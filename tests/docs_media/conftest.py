@@ -59,6 +59,8 @@ _BODY_LUMINANCE = """() => {
 _PROXY_URL = "http://nginx"
 _PROXY_CREDENTIALS = {"ca_username": "kea", "ca_password": "kea"}
 
+#: The names of the demo Servers. Server.name is unique, so a Server with one of them stops the suite.
+DEMO_SERVERS = ("kea-campus", "kea-branch-office")
 #: Documentation MAC addresses (RFC 7042, 00-00-5E-00-53-00 to 00-00-5E-00-53-FF).
 LEASES4 = (
     ("192.0.2.10", "00:00:5e:00:53:0a", "laptop-alice"),
@@ -124,13 +126,13 @@ def demo_kea(kea_control_urls: dict[int, str]) -> Iterator[_DualEndpointKeaClien
         yield _DualEndpointKeaClient(dhcp4, dhcp6)
 
 
-def _create_server(nb_api: pynetbox.api, name: str, **fields):
-    """Create a demo Server, after removing one that an interrupted run left on the same endpoint."""
-    for stale in nb_api.plugins.kea.servers.filter(name=name):
-        if stale.ca_url != fields["ca_url"]:
-            raise RuntimeError(f"A Server named {name!r} exists on another endpoint; the suite does not delete it.")
-        stale.delete()
-    return nb_api.plugins.kea.servers.create(name=name, **fields)
+def _require_no_demo_servers(nb_api: pynetbox.api) -> None:
+    """Fail before seeding when a Server has a demo name: nb_api deletes only the Servers that this session created."""
+    if existing := [server for name in DEMO_SERVERS for server in nb_api.plugins.kea.servers.filter(name=name)]:
+        raise RuntimeError(
+            "NetBox already holds a Server with a demo name, and the suite does not delete Servers it did not "
+            f"create. Delete or rename it, then run again: {[(server.id, server.name) for server in existing]}"
+        )
 
 
 def _sync_identity_rows(nb_api: pynetbox.api) -> dict[str, list]:
@@ -262,15 +264,16 @@ def demo_data(
         page.get_by_label("Password").fill("admin")
         page.get_by_role("button", name="Sign In").click()
         _require_paused_periodic_sync(page, netbox_url)
+        _require_no_demo_servers(nb_api)
         _require_no_sync_rows(nb_api)
         _delete_kea_demo_data(demo_kea)
         # The periodic sync of these Servers stays off too; only the Sync button writes IPAM rows.
-        campus = _create_server(
-            nb_api, "kea-campus", ca_url=kea_url, dhcp6_url=kea_dhcp6_url, has_control_agent=False, sync_enabled=False
+        servers = nb_api.plugins.kea.servers
+        campus = servers.create(
+            name=DEMO_SERVERS[0], ca_url=kea_url, dhcp6_url=kea_dhcp6_url, has_control_agent=False, sync_enabled=False
         )
-        branch = _create_server(
-            nb_api,
-            "kea-branch-office",
+        branch = servers.create(
+            name=DEMO_SERVERS[1],
             ca_url=_PROXY_URL,
             dhcp6=False,
             has_control_agent=False,
