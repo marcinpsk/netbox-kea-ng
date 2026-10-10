@@ -118,10 +118,10 @@ def browser_context_args(browser_context_args: dict) -> dict:
 
 
 @pytest.fixture(scope="session")
-def demo_kea(kea_control_urls: dict[int, str]) -> Iterator[_DualEndpointKeaClient]:
+def demo_kea(kea_harness_daemons: dict[int, str]) -> Iterator[_DualEndpointKeaClient]:
     with (
-        KeaClient(kea_control_urls[4], timeout=30, max_unpaged_leases=1000, write_guard=NoBranchGuard()) as dhcp4,
-        KeaClient(kea_control_urls[6], timeout=30, max_unpaged_leases=1000, write_guard=NoBranchGuard()) as dhcp6,
+        KeaClient(kea_harness_daemons[4], timeout=30, max_unpaged_leases=1000, write_guard=NoBranchGuard()) as dhcp4,
+        KeaClient(kea_harness_daemons[6], timeout=30, max_unpaged_leases=1000, write_guard=NoBranchGuard()) as dhcp6,
     ):
         yield _DualEndpointKeaClient(dhcp4, dhcp6)
 

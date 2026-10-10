@@ -90,6 +90,9 @@ The compose stack runs: NetBox, netbox-worker, postgres, redis, nginx (basic-aut
 + TLS), and **kea-dhcp4 / kea-dhcp6 as direct daemons** (no Control Agent). The
 daemons run with `-X` because Kea 3.2.0 refuses to start with an unsecured HTTP
 control socket; the sockets are loopback-bound with nginx terminating auth in front.
+The suites wipe the leases of these daemons. The `kea_harness_daemons` fixture in `tests/conftest.py` reads each
+daemon's configuration first and refuses one whose global `user-context` lacks `"netbox-kea-test-harness": true`
+(set in `tests/docker/kea_configs/`). Every fixture that writes to Kea takes its URLs from that fixture.
 
 ### Browser tests (`tests/ui/`, Docker required)
 

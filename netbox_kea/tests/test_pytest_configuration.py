@@ -1703,6 +1703,33 @@ def _unscoped_deletes(source: str) -> list[str]:
     return offenders
 
 
+#: The functions that take the raw Kea control URLs: the harness check itself and one read-only command listing.
+_RAW_CONTROL_URL_USERS = {
+    "tests/conftest.py::kea_harness_daemons",
+    "tests/test_kea_commands.py::test_the_harness_kea_lists_the_recorded_commands",
+}
+
+
+def test_every_kea_client_fixture_goes_through_the_harness_check():
+    """The suites wipe Kea leases, so a fixture that writes to Kea takes its URLs from kea_harness_daemons.
+
+    A fixture that requested kea_control_urls directly would write to whatever daemon the
+    environment names, also one that is not a harness daemon.
+    """
+    users = set()
+    for path in sorted(_INTEGRATION_SUITE.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                parameters = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+                if any(parameter.arg == "kea_control_urls" for parameter in parameters):
+                    users.add(f"{path.relative_to(REPOSITORY_ROOT).as_posix()}::{node.name}")
+
+    assert users == _RAW_CONTROL_URL_USERS, (
+        f"{sorted(users - _RAW_CONTROL_URL_USERS)} take kea_control_urls directly. "
+        "Take kea_harness_daemons, which refuses a daemon without the harness marker."
+    )
+
+
 def test_the_unscoped_delete_guard_reads_receiver_and_arguments():
     must_flag = (
         "nb.users.permissions.all(0).delete()",

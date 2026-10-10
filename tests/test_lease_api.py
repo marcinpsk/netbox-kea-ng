@@ -23,10 +23,10 @@ UNREPRESENTABLE_EXPIRE = 300_000_000_000
 
 
 @pytest.fixture
-def kea_clients(kea_control_urls: dict[int, str]) -> Iterator[dict[int, KeaClient]]:
+def kea_clients(kea_harness_daemons: dict[int, str]) -> Iterator[dict[int, KeaClient]]:
     with (
-        KeaClient(kea_control_urls[4], timeout=30, max_unpaged_leases=1000, write_guard=NoBranchGuard()) as dhcp4,
-        KeaClient(kea_control_urls[6], timeout=30, max_unpaged_leases=1000, write_guard=NoBranchGuard()) as dhcp6,
+        KeaClient(kea_harness_daemons[4], timeout=30, max_unpaged_leases=1000, write_guard=NoBranchGuard()) as dhcp4,
+        KeaClient(kea_harness_daemons[6], timeout=30, max_unpaged_leases=1000, write_guard=NoBranchGuard()) as dhcp6,
     ):
         clients = {4: dhcp4, 6: dhcp6}
         wipe = {4: KeaCommand.LEASE4_WIPE, 6: KeaCommand.LEASE6_WIPE}

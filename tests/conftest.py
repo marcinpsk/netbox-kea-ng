@@ -167,6 +167,41 @@ def kea_control_urls() -> dict[int, str]:
     }
 
 
+#: The global user-context key that marks a daemon of the Compose harness (tests/docker/kea_configs).
+HARNESS_MARKER = "netbox-kea-test-harness"
+#: The variable that moves each control URL away from the harness default.
+_CONTROL_URL_VARIABLES = {4: "KEA_DHCP4_CONTROL_URL", 6: "KEA_DHCP6_CONTROL_URL"}
+
+
+@pytest.fixture(scope="session")
+def kea_harness_daemons(kea_control_urls: dict[int, str]) -> dict[int, str]:
+    """Return the control URLs once each daemon shows the harness marker in its configuration.
+
+    The suites wipe and change the leases of these daemons and cannot restore them, so every
+    fixture that writes to Kea takes its URLs from here, never from ``kea_control_urls``.
+    """
+    # Absolute and late: the unit suite loads this file without its package, where `from .kea` fails.
+    from tests.kea import KeaClient, KeaCommand, KeaException
+
+    for family, url in kea_control_urls.items():
+        try:
+            with KeaClient(
+                url, timeout=REQUEST_TIMEOUT, max_unpaged_leases=None, write_guard=NoBranchGuard()
+            ) as client:
+                (reply,) = client.command(KeaCommand.CONFIG_GET, family)
+            marker = reply["arguments"][f"Dhcp{family}"].get("user-context", {}).get(HARNESS_MARKER)
+        except (requests.RequestException, KeaException, RuntimeError, ValueError, KeyError, TypeError) as exc:
+            marker = f"no configuration ({type(exc).__name__})"
+        if marker is not True:
+            pytest.fail(
+                f"The DHCPv{family} daemon at {url} ({_CONTROL_URL_VARIABLES[family]}) is not a test harness daemon: "
+                f'its Dhcp{family} "user-context" has no "{HARNESS_MARKER}": true (found {marker!r}). The suites '
+                "wipe its leases, so they write only to the daemons of tests/docker/kea_configs.",
+                pytrace=False,
+            )
+    return kea_control_urls
+
+
 @pytest.fixture(scope="session")
 def kea_server_kwargs(kea_url: str, kea_dhcp6_url: str) -> dict:
     """Server-create kwargs for the Kea 3.0 dual-daemon harness (no Control Agent):
