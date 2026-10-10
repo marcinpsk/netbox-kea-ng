@@ -499,6 +499,46 @@ class TestCombinedViews:
 class TestCombinedViewsWithKea:
     """Combined view content checks that require a live Kea server fixture."""
 
+    def test_server_selector_applies_two_servers_together(
+        self,
+        page: Page,
+        plugin_base: str,
+        kea_server,
+        nb_api,
+        kea_url: str,
+        kea_dhcp6_url: str,
+        track_http_errors: list,
+    ) -> None:
+        """Two checked Servers stay on the combined page after Apply."""
+        second = nb_api.plugins.kea.servers.create(
+            name=f"{kea_server.name}-second",
+            ca_url=kea_url,
+            dhcp6_url=kea_dhcp6_url,
+            has_control_agent=False,
+        )
+        try:
+            url = f"{plugin_base}/combined/"
+            page.goto(url)
+            page.get_by_role("button", name=re.compile(r"Servers")).click()
+            form = page.locator("#server-filter-form")
+            form.locator(f"#srv_{kea_server.id}").check()
+            expect(page).to_have_url(url)
+            form.locator(f"#srv_{second.id}").check()
+            expect(page).to_have_url(url)
+            form.get_by_role("button", name="Apply", exact=True).click()
+            page.wait_for_url(re.compile(r"/combined/\?"))
+            selected = {int(value) for value in parse_qs(urlparse(page.url).query)["server"]}
+            assert selected == {kea_server.id, second.id}
+            cards = page.locator(".card-header")
+            expect(cards.get_by_role("link", name=kea_server.name, exact=True)).to_be_visible()
+            expect(cards.get_by_role("link", name=second.name, exact=True)).to_be_visible()
+            page.get_by_role("button", name=re.compile(r"Servers")).click()
+            expect(form.locator(f"#srv_{kea_server.id}")).to_be_checked()
+            expect(form.locator(f"#srv_{second.id}")).to_be_checked()
+            _assert_no_http_errors(track_http_errors)
+        finally:
+            second.delete()
+
     @pytest.mark.parametrize("header", ("Server", "Reserved", "NetBox IP"))
     def test_combined_leases4_column_present(
         self,

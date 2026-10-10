@@ -12,7 +12,7 @@
   <div class="card-body">
     <form method="get" class="row g-2 align-items-end">
       {# Preserve server selection when filtering #}
-      {% for pk in selected_server_pks %}
+      {% for pk in server_scope.selected_pks %}
       <input type="hidden" name="server" value="{{ pk }}">
       {% endfor %}
       <div class="col-auto flex-grow-1">
@@ -35,7 +35,7 @@
           <i class="mdi mdi-magnify"></i> Filter
         </button>
         {% if request.GET.q or request.GET.subnet_id or request.GET.scope %}
-        <a href="{{ request.path }}{% if server_qs %}?{{ server_qs }}{% endif %}"
+        <a href="{{ request.path }}{% if server_scope.server_qs %}?{{ server_scope.server_qs }}{% endif %}"
            class="btn btn-outline-secondary btn-sm">
           <i class="mdi mdi-close"></i> Clear
         </a>
@@ -45,8 +45,8 @@
             <i class="mdi mdi-download"></i> Export
           </button>
           <ul class="dropdown-menu dropdown-menu-end">
-            <li><a class="dropdown-item" href="?{% if server_qs %}{{ server_qs }}&amp;{% endif %}export=yaml">Complete Snapshots (YAML)</a></li>
-            <li><a class="dropdown-item" href="?{% if server_qs %}{{ server_qs }}&amp;{% endif %}export=json">Complete Snapshots (JSON)</a></li>
+            <li><a class="dropdown-item" href="?{% if server_scope.server_qs %}{{ server_scope.server_qs }}&amp;{% endif %}export=yaml">Complete Snapshots (YAML)</a></li>
+            <li><a class="dropdown-item" href="?{% if server_scope.server_qs %}{{ server_scope.server_qs }}&amp;{% endif %}export=json">Complete Snapshots (JSON)</a></li>
           </ul>
         </div>
       </div>

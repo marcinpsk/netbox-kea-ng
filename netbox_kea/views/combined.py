@@ -30,7 +30,7 @@ from .reservations import ReservationQuery
 from .reservations import empty_text as reservation_empty_text
 from .reservations import fetch as fetch_reservations
 from .reservations import present as present_reservations
-from .server_scope import ScopeResolution, resolve
+from .server_scope import ServerScope, resolve
 
 logger = logging.getLogger(__name__)
 
@@ -98,37 +98,38 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
 
     active_tab: str = "overview"
     dhcp_version: Family | None = None
-    scope: ScopeResolution
+    server_scope: ServerScope
 
     def get(self, request: HttpRequest) -> HttpResponse:
-        """Resolve the scope and show an explicit state for an invalid selection."""
-        self.scope = resolve(request, self.dhcp_version)
-        if self.scope.kind == "invalid":
+        """Resolve the Server Scope and show an explicit state for an invalid selection."""
+        self.server_scope = resolve(request, self.dhcp_version)
+        if self.server_scope.is_invalid:
             return render(request, "netbox_kea/combined_base.html", self._combined_context(request))
-        if self.scope.kind == "one" and not self.scope.missing_family:
+        if self.server_scope.is_one and not self.server_scope.missing_family:
             target = self._single_server_url(request)
             if request.headers.get("HX-Request") == "true":
                 response = HttpResponse()
                 response["HX-Redirect"] = target
                 return response
             return redirect(target)
-        return self.get_scoped(request)
+        return self.get_server_scoped(request)
 
     def _single_server_url(self, request: HttpRequest) -> str:
         """Keep only query fields that the canonical Server tab understands."""
-        server = self.scope.servers[0]
+        server = self.server_scope.servers[0]
         if self.active_tab == "overview":
             return server.get_absolute_url()
         compatible = {"sort", "per_page"}
         if self.active_tab.startswith("leases"):
             # Combined table pagination is not a per-Server Lease cursor.
             compatible.update(("q", "by", "state", "export", "export_all"))
+        elif self.active_tab.startswith("reservations"):
+            # Combined table pagination is not a per-Server Reservation cursor.
+            compatible.update(forms.ReservationSearchForm.base_fields)
+            compatible.add("export")
         else:
             compatible.add("page")
-            if self.active_tab.startswith("reservations"):
-                compatible.update(forms.ReservationSearchForm.base_fields)
-                compatible.add("export")
-            elif self.active_tab.startswith("subnets"):
+            if self.active_tab.startswith("subnets"):
                 compatible.add("export")
         query = request.GET.copy()
         for key in list(query):
@@ -137,25 +138,22 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
         url = reverse(f"plugins:netbox_kea:server_{self.active_tab}", args=[server.pk])
         return url + (f"?{query.urlencode()}" if query else "")
 
-    def get_scoped(self, request: HttpRequest) -> HttpResponse:
+    def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """Render a combined section within its resolved Server Scope."""
         raise NotImplementedError
 
     def _combined_context(self, request: HttpRequest) -> dict[str, Any]:
         """Build context vars shared by every combined view."""
-        notices = ServerNotices()
+        server_scope_warnings: list[tuple[str, str]] = []
         # All permitted Servers skip a Server without the family; only an explicit selection reports it.
-        if self.scope.kind != "all":
-            notices.warnings.extend(
+        if not self.server_scope.is_all:
+            server_scope_warnings.extend(
                 (server.name, f"DHCPv{self.dhcp_version} is not enabled on this Server.")
-                for server in self.scope.missing_family
+                for server in self.server_scope.missing_family
             )
         return {
-            "all_servers": self.scope.all_servers,
-            "selected_server_pks": self.scope.selected_pks,
-            "server_qs": self.scope.server_qs,
-            "server_scope": self.scope,
-            "scope_warnings": notices.warnings,
+            "server_scope": self.server_scope,
+            "server_scope_warnings": server_scope_warnings,
             "active_tab": self.active_tab,
         }
 
@@ -170,7 +168,7 @@ class CombinedDashboardView(_CombinedViewMixin):
     active_tab = "overview"
     template_name = "netbox_kea/combined_overview.html"
 
-    def get_scoped(self, request: HttpRequest) -> HttpResponse:
+    def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """Render the overview with the Servers in the resolved Server Scope."""
         ctx = self._combined_context(request)
         ctx["page_title"] = "All Kea Servers"
@@ -220,10 +218,10 @@ class _CombinedSubnetsView(_CombinedViewMixin):
     template_name = "netbox_kea/combined_subnets.html"
     dhcp_version: Family = 4
 
-    def get_scoped(self, request: HttpRequest) -> HttpResponse:
+    def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """Merge subnet lists from all queried servers into one table."""
         ctx = self._combined_context(request)
-        servers = self.scope.query_servers
+        servers = self.server_scope.query_servers
 
         all_subnets: list[dict[str, Any]] = []
         read = fan_out(servers, "catalogue", lambda server: _fetch_subnets_from_server(server, self.dhcp_version))
@@ -292,10 +290,10 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
     template_name = "netbox_kea/combined_shared_networks.html"
     dhcp_version: Family = 4
 
-    def get_scoped(self, request: HttpRequest) -> HttpResponse:
+    def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """Merge shared network lists from all queried servers into one table."""
         ctx = self._combined_context(request)
-        servers = self.scope.query_servers
+        servers = self.server_scope.query_servers
 
         all_networks: list[dict[str, Any]] = []
         writable_pks = set(
@@ -358,10 +356,10 @@ class _CombinedReservationsView(_CombinedViewMixin):
     template_name = "netbox_kea/combined_reservations.html"
     dhcp_version: Family = 4
 
-    def get_scoped(self, request: HttpRequest) -> HttpResponse:
+    def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """Merge reservation lists from all queried servers into one table."""
         ctx = self._combined_context(request)
-        servers = self.scope.query_servers
+        servers = self.server_scope.query_servers
 
         is_export = "export" in request.GET
         search_form = forms.ReservationSearchForm(request.GET or None)
@@ -482,7 +480,7 @@ class _CombinedLeasesView(_CombinedViewMixin):
     template_name = "netbox_kea/combined_leases.html"
     dhcp_version: Family = 4
 
-    def get_scoped(self, request: HttpRequest) -> HttpResponse:
+    def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """Render the search form or, when a query is supplied, merge results."""
         search_form_cls = forms.Leases4SearchForm if self.dhcp_version == 4 else forms.Leases6SearchForm
         table_cls = tables.GlobalLeaseTable4 if self.dhcp_version == 4 else tables.GlobalLeaseTable6
@@ -521,7 +519,7 @@ class _CombinedLeasesView(_CombinedViewMixin):
         q = search_form.cleaned_data.get("q")
         by = search_form.cleaned_data.get("by")
         state_filter = search_form.cleaned_data.get("state")
-        servers = self.scope.query_servers
+        servers = self.server_scope.query_servers
 
         read = _read_combined_leases(servers, self.dhcp_version, q, by, state_filter)
         all_leases = read.rows
