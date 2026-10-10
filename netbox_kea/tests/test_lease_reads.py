@@ -481,25 +481,6 @@ class LeaseExportTest(_ViewTestBase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class CombinedLeaseViewTest(_ViewTestBase):
-    def test_a_malformed_record_keeps_the_server_and_its_valid_siblings(self):
-        records = [lease_record("192.0.2.10"), _malformed("not-an-address")]
-        url = reverse("plugins:netbox_kea:combined_leases4")
-        with stub_kea({"lease4-get-all": lease_reply(*records)}):
-            response = self.client.get(url, {"q": "10", "by": "subnet_id"})
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["errors"], [])
-        self.assertEqual([row["ip_address"] for row in response.context["table"].data], ["192.0.2.10"])
-        self.assertEqual(response.context["warnings"], [])
-        self.assertContains(
-            response,
-            f"<li><strong>{self.server.name}</strong>: 1 record(s) could not be read: The lease address is not valid.</li>",
-            html=True,
-        )
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class LeaseRestTest(_ViewTestBase):
     """REST publishes normalized typed facts with explicit scope and coverage."""
 

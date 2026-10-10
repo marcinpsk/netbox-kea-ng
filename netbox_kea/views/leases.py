@@ -239,7 +239,7 @@ class LeaseSearch:
     """What one Lease read asks of a Server.
 
     A selector *by* searches by the value *q*. Without one, the read covers every Lease: the page of *per_page*
-    Leases after *cursor*, or with *max_leases* every page until that many raw records.
+    Leases after *cursor*.
     """
 
     by: str = ""
@@ -247,7 +247,6 @@ class LeaseSearch:
     state: LeaseState | None = None
     cursor: str | None = None
     per_page: int = 250
-    max_leases: int | None = None
 
 
 def _read_leases(client: KeaClient, family: Family, search: LeaseSearch, server_id: int) -> LeaseSnapshot:
@@ -255,10 +254,6 @@ def _read_leases(client: KeaClient, family: Family, search: LeaseSearch, server_
     if search.by:
         value = str(search.q.cidr) if search.by == constants.BY_SUBNET else search.q
         return client.lease_search(family, search.by, value, state=search.state, server_id=server_id)
-    if search.max_leases is not None:
-        return client.lease_get_all(
-            family, per_page=search.per_page, max_leases=search.max_leases, state=search.state, server_id=server_id
-        )
     return client.lease_get_page(
         family, limit=search.per_page, cursor=search.cursor, state=search.state, server_id=server_id
     )
