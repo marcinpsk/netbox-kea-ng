@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from django.contrib import messages
 from django.http import HttpResponse
 from django.http.request import HttpRequest
 from django.shortcuts import redirect, render
@@ -105,6 +106,13 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
         self.server_scope = resolve(request, self.dhcp_version)
         if self.server_scope.is_invalid:
             return render(request, "netbox_kea/combined_base.html", self._combined_context(request))
+        if "export" in request.GET and self.server_scope.missing_family and not self.server_scope.is_all:
+            names = ", ".join(server.name for server in self.server_scope.missing_family)
+            messages.warning(request, f"Export refused: DHCPv{self.dhcp_version} is not enabled on {names}.")
+            query = request.GET.copy()
+            query.pop("export")
+            return redirect(f"{request.path}?{query.urlencode()}")
+        # A download is not navigation, so an export stays on the combined view.
         # A download is not navigation, so an export stays on the combined view.
         if self.server_scope.is_one and not self.server_scope.missing_family and "export" not in request.GET:
             target = self._single_server_url(request)
