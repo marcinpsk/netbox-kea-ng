@@ -110,6 +110,22 @@ the integration job executes.
 `test_setup.sh`, with a NetBox 4.7 image. Elsewhere it skips; `NETBOX_KEA_REQUIRE_BRANCHING=1`
 makes it fail instead.
 
+### Documentation screenshots (`tests/docs_media/`, Docker required)
+
+The site pages show screenshots that CI makes from the commit it builds. Git never holds them:
+`docs/guide/assets/screenshots/` is in `.gitignore`. The suite runs only when `--docs-media-dir` names the output
+directory, so the integration run over `tests/` leaves it out. It drives the `tests/ui` harness, loads one demo data
+set and writes each view as `<name>-light.png` and `<name>-dark.png`. `zensical build --strict` does not check
+images, so `scripts/check_docs_media.py` fails on a page that refers to a missing image and on an image that no page
+refers to.
+
+```bash
+./tests/test_setup.sh
+uv run --native-tls pytest -p no:django tests/docs_media --docs-media-dir docs/guide/assets/screenshots
+python scripts/check_docs_media.py
+uv run --group docs zensical build --strict
+```
+
 ### CI
 
 - **Unit-test job**: pinned to the exact NetBox patch release named by
@@ -144,6 +160,10 @@ makes it fail instead.
   NetBox v4.3 (floor), v4.7 (ceiling), and the dev snapshot (allowed to fail).
 - **Branching browser job**: the integration steps on the netbox-branching variant of the
   harness (a NetBox 4.7 image), running only `tests/ui/test_branching_refusal.py`.
+- **Documentation job**: the reusable workflow `docs-build.yml` starts the harness with NetBox 4.7, runs the
+  screenshot suite and the image check, and builds the site with `--strict`. `ci.yml` calls it on pull requests to
+  `main` and in the scheduled run, and uploads the site as an artifact. `docs.yml` calls it on a push to `main` and
+  deploys the site to GitHub Pages. The lint job has no screenshots, so its link check excludes them.
 - Playwright traces on failure are uploaded as artifacts.
 
 Ruff is configured in `pyproject.toml`: line length 120, max complexity 15,
