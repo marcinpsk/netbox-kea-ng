@@ -11,26 +11,50 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPOSITORY_ROOT / "scripts" / "check_docs_media.py"
 _PNG = b"\x89PNG\r\n\x1a\n"
+_SITE_URL = "https://example.github.io/project/"
 
 
-def _tree(root: Path, pages: dict[str, str], captured: tuple[str, ...], published: tuple[str, ...] | None = None):
-    """Write the HTML pages and the PNGs of a built site, and the captured PNGs; return both directories."""
-    site, shots = root / "site", root / "screenshots"
+def _tree(
+    root: Path,
+    pages: dict[str, str],
+    captured: tuple[str, ...],
+    published: tuple[str, ...] | None = None,
+    readme: str = "# Project\n",
+):
+    """Write a built site, the captured media, a README and mkdocs.yml; return the site and the media root.
+
+    A name without a directory is a screenshot; a published file is in the site under assets/.
+    """
+    site, media = root / "site", root / "assets"
+    site.mkdir(parents=True, exist_ok=True)
     for name, body in pages.items():
         (site / name).parent.mkdir(parents=True, exist_ok=True)
         (site / name).write_text(f"<!doctype html><html><body>{body}</body></html>", encoding="utf-8")
-    shots.mkdir(parents=True, exist_ok=True)
+    media.mkdir(parents=True, exist_ok=True)
     for name in captured:
-        (shots / name).write_bytes(_PNG)
+        (media / _media_path(name)).parent.mkdir(parents=True, exist_ok=True)
+        (media / _media_path(name)).write_bytes(_PNG)
     for name in captured if published is None else published:
-        (site / "assets" / "screenshots" / name).parent.mkdir(parents=True, exist_ok=True)
-        (site / "assets" / "screenshots" / name).write_bytes(_PNG)
-    return site, shots
+        (site / "assets" / _media_path(name)).parent.mkdir(parents=True, exist_ok=True)
+        (site / "assets" / _media_path(name)).write_bytes(_PNG)
+    (root / "README.md").write_text(readme, encoding="utf-8")
+    (root / "mkdocs.yml").write_text(f"site_name: project\nsite_url: {_SITE_URL}\n", encoding="utf-8")
+    return site, media
 
 
-def _check(site: Path, shots: Path) -> subprocess.CompletedProcess[str]:
+def _media_path(name: str) -> str:
+    return name if "/" in name else f"screenshots/{name}"
+
+
+def _check(site: Path, media: Path) -> subprocess.CompletedProcess[str]:
+    root = site.parent
+    options = ("--readme", str(root / "README.md"), "--config", str(root / "mkdocs.yml"))
     return subprocess.run(
-        [sys.executable, str(SCRIPT), str(site), str(shots)], capture_output=True, text=True, timeout=30, check=False
+        [sys.executable, str(SCRIPT), str(site), str(media), *options],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
     )
 
 
@@ -41,7 +65,7 @@ _LEASES = (
 
 
 def test_a_site_whose_pages_and_captures_match_passes(tmp_path: Path) -> None:
-    site, shots = _tree(
+    site, media = _tree(
         tmp_path,
         {
             "leases/index.html": _LEASES,
@@ -51,60 +75,60 @@ def test_a_site_whose_pages_and_captures_match_passes(tmp_path: Path) -> None:
     )
     (site / "assets" / "logo.png").write_bytes(_PNG)
 
-    result = _check(site, shots)
+    result = _check(site, media)
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "Each local image of the site exists, and each of the 2 captures is on a page.\n"
+    assert result.stdout == "Each local media file of the site exists, and each of the 2 captures is on a page.\n"
 
 
 def test_a_page_that_shows_a_screenshot_the_site_lacks_fails(tmp_path: Path) -> None:
-    site, shots = _tree(tmp_path, {"leases/index.html": _LEASES}, ("leases-light.png",))
+    site, media = _tree(tmp_path, {"leases/index.html": _LEASES}, ("leases-light.png",))
 
-    result = _check(site, shots)
+    result = _check(site, media)
 
     assert result.returncode == 1
     assert result.stderr == "missing: ../assets/screenshots/leases-dark.png#only-dark (shown by leases/index.html)\n"
 
 
 def test_a_captured_screenshot_that_no_page_shows_fails(tmp_path: Path) -> None:
-    site, shots = _tree(
+    site, media = _tree(
         tmp_path, {"leases/index.html": _LEASES}, ("leases-light.png", "leases-dark.png", "subnets-light.png")
     )
 
-    result = _check(site, shots)
+    result = _check(site, media)
 
     assert result.returncode == 1
-    assert result.stderr == "unreferenced: subnets-light.png\n"
+    assert result.stderr == "unreferenced: screenshots/subnets-light.png\n"
 
 
 def test_a_relative_src_resolves_against_its_own_page(tmp_path: Path) -> None:
     # From a nested page, "assets/..." without "../" names a file that the site does not hold.
     page = '<img src="assets/screenshots/leases-light.png">'
-    site, shots = _tree(tmp_path, {"guide/leases/index.html": page}, ("leases-light.png",))
+    site, media = _tree(tmp_path, {"guide/leases/index.html": page}, ("leases-light.png",))
 
-    result = _check(site, shots)
+    result = _check(site, media)
 
     assert result.returncode == 1
     assert result.stderr == (
         "missing: assets/screenshots/leases-light.png (shown by guide/leases/index.html)\n"
-        "unreferenced: leases-light.png\n"
+        "unreferenced: screenshots/leases-light.png\n"
     )
 
 
 def test_a_wrong_src_fails_also_when_another_page_shows_the_same_capture(tmp_path: Path) -> None:
     page = '<img src="assets/screenshots/shot.png">'
-    site, shots = _tree(tmp_path, {"index.html": page, "guide/index.html": page}, ("shot.png",))
+    site, media = _tree(tmp_path, {"index.html": page, "guide/index.html": page}, ("shot.png",))
 
-    result = _check(site, shots)
+    result = _check(site, media)
 
     assert result.returncode == 1
     assert result.stderr == "missing: assets/screenshots/shot.png (shown by guide/index.html)\n"
 
 
 def test_a_missing_image_outside_the_screenshots_fails(tmp_path: Path) -> None:
-    site, shots = _tree(tmp_path, {"index.html": '<img src="assets/logo.png">'}, ())
+    site, media = _tree(tmp_path, {"index.html": '<img src="assets/logo.png">'}, ())
 
-    result = _check(site, shots)
+    result = _check(site, media)
 
     assert result.returncode == 1
     assert result.stderr == "missing: assets/logo.png (shown by index.html)\n"
@@ -112,30 +136,30 @@ def test_a_missing_image_outside_the_screenshots_fails(tmp_path: Path) -> None:
 
 def test_an_existing_image_outside_the_site_fails(tmp_path: Path) -> None:
     # The deploy uploads only the site, so a file that escapes it is missing for the reader.
-    page = '<img src="assets/screenshots/shot.png"><img src="../screenshots/shot.png">'
-    site, shots = _tree(tmp_path, {"index.html": page}, ("shot.png",))
+    page = '<img src="assets/screenshots/shot.png"><img src="../assets/screenshots/shot.png">'
+    site, media = _tree(tmp_path, {"index.html": page}, ("shot.png",))
 
-    result = _check(site, shots)
+    result = _check(site, media)
 
     assert result.returncode == 1
-    assert result.stderr == "missing: ../screenshots/shot.png (shown by index.html)\n"
+    assert result.stderr == "missing: ../assets/screenshots/shot.png (shown by index.html)\n"
 
 
 def test_a_nested_page_two_levels_down_finds_its_screenshot(tmp_path: Path) -> None:
     page = '<img src="../../assets/screenshots/leases-light.png">'
-    site, shots = _tree(tmp_path, {"guide/leases/index.html": page}, ("leases-light.png",))
+    site, media = _tree(tmp_path, {"guide/leases/index.html": page}, ("leases-light.png",))
 
-    assert _check(site, shots).returncode == 0
+    assert _check(site, media).returncode == 0
 
 
 def test_an_image_inside_an_html_comment_is_not_on_the_page(tmp_path: Path) -> None:
     page = '<!-- <img src="../assets/screenshots/leases-light.png"> -->'
-    site, shots = _tree(tmp_path, {"leases/index.html": page}, ("leases-light.png",))
+    site, media = _tree(tmp_path, {"leases/index.html": page}, ("leases-light.png",))
 
-    result = _check(site, shots)
+    result = _check(site, media)
 
     assert result.returncode == 1
-    assert result.stderr == "unreferenced: leases-light.png\n"
+    assert result.stderr == "unreferenced: screenshots/leases-light.png\n"
 
 
 def test_a_directory_that_does_not_exist_is_a_usage_error(tmp_path: Path) -> None:
@@ -143,3 +167,90 @@ def test_a_directory_that_does_not_exist_is_a_usage_error(tmp_path: Path) -> Non
 
     assert result.returncode == 2
     assert "is not a directory" in result.stderr
+
+
+_CLIP = (
+    '<video controls muted loop playsinline preload="none" poster="../assets/recordings/clip.png">'
+    '<source src="../assets/recordings/clip.mp4" type="video/mp4"></video>'
+)
+_CLIP_FILES = ("recordings/clip.mp4", "recordings/clip.png")
+
+
+def test_a_page_whose_recording_and_poster_exist_passes(tmp_path: Path) -> None:
+    # A poster and a GIF are not recordings, so only the MP4 must be on a page.
+    site, media = _tree(tmp_path, {"leases/index.html": _CLIP}, (*_CLIP_FILES, "recordings/clip.gif"))
+
+    result = _check(site, media)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "Each local media file of the site exists, and each of the 1 captures is on a page.\n"
+
+
+def test_a_video_src_that_the_site_lacks_fails(tmp_path: Path) -> None:
+    page = '<video src="assets/recordings/clip.mp4" poster="../assets/recordings/clip.png"></video>'
+    site, media = _tree(tmp_path, {"leases/index.html": page}, _CLIP_FILES)
+
+    result = _check(site, media)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "missing: assets/recordings/clip.mp4 (shown by leases/index.html)\nunreferenced: recordings/clip.mp4\n"
+    )
+
+
+def test_a_video_poster_that_the_site_lacks_fails(tmp_path: Path) -> None:
+    site, media = _tree(tmp_path, {"leases/index.html": _CLIP}, _CLIP_FILES, published=("recordings/clip.mp4",))
+
+    result = _check(site, media)
+
+    assert result.returncode == 1
+    assert result.stderr == "missing: ../assets/recordings/clip.png (shown by leases/index.html)\n"
+
+
+def test_a_video_source_that_the_site_lacks_fails(tmp_path: Path) -> None:
+    site, media = _tree(tmp_path, {"leases/index.html": _CLIP}, _CLIP_FILES, published=("recordings/clip.png",))
+
+    result = _check(site, media)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        "missing: ../assets/recordings/clip.mp4 (shown by leases/index.html)\nunreferenced: recordings/clip.mp4\n"
+    )
+
+
+def test_a_captured_recording_that_no_page_shows_fails(tmp_path: Path) -> None:
+    site, media = _tree(tmp_path, {"leases/index.html": _CLIP}, (*_CLIP_FILES, "recordings/other.mp4"))
+
+    result = _check(site, media)
+
+    assert result.returncode == 1
+    assert result.stderr == "unreferenced: recordings/other.mp4\n"
+
+
+def test_a_readme_image_under_the_site_url_that_the_site_holds_passes(tmp_path: Path) -> None:
+    readme = f"![A clip]({_SITE_URL}assets/recordings/clip.gif)\n![Badge](https://img.example.com/badge.svg)\n"
+    site, media = _tree(tmp_path, {}, ("recordings/clip.gif",), readme=readme)
+
+    assert _check(site, media).returncode == 0
+
+
+def test_a_readme_image_under_the_site_url_that_the_site_lacks_fails(tmp_path: Path) -> None:
+    readme = f'![A clip]({_SITE_URL}assets/recordings/clip.gif "Sync")\n<img src="{_SITE_URL}assets/logo.png">\n'
+    site, media = _tree(tmp_path, {}, (), readme=readme)
+
+    result = _check(site, media)
+
+    assert result.returncode == 1
+    assert result.stderr == (
+        f"missing: {_SITE_URL}assets/recordings/clip.gif (shown by README.md)\n"
+        f"missing: {_SITE_URL}assets/logo.png (shown by README.md)\n"
+    )
+
+
+def test_a_readme_image_inside_an_html_comment_is_not_checked(tmp_path: Path) -> None:
+    readme = f"<!--\n![A clip]({_SITE_URL}assets/recordings/old.gif)\n-->\n# Project\n"
+    site, media = _tree(tmp_path, {}, (), readme=readme)
+
+    result = _check(site, media)
+
+    assert result.returncode == 0, result.stderr

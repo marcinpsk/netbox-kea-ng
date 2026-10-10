@@ -44,12 +44,16 @@ Build the documentation site from `docs/guide/`. The `--strict` flag fails the b
 uv run --group docs zensical build --strict
 ```
 
-The pages show screenshots that CI makes. To make them locally, start the integration harness first:
+The pages show screenshots and short recordings that CI makes. To make them locally, start the integration harness
+with the documentation variant `docker-compose.docs.yml`, which lets Kea write its configuration. The suite writes the
+screenshots to `docs/guide/assets/screenshots/`, and the recordings (MP4, a PNG poster and the README GIF) to
+`docs/guide/assets/recordings/`:
 
 ```bash
-uv run --native-tls pytest -p no:django tests/docs_media --docs-media-dir docs/guide/assets/screenshots
+COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.docs.yml ./tests/test_setup.sh
+uv run --native-tls pytest -p no:django tests/docs_media --docs-media-dir docs/guide/assets
 uv run --group docs zensical build --strict
-python scripts/check_docs_media.py site docs/guide/assets/screenshots
+uv run python scripts/check_docs_media.py site docs/guide/assets
 ```
 
 See the [Changelog](changelog.md) for version history.

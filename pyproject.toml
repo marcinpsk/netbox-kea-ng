@@ -57,6 +57,8 @@ dev = [
   "pytest-django>=4.9.0,<5.0.0",
   "pytest-xdist>=3.8.0,<4.0.0",
   "pytest-playwright>=0.6.0,<0.10.0",
+  # The static ffmpeg of tests/docs_media: it encodes the documentation recordings without a system package.
+  "imageio-ffmpeg>=0.6.0,<1.0.0",
   "tree-sitter==0.26.0",
   "tree-sitter-bash==0.25.1",
   "pynetbox>=7.3.0,<7.9.0",

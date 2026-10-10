@@ -20,6 +20,12 @@ SPDX-License-Identifier: Apache-2.0
 ![A NetBox IP address that a lease Sync wrote: status DHCP, the DNS name from the lease hostname and the sync marker in the description](assets/screenshots/synced-ip-address-light.png#only-light)
 ![A NetBox IP address that a lease Sync wrote: status DHCP, the DNS name from the lease hostname and the sync marker in the description](assets/screenshots/synced-ip-address-dark.png#only-dark)
 
+The Sync button of a lease writes the NetBox IP address at once. The button then links to it.
+
+<video controls muted loop playsinline preload="none" width="1440" height="900" poster="../assets/recordings/sync-lease.png" aria-label="Recording: press Sync on a lease, follow the Synced link, and see the sync marker on the NetBox IP address">
+  <source src="assets/recordings/sync-lease.mp4" type="video/mp4">
+</video>
+
 ## Background IPAM Sync
 
 The background sync requires `rqworker`.
