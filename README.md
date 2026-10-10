@@ -8,19 +8,21 @@ SPDX-License-Identifier: Apache-2.0
 
 [![PyPI](https://img.shields.io/pypi/v/netbox-kea-ng)](https://pypi.org/project/netbox-kea-ng/)
 [![PyPI - Downloads](https://img.shields.io/pypi/dm/netbox-kea-ng)](https://pypi.org/project/netbox-kea-ng/)
-[![CI](https://img.shields.io/github/actions/workflow/status/marcinpsk/netbox-kea/ci.yml?branch=main&label=tests)](https://github.com/marcinpsk/netbox-kea/actions/workflows/ci.yml)
-[![Coverage](https://codecov.io/gh/marcinpsk/netbox-kea/branch/main/graph/badge.svg)](https://codecov.io/gh/marcinpsk/netbox-kea)
-[![CodeQL](https://github.com/marcinpsk/netbox-kea/actions/workflows/codeql.yml/badge.svg)](https://github.com/marcinpsk/netbox-kea/actions/workflows/codeql.yml)
-[![REUSE](https://api.reuse.software/badge/github.com/marcinpsk/netbox-kea)](https://api.reuse.software/info/github.com/marcinpsk/netbox-kea)
-[![License](https://img.shields.io/github/license/marcinpsk/netbox-kea)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/marcinpsk/netbox-kea-ng/ci.yml?branch=main&label=tests)](https://github.com/marcinpsk/netbox-kea-ng/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/marcinpsk/netbox-kea-ng/branch/main/graph/badge.svg)](https://codecov.io/gh/marcinpsk/netbox-kea-ng)
+[![CodeQL](https://github.com/marcinpsk/netbox-kea-ng/actions/workflows/codeql.yml/badge.svg)](https://github.com/marcinpsk/netbox-kea-ng/actions/workflows/codeql.yml)
+[![REUSE](https://api.reuse.software/badge/github.com/marcinpsk/netbox-kea-ng)](https://api.reuse.software/info/github.com/marcinpsk/netbox-kea-ng)
+[![License](https://img.shields.io/github/license/marcinpsk/netbox-kea-ng)](LICENSE)
 [![Python](https://img.shields.io/pypi/pyversions/netbox-kea-ng)](https://pypi.org/project/netbox-kea-ng/)
 [![NetBox](https://img.shields.io/badge/NetBox-%E2%89%A54.3.0-blue)](https://github.com/netbox-community/netbox)
 
-> **Fork notice:** This is `netbox-kea-ng`, an independently maintained fork of
+> **Origin:** `netbox-kea-ng` started as a fork of
 > [netbox-kea](https://github.com/devon-mar/netbox-kea) by
-> [Devon Mar](https://github.com/devon-mar).
-> It is published to PyPI as **`netbox-kea-ng`** and tracked in this repository.
-> Upstream changes are periodically merged where applicable.
+> [Devon Mar](https://github.com/devon-mar) and is now a separate project.
+> It is published to PyPI as **`netbox-kea-ng`**.
+> Issues and pull requests up to version 3.1.0 are in the archived repository
+> [marcinpsk/netbox-kea](https://github.com/marcinpsk/netbox-kea).
+> Upstream changes are merged where applicable.
 
 NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your DHCP infrastructure directly from NetBox — view daemon status, search and manage leases, manage host reservations, configure subnets/pools/options, and keep your NetBox IPAM synchronized with live Kea data via a background job.
 
@@ -689,4 +691,4 @@ See [CHANGELOG](CHANGELOG.md) for version history.
 
 ## License
 
-[Apache-2.0](LICENSE) — original code by [Devon Mar](https://github.com/devon-mar), fork maintained by [Marcin Zieba](https://github.com/marcinpsk).
+[Apache-2.0](LICENSE). Original code by [Devon Mar](https://github.com/devon-mar), maintained by [Marcin Zieba](https://github.com/marcinpsk).
