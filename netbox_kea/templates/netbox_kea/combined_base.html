@@ -12,7 +12,9 @@
           data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
     <i class="mdi mdi-server-network"></i>
     Servers
-    {% if selected_server_pks %}
+    {% if server_scope.kind == 'invalid' %}
+      <span class="badge text-bg-warning ms-1">Invalid</span>
+    {% elif selected_server_pks %}
       <span class="badge text-bg-primary ms-1">{{ selected_server_pks|length }}</span>
     {% else %}
       <span class="badge text-bg-secondary ms-1">All</span>
@@ -111,5 +113,22 @@
 {% endblock tabs %}
 
 {% block content %}
-  {% block tab_content %}{% endblock %}
+  {% if server_scope.kind == 'invalid' %}
+    <div class="alert alert-warning mt-3" role="alert">
+      <h2 class="h5">Invalid Server selection</h2>
+      <p>The selection is empty or contains a Server ID that is invalid, unknown, or unavailable to you.</p>
+      <a href="{{ server_scope.all_servers_url }}">Show all Servers</a>
+    </div>
+  {% else %}
+    {% if scope_warnings %}
+      <div class="alert alert-warning mt-3" role="alert">
+        <ul class="mb-0">
+          {% for name, message in scope_warnings %}
+            <li>{{ name }}: {{ message }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+    {% block tab_content %}{% endblock %}
+  {% endif %}
 {% endblock content %}

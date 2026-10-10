@@ -3257,7 +3257,7 @@ class TestCombinedLeasesTruncated(_ViewTestBase):
 
     def test_truncated_server_name_in_context(self):
         records = [lease_record(f"10.0.{index // 256}.{index % 256}") for index in range(1, 1002)]
-        url = reverse("plugins:netbox_kea:combined_leases4") + f"?state=0&server={self.server.pk}"
+        url = reverse("plugins:netbox_kea:combined_leases4") + "?state=0"
         with _lease_stub({"lease4-get-page": lease_pages(records)}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
