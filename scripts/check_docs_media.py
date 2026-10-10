@@ -11,20 +11,19 @@ and when a README image under the `site_url` of mkdocs.yml is not a file inside 
 
 Not checked: `srcset` candidates.
 Not checked: root-relative URLs (`/...`), which depend on the `site_url` path.
-Not checked: README reference-style images (`![alt][ref]`). The README check reads the Markdown source, so
-it also reads an image inside a code block; it skips an HTML comment.
+The README check renders the README with a CommonMark parser, as GitHub does, and reads the same elements.
 """
 
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 import yaml
+from markdown_it import MarkdownIt
 
 #: The media root, relative to the site root.
 MEDIA = Path("assets")
@@ -32,9 +31,6 @@ MEDIA = Path("assets")
 CAPTURES = ("screenshots/*.png", "recordings/*.mp4")
 #: The attributes that name a media file, for each element.
 _MEDIA_ATTRIBUTES = {"img": ("src",), "video": ("src", "poster"), "source": ("src",)}
-#: A Markdown image: ![alt](url) or ![alt](url "title").
-_MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\(\s*<?([^)\s>]+)")
-_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 class _MediaSources(HTMLParser):
@@ -69,9 +65,9 @@ def _media(page: Path) -> list[tuple[str, Path]]:
 def _readme_problems(site: Path, readme: Path, config: Path) -> list[str]:
     """Return one message for each README image under the site URL that the site does not hold."""
     site_url = yaml.safe_load(config.read_text(encoding="utf-8"))["site_url"]
-    text = _HTML_COMMENT.sub("", readme.read_text(encoding="utf-8"))
+    html = MarkdownIt("commonmark").render(readme.read_text(encoding="utf-8"))
     found = []
-    for source in [*_MARKDOWN_IMAGE.findall(text), *_sources(text)]:
+    for source in _sources(html):
         if not source.startswith(site_url):
             continue
         image = (site / unquote(urlsplit(source).path.removeprefix(urlsplit(site_url).path))).resolve()

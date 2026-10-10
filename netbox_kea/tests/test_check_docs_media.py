@@ -247,6 +247,16 @@ def test_a_readme_image_under_the_site_url_that_the_site_lacks_fails(tmp_path: P
     )
 
 
+def test_a_readme_image_url_keeps_its_balanced_parentheses(tmp_path: Path) -> None:
+    readme = f"![Demo]({_SITE_URL}assets/demo(1).png)\n![Clip](<{_SITE_URL}assets/recordings/my clip.gif>)\n"
+    site, media = _tree(tmp_path, {}, ("recordings/my clip.gif",), readme=readme)
+    (site / "assets" / "demo(1).png").write_bytes(_PNG)
+
+    result = _check(site, media)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_a_readme_image_inside_an_html_comment_is_not_checked(tmp_path: Path) -> None:
     readme = f"<!--\n![A clip]({_SITE_URL}assets/recordings/old.gif)\n-->\n# Project\n"
     site, media = _tree(tmp_path, {}, (), readme=readme)
