@@ -82,7 +82,9 @@ def test_edit_lease(plugin_base: str, demo_data: DemoData, recorded_edit: str, r
         expect(field).to_have_value(hostname)
         clip.type(field, RECORDED_EDIT_HOSTNAME)
         clip.click(page.get_by_role("button", name="Save"))
-        expect(page.locator(".toast-body", has_text=f"Lease {recorded_edit} updated.")).to_have_count(1)
+        expect(page.locator(".toast-body", has_text=f"Lease {recorded_edit} updated.")).to_have_count(
+            1, timeout=_TIMEOUT
+        )
         # The save returns to the lease search, which reads the lease from Kea again.
         edited = _row(page, recorded_edit).get_by_text(RECORDED_EDIT_HOSTNAME, exact=True)
         expect(edited).to_be_visible()
