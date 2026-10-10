@@ -5,6 +5,7 @@ import os
 import warnings
 from collections.abc import Iterator
 from functools import partial
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import pynetbox
@@ -12,6 +13,24 @@ import pytest
 import requests
 
 REQUEST_TIMEOUT = 20
+#: The documentation screenshot suite. It runs only when --docs-media-dir names its output directory.
+DOCS_MEDIA_SUITE = Path(__file__).resolve().parent / "docs_media"
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--docs-media-dir",
+        default=None,
+        type=Path,
+        help="Run tests/docs_media and write the documentation screenshots to this directory.",
+    )
+
+
+def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
+    """Leave the documentation screenshot suite out of a run that names no output directory."""
+    if collection_path == DOCS_MEDIA_SUITE and config.getoption("docs_media_dir") is None:
+        return True
+    return None
 
 
 class TimeoutSession(requests.Session):
