@@ -33,6 +33,7 @@ uv run ruff check .                        # lint
 uv run ruff format --check .               # check formatting
 uv run ruff format .                       # auto-format
 uv run reuse lint                          # SPDX/REUSE compliance
+uv run --group docs zensical build --strict  # documentation site (Python 3.11+): mkdocs.yml, pages in docs/guide/
 uv run --native-tls pre-commit install --install-hooks  # install configured hook types
 ./scripts/opengrep-scan.sh                 # custom opengrep ruleset gate (pre-commit only)
 ./scripts/opengrep-test.sh                 # opengrep rule tests
@@ -549,5 +550,7 @@ resort, reserved for true external boundaries you cannot run locally.
   cannot take a comment or are generated (license text, binary, JSON, lock file, changelog).
   Name one `SPDX-FileCopyrightText` line per author whose lines are in the file. Never
   remove a holder whose code is still in the file (Apache-2.0 section 4(c)).
+- **User documentation**: the site pages in `docs/guide/` hold it, and `mkdocs.yml` lists them in `nav`.
+  Keep `README.md` short. PyPI renders it too, so each of its links must be absolute.
 - **Ruff**: line length 120, max complexity 15, migrations excluded, E501 ignored,
   docstrings required except in tests/migrations/`__init__.py`.

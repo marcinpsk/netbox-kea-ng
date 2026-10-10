@@ -301,8 +301,8 @@ jobs:
         with:
           python-version-file: pyproject.toml
 
-      - name: Install dev dependencies
-        run: uv sync --native-tls --group dev
+      - name: Install dev and docs dependencies
+        run: uv sync --native-tls --group dev --group docs
 
       - name: Ruff lint
         run: uv run --native-tls ruff check .
@@ -315,6 +315,10 @@ jobs:
 
       - name: REUSE compliance
         run: uv run --native-tls reuse lint
+
+      # --strict fails the build on a broken link between the site pages.
+      - name: Documentation site
+        run: uv run --native-tls --group docs zensical build --strict
 
   test:
     strategy:

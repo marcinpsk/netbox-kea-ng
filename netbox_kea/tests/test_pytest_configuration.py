@@ -101,8 +101,16 @@ def _workflow_job(workflow: str, name: str) -> str:
     return re.split(r"\n {2}[A-Za-z0-9_-]+:\n", job, maxsplit=1)[0]
 
 
+#: The pages of the documentation site, which zensical builds from docs/guide/.
+_SITE_PAGES = tuple(
+    sorted(page.relative_to(REPOSITORY_ROOT).as_posix() for page in REPOSITORY_ROOT.glob("docs/guide/*.md"))
+)
+
 #: Documentation a reader outside this machine consumes.
-_PUBLISHED_DOCS = ("AGENTS.md", "README.md")
+_PUBLISHED_DOCS = ("AGENTS.md", "README.md", *_SITE_PAGES)
+
+#: Published documentation that gives the contributor commands (lint, unit and integration tests).
+_CONTRIBUTOR_DOCS = ("AGENTS.md", "docs/guide/development.md")
 
 #: Hosts and database names that are safe to publish: they name no particular machine
 #: and paste into a shell unchanged.
@@ -225,6 +233,7 @@ def test_published_docs_name_no_machine_specific_resource():
     """
     # Hosts and database names that only exist on a particular developer machine.
     private = re.compile(r"[\w.-]*(?:review-redis|_review\b|devcontainer-devcontainer|nblp-)[\w.-]*")
+    assert "docs/guide/index.md" in _PUBLISHED_DOCS, "The site pages moved; this guard would not read them."
     for name in _PUBLISHED_DOCS:
         text = (REPOSITORY_ROOT / name).read_text()
         assert text, f"{name} is empty; this guard would pass without reading anything."
@@ -823,7 +832,7 @@ def test_every_unit_test_command_declares_auto_workers():
     their `-p no:django` marker. One worker stays allowed, because the query-count
     baseline must be recorded serially.
     """
-    for relative_path in (".github/workflows/ci.yml", "AGENTS.md", "README.md"):
+    for relative_path in (".github/workflows/ci.yml", *_CONTRIBUTOR_DOCS):
         text = (REPOSITORY_ROOT / relative_path).read_text()
         unit_commands = [command for command in _pytest_commands(text) if "-p no:django" not in command]
         assert unit_commands, relative_path
@@ -1137,7 +1146,7 @@ def test_the_browser_install_does_not_read_the_google_chrome_apt_source():
 
 def test_documented_integration_commands_disable_pytest_django():
     """Keep integration commands independent from the unit-test Django settings."""
-    for relative_path in ("AGENTS.md", "README.md"):
+    for relative_path in _CONTRIBUTOR_DOCS:
         contents = (REPOSITORY_ROOT / relative_path).read_text()
         assert "pytest -p no:django tests/" in contents, relative_path
 
@@ -1913,7 +1922,7 @@ def test_published_docs_run_ruff_over_the_scope_ci_lints():
     ci_targets = _workflow_ruff_targets(workflow)
     assert ci_targets, "The lint job no longer runs ruff; this guard would read nothing."
 
-    for name in _PUBLISHED_DOCS:
+    for name in _CONTRIBUTOR_DOCS:
         documented = _ruff_targets_in(_uv_commands((REPOSITORY_ROOT / name).read_text()))
         assert documented, f"{name} documents no ruff command; this guard would read nothing."
         assert documented == ci_targets, (
@@ -1921,18 +1930,28 @@ def test_published_docs_run_ruff_over_the_scope_ci_lints():
         )
 
 
-def test_readme_documents_the_reservation_transfer_format():
+def test_readme_links_are_absolute():
+    """PyPI renders README.md too, and a relative link there points at nothing."""
+    readme = (REPOSITORY_ROOT / "README.md").read_text()
+    targets = re.findall(r"\]\(([^)\s]+)\)", readme)
+    assert targets, "README.md has no links; this guard would read nothing."
+    relative = [target for target in targets if not target.startswith("https://")]
+    assert not relative, f"README.md links must be absolute: {relative}"
+
+
+def test_docs_document_the_reservation_transfer_format():
     """Operators must not be sent to the removed Reservation CSV workflow.
 
     Both markers are asserted first: without the closing one the split runs to the end
     of the file, and the assertions below can then pass on unrelated sections.
     """
-    readme = (REPOSITORY_ROOT / "README.md").read_text()
-    start, end = "**Host Reservations**", "**Subnet Management**"
+    page_path = "docs/guide/leases-reservations.md"
+    page = (REPOSITORY_ROOT / page_path).read_text()
+    start, end = "\n## Host Reservations\n", "\n## Subnet Management\n"
     for marker in (start, end):
-        assert marker in readme, f"README.md no longer holds {marker!r}, so this guard would read the wrong section."
+        assert marker in page, f"{page_path} no longer holds {marker!r}, so this guard would read the wrong section."
 
-    reservation_section = readme.split(start, 1)[1].split(end, 1)[0]
+    reservation_section = page.split(start, 1)[1].split(end, 1)[0]
     assert reservation_section.strip(), "The Host Reservations section is empty; this guard would read nothing."
 
     assert "Bulk CSV import" not in reservation_section
@@ -2144,7 +2163,10 @@ def test_the_browser_suite_mirrors_the_kea_sync_marker_prefix():
     """
     from netbox_kea.ipam_marker import MARKER_KINDS, render_marker
 
-    expected = os.path.commonprefix([render_marker(kind) for kind in MARKER_KINDS])
+    markers = [render_marker(kind) for kind in MARKER_KINDS]
+    expected = "".join(
+        chars[0] for chars in itertools.takewhile(lambda chars: len(set(chars)) == 1, zip(*markers, strict=False))
+    )
     source = (_BROWSER_SUITE / "test_workflows.py").read_text()
     match = re.search(r'^_KEA_SYNC_MARKER_PREFIX = "([^"]*)"$', source, re.MULTILINE)
     assert match, "The browser suite no longer defines _KEA_SYNC_MARKER_PREFIX."
