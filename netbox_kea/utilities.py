@@ -63,7 +63,7 @@ def diagnostic_reasons(diagnostics: Iterable[_HasMessage]) -> str:
     return "; ".join(dict.fromkeys(diagnostic.message for diagnostic in diagnostics))
 
 
-#: The columns of a complete Lease CSV export, by family. The README documents them.
+#: The columns of a complete Lease CSV export, by family. docs/guide/leases-reservations.md documents them.
 LEASE_CSV_COLUMNS: dict[int, tuple[str, ...]] = {
     family: (
         "family",

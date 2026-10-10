@@ -70,6 +70,10 @@ dev = [
   "python-semantic-release",
   "tblib>=3.0.0,<4.0.0",
 ]
+# The documentation site generator. Zensical needs Python 3.11 or later.
+docs = [
+  "zensical>=0.0.69,<0.1.0; python_version >= '3.11'",
+]
 
 [build-system]
 requires = ["hatchling"]
