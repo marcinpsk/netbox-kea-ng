@@ -49,11 +49,12 @@ def test_a_site_whose_pages_and_captures_match_passes(tmp_path: Path) -> None:
         },
         ("leases-light.png", "leases-dark.png"),
     )
+    (site / "assets" / "logo.png").write_bytes(_PNG)
 
     result = _check(site, shots)
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "2 screenshots on the site pages exist, and each capture is on a page.\n"
+    assert result.stdout == "Each local image of the site exists, and each of the 2 captures is on a page.\n"
 
 
 def test_a_page_that_shows_a_screenshot_the_site_lacks_fails(tmp_path: Path) -> None:
@@ -62,7 +63,7 @@ def test_a_page_that_shows_a_screenshot_the_site_lacks_fails(tmp_path: Path) -> 
     result = _check(site, shots)
 
     assert result.returncode == 1
-    assert result.stderr == "missing: leases-dark.png (shown by leases/index.html)\n"
+    assert result.stderr == "missing: ../assets/screenshots/leases-dark.png#only-dark (shown by leases/index.html)\n"
 
 
 def test_a_captured_screenshot_that_no_page_shows_fails(tmp_path: Path) -> None:
@@ -84,7 +85,29 @@ def test_a_relative_src_resolves_against_its_own_page(tmp_path: Path) -> None:
     result = _check(site, shots)
 
     assert result.returncode == 1
-    assert result.stderr == "unreferenced: leases-light.png\n"
+    assert result.stderr == (
+        "missing: assets/screenshots/leases-light.png (shown by guide/leases/index.html)\n"
+        "unreferenced: leases-light.png\n"
+    )
+
+
+def test_a_wrong_src_fails_also_when_another_page_shows_the_same_capture(tmp_path: Path) -> None:
+    page = '<img src="assets/screenshots/shot.png">'
+    site, shots = _tree(tmp_path, {"index.html": page, "guide/index.html": page}, ("shot.png",))
+
+    result = _check(site, shots)
+
+    assert result.returncode == 1
+    assert result.stderr == "missing: assets/screenshots/shot.png (shown by guide/index.html)\n"
+
+
+def test_a_missing_image_outside_the_screenshots_fails(tmp_path: Path) -> None:
+    site, shots = _tree(tmp_path, {"index.html": '<img src="assets/logo.png">'}, ())
+
+    result = _check(site, shots)
+
+    assert result.returncode == 1
+    assert result.stderr == "missing: assets/logo.png (shown by index.html)\n"
 
 
 def test_a_nested_page_two_levels_down_finds_its_screenshot(tmp_path: Path) -> None:

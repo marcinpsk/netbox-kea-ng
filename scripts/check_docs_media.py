@@ -5,8 +5,11 @@
 
 `zensical build --strict` does not fail on a missing image. Run this check on the built site: it
 reads the `<img src>` of every HTML page, so the renderer has already resolved each Markdown form,
-code block and comment. It fails when a page shows a screenshot that the site does not hold, and
-when a captured screenshot is on no page.
+code block and comment. It fails when a local image of a page is not a file of the site, and when a
+captured screenshot is on no page.
+
+Not checked: `srcset` and `<picture><source>` candidates.
+Not checked: root-relative URLs (`/...`), which depend on the `site_url` path.
 """
 
 from __future__ import annotations
@@ -33,42 +36,32 @@ class _ImageSources(HTMLParser):
             self.sources.extend(value for name, value in attrs if name == "src" and value)
 
 
-def _image_paths(page: Path, site_dir: Path) -> list[Path]:
-    """Return the local file of each image on *page*, resolved as a browser resolves it."""
+def _images(page: Path) -> list[tuple[str, Path]]:
+    """Return each local image of *page*: its src, and its file, resolved as a browser resolves it."""
     parser = _ImageSources()
     parser.feed(page.read_text(encoding="utf-8"))
-    paths = []
+    images = []
     for source in parser.sources:
         url = urlsplit(source)
-        if url.scheme or url.netloc or not url.path:
+        if url.scheme or url.netloc or not url.path or url.path.startswith("/"):
             continue
-        base = site_dir if url.path.startswith("/") else page.parent
-        paths.append((base / unquote(url.path).lstrip("/")).resolve())
-    return paths
-
-
-def referenced_screenshots(site_dir: Path) -> dict[Path, list[str]]:
-    """Return each screenshot path, relative to the screenshot directory, with the pages that show it."""
-    screenshots = (site_dir / SCREENSHOTS).resolve()
-    references: dict[Path, list[str]] = {}
-    for page in sorted(site_dir.rglob("*.html")):
-        for image in _image_paths(page, site_dir.resolve()):
-            if image.is_relative_to(screenshots):
-                pages = references.setdefault(image.relative_to(screenshots), [])
-                pages.append(page.relative_to(site_dir).as_posix())
-    return references
+        images.append((source, (page.parent / unquote(url.path)).resolve()))
+    return images
 
 
 def problems(site_dir: Path, captured_dir: Path) -> list[str]:
-    """Return one message for each missing or unreferenced screenshot."""
-    references = referenced_screenshots(site_dir)
-    found = [
-        f"missing: {image.as_posix()} (shown by {', '.join(pages)})"
-        for image, pages in sorted(references.items())
-        if not (site_dir / SCREENSHOTS / image).is_file()
-    ]
+    """Return one message for each image that the site lacks and each capture that no page shows."""
+    screenshots = (site_dir / SCREENSHOTS).resolve()
+    found = []
+    shown = set()
+    for page in sorted(site_dir.rglob("*.html")):
+        for source, image in _images(page):
+            if not image.is_file():
+                found.append(f"missing: {source} (shown by {page.relative_to(site_dir).as_posix()})")
+            elif image.is_relative_to(screenshots):
+                shown.add(image.relative_to(screenshots))
     captured = {image.relative_to(captured_dir) for image in captured_dir.rglob("*.png")}
-    found.extend(f"unreferenced: {image.as_posix()}" for image in sorted(captured - set(references)))
+    found.extend(f"unreferenced: {image.as_posix()}" for image in sorted(captured - shown))
     return found
 
 
@@ -85,8 +78,8 @@ def main(argv: list[str] | None = None) -> int:
     if found:
         sys.stderr.write("".join(f"{message}\n" for message in found))
         return 1
-    count = len(referenced_screenshots(arguments.site_dir))
-    sys.stdout.write(f"{count} screenshots on the site pages exist, and each capture is on a page.\n")
+    count = len(list(arguments.captured_dir.rglob("*.png")))
+    sys.stdout.write(f"Each local image of the site exists, and each of the {count} captures is on a page.\n")
     return 0
 
 
