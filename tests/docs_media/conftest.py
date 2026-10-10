@@ -94,13 +94,10 @@ class DemoData:
     synced_ip_id: int
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def docs_media_dir(pytestconfig: pytest.Config) -> Path:
-    """Skip the suite unless --docs-media-dir names the output directory, and return that directory."""
-    option = pytestconfig.getoption("docs_media_dir")
-    if option is None:
-        pytest.skip("pass --docs-media-dir to write the documentation screenshots")
-    directory = pytestconfig.invocation_params.dir / option
+    """Return the output directory; tests/conftest.py skips the suite when no option names one."""
+    directory = pytestconfig.invocation_params.dir / pytestconfig.getoption("docs_media_dir")
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 

@@ -33,6 +33,16 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     return None
 
 
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip the screenshot tests that a run names explicitly without an output directory, before any fixture runs."""
+    if config.getoption("docs_media_dir") is not None:
+        return
+    skip = pytest.mark.skip(reason="pass --docs-media-dir to write the documentation screenshots")
+    for item in items:
+        if item.path.is_relative_to(DOCS_MEDIA_SUITE):
+            item.add_marker(skip)
+
+
 class TimeoutSession(requests.Session):
     """Apply a default timeout to requests made through the API client."""
 

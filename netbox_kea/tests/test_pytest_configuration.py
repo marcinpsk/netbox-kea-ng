@@ -1272,6 +1272,37 @@ def test_pytest_configuration_works_with_django_plugin_disabled():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def _integration_pytest(*arguments: str) -> subprocess.CompletedProcess[str]:
+    """Run pytest over the integration suite without a harness: nothing below may reach NetBox."""
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:django", "-p", "no:cacheprovider", *arguments],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=60,
+        env={**os.environ, "NETBOX_URL": "http://127.0.0.1:9"},
+    )
+
+
+def test_the_integration_run_does_not_collect_the_screenshot_suite():
+    # A module whose dependency this environment lacks must not hide the result; a collected
+    # docs_media module would show its path even when it fails to import.
+    result = _integration_pytest("tests/", "--collect-only", "-q", "--continue-on-collection-errors")
+
+    assert "tests/ui/" in result.stdout, "the run collected no browser test; this guard would read nothing"
+    assert "docs_media" not in result.stdout
+
+
+def test_a_named_screenshot_suite_without_an_output_directory_sets_up_no_fixture():
+    """A skip inside a fixture comes too late: the session fixtures before it provision a NetBox token."""
+    result = _integration_pytest("tests/docs_media", "--setup-plan")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert re.search(r"\b8 skipped\b", result.stdout), result.stdout
+    assert "SETUP" not in result.stdout, result.stdout
+
+
 def test_the_pinned_netbox_release_is_documented_only_by_its_constant():
     """Name the release in one place. A copy in the docs goes stale on the next bump."""
     agents = (REPOSITORY_ROOT / "AGENTS.md").read_text()
