@@ -15,7 +15,7 @@ SPDX-License-Identifier: Apache-2.0
 - Bulk sync for entire lease tables
 - Pending-change detection: badge on leases where a reservation exists at a different IP
 - MAC address sync → NetBox `MACAddress`
-- Sets `dns_name` on IPAddress for automatic DNS sync via [netbox-dns](https://github.com/peteeckel/netbox-plugin-dns) IPAMDNSsync
+- Sets `dns_name` on IPAddress for automatic DNS sync via [netbox-dns](https://github.com/peteeckel/netbox-plugin-dns) IPAM DNSsync
 
 ![A NetBox IP address that a lease Sync wrote: status DHCP, the DNS name from the lease hostname and the sync marker in the description](assets/screenshots/synced-ip-address-light.png#only-light)
 ![A NetBox IP address that a lease Sync wrote: status DHCP, the DNS name from the lease hostname and the sync marker in the description](assets/screenshots/synced-ip-address-dark.png#only-dark)

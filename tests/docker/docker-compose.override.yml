@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: 2023 Devon Mar <devon-mar@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
 ---
-# Kea 3.0 removed the Control Agent: each DHCP daemon exposes its own HTTP control
+# Kea 3.1.8 removed the Control Agent: each DHCP daemon exposes its own HTTP control
 # socket, so the plugin connects to kea-dhcp4 and kea-dhcp6 directly (dual-URL).
 # Images are ISC's official open-source builds (docker.cloudsmith.io/isc/docker).
 # -X: Kea 3.2.0 refuses to start with an unsecured HTTP control socket; -X downgrades

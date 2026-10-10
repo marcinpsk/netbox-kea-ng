@@ -17,10 +17,10 @@ lease search/add/edit/delete, host-reservation CRUD, subnet/pool/shared-network
 management, DHCP option editing, and automatic Kea→NetBox IPAM sync via a
 background job.
 
-**Kea connection model.** Kea 3.0 removed the Control Agent: each DHCP daemon
+**Kea connection model.** Kea 3.0 deprecated the Control Agent and Kea 3.1.8 removed it: each DHCP daemon
 exposes its own HTTP control socket, so the plugin connects **directly** to each
 daemon (`has_control_agent=False`, the modern default for Kea 3.0+). A legacy
-Control Agent (Kea < 3.0, or a per-protocol CA) is still supported via
+Control Agent (before Kea 3.1.8, or a per-protocol CA) is still supported via
 `has_control_agent=True`. This flag is the single source of truth for request
 routing — see "Protocol-aware / direct-daemon client" below.
 

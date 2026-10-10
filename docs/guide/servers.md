@@ -13,11 +13,11 @@ A `Server` object holds the connection to one Kea deployment. This page lists it
 
 ## Single-URL (Control Agent, or a single-protocol daemon)
 
-Point one `Server` URL at a Kea endpoint that serves every enabled protocol — a Control Agent (Kea < 3.0, which fronts both DHCPv4 and DHCPv6), or a single DHCP daemon's HTTP control socket (Kea 3.0+) when the server runs only DHCPv4 *or* only DHCPv6. A dual-stack Kea 3.0+ deployment needs one URL per daemon — see **Dual-URL** below.
+Point one `Server` URL at a Kea endpoint that serves every enabled protocol — a Control Agent (deprecated in Kea 3.0 and removed in Kea 3.1.8), which fronts both DHCPv4 and DHCPv6, or a single DHCP daemon's HTTP control socket (Kea 3.0 and later) when the server runs only DHCPv4 *or* only DHCPv6. A dual-stack deployment without a Control Agent needs one URL per daemon: see **Dual-URL** below.
 
 | Field | Description |
 |---|---|
-| `CA / Server URL` (`ca_url`) | URL of the Kea HTTP endpoint — a DHCP daemon control socket (Kea 3.0+) or the Control Agent (Kea < 3.0), e.g. `https://kea.example.com:8000` |
+| `CA / Server URL` (`ca_url`) | URL of the Kea HTTP endpoint — a DHCP daemon control socket (Kea 3.0 and later) or the Control Agent (removed in Kea 3.1.8), e.g. `https://kea.example.com:8000` |
 | `DHCPv4` | Enable DHCPv4 lease/reservation/subnet management |
 | `DHCPv6` | Enable DHCPv6 lease/reservation/subnet management |
 | `CA Username` (`ca_username`) / `CA Password` (`ca_password`) | HTTP Basic Auth credentials (if required) |
@@ -27,14 +27,14 @@ Point one `Server` URL at a Kea endpoint that serves every enabled protocol — 
 ## Dual-URL (separate v4/v6 processes)
 
 - Optional separate URLs for the DHCPv4 and DHCPv6 endpoints
-- Supports Kea 3.0+ (each daemon exposes its own HTTP control socket) and split v4/v6 deployments
+- Supports direct daemon connections (Kea 3.0 and later, where each daemon exposes its own HTTP control socket) and split v4/v6 deployments
 
-When DHCPv4 and DHCPv6 have separate endpoints — the norm on Kea 3.0+, where each daemon exposes its own HTTP control socket:
+When DHCPv4 and DHCPv6 have separate endpoints (the norm for direct daemon connections, where each daemon exposes its own HTTP control socket):
 
 | Field | Description |
 |---|---|
-| `DHCPv4 URL` | URL of the DHCPv4 daemon's HTTP control socket (or its Control Agent on Kea < 3.0) |
-| `DHCPv6 URL` | URL of the DHCPv6 daemon's HTTP control socket (or its Control Agent on Kea < 3.0) |
+| `DHCPv4 URL` | URL of the DHCPv4 daemon's HTTP control socket (or its Control Agent, before Kea 3.1.8) |
+| `DHCPv6 URL` | URL of the DHCPv6 daemon's HTTP control socket (or its Control Agent, before Kea 3.1.8) |
 
 The main `CA URL` (`ca_url`) is required and acts as a fallback for any protocol without a dedicated URL.
 By default, both `DHCPv4 URL` and `DHCPv6 URL` use CA-level credentials; see **Per-protocol credentials** below for optional overrides.
