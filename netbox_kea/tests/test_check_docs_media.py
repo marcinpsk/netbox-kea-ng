@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPOSITORY_ROOT / "scripts" / "check_docs_media.py"
 _PNG = b"\x89PNG\r\n\x1a\n"
@@ -83,3 +85,51 @@ def test_a_documentation_directory_that_does_not_exist_is_a_usage_error(tmp_path
 
     assert result.returncode == 2
     assert "is not a directory" in result.stderr
+
+
+#: Each Markdown form of an image that refers to assets/screenshots/form.png.
+_IMAGE_FORMS = {
+    "inline with a double-quoted title": '![Alt](assets/screenshots/form.png "Title")\n',
+    "inline with a single-quoted title": "![Alt](assets/screenshots/form.png 'Title')\n",
+    "inline in angle brackets": "![Alt](<assets/screenshots/form.png>)\n",
+    "full reference": "![Alt][shot]\n\n[shot]: assets/screenshots/form.png\n",
+    "collapsed reference": "![Shot][]\n\n[shot]: assets/screenshots/form.png 'Title'\n",
+    "shortcut reference": "![Shot]\n\n[Shot]: <assets/screenshots/form.png>\n",
+    "HTML img with double quotes": '<img alt="Alt" src="assets/screenshots/form.png#only-light">\n',
+    "HTML img with single quotes": "<img src='assets/screenshots/form.png' width=600>\n",
+}
+
+
+@pytest.mark.parametrize("page", _IMAGE_FORMS.values(), ids=_IMAGE_FORMS)
+def test_each_image_form_counts_as_a_reference(tmp_path: Path, page: str) -> None:
+    referenced = _docs_tree(tmp_path, {"page.md": page}, ("form.png",))
+    missing = _docs_tree(tmp_path / "missing", {"page.md": page}, ())
+
+    assert _check(referenced).returncode == 0, _check(referenced).stderr
+    assert _check(missing).stderr == "missing: form.png (referenced by page.md)\n"
+
+
+#: Images that only a code sample shows: they refer to nothing.
+_CODE_SAMPLES = {
+    "backtick fence": "```markdown\n![Alt](assets/screenshots/form.png)\n```\n",
+    "tilde fence": "~~~\n<img src='assets/screenshots/form.png'>\n~~~\n",
+    "longer closing fence": "````\n```\n![Alt](assets/screenshots/form.png)\n```\n`````\n",
+    "inline code": "Write `![Alt](assets/screenshots/form.png)` to show an image.\n",
+    "double-backtick inline code": "Write ``![Alt](assets/screenshots/form.png)`` to show it.\n",
+}
+
+
+@pytest.mark.parametrize("page", _CODE_SAMPLES.values(), ids=_CODE_SAMPLES)
+def test_an_image_in_code_is_not_a_reference(tmp_path: Path, page: str) -> None:
+    docs = _docs_tree(tmp_path, {"page.md": page}, ("form.png",))
+
+    result = _check(docs)
+
+    assert result.returncode == 1
+    assert result.stderr == "unreferenced: form.png\n"
+
+
+def test_an_unused_reference_definition_is_not_a_reference(tmp_path: Path) -> None:
+    docs = _docs_tree(tmp_path, {"page.md": "[shot]: assets/screenshots/form.png\n"}, ("form.png",))
+
+    assert _check(docs).stderr == "unreferenced: form.png\n"
