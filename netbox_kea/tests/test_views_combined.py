@@ -182,10 +182,10 @@ class TestServerScope(_ViewTestBase):
 
     def test_one_server_redirects_to_each_family_tab_with_only_compatible_filters(self):
         expected_filters = {
-            "subnets": {"page", "per_page", "sort", "export"},
+            "subnets": {"page", "per_page", "sort"},
             "shared_networks": {"page", "per_page", "sort"},
-            "reservations": {"q", "subnet_id", "scope", "per_page", "sort", "export"},
-            "leases": {"q", "by", "state", "per_page", "sort", "export"},
+            "reservations": {"q", "subnet_id", "scope", "per_page", "sort"},
+            "leases": {"q", "by", "state", "per_page", "sort"},
         }
         filters = {
             "q": "needle & spaces",
@@ -196,7 +196,6 @@ class TestServerScope(_ViewTestBase):
             "page": "2",
             "per_page": "50",
             "sort": "-hostname",
-            "export": "json",
             "unrelated": "drop",
             f"reservation_cursor_{self.server.pk}": "done",
         }
@@ -231,7 +230,7 @@ class TestServerScope(_ViewTestBase):
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.context["form"]["state"].value(), "1")
 
-    def test_lease_redirect_preserves_a_state_only_table_export(self):
+    def test_one_server_state_only_export_downloads_the_combined_collection(self):
         for family, cidr, active_ip, declined_ip in (
             (4, "198.18.0.0/24", "198.18.0.1", "198.18.0.2"),
             (6, "2001:db8::/64", "2001:db8::1", "2001:db8::2"),
@@ -246,19 +245,16 @@ class TestServerScope(_ViewTestBase):
                 "reservation-get": {"result": 3, "text": "not found"},
             }
             with self.subTest(family=family), stub_kea(responses):
+                # The matching lease is after the first page of the table, so a one-page read misses it.
                 response = self.client.get(
                     self._url("leases", family),
-                    {"server": self.server.pk, "state": "1", "export": "table"},
-                    follow=True,
+                    {"server": self.server.pk, "state": "1", "per_page": "1", "export": "table"},
                 )
-                canonical = reverse(f"plugins:netbox_kea:server_leases{family}", args=[self.server.pk])
-                self.assertEqual(response.redirect_chain, [(f"{canonical}?state=1&export=table", 302)])
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("text/csv", response["Content-Type"])
                 rows = list(csv.reader(io.StringIO(response.content.decode())))
                 self.assertEqual(len(rows), 2)
                 self.assertIn(declined_ip, rows[1])
-                self.assertIn("declined-host", rows[1])
                 self.assertNotIn(active_ip, rows[1])
 
     def test_htmx_single_server_uses_a_navigation_response(self):

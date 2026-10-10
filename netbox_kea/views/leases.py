@@ -375,25 +375,18 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             return redirect(request.path)
 
         by = form.cleaned_data["by"]
-        state_filter: LeaseState | None = form.cleaned_data.get("state")
-        limited = request.GET["export"] == "table"
-        if not by and not (limited and state_filter is not None):
+        if not by:
             messages.warning(request, "A search attribute is required to export.")
             return redirect(request.path)
 
+        state_filter: LeaseState | None = form.cleaned_data.get("state")
         try:
             client = instance.get_client(version=self.dhcp_version)
         except ValueError as exc:
             messages.error(request, _client_settings_error(instance, exc))
             return redirect(request.path)
         try:
-            search = LeaseSearch(
-                by,
-                form.cleaned_data["q"],
-                state_filter,
-                cursor=form.cleaned_data["page"] or None,
-                per_page=get_paginate_count(request),
-            )
+            search = LeaseSearch(by, form.cleaned_data["q"], state_filter)
             snapshot = _read_leases(client, self.dhcp_version, search, instance.pk)
         except LeaseQueryGuardError as exc:
             messages.warning(request, lease_query_guard_message(exc, state_filter))
@@ -407,6 +400,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             messages.error(request, "Failed to fetch leases for export; see server logs.")
             return redirect(request.path)
 
+        limited = request.GET["export"] == "table"
         if not limited and not snapshot.complete:
             messages.warning(request, _incomplete_export_message(snapshot))
             return redirect(request.path)

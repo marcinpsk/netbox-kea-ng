@@ -105,7 +105,8 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
         self.server_scope = resolve(request, self.dhcp_version)
         if self.server_scope.is_invalid:
             return render(request, "netbox_kea/combined_base.html", self._combined_context(request))
-        if self.server_scope.is_one and not self.server_scope.missing_family:
+        # A download is not navigation, so an export stays on the combined view.
+        if self.server_scope.is_one and not self.server_scope.missing_family and "export" not in request.GET:
             target = self._single_server_url(request)
             if request.headers.get("HX-Request") == "true":
                 response = HttpResponse()
@@ -122,15 +123,12 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
         compatible = {"sort", "per_page"}
         if self.active_tab.startswith("leases"):
             # Combined table pagination is not a per-Server Lease cursor.
-            compatible.update(("q", "by", "state", "export", "export_all"))
+            compatible.update(("q", "by", "state"))
         elif self.active_tab.startswith("reservations"):
             # Combined table pagination is not a per-Server Reservation cursor.
             compatible.update(forms.ReservationSearchForm.base_fields)
-            compatible.add("export")
         else:
             compatible.add("page")
-            if self.active_tab.startswith("subnets"):
-                compatible.add("export")
         query = request.GET.copy()
         for key in list(query):
             if key not in compatible:

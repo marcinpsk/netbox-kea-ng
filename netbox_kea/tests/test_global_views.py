@@ -1657,6 +1657,15 @@ class TestCombinedSharedNetworks4View(_CombinedViewBase):
             response = self.client.get(url)
         self.assertContains(response, "test-shared-net-v4")
 
+    def test_one_server_export_returns_csv_without_a_redirect(self):
+        """The Server tab has no export, so a one-Server export stays on the combined view."""
+        with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V4}):
+            url = reverse("plugins:netbox_kea:combined_shared_networks4") + f"?server={self.v4_server.pk}&export=table"
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/csv", response["Content-Type"])
+        self.assertIn("test-shared-net-v4", response.content.decode())
+
     def test_export_returns_csv(self):
         """?export=table returns a CSV download of shared network data."""
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V4}):
