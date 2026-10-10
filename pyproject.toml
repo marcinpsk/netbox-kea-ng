@@ -38,10 +38,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/marcinpsk/netbox-kea"
-Repository = "https://github.com/marcinpsk/netbox-kea"
-Issues = "https://github.com/marcinpsk/netbox-kea/issues"
-Changelog = "https://github.com/marcinpsk/netbox-kea/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/marcinpsk/netbox-kea-ng"
+Repository = "https://github.com/marcinpsk/netbox-kea-ng"
+Issues = "https://github.com/marcinpsk/netbox-kea-ng/issues"
+Changelog = "https://github.com/marcinpsk/netbox-kea-ng/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
