@@ -25,8 +25,9 @@ NetBox 4.7 with netbox-branching 1.2.1. List `netbox_branching` last in `PLUGINS
   `_branch` query that names a merged, archived, or not ready branch, and an `active_branch` cookie
   that names such a branch or a deleted one, get HTTP 409 with the code `branch_selection_unusable`.
   netbox-branching answers HTTP 400 first when a `_branch` query names a deleted branch, and when
-  an API `X-NetBox-Branch` header names a deleted or unusable branch. Select main (`?_branch=`)
-  and try again.
+  an API `X-NetBox-Branch` header names a deleted or unusable branch. In the web interface, select
+  main (`?_branch=`) and try again. An API client sends the request again without the
+  `X-NetBox-Branch` header.
 - Code that runs outside a web request (a custom script, for example) is also refused in a branch.
   A save or a delete of a Kea Server, sync settings or an IPAM ownership link raises
   `BranchActive`, and so does a Kea command that changes Kea, from a client that
