@@ -1145,12 +1145,34 @@ def test_the_browser_install_does_not_read_the_google_chrome_apt_source(workflow
     _assert_browser_install_step_is_guarded(workflow, job_name)
 
 
-def test_every_push_to_main_rebuilds_the_documentation_site():
-    """A paths filter cannot name each file that changes a screenshot, so a filtered push left stale images."""
-    push = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/docs.yml").read_text())["on"]["push"]
+def test_a_release_deploys_the_documentation_site_of_its_own_tag():
+    """A wrong output or input name skips the docs job or builds another commit, and no run shows an error."""
+    release = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/release.yml").read_text())["jobs"]
+    docs = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/docs.yml").read_text())
 
-    assert push["branches"] == ["main"]
-    assert "paths" not in push and "paths-ignore" not in push, push
+    assert [step["run"] for step in release["release"]["steps"] if step.get("id") == "release"] == [
+        "uv run semantic-release version"
+    ]
+    assert release["release"]["outputs"] == {
+        "released": "${{ steps.release.outputs.released }}",
+        "tag": "${{ steps.release.outputs.tag }}",
+    }
+    assert release["docs"]["needs"] == "release"
+    assert release["docs"]["if"] == "needs.release.outputs.released == 'true'"
+    assert release["docs"]["uses"] == "./.github/workflows/docs.yml"
+    assert release["docs"]["with"] == {"tag": "${{ needs.release.outputs.tag }}"}
+    assert set(docs["on"]) == {"workflow_call", "workflow_dispatch"}
+    assert docs["jobs"]["build"]["with"]["ref"] == "refs/tags/${{ inputs.tag }}"
+
+
+def test_a_stale_documentation_build_neither_deploys_nor_cancels_a_newer_one():
+    """Builds of two releases overlap, so the older one can reach the `pages` queue last."""
+    deploy = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/docs.yml").read_text())["jobs"]["deploy"]
+    steps = [step.get("uses") or step["run"] for step in deploy["steps"]]
+
+    assert deploy["concurrency"] == {"group": "pages", "cancel-in-progress": False, "queue": "max"}
+    assert "/releases/latest" in steps[0], steps
+    assert steps[-1].startswith("actions/deploy-pages@"), steps
 
 
 def test_the_docs_build_passes_native_tls_to_every_uv_command():

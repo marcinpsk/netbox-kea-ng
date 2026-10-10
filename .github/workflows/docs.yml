@@ -33,10 +33,11 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    # One deployment at a time. A queued run waits, so a deployment that started always finishes.
+    # One deployment at a time. A started deployment always finishes, and `queue: max` keeps every waiting one.
     concurrency:
       group: pages
       cancel-in-progress: false
+      queue: max
     permissions:
       contents: read
       pages: write
