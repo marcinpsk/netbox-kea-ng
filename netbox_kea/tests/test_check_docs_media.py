@@ -110,6 +110,17 @@ def test_a_missing_image_outside_the_screenshots_fails(tmp_path: Path) -> None:
     assert result.stderr == "missing: assets/logo.png (shown by index.html)\n"
 
 
+def test_an_existing_image_outside_the_site_fails(tmp_path: Path) -> None:
+    # The deploy uploads only the site, so a file that escapes it is missing for the reader.
+    page = '<img src="assets/screenshots/shot.png"><img src="../screenshots/shot.png">'
+    site, shots = _tree(tmp_path, {"index.html": page}, ("shot.png",))
+
+    result = _check(site, shots)
+
+    assert result.returncode == 1
+    assert result.stderr == "missing: ../screenshots/shot.png (shown by index.html)\n"
+
+
 def test_a_nested_page_two_levels_down_finds_its_screenshot(tmp_path: Path) -> None:
     page = '<img src="../../assets/screenshots/leases-light.png">'
     site, shots = _tree(tmp_path, {"guide/leases/index.html": page}, ("leases-light.png",))

@@ -5,7 +5,7 @@
 
 `zensical build --strict` does not fail on a missing image. Run this check on the built site: it
 reads the `<img src>` of every HTML page, so the renderer has already resolved each Markdown form,
-code block and comment. It fails when a local image of a page is not a file of the site, and when a
+code block and comment. It fails when a local image of a page is not a file inside the site, and when a
 captured screenshot is on no page.
 
 Not checked: `srcset` and `<picture><source>` candidates.
@@ -51,12 +51,13 @@ def _images(page: Path) -> list[tuple[str, Path]]:
 
 def problems(site_dir: Path, captured_dir: Path) -> list[str]:
     """Return one message for each image that the site lacks and each capture that no page shows."""
+    site = site_dir.resolve()
     screenshots = (site_dir / SCREENSHOTS).resolve()
     found = []
     shown = set()
     for page in sorted(site_dir.rglob("*.html")):
         for source, image in _images(page):
-            if not image.is_file():
+            if not image.is_relative_to(site) or not image.is_file():
                 found.append(f"missing: {source} (shown by {page.relative_to(site_dir).as_posix()})")
             elif image.is_relative_to(screenshots):
                 shown.add(image.relative_to(screenshots))
