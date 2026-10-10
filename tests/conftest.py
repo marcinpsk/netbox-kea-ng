@@ -13,7 +13,7 @@ import pytest
 import requests
 
 REQUEST_TIMEOUT = 20
-#: The documentation screenshot suite. It runs only when --docs-media-dir names its output directory.
+#: The documentation media suite. It runs only when --docs-media-dir names the media root.
 DOCS_MEDIA_SUITE = Path(__file__).resolve().parent / "docs_media"
 
 
@@ -22,22 +22,22 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--docs-media-dir",
         default=None,
         type=Path,
-        help="Run tests/docs_media and write the documentation screenshots to this directory.",
+        help="Run tests/docs_media and write the documentation screenshots and recordings below this directory.",
     )
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
-    """Leave the documentation screenshot suite out of a run that names no output directory."""
+    """Leave the documentation media suite out of a run that names no media root."""
     if collection_path == DOCS_MEDIA_SUITE and config.getoption("docs_media_dir") is None:
         return True
     return None
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip the screenshot tests that a run names explicitly without an output directory, before any fixture runs."""
+    """Skip the media tests that a run names explicitly without a media root, before any fixture runs."""
     if config.getoption("docs_media_dir") is not None:
         return
-    skip = pytest.mark.skip(reason="pass --docs-media-dir to write the documentation screenshots")
+    skip = pytest.mark.skip(reason="pass --docs-media-dir to write the documentation media")
     for item in items:
         if item.path.is_relative_to(DOCS_MEDIA_SUITE):
             item.add_marker(skip)

@@ -28,6 +28,8 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 
 The full documentation is at **[marcinpsk.github.io/netbox-kea-ng](https://marcinpsk.github.io/netbox-kea-ng/)**.
 
+![A lease search in NetBox: Sync on a lease writes a NetBox IP address, and the Synced link opens it with the sync marker in the description](https://marcinpsk.github.io/netbox-kea-ng/assets/recordings/sync-lease.gif)
+
 ## Features
 
 - Kea DHCPv4 and DHCPv6 daemon status, with enable and disable controls.

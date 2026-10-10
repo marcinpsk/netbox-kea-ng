@@ -1299,8 +1299,24 @@ def test_a_named_screenshot_suite_without_an_output_directory_sets_up_no_fixture
     result = _integration_pytest("tests/docs_media", "--setup-plan")
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert re.search(r"\b8 skipped\b", result.stdout), result.stdout
+    assert re.search(r"\b11 skipped\b", result.stdout), result.stdout
     assert "SETUP" not in result.stdout, result.stdout
+
+
+def test_the_docs_build_checks_the_media_root_that_it_captures_and_git_ignores():
+    """The check must read the files that the capture wrote, and git must never hold a captured file."""
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github" / "workflows" / "docs-build.yml").read_text())
+    runs = [
+        shlex.split(step["run"].replace("\\\n", " ")) for step in workflow["jobs"]["build"]["steps"] if "run" in step
+    ]
+    (capture,) = [run for run in runs if "tests/docs_media" in run]
+    (check,) = [run for run in runs if "scripts/check_docs_media.py" in run]
+    root = capture[capture.index("--docs-media-dir") + 1]
+
+    assert check[check.index("scripts/check_docs_media.py") + 1 :] == ["site", root]
+    ignored = (REPOSITORY_ROOT / ".gitignore").read_text().splitlines()
+    assert f"{root}/screenshots/" in ignored
+    assert f"{root}/recordings/" in ignored
 
 
 def test_the_pinned_netbox_release_is_documented_only_by_its_constant():

@@ -3,7 +3,7 @@
 ---
 name: Docs build
 
-# Builds the documentation site with screenshots of the commit it checks out. docs.yml deploys the
+# Builds the documentation site with screenshots and recordings of the commit it checks out. docs.yml deploys the
 # result, and ci.yml runs it on release pull requests and in the scheduled run.
 "on":
   workflow_call:
@@ -49,17 +49,18 @@ jobs:
         env:
           NETBOX_CONTAINER_TAG: v4.7
 
-      - name: Capture the documentation screenshots
+      # imageio-ffmpeg in the dev group brings the ffmpeg that encodes the recordings, so no apt package is needed.
+      - name: Capture the documentation screenshots and recordings
         run: |
           uv run --native-tls pytest tests/docs_media -p no:django --tracing=retain-on-failure -v \
-            --docs-media-dir docs/guide/assets/screenshots
+            --docs-media-dir docs/guide/assets
 
-      # The build does not fail on a missing image, so the check reads the pages that it wrote.
+      # The build does not fail on a missing image or video, so the check reads the pages that it wrote.
       - name: Build the documentation site
         run: uv run --native-tls --group docs zensical build --strict
 
-      - name: Check the screenshots on the built pages
-        run: python scripts/check_docs_media.py site docs/guide/assets/screenshots
+      - name: Check the screenshots and recordings on the built pages
+        run: uv run --native-tls python scripts/check_docs_media.py site docs/guide/assets
 
       - name: Upload the site for GitHub Pages
         if: ${{ inputs.upload-pages }}
@@ -75,6 +76,7 @@ jobs:
           path: site/
           retention-days: 14
 
+      # test-results/ also holds the raw WebM of each recording.
       - name: Upload Playwright traces
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         if: ${{ failure() }}

@@ -283,11 +283,11 @@ jobs:
       # Before the venv exists, so the glob cannot reach a dependency's own Markdown.
       # --offline checks the links that live in this repository and skips every URL,
       # which keeps the job independent of whether an external site is up.
-      # This job has no screenshots; scripts/check_docs_media.py checks them in docs-build.yml.
+      # This job has no screenshots or recordings; scripts/check_docs_media.py checks them in docs-build.yml.
       - name: Documentation links
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8  # v2.9.0
         with:
-          args: "--offline --no-progress --exclude '/assets/screenshots/' './**/*.md'"
+          args: "--offline --no-progress --exclude '/assets/(screenshots|recordings)/' './**/*.md'"
           # Outside the checkout: the summary file carries no SPDX header, and the
           # REUSE step later in this job reads everything the workspace holds.
           output: ${{ runner.temp }}/lychee.md

@@ -41,6 +41,12 @@ SPDX-License-Identifier: Apache-2.0
 ![The Edit DHCPv4 Lease form with the hostname, the hardware address and the valid lifetime of the lease](assets/screenshots/lease-edit-light.png#only-light)
 ![The Edit DHCPv4 Lease form with the hostname, the hardware address and the valid lifetime of the lease](assets/screenshots/lease-edit-dark.png#only-dark)
 
+Edit a lease from the row menu of a lease search: change the hostname and save. The search shows the new value.
+
+<video controls muted loop playsinline preload="none" width="1440" height="900" poster="../assets/recordings/edit-lease.png" aria-label="Recording: open Edit lease from the row menu, change the hostname, save, and see the new hostname in the lease search">
+  <source src="assets/recordings/edit-lease.mp4" type="video/mp4">
+</video>
+
 ![A DHCPv6 lease search that shows two address leases and one delegated prefix with its prefix length](assets/screenshots/dhcpv6-leases-light.png#only-light)
 ![A DHCPv6 lease search that shows two address leases and one delegated prefix with its prefix length](assets/screenshots/dhcpv6-leases-dark.png#only-dark)
 
@@ -126,6 +132,13 @@ Integrations that read leases from the plugin must change with the typed lease r
 - Journal entries on add/edit/delete
 - Validated YAML or JSON bulk transfer. Export a Complete Snapshot from one server
   or the combined view, then import it from the matching DHCPv4 or DHCPv6 Reservations page
+
+*+ Reserve* on a lease opens the Reservation form with the address, the client identifier and the hostname of
+the lease. After the save, the lease search shows the lease as *Reserved*.
+
+<video controls muted loop playsinline preload="none" width="1440" height="900" poster="../assets/recordings/reserve-lease.png" aria-label="Recording: press Reserve on a lease, save the filled Reservation form, and see the Reserved badge in the lease search">
+  <source src="assets/recordings/reserve-lease.mp4" type="video/mp4">
+</video>
 
 ![The DHCPv4 Reservations of a Server, with the identifier, the reserved address, the DHCP options, the lease state and the NetBox IP state of each Reservation](assets/screenshots/reservations-light.png#only-light)
 ![The DHCPv4 Reservations of a Server, with the identifier, the reserved address, the DHCP options, the lease state and the NetBox IP state of each Reservation](assets/screenshots/reservations-dark.png#only-dark)
