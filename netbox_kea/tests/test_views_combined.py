@@ -273,6 +273,19 @@ class TestServerScope(_ViewTestBase):
                     self.assertEqual(response.content, b"")
                     self.assertEqual(kea.commands(), [])
 
+    def test_an_export_with_a_selected_server_without_the_family_is_refused(self):
+        Server.objects.filter(pk=self.second.pk).update(dhcp6=False)
+        exports = {"subnets": "table", "shared_networks": "table", "reservations": "json", "leases": "table"}
+        for selection in ([self.second.pk], [self.server.pk, self.second.pk]):
+            for section, export in exports.items():
+                with self.subTest(selection=selection, section=section), stub_kea({}) as kea:
+                    response = self.client.get(self._url(section, 6), {"server": selection, "export": export})
+                    expected = f"{self._url(section, 6)}?" + "&".join(f"server={pk}" for pk in sorted(selection))
+                    self.assertRedirects(response, expected, fetch_redirect_response=False)
+                    self.assertEqual(kea.commands(), [])
+        response = self.client.get(self._url("subnets", 6), {"server": self.second.pk, "export": "table"}, follow=True)
+        self.assertContains(response, "Export refused: DHCPv6 is not enabled on other.")
+
     def test_selected_server_without_the_family_has_a_notice_even_without_a_lease_query(self):
         for family in (4, 6):
             Server.objects.filter(pk=self.server.pk).update(**{f"dhcp{family}": False})
