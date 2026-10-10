@@ -3,23 +3,11 @@
 ---
 name: Docs
 
+# A push to main is a release merge here, so each one rebuilds the site and its screenshots.
 "on":
   push:
     branches:
       - main
-    paths:
-      - "docs/guide/**"
-      - mkdocs.yml
-      - README.md
-      - CHANGELOG.md
-      - pyproject.toml
-      - uv.lock
-      # The screenshots come from the plugin templates and the capture suite.
-      - "netbox_kea/templates/**"
-      - "tests/docs_media/**"
-      - scripts/check_docs_media.py
-      - .github/workflows/docs.yml
-      - .github/workflows/docs-build.yml
   workflow_dispatch:
 
 permissions:

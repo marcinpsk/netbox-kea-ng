@@ -1145,6 +1145,14 @@ def test_the_browser_install_does_not_read_the_google_chrome_apt_source(workflow
     _assert_browser_install_step_is_guarded(workflow, job_name)
 
 
+def test_every_push_to_main_rebuilds_the_documentation_site():
+    """A paths filter cannot name each file that changes a screenshot, so a filtered push left stale images."""
+    push = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/docs.yml").read_text())["on"]["push"]
+
+    assert push["branches"] == ["main"]
+    assert "paths" not in push and "paths-ignore" not in push, push
+
+
 def test_the_docs_build_passes_native_tls_to_every_uv_command():
     """The documentation build runs the integration steps, so it follows the uv convention of ci.yml."""
     uv_commands = _workflow_uv_commands((REPOSITORY_ROOT / ".github/workflows/docs-build.yml").read_text())
