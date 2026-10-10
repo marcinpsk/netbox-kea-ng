@@ -177,8 +177,11 @@ uv run python scripts/check_docs_media.py site docs/guide/assets
   harness (a NetBox 4.7 image), running only `tests/ui/test_branching_refusal.py`.
 - **Documentation job**: the reusable workflow `docs-build.yml` starts the docs variant of the harness with NetBox 4.7, runs the
   media suite and the media check, and builds the site with `--strict`. `ci.yml` calls it on pull requests to
-  `main` and in the scheduled run, and uploads the site as an artifact. `docs.yml` calls it on a push to `main` and
-  deploys the site to GitHub Pages. The lint job has no screenshots or recordings, so its link check excludes them.
+  `main` and in the scheduled run, and uploads the site as an artifact. `docs.yml` calls it for one release tag and
+  deploys the site to GitHub Pages, so the site shows the latest release only. `release.yml` calls `docs.yml` after
+  a release, in a separate job, so a failed deployment leaves the PyPI release in place. The deploy job refuses a tag
+  that is not the latest GitHub release. To deploy the latest release again, dispatch `docs.yml` from `main` with its tag. The lint job has no screenshots or recordings, so its link check
+  excludes them.
 - Playwright traces on failure are uploaded as artifacts.
 
 Ruff is configured in `pyproject.toml`: line length 120, max complexity 15,

@@ -56,4 +56,13 @@ uv run --group docs zensical build --strict
 uv run python scripts/check_docs_media.py site docs/guide/assets
 ```
 
+The site shows the latest release. After a release, the release workflow builds the site from the release tag and
+deploys it to GitHub Pages. A release pull request and the scheduled CI run build the site and upload it as an
+artifact. To deploy the site of the latest release again, run the Docs workflow from `main` with its tag. The
+workflow refuses any other tag:
+
+```bash
+gh workflow run docs.yml --ref main -f tag=v3.2.0
+```
+
 See the [Changelog](changelog.md) for version history.
