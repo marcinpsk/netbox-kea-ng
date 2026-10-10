@@ -25,7 +25,7 @@ from ..ipam_reconciliation import (
     reconcile,
     reconcile_permissions,
 )
-from ..kea import KeaException
+from ..kea import KeaClient, KeaException
 from ..leases import (
     ExactLeaseResult,
     LeaseFound,
@@ -50,7 +50,7 @@ from ..utilities import (
     kea_error_hint,
     parse_lease_csv,
 )
-from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin
+from ._base import ConditionalLoginRequiredMixin, _client_settings_error, _KeaChangeMixin
 from .leases import _LEASES_TAB, _add_lease_journal, lease_sync_gates
 from .reservation_mutations import _confirmed_side_effects, _identity_from_request, _reservation_target_scope
 from .reservations import _RESERVATIONS_TAB
@@ -83,8 +83,12 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
             return _row_error(request, gate.reason)
 
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except ValueError as exc:
+            return _row_error(request, _client_settings_error(server, exc))
 
-        observed = self._fetch_live_data(server, identity)
+        observed = self._fetch_live_data(client, identity)
         if isinstance(observed, LeaseLookupFailed):
             logger.warning("Kea returned a malformed lease%s for %s", self.dhcp_version, label)
             return _row_error(request, "Sync error: see server logs for details.")
@@ -119,10 +123,9 @@ class _BaseSyncView(ConditionalLoginRequiredMixin, View):
             {"claim_result": result},
         )
 
-    def _fetch_live_data(self, server: "Server", identity: LeaseIdentity) -> ExactLeaseResult | None:
+    def _fetch_live_data(self, client: KeaClient, identity: LeaseIdentity) -> ExactLeaseResult | None:
         """Read the live Lease with *identity* from Kea, or ``None`` when the read fails."""
         try:
-            client = server.get_client(version=self.dhcp_version)
             return client.lease_get(identity)
         except (KeaException, requests.RequestException, RuntimeError, ValueError):
             logger.exception("Failed to fetch live lease%s data for %s", self.dhcp_version, identity.address)
@@ -407,8 +410,7 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
                 break
         return created, failure
 
-    def _execute_import(self, request, instance, proposals):
-        client = instance.get_client(version=self.dhcp_version)
+    def _execute_import(self, request, instance, client, proposals):
         capabilities = client.reservation_capabilities(self.dhcp_version)
         if not capabilities.mutation_available:
             raise RuntimeError("Reservation mutation commands are unavailable.")
@@ -450,7 +452,12 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMi
             return self._render(request, instance, form, self._diagnostic_result(diagnostics))
 
         try:
-            created, failure, diagnostics = self._execute_import(request, instance, parsed.proposals)
+            client = instance.get_client(version=self.dhcp_version)
+        except ValueError as exc:
+            form.add_error(None, _client_settings_error(instance, exc))
+            return self._render(request, instance, form, None)
+        try:
+            created, failure, diagnostics = self._execute_import(request, instance, client, parsed.proposals)
         except (KeaException, requests.RequestException, RuntimeError, ValueError):
             logger.exception("Could not prepare Reservation document import for server %s", instance.pk)
             form.add_error(None, "The live Kea server could not validate this import. See server logs.")
@@ -550,9 +557,8 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, V
 
         try:
             client = instance.get_client(version=self.dhcp_version)
-        except ValueError:
-            logger.exception("Failed to get Kea client for server %s", instance.pk)
-            form.add_error(None, "Failed to connect to Kea server.")
+        except ValueError as exc:
+            form.add_error(None, _client_settings_error(instance, exc))
             return self._render(request, instance, form, None)
         created: list[str] = []
         error_rows: list[dict[str, Any]] = []

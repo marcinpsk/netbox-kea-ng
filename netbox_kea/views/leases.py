@@ -84,7 +84,13 @@ from ..utilities import (
     lease_csv_response,
     snapshot_rows,
 )
-from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _safe_return_url, _strip_empty_params
+from ._base import (
+    ConditionalLoginRequiredMixin,
+    _client_settings_error,
+    _KeaChangeMixin,
+    _safe_return_url,
+    _strip_empty_params,
+)
 from .notices import Notice, load_snapshot, notice
 from .reservations import empty_text
 
@@ -376,9 +382,8 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         state_filter: LeaseState | None = form.cleaned_data.get("state")
         try:
             client = instance.get_client(version=self.dhcp_version)
-        except ValueError:
-            logger.exception("Failed to create Kea client for server %s", instance.pk)
-            messages.error(request, "Failed to connect to Kea: see server logs.")
+        except ValueError as exc:
+            messages.error(request, _client_settings_error(instance, exc))
             return redirect(request.path)
         try:
             search = LeaseSearch(by, form.cleaned_data["q"], state_filter)
@@ -422,6 +427,10 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
 
         try:
             client = instance.get_client(version=self.dhcp_version)
+        except ValueError as exc:
+            messages.error(request, _client_settings_error(instance, exc))
+            return redirect(request.path)
+        try:
             snapshot = client.lease_get_all(
                 self.dhcp_version,
                 per_page=per_page,
@@ -659,9 +668,8 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
 
         try:
             client = instance.get_client(version=self.dhcp_version)
-        except ValueError:
-            logger.exception("Failed to create Kea client for server %s", instance.pk)
-            messages.error(request, "Failed to connect to Kea: see server logs for details.")
+        except ValueError as exc:
+            messages.error(request, _client_settings_error(instance, exc))
             return _after_lease_delete(request, return_url)
 
         deleted: list[Lease] = []
@@ -832,8 +840,12 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
             return resp
 
         try:
-            label, identity = parse_selection(self.dhcp_version, ip_address)
             client = server.get_client(version=self.dhcp_version)
+        except ValueError as exc:
+            messages.error(request, _client_settings_error(server, exc))
+            return redirect(self._leases_url(server))
+        try:
+            label, identity = parse_selection(self.dhcp_version, ip_address)
             result = client.lease_get(identity)
         except KeaException as exc:
             logger.exception("Failed to fetch lease %s on server %s", ip_address, pk)
@@ -890,6 +902,10 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
             return redirect(self._leases_url(server))
         try:
             client = server.get_client(version=self.dhcp_version)
+        except ValueError as exc:
+            messages.error(request, _client_settings_error(server, exc))
+            return redirect(self._leases_url(server))
+        try:
             result = client.lease_update(shown, edit)
         except KeaException as exc:
             logger.exception("Error updating lease %s", label)
@@ -974,6 +990,10 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
         address = str(creation.address)
         try:
             client = server.get_client(version=self.dhcp_version)
+        except ValueError as exc:
+            messages.error(request, _client_settings_error(server, exc))
+            return self._render(request, server, form)
+        try:
             client.lease_add(creation)
         except KeaException as exc:
             logger.exception("Failed to create DHCPv%s lease for %s", self.dhcp_version, address)

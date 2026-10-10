@@ -39,6 +39,7 @@ from ..utilities import (
 from ._base import (
     _POOL_RE,
     _catalogue_subnet_row,
+    _client_settings_error,
     _enrich_subnet_statistics,
     _KeaChangeMixin,
     _run_config_change,
@@ -789,9 +790,8 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
         return_url = self._subnets_url(pk)
         try:
             client = server.get_client(version=self.dhcp_version)
-        except ValueError:
-            logger.exception("Failed to connect to Kea for lease wipe on server %s", pk)
-            messages.error(request, "Failed to connect to Kea: see server logs.")
+        except ValueError as exc:
+            messages.error(request, _client_settings_error(server, exc))
             return redirect(return_url)
         try:
             client.lease_wipe(version=self.dhcp_version, subnet_id=subnet_id)

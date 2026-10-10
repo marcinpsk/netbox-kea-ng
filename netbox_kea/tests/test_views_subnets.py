@@ -48,7 +48,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _PLUGINS_CONFIG, _make_db_server, _page_data, _ViewTestBase
+from .utils import _PLUGINS_CONFIG, _make_db_server, _page_data, _ViewTestBase, save_key_without_certificate
 
 # Shared stub responses for the subnet list/table views, which issue config-get
 # (subnets + shared-networks) then stat-lease{v}-get (utilisation; degrades if the
@@ -555,6 +555,15 @@ class TestServerSubnet4WipeView(_ViewTestBase):
         self._assert_no_none_pk_redirect(response)
         self.assertIn("lease4-wipe", kea.commands())
         self.assertEqual(kea.bodies("lease4-wipe")[0]["arguments"]["subnet-id"], 10)
+
+    def test_post_with_a_client_that_cannot_be_built_is_a_settings_error(self):
+        """A key without a certificate is a Server setting error, not a connection failure; nothing is wiped."""
+        expected = save_key_without_certificate(self.server)
+        with stub_kea({}) as kea:
+            response = self.client.post(self._url(subnet_id=10))
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands(), [])
+        self.assertEqual([str(message) for message in get_messages(response.wsgi_request)], [expected])
 
     def test_post_on_a_subnet_without_leases_reports_success(self):
         """Kea 3.2.0 answers result 3 when there is no lease to delete; the Subnet is still empty."""
