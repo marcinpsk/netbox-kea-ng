@@ -3,30 +3,40 @@
 ---
 name: Docs
 
-# A push to main is a release merge here, so each one rebuilds the site and its screenshots.
+# Deploys the site of one release tag, so the site always shows the latest release. release.yml calls it after a
+# release. Dispatch it from main with a tag to deploy that release again; the github-pages environment accepts main only.
 "on":
-  push:
-    branches:
-      - main
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to build and deploy, for example v3.2.0.
+        type: string
+        required: true
   workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag to build and deploy, for example v3.2.0.
+        type: string
+        required: true
 
 permissions:
   contents: read
-
-# One deployment at a time. A queued run waits, so a deployment that started always finishes.
-concurrency:
-  group: pages
-  cancel-in-progress: false
 
 jobs:
   build:
     uses: ./.github/workflows/docs-build.yml
     with:
+      # The full tag ref, so a branch name fails the checkout.
+      ref: refs/tags/${{ inputs.tag }}
       upload-pages: true
 
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    # One deployment at a time. A queued run waits, so a deployment that started always finishes.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     permissions:
       pages: write
       id-token: write

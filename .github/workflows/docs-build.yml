@@ -4,10 +4,14 @@
 name: Docs build
 
 # Builds the documentation site with screenshots and recordings of the commit it checks out. docs.yml deploys the
-# result, and ci.yml runs it on release pull requests and in the scheduled run.
+# result for a release tag, and ci.yml runs it on release pull requests and in the scheduled run.
 "on":
   workflow_call:
     inputs:
+      ref:
+        description: The ref to check out. Empty checks out the commit of the calling event.
+        type: string
+        default: ""
       upload-pages:
         description: Upload the site as the GitHub Pages artifact. Otherwise upload it as a workflow artifact.
         type: boolean
@@ -25,6 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: Install uv
