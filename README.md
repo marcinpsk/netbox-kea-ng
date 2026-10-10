@@ -43,7 +43,7 @@ The full documentation is at **[marcinpsk.github.io/netbox-kea-ng](https://marci
 
 | netbox-kea-ng | NetBox | Kea |
 |---|---|---|
-| 1.x | 4.3 – 4.7 | 3.0+ recommended (2.4+ via Control Agent) |
+| 3.x | 4.3 – 4.7 | 3.0+ recommended (2.4+ via Control Agent) |
 
 Lease search needs the Kea `lease_cmds` hook. Other hooks are optional. See [Requirements](https://marcinpsk.github.io/netbox-kea-ng/installation/#requirements).
 
