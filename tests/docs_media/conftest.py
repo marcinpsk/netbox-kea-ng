@@ -189,6 +189,18 @@ def _delete_rows(found: dict[str, list]) -> None:
             row.delete()
 
 
+def _require_writable_configuration(kea: _DualEndpointKeaClient) -> None:
+    """Fail before any write when a daemon cannot persist its configuration: a clip would show that failure."""
+    for family in (4, 6):
+        (reply,) = kea.command("config-write", family, check=(0, 1))
+        if reply["result"] != 0:
+            raise RuntimeError(
+                f"The DHCPv{family} daemon cannot write its configuration ({reply.get('text')}). Start the harness "
+                "with COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.docs.yml in "
+                "tests/docker, so that each daemon runs on a writable copy of its configuration."
+            )
+
+
 def _require_paused_periodic_sync(page: Page, netbox_url: str) -> None:
     """The periodic sync would claim the seeded leases, so the images would not show the Sync buttons."""
     page.goto(f"{netbox_url}/plugins/kea/sync-jobs/")
@@ -304,6 +316,7 @@ def demo_data(
         page.get_by_label("Username").fill("admin")
         page.get_by_label("Password").fill("admin")
         page.get_by_role("button", name="Sign In").click()
+        _require_writable_configuration(demo_kea)
         _require_paused_periodic_sync(page, netbox_url)
         _require_no_demo_servers(nb_api)
         _require_no_sync_rows(nb_api, SYNCED4)

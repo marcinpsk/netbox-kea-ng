@@ -45,10 +45,13 @@ uv run --group docs zensical build --strict
 ```
 
 The pages show screenshots and short recordings that CI makes. To make them locally, start the integration harness
-first. The suite writes the screenshots to `docs/guide/assets/screenshots/`, and the recordings (MP4, a PNG poster and
-the README GIF) to `docs/guide/assets/recordings/`:
+with the documentation variant `docker-compose.docs.yml`, which lets Kea write its configuration. The suite writes the
+screenshots to `docs/guide/assets/screenshots/`, and the recordings (MP4, a PNG poster and the README GIF) to
+`docs/guide/assets/recordings/`:
 
 ```bash
+export COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.docs.yml
+./tests/test_setup.sh
 uv run --native-tls pytest -p no:django tests/docs_media --docs-media-dir docs/guide/assets
 uv run --group docs zensical build --strict
 uv run python scripts/check_docs_media.py site docs/guide/assets

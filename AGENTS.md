@@ -129,7 +129,13 @@ recording that no page shows, and on a README image under the `site_url` that th
 to `<page>/index.html`. Zensical rewrites a `<source src>` like a Markdown link, but not a `<video poster>`, so a page
 names `<source src="assets/recordings/<name>.mp4">` and `poster="../assets/recordings/<name>.png"`.
 
+Start the harness with `docker-compose.docs.yml` on top of the two base files. It runs each Kea daemon on a writable
+copy of its configuration, so `config-write` succeeds and the clips show no persistence failure. The suite refuses a
+daemon that cannot write its configuration. The other suites keep the read-only configuration, because
+`tests/ui/test_lease_acceptance.py` expects the persistence warning.
+
 ```bash
+export COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.docs.yml
 ./tests/test_setup.sh
 uv run --native-tls pytest -p no:django tests/docs_media --docs-media-dir docs/guide/assets
 uv run --group docs zensical build --strict
@@ -170,7 +176,7 @@ uv run python scripts/check_docs_media.py site docs/guide/assets
   NetBox v4.3 (floor), v4.7 (ceiling), and the dev snapshot (allowed to fail).
 - **Branching browser job**: the integration steps on the netbox-branching variant of the
   harness (a NetBox 4.7 image), running only `tests/ui/test_branching_refusal.py`.
-- **Documentation job**: the reusable workflow `docs-build.yml` starts the harness with NetBox 4.7, runs the
+- **Documentation job**: the reusable workflow `docs-build.yml` starts the docs variant of the harness with NetBox 4.7, runs the
   media suite and the media check, and builds the site with `--strict`. `ci.yml` calls it on pull requests to
   `main` and in the scheduled run, and uploads the site as an artifact. `docs.yml` calls it on a push to `main` and
   deploys the site to GitHub Pages. The lint job has no screenshots or recordings, so its link check excludes them.

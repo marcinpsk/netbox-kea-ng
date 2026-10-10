@@ -1319,6 +1319,18 @@ def test_the_docs_build_checks_the_media_root_that_it_captures_and_git_ignores()
     assert f"{root}/recordings/" in ignored
 
 
+def test_the_docs_build_starts_the_harness_variant_that_persists_the_kea_configuration():
+    """On the read-only harness, the Reserve clip would show a config-write failure on the published page."""
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github" / "workflows" / "docs-build.yml").read_text())
+    variant = yaml.safe_load((REPOSITORY_ROOT / "tests" / "docker" / "docker-compose.docs.yml").read_text())
+
+    compose_files = workflow["jobs"]["build"]["env"]["COMPOSE_FILE"].split(":")
+    assert compose_files == ["docker-compose.yml", "docker-compose.override.yml", "docker-compose.docs.yml"]
+    for family in (4, 6):
+        command = variant["services"][f"kea-dhcp{family}"]["command"][-1]
+        assert f"exec kea-dhcp{family} -X -c /tmp/kea-dhcp{family}.conf" in command
+
+
 def test_the_pinned_netbox_release_is_documented_only_by_its_constant():
     """Name the release in one place. A copy in the docs goes stale on the next bump."""
     agents = (REPOSITORY_ROOT / "AGENTS.md").read_text()

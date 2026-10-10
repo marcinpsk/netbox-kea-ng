@@ -55,6 +55,7 @@ def test_reserve_lease(plugin_base: str, demo_data: DemoData, recorded_reservati
         clip.point(page.locator("#id_identifier"))
         clip.click(page.get_by_role("button", name="Save"))
         expect(page.locator(".toast-body", has_text="Reservation created.")).to_have_count(1, timeout=_TIMEOUT)
+        expect(page.locator(".toast-body", has_text="could not persist")).to_have_count(0)
         # The save returns to the lease search, where the lease is now reserved.
         reserved = _row(page, recorded_reservation).get_by_text("Reserved", exact=True)
         expect(reserved).to_be_visible()
