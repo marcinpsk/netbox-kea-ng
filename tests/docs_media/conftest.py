@@ -133,10 +133,37 @@ def _create_server(nb_api: pynetbox.api, name: str, **fields):
     return nb_api.plugins.kea.servers.create(name=name, **fields)
 
 
-def _delete_netbox_ips(nb_api: pynetbox.api, address: str) -> None:
-    # A stray row can carry any prefix length, and NetBox refuses a duplicate host address.
-    for stale in nb_api.ipam.ip_addresses.filter(parent=f"{address}/32"):
-        stale.delete()
+def _sync_identity_rows(nb_api: pynetbox.api) -> dict[str, list]:
+    """Return the NetBox rows, in any VRF, that a Sync of a lease in SYNCED4 writes or changes."""
+    macs = {address: mac for address, mac, _hostname in LEASES4}
+    found = {}
+    for address in SYNCED4:
+        # NetBox refuses a duplicate host address at any prefix length, so look up the host.
+        found[f"IP address {address}"] = list(nb_api.ipam.ip_addresses.filter(parent=f"{address}/32"))
+        found[f"MAC address {macs[address]}"] = list(nb_api.dcim.mac_addresses.filter(mac_address=macs[address]))
+    return {name: rows for name, rows in found.items() if rows}
+
+
+def _require_no_sync_rows(nb_api: pynetbox.api) -> None:
+    """Fail before seeding when a row that the Sync would write exists: the suite deletes only its own rows."""
+    if existing := _sync_identity_rows(nb_api):
+        raise RuntimeError(
+            "NetBox already holds rows that the demo Sync writes, and the suite does not delete rows it did not "
+            f"create. Delete them, then run again: {existing}"
+        )
+
+
+def _require_paused_periodic_sync(page: Page, netbox_url: str) -> None:
+    """The periodic sync would claim the seeded leases, so the images would not show the Sync buttons."""
+    page.goto(f"{netbox_url}/plugins/kea/sync-jobs/")
+    toggle = page.locator("#id_sync_enabled")
+    toggle.wait_for()
+    if toggle.is_checked():
+        raise RuntimeError(
+            "The periodic Kea IPAM sync is enabled. tests/docker/plugins.py disables it when the migration creates "
+            "the SyncConfig row, so this stack reuses an older postgres volume: run 'docker compose down -v' in "
+            "tests/docker, then tests/test_setup.sh again."
+        )
 
 
 def _delete_kea_demo_data(kea: _DualEndpointKeaClient) -> None:
@@ -201,23 +228,14 @@ def _add_kea_demo_data(kea: _DualEndpointKeaClient) -> None:
     )
 
 
-def _sync_leases(browser: Browser, context_args: dict, netbox_url: str, server_id: int) -> None:
+def _sync_leases(page: Page, netbox_url: str, server_id: int) -> None:
     """Press Sync on each lease in SYNCED4, as an operator does, so that the plugin writes the IPAM rows."""
-    context = browser.new_context(**context_args)
-    try:
-        page = context.new_page()
-        page.goto(f"{netbox_url}/login/")
-        page.get_by_label("Username").fill("admin")
-        page.get_by_label("Password").fill("admin")
-        page.get_by_role("button", name="Sign In").click()
-        page.goto(f"{netbox_url}/plugins/kea/servers/{server_id}/leases4/?q=1&by=subnet_id")
-        for address in SYNCED4:
-            row = page.locator("table.object-list > tbody > tr").filter(has_text=address)
-            row.get_by_role("button", name="Sync", exact=True).click()
-            # The reply replaces the button with a link to the new IP address.
-            expect(row.get_by_role("link", name=f"{address}/")).to_have_count(1, timeout=REQUEST_TIMEOUT * 1000)
-    finally:
-        context.close()
+    page.goto(f"{netbox_url}/plugins/kea/servers/{server_id}/leases4/?q=1&by=subnet_id")
+    for address in SYNCED4:
+        row = page.locator("table.object-list > tbody > tr").filter(has_text=address)
+        row.get_by_role("button", name="Sync", exact=True).click()
+        # The reply replaces the button with a link to the new IP address.
+        expect(row.get_by_role("link", name=f"{address}/")).to_have_count(1, timeout=REQUEST_TIMEOUT * 1000)
 
 
 @pytest.fixture(scope="session")
@@ -231,27 +249,50 @@ def demo_data(
     kea_url: str,
     kea_dhcp6_url: str,
 ) -> Iterator[DemoData]:
-    """Load one fixed data set into Kea and NetBox, for every shot of the session."""
-    _delete_kea_demo_data(demo_kea)
-    for address in SYNCED4:
-        _delete_netbox_ips(nb_api, address)
-    campus = _create_server(nb_api, "kea-campus", ca_url=kea_url, dhcp6_url=kea_dhcp6_url, has_control_agent=False)
-    branch = _create_server(
-        nb_api, "kea-branch-office", ca_url=_PROXY_URL, dhcp6=False, has_control_agent=False, **_PROXY_CREDENTIALS
-    )
+    """Load one fixed data set into Kea and NetBox, for every shot of the session.
+
+    Before seeding, no row that the Sync writes may exist, so each such row after the Sync is the
+    suite's own: teardown deletes exactly the rows that it records then.
+    """
+    context = browser.new_context(**browser_context_args)
     try:
-        _add_kea_demo_data(demo_kea)
-        _sync_leases(browser, browser_context_args, netbox_url, campus.id)
-        synced = nb_api.ipam.ip_addresses.get(parent=f"{SYNCED4[0]}/32")
-        yield DemoData(campus=campus, branch=branch, synced_ip_id=synced.id)
-    finally:
-        for address in SYNCED4:
-            _delete_netbox_ips(nb_api, address)
-        for _address, mac, _hostname in LEASES4:
-            for row in nb_api.dcim.mac_addresses.filter(mac_address=mac):
-                if "dhcp_hostname:" in (row.description or ""):
-                    row.delete()
+        page = context.new_page()
+        page.goto(f"{netbox_url}/login/")
+        page.get_by_label("Username").fill("admin")
+        page.get_by_label("Password").fill("admin")
+        page.get_by_role("button", name="Sign In").click()
+        _require_paused_periodic_sync(page, netbox_url)
+        _require_no_sync_rows(nb_api)
         _delete_kea_demo_data(demo_kea)
+        # The periodic sync of these Servers stays off too; only the Sync button writes IPAM rows.
+        campus = _create_server(
+            nb_api, "kea-campus", ca_url=kea_url, dhcp6_url=kea_dhcp6_url, has_control_agent=False, sync_enabled=False
+        )
+        branch = _create_server(
+            nb_api,
+            "kea-branch-office",
+            ca_url=_PROXY_URL,
+            dhcp6=False,
+            has_control_agent=False,
+            sync_enabled=False,
+            **_PROXY_CREDENTIALS,
+        )
+        assert not campus.sync_enabled and not branch.sync_enabled, "a demo Server takes part in the periodic sync"
+        created: dict[str, list] = {}
+        try:
+            _add_kea_demo_data(demo_kea)
+            try:
+                _sync_leases(page, netbox_url, campus.id)
+            finally:
+                created = _sync_identity_rows(nb_api)
+            yield DemoData(campus=campus, branch=branch, synced_ip_id=created[f"IP address {SYNCED4[0]}"][0].id)
+        finally:
+            for rows in created.values():
+                for row in rows:
+                    row.delete()
+            _delete_kea_demo_data(demo_kea)
+    finally:
+        context.close()
 
 
 @pytest.fixture
