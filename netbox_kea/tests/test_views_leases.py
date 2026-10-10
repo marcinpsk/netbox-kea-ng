@@ -65,7 +65,14 @@ from .kea_stub import (
     stub_kea,
     typed_lease,
 )
-from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase, active_tabs, plugins_config
+from .utils import (
+    _PLUGINS_CONFIG,
+    _make_db_server,
+    _ViewTestBase,
+    active_tabs,
+    plugins_config,
+    save_key_without_certificate,
+)
 
 #: The HTMX error template renders a uuid4 reference ID, so a test that stops at the
 #: label also passes when that ID is missing.
@@ -832,6 +839,18 @@ class TestLeaseExport(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
+    def test_a_client_that_cannot_be_built_is_reported_as_a_settings_error(self):
+        """A key without a certificate is a Server setting error, not a connection failure; no lease is read."""
+        expected = save_key_without_certificate(self.server)
+        with _lease_stub({}) as kea:
+            response = self.client.get(self._url(), {"export": "all", "by": "ip", "q": "10.0.0.5"})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands(), [])
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)],
+            [expected],
+        )
+
     @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
     def test_export_by_subnet_uses_the_guarded_subnet_query(self):
         """A Subnet export must not rely on global lease-page ordering."""
@@ -927,6 +946,19 @@ class TestLeaseDeleteFullFlow(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
         self.assertIn("Error deleting lease 10.0.0.5", str(next(iter(get_messages(response.wsgi_request)))))
+
+    def test_post_confirmed_with_a_client_that_cannot_be_built_is_a_settings_error(self):
+        """A key without a certificate is a Server setting error, not a connection failure; nothing is deleted."""
+        expected = save_key_without_certificate(self.server)
+        record = lease_record("10.0.0.1", subnet_id=1)
+        with _lease_stub({}) as kea:
+            response = self.client.post(self._url(), {"pk": [shown_token(record)], "_confirm": "1"})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands(), [])
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)],
+            [expected],
+        )
 
     def test_forbidden_user_gets_403(self):
         """A user without bulk_delete_lease_from_server permission must receive 403."""
@@ -3013,17 +3045,18 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         self.assertContains(response, "CSV parsing failed. Check the file format and column headers.")
 
     def test_a_client_that_cannot_be_built_is_reported_on_the_form(self):
-        """A key without a certificate makes get_client() raise ValueError; the form reports it."""
+        """A key without a certificate makes get_client() raise ValueError; the form names the Server setting."""
         import io
 
-        Server.objects.filter(pk=self.server.pk).update(client_key_path="/tls/client.key", client_cert_path="")
+        expected = save_key_without_certificate(self.server)
         csv_file = io.BytesIO(b"ip-address,hw-address\n10.0.0.1,aa:bb:cc:00:00:01")
         csv_file.name = "leases.csv"
         with _lease_stub({}) as kea:
             response = self.client.post(self._url(), {"csv_file": csv_file})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
-        self.assertContains(response, "Failed to connect to Kea server.")
+        self.assertContains(response, escape(expected))
+        self.assertNotContains(response, "Failed to connect")
 
     def test_a_malformed_reply_body_is_an_invalid_response_row_error(self):
         """A lease4-add body that is not a JSON list is a malformed reply; the log names the line, not its MAC."""

@@ -415,6 +415,15 @@ def _configured_capabilities(server: Server, version: Family) -> ReservationCapa
     """Return confirmed live mutation capabilities without affecting read-only display."""
     try:
         client = server.get_client(version=version)
+    except ValueError:
+        logger.exception("Could not build the DHCPv%s Kea client of %s", version, server.name)
+        return None
+    return _client_capabilities(server, client, version)
+
+
+def _client_capabilities(server: Server, client: KeaClient, version: Family) -> ReservationCapabilities | None:
+    """Return the live mutation capabilities that *client* confirms, or ``None`` when the read fails."""
+    try:
         return client.reservation_capabilities(version)
     except (KeaException, requests.RequestException, RuntimeError, ValueError):
         logger.exception("Could not read DHCPv%s Reservation capabilities from %s", version, server.name)

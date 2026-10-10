@@ -18,7 +18,7 @@ from ..models import Server
 from ..utilities import (
     kea_error_hint,
 )
-from ._base import _KeaChangeMixin
+from ._base import _client_settings_error, _KeaChangeMixin
 from .server import _STATUS_TAB
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,10 @@ class _BaseServerDHCPEnableView(_KeaChangeMixin, generic.ObjectView):
         instance = self.get_object(pk=pk)
         try:
             client = instance.get_client(version=self.dhcp_version)
+        except ValueError as exc:
+            messages.error(request, _client_settings_error(instance, exc))
+            return redirect(reverse("plugins:netbox_kea:server_status", args=[pk]))
+        try:
             client.dhcp_enable(self.dhcp_version)
             messages.success(request, f"DHCPv{self.dhcp_version} service re-enabled on {instance}.")
         except KeaException as exc:
@@ -83,6 +87,10 @@ class _BaseServerDHCPDisableView(_KeaChangeMixin, generic.ObjectView):
         max_period = form.cleaned_data.get("max_period")
         try:
             client = instance.get_client(version=self.dhcp_version)
+        except ValueError as exc:
+            messages.error(request, _client_settings_error(instance, exc))
+            return redirect(reverse("plugins:netbox_kea:server_status", args=[pk]))
+        try:
             client.dhcp_disable(self.dhcp_version, max_period=max_period)
             if max_period:
                 messages.warning(
