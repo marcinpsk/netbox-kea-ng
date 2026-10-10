@@ -116,14 +116,14 @@ The site pages show screenshots that CI makes from the commit it builds. Git nev
 `docs/guide/assets/screenshots/` is in `.gitignore`. The suite runs only when `--docs-media-dir` names the output
 directory, so the integration run over `tests/` leaves it out. It drives the `tests/ui` harness, loads one demo data
 set and writes each view as `<name>-light.png` and `<name>-dark.png`. `zensical build --strict` does not check
-images, so `scripts/check_docs_media.py` fails on a page that refers to a missing image and on an image that no page
-refers to.
+images, so `scripts/check_docs_media.py` reads the `<img src>` of each built page. It fails on a page that shows a
+screenshot that the site does not hold, and on a captured screenshot that no page shows.
 
 ```bash
 ./tests/test_setup.sh
 uv run --native-tls pytest -p no:django tests/docs_media --docs-media-dir docs/guide/assets/screenshots
-python scripts/check_docs_media.py
 uv run --group docs zensical build --strict
+python scripts/check_docs_media.py site docs/guide/assets/screenshots
 ```
 
 ### CI

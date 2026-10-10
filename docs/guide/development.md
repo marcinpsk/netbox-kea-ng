@@ -48,7 +48,8 @@ The pages show screenshots that CI makes. To make them locally, start the integr
 
 ```bash
 uv run --native-tls pytest -p no:django tests/docs_media --docs-media-dir docs/guide/assets/screenshots
-python scripts/check_docs_media.py
+uv run --group docs zensical build --strict
+python scripts/check_docs_media.py site docs/guide/assets/screenshots
 ```
 
 See the [Changelog](changelog.md) for version history.

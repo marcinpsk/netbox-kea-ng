@@ -54,11 +54,12 @@ jobs:
           uv run --native-tls pytest tests/docs_media -p no:django --tracing=retain-on-failure -v \
             --docs-media-dir docs/guide/assets/screenshots
 
-      - name: Check the screenshot references
-        run: python scripts/check_docs_media.py docs/guide
-
+      # The build does not fail on a missing image, so the check reads the pages that it wrote.
       - name: Build the documentation site
         run: uv run --native-tls --group docs zensical build --strict
+
+      - name: Check the screenshots on the built pages
+        run: python scripts/check_docs_media.py site docs/guide/assets/screenshots
 
       - name: Upload the site for GitHub Pages
         if: ${{ inputs.upload-pages }}
