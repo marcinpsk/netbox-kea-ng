@@ -179,8 +179,8 @@ uv run python scripts/check_docs_media.py site docs/guide/assets
   media suite and the media check, and builds the site with `--strict`. `ci.yml` calls it on pull requests to
   `main` and in the scheduled run, and uploads the site as an artifact. `docs.yml` calls it for one release tag and
   deploys the site to GitHub Pages, so the site shows the latest release only. `release.yml` calls `docs.yml` after
-  a release, in a separate job, so a failed deployment leaves the PyPI release in place. To deploy a release again,
-  dispatch `docs.yml` from `main` with the tag. The lint job has no screenshots or recordings, so its link check
+  a release, in a separate job, so a failed deployment leaves the PyPI release in place. The deploy job refuses a tag
+  that is not the latest GitHub release. To deploy the latest release again, dispatch `docs.yml` from `main` with its tag. The lint job has no screenshots or recordings, so its link check
   excludes them.
 - Playwright traces on failure are uploaded as artifacts.
 
