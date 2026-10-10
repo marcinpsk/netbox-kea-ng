@@ -128,7 +128,9 @@ def demo_kea(kea_control_urls: dict[int, str]) -> Iterator[_DualEndpointKeaClien
 
 def _require_no_demo_servers(nb_api: pynetbox.api) -> None:
     """Fail before seeding when a Server has a demo name: nb_api deletes only the Servers that this session created."""
-    if existing := [server for name in DEMO_SERVERS for server in nb_api.plugins.kea.servers.filter(name=name)]:
+    # The name filter of the Server API matches a part of the name, so compare the whole name here.
+    candidates = (server for name in DEMO_SERVERS for server in nb_api.plugins.kea.servers.filter(name=name))
+    if existing := [server for server in candidates if server.name in DEMO_SERVERS]:
         raise RuntimeError(
             "NetBox already holds a Server with a demo name, and the suite does not delete Servers it did not "
             f"create. Delete or rename it, then run again: {[(server.id, server.name) for server in existing]}"
