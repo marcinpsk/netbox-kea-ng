@@ -7,6 +7,7 @@ It drives the same Compose harness as tests/ui. It writes each screenshot in the
 dark color mode of NetBox to <root>/screenshots/, and each recording to <root>/recordings/.
 """
 
+import re
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
@@ -183,10 +184,22 @@ def _require_no_sync_rows(nb_api: pynetbox.api, addresses: Sequence[str]) -> Non
         )
 
 
-def _delete_rows(found: dict[str, list]) -> None:
-    for rows in found.values():
-        for row in rows:
-            row.delete()
+def _claim_sync_rows(nb_api: pynetbox.api, synced: Locator, address: str) -> list:
+    """Return the IP address that a Sync reply links to, then the MAC address rows of its lease.
+
+    Call it right after the reply: the precheck found none of these rows, so each one is the suite's own.
+    """
+    link = re.search(r"/ipam/ip-addresses/(\d+)/$", synced.get_attribute("href") or "")
+    assert link, f"the Sync reply of {address} links to no IP address: {synced.get_attribute('href')!r}"
+    ip = nb_api.ipam.ip_addresses.get(int(link[1]))
+    assert ip is not None and ip.address.split("/")[0] == address, f"the Sync reply of {address} links to {ip}"
+    mac = {lease_address: mac for lease_address, mac, _hostname in LEASES4}[address]
+    return [ip, *nb_api.dcim.mac_addresses.filter(mac_address=mac)]
+
+
+def _delete_rows(rows: list) -> None:
+    for row in rows:
+        row.delete()
 
 
 def _require_writable_configuration(kea: _DualEndpointKeaClient) -> None:
@@ -283,14 +296,16 @@ def _add_kea_demo_data(kea: _DualEndpointKeaClient) -> None:
     )
 
 
-def _sync_leases(page: Page, netbox_url: str, server_id: int) -> None:
-    """Press Sync on each lease in SYNCED4, as an operator does, so that the plugin writes the IPAM rows."""
+def _sync_leases(page: Page, netbox_url: str, server_id: int, nb_api: pynetbox.api, created: list) -> None:
+    """Press Sync on each lease in SYNCED4, as an operator does, and add the rows of each Sync to *created*."""
     page.goto(f"{netbox_url}/plugins/kea/servers/{server_id}/leases4/?q=1&by=subnet_id")
     for address in SYNCED4:
         row = page.locator("table.object-list > tbody > tr").filter(has_text=address)
         row.get_by_role("button", name="Sync", exact=True).click()
         # The reply replaces the button with a link to the new IP address.
-        expect(row.get_by_role("link", name=f"{address}/")).to_have_count(1, timeout=REQUEST_TIMEOUT * 1000)
+        synced = row.get_by_role("link", name=f"{address}/")
+        expect(synced).to_have_count(1, timeout=REQUEST_TIMEOUT * 1000)
+        created.extend(_claim_sync_rows(nb_api, synced, address))
 
 
 @pytest.fixture(scope="session")
@@ -306,8 +321,9 @@ def demo_data(
 ) -> Iterator[DemoData]:
     """Load one fixed data set into Kea and NetBox, for every shot of the session.
 
-    Before seeding, no row that the Sync writes may exist, so each such row after the Sync is the
-    suite's own: teardown deletes exactly the rows that it records then.
+    Before seeding, no row that the Sync writes may exist. The suite records the rows of each Sync
+    right after its reply, and teardown deletes exactly those. A Sync without a reply leaves its rows,
+    and the precheck of the next run names them.
     """
     context = browser.new_context(**browser_context_args)
     try:
@@ -335,14 +351,12 @@ def demo_data(
             **_PROXY_CREDENTIALS,
         )
         assert not campus.sync_enabled and not branch.sync_enabled, "a demo Server takes part in the periodic sync"
-        created: dict[str, list] = {}
+        created: list = []
         try:
             _add_kea_demo_data(demo_kea)
-            try:
-                _sync_leases(page, netbox_url, campus.id)
-            finally:
-                created = _sync_identity_rows(nb_api, SYNCED4)
-            yield DemoData(campus=campus, branch=branch, synced_ip_id=created[f"IP address {SYNCED4[0]}"][0].id)
+            _sync_leases(page, netbox_url, campus.id, nb_api, created)
+            # _claim_sync_rows puts the IP address of each Sync first.
+            yield DemoData(campus=campus, branch=branch, synced_ip_id=created[0].id)
         finally:
             _delete_rows(created)
             _delete_kea_demo_data(demo_kea)
@@ -396,7 +410,6 @@ def record(
 
     @contextmanager
     def _record(name: str, url: str, gif: bool = False) -> Iterator[Clip]:
-        started = time.monotonic()
         context = new_context(
             storage_state=page.context.storage_state(),
             color_scheme="light",
@@ -406,6 +419,8 @@ def record(
         context.add_init_script(script=CURSOR_SCRIPT)
         context.add_init_script(script=f'addEventListener("DOMContentLoaded", {_REMOVE_DEBUG_BANNER});')
         recorded = context.new_page()
+        # The video timeline starts with the screencast of the page.
+        started = time.monotonic()
         response = recorded.goto(url)
         assert response is not None and response.ok, f"{url} answered {response and response.status}"
         recorded.wait_for_load_state("networkidle")
@@ -427,15 +442,28 @@ def record(
     return _record
 
 
+@dataclass(frozen=True)
+class RecordedSync:
+    """The lease that the Sync recording synchronizes, and the rows that its Sync wrote."""
+
+    address: str
+    nb_api: pynetbox.api
+    created: list
+
+    def claim(self, synced: Locator) -> None:
+        """Record the rows of the Sync whose reply shows the link *synced*, for teardown."""
+        self.created.extend(_claim_sync_rows(self.nb_api, synced, self.address))
+
+
 @pytest.fixture
-def recorded_sync(demo_data: DemoData, nb_api: pynetbox.api) -> Iterator[str]:
-    """Return the address that the Sync recording synchronizes, and delete the rows that the Sync wrote afterwards."""
-    addresses = (RECORDED_SYNC_LEASE[0],)
-    _require_no_sync_rows(nb_api, addresses)
+def recorded_sync(demo_data: DemoData, nb_api: pynetbox.api) -> Iterator[RecordedSync]:
+    """Return the lease of the Sync recording; afterwards delete the rows that it claimed, and only those."""
+    sync = RecordedSync(RECORDED_SYNC_LEASE[0], nb_api, [])
+    _require_no_sync_rows(nb_api, (sync.address,))
     try:
-        yield addresses[0]
+        yield sync
     finally:
-        _delete_rows(_sync_identity_rows(nb_api, addresses))
+        _delete_rows(sync.created)
 
 
 @pytest.fixture

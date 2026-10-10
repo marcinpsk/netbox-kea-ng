@@ -11,6 +11,8 @@ and when a README image under the `site_url` of mkdocs.yml is not a file inside 
 
 Not checked: `srcset` candidates.
 Not checked: root-relative URLs (`/...`), which depend on the `site_url` path.
+Not checked: README reference-style images (`![alt][ref]`). The README check reads the Markdown source, so
+it also reads an image inside a code block; it skips an HTML comment.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ CAPTURES = ("screenshots/*.png", "recordings/*.mp4")
 _MEDIA_ATTRIBUTES = {"img": ("src",), "video": ("src", "poster"), "source": ("src",)}
 #: A Markdown image: ![alt](url) or ![alt](url "title").
 _MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\(\s*<?([^)\s>]+)")
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 class _MediaSources(HTMLParser):
@@ -66,7 +69,7 @@ def _media(page: Path) -> list[tuple[str, Path]]:
 def _readme_problems(site: Path, readme: Path, config: Path) -> list[str]:
     """Return one message for each README image under the site URL that the site does not hold."""
     site_url = yaml.safe_load(config.read_text(encoding="utf-8"))["site_url"]
-    text = readme.read_text(encoding="utf-8")
+    text = _HTML_COMMENT.sub("", readme.read_text(encoding="utf-8"))
     found = []
     for source in [*_MARKDOWN_IMAGE.findall(text), *_sources(text)]:
         if not source.startswith(site_url):

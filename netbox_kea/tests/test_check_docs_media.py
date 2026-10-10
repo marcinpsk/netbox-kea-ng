@@ -245,3 +245,12 @@ def test_a_readme_image_under_the_site_url_that_the_site_lacks_fails(tmp_path: P
         f"missing: {_SITE_URL}assets/recordings/clip.gif (shown by README.md)\n"
         f"missing: {_SITE_URL}assets/logo.png (shown by README.md)\n"
     )
+
+
+def test_a_readme_image_inside_an_html_comment_is_not_checked(tmp_path: Path) -> None:
+    readme = f"<!--\n![A clip]({_SITE_URL}assets/recordings/old.gif)\n-->\n# Project\n"
+    site, media = _tree(tmp_path, {}, (), readme=readme)
+
+    result = _check(site, media)
+
+    assert result.returncode == 0, result.stderr

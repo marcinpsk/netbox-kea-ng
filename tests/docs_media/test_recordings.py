@@ -13,7 +13,14 @@ from contextlib import AbstractContextManager
 from playwright.sync_api import Locator, Page, expect
 
 from ..conftest import REQUEST_TIMEOUT
-from .conftest import RECORDED_EDIT_HOSTNAME, RECORDED_EDIT_LEASE, RECORDED_RESERVE_LEASE, RECORDED_SUBNET_ID, DemoData
+from .conftest import (
+    RECORDED_EDIT_HOSTNAME,
+    RECORDED_EDIT_LEASE,
+    RECORDED_RESERVE_LEASE,
+    RECORDED_SUBNET_ID,
+    DemoData,
+    RecordedSync,
+)
 from .recording import Clip
 
 _TIMEOUT = REQUEST_TIMEOUT * 1000
@@ -30,13 +37,14 @@ def _row(page: Page, address: str) -> Locator:
     return row
 
 
-def test_sync_lease(plugin_base: str, demo_data: DemoData, recorded_sync: str, record: Recorder) -> None:
+def test_sync_lease(plugin_base: str, demo_data: DemoData, recorded_sync: RecordedSync, record: Recorder) -> None:
     with record("sync-lease", _search(plugin_base, demo_data), gif=True) as clip:
-        row = _row(clip.page, recorded_sync)
+        row = _row(clip.page, recorded_sync.address)
         clip.click(row.get_by_role("button", name="Sync", exact=True))
         # The reply replaces the button with a link to the new IP address.
-        synced = row.get_by_role("link", name=f"{recorded_sync}/")
+        synced = row.get_by_role("link", name=f"{recorded_sync.address}/")
         expect(synced).to_have_count(1, timeout=_TIMEOUT)
+        recorded_sync.claim(synced)
         clip.click(synced)
         marker = clip.page.get_by_text("[kea-sync: ")
         expect(marker).not_to_have_count(0)
@@ -59,7 +67,7 @@ def test_reserve_lease(plugin_base: str, demo_data: DemoData, recorded_reservati
         # The save returns to the lease search, where the lease is now reserved.
         reserved = _row(page, recorded_reservation).get_by_text("Reserved", exact=True)
         expect(reserved).to_be_visible()
-        clip.point(reserved)
+        clip.point(_row(page, recorded_reservation).get_by_text(hostname, exact=True))
 
 
 def test_edit_lease(plugin_base: str, demo_data: DemoData, recorded_edit: str, record: Recorder) -> None:
