@@ -391,9 +391,12 @@ class TestCombinedReservations4View(_CombinedViewBase):
         self.assertGreaterEqual(kea.commands().count("reservation-get-page"), 2)
 
     def test_server_filter_limits_queried_servers(self):
-        """?server=<pk> filters down to exactly that one server."""
+        """An explicit selection reads only its Servers that serve the page's family."""
         with _reservation_stub(4, {"reservation-get-page": _RES_EMPTY_PAGE}) as kea:
-            url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}"
+            url = (
+                reverse("plugins:netbox_kea:combined_reservations4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
+            )
             self.client.get(url)
         self.assertEqual(kea.commands().count("reservation-get-page"), 1)
 
@@ -402,7 +405,10 @@ class TestCombinedReservations4View(_CombinedViewBase):
         with _reservation_stub(
             4, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-by-state": _LEASE_NONE}
         ):
-            url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}"
+            url = (
+                reverse("plugins:netbox_kea:combined_reservations4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "v4-server")
@@ -425,7 +431,10 @@ class TestCombinedReservations4View(_CombinedViewBase):
             next_source=1,
         )
         # A search with no match on the first page reads the next one, and that read fails.
-        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&q=needle"
+        url = (
+            reverse("plugins:netbox_kea:combined_reservations4")
+            + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=needle"
+        )
 
         with _reservation_stub(
             4,
@@ -462,7 +471,10 @@ class TestCombinedReservations4View(_CombinedViewBase):
         with _reservation_stub(
             4, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-by-state": _LEASE_NONE}
         ):
-            url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&export=yaml"
+            url = (
+                reverse("plugins:netbox_kea:combined_reservations4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&export=yaml"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("application/yaml", response.get("Content-Type", ""))
@@ -475,7 +487,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
     def test_export_rejects_an_incomplete_snapshot(self):
         first_page = _res_page([dict(_MOCK_RESERVATION_V4)], next_from=1, next_source=1)
         url = reverse("plugins:netbox_kea:combined_reservations4")
-        url += f"?server={self.v4_server.pk}&export=yaml"
+        url += f"?server={self.v4_server.pk}&server={self.v6_server.pk}&export=yaml"
 
         with _reservation_stub(
             4, {"reservation-get-page": queued(first_page, requests.ConnectionError("page failed"))}
@@ -503,7 +515,10 @@ class TestCombinedReservations4View(_CombinedViewBase):
         with _reservation_stub(
             4, {"reservation-get-page": _res_page([rec_match, rec_nomatch]), "lease4-get-by-state": _LEASE_NONE}
         ):
-            url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&q=host-v4"
+            url = (
+                reverse("plugins:netbox_kea:combined_reservations4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=host-v4"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.0.0.100")
@@ -516,7 +531,10 @@ class TestCombinedReservations4View(_CombinedViewBase):
         rec2["ip-address"] = "10.0.0.200"
         rec2["hostname"] = "other"
         with _reservation_stub(4, {"reservation-get-page": _res_page([rec, rec2]), "lease4-get-by-state": _LEASE_NONE}):
-            url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&q=10.0.0.100"
+            url = (
+                reverse("plugins:netbox_kea:combined_reservations4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=10.0.0.100"
+            )
             response = self.client.get(url)
         self.assertContains(response, "10.0.0.100")
         self.assertNotContains(response, "10.0.0.200")
@@ -553,7 +571,10 @@ class TestCombinedReservations4View(_CombinedViewBase):
                 "lease4-get-by-state": _LEASE_NONE,
             },
         ):
-            url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&subnet_id=2"
+            url = (
+                reverse("plugins:netbox_kea:combined_reservations4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&subnet_id=2"
+            )
             response = self.client.get(url)
         self.assertNotContains(response, "10.0.0.100")
         self.assertContains(response, "10.0.0.200")
@@ -563,7 +584,10 @@ class TestCombinedReservations4View(_CombinedViewBase):
         with _reservation_stub(
             4, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-by-state": _LEASE_NONE}
         ):
-            url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&q=zzz-no-match"
+            url = (
+                reverse("plugins:netbox_kea:combined_reservations4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=zzz-no-match"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -600,7 +624,10 @@ class TestCombinedReservations6View(_CombinedViewBase):
 
     def test_server_filter_limits_queried_servers(self):
         with _reservation_stub(6, {"reservation-get-page": _RES_EMPTY_PAGE}) as kea:
-            url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}"
+            url = (
+                reverse("plugins:netbox_kea:combined_reservations6")
+                + f"?server={self.v6_server.pk}&server={self.v4_server.pk}"
+            )
             self.client.get(url)
         self.assertEqual(kea.commands().count("reservation-get-page"), 1)
 
@@ -615,7 +642,10 @@ class TestCombinedReservations6View(_CombinedViewBase):
         with _reservation_stub(
             6, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6)]), "lease6-get-by-state": _LEASE_NONE}
         ):
-            url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}&export=json"
+            url = (
+                reverse("plugins:netbox_kea:combined_reservations6")
+                + f"?server={self.v6_server.pk}&server={self.v4_server.pk}&export=json"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("application/json", response.get("Content-Type", ""))
@@ -643,7 +673,10 @@ class TestCombinedReservations6View(_CombinedViewBase):
         with _reservation_stub(
             6, {"reservation-get-page": _res_page([rec_match, rec_nomatch]), "lease6-get-by-state": _LEASE_NONE}
         ):
-            url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}&q=host-v6"
+            url = (
+                reverse("plugins:netbox_kea:combined_reservations6")
+                + f"?server={self.v6_server.pk}&server={self.v4_server.pk}&q=host-v6"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "host-v6")
@@ -659,7 +692,10 @@ class TestCombinedReservations6View(_CombinedViewBase):
             "hostname": "other",
         }
         with _reservation_stub(6, {"reservation-get-page": _res_page([rec, rec2]), "lease6-get-by-state": _LEASE_NONE}):
-            url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}&q=00:01:aa:bb"
+            url = (
+                reverse("plugins:netbox_kea:combined_reservations6")
+                + f"?server={self.v6_server.pk}&server={self.v4_server.pk}&q=00:01:aa:bb"
+            )
             response = self.client.get(url)
         self.assertContains(response, "00:01:aa:bb")
         self.assertNotContains(response, "ff:ff:ff:ff")
@@ -707,7 +743,7 @@ class TestCombinedLeases4View(_CombinedViewBase):
         with stub_kea({"lease4-get-by-hostname": _leases([])}) as kea:
             url = (
                 reverse("plugins:netbox_kea:combined_leases4")
-                + f"?server={self.v4_server.pk}&q=test&by={constants.BY_HOSTNAME}"
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=test&by={constants.BY_HOSTNAME}"
             )
             self.client.get(url)
         # One server, no leases returned → exactly one lease search, no enrichment.
@@ -723,7 +759,7 @@ class TestCombinedLeases4View(_CombinedViewBase):
         with stub_kea({"lease4-get-by-hostname": _leases([dict(_MOCK_LEASE_V4)]), "reservation-get": _RES_NOT_FOUND}):
             url = (
                 reverse("plugins:netbox_kea:combined_leases4")
-                + f"?server={self.v4_server.pk}&q=test&by={constants.BY_HOSTNAME}"
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=test&by={constants.BY_HOSTNAME}"
             )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -784,7 +820,7 @@ class TestCombinedLeases6View(_CombinedViewBase):
         with stub_kea({"lease6-get-by-hostname": _leases([dict(_MOCK_LEASE_V6)]), "reservation-get": _RES_NOT_FOUND}):
             url = (
                 reverse("plugins:netbox_kea:combined_leases6")
-                + f"?server={self.v6_server.pk}&q=test&by={constants.BY_HOSTNAME}"
+                + f"?server={self.v6_server.pk}&server={self.v4_server.pk}&q=test&by={constants.BY_HOSTNAME}"
             )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -823,7 +859,10 @@ class TestCombinedSubnets4View(_CombinedViewBase):
 
     def test_server_filter_limits_queried_servers(self):
         with stub_kea(_subnet_responses(4)) as kea:
-            url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}"
+            url = (
+                reverse("plugins:netbox_kea:combined_subnets4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
+            )
             self.client.get(url)
         # One server reads both Catalogue sources, then fetches utilization.
         self.assertEqual(kea.commands(), ["subnet4-list", "config-get", "stat-lease4-get"])
@@ -841,7 +880,10 @@ class TestCombinedSubnets4View(_CombinedViewBase):
 
     def test_results_include_server_name(self):
         with stub_kea(_subnet_responses(4)):
-            url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}"
+            url = (
+                reverse("plugins:netbox_kea:combined_subnets4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "v4-server")
@@ -865,7 +907,10 @@ class TestCombinedSubnets4View(_CombinedViewBase):
             }
         ]
         with stub_kea(_subnet_responses(4, config=config)):
-            url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}"
+            url = (
+                reverse("plugins:netbox_kea:combined_subnets4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
+            )
             response = self.client.get(url)
         self.assertContains(response, "DDNS: dhcp.example")
 
@@ -878,7 +923,10 @@ class TestCombinedSubnets4View(_CombinedViewBase):
     def test_export_returns_csv(self):
         """?export=table returns a CSV download of the subnet table."""
         with stub_kea(_subnet_responses(4)):
-            url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}&export=table"
+            url = (
+                reverse("plugins:netbox_kea:combined_subnets4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&export=table"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
@@ -893,7 +941,10 @@ class TestCombinedSubnets4View(_CombinedViewBase):
     def test_search_by_cidr_filters_results(self):
         """?q=10.0 returns subnets whose CIDR contains '10.0', excludes others."""
         with stub_kea(_subnet_responses(4, config=_MOCK_CONFIG_TWO_V4, subnets=_MOCK_SUBNET_LIST_TWO_V4)):
-            url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}&q=10.0"
+            url = (
+                reverse("plugins:netbox_kea:combined_subnets4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=10.0"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "10.0.1.0/24")
@@ -902,7 +953,10 @@ class TestCombinedSubnets4View(_CombinedViewBase):
     def test_search_by_subnet_id_filters_results(self):
         """?subnet_id=2 returns only the subnet with id=2."""
         with stub_kea(_subnet_responses(4, config=_MOCK_CONFIG_TWO_V4, subnets=_MOCK_SUBNET_LIST_TWO_V4)):
-            url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}&subnet_id=2"
+            url = (
+                reverse("plugins:netbox_kea:combined_subnets4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&subnet_id=2"
+            )
             response = self.client.get(url)
         self.assertNotContains(response, "10.0.1.0/24")
         self.assertContains(response, "192.168.0.0/24")
@@ -910,7 +964,10 @@ class TestCombinedSubnets4View(_CombinedViewBase):
     def test_search_no_match_returns_empty_table(self):
         """?q=zzz with no matching subnets renders 200 with empty table."""
         with stub_kea(_subnet_responses(4)):
-            url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}&q=zzz-no-match"
+            url = (
+                reverse("plugins:netbox_kea:combined_subnets4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=zzz-no-match"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -929,7 +986,10 @@ class TestCombinedSubnets4View(_CombinedViewBase):
         ]
         subnets = {"result": 2, "text": "unknown command"}
         with stub_kea(_subnet_responses(4, config=config, subnets=subnets)):
-            url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}"
+            url = (
+                reverse("plugins:netbox_kea:combined_subnets4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
+            )
             response = self.client.get(url)
         edit_url = reverse(
             "plugins:netbox_kea:server_subnet4_edit",
@@ -981,7 +1041,10 @@ class TestCombinedSubnets6View(_CombinedViewBase):
     def test_export_returns_csv(self):
         """?export=table returns a CSV download of the v6 subnet table."""
         with stub_kea(_subnet_responses(6)):
-            url = reverse("plugins:netbox_kea:combined_subnets6") + f"?server={self.v6_server.pk}&export=table"
+            url = (
+                reverse("plugins:netbox_kea:combined_subnets6")
+                + f"?server={self.v6_server.pk}&server={self.v4_server.pk}&export=table"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
@@ -1003,7 +1066,10 @@ class TestCombinedSubnets6View(_CombinedViewBase):
         ]
         subnet_list = {"result": 0, "arguments": {"subnets": two_subnets}}
         with stub_kea(_subnet_responses(6, config=config_with_two_subnets, subnets=subnet_list)):
-            url = reverse("plugins:netbox_kea:combined_subnets6") + f"?server={self.v6_server.pk}&q=2001:db8"
+            url = (
+                reverse("plugins:netbox_kea:combined_subnets6")
+                + f"?server={self.v6_server.pk}&server={self.v4_server.pk}&q=2001:db8"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "2001:db8::/32")
@@ -1034,7 +1100,10 @@ class TestCombinedLeases4Enrichment(_CombinedViewBase):
     """Combined DHCPv4 lease view must include the same badge enrichment as per-server view."""
 
     def _lease_url(self, q="10.0.0.5", by="ip"):
-        return reverse("plugins:netbox_kea:combined_leases4") + f"?q={q}&by={by}&server={self.v4_server.pk}"
+        return (
+            reverse("plugins:netbox_kea:combined_leases4")
+            + f"?q={q}&by={by}&server={self.v4_server.pk}&server={self.v6_server.pk}"
+        )
 
     def test_reserved_badge_appears_when_reservation_exists(self):
         """A lease with a matching reservation must show the 'Reserved' badge."""
@@ -1103,7 +1172,10 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
     """Combined DHCPv4 reservation view must include the same badge enrichment as per-server."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}"
+        return (
+            reverse("plugins:netbox_kea:combined_reservations4")
+            + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
+        )
 
     def test_active_lease_badge_when_lease_exists(self):
         """A reservation with an active lease must show 'Active Lease' badge."""
@@ -1247,7 +1319,10 @@ class TestCombinedLeases6Enrichment(_CombinedViewBase):
     """Combined DHCPv6 lease view must include the same badge enrichment as DHCPv4."""
 
     def _lease_url(self, q="2001:db8::5", by="ip"):
-        return reverse("plugins:netbox_kea:combined_leases6") + f"?q={q}&by={by}&server={self.v6_server.pk}"
+        return (
+            reverse("plugins:netbox_kea:combined_leases6")
+            + f"?q={q}&by={by}&server={self.v6_server.pk}&server={self.v4_server.pk}"
+        )
 
     def test_reserved_badge_appears_when_reservation_exists(self):
         """A v6 lease with a matching reservation must show the 'Reserved' badge."""
@@ -1298,7 +1373,10 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
     """Combined DHCPv6 reservation view must include the same badge enrichment as DHCPv4."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}"
+        return (
+            reverse("plugins:netbox_kea:combined_reservations6")
+            + f"?server={self.v6_server.pk}&server={self.v4_server.pk}"
+        )
 
     def test_active_lease_badge_when_lease_exists(self):
         """A v6 reservation with an active lease must show 'Active Lease' badge."""
@@ -1383,7 +1461,7 @@ class TestCombinedLeasesStateFilter(_CombinedViewBase):
         ):
             url = (
                 reverse("plugins:netbox_kea:combined_leases4")
-                + f"?server={self.v4_server.pk}&q=host&by={constants.BY_HOSTNAME}&state=1"
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=host&by={constants.BY_HOSTNAME}&state=1"
             )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -1400,7 +1478,7 @@ class TestCombinedLeasesStateFilter(_CombinedViewBase):
         ):
             url = (
                 reverse("plugins:netbox_kea:combined_leases4")
-                + f"?server={self.v4_server.pk}&q=host&by={constants.BY_HOSTNAME}"
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=host&by={constants.BY_HOSTNAME}"
             )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -1414,7 +1492,7 @@ class TestCombinedLeasesStateFilter(_CombinedViewBase):
         ):
             url = (
                 reverse("plugins:netbox_kea:combined_leases4")
-                + f"?server={self.v4_server.pk}&q=host&by={constants.BY_HOSTNAME}&export=table"
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=host&by={constants.BY_HOSTNAME}&export=table"
             )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -1430,14 +1508,20 @@ class TestCombinedLeasesStateFilter(_CombinedViewBase):
     def test_state_only_no_q_returns_200(self):
         """?state=1 without q must return 200 (uses lease4-get-page)."""
         with stub_kea({"lease4-get-page": _leases([])}):
-            url = reverse("plugins:netbox_kea:combined_leases4") + f"?server={self.v4_server.pk}&state=1"
+            url = (
+                reverse("plugins:netbox_kea:combined_leases4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&state=1"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_state_only_no_q_calls_get_page(self):
         """?state=1 without q must call lease4-get-page (enumerate all)."""
         with stub_kea({"lease4-get-page": _leases([])}) as kea:
-            url = reverse("plugins:netbox_kea:combined_leases4") + f"?server={self.v4_server.pk}&state=1"
+            url = (
+                reverse("plugins:netbox_kea:combined_leases4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&state=1"
+            )
             self.client.get(url)
         self.assertIn("lease4-get-page", kea.commands())
 
@@ -1449,7 +1533,10 @@ class TestCombinedLeasesStateFilter(_CombinedViewBase):
                 "reservation-get": _RES_NOT_FOUND,
             }
         ):
-            url = reverse("plugins:netbox_kea:combined_leases4") + f"?server={self.v4_server.pk}&state=1"
+            url = (
+                reverse("plugins:netbox_kea:combined_leases4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&state=1"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "active-host")
@@ -1458,7 +1545,10 @@ class TestCombinedLeasesStateFilter(_CombinedViewBase):
     def test_state_only_no_q_server_error_graceful(self):
         """?state=1 without q handles unreachable server gracefully (no 500)."""
         with stub_kea({"lease4-get-page": requests.ConnectionError("refused")}):
-            url = reverse("plugins:netbox_kea:combined_leases4") + f"?server={self.v4_server.pk}&state=1"
+            url = (
+                reverse("plugins:netbox_kea:combined_leases4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&state=1"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -1543,7 +1633,10 @@ class TestCombinedSharedNetworks4View(_CombinedViewBase):
     def test_results_include_server_name(self):
         """Shared network rows must include the server name they came from."""
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V4}):
-            url = reverse("plugins:netbox_kea:combined_shared_networks4") + f"?server={self.v4_server.pk}"
+            url = (
+                reverse("plugins:netbox_kea:combined_shared_networks4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "v4-server")
@@ -1557,14 +1650,20 @@ class TestCombinedSharedNetworks4View(_CombinedViewBase):
     def test_shared_network_name_in_response(self):
         """The shared network name must appear in the rendered table."""
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V4}):
-            url = reverse("plugins:netbox_kea:combined_shared_networks4") + f"?server={self.v4_server.pk}"
+            url = (
+                reverse("plugins:netbox_kea:combined_shared_networks4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
+            )
             response = self.client.get(url)
         self.assertContains(response, "test-shared-net-v4")
 
     def test_export_returns_csv(self):
         """?export=table returns a CSV download of shared network data."""
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V4}):
-            url = reverse("plugins:netbox_kea:combined_shared_networks4") + f"?server={self.v4_server.pk}&export=table"
+            url = (
+                reverse("plugins:netbox_kea:combined_shared_networks4")
+                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&export=table"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
@@ -1614,6 +1713,9 @@ class TestCombinedSharedNetworks6View(_CombinedViewBase):
     def test_shared_network_name_in_response(self):
         """The v6 shared network name must appear in the rendered table."""
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V6}):
-            url = reverse("plugins:netbox_kea:combined_shared_networks6") + f"?server={self.v6_server.pk}"
+            url = (
+                reverse("plugins:netbox_kea:combined_shared_networks6")
+                + f"?server={self.v6_server.pk}&server={self.v4_server.pk}"
+            )
             response = self.client.get(url)
         self.assertContains(response, "test-shared-net-v6")

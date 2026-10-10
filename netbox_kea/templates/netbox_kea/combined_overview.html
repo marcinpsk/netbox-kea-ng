@@ -4,7 +4,7 @@
 
 {% block tab_content %}
 <div class="row row-cols-1 row-cols-md-2 row-cols-xl-3 g-3 mt-0">
-  {% for server in all_servers %}
+  {% for server in server_scope.servers %}
   <div class="col">
     <div class="card h-100">
       <div class="card-header d-flex justify-content-between align-items-center">

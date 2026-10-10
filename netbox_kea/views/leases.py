@@ -347,7 +347,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         # For non-htmx requests.
 
         table = self.get_table([], request)
-        form = self._make_search_form(instance, request.GET if "q" in request.GET else None)
+        form = self._make_search_form(instance, request.GET if "q" in request.GET or "state" in request.GET else None)
         can_change = Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists()
         ctx: dict[str, Any] = {
             "form": form,

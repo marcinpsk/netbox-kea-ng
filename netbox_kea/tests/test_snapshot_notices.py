@@ -335,14 +335,14 @@ class TestCombinedPagesKeepANoticePerServer(_ViewTestBase):
     def test_a_failed_reservation_read_is_an_error_of_its_server(self):
         responses = {**_catalogue_responses(4, 20, "198.18.0.0/24"), "reservation-get-page": {"result": 1}}
         with stub_kea(responses):
-            response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"), {"server": self.server.pk})
+            response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["errors"], [(self.server.name, HEADLINES["reservation"])])
         self.assertContains(response, '<div class="alert alert-danger mt-3">')
 
     def test_a_failed_lease_read_is_an_error_and_a_refused_query_a_warning(self):
         url = reverse("plugins:netbox_kea:combined_leases4")
-        query = {"q": "aa:bb:cc:dd:ee:ff", "by": "hw", "server": self.server.pk}
+        query = {"q": "aa:bb:cc:dd:ee:ff", "by": "hw"}
         with stub_kea({"lease4-get-by-hw-address": requests.ConnectionError("unreachable")}):
             failed = self.client.get(url, query)
         self.assertEqual(failed.context["errors"], [(self.server.name, HEADLINES["lease"])])
@@ -362,12 +362,10 @@ class TestCombinedPagesKeepANoticePerServer(_ViewTestBase):
             client_key_path="/tls/client.key", client_cert_path=""
         )
         with stub_kea({}) as kea:
-            reservations = self.client.get(
-                reverse("plugins:netbox_kea:combined_reservations4"), {"server": self.server.pk}
-            )
+            reservations = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"))
             leases = self.client.get(
                 reverse("plugins:netbox_kea:combined_leases4"),
-                {"q": "aa:bb:cc:dd:ee:ff", "by": "hw", "server": self.server.pk},
+                {"q": "aa:bb:cc:dd:ee:ff", "by": "hw"},
             )
         self.assertEqual(kea.commands(), [])
         self.assertEqual(reservations.context["errors"], [(self.server.name, HEADLINES["reservation"])])

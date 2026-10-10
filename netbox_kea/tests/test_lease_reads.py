@@ -486,7 +486,7 @@ class CombinedLeaseViewTest(_ViewTestBase):
         records = [lease_record("192.0.2.10"), _malformed("not-an-address")]
         url = reverse("plugins:netbox_kea:combined_leases4")
         with stub_kea({"lease4-get-all": lease_reply(*records)}):
-            response = self.client.get(url, {"q": "10", "by": "subnet_id", "server": self.server.pk})
+            response = self.client.get(url, {"q": "10", "by": "subnet_id"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["errors"], [])
