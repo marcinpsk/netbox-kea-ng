@@ -175,3 +175,5 @@ core
 core.*
 docs/superpowers/
 .superpowers/
+# Documentation screenshots: CI makes them from the commit that it builds (tests/docs_media).
+docs/guide/assets/screenshots/

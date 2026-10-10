@@ -17,6 +17,9 @@ SPDX-License-Identifier: Apache-2.0
 - MAC address sync → NetBox `MACAddress`
 - Sets `dns_name` on IPAddress for automatic DNS sync via [netbox-dns](https://github.com/peteeckel/netbox-plugin-dns) IPAMDNSsync
 
+![A NetBox IP address that a lease Sync wrote: status DHCP, the DNS name from the lease hostname and the sync marker in the description](assets/screenshots/synced-ip-address-light.png#only-light)
+![A NetBox IP address that a lease Sync wrote: status DHCP, the DNS name from the lease hostname and the sync marker in the description](assets/screenshots/synced-ip-address-dark.png#only-dark)
+
 ## Background IPAM Sync
 
 The background sync requires `rqworker`.

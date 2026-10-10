@@ -8,6 +8,9 @@ SPDX-License-Identifier: Apache-2.0
 
 A `Server` object holds the connection to one Kea deployment. This page lists its fields.
 
+![The Status tab of a Server shows the version and the status of the DHCPv4 and the DHCPv6 daemon, and their global DHCP options](assets/screenshots/server-status-light.png#only-light)
+![The Status tab of a Server shows the version and the status of the DHCPv4 and the DHCPv6 daemon, and their global DHCP options](assets/screenshots/server-status-dark.png#only-dark)
+
 ## Single-URL (Control Agent, or a single-protocol daemon)
 
 Point one `Server` URL at a Kea endpoint that serves every enabled protocol — a Control Agent (Kea < 3.0, which fronts both DHCPv4 and DHCPv6), or a single DHCP daemon's HTTP control socket (Kea 3.0+) when the server runs only DHCPv4 *or* only DHCPv6. A dual-stack Kea 3.0+ deployment needs one URL per daemon — see **Dual-URL** below.

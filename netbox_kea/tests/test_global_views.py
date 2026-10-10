@@ -290,6 +290,15 @@ class TestCombinedServerStatusBadge(_CombinedViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Online")
 
+    def test_badges_set_a_text_color_that_contrasts_with_their_background(self):
+        """A bare bg-* badge keeps the body text color: grey on green in the light theme."""
+        with stub_kea({"version-get": {"result": 0, "arguments": {"extended": "Kea DHCPv4/2.x"}}}):
+            online = self.client.get(self._url(self.v4_server))
+        with stub_kea({"version-get": requests.ConnectionError("connection refused")}):
+            offline = self.client.get(self._url(self.v4_server))
+        self.assertContains(online, "badge text-bg-success")
+        self.assertContains(offline, "badge text-bg-danger")
+
     def test_offline_server_returns_200_with_offline_text(self):
         """Unreachable server should return 200 and contain 'Offline' (no 500)."""
         with stub_kea({"version-get": requests.ConnectionError("connection refused")}):

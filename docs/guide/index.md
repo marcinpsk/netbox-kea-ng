@@ -46,6 +46,9 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 
 - Combined dashboard, lease, reservation, subnet and shared-network views across all servers
 
+![The combined view lists each Kea Server with its endpoint URLs and the online state of each DHCP daemon](assets/screenshots/combined-dashboard-light.png#only-light)
+![The combined view lists each Kea Server with its endpoint URLs and the online state of each DHCP daemon](assets/screenshots/combined-dashboard-dark.png#only-dark)
+
 ## License
 
 [Apache-2.0](https://github.com/marcinpsk/netbox-kea-ng/blob/main/LICENSE). Original code by [Devon Mar](https://github.com/devon-mar), maintained by [Marcin Zieba](https://github.com/marcinpsk).

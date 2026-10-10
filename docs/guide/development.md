@@ -44,4 +44,12 @@ Build the documentation site from `docs/guide/`. The `--strict` flag fails the b
 uv run --group docs zensical build --strict
 ```
 
+The pages show screenshots that CI makes. To make them locally, start the integration harness first:
+
+```bash
+uv run --native-tls pytest -p no:django tests/docs_media --docs-media-dir docs/guide/assets/screenshots
+uv run --group docs zensical build --strict
+python scripts/check_docs_media.py site docs/guide/assets/screenshots
+```
+
 See the [Changelog](changelog.md) for version history.

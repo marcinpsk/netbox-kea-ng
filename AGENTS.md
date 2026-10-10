@@ -90,6 +90,9 @@ The compose stack runs: NetBox, netbox-worker, postgres, redis, nginx (basic-aut
 + TLS), and **kea-dhcp4 / kea-dhcp6 as direct daemons** (no Control Agent). The
 daemons run with `-X` because Kea 3.2.0 refuses to start with an unsecured HTTP
 control socket; the sockets are loopback-bound with nginx terminating auth in front.
+The suites wipe the leases of these daemons. The `kea_harness_daemons` fixture in `tests/conftest.py` reads each
+daemon's configuration first and refuses one whose global `user-context` lacks `"netbox-kea-test-harness": true`
+(set in `tests/docker/kea_configs/`). Every fixture that writes to Kea takes its URLs from that fixture.
 
 ### Browser tests (`tests/ui/`, Docker required)
 
@@ -109,6 +112,22 @@ the integration job executes.
 `NETBOX_BRANCHING_VERSION` (the value in the `env` of `.github/workflows/ci.yml`) before
 `test_setup.sh`, with a NetBox 4.7 image. Elsewhere it skips; `NETBOX_KEA_REQUIRE_BRANCHING=1`
 makes it fail instead.
+
+### Documentation screenshots (`tests/docs_media/`, Docker required)
+
+The site pages show screenshots that CI makes from the commit it builds. Git never holds them:
+`docs/guide/assets/screenshots/` is in `.gitignore`. The suite runs only when `--docs-media-dir` names the output
+directory, so the integration run over `tests/` leaves it out. It drives the `tests/ui` harness, loads one demo data
+set and writes each view as `<name>-light.png` and `<name>-dark.png`. `zensical build --strict` does not check
+images, so `scripts/check_docs_media.py` reads the `<img src>` of each built page. It fails on a page that shows a
+screenshot that the site does not hold, and on a captured screenshot that no page shows.
+
+```bash
+./tests/test_setup.sh
+uv run --native-tls pytest -p no:django tests/docs_media --docs-media-dir docs/guide/assets/screenshots
+uv run --group docs zensical build --strict
+python scripts/check_docs_media.py site docs/guide/assets/screenshots
+```
 
 ### CI
 
@@ -144,6 +163,10 @@ makes it fail instead.
   NetBox v4.3 (floor), v4.7 (ceiling), and the dev snapshot (allowed to fail).
 - **Branching browser job**: the integration steps on the netbox-branching variant of the
   harness (a NetBox 4.7 image), running only `tests/ui/test_branching_refusal.py`.
+- **Documentation job**: the reusable workflow `docs-build.yml` starts the harness with NetBox 4.7, runs the
+  screenshot suite and the image check, and builds the site with `--strict`. `ci.yml` calls it on pull requests to
+  `main` and in the scheduled run, and uploads the site as an artifact. `docs.yml` calls it on a push to `main` and
+  deploys the site to GitHub Pages. The lint job has no screenshots, so its link check excludes them.
 - Playwright traces on failure are uploaded as artifacts.
 
 Ruff is configured in `pyproject.toml`: line length 120, max complexity 15,

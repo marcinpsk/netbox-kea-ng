@@ -1076,9 +1076,9 @@ def test_chrome_source_guard_rejects_incomplete_or_unsupported_scripts(script):
     assert not _drops_chrome_source_before_installing(script)
 
 
-def _assert_browser_install_step_is_guarded(workflow: dict) -> None:
+def _assert_browser_install_step_is_guarded(workflow: dict, job_name: str = "test") -> None:
     """Bind the shell proof to the unconditional browser-install step and default shell."""
-    job = workflow["jobs"]["test"]
+    job = workflow["jobs"][job_name]
     for scope in (workflow, job):
         assert "shell" not in scope.get("defaults", {}).get("run", {}), (
             "browser installation must use the default shell"
@@ -1132,7 +1132,8 @@ def test_browser_install_guard_requires_one_unconditional_executable_step(change
         _assert_browser_install_step_is_guarded(workflow)
 
 
-def test_the_browser_install_does_not_read_the_google_chrome_apt_source():
+@pytest.mark.parametrize(("workflow_name", "job_name"), [("ci.yml", "test"), ("docs-build.yml", "build")])
+def test_the_browser_install_does_not_read_the_google_chrome_apt_source(workflow_name, job_name):
     """`--with-deps` runs `apt-get update`, so every apt source on the runner can fail the job.
 
     The runner image ships Google's Chrome repository. On 2026-09-09 it served a Release
@@ -1140,8 +1141,24 @@ def test_the_browser_install_does_not_read_the_google_chrome_apt_source():
     three browser jobs died before pytest started on every open branch. Playwright
     downloads its own Chromium, so that source is never needed here.
     """
-    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text())
-    _assert_browser_install_step_is_guarded(workflow)
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows" / workflow_name).read_text())
+    _assert_browser_install_step_is_guarded(workflow, job_name)
+
+
+def test_every_push_to_main_rebuilds_the_documentation_site():
+    """A paths filter cannot name each file that changes a screenshot, so a filtered push left stale images."""
+    push = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/docs.yml").read_text())["on"]["push"]
+
+    assert push["branches"] == ["main"]
+    assert "paths" not in push and "paths-ignore" not in push, push
+
+
+def test_the_docs_build_passes_native_tls_to_every_uv_command():
+    """The documentation build runs the integration steps, so it follows the uv convention of ci.yml."""
+    uv_commands = _workflow_uv_commands((REPOSITORY_ROOT / ".github/workflows/docs-build.yml").read_text())
+
+    assert uv_commands, "docs-build.yml runs no uv command; this guard would pass without reading anything."
+    assert all("--native-tls" in command for command in uv_commands), uv_commands
 
 
 def test_documented_integration_commands_disable_pytest_django():
@@ -1255,6 +1272,37 @@ def test_pytest_configuration_works_with_django_plugin_disabled():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def _integration_pytest(*arguments: str) -> subprocess.CompletedProcess[str]:
+    """Run pytest over the integration suite without a harness: nothing below may reach NetBox."""
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:django", "-p", "no:cacheprovider", *arguments],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=60,
+        env={**os.environ, "NETBOX_URL": "http://127.0.0.1:9"},
+    )
+
+
+def test_the_integration_run_does_not_collect_the_screenshot_suite():
+    # A module whose dependency this environment lacks must not hide the result; a collected
+    # docs_media module would show its path even when it fails to import.
+    result = _integration_pytest("tests/", "--collect-only", "-q", "--continue-on-collection-errors")
+
+    assert "tests/ui/" in result.stdout, "the run collected no browser test; this guard would read nothing"
+    assert "docs_media" not in result.stdout
+
+
+def test_a_named_screenshot_suite_without_an_output_directory_sets_up_no_fixture():
+    """A skip inside a fixture comes too late: the session fixtures before it provision a NetBox token."""
+    result = _integration_pytest("tests/docs_media", "--setup-plan")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert re.search(r"\b8 skipped\b", result.stdout), result.stdout
+    assert "SETUP" not in result.stdout, result.stdout
+
+
 def test_the_pinned_netbox_release_is_documented_only_by_its_constant():
     """Name the release in one place. A copy in the docs goes stale on the next bump."""
     agents = (REPOSITORY_ROOT / "AGENTS.md").read_text()
@@ -1277,7 +1325,8 @@ def test_ci_pins_the_netbox_release_the_query_counts_describe():
     checkouts = {
         (name, step["with"]["ref"])
         for name, job in workflow["jobs"].items()
-        for step in job["steps"]
+        # A job that calls a reusable workflow has no steps.
+        for step in job.get("steps", ())
         if step.get("with", {}).get("repository") == "netbox-community/netbox"
     }
     # The floor job runs only test_event_scope.py, which asserts no query count.
@@ -1652,6 +1701,33 @@ def _unscoped_deletes(source: str) -> list[str]:
         ):
             offenders.append(f"line {node.lineno}")
     return offenders
+
+
+#: The functions that take the raw Kea control URLs: the harness check itself and one read-only command listing.
+_RAW_CONTROL_URL_USERS = {
+    "tests/conftest.py::kea_harness_daemons",
+    "tests/test_kea_commands.py::test_the_harness_kea_lists_the_recorded_commands",
+}
+
+
+def test_every_kea_client_fixture_goes_through_the_harness_check():
+    """The suites wipe Kea leases, so a fixture that writes to Kea takes its URLs from kea_harness_daemons.
+
+    A fixture that requested kea_control_urls directly would write to whatever daemon the
+    environment names, also one that is not a harness daemon.
+    """
+    users = set()
+    for path in sorted(_INTEGRATION_SUITE.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                parameters = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+                if any(parameter.arg == "kea_control_urls" for parameter in parameters):
+                    users.add(f"{path.relative_to(REPOSITORY_ROOT).as_posix()}::{node.name}")
+
+    assert users == _RAW_CONTROL_URL_USERS, (
+        f"{sorted(users - _RAW_CONTROL_URL_USERS)} take kea_control_urls directly. "
+        "Take kea_harness_daemons, which refuses a daemon without the harness marker."
+    )
 
 
 def test_the_unscoped_delete_guard_reads_receiver_and_arguments():

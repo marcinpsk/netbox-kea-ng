@@ -8,6 +8,9 @@ SPDX-License-Identifier: Apache-2.0
 
 ## Lease Add / Edit / Delete / Bulk Import
 
+![A DHCPv4 lease search by Subnet ID: each lease shows its state, a Reserved badge or a Reserve button, and a Synced badge or a Sync button](assets/screenshots/lease-search-light.png#only-light)
+![A DHCPv4 lease search by Subnet ID: each lease shows its state, a Reserved badge or a Reserve button, and a Synced badge or a Sync button](assets/screenshots/lease-search-dark.png#only-dark)
+
 - Add and edit individual leases, and bulk import leases from CSV. A DHCPv4 lease needs a hardware
   address (`hw-address`), because Kea refuses one without it. A CSV row that is not a valid lease
   rejects the whole file; the message names the file line and the column, never the value. A line number
@@ -34,6 +37,12 @@ SPDX-License-Identifier: Apache-2.0
   `leases_deleted` sends `leases`, the leases whose deletion Kea confirmed. A refused, changed or
   failed action sends no signal. Wiping the leases of a Subnet sends no signal, because Kea does
   not report which leases it removed.
+
+![The Edit DHCPv4 Lease form with the hostname, the hardware address and the valid lifetime of the lease](assets/screenshots/lease-edit-light.png#only-light)
+![The Edit DHCPv4 Lease form with the hostname, the hardware address and the valid lifetime of the lease](assets/screenshots/lease-edit-dark.png#only-dark)
+
+![A DHCPv6 lease search that shows two address leases and one delegated prefix with its prefix length](assets/screenshots/dhcpv6-leases-light.png#only-light)
+![A DHCPv6 lease search that shows two address leases and one delegated prefix with its prefix length](assets/screenshots/dhcpv6-leases-dark.png#only-dark)
 
 ## Lease observations
 
@@ -118,9 +127,15 @@ Integrations that read leases from the plugin must change with the typed lease r
 - Validated YAML or JSON bulk transfer. Export a Complete Snapshot from one server
   or the combined view, then import it from the matching DHCPv4 or DHCPv6 Reservations page
 
+![The DHCPv4 Reservations of a Server, with the identifier, the reserved address, the DHCP options, the lease state and the NetBox IP state of each Reservation](assets/screenshots/reservations-light.png#only-light)
+![The DHCPv4 Reservations of a Server, with the identifier, the reserved address, the DHCP options, the lease state and the NetBox IP state of each Reservation](assets/screenshots/reservations-dark.png#only-dark)
+
 ## Subnet Management
 
 - Add, edit and delete subnets (requires [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-subnet-cmds) or `config-set`)
 - Pool management (add/delete pools per subnet)
 - Shared network management (add/edit/delete)
 - Per-subnet and global DHCP option editing
+
+![The DHCPv4 Subnets of a Server, with the pools, the utilization, the options and the shared network of each Subnet](assets/screenshots/subnets-light.png#only-light)
+![The DHCPv4 Subnets of a Server, with the pools, the utilization, the options and the shared network of each Subnet](assets/screenshots/subnets-dark.png#only-dark)
