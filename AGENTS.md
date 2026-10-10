@@ -204,7 +204,7 @@ URL request
       shared_networks.py (shared network CRUD)
       options.py        (global and per-subnet DHCP option editing)
       dhcp_control.py   (enable/disable DHCP daemons)
-      combined.py       (cross-server dashboard, leases, reservations, subnets)
+      combined.py       (cross-server dashboard, reservations, subnets; the lease Server chooser)
       server_scope.py   (Server selection, view permissions, and family availability)
       fan_out.py        (the per-Server read pool of combined Subnets, Shared Networks, Reservations)
       sync_views.py     (per-server IPAM sync UI)
