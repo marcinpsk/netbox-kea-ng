@@ -116,7 +116,8 @@ makes it fail instead.
 ### Documentation media (`tests/docs_media/`, Docker required)
 
 The site pages show screenshots and short recordings that CI makes from the commit it builds. Git never holds them:
-`docs/guide/assets/screenshots/` and `docs/guide/assets/recordings/` are in `.gitignore`. The suite runs only when
+`docs/guide/assets/screenshots/` and `docs/guide/assets/recordings/` are in `.gitignore`, and the pre-commit hook
+`no-committed-media` refuses any image or video. The suite runs only when
 `--docs-media-dir` names the media root, so the integration run over `tests/` leaves it out. It drives the `tests/ui`
 harness and loads one demo data set. `test_screenshots.py` writes each view as `screenshots/<name>-light.png` and
 `<name>-dark.png`. `test_recordings.py` records each workflow in the light color mode as `recordings/<name>.mp4`
