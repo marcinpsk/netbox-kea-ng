@@ -2144,7 +2144,10 @@ def test_the_browser_suite_mirrors_the_kea_sync_marker_prefix():
     """
     from netbox_kea.ipam_marker import MARKER_KINDS, render_marker
 
-    expected = os.path.commonprefix([render_marker(kind) for kind in MARKER_KINDS])
+    markers = [render_marker(kind) for kind in MARKER_KINDS]
+    expected = "".join(
+        chars[0] for chars in itertools.takewhile(lambda chars: len(set(chars)) == 1, zip(*markers, strict=False))
+    )
     source = (_BROWSER_SUITE / "test_workflows.py").read_text()
     match = re.search(r'^_KEA_SYNC_MARKER_PREFIX = "([^"]*)"$', source, re.MULTILINE)
     assert match, "The browser suite no longer defines _KEA_SYNC_MARKER_PREFIX."
