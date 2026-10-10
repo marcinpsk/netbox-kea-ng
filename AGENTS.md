@@ -33,7 +33,7 @@ uv run ruff check .                        # lint
 uv run ruff format --check .               # check formatting
 uv run ruff format .                       # auto-format
 uv run reuse lint                          # SPDX/REUSE compliance
-uv run --group docs zensical build --strict  # documentation site: mkdocs.yml, pages in docs/guide/
+uv run --group docs zensical build --strict  # documentation site (Python 3.11+): mkdocs.yml, pages in docs/guide/
 uv run --native-tls pre-commit install --install-hooks  # install configured hook types
 ./scripts/opengrep-scan.sh                 # custom opengrep ruleset gate (pre-commit only)
 ./scripts/opengrep-test.sh                 # opengrep rule tests

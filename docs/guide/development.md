@@ -38,7 +38,7 @@ uv run --native-tls pytest -p no:django tests/ --tracing=retain-on-failure -v --
 [AGENTS.md](https://github.com/marcinpsk/netbox-kea-ng/blob/main/AGENTS.md) explains how to pick the test database and Redis values, and holds the
 repository conventions.
 
-Build the documentation site from `docs/guide/`. The `--strict` flag fails the build on a broken link:
+Build the documentation site from `docs/guide/`. The `--strict` flag fails the build on a broken link. Zensical needs Python 3.11 or later in the project environment:
 
 ```bash
 uv run --group docs zensical build --strict
