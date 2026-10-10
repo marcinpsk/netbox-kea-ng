@@ -5,6 +5,7 @@
 The suite runs only when ``--docs-media-dir`` names the media root (see tests/conftest.py).
 It drives the same Compose harness as tests/ui. It writes each screenshot in the light and the
 dark color mode of NetBox to <root>/screenshots/, and each recording to <root>/recordings/.
+It assumes that no other writer changes the harness during a run; the prechecks find leftovers of an earlier run.
 """
 
 import re

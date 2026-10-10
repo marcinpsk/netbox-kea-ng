@@ -131,12 +131,11 @@ names `<source src="assets/recordings/<name>.mp4">` and `poster="../assets/recor
 
 Start the harness with `docker-compose.docs.yml` on top of the two base files. It runs each Kea daemon on a writable
 copy of its configuration, so `config-write` succeeds and the clips show no persistence failure. The suite refuses a
-daemon that cannot write its configuration. The other suites keep the read-only configuration, because
-`tests/ui/test_lease_acceptance.py` expects the persistence warning.
+daemon that cannot write its configuration. Set `COMPOSE_FILE` for the setup command only: the other suites keep
+the read-only configuration.
 
 ```bash
-export COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.docs.yml
-./tests/test_setup.sh
+COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.docs.yml ./tests/test_setup.sh
 uv run --native-tls pytest -p no:django tests/docs_media --docs-media-dir docs/guide/assets
 uv run --group docs zensical build --strict
 uv run python scripts/check_docs_media.py site docs/guide/assets

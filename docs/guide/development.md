@@ -50,8 +50,7 @@ screenshots to `docs/guide/assets/screenshots/`, and the recordings (MP4, a PNG 
 `docs/guide/assets/recordings/`:
 
 ```bash
-export COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.docs.yml
-./tests/test_setup.sh
+COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.docs.yml ./tests/test_setup.sh
 uv run --native-tls pytest -p no:django tests/docs_media --docs-media-dir docs/guide/assets
 uv run --group docs zensical build --strict
 uv run python scripts/check_docs_media.py site docs/guide/assets
