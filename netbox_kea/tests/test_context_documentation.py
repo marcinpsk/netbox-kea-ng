@@ -26,6 +26,13 @@ def test_context_distinguishes_server_scope_from_reservation_scope():
     assert '"Scope" alone means Reservation Scope.' in reservation_scope
 
 
+def test_agent_architecture_lists_server_scope():
+    """Document the owner of combined Server selection and family availability."""
+    agents = (REPOSITORY_ROOT / "AGENTS.md").read_text()
+    architecture = agents.split("## Architecture", 1)[1].split("### Core components", 1)[0]
+    assert "server_scope.py   (Server selection, view permissions, and family availability)" in architecture
+
+
 def test_branching_decisions_keep_ownership_links_in_main():
     """The decisions must agree with the ownership link's main-only routing."""
     design = (REPOSITORY_ROOT / "docs/design/netbox-branching.md").read_text()

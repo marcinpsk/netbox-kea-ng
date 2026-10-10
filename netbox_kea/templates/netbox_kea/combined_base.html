@@ -6,16 +6,16 @@
 {% block title %}All Kea Servers{% endblock %}
 
 {% block control-buttons %}
-{# Server selector dropdown — auto-submits on checkbox change #}
+{# Apply the Server selection after the user chooses its Servers. #}
 <div class="dropdown">
   <button class="btn btn-outline-secondary dropdown-toggle" type="button"
           data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
     <i class="mdi mdi-server-network"></i>
     Servers
-    {% if server_scope.kind == 'invalid' %}
+    {% if server_scope.is_invalid %}
       <span class="badge text-bg-warning ms-1">Invalid</span>
-    {% elif selected_server_pks %}
-      <span class="badge text-bg-primary ms-1">{{ selected_server_pks|length }}</span>
+    {% elif server_scope.selected_pks %}
+      <span class="badge text-bg-primary ms-1">{{ server_scope.selected_pks|length }}</span>
     {% else %}
       <span class="badge text-bg-secondary ms-1">All</span>
     {% endif %}
@@ -23,14 +23,13 @@
   <div class="dropdown-menu p-3" style="min-width: 260px;">
     <form id="server-filter-form" method="get" action="{{ request.path }}">
       <div class="mb-2 fw-semibold text-muted small text-uppercase">Select servers</div>
-      {% if all_servers %}
-        {% for server in all_servers %}
+      {% if server_scope.all_servers %}
+        {% for server in server_scope.all_servers %}
         <div class="form-check mb-1">
           <input class="form-check-input" type="checkbox"
                  name="server" value="{{ server.pk }}"
                  id="srv_{{ server.pk }}"
-                 {% if server.pk in selected_server_pks %}checked{% endif %}
-                 onchange="document.getElementById('server-filter-form').submit()">
+                 {% if server.pk in server_scope.selected_pks %}checked{% endif %}>
           <label class="form-check-label" for="srv_{{ server.pk }}">
             {{ server.name }}
             {% if server.dhcp4 %}<span class="badge text-bg-primary ms-1" style="font-size:0.65em">v4</span>{% endif %}
@@ -38,7 +37,8 @@
           </label>
         </div>
         {% endfor %}
-        {% if selected_server_pks %}
+        <button type="submit" class="btn btn-sm btn-primary w-100 mt-2">Apply</button>
+        {% if server_scope.selected_pks %}
         <div class="mt-2 border-top pt-2">
           <a href="{{ request.path }}" class="btn btn-sm btn-outline-secondary w-100">
             <i class="mdi mdi-refresh"></i> Show all servers
@@ -57,55 +57,55 @@
 <ul class="nav nav-tabs" role="presentation">
   <li class="nav-item">
     <a class="nav-link{% if active_tab == 'overview' %} active{% endif %}"
-       href="{% url 'plugins:netbox_kea:combined' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+       href="{% url 'plugins:netbox_kea:combined' %}{% if server_scope.server_qs %}?{{ server_scope.server_qs }}{% endif %}">
       <i class="mdi mdi-view-dashboard-outline" aria-hidden="true"></i> Overview
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% if active_tab == 'leases4' %} active{% endif %}"
-       href="{% url 'plugins:netbox_kea:combined_leases4' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+       href="{% url 'plugins:netbox_kea:combined_leases4' %}{% if server_scope.server_qs %}?{{ server_scope.server_qs }}{% endif %}">
       DHCPv4 Leases
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% if active_tab == 'leases6' %} active{% endif %}"
-       href="{% url 'plugins:netbox_kea:combined_leases6' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+       href="{% url 'plugins:netbox_kea:combined_leases6' %}{% if server_scope.server_qs %}?{{ server_scope.server_qs }}{% endif %}">
       DHCPv6 Leases
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% if active_tab == 'subnets4' %} active{% endif %}"
-       href="{% url 'plugins:netbox_kea:combined_subnets4' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+       href="{% url 'plugins:netbox_kea:combined_subnets4' %}{% if server_scope.server_qs %}?{{ server_scope.server_qs }}{% endif %}">
       DHCPv4 Subnets
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% if active_tab == 'subnets6' %} active{% endif %}"
-       href="{% url 'plugins:netbox_kea:combined_subnets6' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+       href="{% url 'plugins:netbox_kea:combined_subnets6' %}{% if server_scope.server_qs %}?{{ server_scope.server_qs }}{% endif %}">
       DHCPv6 Subnets
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% if active_tab == 'shared_networks4' %} active{% endif %}"
-       href="{% url 'plugins:netbox_kea:combined_shared_networks4' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+       href="{% url 'plugins:netbox_kea:combined_shared_networks4' %}{% if server_scope.server_qs %}?{{ server_scope.server_qs }}{% endif %}">
       DHCPv4 Shared Networks
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% if active_tab == 'shared_networks6' %} active{% endif %}"
-       href="{% url 'plugins:netbox_kea:combined_shared_networks6' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+       href="{% url 'plugins:netbox_kea:combined_shared_networks6' %}{% if server_scope.server_qs %}?{{ server_scope.server_qs }}{% endif %}">
       DHCPv6 Shared Networks
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% if active_tab == 'reservations4' %} active{% endif %}"
-       href="{% url 'plugins:netbox_kea:combined_reservations4' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+       href="{% url 'plugins:netbox_kea:combined_reservations4' %}{% if server_scope.server_qs %}?{{ server_scope.server_qs }}{% endif %}">
       DHCPv4 Reservations
     </a>
   </li>
   <li class="nav-item">
     <a class="nav-link{% if active_tab == 'reservations6' %} active{% endif %}"
-       href="{% url 'plugins:netbox_kea:combined_reservations6' %}{% if server_qs %}?{{ server_qs }}{% endif %}">
+       href="{% url 'plugins:netbox_kea:combined_reservations6' %}{% if server_scope.server_qs %}?{{ server_scope.server_qs }}{% endif %}">
       DHCPv6 Reservations
     </a>
   </li>
@@ -113,17 +113,17 @@
 {% endblock tabs %}
 
 {% block content %}
-  {% if server_scope.kind == 'invalid' %}
+  {% if server_scope.is_invalid %}
     <div class="alert alert-warning mt-3" role="alert">
       <h2 class="h5">Invalid Server selection</h2>
       <p>The selection is empty or contains a Server ID that is invalid, unknown, or unavailable to you.</p>
       <a href="{{ server_scope.all_servers_url }}">Show all Servers</a>
     </div>
   {% else %}
-    {% if scope_warnings %}
+    {% if server_scope_warnings %}
       <div class="alert alert-warning mt-3" role="alert">
         <ul class="mb-0">
-          {% for name, message in scope_warnings %}
+          {% for name, message in server_scope_warnings %}
             <li>{{ name }}: {{ message }}</li>
           {% endfor %}
         </ul>

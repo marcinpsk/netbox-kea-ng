@@ -18,7 +18,7 @@ GET /plugins/kea/combined/shared-networks4/      → CombinedSharedNetworks4View
 GET /plugins/kea/combined/shared-networks6/      → CombinedSharedNetworks6View
 
 All views:
-- Extend _CombinedViewMixin which injects all_servers, selected_server_pks, server_qs, active_tab
+- Extend _CombinedViewMixin which provides server_scope and active_tab
 - Use concurrent.futures.ThreadPoolExecutor for parallel fetching
 - Gracefully handle unreachable servers (warning, not 500)
 
@@ -249,8 +249,8 @@ class TestCombinedDashboardView(_CombinedViewBase):
     def test_context_contains_all_servers(self):
         url = reverse("plugins:netbox_kea:combined")
         response = self.client.get(url)
-        self.assertIn("all_servers", response.context)
-        self.assertEqual(len(response.context["all_servers"]), 3)
+        self.assertIn("server_scope", response.context)
+        self.assertEqual(len(response.context["server_scope"].all_servers), 3)
 
     def test_context_active_tab_is_overview(self):
         url = reverse("plugins:netbox_kea:combined")

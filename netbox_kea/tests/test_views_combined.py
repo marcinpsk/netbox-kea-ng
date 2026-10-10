@@ -11,10 +11,14 @@ via ``kea_stub.stub_kea``, so the combined multi-server fetch helpers exercise t
 real request/response path.
 """
 
+import csv
+import io
 import threading
+from enum import Enum
 from urllib.parse import parse_qs, urlsplit
 
 import requests
+from bs4 import BeautifulSoup
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.urls import reverse
@@ -29,6 +33,7 @@ from .kea_stub import (
     _catalogue_responses_for_subnets,
     _res_page,
     _reservation_mutation_commands,
+    complete_lease,
     queued,
     stub_kea,
 )
@@ -61,7 +66,7 @@ class TestCombinedServerSelection(_ViewTestBase):
             with self.subTest(selection=selection), stub_kea(responses):
                 response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"), {"server": selection})
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.context["selected_server_pks"], set())
+                self.assertEqual(response.context["server_scope"].selected_pks, set())
                 self.assertContains(response, "Invalid Server selection")
                 self.assertNotContains(response, "198.18.0.0/24")
 
@@ -73,7 +78,7 @@ class TestServerScope(_ViewTestBase):
         super().setUp()
         self.second = _make_db_server(name="other")
         self.hidden = _make_db_server(name="hidden")
-        self.viewer = get_user_model().objects.create_user(username="scope-viewer")
+        self.viewer = get_user_model().objects.create_user(username="server-scope-viewer")
         permission = ObjectPermission.objects.create(
             name="view-selected-servers", actions=["view"], constraints={"name__in": [self.server.name, "other"]}
         )
@@ -84,6 +89,50 @@ class TestServerScope(_ViewTestBase):
     def _url(self, section="subnets", family=4):
         name = "combined" if section == "overview" else f"combined_{section}{family}"
         return reverse(f"plugins:netbox_kea:{name}")
+
+    def test_server_selector_waits_for_apply(self):
+        response = self.client.get(self._url("overview"), {"server": [self.server.pk, self.second.pk]})
+        form = BeautifulSoup(response.content, "html.parser").select_one("#server-filter-form")
+        self.assertIsNotNone(form)
+        submit = form.select_one('button[type="submit"]')
+        self.assertIsNotNone(submit)
+        self.assertEqual(submit.get_text(strip=True), "Apply")
+        self.assertFalse(form.select("[onchange]"))
+        self.assertEqual(len(form.select('input[name="server"]')), 2)
+        self.assertIn("Show all servers", form.get_text())
+
+    def test_valid_selection_normalizes_the_tab_query_string(self):
+        response = self.client.get(
+            self._url("overview"), {"server": [f"0{self.second.pk}", f"0{self.server.pk}", str(self.server.pk)]}
+        )
+        page = BeautifulSoup(response.content, "html.parser")
+        query = "&".join(f"server={pk}" for pk in sorted((self.server.pk, self.second.pk)))
+        links = page.select(".nav-tabs a")
+        self.assertEqual(len(links), 9)
+        for link in links:
+            self.assertEqual(urlsplit(link["href"]).query, query)
+
+    def test_invalid_selection_preserves_raw_ids_in_the_tab_links(self):
+        selection = [f"0{self.server.pk}", "abc", ""]
+        response = self.client.get(self._url("overview"), {"server": selection})
+        self.assertContains(response, "Invalid Server selection")
+        page = BeautifulSoup(response.content, "html.parser")
+        links = page.select(".nav-tabs a")
+        self.assertEqual(len(links), 9)
+        for link in links:
+            self.assertEqual(parse_qs(urlsplit(link["href"]).query, keep_blank_values=True), {"server": selection})
+
+    def test_context_exposes_server_scope_without_duplicate_facts(self):
+        response = self.client.get(self._url("overview"))
+        server_scope = response.context["server_scope"]
+        self.assertIsInstance(server_scope.kind, Enum)
+        self.assertTrue(server_scope.is_all)
+        self.assertFalse(server_scope.is_one)
+        self.assertFalse(server_scope.is_invalid)
+        self.assertEqual(set(server_scope.all_servers), {self.server, self.second})
+        for key in ("all_servers", "selected_server_pks", "server_qs", "scope_warnings"):
+            self.assertNotIn(key, response.context)
+        self.assertEqual(response.context["server_scope_warnings"], [])
 
     def test_invalid_selections_show_an_explicit_state_on_every_section(self):
         selections = (
@@ -104,6 +153,7 @@ class TestServerScope(_ViewTestBase):
                     with self.subTest(section=section, family=family, selection=selection), stub_kea({}) as kea:
                         response = self.client.get(self._url(section, family), {"server": selection, "q": "needle"})
                         self.assertContains(response, "Invalid Server selection")
+                        self.assertTrue(response.context["server_scope"].is_invalid)
                         self.assertContains(response, f'href="{self._url(section, family)}?q=needle"')
                         self.assertNotContains(response, '<div class="table-responsive')
                         self.assertEqual(kea.commands(), [])
@@ -124,12 +174,17 @@ class TestServerScope(_ViewTestBase):
             response = self.client.get(self._url(), {"server": [self.server.pk, self.second.pk]})
         rows = list(response.context["table"].data)
         self.assertEqual({row["server_pk"] for row in rows}, {self.server.pk, self.second.pk})
+        server_scope = response.context["server_scope"]
+        self.assertIsInstance(server_scope.kind, Enum)
+        self.assertFalse(server_scope.is_all)
+        self.assertFalse(server_scope.is_one)
+        self.assertFalse(server_scope.is_invalid)
 
     def test_one_server_redirects_to_each_family_tab_with_only_compatible_filters(self):
         expected_filters = {
             "subnets": {"page", "per_page", "sort", "export"},
             "shared_networks": {"page", "per_page", "sort"},
-            "reservations": {"q", "subnet_id", "scope", "page", "per_page", "sort", "export"},
+            "reservations": {"q", "subnet_id", "scope", "per_page", "sort", "export"},
             "leases": {"q", "by", "state", "per_page", "sort", "export"},
         }
         filters = {
@@ -176,6 +231,36 @@ class TestServerScope(_ViewTestBase):
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.context["form"]["state"].value(), "1")
 
+    def test_lease_redirect_preserves_a_state_only_table_export(self):
+        for family, cidr, active_ip, declined_ip in (
+            (4, "198.18.0.0/24", "198.18.0.1", "198.18.0.2"),
+            (6, "2001:db8::/64", "2001:db8::1", "2001:db8::2"),
+        ):
+            leases = [
+                complete_lease({"ip-address": active_ip, "state": 0, "hostname": "active-host"}),
+                complete_lease({"ip-address": declined_ip, "state": 1, "hostname": "declined-host"}),
+            ]
+            responses = {
+                **_catalogue_responses(family, 1, cidr),
+                f"lease{family}-get-page": {"result": 0, "arguments": {"leases": leases, "count": len(leases)}},
+                "reservation-get": {"result": 3, "text": "not found"},
+            }
+            with self.subTest(family=family), stub_kea(responses):
+                response = self.client.get(
+                    self._url("leases", family),
+                    {"server": self.server.pk, "state": "1", "export": "table"},
+                    follow=True,
+                )
+                canonical = reverse(f"plugins:netbox_kea:server_leases{family}", args=[self.server.pk])
+                self.assertEqual(response.redirect_chain, [(f"{canonical}?state=1&export=table", 302)])
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("text/csv", response["Content-Type"])
+                rows = list(csv.reader(io.StringIO(response.content.decode())))
+                self.assertEqual(len(rows), 2)
+                self.assertIn(declined_ip, rows[1])
+                self.assertIn("declined-host", rows[1])
+                self.assertNotIn(active_ip, rows[1])
+
     def test_htmx_single_server_uses_a_navigation_response(self):
         for section in (*self.sections, "overview"):
             families = (4,) if section == "overview" else (4, 6)
@@ -199,6 +284,11 @@ class TestServerScope(_ViewTestBase):
                 with self.subTest(section=section, family=family), stub_kea({}) as kea:
                     response = self.client.get(self._url(section, family), {"server": self.server.pk})
                     self.assertContains(response, f"{self.server.name}: DHCPv{family} is not enabled on this Server.")
+                    self.assertTrue(response.context["server_scope"].is_one)
+                    self.assertEqual(
+                        response.context["server_scope_warnings"],
+                        [(self.server.name, f"DHCPv{family} is not enabled on this Server.")],
+                    )
                     self.assertEqual(kea.commands(), [])
 
     def test_no_selection_skips_a_server_without_the_family_without_a_notice(self):
@@ -208,15 +298,13 @@ class TestServerScope(_ViewTestBase):
                 response = self.client.get(self._url(section, 6))
                 self.assertEqual(response.status_code, 200)
                 self.assertNotContains(response, "is not enabled on this Server")
+                self.assertEqual(response.context["server_scope_warnings"], [])
                 self.assertEqual(kea.commands(), [])
 
     def test_overview_honors_a_selection_of_several_servers(self):
         self.client.force_login(self.user)
         response = self.client.get(self._url("overview"), {"server": [self.server.pk, self.second.pk]})
-        cards = response.content.decode().split('<div class="row row-cols-1')[1]
-        self.assertIn(self.server.get_absolute_url(), cards)
-        self.assertIn(self.second.get_absolute_url(), cards)
-        self.assertNotIn(self.hidden.get_absolute_url(), cards)
+        self.assertEqual(set(response.context["server_scope"].servers), {self.server, self.second})
 
     def test_overview_without_selection_shows_only_permitted_servers(self):
         response = self.client.get(self._url("overview"))

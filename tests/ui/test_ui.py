@@ -1862,6 +1862,7 @@ def test_global_reservation_is_visible_and_read_only(
     plugin_base: str,
     kea_client: _DualEndpointKeaClient,
     reservation_server,
+    kea_server,
     reservation_keys: list,
 ) -> None:
     """Per-server and combined views keep a live Global Reservation read-only."""
@@ -1882,11 +1883,14 @@ def test_global_reservation_is_visible_and_read_only(
 
     urls = (
         f"{plugin_base}/servers/{reservation_server.id}/reservations4/",
-        f"{plugin_base}/combined/reservations4/?server={reservation_server.id}",
+        f"{plugin_base}/combined/reservations4/?server={reservation_server.id}&server={kea_server.id}",
     )
     for url in urls:
         page.goto(url)
         row = page.locator("table.object-list > tbody > tr").filter(has_text=mac)
+        if "/combined/" in url:
+            expect(page).to_have_url(url)
+            row = row.filter(has_text=reservation_server.name)
 
         expect(row).to_have_count(1)
         expect(row.get_by_text("Global", exact=True)).to_be_visible()

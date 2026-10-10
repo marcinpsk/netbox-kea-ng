@@ -11,7 +11,7 @@
   <div class="card-body">
     <form method="get">
       {# Preserve server selection when searching #}
-      {% for pk in selected_server_pks %}
+      {% for pk in server_scope.selected_pks %}
       <input type="hidden" name="server" value="{{ pk }}">
       {% endfor %}
       {% render_form search_form %}
@@ -19,7 +19,7 @@
         <button type="submit" class="btn btn-primary">
           <i class="mdi mdi-magnify"></i> Search
         </button>
-        <a href="{{ request.path }}{% if server_qs %}?{{ server_qs }}{% endif %}"
+        <a href="{{ request.path }}{% if server_scope.server_qs %}?{{ server_scope.server_qs }}{% endif %}"
            class="btn btn-outline-secondary">Reset</a>
         {% if request.GET.q or request.GET.state %}
         <div class="dropdown d-inline-block ms-1">
