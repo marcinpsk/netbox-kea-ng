@@ -24,18 +24,31 @@ def _open(page: Page, url: str) -> None:
 
 def test_server_status(page: Page, plugin_base: str, demo_data: DemoData, capture: Callable[..., None]) -> None:
     _open(page, f"{plugin_base}/servers/{demo_data.campus.id}/status/")
-    cards = page.locator(".card", has=page.locator(".card-header"))
-    expect(cards.filter(has_text="DHCPv4").first).to_be_visible()
-    expect(cards.filter(has_text="DHCPv6").first).to_be_visible()
+    # The view draws a card for each daemon also when status-get fails, so require its rows.
+    expect(page.get_by_text("No status data available.")).to_have_count(0)
+    for daemon in ("DHCPv4", "DHCPv6"):
+        card = page.locator(".card").filter(
+            has=page.locator(".card-header", has_text=re.compile(f"^\\s*{daemon}(?!:)"))
+        )
+        expect(card).to_have_count(1)
+        expect(card.locator("tr", has=page.locator("th", has_text="Version")).locator("code")).to_have_text(
+            re.compile(r"^\d+\.\d+\.\d+")
+        )
+        expect(card.locator("tr", has=page.locator("th", has_text="PID")).locator("td")).to_have_text(
+            re.compile(r"^\d+$")
+        )
     changing = page.locator("tr").filter(has=page.locator("th", has_text=re.compile("^(Uptime|Time since reload)$")))
     capture("server-status", mask=[changing.locator("td")])
 
 
 def test_combined_dashboard(page: Page, plugin_base: str, demo_data: DemoData, capture: Callable[..., None]) -> None:
     _open(page, f"{plugin_base}/combined/")
-    for server in (demo_data.campus, demo_data.branch):
-        expect(page.locator(".card-header", has_text=server.name)).to_be_visible()
-    expect(page.get_by_text("Checking…")).to_have_count(0)
+    online = {demo_data.campus.name: ("DHCPv4", "DHCPv6"), demo_data.branch.name: ("DHCPv4",)}
+    for name, daemons in online.items():
+        header = page.locator(".card-header").filter(has=page.get_by_role("link", name=name, exact=True))
+        badges = header.locator(".badge")
+        expect(badges).to_have_text([f"{daemon} Online" for daemon in daemons])
+    expect(page.get_by_text("Offline")).to_have_count(0)
     capture("combined-dashboard")
 
 
