@@ -110,7 +110,7 @@ To change the sync interval, edit it on the **Sync Jobs** page. You do not need 
 ## Manual Sync permissions
 
 A manual Sync makes the writes of the automatic sync, and permission constraints do not limit the automatic sync.
-Thus a manual Sync runs only for an active superuser, or for a user who has an unconstrained grant of each
+Thus a manual Sync runs only for an active superuser, or for an active user who has an unconstrained grant of each
 permission that the Sync can use. An enabled ObjectPermission of the user, or of a group of the user, gives a grant.
 `DEFAULT_PERMISSIONS` also gives a grant. A grant is unconstrained when it has no constraint set, or an empty one.
 

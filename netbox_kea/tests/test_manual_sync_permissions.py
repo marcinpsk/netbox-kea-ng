@@ -25,6 +25,7 @@ from users.models import Group, ObjectPermission
 from netbox_kea import ipam_reconciliation
 from netbox_kea.ipam_reconciliation import LEASE, RESERVATION
 from netbox_kea.models import Server
+from netbox_kea.sync_permissions import sync_gate
 from netbox_kea.views import dhcp_plugin_sync as dps
 
 from .kea_stub import _catalogue_responses, _res_get, _res_page, _subnet_list, complete_lease, stub_kea
@@ -151,6 +152,14 @@ class TestLeaseRowSync(_RowSyncTestBase):
     def test_a_disabled_grant_does_not_count(self):
         self._grant_address_writes(user=self.user, enabled=False)
         self._assert_refused(self._post(), _ADDRESS_WRITES)
+
+    def test_an_inactive_user_is_refused_despite_unconstrained_grants(self):
+        self._grant_address_writes(user=self.user)
+        self.user.is_active = False
+        self.user.save()
+        gate = sync_gate(User.objects.get(pk=self.user.pk), _ADDRESS_WRITES.split(", "))
+        self.assertFalse(gate.allowed)
+        self.assertEqual(gate.reason, _reason(_ADDRESS_WRITES))
 
     def test_an_unconstrained_grant_beside_a_constrained_one_syncs(self):
         self._grant_address_writes(user=self.user, constraints=_CONSTRAINT)
