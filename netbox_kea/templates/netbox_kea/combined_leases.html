@@ -3,10 +3,10 @@
 {% extends 'netbox_kea/combined_base.html' %}
 
 {% block tab_content %}
-{% if lease_search %}
+{% if pending_search %}
 <div class="alert alert-info mt-3">
   A lease search runs on one Server.
-  {% for label, value in lease_search %}{{ label }}: <strong>{{ value }}</strong>{% if not forloop.last %}, {% endif %}{% endfor %}.
+  {% for label, value in pending_search %}{{ label }}: <strong>{{ value }}</strong>{% if not forloop.last %}, {% endif %}{% endfor %}.
   Choose a Server to run it.
 </div>
 {% endif %}

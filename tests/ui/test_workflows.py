@@ -556,16 +556,22 @@ class TestCombinedViewsWithKea:
         page.wait_for_url(f"{plugin_base}/servers/{kea_server.id}/leases4/")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
+        page.locator("#id_q").fill(reserved_lease4)
         page.locator("#id_by + div.form-select").click()
         page.locator("#id_by-ts-dropdown").get_by_role("option", name="IP Address", exact=True).click()
-        row = page.locator("table.object-list > tbody > tr").filter(has_text=reserved_lease4)
-        # The absent address first proves that the search filters the seeded lease out.
-        for query, count in (("203.0.113.250", 0), (reserved_lease4, 1)):
-            page.locator("#id_q").fill(query)
-            with page.expect_response(re.compile(r"/leases4/")) as response:
-                page.get_by_role("button", name="Search", exact=True).click()
-            assert response.value.ok
-            expect(row).to_have_count(count)
+        with page.expect_response(re.compile(r"/leases4/")) as response:
+            page.get_by_role("button", name="Search", exact=True).click()
+        assert response.value.ok
+        rows = page.locator("table.object-list > tbody > tr")
+        expect(rows).to_have_count(1)
+        expect(rows.first).to_contain_text(reserved_lease4)
+        # A chooser link carries a search; this absent address proves that the Server page filters.
+        page.goto(f"{plugin_base}/combined/leases4/?q=203.0.113.250&by=ip")
+        page.locator(".list-group").get_by_role("link", name=kea_server.name, exact=True).click()
+        page.wait_for_url(re.compile(rf"/servers/{kea_server.id}/leases4/\?"))
+        page.wait_for_load_state("networkidle")
+        expect(page.locator("table.object-list")).to_be_visible()
+        expect(rows.filter(has_text=reserved_lease4)).to_have_count(0)
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
 

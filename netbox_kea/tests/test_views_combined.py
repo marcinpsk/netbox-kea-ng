@@ -127,6 +127,21 @@ class TestLeaseServerChooser(_ViewTestBase):
                 self.assertContains(response, "Choose a Server to run it.")
                 self.assertContains(response, text)
 
+    def test_a_repeated_search_field_keeps_its_last_value(self):
+        query = "state=1&state=&by=ip&by=hostname&q=first&q=last"
+        with stub_kea({}):
+            chooser = self.client.get(f"{reverse('plugins:netbox_kea:combined_leases4')}?{query}")
+            redirect = self.client.get(
+                f"{reverse('plugins:netbox_kea:combined_leases4')}?server={self.server.pk}&{query}"
+            )
+        link = BeautifulSoup(chooser.content, "html.parser").select_one(".list-group a")
+        self.assertEqual(parse_qs(urlsplit(link["href"]).query), {"by": ["hostname"], "q": ["last"]})
+        self.assertNotContains(chooser, "Declined")
+        self.assertContains(chooser, "Attribute: <strong>Hostname</strong>")
+        self.assertNotContains(chooser, "first")
+        target = parse_qs(urlsplit(redirect["Location"]).query, keep_blank_values=True)
+        self.assertEqual((target["state"][-1], target["by"][-1], target["q"][-1]), ("", "hostname", "last"))
+
     def test_an_empty_search_field_is_not_a_pending_search(self):
         with stub_kea({}):
             response = self.client.get(reverse("plugins:netbox_kea:combined_leases4"), {"q": "", "state": ""})

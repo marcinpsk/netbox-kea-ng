@@ -1,9 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-from typing import Any
+from typing import Any, cast
+from urllib.parse import urlencode
 
 from django.contrib import messages
-from django.http import HttpResponse, QueryDict
+from django.forms import ChoiceField, Field
+from django.http import HttpResponse
 from django.http.request import HttpRequest
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -24,6 +26,14 @@ from .reservations import present as present_reservations
 from .server_scope import ServerScope, resolve
 
 _LEASE_SEARCH_FIELDS = ("q", "by", "state")
+
+
+def _search_value_label(field: Field, value: str) -> str:
+    """Return the choice label of *value*, or *value* itself for free text or an unknown choice."""
+    if not isinstance(field, ChoiceField):
+        return value
+    # The lease search forms use flat (value, label) choices.
+    return dict(cast("list[tuple[str, str]]", field.choices)).get(value, value)
 
 
 class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
@@ -423,18 +433,14 @@ class _LeaseServerChooserView(_CombinedViewMixin):
     def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """List the Servers that serve the requested family without reading Kea."""
         ctx = self._combined_context(request)
-        search = QueryDict(mutable=True)
-        for key in _LEASE_SEARCH_FIELDS:
-            if values := [value for value in request.GET.getlist(key) if value]:
-                search.setlist(key, values)
-        search_suffix = f"?{search.urlencode()}" if search else ""
+        # Django forms read the last value of a repeated field, so the chooser does too.
+        search = {key: value for key in _LEASE_SEARCH_FIELDS if (value := request.GET.get(key))}
+        search_suffix = f"?{urlencode(search)}" if search else ""
         fields = (forms.Leases4SearchForm if self.dhcp_version == 4 else forms.Leases6SearchForm).base_fields
         ctx.update(
             {
-                "lease_search": [
-                    (fields[key].label, dict(getattr(fields[key], "choices", ())).get(value, value))
-                    for key in _LEASE_SEARCH_FIELDS
-                    for value in search.getlist(key)
+                "pending_search": [
+                    (fields[key].label, _search_value_label(fields[key], value)) for key, value in search.items()
                 ],
                 "lease_servers": [
                     (
