@@ -340,36 +340,14 @@ class TestCombinedPagesKeepANoticePerServer(_ViewTestBase):
         self.assertEqual(response.context["errors"], [(self.server.name, HEADLINES["reservation"])])
         self.assertContains(response, '<div class="alert alert-danger mt-3">')
 
-    def test_a_failed_lease_read_is_an_error_and_a_refused_query_a_warning(self):
-        url = reverse("plugins:netbox_kea:combined_leases4")
-        query = {"q": "aa:bb:cc:dd:ee:ff", "by": "hw"}
-        with stub_kea({"lease4-get-by-hw-address": requests.ConnectionError("unreachable")}):
-            failed = self.client.get(url, query)
-        self.assertEqual(failed.context["errors"], [(self.server.name, HEADLINES["lease"])])
-        self.assertEqual(failed.context["warnings"], [])
-        self.assertContains(failed, '<div class="alert alert-danger">')
-        with (
-            override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100)),
-            stub_kea({"stat-lease4-get": {"result": 2, "text": "unknown command"}}),
-        ):
-            refused = self.client.get(url, {**query, "q": "1", "by": "subnet_id"})
-        self.assertEqual(refused.context["errors"], [])
-        self.assertEqual(len(refused.context["warnings"]), 1)
-        self.assertIn("stat_cmds", refused.context["warnings"][0][1])
-
     def test_a_client_that_cannot_be_built_is_an_error_with_the_headline_of_its_kind(self):
         type(self.server).objects.filter(pk=self.server.pk).update(
             client_key_path="/tls/client.key", client_cert_path=""
         )
         with stub_kea({}) as kea:
             reservations = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"))
-            leases = self.client.get(
-                reverse("plugins:netbox_kea:combined_leases4"),
-                {"q": "aa:bb:cc:dd:ee:ff", "by": "hw"},
-            )
         self.assertEqual(kea.commands(), [])
         self.assertEqual(reservations.context["errors"], [(self.server.name, HEADLINES["reservation"])])
-        self.assertEqual(leases.context["errors"], [(self.server.name, HEADLINES["lease"])])
 
 
 class TestReservationEditNotice(_ViewTestBase):

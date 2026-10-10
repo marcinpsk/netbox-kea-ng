@@ -2939,35 +2939,6 @@ class TestFetchLeaseSearch(_ViewTestBase):
         )
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestFetchEveryLease(_ViewTestBase):
-    """The Lease fetch of every Lease reads every page through KeaClient.lease_get_all, up to its cap."""
-
-    def _run(self, page, max_leases=1000):
-        with _lease_stub({"lease4-get-page": page}):
-            return fetch(self.server, 4, LeaseSearch(max_leases=max_leases))
-
-    def test_an_empty_daemon_is_exhaustive(self):
-        snapshot = self._run({"result": 3, "arguments": None})
-        self.assertEqual((snapshot.records, snapshot.coverage), ((), "exhaustive"))
-
-    def test_null_args_is_an_unavailable_notice(self):
-        """Null arguments from lease-get-page fail the read."""
-        loaded = self._run({"result": 0, "arguments": None})
-        self.assertIsInstance(loaded, Notice)
-        self.assertTrue(loaded.unavailable)
-
-    def test_reaching_the_cap_before_the_end_is_page_coverage(self):
-        records = [lease_record("10.0.0.1"), lease_record("10.0.0.2")]
-        snapshot = self._run(lease_pages(records), max_leases=1)
-        self.assertEqual((len(snapshot.records), snapshot.coverage), (1, "page"))
-
-    def test_pages_continue_until_a_short_page(self):
-        records = [lease_record(f"10.0.{index // 256}.{index % 256}") for index in range(1, 252)]
-        snapshot = self._run(lease_pages(records))
-        self.assertEqual((len(snapshot.records), snapshot.coverage), (251, "exhaustive"))
-
-
 # ---------------------------------------------------------------------------
 # Lease CSV bulk import — form invalid, parse error, generic exception
 # ---------------------------------------------------------------------------
@@ -3244,25 +3215,6 @@ class TestFetchOneEmptyLease(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(_lease_lines(response))
         self.assertNotIn("reservation-get", kea.commands())
-
-
-# ---------------------------------------------------------------------------
-# Combined leases view — truncated server
-# ---------------------------------------------------------------------------
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestCombinedLeasesTruncated(_ViewTestBase):
-    """A server with more leases than the combined cap is named as truncated."""
-
-    def test_truncated_server_name_in_context(self):
-        records = [lease_record(f"10.0.{index // 256}.{index % 256}") for index in range(1, 1002)]
-        url = reverse("plugins:netbox_kea:combined_leases4") + "?state=0"
-        with _lease_stub({"lease4-get-page": lease_pages(records)}):
-            response = self.client.get(url)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["truncated_servers"], [self.server.name])
-        self.assertEqual(len(response.context["table"].data), 1000)
 
 
 # ---------------------------------------------------------------------------

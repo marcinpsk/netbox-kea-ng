@@ -2093,12 +2093,9 @@ class KeaClient:
         *,
         per_page: int = 250,
         max_leases: int | None = None,
-        state: LeaseState | None = None,
         server_id: int,
     ) -> LeaseSnapshot:
         """Return a bounded Snapshot of every Lease of the family, read page by page.
-
-        A *state* keeps only the Leases in that state; the cap still counts raw records.
 
         Pages continue from the last raw record, so a page whose every record is excluded still continues.
         *max_leases* caps the raw records read; a Snapshot that reaches the cap before Kea proves the end
@@ -2148,7 +2145,7 @@ class KeaClient:
             next_cursor=cursor,
         )
         coverage: LeaseCoverage = "exhaustive" if cursor is None else "page"
-        query = LeaseQuery(family=version, selector=ALL_LEASES, state=state)
+        query = LeaseQuery(family=version, selector=ALL_LEASES)
         return _lease_snapshot(server_id, query, started, read, coverage)
 
     def dhcp_disable(self, family: Family, max_period: int | None = None) -> None:

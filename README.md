@@ -37,7 +37,8 @@ The full documentation is at **[marcinpsk.github.io/netbox-kea-ng](https://marci
 - Host Reservation management, with YAML or JSON bulk transfer.
 - Subnet, pool, shared network and DHCP option editing.
 - IPAM sync of leases, reservations, subnets and pools, by hand or in a periodic background job.
-- Combined views across all Kea servers.
+- Combined Overview, Reservation, Subnet and Shared Network views in a Server Scope.
+- A Server chooser for lease search.
 - Direct connections to each Kea 3.0+ daemon, or a Control Agent (removed in Kea 3.1.8).
 - REST API and GraphQL for Server objects. Works with netbox-dns and netbox-branching.
 

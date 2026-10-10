@@ -851,50 +851,6 @@ class GlobalReservationTable6(ReservationTable6):
         default_columns = ("server", *ReservationTable6.Meta.default_columns)
 
 
-class GlobalLeaseTable4(LeaseTable4):
-    """DHCPv4 lease table aggregated across multiple servers.
-
-    Extends the per-server table with a prepended *Server* column.
-    """
-
-    server = _server_column()
-
-    class Meta(LeaseTable4.Meta):
-        fields = ("server", *LeaseTable4.Meta.fields)
-        default_columns = (
-            "server",
-            "ip_address",
-            "hostname",
-            "hw_address",
-            "subnet_id",
-            "state_label",
-            "reserved",
-            "netbox_ip",
-        )
-
-
-class GlobalLeaseTable6(LeaseTable6):
-    """DHCPv6 lease table aggregated across multiple servers.
-
-    Extends the per-server table with a prepended *Server* column.
-    """
-
-    server = _server_column()
-
-    class Meta(LeaseTable6.Meta):
-        fields = ("server", *LeaseTable6.Meta.fields)
-        default_columns = (
-            "server",
-            "ip_address",
-            "hostname",
-            "duid",
-            "subnet_id",
-            "state_label",
-            "reserved",
-            "netbox_ip",
-        )
-
-
 class GlobalSubnetTable4(SubnetTable):
     """DHCPv4 subnet table aggregated across multiple servers.
 

@@ -539,21 +539,34 @@ class TestCombinedViewsWithKea:
         finally:
             second.delete()
 
-    @pytest.mark.parametrize("header", ("Server", "Reserved", "NetBox IP"))
-    def test_combined_leases4_column_present(
+    def test_lease_chooser_opens_a_server_for_lease_search(
         self,
-        header: str,
         page: Page,
         netbox_login: None,
         plugin_base: str,
         kea_server,
+        reserved_lease4: str,
         track_http_errors: list,
     ) -> None:
-        """Combined leases4 must show each required column as its own case."""
-        page.goto(f"{plugin_base}/combined/leases4/?q=192.0.2.1&by=ip")
+        """Choose a named Server and search its seeded lease."""
+        page.goto(f"{plugin_base}/combined/leases4/")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
-        expect(page.locator("th", has_text=header).first).to_be_visible()
+        page.locator(".list-group").get_by_role("link", name=kea_server.name, exact=True).click()
+        page.wait_for_url(f"{plugin_base}/servers/{kea_server.id}/leases4/")
+        page.wait_for_load_state("networkidle")
+        _check_no_django_error(page)
+        page.locator("#id_by + div.form-select").click()
+        page.locator("#id_by-ts-dropdown").get_by_role("option", name="IP Address", exact=True).click()
+        row = page.locator("table.object-list > tbody > tr").filter(has_text=reserved_lease4)
+        # The absent address first proves that the search filters the seeded lease out.
+        for query, count in (("203.0.113.250", 0), (reserved_lease4, 1)):
+            page.locator("#id_q").fill(query)
+            with page.expect_response(re.compile(r"/leases4/")) as response:
+                page.get_by_role("button", name="Search", exact=True).click()
+            assert response.value.ok
+            expect(row).to_have_count(count)
+        _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
 
     def test_combined_reservations4_server_column_present(
@@ -595,12 +608,7 @@ class TestCombinedViewsWithKea:
         kea_server,
         track_http_errors: list,
     ) -> None:
-        """Per-server leases4 table must include 'Reserved' column header.
-
-        Note: 'NetBox IP' is intentionally not checked here because django_tables2 persists
-        per-user column visibility preferences; the admin user may have toggled it off.
-        Use the combined view tests to verify NetBox IP column presence.
-        """
+        """Per-server leases4 table must include the Reserved column."""
         server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/leases4/?q=192.0.2.1&by=ip")
         page.wait_for_load_state("networkidle")
@@ -830,31 +838,16 @@ class TestBadgeEnrichment:
         reserved_lease4: str,
         track_http_errors: list,
     ) -> None:
-        """Combined leases4 must render a NetBox IP enrichment widget for a real lease row.
-
-        The combined view uses GlobalLeaseTable4 which has no saved per-user column config,
-        so 'NetBox IP' is reliably visible.
-        """
-        # Combined view correctly shows all default columns (no saved user preferences)
-        page.goto(f"{plugin_base}/combined/leases4/?q={reserved_lease4}&by=ip")
+        """The Server lease page shows one NetBox IP widget for the seeded lease."""
+        page.goto(f"{plugin_base}/servers/{kea_server.id}/leases4/?q={reserved_lease4}&by=ip")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
-
         expect(page.locator("th", has_text="NetBox IP").first).to_be_visible()
-
-        # The seeded lease guarantees a row, so the widget assertion is unconditional:
-        # the IP is either already in NetBox IPAM (Synced) or offered for sync (Sync).
-        #
-        # Combined views aggregate every registered Server and the suite's servers all
-        # address the same Kea daemon, so this lease renders once per Server. Assert
-        # exactly one widget per row for it rather than pinning a row count.
-        rows = page.locator("table.object-list > tbody > tr").filter(has_text=reserved_lease4)
-        expect(rows.first).to_be_visible()
-        # Per row: an aggregate count lets a row with two widgets mask a row with none.
-        for row in rows.all():
-            widgets = row.locator('a.badge:has-text("Synced"), button.badge:has-text("Sync")')
-            expect(widgets).to_have_count(1)
+        row = page.locator("table.object-list > tbody > tr").filter(has_text=reserved_lease4)
+        expect(row).to_have_count(1)
+        widgets = row.locator('a.badge:has-text("Synced"), button.badge:has-text("Sync")')
+        expect(widgets).to_have_count(1)
 
 
 # ---------------------------------------------------------------------------

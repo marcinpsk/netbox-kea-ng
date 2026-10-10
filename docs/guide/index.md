@@ -44,7 +44,8 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 
 **Global / Cross-Server Views**
 
-- Combined dashboard, lease, reservation, subnet and shared-network views across all servers
+- Combined Overview, Reservation, Subnet and Shared Network views in a Server Scope
+- A Server chooser for lease search, with each search on one named Server
 
 ![The combined view lists each Kea Server with its endpoint URLs and the online state of each DHCP daemon](assets/screenshots/combined-dashboard-light.png#only-light)
 ![The combined view lists each Kea Server with its endpoint URLs and the online state of each DHCP daemon](assets/screenshots/combined-dashboard-dark.png#only-dark)
