@@ -471,10 +471,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
         with _reservation_stub(
             4, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-by-state": _LEASE_NONE}
         ):
-            url = (
-                reverse("plugins:netbox_kea:combined_reservations4")
-                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&export=yaml"
-            )
+            url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&export=yaml"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("application/yaml", response.get("Content-Type", ""))
@@ -487,7 +484,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
     def test_export_rejects_an_incomplete_snapshot(self):
         first_page = _res_page([dict(_MOCK_RESERVATION_V4)], next_from=1, next_source=1)
         url = reverse("plugins:netbox_kea:combined_reservations4")
-        url += f"?server={self.v4_server.pk}&server={self.v6_server.pk}&export=yaml"
+        url += f"?server={self.v4_server.pk}&export=yaml"
 
         with _reservation_stub(
             4, {"reservation-get-page": queued(first_page, requests.ConnectionError("page failed"))}
@@ -642,10 +639,7 @@ class TestCombinedReservations6View(_CombinedViewBase):
         with _reservation_stub(
             6, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6)]), "lease6-get-by-state": _LEASE_NONE}
         ):
-            url = (
-                reverse("plugins:netbox_kea:combined_reservations6")
-                + f"?server={self.v6_server.pk}&server={self.v4_server.pk}&export=json"
-            )
+            url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}&export=json"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("application/json", response.get("Content-Type", ""))
@@ -923,10 +917,7 @@ class TestCombinedSubnets4View(_CombinedViewBase):
     def test_export_returns_csv(self):
         """?export=table returns a CSV download of the subnet table."""
         with stub_kea(_subnet_responses(4)):
-            url = (
-                reverse("plugins:netbox_kea:combined_subnets4")
-                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&export=table"
-            )
+            url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}&export=table"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
@@ -1041,10 +1032,7 @@ class TestCombinedSubnets6View(_CombinedViewBase):
     def test_export_returns_csv(self):
         """?export=table returns a CSV download of the v6 subnet table."""
         with stub_kea(_subnet_responses(6)):
-            url = (
-                reverse("plugins:netbox_kea:combined_subnets6")
-                + f"?server={self.v6_server.pk}&server={self.v4_server.pk}&export=table"
-            )
+            url = reverse("plugins:netbox_kea:combined_subnets6") + f"?server={self.v6_server.pk}&export=table"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
@@ -1492,7 +1480,7 @@ class TestCombinedLeasesStateFilter(_CombinedViewBase):
         ):
             url = (
                 reverse("plugins:netbox_kea:combined_leases4")
-                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=host&by={constants.BY_HOSTNAME}&export=table"
+                + f"?server={self.v4_server.pk}&q=host&by={constants.BY_HOSTNAME}&export=table"
             )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -1657,22 +1645,10 @@ class TestCombinedSharedNetworks4View(_CombinedViewBase):
             response = self.client.get(url)
         self.assertContains(response, "test-shared-net-v4")
 
-    def test_one_server_export_returns_csv_without_a_redirect(self):
-        """The Server tab has no export, so a one-Server export stays on the combined view."""
-        with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V4}):
-            url = reverse("plugins:netbox_kea:combined_shared_networks4") + f"?server={self.v4_server.pk}&export=table"
-            response = self.client.get(url)
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("text/csv", response["Content-Type"])
-        self.assertIn("test-shared-net-v4", response.content.decode())
-
     def test_export_returns_csv(self):
         """?export=table returns a CSV download of shared network data."""
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V4}):
-            url = (
-                reverse("plugins:netbox_kea:combined_shared_networks4")
-                + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&export=table"
-            )
+            url = reverse("plugins:netbox_kea:combined_shared_networks4") + f"?server={self.v4_server.pk}&export=table"
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
