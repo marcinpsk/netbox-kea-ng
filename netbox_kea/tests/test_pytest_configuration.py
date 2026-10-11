@@ -1338,7 +1338,7 @@ def test_a_named_screenshot_suite_without_an_output_directory_sets_up_no_fixture
     result = _integration_pytest("tests/docs_media", "--setup-plan")
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert re.search(r"\b11 skipped\b", result.stdout), result.stdout
+    assert re.search(r"\b13 skipped\b", result.stdout), result.stdout
     assert "SETUP" not in result.stdout, result.stdout
 
 

@@ -449,6 +449,9 @@ class TestServerWorkspace(_ViewTestBase):
         self.assertIn("Changelog", tabs)
         self.assertIn("Jobs", tabs)
         self.assertNotIn("Status", tabs)
+        self.assertTrue(set(tabs).isdisjoint({"Leases", "Subnets", "Reservations", "Configuration", "Sync"}))
+        self.assertEqual(len(page.select('[aria-label="DHCP family"]')), 1)
+        self.assertEqual(len(page.select('[aria-label="Workspace sections"]')), 1)
 
     def test_legacy_status_redirects_to_overview_without_reading_kea(self):
         with stub_kea({}) as kea:

@@ -20,6 +20,13 @@ def _open(page: Page, url: str) -> None:
     response = page.goto(url)
     assert response is not None and response.ok, f"{url} answered {response and response.status}"
     page.wait_for_load_state("networkidle")
+    if "/plugins/kea/" in url:
+        shell = page.locator("#kea-workspace-shell")
+        expect(shell.get_by_label("Server Scope")).to_be_visible()
+        expect(shell.get_by_role("navigation", name="DHCP family").get_by_role("link")).to_have_count(2)
+        expect(shell.get_by_role("navigation", name="Workspace sections").get_by_role("link")).to_have_text(
+            ["Overview", "Leases", "Subnets", "Reservations", "Configuration", "Sync"]
+        )
 
 
 def test_server_status(page: Page, plugin_base: str, demo_data: DemoData, capture: Callable[..., None]) -> None:
@@ -52,6 +59,28 @@ def test_combined_dashboard(page: Page, plugin_base: str, demo_data: DemoData, c
     capture("combined-dashboard")
 
 
+def test_workspace_selection(page: Page, plugin_base: str, demo_data: DemoData, capture: Callable[..., None]) -> None:
+    _open(page, f"{plugin_base}/combined/subnets4/?server={demo_data.campus.id}&server={demo_data.branch.id}")
+    shell = page.locator("#kea-workspace-shell")
+    expect(shell.get_by_label("Server Scope")).to_have_text("2 Servers selected")
+    expect(page.locator(_ROWS).filter(has_text="192.0.2.0/24")).to_have_count(2)
+    capture("workspace-selection")
+
+
+def test_server_switch(page: Page, plugin_base: str, demo_data: DemoData, capture: Callable[..., None]) -> None:
+    _open(page, f"{plugin_base}/servers/{demo_data.campus.id}/subnets4/")
+    shell = page.locator("#kea-workspace-shell")
+    shell.get_by_role("button", name="Switch Server", exact=True).click()
+    expect(
+        shell.get_by_role("navigation", name="Switch Server").get_by_role(
+            "link",
+            name=demo_data.branch.name,
+            exact=True,
+        )
+    ).to_be_visible()
+    capture("server-switch")
+
+
 def test_lease_search(page: Page, plugin_base: str, demo_data: DemoData, capture: Callable[..., None]) -> None:
     _open(page, f"{plugin_base}/servers/{demo_data.campus.id}/leases4/?q=1&by=subnet_id")
     rows = page.locator(_ROWS)
@@ -74,7 +103,7 @@ def test_lease_edit(page: Page, plugin_base: str, demo_data: DemoData, capture: 
     address, _mac, hostname = LEASES4[1]
     _open(page, f"{plugin_base}/servers/{demo_data.campus.id}/leases4/{address}/edit/")
     expect(page.locator("#id_hostname")).to_have_value(hostname)
-    capture("lease-edit", target=page.locator(".card").filter(has_text="Edit DHCPv4 Lease"))
+    capture("lease-edit")
 
 
 def test_reservations(page: Page, plugin_base: str, demo_data: DemoData, capture: Callable[..., None]) -> None:

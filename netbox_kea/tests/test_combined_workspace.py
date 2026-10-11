@@ -40,6 +40,8 @@ class TestCombinedWorkspace(_ViewTestBase):
                 parse_qs(urlsplit(link["href"]).query), {"server": list(map(str, self.selection["server"]))}
             )
         self.assertEqual(len(shell.select('[aria-label="DHCP family"] a')), 2)
+        self.assertEqual(len(page.select('[aria-label="DHCP family"]')), 1)
+        self.assertEqual(len(page.select('[aria-label="Workspace sections"]')), 1)
         self.assertEqual(kea.commands(), [])
         self.assertContains(response, "2 Servers selected · Overview · DHCPv4")
         breadcrumb = page.select_one('[aria-label="Breadcrumb"]')
@@ -54,6 +56,9 @@ class TestCombinedWorkspace(_ViewTestBase):
             switched = self.client.get(link["href"])
         self.assertContains(switched, "Choose a Server for DHCPv6 leases")
         self.assertContains(switched, "printer")
+        chooser = BeautifulSoup(switched.content, "html.parser")
+        self.assertIsNone(chooser.select_one("#lease-search"))
+        self.assertIsNone(chooser.select_one("table.object-list"))
         self.assertEqual(
             parse_qs(urlsplit(link["href"]).query),
             {"server": list(map(str, self.selection["server"])), **{key: [value] for key, value in filters.items()}},

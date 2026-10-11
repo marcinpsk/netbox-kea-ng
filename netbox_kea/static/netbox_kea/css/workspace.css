@@ -6,6 +6,27 @@
   z-index: 1020;
 }
 
+.kea-workspace-shell .dropdown-menu {
+  max-width: calc(100vw - 2rem);
+}
+
+.kea-workspace-shell .dropdown-item,
+.kea-workspace-shell .form-check-label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.kea-workspace-shell [aria-label="Server Scope"] {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* Let the native object title shrink beside its controls on workspace pages. */
+#page-content:has(.kea-workspace-shell) .page-header .d-flex > div:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* Keep the Lease attribute control height stable when its search input loses focus. */
 #lease-search #id_by + .ts-wrapper .ts-control {
   flex-wrap: nowrap;
