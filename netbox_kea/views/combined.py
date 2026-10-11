@@ -25,7 +25,7 @@ from .reservations import fetch as fetch_reservations
 from .reservations import present as present_reservations
 from .server_scope import SELECTION_FIELD, ServerScope, resolve
 from .sync_jobs import get_all_jobs_for_server
-from .workspace import SECTIONS
+from .workspace import SECTIONS, with_return_url
 
 _LEASE_SEARCH_FIELDS = ("q", "by", "state")
 
@@ -190,6 +190,21 @@ class CombinedDashboardView(_CombinedViewMixin):
         """Render the overview with the Servers in the resolved Server Scope."""
         ctx = self._combined_context(request)
         ctx["page_title"] = "All Kea Servers"
+        ctx["server_cards"] = [
+            (
+                server,
+                with_return_url(server.get_absolute_url() + f"?family={self.dhcp_version}", request.get_full_path()),
+                with_return_url(
+                    reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk]),
+                    request.get_full_path(),
+                ),
+                with_return_url(
+                    reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[server.pk]),
+                    request.get_full_path(),
+                ),
+            )
+            for server in self.server_scope.servers
+        ]
         return render(request, self.template_name, ctx)
 
 
@@ -331,6 +346,11 @@ class _CombinedSubnetsView(_CombinedViewMixin):
             .values_list("pk", flat=True)
         )
         for subnet in all_subnets:
+            subnet["return_url"] = request.get_full_path()
+            subnet["record_url"] = with_return_url(
+                reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[subnet["server_pk"]]),
+                request.get_full_path(),
+            )
             can_change = subnet.get("server_pk") in writable_pks
             subnet["can_change"] = bool(subnet.get("identity_verified")) and can_change
             subnet["can_edit_options"] = subnet["can_change"] and bool(subnet.get("configuration_available"))
@@ -412,6 +432,12 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
                 for network in snapshot.shared_networks
             )
 
+        for row in all_networks:
+            row["return_url"] = request.get_full_path()
+            row["record_url"] = with_return_url(
+                reverse(f"plugins:netbox_kea:server_shared_networks{self.dhcp_version}", args=[row["server_pk"]]),
+                request.get_full_path(),
+            )
         table = tables.GlobalSharedNetworkTable(all_networks, user=request.user)
         table.configure(request)
 
@@ -515,6 +541,11 @@ class _CombinedReservationsView(_CombinedViewMixin):
         for server, server_read in read.results:
             presented = present_reservations(request.user, server, server_read, return_url=request.get_full_path())
             notices.add(server, presented.notice)
+            for row in presented.rows:
+                row["record_url"] = with_return_url(
+                    reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk]),
+                    request.get_full_path(),
+                )
             all_records.extend(presented.rows)
             partial = partial or presented.partial
             if presented.rows and presented.mutation_unavailable_reason:

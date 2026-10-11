@@ -5,6 +5,7 @@
     <div class="d-flex flex-wrap align-items-center gap-2">
       <strong aria-label="Server Scope">{{ workspace_scope_label }}</strong>
       <span class="text-muted">DHCPv{{ workspace_family }}</span>
+      {% if workspace_return_url %}<a href="{{ workspace_return_url }}" class="btn btn-sm btn-outline-secondary">Back to workspace</a>{% endif %}
       {% if server_scope %}{% include 'netbox_kea/inc/server_selector.html' %}{% endif %}
     </div>
     <nav class="btn-group" aria-label="DHCP family">

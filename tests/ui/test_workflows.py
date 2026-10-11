@@ -636,6 +636,109 @@ class TestCombinedViewsWithKea:
     """Combined view content checks that require a live Kea server fixture."""
 
     @pytest.mark.parametrize("width", [1280, 390], ids=["desktop", "narrow"])
+    def test_filtered_reservation_returns_from_owning_server(
+        self,
+        page: Page,
+        plugin_base: str,
+        kea_server,
+        nb_api,
+        kea_url: str,
+        kea_dhcp6_url: str,
+        kea_client: "_DualEndpointKeaClient",
+        track_http_errors: list,
+        width: int,
+    ) -> None:
+        """Open an owning Server, edit its Reservation and restore the filtered workspace."""
+        identifier = "e2:e2:e2:e2:e2:12"
+        second = nb_api.plugins.kea.servers.create(
+            name=f"{kea_server.name}-return",
+            ca_url=kea_url,
+            dhcp6_url=kea_dhcp6_url,
+            has_control_agent=False,
+        )
+        try:
+            page.set_viewport_size({"width": width, "height": 720})
+            page.goto(f"{plugin_base}/servers/{kea_server.id}/reservations4/add/")
+            cidr = _subnet_cidr_for_id(page, 1)
+            address = str(ipaddress.ip_network(cidr)[-40])
+            kea_client.command(
+                "reservation-add",
+                4,
+                arguments={
+                    "reservation": {
+                        "subnet-id": 1,
+                        "hw-address": identifier,
+                        "ip-address": address,
+                        "hostname": "workspace-return-client",
+                    }
+                },
+            )
+            page.goto(f"{plugin_base}/combined/reservations4/?server={kea_server.id}&server={second.id}")
+            page.locator("#id_q").fill("workspace-return")
+            page.locator("#id_subnet_id").fill("1")
+            page.locator("#id_scope").select_option("in-subnet")
+            page.get_by_role("button", name=re.compile(r"Filter$")).click()
+            page.wait_for_load_state("networkidle")
+            workspace_url = page.url
+            workspace_path = urlparse(workspace_url).path + "?" + urlparse(workspace_url).query
+            rows = page.locator("table.object-list > tbody > tr").filter(has_text=identifier)
+            expect(rows).to_have_count(2)
+            row = rows.filter(has=page.get_by_role("link", name=second.name, exact=True))
+            row.get_by_role("link", name=second.name, exact=True).click()
+            page.wait_for_load_state("networkidle")
+            assert urlparse(page.url).path == f"/plugins/kea/servers/{second.id}/reservations4/"
+            assert parse_qs(urlparse(page.url).query)["return_url"] == [workspace_path]
+            shell = page.locator("#kea-workspace-shell")
+            expect(shell.get_by_label("Server Scope")).to_have_text(second.name)
+            back = shell.get_by_role("link", name=re.compile(r"Back to"))
+            expect(back).to_have_attribute("href", workspace_path)
+            server_url = page.url
+            back.click()
+            expect(page).to_have_url(workspace_url)
+            rows.filter(has=page.get_by_role("link", name=second.name, exact=True)).get_by_role(
+                "link", name=second.name, exact=True
+            ).click()
+            expect(page).to_have_url(server_url)
+            page.go_back()
+            expect(page).to_have_url(workspace_url)
+            page.go_forward()
+            expect(page).to_have_url(server_url)
+            for label in ("Overview", "Subnets", "Reservations"):
+                page.get_by_role("navigation", name="Workspace sections").get_by_role(
+                    "link", name=label, exact=True
+                ).click()
+                expect(shell.get_by_role("link", name=re.compile(r"Back to"))).to_have_attribute("href", workspace_path)
+            page.get_by_role("link", name="Journal", exact=True).click()
+            expect(shell.get_by_role("link", name=re.compile(r"Back to"))).to_have_attribute("href", workspace_path)
+            page.get_by_role("navigation", name="Workspace sections").get_by_role(
+                "link", name="Reservations", exact=True
+            ).click()
+            page.locator("table.object-list > tbody > tr").filter(has_text=identifier).locator(
+                'a[href*="/edit/"]'
+            ).click()
+            page.wait_for_load_state("networkidle")
+            expect(page.locator("#kea-workspace-shell").get_by_label("Server Scope")).to_have_text(second.name)
+            expect(page.get_by_role("link", name="Cancel", exact=True)).to_have_attribute("href", workspace_path)
+            page.locator("#id_hostname").fill("workspace-return-edited")
+            _submit_and_wait_nav(page, "document.getElementById('id_hostname').closest('form').submit()")
+            expect(page).to_have_url(workspace_url)
+            expect(page.locator("#id_q")).to_have_value("workspace-return")
+            expect(page.locator("#id_subnet_id")).to_have_value("1")
+            expect(page.locator("#id_scope")).to_have_value("in-subnet")
+            assert set(parse_qs(urlparse(page.url).query)["server"]) == {str(kea_server.id), str(second.id)}
+            expect(page.locator("table.object-list > tbody > tr").filter(has_text=identifier)).to_have_count(2)
+            expect(page.get_by_text("workspace-return-edited", exact=True)).to_have_count(2)
+            _assert_no_http_errors(track_http_errors)
+        finally:
+            kea_client.command(
+                "reservation-del",
+                4,
+                arguments={"subnet-id": 1, "identifier-type": "hw-address", "identifier": identifier},
+                check=(0, 3),
+            )
+            second.delete()
+
+    @pytest.mark.parametrize("width", [1280, 390], ids=["desktop", "narrow"])
     @pytest.mark.parametrize("mode", ["light", "dark"])
     def test_shared_workspace_keeps_scope_across_sections_and_families(
         self,

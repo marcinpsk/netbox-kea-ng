@@ -12,6 +12,10 @@ Each Server has the shared workspace navigation: Overview, Leases, Subnets, Rese
 The scope bar shows the Server name and one DHCP family switch on section pages and mutation forms.
 Journal, Changelog, Jobs and the NetBox object controls stay available below the workspace sections.
 
+Opening a record from a combined page enters its owning Server for the selected DHCP family.
+Use **Back to workspace** to restore the previous Server selection, section and filters.
+Forms opened from that page return to the same workspace after a change or when you select **Cancel**.
+
 Overview loads the status of each enabled daemon without blocking the Server details.
 An existing Status URL redirects to Overview.
 If you open a disabled family, the page shows "Protocol not enabled" and a link to the enabled family.
