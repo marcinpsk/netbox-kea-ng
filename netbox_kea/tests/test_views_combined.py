@@ -13,7 +13,7 @@ real request/response path.
 
 import threading
 from enum import Enum
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -301,6 +301,71 @@ class TestServerScope(_ViewTestBase):
                         self.assertContains(response, f'href="{self._url(section, family)}?q=needle"')
                         self.assertNotContains(response, '<div class="table-responsive')
                         self.assertEqual(kea.commands(), [])
+
+    def _apply(self, response, checked):
+        """Submit the Server selector as a browser does, with only the *checked* Server IDs ticked."""
+        form = BeautifulSoup(response.content, "html.parser").select_one("#server-filter-form")
+        data = [(field["name"], field["value"]) for field in form.select('input[type="hidden"]')]
+        data += [
+            ("server", box["value"]) for box in form.select('input[name="server"]') if int(box["value"]) in checked
+        ]
+        return self.client.get(f"{form['action']}?{urlencode(data)}")
+
+    def test_apply_without_a_checked_server_shows_the_invalid_state(self):
+        for section in (*self.sections, "overview"):
+            for family in (4,) if section == "overview" else (4, 6):
+                with self.subTest(section=section, family=family), stub_kea({}) as kea:
+                    page = self.client.get(self._url(section, family), {"server": "abc", "q": "needle"})
+                    response = self._apply(page, checked=())
+                    self.assertContains(response, "Invalid Server selection")
+                    if section not in ("shared_networks", "overview"):
+                        self.assertContains(response, f'href="{self._url(section, family)}?q=needle"')
+                    tab = BeautifulSoup(response.content, "html.parser").select_one(".nav-tabs a.active")
+                    self.assertContains(self.client.get(tab["href"]), "Invalid Server selection")
+                    self.assertEqual(kea.commands(), [])
+
+    def test_apply_keeps_the_filters_of_the_section(self):
+        filters = {
+            "q": "needle",
+            "subnet_id": "1",
+            "scope": "global",
+            "by": "hostname",
+            "state": "0",
+            "sort": "name",
+            "per_page": "25",
+            "page": "2",
+            "cursor": "abc",
+            f"reservation_cursor_{self.server.pk}": "abc",
+            "export": "csv",
+        }
+        expected = {
+            "overview": set(),
+            "subnets": {"q", "subnet_id", "sort", "per_page"},
+            "shared_networks": {"sort", "per_page"},
+            "reservations": {"q", "subnet_id", "scope", "sort", "per_page"},
+            "leases": {"q", "by", "state", "sort", "per_page"},
+        }
+        for section, fields in expected.items():
+            with self.subTest(section=section):
+                page = self.client.get(self._url(section), {"server": "abc", **filters})
+                form = BeautifulSoup(page.content, "html.parser").select_one("#server-filter-form")
+                hidden = {field["name"]: field["value"] for field in form.select('input[type="hidden"]')}
+                hidden.pop("server_selection")
+                self.assertEqual(hidden, {key: filters[key] for key in fields})
+
+    def test_apply_of_one_server_keeps_the_lease_search(self):
+        page = self.client.get(self._url("leases"), {"q": "needle", "by": "hostname", "state": "0"})
+        response = self._apply(page, checked={self.server.pk})
+        self.assertEqual(response.status_code, 302)
+        location = urlsplit(response["Location"])
+        self.assertEqual(location.path, reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]))
+        self.assertEqual(parse_qs(location.query), {"q": ["needle"], "by": ["hostname"], "state": ["0"]})
+
+    def test_show_all_servers_in_the_selector_keeps_the_filters(self):
+        page = self.client.get(self._url(), {"server": [self.server.pk, self.second.pk], "q": "needle"})
+        form = BeautifulSoup(page.content, "html.parser").select_one("#server-filter-form")
+        (link,) = (link for link in form.select("a") if "Show all servers" in link.get_text())
+        self.assertEqual(link["href"], f"{self._url()}?q=needle")
 
     def test_no_selection_reads_all_permitted_servers(self):
         responses = _catalogue_responses(4, 1, "198.18.0.0/24")

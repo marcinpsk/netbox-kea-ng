@@ -11,6 +11,9 @@ from ..constants import Family
 from ..decimal_text import parse_decimal
 from ..models import Server
 
+#: The Server selector always submits this field, so a selection with no Server checked stays explicit.
+SELECTION_FIELD = "server_selection"
+
 
 class ServerScopeKind(Enum):
     """The four possible results of a Server selection."""
@@ -59,13 +62,15 @@ def resolve(request: HttpRequest, family: Family | None) -> ServerScope:
     permitted = tuple(Server.objects.restrict(request.user, "view").order_by("name"))
     query = request.GET.copy()
     query.pop("server", None)
+    query.pop(SELECTION_FIELD, None)
+    query.pop("export", None)
     all_url = request.path + (f"?{query.urlencode()}" if query else "")
     selection = QueryDict(mutable=True)
     selection.setlist("server", request.GET.getlist("server"))
     selected: set[int] = set()
     kind = ServerScopeKind.ALL
     servers = permitted
-    if "server" in request.GET:
+    if "server" in request.GET or SELECTION_FIELD in request.GET:
         try:
             selected = {parse_decimal(value) for value in request.GET.getlist("server")}
         except ValueError:
@@ -78,6 +83,8 @@ def resolve(request: HttpRequest, family: Family | None) -> ServerScope:
         if kind is ServerScopeKind.INVALID:
             servers = ()
             selected = set()
+            if SELECTION_FIELD in request.GET:
+                selection[SELECTION_FIELD] = "1"
         else:
             servers = tuple(server for server in permitted if server.pk in selected)
             selection.setlist("server", [str(pk) for pk in sorted(selected)])

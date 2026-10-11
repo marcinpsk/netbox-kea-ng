@@ -23,7 +23,7 @@ from .reservations import ReservationQuery
 from .reservations import empty_text as reservation_empty_text
 from .reservations import fetch as fetch_reservations
 from .reservations import present as present_reservations
-from .server_scope import ServerScope, resolve
+from .server_scope import SELECTION_FIELD, ServerScope, resolve
 
 _LEASE_SEARCH_FIELDS = ("q", "by", "state")
 
@@ -91,6 +91,19 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
         """Render a combined section within its resolved Server Scope."""
         raise NotImplementedError
 
+    def _filter_fields(self) -> set[str]:
+        """Return the query fields that filter or order this combined section; pagination is not one."""
+        if self.active_tab == "overview":
+            return set()
+        fields = {"sort", "per_page"}
+        if self.active_tab.startswith("leases"):
+            fields.update(_LEASE_SEARCH_FIELDS)
+        elif self.active_tab.startswith("reservations"):
+            fields.update(forms.ReservationSearchForm.base_fields)
+        elif self.active_tab.startswith("subnets"):
+            fields.update(forms.SubnetSearchForm.base_fields)
+        return fields
+
     def _combined_context(self, request: HttpRequest) -> dict[str, Any]:
         """Build context vars shared by every combined view."""
         server_scope_warnings: list[tuple[str, str]] = []
@@ -100,8 +113,13 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
                 (server.name, f"DHCPv{self.dhcp_version} is not enabled on this Server.")
                 for server in self.server_scope.missing_family
             )
+        filter_fields = self._filter_fields()
         return {
             "server_scope": self.server_scope,
+            "server_selector_fields": [
+                (SELECTION_FIELD, "1"),
+                *((key, request.GET[key]) for key in request.GET if key in filter_fields),
+            ],
             "server_scope_warnings": server_scope_warnings,
             "active_tab": self.active_tab,
         }
