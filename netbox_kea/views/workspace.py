@@ -6,7 +6,7 @@ from typing import Any, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django.conf import settings
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponse, QueryDict
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
 from utilities.views import ObjectPermissionRequiredMixin
@@ -23,6 +23,38 @@ SECTIONS = (
     ("configuration", "Configuration"),
     ("sync", "Sync"),
 )
+
+
+def server_section_url(server: Server, section: str, family: Family) -> str:
+    """Return the canonical list or Overview of one Server section and family."""
+    names = {
+        "overview": "server",
+        "leases": f"server_leases{family}",
+        "subnets": f"server_subnets{family}",
+        "shared_networks": f"server_shared_networks{family}",
+        "reservations": f"server_reservations{family}",
+        "configuration": f"server_option_def{family}",
+        "options": f"server_dhcp{family}_options_edit",
+        "sync": "server_sync_status",
+    }
+    url = reverse(f"plugins:netbox_kea:{names[section]}", args=[server.pk])
+    return url + (f"?family={family}" if section in ("overview", "sync") else "")
+
+
+def workspace_filters(query: QueryDict, section: str) -> QueryDict:
+    """Keep section filters and table preferences; pagination belongs to its Server."""
+    fields = {"sort", "per_page"}
+    if section == "leases":
+        fields.update(("q", "by", "state"))
+    elif section == "reservations":
+        fields.update(("q", "subnet_id", "scope"))
+    elif section == "subnets":
+        fields.update(("q", "subnet_id"))
+    result = query.copy()
+    for key in list(result):
+        if key not in fields:
+            result.pop(key)
+    return result
 
 
 def with_return_url(url: str, return_url: str) -> str:
@@ -61,35 +93,31 @@ def server_context(request: HttpRequest, server: Server) -> dict[str, Any]:
     return_url = _safe_return_url(request, "")
 
     def section_url(key: str, version: Family) -> str:
-        names = {
-            "overview": "server",
-            "leases": f"server_leases{version}",
-            "subnets": f"server_subnets{version}",
-            "shared_networks": f"server_shared_networks{version}",
-            "reservations": f"server_reservations{version}",
-            "configuration": f"server_option_def{version}",
-            "options": f"server_dhcp{version}_options_edit",
-            "sync": "server_sync_status",
-        }
-        url = reverse(f"plugins:netbox_kea:{names[key]}", args=[server.pk])
-        return with_return_url(url + (f"?family={version}" if key in ("overview", "sync") else ""), return_url)
-
-    filter_fields = {"sort", "per_page"}
-    if section == "leases":
-        filter_fields.update(("q", "by", "state"))
-    elif section == "reservations":
-        filter_fields.update(("q", "subnet_id", "scope"))
-    elif section == "subnets" and subsection != "shared_networks":
-        filter_fields.update(("q", "subnet_id"))
+        return with_return_url(server_section_url(server, key, version), return_url)
 
     def family_url(version: Family) -> str:
         url = section_url(subsection or section, version)
-        query = request.GET.copy()
-        for name in list(query):
-            if name not in filter_fields:
-                query.pop(name)
+        query = workspace_filters(request.GET, subsection or section)
         suffix = query.urlencode()
         return url + (("&" if "?" in url else "?") + suffix if suffix else "")
+
+    switch_section = "configuration" if subsection == "options" else subsection or section
+    switch_query = workspace_filters(request.GET, switch_section)
+    switch_query["section"] = switch_section
+    switch_query["family"] = str(family)
+    if match and set(match.kwargs) - {"pk"}:
+        switch_query["record_selection"] = "1"
+    if return_url:
+        switch_query["return_url"] = return_url
+    switch_url = reverse("plugins:netbox_kea:server_switch", args=[server.pk])
+    switches = []
+    for choice in Server.objects.restrict(request.user, "view").exclude(pk=server.pk).order_by("name"):
+        switch_query["target"] = str(choice.pk)
+        switches.append((choice.name, switch_url + "?" + switch_query.urlencode()))
+    all_url = reverse(f"plugins:netbox_kea:combined_{switch_section}{family}")
+    all_filters = workspace_filters(request.GET, switch_section)
+    if all_filters:
+        all_url += "?" + all_filters.urlencode()
 
     return {
         "workspace_scope_label": server.name,
@@ -99,6 +127,8 @@ def server_context(request: HttpRequest, server: Server) -> dict[str, Any]:
         "workspace_sections": [(key, label, section_url(key, family)) for key, label in SECTIONS],
         "workspace_families": [(version, family_url(version)) for version in (4, 6)],
         "workspace_subsections": [],
+        "workspace_server_switches": switches,
+        "workspace_all_servers_url": all_url,
     }
 
 

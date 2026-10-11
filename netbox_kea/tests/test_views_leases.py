@@ -352,8 +352,8 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
             response = self._htmx_get(url, {"by": "ip", "q": "192.168.1.100"})
 
         self.assertEqual(response.status_code, 200)
-        # HX-Push-Url is set only on the success render path, and the lease row must
-        # appear — together these prove the table rendered, not the exception partial.
+        # A user search pushes its URL, and the lease row must
+        # appear. Together, these prove the table rendered instead of the exception partial.
         self.assertIn("HX-Push-Url", response.headers)
         self.assertContains(response, "192.168.1.100")
         # The column header says "Reserved" — check no badge link is rendered

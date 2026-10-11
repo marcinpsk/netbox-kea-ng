@@ -16,6 +16,13 @@ Opening a record from a combined page enters its owning Server for the selected 
 Use **Back to workspace** to restore the previous Server selection, section and filters.
 Forms opened from that page return to the same workspace after a change or when you select **Cancel**.
 
+Use **Switch Server** in the scope bar to open the same section and DHCP family on another permitted Server.
+Compatible search filters stay selected. Pagination starts again on the target Server.
+Subnet searches are checked against the target Server's live Subnet identities.
+If the target cannot confirm the Subnet, the filter is dropped and the page explains why.
+Switching from a record form opens the section list and explains that the record selection was dropped.
+Use **All Servers** to open that section in the combined workspace, or **Back to workspace** to restore the previous selection.
+
 Overview loads the status of each enabled daemon without blocking the Server details.
 An existing Status URL redirects to Overview.
 If you open a disabled family, the page shows "Protocol not enabled" and a link to the enabled family.
