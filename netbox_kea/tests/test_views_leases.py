@@ -164,7 +164,7 @@ class TestServerLeases4View(_ViewTestBase):
             with self.subTest(name):
                 self.assertContains(response, f'href="{reverse(f"plugins:netbox_kea:{name}", args=[self.server.pk])}"')
 
-    def test_get_with_dhcp4_disabled_redirects_to_server_with_valid_pk(self):
+    def test_get_with_dhcp4_disabled_shows_protocol_not_enabled(self):
         """When DHCPv4 is disabled the view must redirect to the server detail page.
 
         The redirect URL must contain an integer pk — this is the pattern that
@@ -173,9 +173,7 @@ class TestServerLeases4View(_ViewTestBase):
         v6_only = _make_db_server(name="v6-only", dhcp4=False, dhcp6=True)
         url = reverse("plugins:netbox_kea:server_leases4", args=[v6_only.pk])
         response = self.client.get(url)
-        self.assertEqual(response.status_code, 302)
-        self._assert_no_none_pk_redirect(response)
-        self.assertIn(str(v6_only.pk), response.url)
+        self.assertContains(response, "Protocol not enabled")
 
     def test_get_nonexistent_returns_404(self):
         url = reverse("plugins:netbox_kea:server_leases4", args=[99999])
@@ -192,13 +190,11 @@ class TestServerLeases6View(_ViewTestBase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
-    def test_get_with_dhcp6_disabled_redirects_to_server_with_valid_pk(self):
+    def test_get_with_dhcp6_disabled_shows_protocol_not_enabled(self):
         v4_only = _make_db_server(name="v4-only", dhcp4=True, dhcp6=False)
         url = reverse("plugins:netbox_kea:server_leases6", args=[v4_only.pk])
         response = self.client.get(url)
-        self.assertEqual(response.status_code, 302)
-        self._assert_no_none_pk_redirect(response)
-        self.assertIn(str(v4_only.pk), response.url)
+        self.assertContains(response, "Protocol not enabled")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

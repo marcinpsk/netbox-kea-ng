@@ -1,9 +1,10 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-FileCopyrightText: 2023 Devon Mar <devon-mar@users.noreply.github.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
-{% extends "generic/object.html" %}
 
-{% block content %}
+
+
+{% include "netbox_kea/inc/inline_notices.html" %}
   {% for svc in services %}
     <div class="card">
       <h5 class="card-header d-flex justify-content-between align-items-center">
@@ -80,4 +81,3 @@
       </div>
     </div>
   {% endfor %}
-{% endblock %}

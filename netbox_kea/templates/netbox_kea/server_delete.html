@@ -1,0 +1,15 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends "generic/object_delete.html" %}
+{% load kea_workspace static %}
+{% block head %}
+  {{ block.super }}
+  <link rel="stylesheet" href="{% static 'netbox_kea/css/workspace.css' %}">
+{% endblock %}
+
+{% block page %}
+<div class="container-fluid">
+  {% if object.pk %}{% server_workspace object %}{% endif %}
+  {{ block.super }}
+</div>
+{% endblock %}

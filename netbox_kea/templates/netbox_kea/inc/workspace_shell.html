@@ -1,6 +1,6 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
-<div id="kea-workspace-shell" class="kea-workspace-shell bg-body border-bottom mb-3">
+<div id="{{ workspace_shell_id|default:'kea-workspace-shell' }}" class="kea-workspace-shell bg-body border-bottom mb-3"{% if workspace_oob %} hx-swap-oob="true"{% endif %}>
   <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 py-2">
     <div class="d-flex flex-wrap align-items-center gap-2">
       <strong aria-label="Server Scope">{{ workspace_scope_label }}</strong>

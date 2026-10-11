@@ -1,0 +1,7 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% for css, lines in inline_notices %}
+<div class="alert alert-{{ css }} py-2 px-3 mb-3 small" role="alert"><ul class="mb-0">
+  {% for line in lines %}<li>{{ line }}</li>{% endfor %}
+</ul></div>
+{% endfor %}

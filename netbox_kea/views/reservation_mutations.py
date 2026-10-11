@@ -55,6 +55,7 @@ from .reservations import (
     _build_reservation_options_formset,
     _client_capabilities,
 )
+from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
 
@@ -465,8 +466,10 @@ def _published_name_preview(
     }
 
 
-class _ReservationPublishedNameView(_KeaChangeMixin, View):
+class _ReservationPublishedNameView(_KeaChangeMixin, ServerFamilyMixin, View):
     """Render the name that Kea publishes for the hostname in the Reservation form, from the cached catalogue."""
+
+    workspace_section = "reservations"
 
     dhcp_version: Family
 
@@ -488,7 +491,8 @@ class _ReservationPublishedNameView(_KeaChangeMixin, View):
         return render(request, "netbox_kea/inc/reservation_published_name.html", context)
 
 
-class _ReservationMutationView(_KeaChangeMixin, generic.ObjectView):
+class _ReservationMutationView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
+    workspace_section = "reservations"
     queryset = Server.objects.all()
     tab = _RESERVATIONS_TAB
     template_name = "netbox_kea/server_reservation_form.html"

@@ -171,7 +171,8 @@ class TestCombinedWorkspace(_ViewTestBase):
                 )
                 self.assertRedirects(
                     response,
-                    reverse(f"plugins:netbox_kea:{target}", args=[self.server.pk]),
+                    reverse(f"plugins:netbox_kea:{target}", args=[self.server.pk])
+                    + (f"?family={family}" if section == "sync" else ""),
                     fetch_redirect_response=False,
                 )
 

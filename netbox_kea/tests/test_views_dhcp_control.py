@@ -158,16 +158,16 @@ class TestServerDHCP4DisableView(_ViewTestBase):
         self.assertContains(response, "max_period")
         self.assertEqual(kea.commands(), [])
 
-    def test_the_confirmation_pages_select_the_status_tab(self):
-        """The Status tab links to these pages, so they keep that tab selected."""
+    def test_the_confirmation_pages_select_overview(self):
+        """The daemon controls belong to Overview."""
         with stub_kea({}) as kea:
             for action in ("enable", "disable"):
                 for version in (4, 6):
                     url = reverse(f"plugins:netbox_kea:server_dhcp{version}_{action}", args=[self.server.pk])
                     with self.subTest(action=action, version=version):
-                        self.assertEqual(active_tabs(self.client.get(url)), ["Status"])
+                        self.assertEqual(active_tabs(self.client.get(url)), ["Overview"])
             with self.subTest("invalid disable form"):
-                self.assertEqual(active_tabs(self.client.post(self._url(), {"max_period": "0"})), ["Status"])
+                self.assertEqual(active_tabs(self.client.post(self._url(), {"max_period": "0"})), ["Overview"])
         self.assertEqual(kea.commands(), [])
 
     def test_post_without_max_period_calls_disable_no_period(self):

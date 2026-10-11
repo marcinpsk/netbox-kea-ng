@@ -416,38 +416,17 @@ def open_kea_menu(page: Page):
 
 
 def open_leases(page: Page, version: Literal[4, 6]) -> None:
-    """Open the consolidated Leases tab and select the DHCPv4/DHCPv6 family pill.
-
-    The per-protocol tabs were merged into a single "Leases" tab with an in-page
-    v4/v6 nav-pill toggle that is rendered only on dual-stack servers. On a
-    single-protocol server there is no pill — the tab already lands on the one
-    enabled protocol — so the pill click is skipped.
-    """
-    page.get_by_role("link", name="Leases", exact=True).click()
-    # Wait until the leases page has loaded (search field is present on single + dual)
-    # before probing for the family pill, so .count() reflects the new page.
+    """Open Leases and select its family in the shared Server scope bar."""
+    page.get_by_role("navigation", name="Workspace sections").get_by_role("link", name="Leases", exact=True).click()
+    page.get_by_role("navigation", name="DHCP family").get_by_role("link", name=f"DHCPv{version}", exact=True).click()
     page.locator("#id_q").wait_for()
-    pill = page.get_by_role("link", name=f"DHCPv{version}", exact=True)
-    if pill.count():
-        pill.click()
-        page.locator("#id_q").wait_for()
 
 
 def open_subnets(page: Page, version: Literal[4, 6]) -> None:
-    """Open the consolidated Subnets tab and select the DHCPv4/DHCPv6 family pill.
-
-    Like :func:`open_leases`, the v4/v6 family pill is rendered only on dual-stack
-    servers; on a single-protocol server the tab already lands on the one enabled
-    protocol, so the pill click is skipped.
-    """
-    page.get_by_role("link", name="Subnets", exact=True).click()
-    # Wait until the subnets page has loaded (section nav present on single + dual)
-    # before probing for the family pill, so .count() reflects the new page.
+    """Open Subnets and select its family in the shared Server scope bar."""
+    page.get_by_role("navigation", name="Workspace sections").get_by_role("link", name="Subnets", exact=True).click()
+    page.get_by_role("navigation", name="DHCP family").get_by_role("link", name=f"DHCPv{version}", exact=True).click()
     page.get_by_role("link", name="Shared Networks", exact=True).wait_for()
-    pill = page.get_by_role("link", name=f"DHCPv{version}", exact=True)
-    if pill.count():
-        pill.click()
-        page.get_by_role("link", name="Shared Networks", exact=True).wait_for()
 
 
 def search_lease(page: Page, version: Literal[4, 6], by: str, q: str) -> None:
@@ -666,7 +645,7 @@ def test_server_edit(page: Page, kea: KeaClient) -> None:
 
 
 def test_server_status(page: Page, kea: _DualEndpointKeaClient) -> None:
-    page.get_by_role("link", name="Status", exact=True).click()
+    page.get_by_role("navigation", name="Workspace sections").get_by_role("link", name="Overview", exact=True).click()
 
     # has_control_agent=False (Kea 3.0): the status view shows the daemon versions, not a CA row.
     dhcp4_version = kea.command("version-get", 4)[0]["arguments"]["extended"]
@@ -1405,33 +1384,34 @@ def test_one_service_only(page: Page, version: Literal[6, 4], request: pytest.Fi
 
     server_url = page.url
 
-    # The consolidated Leases/Subnets tabs are present for a single-protocol server.
+    # Both family choices remain available. A disabled family has an explicit page.
     expect(page.get_by_role("link", name="Leases", exact=True)).to_have_count(1)
     expect(page.get_by_role("link", name="Subnets", exact=True)).to_have_count(1)
-
-    # The Leases tab lands on the one enabled protocol, with no v4/v6 family pills.
     page.get_by_role("link", name="Leases", exact=True).click()
     expect(page).to_have_url(re.compile(rf"/leases{version}/$"))
-    expect(page.get_by_role("link", name="DHCPv4", exact=True)).to_have_count(0)
-    expect(page.get_by_role("link", name="DHCPv6", exact=True)).to_have_count(0)
-
-    # The Subnets tab mirrors the same single-service landing behavior.
-    page.goto(server_url)
-    page.get_by_role("link", name="Subnets", exact=True).click()
-    expect(page).to_have_url(re.compile(rf"/subnets{version}/$"))
-
-    if version == 6:
-        # v4 is disabled: the v4 URL redirects to the enabled v6 page (merged-tab UX).
-        page.goto(urljoin(server_url, "leases4/"))
-        expect(page).to_have_url(urljoin(server_url, "leases6/"))
-        page.goto(urljoin(server_url, "subnets4/"))
-        expect(page).to_have_url(urljoin(server_url, "subnets6/"))
-    else:
-        # v6 is disabled: the v6 URL redirects back to the server detail page.
-        page.goto(urljoin(server_url, "leases6/"))
-        expect(page).to_have_url(server_url)
-        page.goto(urljoin(server_url, "subnets6/"))
-        expect(page).to_have_url(server_url)
+    families = page.get_by_role("navigation", name="DHCP family")
+    expect(families.get_by_role("link", name="DHCPv4", exact=True)).to_be_visible()
+    expect(families.get_by_role("link", name="DHCPv6", exact=True)).to_be_visible()
+    disabled = 4 if version == 6 else 6
+    for section in ("leases{family}/", "subnets{family}/", "reservations{family}/", "dhcp{family}/option-def/"):
+        disabled_url = urljoin(server_url, section.format(family=disabled))
+        page.goto(disabled_url)
+        expect(page).to_have_url(disabled_url)
+        state = page.locator("#kea-protocol-disabled")
+        expect(state).to_contain_text(re.compile("protocol not enabled", re.IGNORECASE))
+        expect(
+            page.locator("#kea-workspace-shell").get_by_role("link", name=f"DHCPv{disabled}", exact=True)
+        ).to_have_attribute("aria-current", "page")
+        state.get_by_role("link", name=re.compile(rf"DHCPv{version}")).click()
+        expect(page).to_have_url(urljoin(server_url, section.format(family=version)))
+    for section in ("", "sync_status/"):
+        disabled_url = urljoin(server_url, section) + f"?family={disabled}"
+        page.goto(disabled_url)
+        expect(page).to_have_url(disabled_url)
+        state = page.locator("#kea-protocol-disabled")
+        expect(state).to_contain_text(re.compile("protocol not enabled", re.IGNORECASE))
+        state.get_by_role("link", name=re.compile(rf"DHCPv{version}")).click()
+        expect(page).to_have_url(urljoin(server_url, section) + f"?family={version}")
 
 
 @pytest.mark.parametrize("version", (6, 4))

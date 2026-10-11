@@ -12,10 +12,8 @@ from django.http import HttpResponse
 
 from netbox_kea.constants import Family
 from netbox_kea.leases import DHCPv4LeaseRequest, DHCPv6LeaseRequest
-from netbox_kea.models import Server
 from netbox_kea.tests.kea_stub import lease_record, typed_lease
 from netbox_kea.utilities import (
-    check_dhcp_enabled,
     format_duration,
     is_hex_string,
     lease_rows,
@@ -165,45 +163,6 @@ class TestIsHexString(TestCase):
 
     def test_mixed_case_accepted(self):
         self.assertTrue(is_hex_string("AA:BB:CC:DD:EE:FF", 6, 6))
-
-
-class TestCheckDhcpEnabled(TestCase):
-    """Tests for check_dhcp_enabled() — redirect guard."""
-
-    def _make_server(self, dhcp4=True, dhcp6=True):
-        server = MagicMock(spec=Server)
-        server.dhcp4 = dhcp4
-        server.dhcp6 = dhcp6
-        server.get_absolute_url.return_value = "/plugins/kea/servers/1/"
-        return server
-
-    def test_version4_enabled_returns_none(self):
-        server = self._make_server(dhcp4=True)
-        with patch("netbox_kea.utilities.redirect", autospec=True) as mock_redirect:
-            result = check_dhcp_enabled(server, 4)
-        self.assertIsNone(result)
-        mock_redirect.assert_not_called()
-
-    def test_version6_enabled_returns_none(self):
-        server = self._make_server(dhcp6=True)
-        with patch("netbox_kea.utilities.redirect", autospec=True) as mock_redirect:
-            result = check_dhcp_enabled(server, 6)
-        self.assertIsNone(result)
-        mock_redirect.assert_not_called()
-
-    def test_version4_disabled_returns_redirect(self):
-        server = self._make_server(dhcp4=False)
-        with patch("netbox_kea.utilities.redirect", return_value="<redirect>", autospec=True) as mock_redirect:
-            result = check_dhcp_enabled(server, 4)
-        self.assertEqual(result, "<redirect>")
-        mock_redirect.assert_called_once_with("/plugins/kea/servers/1/")
-
-    def test_version6_disabled_returns_redirect(self):
-        server = self._make_server(dhcp6=False)
-        with patch("netbox_kea.utilities.redirect", return_value="<redirect>", autospec=True) as mock_redirect:
-            result = check_dhcp_enabled(server, 6)
-        self.assertEqual(result, "<redirect>")
-        mock_redirect.assert_called_once_with("/plugins/kea/servers/1/")
 
 
 class TestKeaErrorHint(TestCase):

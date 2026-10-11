@@ -1,9 +1,8 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% comment %}
-Consolidated Subnets tab navigation: section toggle (Subnets | Shared Networks)
-plus a DHCPv4/DHCPv6 family toggle (only when the server runs both protocols).
-Context: section, dhcp_version, nav_subnets_url, nav_shared_url, nav_v4_url, nav_v6_url.
+Subnet subsection navigation: Subnets and Shared Networks.
+Context: section, nav_subnets_url, nav_shared_url.
 {% endcomment %}
 <ul class="nav nav-tabs mb-3">
   <li class="nav-item">
@@ -13,13 +12,3 @@ Context: section, dhcp_version, nav_subnets_url, nav_shared_url, nav_v4_url, nav
     <a class="nav-link{% if section == 'shared_networks' %} active{% endif %}" href="{{ nav_shared_url }}">Shared Networks</a>
   </li>
 </ul>
-{% if object.dhcp4 and object.dhcp6 %}
-<ul class="nav nav-pills justify-content-center mb-3">
-  <li class="nav-item">
-    <a class="nav-link{% if dhcp_version == 4 %} active{% endif %}" href="{{ nav_v4_url }}">DHCPv4</a>
-  </li>
-  <li class="nav-item">
-    <a class="nav-link{% if dhcp_version == 6 %} active{% endif %}" href="{{ nav_v6_url }}">DHCPv6</a>
-  </li>
-</ul>
-{% endif %}

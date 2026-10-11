@@ -14,7 +14,6 @@ from utilities.views import register_model_view
 from .. import config_write, forms, server_configuration, tables
 from ..constants import Family
 from ..models import Server
-from ..utilities import check_dhcp_enabled
 from ._base import (
     ConditionalLoginRequiredMixin,
     _KeaChangeMixin,
@@ -23,14 +22,18 @@ from ._base import (
 )
 from .notices import notice, show_notices
 from .subnets import _SUBNETS_TAB, subnets_nav_context
+from .workspace import ServerFamilyMixin
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared Networks views
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class BaseServerSharedNetworksView(generic.ObjectChildrenView):
+class BaseServerSharedNetworksView(ServerFamilyMixin, generic.ObjectChildrenView):
     """Read-only tab listing shared networks from the Kea config."""
+
+    workspace_section = "subnets"
+    workspace_subsection = "shared_networks"
 
     table = tables.SharedNetworkTable
     queryset = Server.objects.all()
@@ -39,7 +42,7 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
 
     def get_children(self, request: HttpRequest, parent: Server) -> list[dict[str, Any]]:
         """Return Shared Network rows from the Server Configuration snapshot."""
-        if check_dhcp_enabled(parent, self.dhcp_version) is not None:
+        if not (parent.dhcp4 if self.dhcp_version == 4 else parent.dhcp6):
             return []
         snapshot = server_configuration.display(parent, self.dhcp_version)
         show_notices(request, notice(snapshot))
@@ -53,9 +56,6 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
     def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
         """Handle GET: check DHCP enabled, then render shared-network table."""
         instance = self.get_object(**kwargs)
-        if resp := check_dhcp_enabled(instance, self.dhcp_version):
-            return resp
-
         child_objects = self.get_children(request, instance)
         table_data = self.prep_table_data(request, child_objects, instance)
         table = self.get_table(table_data, request, False)
@@ -91,19 +91,15 @@ class ServerSharedNetworks4View(BaseServerSharedNetworksView):
 
     dhcp_version = 4
 
-    def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
-        """Redirect to the v6 view on v6-only servers so the merged tab works."""
-        instance = self.get_object(**kwargs)
-        if not instance.dhcp4 and instance.dhcp6:
-            return redirect(reverse("plugins:netbox_kea:server_shared_networks6", args=[instance.pk]))
-        return super().get(request, **kwargs)
 
-
-class BaseServerSharedNetworkAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+class BaseServerSharedNetworkAddView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Add a new shared network to a Kea server.
 
     Subclasses set ``dhcp_version`` to 4 or 6.
     """
+
+    workspace_section = "subnets"
+    workspace_subsection = "shared_networks"
 
     dhcp_version: Family
 
@@ -167,12 +163,15 @@ class ServerSharedNetwork4AddView(BaseServerSharedNetworkAddView):
     tab = _SUBNETS_TAB
 
 
-class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Delete a shared network from a Kea server.
 
     The network name is passed as a URL kwarg ``network_name``.  Subnets that
     belonged to the deleted network fall back to the global address pool.
     """
+
+    workspace_section = "subnets"
+    workspace_subsection = "shared_networks"
 
     dhcp_version: Family
 
@@ -220,8 +219,11 @@ class ServerSharedNetwork4DeleteView(BaseServerSharedNetworkDeleteView):
     tab = _SUBNETS_TAB
 
 
-class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+class BaseServerSharedNetworkEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Edit a Shared Network's managed configuration fields."""
+
+    workspace_section = "subnets"
+    workspace_subsection = "shared_networks"
 
     dhcp_version: Family
 

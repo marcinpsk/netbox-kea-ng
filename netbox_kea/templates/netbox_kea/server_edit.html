@@ -1,0 +1,19 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends "generic/object_edit.html" %}
+{% load kea_workspace static %}
+{% block head %}
+  {{ block.super }}
+  <link rel="stylesheet" href="{% static 'netbox_kea/css/workspace.css' %}">
+{% endblock %}
+
+{% block tabs %}{% endblock %}
+{% block page %}
+<div class="container-fluid">
+  {% if object.pk %}{% server_workspace object %}{% endif %}
+  <ul class="nav nav-tabs">
+    <li class="nav-item"><button class="nav-link active" id="edit-form-tab" data-bs-toggle="tab" data-bs-target="#edit-form" type="button" role="tab" aria-controls="edit-form" aria-selected="true">{% if object.pk %}Edit{% else %}Create{% endif %}</button></li>
+  </ul>
+  {{ block.super }}
+</div>
+{% endblock %}
