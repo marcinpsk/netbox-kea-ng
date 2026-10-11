@@ -4,7 +4,7 @@ import logging
 import re
 from collections.abc import Callable
 from typing import Any, TypeVar, cast
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, unquote, urlparse, urlsplit
 from urllib.parse import urlencode as _urlencode
 
 import requests
@@ -12,7 +12,7 @@ from django.contrib import messages
 from django.contrib.auth.models import PermissionsMixin
 from django.http import Http404, HttpResponse, HttpResponseForbidden
 from django.http.request import HttpRequest
-from django.urls import reverse
+from django.urls import Resolver404, get_script_prefix, resolve, reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from netbox.tables import BaseTable
 
@@ -53,9 +53,22 @@ def _safe_return_url(request: HttpRequest, fallback: str) -> str:
     """Return the request's ``return_url`` when it is a local absolute path, else *fallback*."""
     return_url = request.GET.get("return_url", "")
     # redirect() reverses a value without "/" as a view name, so only a path is safe.
-    if return_url.startswith("/") and url_has_allowed_host_and_scheme(return_url, allowed_hosts=None):
-        return return_url
-    return fallback
+    if (
+        not return_url.startswith("/")
+        or "\\" in return_url
+        or any(ord(character) < 32 for character in return_url)
+        or not url_has_allowed_host_and_scheme(return_url, allowed_hosts=None)
+    ):
+        return fallback
+    path = unquote(urlsplit(return_url).path)
+    prefix = get_script_prefix()
+    if not path.startswith(prefix):
+        return fallback
+    try:
+        resolve("/" + path.removeprefix(prefix))
+    except Resolver404:
+        return fallback
+    return return_url
 
 
 def _strip_empty_params(path: str) -> str:

@@ -53,6 +53,10 @@ is a subsection of Subnets. Leases and Configuration choose a Server for the sel
 Sync shows the latest recorded results for each Server in the scope. A sync run covers all enabled
 families on its Server. Unknown counts remain unknown.
 
+Open a combined Subnet, Shared Network or Reservation row to enter its owning Server.
+The Server page keeps a **Back to workspace** link to the same combined page and filters.
+Row actions open the owning Server's forms and return to that combined page after the change.
+
 The Servers inventory and global Sync Jobs page remain in the plugin menu.
 
 ![The combined view lists each Kea Server with its endpoint URLs and the online state of each DHCP daemon](assets/screenshots/combined-dashboard-light.png#only-light)

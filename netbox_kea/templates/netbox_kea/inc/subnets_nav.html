@@ -1,14 +1,15 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
+{% load kea_workspace %}
 {% comment %}
 Subnet subsection navigation: Subnets and Shared Networks.
 Context: section, nav_subnets_url, nav_shared_url.
 {% endcomment %}
 <ul class="nav nav-tabs mb-3">
   <li class="nav-item">
-    <a class="nav-link{% if section == 'subnets' %} active{% endif %}" href="{{ nav_subnets_url }}">Subnets</a>
+    <a class="nav-link{% if section == 'subnets' %} active{% endif %}" href="{% workspace_url nav_subnets_url %}">Subnets</a>
   </li>
   <li class="nav-item">
-    <a class="nav-link{% if section == 'shared_networks' %} active{% endif %}" href="{{ nav_shared_url }}">Shared Networks</a>
+    <a class="nav-link{% if section == 'shared_networks' %} active{% endif %}" href="{% workspace_url nav_shared_url %}">Shared Networks</a>
   </li>
 </ul>

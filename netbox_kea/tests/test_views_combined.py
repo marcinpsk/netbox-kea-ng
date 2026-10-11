@@ -555,26 +555,34 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
     def test_writable_verified_subnet_offers_options_and_identity_actions(self):
         response = self._subnet_actions_response()
         self.assertEqual(response.status_code, 200)
+        page = BeautifulSoup(response.content, "html.parser")
         for action in ("options_edit", "wipe_leases"):
             url = reverse(f"plugins:netbox_kea:server_subnet4_{action}", args=[self.server.pk, 7])
-            self.assertTrue(f'href="{url}"' in response.content.decode(), f"Missing {action} action")
+            links = [link for link in page.select("td a") if urlsplit(link["href"]).path == url]
+            self.assertEqual(len(links), 1, f"Missing {action} action")
+            self.assertEqual(
+                parse_qs(urlsplit(links[0]["href"]).query).get("return_url"),
+                [reverse("plugins:netbox_kea:combined_subnets4")],
+            )
 
     def test_writable_configured_subnet_offers_no_options_or_identity_actions(self):
         """A Subnet options change needs a Verified Subnet, so a Subnet that Kea did not confirm has no form."""
         response = self._subnet_actions_response(verified=False)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "198.18.0.0/24")
+        paths = {urlsplit(link["href"]).path for link in BeautifulSoup(response.content, "html.parser").select("td a")}
         for action in ("options_edit", "wipe_leases"):
             url = reverse(f"plugins:netbox_kea:server_subnet4_{action}", args=[self.server.pk, 7])
-            self.assertNotContains(response, f'href="{url}"')
+            self.assertNotIn(url, paths)
 
     def test_readonly_subnet_has_no_mutation_actions(self):
         response = self._subnet_actions_response(writable=False)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "198.18.0.0/24")
+        paths = {urlsplit(link["href"]).path for link in BeautifulSoup(response.content, "html.parser").select("td a")}
         for action in ("options_edit", "wipe_leases"):
             url = reverse(f"plugins:netbox_kea:server_subnet4_{action}", args=[self.server.pk, 7])
-            self.assertNotContains(response, f'href="{url}"')
+            self.assertNotIn(url, paths)
 
     def test_complete_catalogue_is_reused_for_unchanged_requests(self):
         url = reverse("plugins:netbox_kea:combined_subnets4")

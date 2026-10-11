@@ -45,6 +45,7 @@ from ..subnet_catalogue import VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
 from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import OptionalViewTab
+from ._base import _safe_return_url
 from .notices import HEADLINES, Notice, load_snapshot, notice
 from .workspace import ServerFamilyMixin
 
@@ -631,7 +632,7 @@ def _reservation_list_context(
         logger.exception("Unexpected error fetching DHCPv%s Reservations", version)
         messages.error(request, HEADLINES["reservation"])
         read = ReservationRead(query, _empty_reservation_snapshot(version), capabilities=None)
-    presented = present(request.user, server, read, return_url=request.get_full_path())
+    presented = present(request.user, server, read, return_url=_safe_return_url(request, request.get_full_path()))
     # A missing host_cmds hook has its own panel, so one cause shows one banner.
     hook_available = not (presented.notice is not None and presented.notice.unsupported_command)
     bulk_sync = sync_gate(request.user, reconcile_permissions(server, ReservationPhase.source))
@@ -650,7 +651,7 @@ def _reservation_list_context(
         "mutation_unavailable": bool(presented.mutation_unavailable_reason),
         "mutation_unavailable_reason": presented.mutation_unavailable_reason,
         "add_url": reverse(f"plugins:netbox_kea:server_reservation{version}_add", args=[server.pk])
-        + f"?{urlencode({'return_url': request.get_full_path()})}"
+        + f"?{urlencode({'return_url': _safe_return_url(request, request.get_full_path())})}"
         if presented.can_mutate
         else None,
         "bulk_sync_url": reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_sync", args=[server.pk])

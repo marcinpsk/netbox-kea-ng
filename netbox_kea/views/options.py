@@ -21,7 +21,7 @@ from ..dhcp_options import DHCPOption, DHCPOptionConflict, DHCPOptionNameChange
 from ..kea import KeaCommand, KeaException
 from ..models import Server
 from ..utilities import OptionalViewTab
-from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _run_config_change
+from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _run_config_change, _safe_return_url
 from .notices import notice, show_notices
 from .subnets import _NO_SUBNET_CIDR, _SUBNETS_TAB, _displayed_subnet
 from .workspace import ServerFamilyMixin
@@ -79,7 +79,9 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
             Server.objects.restrict(request.user, "change"),
             pk=pk,
         )
-        return_url = reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
+        return_url = _safe_return_url(
+            request, reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
+        )
         catalogue, verified = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
         if verified is None:
             reason = ", because the subnet_cmds hook is not loaded" if not catalogue.subnet_cmds_available else ""
@@ -129,9 +131,8 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
             Server.objects.restrict(request.user, "change"),
             pk=pk,
         )
-        return_url = reverse(
-            f"plugins:netbox_kea:server_subnets{self.dhcp_version}",
-            args=[pk],
+        return_url = _safe_return_url(
+            request, reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
         )
         formset = forms.SubnetOptionsFormSet(request.POST)
         form = forms.SubnetConfirmForm(request.POST, family=self.dhcp_version)

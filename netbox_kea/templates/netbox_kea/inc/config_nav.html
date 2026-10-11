@@ -1,14 +1,15 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
+{% load kea_workspace %}
 {% comment %}
 Configuration subsection navigation: Server Options and Option Definitions.
 Context: config_section, nav_options_url, nav_optiondef_url.
 {% endcomment %}
 <ul class="nav nav-tabs mb-3">
   <li class="nav-item">
-    <a class="nav-link{% if config_section == 'options' %} active{% endif %}" href="{{ nav_options_url }}">Server Options</a>
+    <a class="nav-link{% if config_section == 'options' %} active{% endif %}" href="{% workspace_url nav_options_url %}">Server Options</a>
   </li>
   <li class="nav-item">
-    <a class="nav-link{% if config_section == 'option_def' %} active{% endif %}" href="{{ nav_optiondef_url }}">Option Definitions</a>
+    <a class="nav-link{% if config_section == 'option_def' %} active{% endif %}" href="{% workspace_url nav_optiondef_url %}">Option Definitions</a>
   </li>
 </ul>

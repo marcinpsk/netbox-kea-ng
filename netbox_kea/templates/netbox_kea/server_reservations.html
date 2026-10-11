@@ -2,6 +2,7 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% extends "netbox_kea/server_workspace.html" %}
 {% load render_table from django_tables2 %}
+{% load kea_workspace %}
 
 {% block content %}
 {% include "netbox_kea/includes/persist_config_warning.html" %}
@@ -31,6 +32,7 @@
   </div>
   <div class="card-body">
     <form method="get" class="row g-2 align-items-end">
+      {% workspace_return_field %}
       <div class="col-auto flex-grow-1">
         <label for="id_q" class="form-label">{{ search_form.q.label }}</label>
         {{ search_form.q }}
@@ -57,7 +59,7 @@
           <i class="mdi mdi-magnify"></i> Filter
         </button>
         {% if request.GET %}
-        <a href="{{ request.path }}" class="btn btn-outline-secondary btn-sm">
+        <a href="{% workspace_url request.path %}" class="btn btn-outline-secondary btn-sm">
           <i class="mdi mdi-close"></i> Clear
         </a>
         {% endif %}
