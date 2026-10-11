@@ -23,6 +23,16 @@ If the target cannot confirm the Subnet, the filter is dropped and the page expl
 Switching from a record form opens the section list and explains that the record selection was dropped.
 Use **All Servers** to open that section in the combined workspace, or **Back to workspace** to restore the previous selection.
 
+![The Server switcher offers another permitted Server and All Servers](assets/screenshots/server-switch-light.png#only-light)
+![The Server switcher offers another permitted Server and All Servers](assets/screenshots/server-switch-dark.png#only-dark)
+
+The scope bar and section links use the NetBox light or dark theme.
+On narrow screens, the Server name wraps and the section bar scrolls within the workspace.
+Use **Tab** to reach **Switch Server**, then **Enter** to open it.
+Use **Tab** to reach a Server link, then **Enter** to switch.
+Use **Escape** to close the switcher and return focus to its button.
+See the [workspace keyboard guide](index.md#keyboard-narrow-layouts-and-themes) for the full navigation sequence.
+
 Overview loads the status of each enabled daemon without blocking the Server details.
 An existing Status URL redirects to Overview.
 If you open a disabled family, the page shows "Protocol not enabled" and a link to the enabled family.
