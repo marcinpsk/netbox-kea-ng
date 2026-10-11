@@ -274,6 +274,118 @@ class TestAddServerForm:
 class TestKeaServerTabs:
     """Every Server tab renders against the harness Kea daemons."""
 
+    @pytest.mark.parametrize("family", [4, 6])
+    def test_switch_with_missing_subnet_and_state_filter_keeps_browser_history(
+        self,
+        page: Page,
+        plugin_base: str,
+        kea_server,
+        nb_api,
+        kea_url: str,
+        kea_dhcp6_url: str,
+        track_http_errors: list,
+        family: int,
+    ) -> None:
+        """Dropping an unconfirmed Subnet keeps the state filter and one Back step."""
+        second = nb_api.plugins.kea.servers.create(
+            name=f"{kea_server.name}-missing-subnet",
+            ca_url=kea_url,
+            dhcp6_url=kea_dhcp6_url,
+            has_control_agent=False,
+        )
+        try:
+            page.goto(f"{plugin_base}/servers/{kea_server.id}/leases{family}/?by=subnet_id&q=999999&state=0")
+            page.wait_for_load_state("networkidle")
+            source_url = page.url
+            shell = page.locator("#kea-workspace-shell")
+            shell.get_by_role("button", name="Switch Server", exact=True).click()
+            shell.get_by_role("navigation", name="Switch Server").get_by_role(
+                "link", name=second.name, exact=True
+            ).click()
+            page.wait_for_url(re.compile(rf"/servers/{second.id}/leases{family}/"))
+            page.wait_for_load_state("networkidle")
+            expect(shell.get_by_label("Server Scope")).to_have_text(second.name)
+            expect(
+                page.get_by_text("Subnet filter dropped: the target Server did not confirm this Subnet.", exact=True)
+            ).to_be_visible()
+            expect(page.locator("#id_state")).to_have_value("0")
+            expect(page.locator("#id_q")).to_have_value("")
+            target_url = page.url
+            page.go_back()
+            expect(page).to_have_url(source_url)
+            page.go_forward()
+            expect(page).to_have_url(target_url)
+            _assert_no_http_errors(track_http_errors)
+        finally:
+            second.delete()
+
+    @pytest.mark.parametrize("width", [1280, 390], ids=["desktop", "narrow"])
+    @pytest.mark.parametrize("family", [4, 6])
+    def test_switch_servers_keeps_section_search_and_previous_workspace(
+        self,
+        page: Page,
+        plugin_base: str,
+        kea_server,
+        nb_api,
+        kea_url: str,
+        kea_dhcp6_url: str,
+        track_http_errors: list,
+        width: int,
+        family: int,
+    ) -> None:
+        """Switch on Subnets and filtered Leases, then restore the previous selection."""
+        second = nb_api.plugins.kea.servers.create(
+            name=f"{kea_server.name}-switch",
+            ca_url=kea_url,
+            dhcp6_url=kea_dhcp6_url,
+            has_control_agent=False,
+        )
+        try:
+            page.set_viewport_size({"width": width, "height": 720})
+            previous = f"{plugin_base}/combined/subnets{family}/?server={kea_server.id}&server={second.id}"
+            previous_path = urlparse(previous).path + "?" + urlparse(previous).query
+            for section in ("subnets", "leases"):
+                filters = {"return_url": previous_path}
+                if section == "leases":
+                    filters.update({"sort": "ip_address", "per_page": "50"})
+                page.goto(f"{plugin_base}/servers/{kea_server.id}/{section}{family}/?{urlencode(filters)}")
+                if section == "leases":
+                    page.locator("#id_by").select_option(label="Hostname")
+                    page.locator("#id_q").fill("scope-switch-client")
+                    page.locator("#lease-search-btn").click()
+                    page.wait_for_url(re.compile(r"q=scope-switch-client"))
+                page.wait_for_load_state("networkidle")
+                source_url = page.url
+                shell = page.locator("#kea-workspace-shell")
+                assert shell.get_by_role("button", name="Switch Server", exact=True).count() == 1, shell.aria_snapshot()
+                shell.get_by_role("button", name="Switch Server", exact=True).click()
+                shell.get_by_role("navigation", name="Switch Server").get_by_role(
+                    "link", name=second.name, exact=True
+                ).click()
+                page.wait_for_url(re.compile(rf"/servers/{second.id}/{section}{family}/"))
+                expect(shell.get_by_label("Server Scope")).to_have_text(second.name)
+                expect(shell.get_by_role("link", name=f"DHCPv{family}", exact=True)).to_have_attribute(
+                    "aria-current", "page"
+                )
+                query = parse_qs(urlparse(page.url).query)
+                assert query["return_url"] == [previous_path]
+                if section == "leases":
+                    assert query["q"] == ["scope-switch-client"]
+                    assert query["by"] == ["hostname"]
+                    assert query["sort"] == ["ip_address"]
+                    assert query["per_page"] == ["50"]
+                    expect(page.locator("#id_q")).to_have_value("scope-switch-client")
+                target_url = page.url
+                page.go_back()
+                expect(page).to_have_url(source_url)
+                page.go_forward()
+                expect(page).to_have_url(target_url)
+                shell.get_by_role("link", name="Back to workspace", exact=True).click()
+                expect(page).to_have_url(previous)
+            _assert_no_http_errors(track_http_errors)
+        finally:
+            second.delete()
+
     def test_lease_search_updates_family_links_and_native_form_context(
         self,
         page: Page,

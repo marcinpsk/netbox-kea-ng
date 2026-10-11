@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
 from typing import Any, Generic, Literal, TypeVar
+from urllib.parse import parse_qs, urlsplit
 from urllib.parse import urlencode as _urlencode
 
 import requests
@@ -98,6 +99,18 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseTable)
 _LEASE_EXPORT_MAX_LEASES = 50_000
+
+
+def _search_history(request: HttpRequest, response: HttpResponse, url: str) -> HttpResponse:
+    """Replace automatic or unchanged searches; push user searches that change the URL."""
+    current = urlsplit(_strip_empty_params(request.headers.get("HX-Current-URL", "")))
+    target = urlsplit(url)
+    unchanged = current.path == target.path and parse_qs(current.query, keep_blank_values=True) == parse_qs(
+        target.query, keep_blank_values=True
+    )
+    initial_search = request.headers.get("Kea-Initial-Search") == "true"
+    response["HX-Replace-Url" if initial_search or unchanged else "HX-Push-Url"] = url
+    return response
 
 
 def lease_sync_gates(user: Any) -> dict[AllocationKind, SyncGate]:
@@ -468,7 +481,7 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
         self, request: HttpRequest, server: Server, form, lease_notice: Notice | None = None
     ) -> HttpResponse:
         """Render the search partial with the form and an empty table: a refused search or a failed read."""
-        return render(
+        response = render(
             request,
             "netbox_kea/server_dhcp_leases_htmx.html",
             {
@@ -480,6 +493,7 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
                 "lease_notice": lease_notice,
             },
         )
+        return _search_history(request, response, _strip_empty_params(request.get_full_path()))
 
     def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
         """Dispatch to export, HTMX partial, or full page render as appropriate."""
@@ -545,11 +559,7 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
                     "page_lengths": EnhancedPaginator.default_page_lengths,
                 },
             )
-            # Tell HTMX which URL to push to the browser history.  The request
-            # URL may include empty params (e.g. state=) that HTMX would otherwise
-            # push verbatim; sending the stripped URL as HX-Push-Url overrides
-            # that so the address bar always shows the clean URL.
-            response["HX-Push-Url"] = presented.return_url
+            _search_history(request, response, presented.return_url)
         except LeaseQueryGuardError as exc:
             logger.info("Rejected unsafe Subnet lease query on server %s: %s", instance.pk, exc)
             field = "q" if isinstance(exc, LeaseQueryUnknownSubnet) else "state"
