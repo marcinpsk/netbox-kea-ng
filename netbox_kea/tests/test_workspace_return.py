@@ -13,6 +13,53 @@ from .utils import _make_db_server, _page_data, _ViewTestBase
 
 
 class TestWorkspaceReturn(_ViewTestBase):
+    def test_direct_subnet_row_edits_return_to_the_current_list_query(self):
+        for family, cidr in ((4, "198.18.0.0/24"), (6, "2001:db8::/64")):
+            origin = reverse(f"plugins:netbox_kea:server_subnets{family}", args=[self.server.pk])
+            origin += "?sort=-id&per_page=25&page=1"
+            daemon = SubnetDaemon(family, [{"id": 7, "subnet": cidr}])
+            with (
+                self.subTest(family=family),
+                stub_kea({**daemon.responses(), f"stat-lease{family}-get": {"result": 3}}),
+            ):
+                page = BeautifulSoup(self.client.get(origin).content, "html.parser")
+                edit = next(link["href"] for link in page.select("td a") if link.text.strip() == "Edit subnet")
+                response = self.client.get(edit)
+                form = BeautifulSoup(response.content, "html.parser")
+                cancel = next(link for link in form.select("a") if link.text.strip() == "Cancel")
+                self.assertEqual(cancel["href"], origin)
+                result = self.client.post(edit, {**_page_data(response), "valid_lft": "3600"})
+                self.assertEqual(daemon.subnet(7)["valid-lifetime"], 3600)
+                self.assertRedirects(result, origin, fetch_redirect_response=False)
+
+    def test_direct_shared_network_row_actions_return_to_the_current_list_query(self):
+        for family in (4, 6):
+            origin = reverse(f"plugins:netbox_kea:server_shared_networks{family}", args=[self.server.pk])
+            origin += "?sort=name&per_page=25&page=1"
+            responses = {
+                **_catalogue_responses_for_subnets(family, [], shared_networks=[{"name": "clients"}]),
+                "config-test": {"result": 0},
+                "config-set": {"result": 0},
+                "config-write": {"result": 0},
+                f"network{family}-del": {"result": 0},
+                f"network{family}-get": _network_present(family, "clients"),
+            }
+            with self.subTest(family=family), stub_kea(responses) as kea:
+                page = BeautifulSoup(self.client.get(origin).content, "html.parser")
+                actions = page.select('td a[aria-label^="Edit"], td a[aria-label^="Delete"]')
+                self.assertEqual(len(actions), 2)
+                for link in actions:
+                    with self.subTest(action=link["href"]):
+                        response = self.client.get(link["href"])
+                        form = BeautifulSoup(response.content, "html.parser")
+                        cancel = next(node for node in form.select("a") if node.text.strip() == "Cancel")
+                        self.assertEqual(cancel["href"], origin)
+                        data = {**_page_data(response), "description": "Updated"} if "/edit/" in link["href"] else {}
+                        result = self.client.post(link["href"], data)
+                        self.assertRedirects(result, origin, fetch_redirect_response=False)
+                self.assertIn("config-set", kea.commands())
+                self.assertIn(f"network{family}-del", kea.commands())
+
     def test_return_validation_uses_the_same_path_as_real_application_navigation(self):
         invalid = reverse("plugins:netbox_kea:combined") + ";junk"
         quoted = reverse("plugins:netbox_kea:combined_reservations4").replace("reservations4", "%72eservations4")

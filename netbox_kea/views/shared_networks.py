@@ -54,7 +54,7 @@ class BaseServerSharedNetworksView(ServerFamilyMixin, generic.ObjectChildrenView
             _shared_network_row(network, parent, self.dhcp_version, can_change) for network in snapshot.shared_networks
         ]
         for row in rows:
-            row["return_url"] = _safe_return_url(request, "")
+            row["return_url"] = _safe_return_url(request, request.get_full_path())
         return rows
 
     def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:

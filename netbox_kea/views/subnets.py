@@ -95,7 +95,7 @@ class BaseServerDHCPSubnetsView(ServerFamilyMixin, generic.ObjectChildrenView):
         subnets: tuple[VerifiedSubnet | ConfiguredSubnet, ...] = (*snapshot.subnets, *snapshot.configured_subnets)
         rows = [_catalogue_subnet_row(subnet, parent, self.dhcp_version, can_change) for subnet in subnets]
         for row in rows:
-            row["return_url"] = _safe_return_url(request, "")
+            row["return_url"] = _safe_return_url(request, request.get_full_path())
         _enrich_subnet_statistics(rows, parent, self.dhcp_version)
         return rows
 
