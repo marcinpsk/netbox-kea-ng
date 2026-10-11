@@ -371,7 +371,8 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
   `ca_url` even when a protocol-specific URL is configured.
 - **Always call `server.get_client()` inside a try block** — client creation raises
   `ValueError` on bad config and sends no request. A try block around `get_client()` alone
-  catches `ValueError` only. Request errors come from the Kea calls, so the "Catch" rule
+  catches `ValueError` only, and a view reports it with `_client_settings_error()` in
+  `views/_base.py`, never as a connection failure. Request errors come from the Kea calls, so the "Catch" rule
   below covers those calls. Never call it at module/class level or before error handling
   is in scope.
 - **Validate Kea response shape before indexing.** After `client.command()`, check

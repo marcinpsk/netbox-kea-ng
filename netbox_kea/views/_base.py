@@ -73,6 +73,17 @@ def _strip_empty_params(path: str) -> str:
     return parsed._replace(query=query).geturl()
 
 
+def _client_settings_error(server: Server, exc: ValueError) -> str:
+    """Log the ``ValueError`` of ``server.get_client()`` and return the message that names the Server setting.
+
+    ``get_client()`` sends nothing, so its ``ValueError`` is never a connection failure. The client also refuses an
+    invalid ``max_unpaged_leases``, but that value comes from ``lease_query_max_unpaged_leases``, which NetBox
+    validates at startup, so the remaining cause is a client key without a certificate, or the reverse.
+    """
+    logger.error("Kea client settings of server %s are invalid", server.pk, exc_info=exc)
+    return f"The Kea client settings of Server {server.name} are invalid. Check the client certificate and key."
+
+
 class _KeaChangeMixin:
     """Mixin that gates a view behind ``netbox_kea.change_server``.
 
