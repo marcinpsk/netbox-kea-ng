@@ -227,6 +227,25 @@ def test_a_captured_recording_that_no_page_shows_fails(tmp_path: Path) -> None:
     assert result.stderr == "unreferenced: recordings/other.mp4\n"
 
 
+def test_a_page_image_under_the_site_url_that_the_site_lacks_fails(tmp_path: Path) -> None:
+    page = f'<img src="{_SITE_URL}assets/missing.png">'
+    site, media = _tree(tmp_path, {"guide/index.html": page}, ())
+
+    result = _check(site, media)
+
+    assert result.returncode == 1
+    assert result.stderr == f"missing: {_SITE_URL}assets/missing.png (shown by guide/index.html)\n"
+
+
+def test_a_page_image_under_the_site_url_shows_its_capture(tmp_path: Path) -> None:
+    page = f'<img src="{_SITE_URL}assets/screenshots/shot.png"><img src="https://example.github.io/other/a.png">'
+    site, media = _tree(tmp_path, {"guide/index.html": page}, ("shot.png",))
+
+    result = _check(site, media)
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_a_readme_image_under_the_site_url_that_the_site_holds_passes(tmp_path: Path) -> None:
     readme = f"![A clip]({_SITE_URL}assets/recordings/clip.gif)\n![Badge](https://img.example.com/badge.svg)\n"
     site, media = _tree(tmp_path, {}, ("recordings/clip.gif",), readme=readme)

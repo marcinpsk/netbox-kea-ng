@@ -5,9 +5,9 @@
 
 `zensical build --strict` does not fail on a missing image or video. Run this check on the built site: it
 reads the `<img src>`, `<video src>`, `<video poster>` and `<source src>` of every HTML page, so the
-renderer has already resolved each Markdown form, code block and comment. It fails when a local media
-file of a page is not a file inside the site, when a captured screenshot or recording is on no page,
-and when a README image under the `site_url` of mkdocs.yml is not a file inside the site.
+renderer has already resolved each Markdown form, code block and comment. It fails when a relative media
+URL of a page, or a page or README media URL under the `site_url` of mkdocs.yml, is not a file inside the
+site, and when a captured screenshot or recording is on no page.
 
 Not checked: `srcset` candidates.
 Not checked: root-relative URLs (`/...`), which depend on the `site_url` path.
@@ -51,26 +51,31 @@ def _sources(html: str) -> list[str]:
     return parser.sources
 
 
-def _media(page: Path) -> list[tuple[str, Path]]:
-    """Return each local media file of *page*: its URL, and its file, resolved as a browser resolves it."""
+def _site_file(site: Path, site_url: str, source: str) -> Path:
+    """Return the file of the site that *source*, a URL under *site_url*, names."""
+    return (site / unquote(urlsplit(source).path.removeprefix(urlsplit(site_url).path))).resolve()
+
+
+def _media(site: Path, site_url: str, page: Path) -> list[tuple[str, Path]]:
+    """Return each media file of *page* in the site: its URL, and its file, resolved as a browser resolves it."""
     files = []
     for source in _sources(page.read_text(encoding="utf-8")):
         url = urlsplit(source)
-        if url.scheme or url.netloc or not url.path or url.path.startswith("/"):
-            continue
-        files.append((source, (page.parent / unquote(url.path)).resolve()))
+        if source.startswith(site_url):
+            files.append((source, _site_file(site, site_url, source)))
+        elif not (url.scheme or url.netloc or not url.path or url.path.startswith("/")):
+            files.append((source, (page.parent / unquote(url.path)).resolve()))
     return files
 
 
-def _readme_problems(site: Path, readme: Path, config: Path) -> list[str]:
+def _readme_problems(site: Path, site_url: str, readme: Path) -> list[str]:
     """Return one message for each README image under the site URL that the site does not hold."""
-    site_url = yaml.safe_load(config.read_text(encoding="utf-8"))["site_url"]
     html = MarkdownIt("commonmark").render(readme.read_text(encoding="utf-8"))
     found = []
     for source in _sources(html):
         if not source.startswith(site_url):
             continue
-        image = (site / unquote(urlsplit(source).path.removeprefix(urlsplit(site_url).path))).resolve()
+        image = _site_file(site, site_url, source)
         if not image.is_relative_to(site) or not image.is_file():
             found.append(f"missing: {source} (shown by {readme.name})")
     return found
@@ -80,15 +85,16 @@ def problems(site_dir: Path, media_dir: Path, readme: Path, config: Path) -> lis
     """Return one message for each media file that the site lacks and each capture that no page shows."""
     site = site_dir.resolve()
     media = (site_dir / MEDIA).resolve()
+    site_url = yaml.safe_load(config.read_text(encoding="utf-8"))["site_url"]
     found = []
     shown = set()
     for page in sorted(site_dir.rglob("*.html")):
-        for source, file in _media(page):
+        for source, file in _media(site, site_url, page):
             if not file.is_relative_to(site) or not file.is_file():
                 found.append(f"missing: {source} (shown by {page.relative_to(site_dir).as_posix()})")
             elif file.is_relative_to(media):
                 shown.add(file.relative_to(media))
-    found.extend(_readme_problems(site, readme, config))
+    found.extend(_readme_problems(site, site_url, readme))
     captured = {file.relative_to(media_dir) for pattern in CAPTURES for file in media_dir.glob(pattern)}
     found.extend(f"unreferenced: {file.as_posix()}" for file in sorted(captured - shown))
     return found
