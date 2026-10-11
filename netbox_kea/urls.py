@@ -12,6 +12,7 @@ from .views import (
     options,
     reservation_mutations,
     server,
+    server_switch,
     shared_networks,
     subnets,
     sync_jobs,
@@ -19,6 +20,7 @@ from .views import (
 )
 
 urlpatterns = (
+    path("servers/<int:pk>/switch/", server_switch.ServerSwitchView.as_view(), name="server_switch"),
     path("combined/", combined.CombinedDashboardView.as_view(), name="combined"),
     path("combined/overview4/", combined.CombinedDashboardView.as_view(), name="combined_overview4"),
     path("combined/overview6/", combined.CombinedDashboard6View.as_view(), name="combined_overview6"),

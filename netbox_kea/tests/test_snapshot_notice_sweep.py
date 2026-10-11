@@ -36,6 +36,7 @@ _EXEMPT = {
     "ipaddress_kea_reservations": "Its pk names an IP address, and it reads no Kea data.",
     "reservation_check_ip": "An htmx fragment that reads NetBox IPAM, not Kea.",
     "server": "The NetBox object page reads no Kea data.",
+    "server_switch": "A redirect checks target Subnet identities only for Subnet filters; dedicated request tests cover it.",
     "server_status": "The legacy Status entry point redirects without a Snapshot read.",
     "server_changelog": "A NetBox page that reads no Kea data.",
     "server_delete": "A NetBox page that reads no Kea data.",
