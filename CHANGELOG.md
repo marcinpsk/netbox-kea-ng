@@ -13,6 +13,64 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.1.1 (2026-10-11)
+
+### Bug Fixes
+
+- Check page media URLs under the site URL in the docs media check
+  ([`9d0ce04`](https://github.com/marcinpsk/netbox-kea-ng/commit/9d0ce049f6c2f51f9a92966befebb47cd963d706))
+
+- Read README images with a CommonMark parser in the docs media check
+  ([`106d282`](https://github.com/marcinpsk/netbox-kea-ng/commit/106d28286d44ef49b586dec471446713d559cbeb))
+
+### Build System
+
+- **deps**: Bump actions/upload-artifact
+  ([`5177216`](https://github.com/marcinpsk/netbox-kea-ng/commit/5177216bba3c3d7da8bce912a2f2f3b1a2964579))
+
+### Continuous Integration
+
+- Deploy only the latest release tag to the documentation site
+  ([`6332b1b`](https://github.com/marcinpsk/netbox-kea-ng/commit/6332b1b7b394d3460ce932d9f4b27c9b81db76d9))
+
+- Deploy the documentation site from the release tag after a release
+  ([`71d1c79`](https://github.com/marcinpsk/netbox-kea-ng/commit/71d1c79043db1b545fde62ad888166c8267b369a))
+
+- Keep every waiting documentation deployment in the pages queue
+  ([`694808e`](https://github.com/marcinpsk/netbox-kea-ng/commit/694808e4a709faecff68010f4290c193e1c75f03))
+
+### Documentation
+
+- Add CI-recorded workflow clips to the documentation site
+  ([`43219da`](https://github.com/marcinpsk/netbox-kea-ng/commit/43219dac15b3778f3ac40a540d21f278d0d7a066))
+
+- Give the Kea Control Agent its real deprecation and removal versions
+  ([`1cc4666`](https://github.com/marcinpsk/netbox-kea-ng/commit/1cc46669ca008d80d31fac87b9050a93fa128a7e))
+
+- Remove the last committed screenshot and refuse new ones in pre-commit
+  ([`01f7aa4`](https://github.com/marcinpsk/netbox-kea-ng/commit/01f7aa498e10e98f42eb48b528ac25a635e233cb))
+
+- Set the docs harness variant for the setup command only
+  ([`288900a`](https://github.com/marcinpsk/netbox-kea-ng/commit/288900ae5ad4ec1e28322b8ce8fbe51b145befb7))
+
+- State that a manual Sync by grant needs an active user
+  ([`6a13712`](https://github.com/marcinpsk/netbox-kea-ng/commit/6a1371205af643a2cc5af107d426de3a8e1b930f))
+
+- Tell an API client to drop an unusable X-NetBox-Branch header
+  ([`b83b536`](https://github.com/marcinpsk/netbox-kea-ng/commit/b83b53681c5eea846c1904d180c21f849e4ed428))
+
+### Testing
+
+- Delete only the claimed Sync rows and cut each clip from its page
+  ([`ca4ab1f`](https://github.com/marcinpsk/netbox-kea-ng/commit/ca4ab1f5e17fee686066632852879bf533f60d74))
+
+- Give the edit-lease toast check the request timeout
+  ([`5015dd1`](https://github.com/marcinpsk/netbox-kea-ng/commit/5015dd1b719bd51837e0aa79967f9d724aea70e1))
+
+- Record the documentation clips on a harness that persists Kea's configuration
+  ([`305e593`](https://github.com/marcinpsk/netbox-kea-ng/commit/305e5937ba069d0f9599ee20a0a614e7b6d156bf))
+
+
 ## v3.1.0 (2026-10-10)
 
 
