@@ -20,6 +20,12 @@ from .views import (
 
 urlpatterns = (
     path("combined/", combined.CombinedDashboardView.as_view(), name="combined"),
+    path("combined/overview4/", combined.CombinedDashboardView.as_view(), name="combined_overview4"),
+    path("combined/overview6/", combined.CombinedDashboard6View.as_view(), name="combined_overview6"),
+    path("combined/configuration4/", combined.CombinedConfiguration4View.as_view(), name="combined_configuration4"),
+    path("combined/configuration6/", combined.CombinedConfiguration6View.as_view(), name="combined_configuration6"),
+    path("combined/sync4/", combined.CombinedSync4View.as_view(), name="combined_sync4"),
+    path("combined/sync6/", combined.CombinedSync6View.as_view(), name="combined_sync6"),
     path("combined/leases4/", combined.CombinedLeases4View.as_view(), name="combined_leases4"),
     path("combined/leases6/", combined.CombinedLeases6View.as_view(), name="combined_leases6"),
     path("combined/subnets4/", combined.CombinedSubnets4View.as_view(), name="combined_subnets4"),

@@ -189,17 +189,13 @@ class TestCombinedDashboardView(_CombinedViewBase):
         self.assertEqual(response.context["active_tab"], "overview")
 
     def test_tab_navigation_links_present(self):
-        """The combined base template should render links to all 8 tabs."""
-        url = reverse("plugins:netbox_kea:combined")
-        response = self.client.get(url)
-        self.assertContains(response, "/combined/leases4/")
-        self.assertContains(response, "/combined/leases6/")
-        self.assertContains(response, "/combined/subnets4/")
-        self.assertContains(response, "/combined/subnets6/")
-        self.assertContains(response, "/combined/reservations4/")
-        self.assertContains(response, "/combined/reservations6/")
-        self.assertContains(response, "/combined/shared-networks4/")
-        self.assertContains(response, "/combined/shared-networks6/")
+        """The workspace links to six sections in the selected family."""
+        for family in (4, 6):
+            response = self.client.get(reverse(f"plugins:netbox_kea:combined_overview{family}"))
+            for section in ("overview", "leases", "subnets", "reservations", "configuration", "sync"):
+                self.assertContains(response, reverse(f"plugins:netbox_kea:combined_{section}{family}"))
+            self.assertNotContains(response, "/combined/shared-networks4/")
+            self.assertNotContains(response, "/combined/shared-networks6/")
 
 
 # ---------------------------------------------------------------------------

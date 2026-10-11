@@ -42,10 +42,18 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 
 - Enable/disable DHCPv4 and DHCPv6 daemons from the NetBox UI
 
-**Global / Cross-Server Views**
+**Kea Workspace**
 
-- Combined Overview, Reservation, Subnet and Shared Network views in a Server Scope
-- A Server chooser for lease search, with each search on one named Server
+Open **Kea Workspace** from the plugin menu. The scope bar shows all permitted Servers or the selected
+Servers. It stays visible while scrolling. Use its DHCPv4/DHCPv6 switch to change the family and keep
+the Server selection and compatible filters. Selecting one Server opens its own workspace.
+
+The sections are Overview, Leases, Subnets, Reservations, Configuration, and Sync. Shared Networks
+is a subsection of Subnets. Leases and Configuration choose a Server for the selected family.
+Sync shows the latest recorded results for each Server in the scope. A sync run covers all enabled
+families on its Server. Unknown counts remain unknown.
+
+The Servers inventory and global Sync Jobs page remain in the plugin menu.
 
 ![The combined view lists each Kea Server with its endpoint URLs and the online state of each DHCP daemon](assets/screenshots/combined-dashboard-light.png#only-light)
 ![The combined view lists each Kea Server with its endpoint URLs and the online state of each DHCP daemon](assets/screenshots/combined-dashboard-dark.png#only-dark)

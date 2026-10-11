@@ -1,0 +1,27 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends 'netbox_kea/combined_base.html' %}
+{% block tab_content %}
+<p class="text-muted">Recorded IPAM sync runs cover all enabled DHCP families on each Server.</p>
+<div class="table-responsive">
+  <table class="table table-striped">
+    <thead><tr><th>Server</th><th>Last Sync</th><th>Status</th><th>Created</th><th>Updated</th><th>Address Errors</th><th>Prefix/Range Errors</th><th>Conflicts</th></tr></thead>
+    <tbody>
+      {% for server, job, summary in sync_results %}
+      <tr>
+        <td><a href="{% url 'plugins:netbox_kea:server_sync_status' server.pk %}">{{ server.name }}</a></td>
+        <td>{% if job %}{{ job.created }}{% else %}No sync runs recorded yet.{% endif %}</td>
+        <td>{% if job %}{{ job.get_status_display }}{% else %}Never{% endif %}</td>
+        <td>{{ summary.created|default_if_none:'Unknown' }}</td>
+        <td>{{ summary.updated|default_if_none:'Unknown' }}</td>
+        <td>{{ summary.errors|default_if_none:'Unknown' }}</td>
+        <td>{{ summary.prefix_errors|default_if_none:'Unknown' }}</td>
+        <td>{{ summary.conflicts|default_if_none:'Unknown' }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="8">No Server in this Server Scope serves DHCPv{{ workspace_family }}.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
