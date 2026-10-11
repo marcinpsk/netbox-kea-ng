@@ -25,16 +25,9 @@ from .reservations import fetch as fetch_reservations
 from .reservations import present as present_reservations
 from .server_scope import SELECTION_FIELD, ServerScope, resolve
 from .sync_jobs import get_all_jobs_for_server
+from .workspace import SECTIONS
 
 _LEASE_SEARCH_FIELDS = ("q", "by", "state")
-_SECTIONS = (
-    ("overview", "Overview"),
-    ("leases", "Leases"),
-    ("subnets", "Subnets"),
-    ("reservations", "Reservations"),
-    ("configuration", "Configuration"),
-    ("sync", "Sync"),
-)
 
 
 def _search_value_label(field: Field, value: str) -> str:
@@ -80,11 +73,11 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
         """Keep only query fields that the canonical Server tab understands."""
         server = self.server_scope.servers[0]
         if self.active_tab == "overview":
-            return server.get_absolute_url()
+            return server.get_absolute_url() + f"?family={self.dhcp_version}"
         if self.active_tab.startswith("configuration"):
             return reverse(f"plugins:netbox_kea:server_option_def{self.dhcp_version}", args=[server.pk])
         if self.active_tab.startswith("sync"):
-            return reverse("plugins:netbox_kea:server_sync_status", args=[server.pk])
+            return reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]) + f"?family={self.dhcp_version}"
         compatible = {"sort", "per_page"}
         if self.active_tab.startswith("leases"):
             # The chooser has no per-Server Lease cursor.
@@ -131,7 +124,7 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
         family = self.dhcp_version or 4
         subsection = self.active_tab.rstrip("46")
         section = "subnets" if subsection == "shared_networks" else subsection
-        label = dict(_SECTIONS)[section]
+        label = dict(SECTIONS)[section]
         scope_label = (
             "Invalid Server selection"
             if self.server_scope.is_invalid
@@ -170,7 +163,7 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
             "workspace_section": section,
             "workspace_subsection": subsection,
             "workspace_family": family,
-            "workspace_sections": [(key, text, section_url(key, family)) for key, text in _SECTIONS],
+            "workspace_sections": [(key, text, section_url(key, family)) for key, text in SECTIONS],
             "workspace_families": [(version, section_url(subsection, version, filters=True)) for version in (4, 6)],
             "workspace_subsections": [
                 (key, text, section_url(key, family))

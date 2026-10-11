@@ -8,8 +8,16 @@ SPDX-License-Identifier: Apache-2.0
 
 A `Server` object holds the connection to one Kea deployment. This page lists its fields.
 
-![The Status tab of a Server shows the version and the status of the DHCPv4 and the DHCPv6 daemon, and their global DHCP options](assets/screenshots/server-status-light.png#only-light)
-![The Status tab of a Server shows the version and the status of the DHCPv4 and the DHCPv6 daemon, and their global DHCP options](assets/screenshots/server-status-dark.png#only-dark)
+Each Server has the shared workspace navigation: Overview, Leases, Subnets, Reservations, Configuration and Sync.
+The scope bar shows the Server name and one DHCP family switch on section pages and mutation forms.
+Journal, Changelog, Jobs and the NetBox object controls stay available below the workspace sections.
+
+Overview loads the status of each enabled daemon without blocking the Server details.
+An existing Status URL redirects to Overview.
+If you open a disabled family, the page shows "Protocol not enabled" and a link to the enabled family.
+
+![Server Overview shows the version and status of the DHCPv4 and DHCPv6 daemons, and their global DHCP options](assets/screenshots/server-status-light.png#only-light)
+![Server Overview shows the version and status of the DHCPv4 and DHCPv6 daemons, and their global DHCP options](assets/screenshots/server-status-dark.png#only-dark)
 
 ## Single-URL (Control Agent, or a single-protocol daemon)
 

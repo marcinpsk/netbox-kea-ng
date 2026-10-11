@@ -274,6 +274,56 @@ class TestAddServerForm:
 class TestKeaServerTabs:
     """Every Server tab renders against the harness Kea daemons."""
 
+    def test_lease_search_updates_family_links_and_native_form_context(
+        self,
+        page: Page,
+        plugin_base: str,
+        kea_server,
+        track_http_errors: list,
+    ) -> None:
+        """HTMX search keeps filters on family switches and family on native forms."""
+        server_url = f"{plugin_base}/servers/{kea_server.id}/"
+        page.goto(f"{server_url}leases4/")
+        page.locator("#id_by").select_option(label="Hostname")
+        page.locator("#id_q").fill("printer.example")
+        page.locator("#lease-search-btn").click()
+        page.wait_for_url(re.compile(r"q=printer"))
+        page.get_by_role("navigation", name="DHCP family").get_by_role("link", name="DHCPv6", exact=True).click()
+        page.wait_for_load_state("networkidle")
+        assert urlparse(page.url).path.endswith("/leases6/")
+        assert parse_qs(urlparse(page.url).query)["q"] == ["printer.example"]
+        assert parse_qs(urlparse(page.url).query)["by"] == ["hostname"]
+        expect(page.locator("#id_q")).to_have_value("printer.example")
+        for action in ("Edit", "Delete"):
+            page.goto(f"{server_url}subnets6/")
+            control = page.get_by_role("button", name=action, exact=True)
+            if action == "Delete":
+                target = control.get_attribute("hx-get") or control.get_attribute("href")
+                assert target and parse_qs(urlparse(target).query)["family"] == ["6"]
+                control.click()
+                shell = page.locator("#kea-modal-workspace-shell")
+            else:
+                control.click()
+                shell = page.locator("#kea-workspace-shell")
+            expect(shell.get_by_role("link", name="DHCPv6", exact=True)).to_have_attribute("aria-current", "page")
+        page.goto(f"{server_url}sync_status/?family=6")
+        page.locator("p").filter(has_text="Server overrides").get_by_role("link", name="configure", exact=True).click()
+        expect(page.locator("#kea-workspace-shell").get_by_role("link", name="DHCPv6", exact=True)).to_have_attribute(
+            "aria-current", "page"
+        )
+        for label in ("Journal", "Changelog", "Jobs"):
+            page.goto(f"{server_url}leases6/")
+            page.get_by_role("link", name=label, exact=True).click()
+            expect(
+                page.locator("#kea-workspace-shell").get_by_role("link", name="DHCPv6", exact=True)
+            ).to_have_attribute("aria-current", "page")
+            page.get_by_role("navigation", name="Workspace sections").get_by_role(
+                "link", name="Leases", exact=True
+            ).click()
+            page.wait_for_load_state("networkidle")
+            assert urlparse(page.url).path.endswith("/leases6/")
+        _assert_no_http_errors(track_http_errors)
+
     def test_server_detail_page_loads(
         self,
         page: Page,
@@ -289,7 +339,7 @@ class TestKeaServerTabs:
         expect(page.get_by_role("heading", name=kea_server.name)).to_be_visible()
         _assert_no_http_errors(track_http_errors)
 
-    def test_server_status_tab(
+    def test_server_status_url_opens_overview(
         self,
         page: Page,
         netbox_login: None,
@@ -299,15 +349,98 @@ class TestKeaServerTabs:
     ) -> None:
         server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/status/")
+        expect(page).to_have_url(f"{plugin_base}/servers/{server_id}/")
         _check_no_django_error(page)
-        # Status tab should surface daemon version / uptime data from Kea
-        expect(page.get_by_text(re.compile(r"version|uptime|pid", re.IGNORECASE)).first).to_be_visible()
+        expect(page.locator("#kea-server-status").get_by_text("Uptime", exact=True).first).to_be_visible()
+        expect(page.get_by_role("link", name="Status", exact=True)).to_have_count(0)
         _assert_no_http_errors(track_http_errors)
 
         # The helper returns "" for every failure, so an empty result proves nothing.
         logs = _tail_container_logs()
         if logs:
-            assert "ERROR" not in logs, f"Unexpected server errors after status tab:\n{logs}"
+            assert "ERROR" not in logs, f"Unexpected server errors after Overview:\n{logs}"
+
+    @pytest.mark.parametrize("width", [1280, 390], ids=["desktop", "narrow"])
+    @pytest.mark.parametrize("mode", ["light", "dark"])
+    def test_server_workspace_keeps_scope_on_sections_and_forms(
+        self,
+        page: Page,
+        plugin_base: str,
+        kea_server,
+        track_http_errors: list,
+        width: int,
+        mode: str,
+    ) -> None:
+        """One Server keeps usable shared navigation on sections and mutation forms."""
+        server_url = f"{plugin_base}/servers/{kea_server.id}/"
+        labels = ("Overview", "Leases", "Subnets", "Reservations", "Configuration", "Sync")
+        page.set_viewport_size({"width": width, "height": 360})
+        page.add_init_script(f"localStorage.setItem('netbox-color-mode', '{mode}');")
+        page.goto(server_url)
+        for family in (4, 6):
+            page.get_by_role("navigation", name="DHCP family").get_by_role(
+                "link", name=f"DHCPv{family}", exact=True
+            ).click()
+            for label in labels:
+                page.get_by_role("navigation", name="Workspace sections").get_by_role(
+                    "link", name=label, exact=True
+                ).click()
+                page.wait_for_load_state("networkidle")
+                shell = page.locator("#kea-workspace-shell")
+                expect(shell.get_by_label("Server Scope")).to_have_text(kea_server.name)
+                expect(page.locator("html")).to_have_attribute("data-bs-theme", mode)
+                expect(shell.get_by_role("link", name=f"DHCPv{family}", exact=True)).to_have_attribute(
+                    "aria-current", "page"
+                )
+                sections = shell.get_by_role("navigation", name="Workspace sections")
+                assert sections.get_by_role("link").all_text_contents() == list(labels)
+                expect(sections.get_by_role("link", name=label, exact=True)).to_have_attribute("aria-current", "page")
+                expect(page.get_by_role("link", name="Journal", exact=True)).to_be_visible()
+                expect(page.get_by_role("link", name="Changelog", exact=True)).to_be_visible()
+                expect(page.get_by_role("link", name="Jobs", exact=True)).to_be_visible()
+                expect(page.get_by_role("link", name="Status", exact=True)).to_have_count(0)
+                if label == "Overview":
+                    for daemon in ("DHCPv4", "DHCPv6"):
+                        status = page.locator("#kea-server-status .card").filter(
+                            has=page.locator(".card-header", has_text=re.compile(rf"^\s*{daemon}(?!:)"))
+                        )
+                        expect(status.get_by_text("Uptime", exact=True)).to_be_visible()
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                page.wait_for_function("window.scrollY > 0")
+                geometry = shell.evaluate("""el => {
+                    const rect = el.getBoundingClientRect();
+                    const navbar = document.querySelector('header.navbar.sticky-top');
+                    const navbarBottom = navbar && getComputedStyle(navbar).display !== 'none'
+                        ? navbar.getBoundingClientRect().bottom : 0;
+                    return {top: rect.top, bottom: rect.bottom, navbarBottom, height: window.innerHeight};
+                }""")
+                assert geometry["top"] >= geometry["navbarBottom"] - 1
+                assert geometry["bottom"] <= geometry["height"]
+                sections.get_by_role("link", name="Overview", exact=True).focus()
+                page.keyboard.press("Tab")
+                expect(sections.get_by_role("link", name="Leases", exact=True)).to_be_focused()
+            for route in (
+                f"leases{family}/add/",
+                f"reservations{family}/add/",
+                f"subnets{family}/add/",
+                f"subnets{family}/1/pools/add/",
+                f"subnets{family}/1/options/",
+                f"shared-networks{family}/add/",
+                f"dhcp{family}/option-def/add/",
+                f"dhcp{family}/options/",
+                f"edit/?family={family}",
+                f"delete/?family={family}",
+            ):
+                response = page.goto(f"{server_url}{route}")
+                assert response is not None and response.ok
+                shell = page.locator("#kea-workspace-shell")
+                expect(shell.get_by_label("Server Scope")).to_have_text(kea_server.name)
+                expect(shell.get_by_role("link", name=f"DHCPv{family}", exact=True)).to_have_attribute(
+                    "aria-current", "page"
+                )
+                expect(page.locator('form[method="post"]:visible').first).to_be_visible()
+                _check_no_django_error(page)
+        _assert_no_http_errors(track_http_errors)
 
     def test_server_leases4_tab(
         self,

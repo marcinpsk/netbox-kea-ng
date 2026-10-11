@@ -36,6 +36,7 @@ _EXEMPT = {
     "ipaddress_kea_reservations": "Its pk names an IP address, and it reads no Kea data.",
     "reservation_check_ip": "An htmx fragment that reads NetBox IPAM, not Kea.",
     "server": "The NetBox object page reads no Kea data.",
+    "server_status": "The legacy Status entry point redirects without a Snapshot read.",
     "server_changelog": "A NetBox page that reads no Kea data.",
     "server_delete": "A NetBox page that reads no Kea data.",
     "server_edit": "A NetBox page that reads no Kea data.",
@@ -76,7 +77,7 @@ _EXPECTED: dict[str, frozenset[SnapshotKind]] = {
     "combined_subnets": frozenset({"catalogue"}),
     "combined_shared_networks": frozenset({"configuration"}),
     "combined_reservations": frozenset({"reservation"}),
-    "server_status": frozenset({"configuration"}),
+    "server_status_data": frozenset({"configuration"}),
     "server_dhcp_options_edit": frozenset({"configuration"}),
     "server_option_def": frozenset({"configuration"}),
     "server_shared_networks": frozenset({"configuration"}),
@@ -176,4 +177,6 @@ class TestEveryServerPageShowsAFailedRead(_ViewTestBase):
                         self.assertEqual(missing, [], f"{name} shows no error headline of {missing}")
                         checked.append(name)
         # The sweep must reach the pages that read each Snapshot kind.
-        self.assertTrue({"server_subnets4", "server_status", "server_reservations4", "server_leases6"} <= set(checked))
+        self.assertTrue(
+            {"server_subnets4", "server_status_data", "server_reservations4", "server_leases6"} <= set(checked)
+        )

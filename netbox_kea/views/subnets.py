@@ -32,7 +32,6 @@ from ..subnet_catalogue import (
 )
 from ..utilities import (
     OptionalViewTab,
-    check_dhcp_enabled,
     export_table,
     kea_error_hint,
 )
@@ -45,6 +44,7 @@ from ._base import (
     _run_config_change,
 )
 from .notices import notice, show_notices
+from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +55,16 @@ _NO_SUBNET_CIDR = (
 # Single consolidated "Subnets" tab covering subnets AND shared networks for both
 # protocols. Owned by ServerDHCP4SubnetsView (the one class-level tab); the other
 # three list views (subnets6, shared_networks4/6) inject it via render context.
-# Two in-page toggles — section (Subnets | Shared Networks) and family (v4 | v6) —
-# switch between the four underlying URLs, which are all unchanged.
+# The subsection navigation selects Subnets or Shared Networks.
+# The workspace shell selects the DHCP family.
 _SUBNETS_TAB = OptionalViewTab(label="Subnets", weight=1020, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
 
 
 def subnets_nav_context(server_pk: int, section: str, dhcp_version: Family) -> dict[str, Any]:
-    """Build context for the Subnets/Shared-Networks section+family toggle nav.
+    """Build context for the Subnets and Shared Networks subsection navigation.
 
     ``section`` is ``"subnets"`` or ``"shared_networks"``. Returns the shared tab
-    plus the four URLs the toggles link to.
+    plus the URLs of the two subsections.
     """
     return {
         "tab": _SUBNETS_TAB,
@@ -72,13 +72,13 @@ def subnets_nav_context(server_pk: int, section: str, dhcp_version: Family) -> d
         "dhcp_version": dhcp_version,
         "nav_subnets_url": reverse(f"plugins:netbox_kea:server_subnets{dhcp_version}", args=[server_pk]),
         "nav_shared_url": reverse(f"plugins:netbox_kea:server_shared_networks{dhcp_version}", args=[server_pk]),
-        "nav_v4_url": reverse(f"plugins:netbox_kea:server_{section}4", args=[server_pk]),
-        "nav_v6_url": reverse(f"plugins:netbox_kea:server_{section}6", args=[server_pk]),
     }
 
 
-class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
+class BaseServerDHCPSubnetsView(ServerFamilyMixin, generic.ObjectChildrenView):
     """Base view for the subnet list tab; fetches subnet data from Kea config."""
+
+    workspace_section = "subnets"
 
     table = tables.SubnetTable
     queryset = Server.objects.all()
@@ -99,9 +99,6 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
     def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
         """Handle GET: check DHCP enabled, then render table or export."""
         instance = self.get_object(**kwargs)
-        if resp := check_dhcp_enabled(instance, self.dhcp_version):
-            return resp
-
         # We can't use the original get() since it calls get_table_configs which requires a NetBox model.
         snapshot = subnet_catalogue.display(instance, self.dhcp_version)
         subnet_notice = notice(snapshot)
@@ -159,13 +156,6 @@ class ServerDHCP4SubnetsView(BaseServerDHCPSubnetsView):
 
     tab = _SUBNETS_TAB
     dhcp_version = 4
-
-    def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
-        """Redirect to the v6 view on v6-only servers so the merged tab works."""
-        instance = self.get_object(**kwargs)
-        if not instance.dhcp4 and instance.dhcp6:
-            return redirect(reverse("plugins:netbox_kea:server_subnets6", args=[instance.pk]))
-        return super().get(request, **kwargs)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -238,8 +228,10 @@ def _displayed_subnet(
     return catalogue, None
 
 
-class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
+class _BasePoolAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     """Base view for adding a pool to a subnet."""
+
+    workspace_section = "subnets"
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_pool_add.html"
@@ -309,8 +301,10 @@ class ServerSubnet6PoolAddView(_BasePoolAddView):
     tab = _SUBNETS_TAB
 
 
-class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
+class _BasePoolDeleteView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     """Base view for deleting a pool from a subnet."""
+
+    workspace_section = "subnets"
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_pool_delete.html"
@@ -445,8 +439,10 @@ def _inherited_subnet_options(
     return {field: hint for field, hint in inherited.items() if not form_values.get(field)}
 
 
-class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
+class _BaseSubnetAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     """Base view for adding a new subnet to Kea."""
+
+    workspace_section = "subnets"
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_subnet_add.html"
@@ -542,8 +538,10 @@ class ServerSubnet6AddView(_BaseSubnetAddView):
     tab = _SUBNETS_TAB
 
 
-class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
+class _BaseSubnetEditView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     """Base view for editing an existing subnet's configuration in Kea."""
+
+    workspace_section = "subnets"
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_subnet_edit.html"
@@ -694,8 +692,10 @@ class ServerSubnet6EditView(_BaseSubnetEditView):
     tab = _SUBNETS_TAB
 
 
-class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
+class _BaseSubnetDeleteView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     """Base view for deleting a subnet from Kea."""
+
+    workspace_section = "subnets"
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_subnet_delete.html"
@@ -756,8 +756,10 @@ class ServerSubnet6DeleteView(_BaseSubnetDeleteView):
     tab = _SUBNETS_TAB
 
 
-class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
+class _BaseSubnetWipeView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     """Base view for wiping all leases in a subnet."""
+
+    workspace_section = "subnets"
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_subnet_wipe.html"

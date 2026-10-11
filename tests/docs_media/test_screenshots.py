@@ -23,7 +23,7 @@ def _open(page: Page, url: str) -> None:
 
 
 def test_server_status(page: Page, plugin_base: str, demo_data: DemoData, capture: Callable[..., None]) -> None:
-    _open(page, f"{plugin_base}/servers/{demo_data.campus.id}/status/")
+    _open(page, f"{plugin_base}/servers/{demo_data.campus.id}/")
     # The view draws a card for each daemon also when status-get fails, so require its rows.
     expect(page.get_by_text("No status data available.")).to_have_count(0)
     for daemon in ("DHCPv4", "DHCPv6"):

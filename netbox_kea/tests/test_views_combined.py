@@ -450,7 +450,9 @@ class TestServerScope(_ViewTestBase):
                     target = "server" if section == "overview" else f"server_{section}{family}"
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(
-                        response["HX-Redirect"], reverse(f"plugins:netbox_kea:{target}", args=[self.server.pk])
+                        response["HX-Redirect"],
+                        reverse(f"plugins:netbox_kea:{target}", args=[self.server.pk])
+                        + (f"?family={family}" if section == "overview" else ""),
                     )
                     self.assertEqual(response.content, b"")
                     self.assertEqual(kea.commands(), [])
@@ -588,7 +590,7 @@ class TestServerScope(_ViewTestBase):
 
     def test_overview_with_one_server_redirects_to_its_detail_page(self):
         response = self.client.get(self._url("overview"), {"server": self.server.pk, "q": "drop"})
-        self.assertRedirects(response, self.server.get_absolute_url(), fetch_redirect_response=False)
+        self.assertRedirects(response, self.server.get_absolute_url() + "?family=4", fetch_redirect_response=False)
 
 
 class TestCombinedSubnetDiagnostics(_ViewTestBase):

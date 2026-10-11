@@ -24,4 +24,5 @@ from . import (
     subnets,
     sync_jobs,
     sync_views,
+    workspace,
 )
