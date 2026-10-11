@@ -569,6 +569,9 @@ class TestCombinedViewsWithKea:
         page.goto(f"{plugin_base}/combined/leases4/?q=203.0.113.250&by=ip")
         page.locator(".list-group").get_by_role("link", name=kea_server.name, exact=True).click()
         page.wait_for_url(re.compile(rf"/servers/{kea_server.id}/leases4/\?"))
+        query = parse_qs(urlparse(page.url).query)
+        assert query["q"] == ["203.0.113.250"]
+        assert query["by"] == ["ip"]
         page.wait_for_load_state("networkidle")
         expect(page.locator("table.object-list")).to_be_visible()
         expect(rows.filter(has_text=reserved_lease4)).to_have_count(0)

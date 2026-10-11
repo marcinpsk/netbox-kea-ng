@@ -468,6 +468,30 @@ class TestServerScope(_ViewTestBase):
         response = self.client.get(self._url("subnets", 6), {"server": self.second.pk, "export": "table"}, follow=True)
         self.assertContains(response, "Export refused: DHCPv6 is not enabled on other.")
 
+    def test_export_refusal_keeps_hostile_query_values_inside_the_local_route(self):
+        Server.objects.filter(pk=self.second.pk).update(dhcp6=False)
+        for section in ("subnets", "shared_networks", "reservations"):
+            for value in (
+                "//outside.example/path",
+                "https://outside.example/path",
+                "/\\outside.example",
+                "\r\nLocation: //outside.example",
+            ):
+                with self.subTest(section=section, value=value), stub_kea({}) as kea:
+                    response = self.client.get(
+                        self._url(section, 6),
+                        {"server": self.second.pk, "export": "table", "q": value, "return_url": value},
+                    )
+                    self.assertEqual(response.status_code, 302)
+                    location = urlsplit(response["Location"])
+                    self.assertEqual(location.scheme, "")
+                    self.assertEqual(location.netloc, "")
+                    self.assertEqual(location.path, self._url(section, 6))
+                    self.assertEqual(
+                        parse_qs(location.query), {"server": [str(self.second.pk)], "q": [value], "return_url": [value]}
+                    )
+                    self.assertEqual(kea.commands(), [])
+
     def test_selected_server_without_the_family_has_a_notice_even_without_a_lease_query(self):
         for family in (4, 6):
             Server.objects.filter(pk=self.server.pk).update(**{f"dhcp{family}": False})
