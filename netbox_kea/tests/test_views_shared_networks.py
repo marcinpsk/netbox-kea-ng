@@ -1259,7 +1259,7 @@ class TestSharedNetworkListEdgeCases(_ViewTestBase):
     """Shared Network list when DHCP is disabled."""
 
     def test_dhcp4_disabled_shows_protocol_not_enabled(self):
-        """When dhcp4 disabled, the v4 list view redirects to the v6 route (no Kea)."""
+        """A disabled DHCPv4 family shows the protocol-disabled state without a Kea read."""
         server_no4 = _make_db_server(name="no-dhcp4", ca_url="https://kea.example.com", dhcp4=False, dhcp6=True)
         url = reverse("plugins:netbox_kea:server_shared_networks4", args=[server_no4.pk])
         with stub_kea({}) as kea:

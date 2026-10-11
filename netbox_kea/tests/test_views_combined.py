@@ -81,7 +81,9 @@ class TestLeaseServerChooser(_ViewTestBase):
                         self.assertEqual(
                             target.path, reverse(f"plugins:netbox_kea:server_leases{family}", args=[server.pk])
                         )
-                        self.assertEqual(parse_qs(target.query), {key: [value] for key, value in search.items()})
+                        query = parse_qs(target.query)
+                        self.assertEqual(query.pop("return_url"), [response.wsgi_request.get_full_path()])
+                        self.assertEqual(query, {key: [value] for key, value in search.items()})
                     self.assertEqual(page.select('a[href*="export="]'), [])
                     self.assertEqual(kea.commands(), [])
 
@@ -110,9 +112,9 @@ class TestLeaseServerChooser(_ViewTestBase):
                 response = self.client.get(
                     reverse(f"plugins:netbox_kea:combined_leases{family}"),
                     {"server": self.server.pk, "export": "table"},
+                    follow=True,
                 )
-                self.assertContains(response, f"No Server in this Server Scope serves DHCPv{family}.")
-                self.assertContains(response, f"{self.server.name}: DHCPv{family} is not enabled on this Server.")
+                self.assertContains(response, "Protocol not enabled")
                 self.assertNotContains(response, "Export refused")
                 self.assertEqual(kea.commands(), [])
 
@@ -135,10 +137,13 @@ class TestLeaseServerChooser(_ViewTestBase):
                 f"{reverse('plugins:netbox_kea:combined_leases4')}?server={self.server.pk}&{query}"
             )
         link = BeautifulSoup(chooser.content, "html.parser").select_one(".list-group a")
-        self.assertEqual(parse_qs(urlsplit(link["href"]).query), {"by": ["hostname"], "q": ["last"]})
-        self.assertNotContains(chooser, "Declined")
+        target = parse_qs(urlsplit(link["href"]).query)
+        self.assertEqual(target.pop("return_url"), [chooser.wsgi_request.get_full_path()])
+        self.assertEqual(target, {"by": ["hostname"], "q": ["last"]})
+        explanation = BeautifulSoup(chooser.content, "html.parser").select_one(".alert-info").get_text()
+        self.assertNotIn("Declined", explanation)
         self.assertContains(chooser, "Attribute: <strong>Hostname</strong>")
-        self.assertNotContains(chooser, "first")
+        self.assertNotIn("first", explanation)
         target = parse_qs(urlsplit(redirect["Location"]).query, keep_blank_values=True)
         self.assertEqual((target["state"][-1], target["by"][-1], target["q"][-1]), ("", "hostname", "last"))
 
@@ -147,7 +152,9 @@ class TestLeaseServerChooser(_ViewTestBase):
             response = self.client.get(reverse("plugins:netbox_kea:combined_leases4"), {"q": "", "state": ""})
         self.assertNotContains(response, "Choose a Server to run it.")
         link = BeautifulSoup(response.content, "html.parser").select_one(".list-group a")
-        self.assertEqual(urlsplit(link["href"]).query, "")
+        self.assertEqual(
+            parse_qs(urlsplit(link["href"]).query), {"return_url": [response.wsgi_request.get_full_path()]}
+        )
 
     def test_an_anonymous_user_is_sent_to_login(self):
         self.client.logout()
@@ -558,12 +565,11 @@ class TestServerScope(_ViewTestBase):
             Server.objects.filter(pk=self.server.pk).update(**{f"dhcp{family}": False})
             for section in self.sections:
                 with self.subTest(section=section, family=family), stub_kea({}) as kea:
-                    response = self.client.get(self._url(section, family), {"server": self.server.pk})
-                    self.assertContains(response, f"{self.server.name}: DHCPv{family} is not enabled on this Server.")
-                    self.assertTrue(response.context["server_scope"].is_one)
+                    response = self.client.get(self._url(section, family), {"server": self.server.pk}, follow=True)
+                    self.assertContains(response, "Protocol not enabled")
                     self.assertEqual(
-                        response.context["server_scope_warnings"],
-                        [(self.server.name, f"DHCPv{family} is not enabled on this Server.")],
+                        response.wsgi_request.path,
+                        reverse(f"plugins:netbox_kea:server_{section}{family}", args=[self.server.pk]),
                     )
                     self.assertEqual(kea.commands(), [])
 

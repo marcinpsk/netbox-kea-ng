@@ -25,7 +25,7 @@ from .reservations import fetch as fetch_reservations
 from .reservations import present as present_reservations
 from .server_scope import SELECTION_FIELD, ServerScope, resolve
 from .sync_jobs import get_all_jobs_for_server
-from .workspace import SECTIONS, with_return_url
+from .workspace import SECTIONS, server_section_url, with_return_url
 
 _LEASE_SEARCH_FIELDS = ("q", "by", "state")
 
@@ -60,7 +60,7 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
             url = reverse(f"plugins:netbox_kea:combined_{self.active_tab}")
             return redirect(url + "?" + query.urlencode())
         # A download stays on a section that supports combined exports.
-        if self.server_scope.is_one and not self.server_scope.missing_family and not is_export:
+        if self.server_scope.is_one and not is_export:
             target = self._single_server_url(request)
             if request.headers.get("HX-Request") == "true":
                 response = HttpResponse()
@@ -224,7 +224,12 @@ class _ConfigurationServerChooserView(_CombinedViewMixin):
         """List only selected Servers that serve this family, without reading Kea."""
         ctx = self._combined_context(request)
         ctx["configuration_servers"] = [
-            (server, reverse(f"plugins:netbox_kea:server_option_def{self.dhcp_version}", args=[server.pk]))
+            (
+                server,
+                with_return_url(
+                    server_section_url(server, "configuration", self.dhcp_version), request.get_full_path()
+                ),
+            )
             for server in self.server_scope.query_servers
         ]
         return render(request, "netbox_kea/combined_configuration.html", ctx)
@@ -266,7 +271,8 @@ class _CombinedSyncView(_CombinedViewMixin):
                 key: summary.get(key) if summary else None
                 for key in ("created", "updated", "errors", "prefix_errors", "conflicts")
             }
-            rows.append((server, job, counts))
+            url = with_return_url(server_section_url(server, "sync", self.dhcp_version), request.get_full_path())
+            rows.append((server, job, counts, url))
         ctx["sync_results"] = rows
         return render(request, "netbox_kea/combined_sync.html", ctx)
 
@@ -621,8 +627,10 @@ class _LeaseServerChooserView(_CombinedViewMixin):
                 "lease_servers": [
                     (
                         server,
-                        reverse(f"plugins:netbox_kea:server_leases{self.dhcp_version}", args=[server.pk])
-                        + search_suffix,
+                        with_return_url(
+                            server_section_url(server, "leases", self.dhcp_version) + search_suffix,
+                            request.get_full_path(),
+                        ),
                     )
                     for server in self.server_scope.query_servers
                 ],

@@ -408,13 +408,16 @@ class TestKeaServerTabs:
         expect(page.locator("#id_q")).to_have_value("printer.example")
         for action in ("Edit", "Delete"):
             page.goto(f"{server_url}subnets6/")
-            control = page.get_by_role("button", name=action, exact=True)
             if action == "Delete":
+                control = page.locator('[hx-get][hx-target="#htmx-modal-content"]').filter(
+                    has_text=re.compile(r"^\s*Delete\s*$")
+                )
                 target = control.get_attribute("hx-get") or control.get_attribute("href")
                 assert target and parse_qs(urlparse(target).query)["family"] == ["6"]
                 control.click()
                 shell = page.locator("#kea-modal-workspace-shell")
             else:
+                control = page.get_by_role("button", name=action, exact=True)
                 control.click()
                 shell = page.locator("#kea-workspace-shell")
             expect(shell.get_by_role("link", name="DHCPv6", exact=True)).to_have_attribute("aria-current", "page")
@@ -747,6 +750,82 @@ class TestCombinedViews:
 class TestCombinedViewsWithKea:
     """Combined view content checks that require a live Kea server fixture."""
 
+    @pytest.mark.parametrize("section", ["leases", "configuration", "sync"])
+    @pytest.mark.parametrize("family", [4, 6])
+    def test_chooser_returns_to_selected_workspace(
+        self,
+        page: Page,
+        plugin_base: str,
+        kea_server,
+        nb_api,
+        kea_url: str,
+        kea_dhcp6_url: str,
+        track_http_errors: list,
+        section: str,
+        family: int,
+    ) -> None:
+        """Every chooser restores the selected Servers and the Lease search."""
+        second = nb_api.plugins.kea.servers.create(
+            name=f"{kea_server.name}-chooser",
+            ca_url=kea_url,
+            dhcp6_url=kea_dhcp6_url,
+            has_control_agent=False,
+        )
+        try:
+            query = [("server", str(kea_server.id)), ("server", str(second.id))]
+            if section == "leases":
+                query.extend([("q", "documentation-client"), ("by", "hostname")])
+            origin = f"{plugin_base}/combined/{section}{family}/?{urlencode(query)}"
+            page.goto(origin)
+            page.get_by_role("link", name=second.name, exact=True).click()
+            target_path = {
+                "leases": f"leases{family}/",
+                "configuration": f"dhcp{family}/option-def/",
+                "sync": "sync_status/",
+            }[section]
+            page.wait_for_url(re.compile(rf"/servers/{second.id}/{target_path}\?"))
+            shell = page.locator("#kea-workspace-shell")
+            expect(shell.get_by_label("Server Scope")).to_have_text(second.name)
+            expect(shell.get_by_role("link", name=f"DHCPv{family}", exact=True)).to_have_attribute(
+                "aria-current", "page"
+            )
+            target_query = parse_qs(urlparse(page.url).query)
+            assert target_query["return_url"] == [urlparse(origin).path + "?" + urlparse(origin).query]
+            if section == "leases":
+                expect(page.locator("#id_q")).to_have_value("documentation-client")
+                assert target_query["by"] == ["hostname"]
+            destination = page.url
+            page.go_back()
+            expect(page).to_have_url(origin)
+            page.go_forward()
+            expect(page).to_have_url(destination)
+            shell.get_by_role("link", name="Back to workspace", exact=True).click()
+            expect(page).to_have_url(origin)
+            _assert_no_http_errors(track_http_errors)
+        finally:
+            second.delete()
+
+    @pytest.mark.parametrize("family", [4, 6])
+    def test_disabled_single_server_uses_canonical_workspace(
+        self,
+        page: Page,
+        plugin_base: str,
+        kea_server,
+        track_http_errors: list,
+        family: int,
+    ) -> None:
+        """A disabled family still resolves one selected Server to its own workspace."""
+        kea_server.update({f"dhcp{family}": False})
+        page.goto(f"{plugin_base}/combined/leases{family}/?server={kea_server.id}")
+        expect(page).to_have_url(f"{plugin_base}/servers/{kea_server.id}/leases{family}/")
+        expect(page.get_by_text("Protocol not enabled", exact=True)).to_be_visible()
+        shell = page.locator("#kea-workspace-shell")
+        expect(shell.get_by_label("Server Scope")).to_have_text(kea_server.name)
+        other_family = 6 if family == 4 else 4
+        shell.get_by_role("link", name=f"DHCPv{other_family}", exact=True).click()
+        expect(page).to_have_url(f"{plugin_base}/servers/{kea_server.id}/leases{other_family}/")
+        _assert_no_http_errors(track_http_errors)
+
     @pytest.mark.parametrize("width", [1280, 390], ids=["desktop", "narrow"])
     def test_filtered_reservation_returns_from_owning_server(
         self,
@@ -969,7 +1048,7 @@ class TestCombinedViewsWithKea:
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
         page.locator(".list-group").get_by_role("link", name=kea_server.name, exact=True).click()
-        page.wait_for_url(f"{plugin_base}/servers/{kea_server.id}/leases4/")
+        page.wait_for_url(re.compile(rf"/servers/{kea_server.id}/leases4/\?"))
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
         page.locator("#id_q").fill(reserved_lease4)

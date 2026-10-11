@@ -101,12 +101,15 @@ class TestCombinedWorkspace(_ViewTestBase):
     def test_new_sections_report_unsupported_families_and_offer_the_other_family(self):
         Server.objects.filter(pk=self.server.pk).update(dhcp6=False)
         for section in ("overview", "configuration", "sync"):
-            response = self.client.get(reverse(f"plugins:netbox_kea:combined_{section}6"), {"server": self.server.pk})
-            self.assertContains(response, f"{self.server.name}: DHCPv6 is not enabled on this Server.")
+            response = self.client.get(
+                reverse(f"plugins:netbox_kea:combined_{section}6"), {"server": self.server.pk}, follow=True
+            )
+            self.assertContains(response, "Protocol not enabled")
             page = BeautifulSoup(response.content, "html.parser")
             enabled = page.select('[aria-label="DHCP family"] a')[0]
-            redirected = self.client.get(enabled["href"])
-            self.assertEqual(redirected.status_code, 302)
+            self.assertIn(f"/servers/{self.server.pk}/", enabled["href"])
+            self.assertNotIn("/combined/", enabled["href"])
+            self.assertEqual(enabled.text.strip(), "DHCPv4")
 
     def test_family_switch_keeps_selection_section_and_compatible_filters(self):
         for section, filters in (

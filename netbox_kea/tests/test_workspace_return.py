@@ -349,3 +349,83 @@ class TestWorkspaceReturn(_ViewTestBase):
                     destination = BeautifulSoup(self.client.get(link["href"]).content, "html.parser")
                     back = next(link for link in destination.select("a") if link.text.strip().startswith("Back to"))
                     self.assertEqual(back["href"], origin)
+
+
+class TestChooserWorkspaceOrigin(_ViewTestBase):
+    def _chooser_origin(self, section, family):
+        other = _make_db_server(name="other-workspace-server")
+        query = [("server", self.server.pk), ("server", other.pk)]
+        if section == "leases":
+            query.extend((("q", "documentation-client"), ("by", "hostname")))
+        origin = reverse(f"plugins:netbox_kea:combined_{section}{family}") + "?" + urlencode(query)
+        response = self.client.get(origin)
+        self.assertEqual(response.status_code, 200)
+        page = BeautifulSoup(response.content, "html.parser")
+        target = next(link for link in page.select(".list-group a, tbody td a") if link.text.strip() == other.name)
+        self.assertEqual(parse_qs(urlsplit(target["href"]).query).get("return_url"), [origin])
+        with stub_kea(_catalogue_responses_for_subnets(family, [])):
+            destination = self.client.get(target["href"])
+        self.assertEqual(destination.status_code, 200)
+        shell = BeautifulSoup(destination.content, "html.parser").select_one("#kea-workspace-shell")
+        self.assertEqual(shell.select_one('[aria-label="Server Scope"]').text.strip(), other.name)
+        back = next(link for link in shell.select("a") if link.text.strip() == "Back to workspace")
+        self.assertEqual(back["href"], origin)
+        active = shell.select_one('[aria-label="DHCP family"] [aria-current="page"]')
+        self.assertEqual(active.text.strip(), f"DHCPv{family}")
+
+    def test_lease_chooser_keeps_ipv4_workspace_origin(self):
+        self._chooser_origin("leases", 4)
+
+    def test_lease_chooser_keeps_ipv6_workspace_origin(self):
+        self._chooser_origin("leases", 6)
+
+    def test_configuration_chooser_keeps_ipv4_workspace_origin(self):
+        self._chooser_origin("configuration", 4)
+
+    def test_configuration_chooser_keeps_ipv6_workspace_origin(self):
+        self._chooser_origin("configuration", 6)
+
+    def test_overview_handoff_keeps_workspace_origin(self):
+        other = _make_db_server(name="other-workspace-server")
+        origin = (
+            reverse("plugins:netbox_kea:combined_overview6")
+            + "?"
+            + urlencode([("server", self.server.pk), ("server", other.pk)])
+        )
+        response = self.client.get(origin)
+        self.assertEqual(response.status_code, 200)
+        page = BeautifulSoup(response.content, "html.parser")
+        target = next(link for link in page.select(".card-header a") if link.text.strip() == other.name)
+        self.assertEqual(parse_qs(urlsplit(target["href"]).query).get("return_url"), [origin])
+
+    def _disabled_canonical(self, family):
+        setattr(self.server, f"dhcp{family}", False)
+        self.server.save()
+        source = reverse(f"plugins:netbox_kea:combined_leases{family}")
+        target = reverse(f"plugins:netbox_kea:server_leases{family}", args=[self.server.pk])
+        with stub_kea({}) as kea:
+            response = self.client.get(source, {"server": self.server.pk})
+            self.assertRedirects(response, target, fetch_redirect_response=False)
+            destination = self.client.get(response.url)
+        self.assertContains(destination, "Protocol not enabled")
+        self.assertEqual(kea.commands(), [])
+        shell = BeautifulSoup(destination.content, "html.parser").select_one("#kea-workspace-shell")
+        self.assertEqual(shell.select_one('[aria-label="Server Scope"]').text.strip(), self.server.name)
+
+    def test_one_server_with_disabled_ipv4_uses_canonical_workspace(self):
+        self._disabled_canonical(4)
+
+    def test_one_server_with_disabled_ipv6_uses_canonical_workspace(self):
+        self._disabled_canonical(6)
+
+    def test_one_enabled_server_uses_canonical_workspace(self):
+        source = reverse("plugins:netbox_kea:combined_leases4")
+        target = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        response = self.client.get(source, {"server": self.server.pk})
+        self.assertRedirects(response, target, fetch_redirect_response=False)
+
+    def test_sync_handoff_keeps_ipv4_workspace_origin(self):
+        self._chooser_origin("sync", 4)
+
+    def test_sync_handoff_keeps_ipv6_workspace_origin(self):
+        self._chooser_origin("sync", 6)

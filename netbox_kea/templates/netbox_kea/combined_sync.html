@@ -7,9 +7,9 @@
   <table class="table table-striped">
     <thead><tr><th>Server</th><th>Last Sync</th><th>Status</th><th>Created</th><th>Updated</th><th>Address Errors</th><th>Prefix/Range Errors</th><th>Conflicts</th></tr></thead>
     <tbody>
-      {% for server, job, summary in sync_results %}
+      {% for server, job, summary, url in sync_results %}
       <tr>
-        <td><a href="{% url 'plugins:netbox_kea:server_sync_status' server.pk %}">{{ server.name }}</a></td>
+        <td><a href="{{ url }}">{{ server.name }}</a></td>
         <td>{% if job %}{{ job.created }}{% else %}No sync runs recorded yet.{% endif %}</td>
         <td>{% if job %}{{ job.get_status_display }}{% else %}Never{% endif %}</td>
         <td>{{ summary.created|default_if_none:'Unknown' }}</td>
