@@ -64,7 +64,8 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
             messages.warning(request, f"Export refused: DHCPv{self.dhcp_version} is not enabled on {names}.")
             query = request.GET.copy()
             query.pop("export")
-            return redirect(f"{request.path}?{query.urlencode()}")
+            url = reverse(f"plugins:netbox_kea:combined_{self.active_tab}")
+            return redirect(url + "?" + query.urlencode())
         # A download stays on a section that supports combined exports.
         if self.server_scope.is_one and not self.server_scope.missing_family and not is_export:
             target = self._single_server_url(request)

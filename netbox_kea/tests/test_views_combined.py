@@ -19,7 +19,7 @@ import requests
 from bs4 import BeautifulSoup
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
-from django.urls import reverse
+from django.urls import clear_script_prefix, reverse, set_script_prefix
 from users.models import ObjectPermission
 
 from netbox_kea.models import Server
@@ -491,6 +491,65 @@ class TestServerScope(_ViewTestBase):
                         parse_qs(location.query), {"server": [str(self.second.pk)], "q": [value], "return_url": [value]}
                     )
                     self.assertEqual(kea.commands(), [])
+
+    def test_export_refusal_preserves_repeated_values_on_each_combined_route(self):
+        exports = {"subnets": "table", "shared_networks": "table", "reservations": "json"}
+        for family in (4, 6):
+            Server.objects.filter(pk=self.second.pk).update(**{f"dhcp{family}": False})
+            for section, export in exports.items():
+                for selection in ([self.second.pk], [self.server.pk, self.second.pk, self.second.pk]):
+                    query = {
+                        "server": list(map(str, selection)),
+                        "export": [export, export],
+                        "q": ["//outside.example/path", "", "percent% & spaces + #fragment"],
+                        "return_url": ["https://outside.example/path", "/\\outside.example"],
+                        "sort": ["hostname", "-hostname"],
+                        "page": ["2", "3"],
+                    }
+                    with self.subTest(family=family, section=section, selection=selection), stub_kea({}) as kea:
+                        response = self.client.get(self._url(section, family), query)
+                        self.assertEqual(response.status_code, 302)
+                        location = urlsplit(response["Location"])
+                        self.assertEqual(location.scheme, "")
+                        self.assertEqual(location.netloc, "")
+                        self.assertEqual(location.fragment, "")
+                        self.assertEqual(location.path, self._url(section, family))
+                        self.assertEqual(
+                            parse_qs(location.query, keep_blank_values=True),
+                            {key: values for key, values in query.items() if key != "export"},
+                        )
+                        self.assertEqual(kea.commands(), [])
+
+    def test_export_refusal_keeps_the_deployment_prefix_on_each_combined_route(self):
+        for family in (4, 6):
+            Server.objects.filter(pk=self.second.pk).update(**{f"dhcp{family}": False})
+            for section in ("subnets", "shared_networks", "reservations"):
+                url = self._url(section, family)
+                query = {"server": [str(self.server.pk), str(self.second.pk)], "q": ["needle & spaces", ""]}
+                # The test client skips WSGIHandler, which sets this from SCRIPT_NAME.
+                set_script_prefix("/netbox/")
+                try:
+                    with self.subTest(family=family, section=section), stub_kea({}) as kea:
+                        response = self.client.get(url, {**query, "export": "table"}, SCRIPT_NAME="/netbox")
+                        self.assertEqual(response.status_code, 302)
+                        location = urlsplit(response["Location"])
+                        self.assertEqual(location.path, self._url(section, family))
+                        self.assertEqual(location.path, f"/netbox{url}")
+                        self.assertEqual(parse_qs(location.query, keep_blank_values=True), query)
+                        self.assertEqual(kea.commands(), [])
+                finally:
+                    clear_script_prefix()
+
+    def test_export_refusal_renders_the_warning_and_reads_only_the_supported_selection(self):
+        Server.objects.filter(pk=self.second.pk).update(dhcp4=False)
+        responses = _catalogue_responses(4, 1, "198.18.0.0/24")
+        responses["stat-lease4-get"] = {"result": 2, "text": "unsupported"}
+        with stub_kea(responses):
+            response = self.client.get(
+                self._url(), {"server": [self.server.pk, self.second.pk], "export": "table"}, follow=True
+            )
+        self.assertContains(response, "Export refused: DHCPv4 is not enabled on other.")
+        self.assertEqual({row["server_pk"] for row in response.context["table"].data}, {self.server.pk})
 
     def test_selected_server_without_the_family_has_a_notice_even_without_a_lease_query(self):
         for family in (4, 6):
