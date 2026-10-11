@@ -54,50 +54,6 @@
   </div>
 </div>
 
-{% if errors %}
-<div class="alert alert-danger mt-3">
-  <strong>Some servers could not be reached:</strong>
-  <ul class="mb-0 mt-1">
-    {% for name, msg in errors %}
-    <li><strong>{{ name }}</strong>: {{ msg }}</li>
-    {% endfor %}
-  </ul>
-</div>
-{% endif %}
-
-{% if mutation_unavailable_servers %}
-<div class="alert alert-warning mt-3" role="alert">
-  <strong>Mutation controls are unavailable for some servers.</strong>
-  Existing Reservations remain visible for read-only use.
-  <ul class="mb-0 mt-1">
-    {% for name, reason in mutation_unavailable_servers %}
-    <li><strong>{{ name }}</strong>: {{ reason }}</li>
-    {% endfor %}
-  </ul>
-</div>
-{% endif %}
-
-{% if snapshot_incomplete %}
-<div class="alert alert-warning mt-3" role="alert">
-  <strong>Snapshot is incomplete.</strong>
-  The Reservation Snapshot could not be read completely.
-  {% if reservation_diagnostics %}
-  See the {{ reservation_diagnostics|length }} diagnostic{{ reservation_diagnostics|length|pluralize }} below.
-  <ul class="mb-0 mt-2">
-    {% for server_name, diagnostic in reservation_diagnostics %}
-    <li><strong>{{ server_name }}</strong>: <code>{{ diagnostic.code }}</code> at
-      <code>{{ diagnostic.source_position }}</code>: {{ diagnostic.message }}</li>
-    {% endfor %}
-  </ul>
-  {% endif %}
-</div>
-{% elif snapshot_complete %}
-<div class="alert alert-success py-2 mt-3" role="status">
-  <i class="mdi mdi-check-circle-outline" aria-hidden="true"></i>
-  This bounded Snapshot is complete for the current page.
-</div>
-{% endif %}
-
 <div class="table-responsive">
 
   {% render_table table %}

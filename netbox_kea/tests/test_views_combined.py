@@ -252,7 +252,7 @@ class TestServerScope(_ViewTestBase):
         page = BeautifulSoup(response.content, "html.parser")
         query = "&".join(f"server={pk}" for pk in sorted((self.server.pk, self.second.pk)))
         links = page.select(".nav-tabs a")
-        self.assertEqual(len(links), 9)
+        self.assertEqual(len(links), 6)
         for link in links:
             self.assertEqual(urlsplit(link["href"]).query, query)
 
@@ -262,7 +262,7 @@ class TestServerScope(_ViewTestBase):
         self.assertContains(response, "Invalid Server selection")
         page = BeautifulSoup(response.content, "html.parser")
         links = page.select(".nav-tabs a")
-        self.assertEqual(len(links), 9)
+        self.assertEqual(len(links), 6)
         for link in links:
             self.assertEqual(parse_qs(urlsplit(link["href"]).query, keep_blank_values=True), {"server": selection})
 

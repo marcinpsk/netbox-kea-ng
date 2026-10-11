@@ -338,7 +338,8 @@ class TestCombinedPagesKeepANoticePerServer(_ViewTestBase):
             response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["errors"], [(self.server.name, HEADLINES["reservation"])])
-        self.assertContains(response, '<div class="alert alert-danger mt-3">')
+        self.assertContains(response, '<div class="alert alert-danger mt-3" role="alert">')
+        self.assertContains(response, f"<li><strong>{self.server.name}</strong>: {HEADLINES['reservation']}</li>")
 
     def test_a_client_that_cannot_be_built_is_an_error_with_the_headline_of_its_kind(self):
         type(self.server).objects.filter(pk=self.server.pk).update(

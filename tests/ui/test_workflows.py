@@ -484,10 +484,13 @@ class TestCombinedViews:
         page.goto(f"{plugin_base}/combined/")
         page.wait_for_load_state("networkidle")
         _check_no_django_error(page)
-        for _name, path in self.COMBINED_TABS[1:]:  # skip dashboard itself
-            link = page.locator(f'a[href*="{path}"]').first
-            assert link.count(), f"Missing tab link for {path}"
+        sections = page.get_by_role("navigation", name="Workspace sections")
+        for label in ("Overview", "Leases", "Subnets", "Reservations", "Configuration", "Sync"):
+            link = sections.get_by_role("link", name=label, exact=True)
             expect(link).to_be_visible()
+        families = page.get_by_role("navigation", name="DHCP family")
+        expect(families.get_by_role("link", name="DHCPv4", exact=True)).to_be_visible()
+        expect(families.get_by_role("link", name="DHCPv6", exact=True)).to_be_visible()
         _assert_no_http_errors(track_http_errors)
 
 
@@ -498,6 +501,71 @@ class TestCombinedViews:
 
 class TestCombinedViewsWithKea:
     """Combined view content checks that require a live Kea server fixture."""
+
+    @pytest.mark.parametrize("width", [1280, 390], ids=["desktop", "narrow"])
+    @pytest.mark.parametrize("mode", ["light", "dark"])
+    def test_shared_workspace_keeps_scope_across_sections_and_families(
+        self,
+        page: Page,
+        plugin_base: str,
+        kea_server,
+        nb_api,
+        kea_url: str,
+        kea_dhcp6_url: str,
+        track_http_errors: list,
+        width: int,
+        mode: str,
+    ) -> None:
+        """Two selected Servers keep a usable scope bar throughout workspace navigation."""
+        second = nb_api.plugins.kea.servers.create(
+            name=f"{kea_server.name}-workspace",
+            ca_url=kea_url,
+            dhcp6_url=kea_dhcp6_url,
+            has_control_agent=False,
+        )
+        try:
+            page.set_viewport_size({"width": width, "height": 360})
+            page.add_init_script(f"localStorage.setItem('netbox-color-mode', '{mode}');")
+            page.goto(f"{plugin_base}/combined/?server={kea_server.id}&server={second.id}")
+            for family in (4, 6):
+                page.get_by_role("navigation", name="DHCP family").get_by_role(
+                    "link", name=f"DHCPv{family}", exact=True
+                ).click()
+                for label in ("Overview", "Leases", "Subnets", "Reservations", "Configuration", "Sync"):
+                    page.get_by_role("navigation", name="Workspace sections").get_by_role(
+                        "link", name=label, exact=True
+                    ).click()
+                    page.wait_for_load_state("networkidle")
+                    expect(page.locator("html")).to_have_attribute("data-bs-theme", mode)
+                    shell = page.locator("#kea-workspace-shell")
+                    expect(shell.get_by_label("Server Scope")).to_have_text("2 Servers selected")
+                    expect(shell.get_by_role("link", name=f"DHCPv{family}", exact=True)).to_have_attribute(
+                        "aria-current", "page"
+                    )
+                    assert set(parse_qs(urlparse(page.url).query)["server"]) == {str(kea_server.id), str(second.id)}
+                    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                    page.wait_for_function("window.scrollY > 0")
+                    geometry = shell.evaluate("""el => {
+                        const rect = el.getBoundingClientRect();
+                        const navbar = document.querySelector('header.navbar.sticky-top');
+                        const navbarBottom = navbar && getComputedStyle(navbar).display !== 'none'
+                            ? navbar.getBoundingClientRect().bottom : 0;
+                        return {top: rect.top, bottom: rect.bottom, navbarBottom, height: window.innerHeight};
+                    }""")
+                    assert geometry["top"] >= geometry["navbarBottom"] - 1
+                    assert geometry["bottom"] <= geometry["height"]
+                    expect(shell.get_by_label("Server Scope")).to_be_in_viewport()
+                    # Keyboard focus remains available after scrolling on narrow layouts.
+                    active = shell.get_by_role("link", name=label, exact=True)
+                    active.focus()
+                    expect(active).to_be_focused()
+                    sections = shell.get_by_role("navigation", name="Workspace sections")
+                    sections.get_by_role("link", name="Overview", exact=True).focus()
+                    page.keyboard.press("Tab")
+                    expect(sections.get_by_role("link", name="Leases", exact=True)).to_be_focused()
+                    _assert_no_http_errors(track_http_errors)
+        finally:
+            second.delete()
 
     def test_server_selector_applies_two_servers_together(
         self,

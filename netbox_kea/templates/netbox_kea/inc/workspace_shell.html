@@ -1,0 +1,35 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+<div id="kea-workspace-shell" class="kea-workspace-shell bg-body border-bottom mb-3">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 py-2">
+    <div class="d-flex flex-wrap align-items-center gap-2">
+      <strong aria-label="Server Scope">{{ workspace_scope_label }}</strong>
+      <span class="text-muted">DHCPv{{ workspace_family }}</span>
+      {% if server_scope %}{% include 'netbox_kea/inc/server_selector.html' %}{% endif %}
+    </div>
+    <nav class="btn-group" aria-label="DHCP family">
+      {% for family, url in workspace_families %}
+      <a href="{{ url }}" class="btn btn-sm {% if family == workspace_family %}btn-primary{% else %}btn-outline-primary{% endif %}"
+         {% if family == workspace_family %}aria-current="page"{% endif %}>DHCPv{{ family }}</a>
+      {% endfor %}
+    </nav>
+  </div>
+  <nav aria-label="Workspace sections">
+    <ul class="nav nav-tabs flex-nowrap overflow-auto">
+      {% for key, label, url in workspace_sections %}
+      <li class="nav-item">
+        <a href="{{ url }}" class="nav-link{% if key == workspace_section %} active{% endif %}"
+           {% if key == workspace_section %}aria-current="page"{% endif %}>{{ label }}</a>
+      </li>
+      {% endfor %}
+    </ul>
+  </nav>
+</div>
+{% if workspace_subsections %}
+<nav class="nav nav-pills mb-3" aria-label="Subnet subsections">
+  {% for key, label, url in workspace_subsections %}
+  <a href="{{ url }}" class="nav-link{% if key == workspace_subsection %} active{% endif %}"
+     {% if key == workspace_subsection %}aria-current="page"{% endif %}>{{ label }}</a>
+  {% endfor %}
+</nav>
+{% endif %}

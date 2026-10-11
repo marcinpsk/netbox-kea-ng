@@ -39,24 +39,14 @@
         <a href="{{ server.get_absolute_url }}" class="btn btn-sm btn-outline-secondary">
           <i class="mdi mdi-eye"></i> Detail
         </a>
-        {% if server.dhcp4 %}
-        <a href="{% url 'plugins:netbox_kea:combined_reservations4' %}?server={{ server.pk }}"
+        {% if workspace_family == 4 and server.dhcp4 or workspace_family == 6 and server.dhcp6 %}
+        <a href="{% if workspace_family == 4 %}{% url 'plugins:netbox_kea:server_reservations4' server.pk %}{% else %}{% url 'plugins:netbox_kea:server_reservations6' server.pk %}{% endif %}"
            class="btn btn-sm btn-outline-primary">
-          <i class="mdi mdi-bookmark-multiple"></i> v4 Reservations
+          <i class="mdi mdi-bookmark-multiple"></i> Reservations
         </a>
-        <a href="{% url 'plugins:netbox_kea:combined_subnets4' %}?server={{ server.pk }}"
+        <a href="{% if workspace_family == 4 %}{% url 'plugins:netbox_kea:server_subnets4' server.pk %}{% else %}{% url 'plugins:netbox_kea:server_subnets6' server.pk %}{% endif %}"
            class="btn btn-sm btn-outline-primary">
-          <i class="mdi mdi-ip-network"></i> v4 Subnets
-        </a>
-        {% endif %}
-        {% if server.dhcp6 %}
-        <a href="{% url 'plugins:netbox_kea:combined_reservations6' %}?server={{ server.pk }}"
-           class="btn btn-sm btn-outline-info">
-          <i class="mdi mdi-bookmark-multiple"></i> v6 Reservations
-        </a>
-        <a href="{% url 'plugins:netbox_kea:combined_subnets6' %}?server={{ server.pk }}"
-           class="btn btn-sm btn-outline-info">
-          <i class="mdi mdi-ip-network"></i> v6 Subnets
+          <i class="mdi mdi-ip-network"></i> Subnets
         </a>
         {% endif %}
       </div>
