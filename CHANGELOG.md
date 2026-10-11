@@ -13,6 +13,24 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.1.2 (2026-10-11)
+
+### Bug Fixes
+
+- Name client settings errors on Reservation forms
+  ([`d33560c`](https://github.com/marcinpsk/netbox-kea-ng/commit/d33560c607680c0a212a4f76c6f288d7394cdf23))
+
+### Continuous Integration
+
+- Skip the Release run that the release commit starts
+  ([`9e08841`](https://github.com/marcinpsk/netbox-kea-ng/commit/9e088416281740174871f2d54b184de921928d66))
+
+### Documentation
+
+- Play each recording when the reader scrolls to it
+  ([`91757fc`](https://github.com/marcinpsk/netbox-kea-ng/commit/91757fc9dedac71afb8e940ce5fb1239cc6bdfb7))
+
+
 ## v3.1.1 (2026-10-11)
 
 ### Bug Fixes
