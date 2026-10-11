@@ -48,9 +48,13 @@ from ..signals import reservation_created, reservation_deleted, reservation_upda
 from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, MutationScope, SubnetIdentity, VerifiedSubnet
 from ..sync_permissions import sync_gate
 from ..utilities import kea_error_hint
-from ._base import _KeaChangeMixin, _safe_return_url
+from ._base import _client_settings_error, _KeaChangeMixin, _safe_return_url
 from .notices import notice, show_notices
-from .reservations import _RESERVATIONS_TAB, _build_reservation_options_formset, _configured_capabilities
+from .reservations import (
+    _RESERVATIONS_TAB,
+    _build_reservation_options_formset,
+    _client_capabilities,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -502,16 +506,18 @@ class _ReservationMutationView(_KeaChangeMixin, generic.ObjectView):
         """Return why the manual Sync rule refuses the user a Reservation claim, or an empty string."""
         return sync_gate(self.request.user, claim_permissions(RESERVATION)).reason
 
-    def _mutation_unavailable_response(
-        self,
-        request: HttpRequest,
-        server: Server,
-        capabilities: ReservationCapabilities | None,
-    ) -> HttpResponse | None:
-        if capabilities is not None and capabilities.mutation_available:
-            return None
-        messages.error(request, "Reservation mutation capabilities are unavailable.")
-        return redirect(self._return_url(server))
+    def _mutation_capabilities(self, request: HttpRequest, server: Server) -> ReservationCapabilities | HttpResponse:
+        """Return the confirmed mutation capabilities, or the response that refuses the mutation."""
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except ValueError as exc:
+            messages.error(request, _client_settings_error(server, exc))
+            return redirect(self._return_url(server))
+        capabilities = _client_capabilities(server, client, self.dhcp_version)
+        if capabilities is None or not capabilities.mutation_available:
+            messages.error(request, "Reservation mutation capabilities are unavailable.")
+            return redirect(self._return_url(server))
+        return capabilities
 
     def _form_context(
         self,
@@ -565,7 +571,13 @@ class _ReservationAddView(_ReservationMutationView):
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        capabilities = _configured_capabilities(server, self.dhcp_version)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except ValueError as exc:
+            messages.error(request, _client_settings_error(server, exc))
+            capabilities = None
+        else:
+            capabilities = _client_capabilities(server, client, self.dhcp_version)
         snapshot = subnet_catalogue.display(server, self.dhcp_version)
         show_notices(request, notice(snapshot))
         initial_fields = (
@@ -587,10 +599,9 @@ class _ReservationAddView(_ReservationMutationView):
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        capabilities = _configured_capabilities(server, self.dhcp_version)
-        unavailable_response = self._mutation_unavailable_response(request, server, capabilities)
-        if unavailable_response is not None:
-            return unavailable_response
+        capabilities = self._mutation_capabilities(request, server)
+        if isinstance(capabilities, HttpResponse):
+            return capabilities
         form = self.form_class(data=request.POST, capabilities=capabilities, sync_refusal=self._sync_refusal())
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         if form.is_valid() and options_valid:
@@ -699,6 +710,11 @@ class _ReservationEditView(_ReservationMutationView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except ValueError as exc:
+            messages.error(request, _client_settings_error(server, exc))
+            return redirect(self._return_url(server))
         identity = _identity_from_request(request, self.dhcp_version)
         catalogue = subnet_catalogue.display(server, self.dhcp_version)
         show_notices(request, notice(catalogue))
@@ -709,7 +725,7 @@ class _ReservationEditView(_ReservationMutationView):
             logger.exception("Could not load the Reservation edit target")
             messages.error(request, "The Reservation could not be loaded. See server logs.")
             return redirect(self._return_url(server))
-        capabilities = _configured_capabilities(server, self.dhcp_version)
+        capabilities = _client_capabilities(server, client, self.dhcp_version)
         form = self._form_for(reservation, suffix, capabilities)
         return self._render(
             request,
@@ -723,10 +739,9 @@ class _ReservationEditView(_ReservationMutationView):
         server = self.get_object(pk=pk)
         identity = _identity_from_request(request, self.dhcp_version)
         return_url = self._return_url(server)
-        capabilities = _configured_capabilities(server, self.dhcp_version)
-        unavailable_response = self._mutation_unavailable_response(request, server, capabilities)
-        if unavailable_response is not None:
-            return unavailable_response
+        capabilities = self._mutation_capabilities(request, server)
+        if isinstance(capabilities, HttpResponse):
+            return capabilities
         try:
             with _reservation_target_scope(server, self.dhcp_version, subnet_id, identity) as (
                 current,
@@ -840,6 +855,11 @@ class _ReservationDeleteView(_ReservationMutationView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
+        try:
+            server.get_client(version=self.dhcp_version)
+        except ValueError as exc:
+            messages.error(request, _client_settings_error(server, exc))
+            return redirect(self._return_url(server))
         identity = _identity_from_request(request, self.dhcp_version)
         try:
             reservation = _load_target(server, self.dhcp_version, subnet_id, identity)
@@ -866,10 +886,9 @@ class _ReservationDeleteView(_ReservationMutationView):
         server = self.get_object(pk=pk)
         identity = _identity_from_request(request, self.dhcp_version)
         return_url = self._return_url(server)
-        capabilities = _configured_capabilities(server, self.dhcp_version)
-        unavailable_response = self._mutation_unavailable_response(request, server, capabilities)
-        if unavailable_response is not None:
-            return unavailable_response
+        capabilities = self._mutation_capabilities(request, server)
+        if isinstance(capabilities, HttpResponse):
+            return capabilities
         try:
             with _reservation_target_scope(server, self.dhcp_version, subnet_id, identity) as (
                 reservation,

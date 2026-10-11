@@ -129,6 +129,8 @@ of each built page. It fails on a page that shows a file that the site does not 
 recording that no page shows, and on a README image under the `site_url` that the site does not hold. Each page builds
 to `<page>/index.html`. Zensical rewrites a `<source src>` like a Markdown link, but not a `<video poster>`, so a page
 names `<source src="assets/recordings/<name>.mp4">` and `poster="../assets/recordings/<name>.png"`.
+`docs/guide/assets/js/autoplay-videos.js` plays each `muted` video while half of it is on the screen, and pauses it
+when it goes away. It does nothing when the reader prefers reduced motion.
 
 Start the harness with `docker-compose.docs.yml` on top of the two base files. It runs each Kea daemon on a writable
 copy of its configuration, so `config-write` succeeds and the clips show no persistence failure. The suite refuses a
@@ -371,7 +373,8 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
   `ca_url` even when a protocol-specific URL is configured.
 - **Always call `server.get_client()` inside a try block** — client creation raises
   `ValueError` on bad config and sends no request. A try block around `get_client()` alone
-  catches `ValueError` only. Request errors come from the Kea calls, so the "Catch" rule
+  catches `ValueError` only, and a view reports it with `_client_settings_error()` in
+  `views/_base.py`, never as a connection failure. Request errors come from the Kea calls, so the "Catch" rule
   below covers those calls. Never call it at module/class level or before error handling
   is in scope.
 - **Validate Kea response shape before indexing.** After `client.command()`, check

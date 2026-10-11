@@ -25,6 +25,11 @@ import tree_sitter_bash
 import yaml
 from tree_sitter import Language, Parser
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # Python 3.10 needs the dev group's explicit TOML reader.
+    import tomli as tomllib
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 #: The Playwright suite. It must stay inside the path the integration job runs.
 _BROWSER_SUITE = REPOSITORY_ROOT / "tests" / "ui"
@@ -1163,6 +1168,18 @@ def test_a_release_deploys_the_documentation_site_of_its_own_tag():
     assert release["docs"]["with"] == {"tag": "${{ needs.release.outputs.tag }}"}
     assert set(docs["on"]) == {"workflow_call", "workflow_dispatch"}
     assert docs["jobs"]["build"]["with"]["ref"] == "refs/tags/${{ inputs.tag }}"
+
+
+def test_the_push_of_the_release_commit_starts_no_second_release():
+    """The release commit has the subject that pyproject.toml gives semantic-release; a new subject undoes the skip."""
+    pyproject = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text())
+    prefix = pyproject["tool"]["semantic_release"]["commit_message"].partition("{version}")[0]
+    release = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/release.yml").read_text())["jobs"]["release"]
+
+    assert prefix == "chore(release): "
+    assert release["if"] == (
+        f"github.ref == 'refs/heads/main' && !startsWith(github.event.head_commit.message, '{prefix}')"
+    )
 
 
 def test_a_stale_documentation_build_neither_deploys_nor_cancels_a_newer_one():

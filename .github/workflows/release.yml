@@ -12,7 +12,8 @@ name: Release
 
 jobs:
   release:
-    if: github.ref == 'refs/heads/main'
+    # The push of the release commit starts this workflow again; that run has nothing to release.
+    if: "github.ref == 'refs/heads/main' && !startsWith(github.event.head_commit.message, 'chore(release): ')"
     runs-on: ubuntu-latest
     concurrency: release
     permissions:
