@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+# Zensical reads this file. It ignores exclude_docs, so the site source has its own directory.
+site_name: netbox-kea-ng
+site_description: NetBox plugin for the Kea DHCP server
+site_url: https://marcinpsk.github.io/netbox-kea-ng/
+repo_url: https://github.com/marcinpsk/netbox-kea-ng
+repo_name: marcinpsk/netbox-kea-ng
+docs_dir: docs/guide
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      toggle:
+        icon: material/brightness-7
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      toggle:
+        icon: material/brightness-4
+        name: Light mode
+  features:
+    - content.code.copy
+    - navigation.sections
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+
+nav:
+  - Overview: index.md
+  - Installation: installation.md
+  - Configuration: configuration.md
+  - Kea Servers: servers.md
+  - IPAM Sync: ipam-sync.md
+  - Leases, Reservations and Subnets: leases-reservations.md
+  - Event rules and webhooks: event-rules.md
+  - DNS: dns.md
+  - Custom links: custom-links.md
+  - netbox-branching: branching.md
+  - Development: development.md
+  - Changelog: changelog.md

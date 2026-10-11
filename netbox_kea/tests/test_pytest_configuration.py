@@ -101,8 +101,16 @@ def _workflow_job(workflow: str, name: str) -> str:
     return re.split(r"\n {2}[A-Za-z0-9_-]+:\n", job, maxsplit=1)[0]
 
 
+#: The pages of the documentation site, which zensical builds from docs/guide/.
+_SITE_PAGES = tuple(
+    sorted(page.relative_to(REPOSITORY_ROOT).as_posix() for page in REPOSITORY_ROOT.glob("docs/guide/*.md"))
+)
+
 #: Documentation a reader outside this machine consumes.
-_PUBLISHED_DOCS = ("AGENTS.md", "README.md")
+_PUBLISHED_DOCS = ("AGENTS.md", "README.md", *_SITE_PAGES)
+
+#: Published documentation that gives the contributor commands (lint, unit and integration tests).
+_CONTRIBUTOR_DOCS = ("AGENTS.md", "docs/guide/development.md")
 
 #: Hosts and database names that are safe to publish: they name no particular machine
 #: and paste into a shell unchanged.
@@ -225,6 +233,7 @@ def test_published_docs_name_no_machine_specific_resource():
     """
     # Hosts and database names that only exist on a particular developer machine.
     private = re.compile(r"[\w.-]*(?:review-redis|_review\b|devcontainer-devcontainer|nblp-)[\w.-]*")
+    assert "docs/guide/index.md" in _PUBLISHED_DOCS, "The site pages moved; this guard would not read them."
     for name in _PUBLISHED_DOCS:
         text = (REPOSITORY_ROOT / name).read_text()
         assert text, f"{name} is empty; this guard would pass without reading anything."
@@ -823,7 +832,7 @@ def test_every_unit_test_command_declares_auto_workers():
     their `-p no:django` marker. One worker stays allowed, because the query-count
     baseline must be recorded serially.
     """
-    for relative_path in (".github/workflows/ci.yml", "AGENTS.md", "README.md"):
+    for relative_path in (".github/workflows/ci.yml", *_CONTRIBUTOR_DOCS):
         text = (REPOSITORY_ROOT / relative_path).read_text()
         unit_commands = [command for command in _pytest_commands(text) if "-p no:django" not in command]
         assert unit_commands, relative_path
@@ -1067,9 +1076,9 @@ def test_chrome_source_guard_rejects_incomplete_or_unsupported_scripts(script):
     assert not _drops_chrome_source_before_installing(script)
 
 
-def _assert_browser_install_step_is_guarded(workflow: dict) -> None:
+def _assert_browser_install_step_is_guarded(workflow: dict, job_name: str = "test") -> None:
     """Bind the shell proof to the unconditional browser-install step and default shell."""
-    job = workflow["jobs"]["test"]
+    job = workflow["jobs"][job_name]
     for scope in (workflow, job):
         assert "shell" not in scope.get("defaults", {}).get("run", {}), (
             "browser installation must use the default shell"
@@ -1123,7 +1132,8 @@ def test_browser_install_guard_requires_one_unconditional_executable_step(change
         _assert_browser_install_step_is_guarded(workflow)
 
 
-def test_the_browser_install_does_not_read_the_google_chrome_apt_source():
+@pytest.mark.parametrize(("workflow_name", "job_name"), [("ci.yml", "test"), ("docs-build.yml", "build")])
+def test_the_browser_install_does_not_read_the_google_chrome_apt_source(workflow_name, job_name):
     """`--with-deps` runs `apt-get update`, so every apt source on the runner can fail the job.
 
     The runner image ships Google's Chrome repository. On 2026-09-09 it served a Release
@@ -1131,13 +1141,51 @@ def test_the_browser_install_does_not_read_the_google_chrome_apt_source():
     three browser jobs died before pytest started on every open branch. Playwright
     downloads its own Chromium, so that source is never needed here.
     """
-    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text())
-    _assert_browser_install_step_is_guarded(workflow)
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows" / workflow_name).read_text())
+    _assert_browser_install_step_is_guarded(workflow, job_name)
+
+
+def test_a_release_deploys_the_documentation_site_of_its_own_tag():
+    """A wrong output or input name skips the docs job or builds another commit, and no run shows an error."""
+    release = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/release.yml").read_text())["jobs"]
+    docs = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/docs.yml").read_text())
+
+    assert [step["run"] for step in release["release"]["steps"] if step.get("id") == "release"] == [
+        "uv run semantic-release version"
+    ]
+    assert release["release"]["outputs"] == {
+        "released": "${{ steps.release.outputs.released }}",
+        "tag": "${{ steps.release.outputs.tag }}",
+    }
+    assert release["docs"]["needs"] == "release"
+    assert release["docs"]["if"] == "needs.release.outputs.released == 'true'"
+    assert release["docs"]["uses"] == "./.github/workflows/docs.yml"
+    assert release["docs"]["with"] == {"tag": "${{ needs.release.outputs.tag }}"}
+    assert set(docs["on"]) == {"workflow_call", "workflow_dispatch"}
+    assert docs["jobs"]["build"]["with"]["ref"] == "refs/tags/${{ inputs.tag }}"
+
+
+def test_a_stale_documentation_build_neither_deploys_nor_cancels_a_newer_one():
+    """Builds of two releases overlap, so the older one can reach the `pages` queue last."""
+    deploy = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/docs.yml").read_text())["jobs"]["deploy"]
+    steps = [step.get("uses") or step["run"] for step in deploy["steps"]]
+
+    assert deploy["concurrency"] == {"group": "pages", "cancel-in-progress": False, "queue": "max"}
+    assert "/releases/latest" in steps[0], steps
+    assert steps[-1].startswith("actions/deploy-pages@"), steps
+
+
+def test_the_docs_build_passes_native_tls_to_every_uv_command():
+    """The documentation build runs the integration steps, so it follows the uv convention of ci.yml."""
+    uv_commands = _workflow_uv_commands((REPOSITORY_ROOT / ".github/workflows/docs-build.yml").read_text())
+
+    assert uv_commands, "docs-build.yml runs no uv command; this guard would pass without reading anything."
+    assert all("--native-tls" in command for command in uv_commands), uv_commands
 
 
 def test_documented_integration_commands_disable_pytest_django():
     """Keep integration commands independent from the unit-test Django settings."""
-    for relative_path in ("AGENTS.md", "README.md"):
+    for relative_path in _CONTRIBUTOR_DOCS:
         contents = (REPOSITORY_ROOT / relative_path).read_text()
         assert "pytest -p no:django tests/" in contents, relative_path
 
@@ -1246,6 +1294,65 @@ def test_pytest_configuration_works_with_django_plugin_disabled():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def _integration_pytest(*arguments: str) -> subprocess.CompletedProcess[str]:
+    """Run pytest over the integration suite without a harness: nothing below may reach NetBox."""
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-p", "no:django", "-p", "no:cacheprovider", *arguments],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=60,
+        env={**os.environ, "NETBOX_URL": "http://127.0.0.1:9"},
+    )
+
+
+def test_the_integration_run_does_not_collect_the_screenshot_suite():
+    # A module whose dependency this environment lacks must not hide the result; a collected
+    # docs_media module would show its path even when it fails to import.
+    result = _integration_pytest("tests/", "--collect-only", "-q", "--continue-on-collection-errors")
+
+    assert "tests/ui/" in result.stdout, "the run collected no browser test; this guard would read nothing"
+    assert "docs_media" not in result.stdout
+
+
+def test_a_named_screenshot_suite_without_an_output_directory_sets_up_no_fixture():
+    """A skip inside a fixture comes too late: the session fixtures before it provision a NetBox token."""
+    result = _integration_pytest("tests/docs_media", "--setup-plan")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert re.search(r"\b11 skipped\b", result.stdout), result.stdout
+    assert "SETUP" not in result.stdout, result.stdout
+
+
+def test_the_docs_build_checks_the_media_root_that_it_captures_and_git_ignores():
+    """The check must read the files that the capture wrote, and git must never hold a captured file."""
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github" / "workflows" / "docs-build.yml").read_text())
+    runs = [
+        shlex.split(step["run"].replace("\\\n", " ")) for step in workflow["jobs"]["build"]["steps"] if "run" in step
+    ]
+    (capture,) = [run for run in runs if "tests/docs_media" in run]
+    (check,) = [run for run in runs if "scripts/check_docs_media.py" in run]
+    root = capture[capture.index("--docs-media-dir") + 1]
+
+    assert check[check.index("scripts/check_docs_media.py") + 1 :] == ["site", root]
+    ignored = (REPOSITORY_ROOT / ".gitignore").read_text().splitlines()
+    assert f"{root}/screenshots/" in ignored
+    assert f"{root}/recordings/" in ignored
+
+
+def test_the_docs_build_starts_the_harness_variant_that_persists_the_kea_configuration():
+    """On the read-only harness, the Reserve clip would show a config-write failure on the published page."""
+    workflow = yaml.safe_load((REPOSITORY_ROOT / ".github" / "workflows" / "docs-build.yml").read_text())
+    variant = yaml.safe_load((REPOSITORY_ROOT / "tests" / "docker" / "docker-compose.docs.yml").read_text())
+
+    compose_files = workflow["jobs"]["build"]["env"]["COMPOSE_FILE"].split(":")
+    assert compose_files == ["docker-compose.yml", "docker-compose.override.yml", "docker-compose.docs.yml"]
+    for family in (4, 6):
+        command = variant["services"][f"kea-dhcp{family}"]["command"][-1]
+        assert f"exec kea-dhcp{family} -X -c /tmp/kea-dhcp{family}.conf" in command
+
+
 def test_the_pinned_netbox_release_is_documented_only_by_its_constant():
     """Name the release in one place. A copy in the docs goes stale on the next bump."""
     agents = (REPOSITORY_ROOT / "AGENTS.md").read_text()
@@ -1268,7 +1375,8 @@ def test_ci_pins_the_netbox_release_the_query_counts_describe():
     checkouts = {
         (name, step["with"]["ref"])
         for name, job in workflow["jobs"].items()
-        for step in job["steps"]
+        # A job that calls a reusable workflow has no steps.
+        for step in job.get("steps", ())
         if step.get("with", {}).get("repository") == "netbox-community/netbox"
     }
     # The floor job runs only test_event_scope.py, which asserts no query count.
@@ -1645,6 +1753,33 @@ def _unscoped_deletes(source: str) -> list[str]:
     return offenders
 
 
+#: The functions that take the raw Kea control URLs: the harness check itself and one read-only command listing.
+_RAW_CONTROL_URL_USERS = {
+    "tests/conftest.py::kea_harness_daemons",
+    "tests/test_kea_commands.py::test_the_harness_kea_lists_the_recorded_commands",
+}
+
+
+def test_every_kea_client_fixture_goes_through_the_harness_check():
+    """The suites wipe Kea leases, so a fixture that writes to Kea takes its URLs from kea_harness_daemons.
+
+    A fixture that requested kea_control_urls directly would write to whatever daemon the
+    environment names, also one that is not a harness daemon.
+    """
+    users = set()
+    for path in sorted(_INTEGRATION_SUITE.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                parameters = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+                if any(parameter.arg == "kea_control_urls" for parameter in parameters):
+                    users.add(f"{path.relative_to(REPOSITORY_ROOT).as_posix()}::{node.name}")
+
+    assert users == _RAW_CONTROL_URL_USERS, (
+        f"{sorted(users - _RAW_CONTROL_URL_USERS)} take kea_control_urls directly. "
+        "Take kea_harness_daemons, which refuses a daemon without the harness marker."
+    )
+
+
 def test_the_unscoped_delete_guard_reads_receiver_and_arguments():
     must_flag = (
         "nb.users.permissions.all(0).delete()",
@@ -1913,7 +2048,7 @@ def test_published_docs_run_ruff_over_the_scope_ci_lints():
     ci_targets = _workflow_ruff_targets(workflow)
     assert ci_targets, "The lint job no longer runs ruff; this guard would read nothing."
 
-    for name in _PUBLISHED_DOCS:
+    for name in _CONTRIBUTOR_DOCS:
         documented = _ruff_targets_in(_uv_commands((REPOSITORY_ROOT / name).read_text()))
         assert documented, f"{name} documents no ruff command; this guard would read nothing."
         assert documented == ci_targets, (
@@ -1921,18 +2056,28 @@ def test_published_docs_run_ruff_over_the_scope_ci_lints():
         )
 
 
-def test_readme_documents_the_reservation_transfer_format():
+def test_readme_links_are_absolute():
+    """PyPI renders README.md too, and a relative link there points at nothing."""
+    readme = (REPOSITORY_ROOT / "README.md").read_text()
+    targets = re.findall(r"\]\(([^)\s]+)\)", readme)
+    assert targets, "README.md has no links; this guard would read nothing."
+    relative = [target for target in targets if not target.startswith("https://")]
+    assert not relative, f"README.md links must be absolute: {relative}"
+
+
+def test_docs_document_the_reservation_transfer_format():
     """Operators must not be sent to the removed Reservation CSV workflow.
 
     Both markers are asserted first: without the closing one the split runs to the end
     of the file, and the assertions below can then pass on unrelated sections.
     """
-    readme = (REPOSITORY_ROOT / "README.md").read_text()
-    start, end = "**Host Reservations**", "**Subnet Management**"
+    page_path = "docs/guide/leases-reservations.md"
+    page = (REPOSITORY_ROOT / page_path).read_text()
+    start, end = "\n## Host Reservations\n", "\n## Subnet Management\n"
     for marker in (start, end):
-        assert marker in readme, f"README.md no longer holds {marker!r}, so this guard would read the wrong section."
+        assert marker in page, f"{page_path} no longer holds {marker!r}, so this guard would read the wrong section."
 
-    reservation_section = readme.split(start, 1)[1].split(end, 1)[0]
+    reservation_section = page.split(start, 1)[1].split(end, 1)[0]
     assert reservation_section.strip(), "The Host Reservations section is empty; this guard would read nothing."
 
     assert "Bulk CSV import" not in reservation_section
@@ -2144,7 +2289,10 @@ def test_the_browser_suite_mirrors_the_kea_sync_marker_prefix():
     """
     from netbox_kea.ipam_marker import MARKER_KINDS, render_marker
 
-    expected = os.path.commonprefix([render_marker(kind) for kind in MARKER_KINDS])
+    markers = [render_marker(kind) for kind in MARKER_KINDS]
+    expected = "".join(
+        chars[0] for chars in itertools.takewhile(lambda chars: len(set(chars)) == 1, zip(*markers, strict=False))
+    )
     source = (_BROWSER_SUITE / "test_workflows.py").read_text()
     match = re.search(r'^_KEA_SYNC_MARKER_PREFIX = "([^"]*)"$', source, re.MULTILINE)
     assert match, "The browser suite no longer defines _KEA_SYNC_MARKER_PREFIX."

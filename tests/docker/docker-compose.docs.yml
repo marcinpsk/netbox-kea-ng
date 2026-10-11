@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+---
+# The documentation media variant: each daemon runs on a writable copy of its read-only configuration, so config-write succeeds.
+services:
+  kea-dhcp4:
+    command: ["sh", "-c", "cp /etc/kea/kea-dhcp4.conf /tmp/kea-dhcp4.conf && exec kea-dhcp4 -X -c /tmp/kea-dhcp4.conf"]
+  kea-dhcp6:
+    command: ["sh", "-c", "cp /etc/kea/kea-dhcp6.conf /tmp/kea-dhcp6.conf && exec kea-dhcp6 -X -c /tmp/kea-dhcp6.conf"]

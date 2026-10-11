@@ -256,7 +256,7 @@ class Server(JobsMixin, NetBoxModel):
         False) ``service`` is dropped, because Kea 3.2.0+ rejects a ``service`` that
         does not match the daemon the request lands on. ``has_control_agent`` is the
         single source of truth here: a protocol-specific ``dhcp{4,6}_url`` may itself
-        point at a per-protocol Control Agent (Kea < 3.0) or a bare daemon socket
+        point at a per-protocol Control Agent (before Kea 3.1.8) or a bare daemon socket
         (Kea 3.0+), so the routing decision follows the flag, not the URL.
 
         The client is bound to the branch that is active now, so it refuses each Kea write

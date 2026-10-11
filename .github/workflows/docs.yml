@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+---
+name: Docs
+
+# Deploys the site of one release tag, so the site always shows the latest release. release.yml calls it after a
+# release. Dispatch it from main with a tag to deploy that release again; the github-pages environment accepts main only.
+"on":
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to build and deploy, for example v3.2.0.
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag to build and deploy, for example v3.2.0.
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/docs-build.yml
+    with:
+      # The full tag ref, so a branch name fails the checkout.
+      ref: refs/tags/${{ inputs.tag }}
+      upload-pages: true
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    # One deployment at a time. A started deployment always finishes, and `queue: max` keeps every waiting one.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+      queue: max
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # Builds of two releases can overlap, so the older one can finish last.
+      - name: Refuse a tag that is not the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          latest=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)
+          if [ "$latest" != "$TAG" ]; then
+            echo "::error::$TAG is not the latest release ($latest). The site shows the latest release only."
+            exit 1
+          fi
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1

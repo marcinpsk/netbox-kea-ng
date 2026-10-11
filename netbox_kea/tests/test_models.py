@@ -299,7 +299,7 @@ class TestGetClientSendService(SimpleTestCase):
     ``service`` (send it); a direct DHCP-daemon connection must omit it (Kea 3.2.0+
     rejects a mismatched service). This holds regardless of *which* URL is used —
     a protocol-specific ``dhcp{4,6}_url`` may itself point at a per-protocol Control
-    Agent (Kea < 3.0) or a bare daemon socket (Kea 3.0+).
+    Agent (before Kea 3.1.8) or a bare daemon socket (Kea 3.0+).
     """
 
     def _sent_body(self, client):
@@ -321,7 +321,7 @@ class TestGetClientSendService(SimpleTestCase):
         self.assertNotIn("service", self._sent_body(client))
 
     def test_protocol_url_control_agent_still_routes_by_service(self):
-        # A protocol-specific URL pointing at a per-protocol Control Agent (Kea < 3.0)
+        # A protocol-specific URL pointing at a per-protocol Control Agent (before Kea 3.1.8)
         # must KEEP service so the CA can route to the daemon (regression for the case
         # where every dhcp{4,6}_url was wrongly treated as a bare daemon).
         client = _make_server(dhcp4_url="https://kea-v4-ca.example.com", has_control_agent=True).get_client(version=4)

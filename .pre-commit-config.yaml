@@ -19,6 +19,15 @@ repos:
       - id: mixed-line-ending
         args: [--fix=lf]
 
+  # CI makes each screenshot and recording from the commit that it documents, so git holds none.
+  - repo: local
+    hooks:
+      - id: no-committed-media
+        name: no committed screenshot or recording
+        language: fail
+        entry: "CI makes the documentation media (docs/guide/development.md). Do not commit an image or a video:"
+        files: '(?i)\.(png|jpe?g|gif|webp|avif|mp4|webm|mov)$'
+
   - repo: local
     hooks:
       # Python code quality. Run through uv so the version comes from uv.lock, the same

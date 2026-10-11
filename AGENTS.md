@@ -17,10 +17,10 @@ lease search/add/edit/delete, host-reservation CRUD, subnet/pool/shared-network
 management, DHCP option editing, and automatic Kea→NetBox IPAM sync via a
 background job.
 
-**Kea connection model.** Kea 3.0 removed the Control Agent: each DHCP daemon
+**Kea connection model.** Kea 3.0 deprecated the Control Agent and Kea 3.1.8 removed it: each DHCP daemon
 exposes its own HTTP control socket, so the plugin connects **directly** to each
 daemon (`has_control_agent=False`, the modern default for Kea 3.0+). A legacy
-Control Agent (Kea < 3.0, or a per-protocol CA) is still supported via
+Control Agent (before Kea 3.1.8, or a per-protocol CA) is still supported via
 `has_control_agent=True`. This flag is the single source of truth for request
 routing — see "Protocol-aware / direct-daemon client" below.
 
@@ -33,6 +33,7 @@ uv run ruff check .                        # lint
 uv run ruff format --check .               # check formatting
 uv run ruff format .                       # auto-format
 uv run reuse lint                          # SPDX/REUSE compliance
+uv run --group docs zensical build --strict  # documentation site (Python 3.11+): mkdocs.yml, pages in docs/guide/
 uv run --native-tls pre-commit install --install-hooks  # install configured hook types
 ./scripts/opengrep-scan.sh                 # custom opengrep ruleset gate (pre-commit only)
 ./scripts/opengrep-test.sh                 # opengrep rule tests
@@ -89,6 +90,9 @@ The compose stack runs: NetBox, netbox-worker, postgres, redis, nginx (basic-aut
 + TLS), and **kea-dhcp4 / kea-dhcp6 as direct daemons** (no Control Agent). The
 daemons run with `-X` because Kea 3.2.0 refuses to start with an unsecured HTTP
 control socket; the sockets are loopback-bound with nginx terminating auth in front.
+The suites wipe the leases of these daemons. The `kea_harness_daemons` fixture in `tests/conftest.py` reads each
+daemon's configuration first and refuses one whose global `user-context` lacks `"netbox-kea-test-harness": true`
+(set in `tests/docker/kea_configs/`). Every fixture that writes to Kea takes its URLs from that fixture.
 
 ### Browser tests (`tests/ui/`, Docker required)
 
@@ -108,6 +112,35 @@ the integration job executes.
 `NETBOX_BRANCHING_VERSION` (the value in the `env` of `.github/workflows/ci.yml`) before
 `test_setup.sh`, with a NetBox 4.7 image. Elsewhere it skips; `NETBOX_KEA_REQUIRE_BRANCHING=1`
 makes it fail instead.
+
+### Documentation media (`tests/docs_media/`, Docker required)
+
+The site pages show screenshots and short recordings that CI makes from the commit it builds. Git never holds them:
+`docs/guide/assets/screenshots/` and `docs/guide/assets/recordings/` are in `.gitignore`, and the pre-commit hook
+`no-committed-media` refuses any image or video. The suite runs only when
+`--docs-media-dir` names the media root, so the integration run over `tests/` leaves it out. It drives the `tests/ui`
+harness and loads one demo data set. `test_screenshots.py` writes each view as `screenshots/<name>-light.png` and
+`<name>-dark.png`. `test_recordings.py` records each workflow in the light color mode as `recordings/<name>.mp4`
+(H.264) with the poster `<name>.png`, and the Sync clip also as the README GIF. `tests/docs_media/recording.py` draws
+the pointer, paces the steps and encodes with the ffmpeg of `imageio-ffmpeg` (dev group). Each recording changes one
+lease of subnet 2, which no screenshot shows, and its fixture removes the change. `zensical build --strict` does not
+check media, so `scripts/check_docs_media.py` reads the `<img src>`, `<video src>`, `<video poster>` and `<source src>`
+of each built page. It fails on a page that shows a file that the site does not hold, on a captured screenshot or
+recording that no page shows, and on a README image under the `site_url` that the site does not hold. Each page builds
+to `<page>/index.html`. Zensical rewrites a `<source src>` like a Markdown link, but not a `<video poster>`, so a page
+names `<source src="assets/recordings/<name>.mp4">` and `poster="../assets/recordings/<name>.png"`.
+
+Start the harness with `docker-compose.docs.yml` on top of the two base files. It runs each Kea daemon on a writable
+copy of its configuration, so `config-write` succeeds and the clips show no persistence failure. The suite refuses a
+daemon that cannot write its configuration. Set `COMPOSE_FILE` for the setup command only: the other suites keep
+the read-only configuration.
+
+```bash
+COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.docs.yml ./tests/test_setup.sh
+uv run --native-tls pytest -p no:django tests/docs_media --docs-media-dir docs/guide/assets
+uv run --group docs zensical build --strict
+uv run python scripts/check_docs_media.py site docs/guide/assets
+```
 
 ### CI
 
@@ -143,6 +176,13 @@ makes it fail instead.
   NetBox v4.3 (floor), v4.7 (ceiling), and the dev snapshot (allowed to fail).
 - **Branching browser job**: the integration steps on the netbox-branching variant of the
   harness (a NetBox 4.7 image), running only `tests/ui/test_branching_refusal.py`.
+- **Documentation job**: the reusable workflow `docs-build.yml` starts the docs variant of the harness with NetBox 4.7, runs the
+  media suite and the media check, and builds the site with `--strict`. `ci.yml` calls it on pull requests to
+  `main` and in the scheduled run, and uploads the site as an artifact. `docs.yml` calls it for one release tag and
+  deploys the site to GitHub Pages, so the site shows the latest release only. `release.yml` calls `docs.yml` after
+  a release, in a separate job, so a failed deployment leaves the PyPI release in place. The deploy job refuses a tag
+  that is not the latest GitHub release. To deploy the latest release again, dispatch `docs.yml` from `main` with its tag. The lint job has no screenshots or recordings, so its link check
+  excludes them.
 - Playwright traces on failure are uploaded as artifacts.
 
 Ruff is configured in `pyproject.toml`: line length 120, max complexity 15,
@@ -549,5 +589,7 @@ resort, reserved for true external boundaries you cannot run locally.
   cannot take a comment or are generated (license text, binary, JSON, lock file, changelog).
   Name one `SPDX-FileCopyrightText` line per author whose lines are in the file. Never
   remove a holder whose code is still in the file (Apache-2.0 section 4(c)).
+- **User documentation**: the site pages in `docs/guide/` hold it, and `mkdocs.yml` lists them in `nav`.
+  Keep `README.md` short. PyPI renders it too, so each of its links must be absolute.
 - **Ruff**: line length 120, max complexity 15, migrations excluded, E501 ignored,
   docstrings required except in tests/migrations/`__init__.py`.
