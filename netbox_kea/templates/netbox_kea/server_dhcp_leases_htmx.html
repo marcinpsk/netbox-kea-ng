@@ -16,6 +16,7 @@
         hx-disabled-elt="#lease-search-btn"
         {% if form.is_bound and is_embedded and form.is_valid %}hx-trigger="load"{% endif %}
       >
+        {% workspace_return_field %}
         {% if form.cleaned_data.page %}
           {# Only include on full page load so that the user lands on the correct page. #}
           <input type="hidden" id="id_page" name="page" value="{{ form.cleaned_data.page }}">

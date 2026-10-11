@@ -3,6 +3,7 @@
 """Shared section definitions and canonical Server workspace navigation."""
 
 from typing import Any, cast
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse
@@ -12,6 +13,7 @@ from utilities.views import ObjectPermissionRequiredMixin
 
 from ..constants import Family
 from ..models import Server
+from ._base import _safe_return_url
 
 SECTIONS = (
     ("overview", "Overview"),
@@ -21,6 +23,15 @@ SECTIONS = (
     ("configuration", "Configuration"),
     ("sync", "Sync"),
 )
+
+
+def with_return_url(url: str, return_url: str) -> str:
+    """Carry the previous workspace alongside the target's own query fields."""
+    if not return_url:
+        return url
+    parsed = urlsplit(url)
+    query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True) if key != "return_url"]
+    return urlunsplit(parsed._replace(query=urlencode([*query, ("return_url", return_url)])))
 
 
 def selected_family(request: HttpRequest, server: Server, view: Any) -> Family:
@@ -36,7 +47,8 @@ def selected_family(request: HttpRequest, server: Server, view: Any) -> Family:
 
 def server_family_url(request: HttpRequest, server: Server, view: Any, name: str) -> str:
     """Retain the selected family when navigating to a native Server route."""
-    return reverse(f"plugins:netbox_kea:{name}", args=[server.pk]) + f"?family={selected_family(request, server, view)}"
+    url = reverse(f"plugins:netbox_kea:{name}", args=[server.pk]) + f"?family={selected_family(request, server, view)}"
+    return with_return_url(url, _safe_return_url(request, ""))
 
 
 def server_context(request: HttpRequest, server: Server) -> dict[str, Any]:
@@ -46,6 +58,7 @@ def server_context(request: HttpRequest, server: Server) -> dict[str, Any]:
     family = selected_family(request, server, view)
     section = getattr(view, "workspace_section", "overview")
     subsection = getattr(view, "workspace_subsection", None)
+    return_url = _safe_return_url(request, "")
 
     def section_url(key: str, version: Family) -> str:
         names = {
@@ -59,7 +72,7 @@ def server_context(request: HttpRequest, server: Server) -> dict[str, Any]:
             "sync": "server_sync_status",
         }
         url = reverse(f"plugins:netbox_kea:{names[key]}", args=[server.pk])
-        return url + (f"?family={version}" if key in ("overview", "sync") else "")
+        return with_return_url(url + (f"?family={version}" if key in ("overview", "sync") else ""), return_url)
 
     filter_fields = {"sort", "per_page"}
     if section == "leases":
@@ -80,6 +93,7 @@ def server_context(request: HttpRequest, server: Server) -> dict[str, Any]:
 
     return {
         "workspace_scope_label": server.name,
+        "workspace_return_url": return_url,
         "workspace_section": section,
         "workspace_family": family,
         "workspace_sections": [(key, label, section_url(key, family)) for key, label in SECTIONS],

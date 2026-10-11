@@ -113,13 +113,19 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         url = reverse("plugins:netbox_kea:combined_reservations4")
         combined_row, _ = self._searched_row(url, {})
 
-        # The return URL of each action is the page that shows the row.
+        # The same domain facts have page-specific navigation targets.
         actions = {"edit_url", "delete_url"}
+        navigation = actions | {"record_url"}
         self.assertEqual(
-            {key: value for key, value in tab_row.items() if key not in actions},
-            {key: value for key, value in combined_row.items() if key not in actions},
+            {key: value for key, value in tab_row.items() if key not in navigation},
+            {key: value for key, value in combined_row.items() if key not in navigation},
         )
         self.assertTrue(actions <= tab_row.keys() & combined_row.keys())
+        self.assertEqual(urlsplit(combined_row["record_url"]).path, self._url())
+        self.assertEqual(parse_qs(urlsplit(combined_row["record_url"]).query).get("return_url"), [url])
+        for row, origin in ((tab_row, self._url()), (combined_row, url)):
+            for action in actions:
+                self.assertEqual(parse_qs(urlsplit(row[action]).query).get("return_url"), [origin])
         self.assertNotIn("can_change", tab_row)
 
     def test_configured_only_subnet_filter_does_not_authorize_a_scoped_read(self):

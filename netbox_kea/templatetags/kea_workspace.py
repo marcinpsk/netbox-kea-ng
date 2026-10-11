@@ -10,9 +10,22 @@ from django.urls import reverse
 from netbox.views import generic
 from utilities.templatetags.tabs import model_view_tabs
 
-from ..views.workspace import server_context
+from ..views._base import _safe_return_url
+from ..views.workspace import server_context, with_return_url
 
 register = template.Library()
+
+
+@register.simple_tag(takes_context=True)
+def workspace_url(context, url):
+    """Retain the validated previous workspace on a local navigation control."""
+    return with_return_url(url, _safe_return_url(context["request"], ""))
+
+
+@register.inclusion_tag("netbox_kea/inc/workspace_return_field.html", takes_context=True)
+def workspace_return_field(context):
+    """Retain the validated previous workspace when a search form submits."""
+    return {"workspace_return_url": _safe_return_url(context["request"], "")}
 
 
 @register.inclusion_tag("netbox_kea/inc/workspace_shell.html", takes_context=True)
@@ -37,7 +50,14 @@ def server_object_tabs(context, server):
         url = urlsplit(tab["url"])
         query = QueryDict(url.query, mutable=True)
         query["family"] = str(family)
-        extra_tabs.append({**tab, "url": urlunsplit(url._replace(query=query.urlencode()))})
+        extra_tabs.append(
+            {
+                **tab,
+                "url": with_return_url(
+                    urlunsplit(url._replace(query=query.urlencode())), _safe_return_url(context["request"], "")
+                ),
+            }
+        )
     return {"tabs": extra_tabs}
 
 
@@ -49,7 +69,7 @@ def server_control_urls(context, server):
         context["actions"] = view.get_permitted_actions(context["request"].user, model=server)
     family = server_context(context["request"], server)["workspace_family"]
     urls = [reverse(f"plugins:netbox_kea:server_{action}", args=[server.pk]) for action in ("edit", "delete")]
-    return [(url, f"{url}?family={family}") for url in urls]
+    return [(url, with_return_url(f"{url}?family={family}", _safe_return_url(context["request"], ""))) for url in urls]
 
 
 @register.filter(is_safe=True)
