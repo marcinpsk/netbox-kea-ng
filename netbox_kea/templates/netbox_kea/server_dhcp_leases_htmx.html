@@ -1,7 +1,7 @@
 {# SPDX-FileCopyrightText: 2023-2025 Devon Mar <devon-mar@users.noreply.github.com> #}
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
-{% load form_helpers %}
+{% load form_helpers kea_workspace %}
 {% load get_key from helpers %}
 {% load render_table from django_tables2 %}
 
@@ -136,3 +136,5 @@
     {% endwith %}
   {% endif %}
 </div>
+
+{% if not is_embedded %}{% server_workspace object out_of_band=True %}{% endif %}

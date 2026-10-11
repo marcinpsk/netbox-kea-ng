@@ -1,0 +1,23 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends "generic/object.html" %}
+{% load kea_workspace static %}
+
+{% block head %}
+  {{ block.super }}
+  <link rel="stylesheet" href="{% static 'netbox_kea/css/workspace.css' %}">
+{% endblock %}
+
+{% block control-buttons %}
+  {% server_control_urls object as control_urls %}
+  {% filter server_family_controls:control_urls %}{{ block.super }}{% endfilter %}
+{% endblock %}
+
+{% block tabs %}{% endblock %}
+{% block page %}
+<div class="container-fluid">
+  {% server_workspace object %}
+  {% server_object_tabs object %}
+  {{ block.super }}
+</div>
+{% endblock %}

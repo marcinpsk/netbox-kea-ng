@@ -1,0 +1,138 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+"""Shared section definitions and canonical Server workspace navigation."""
+
+from typing import Any, cast
+
+from django.conf import settings
+from django.http import HttpRequest, HttpResponse
+from django.shortcuts import get_object_or_404, render
+from django.urls import reverse
+from utilities.views import ObjectPermissionRequiredMixin
+
+from ..constants import Family
+from ..models import Server
+
+SECTIONS = (
+    ("overview", "Overview"),
+    ("leases", "Leases"),
+    ("subnets", "Subnets"),
+    ("reservations", "Reservations"),
+    ("configuration", "Configuration"),
+    ("sync", "Sync"),
+)
+
+
+def selected_family(request: HttpRequest, server: Server, view: Any) -> Family:
+    """Read the route's family, or the explicit selection on a native Server page."""
+    family = getattr(view, "dhcp_version", None)
+    if family in (4, 6):
+        return cast(Family, family)
+    selected = request.GET.get("family")
+    if selected in ("4", "6"):
+        return 4 if selected == "4" else 6
+    return 4 if server.dhcp4 else 6
+
+
+def server_family_url(request: HttpRequest, server: Server, view: Any, name: str) -> str:
+    """Retain the selected family when navigating to a native Server route."""
+    return reverse(f"plugins:netbox_kea:{name}", args=[server.pk]) + f"?family={selected_family(request, server, view)}"
+
+
+def server_context(request: HttpRequest, server: Server) -> dict[str, Any]:
+    """Build the shared shell from the Server page's section and requested family."""
+    match = request.resolver_match
+    view = getattr(match.func, "view_class", None) if match else None
+    family = selected_family(request, server, view)
+    section = getattr(view, "workspace_section", "overview")
+    subsection = getattr(view, "workspace_subsection", None)
+
+    def section_url(key: str, version: Family) -> str:
+        names = {
+            "overview": "server",
+            "leases": f"server_leases{version}",
+            "subnets": f"server_subnets{version}",
+            "shared_networks": f"server_shared_networks{version}",
+            "reservations": f"server_reservations{version}",
+            "configuration": f"server_option_def{version}",
+            "options": f"server_dhcp{version}_options_edit",
+            "sync": "server_sync_status",
+        }
+        url = reverse(f"plugins:netbox_kea:{names[key]}", args=[server.pk])
+        return url + (f"?family={version}" if key in ("overview", "sync") else "")
+
+    filter_fields = {"sort", "per_page"}
+    if section == "leases":
+        filter_fields.update(("q", "by", "state"))
+    elif section == "reservations":
+        filter_fields.update(("q", "subnet_id", "scope"))
+    elif section == "subnets" and subsection != "shared_networks":
+        filter_fields.update(("q", "subnet_id"))
+
+    def family_url(version: Family) -> str:
+        url = section_url(subsection or section, version)
+        query = request.GET.copy()
+        for name in list(query):
+            if name not in filter_fields:
+                query.pop(name)
+        suffix = query.urlencode()
+        return url + (("&" if "?" in url else "?") + suffix if suffix else "")
+
+    return {
+        "workspace_scope_label": server.name,
+        "workspace_section": section,
+        "workspace_family": family,
+        "workspace_sections": [(key, label, section_url(key, family)) for key, label in SECTIONS],
+        "workspace_families": [(version, family_url(version)) for version in (4, 6)],
+        "workspace_subsections": [],
+    }
+
+
+class ServerFamilyMixin:
+    """Refuse a disabled family before a Server view reads or changes Kea."""
+
+    dhcp_version: Family
+    workspace_section = "overview"
+
+    def dispatch(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
+        """Use the native permitted Server scope before showing the disabled state."""
+        if not request.user.is_authenticated and settings.LOGIN_REQUIRED:
+            return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
+        if isinstance(self, ObjectPermissionRequiredMixin) and not self.has_permission():
+            return self.handle_no_permission()
+        if request.method not in ("GET", "HEAD", "OPTIONS") and (refusal := self.server_scope_access(request)):
+            return refusal
+        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=kwargs["pk"])
+        family = selected_family(request, server, self)
+        if not (server.dhcp4 if family == 4 else server.dhcp6):
+            if request.method not in ("GET", "HEAD", "OPTIONS") and (
+                refusal := self.disabled_family_access(request, server)
+            ):
+                return refusal
+            if request.headers.get("HX-Request") == "true":
+                response = HttpResponse()
+                response["HX-Refresh"] = "true"
+                return response
+            context = server_context(request, server)
+            enabled = next(
+                (
+                    (family, url)
+                    for family, url in context["workspace_families"]
+                    if (server.dhcp4 if family == 4 else server.dhcp6)
+                ),
+                None,
+            )
+            return render(
+                request,
+                "netbox_kea/server_protocol_disabled.html",
+                {"object": server, "enabled_family": enabled},
+            )
+        return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
+
+    def server_scope_access(self, request: HttpRequest) -> HttpResponse | None:
+        """Keep object-independent action refusals before the Server lookup."""
+        return None
+
+    def disabled_family_access(self, request: HttpRequest, server: Server) -> HttpResponse | None:
+        """Keep an action's extra permission refusal before the disabled state."""
+        return None

@@ -17,7 +17,6 @@ from django.contrib import messages
 from django.core.exceptions import BadRequest
 from django.db import DatabaseError
 from django.http import HttpRequest, HttpResponse
-from django.shortcuts import redirect
 from django.urls import NoReverseMatch, reverse
 from netbox.views import generic
 from utilities.views import register_model_view
@@ -47,6 +46,7 @@ from ..subnet_catalogue import display as subnet_catalogue
 from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import OptionalViewTab
 from .notices import HEADLINES, Notice, load_snapshot, notice
+from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
 
@@ -690,8 +690,11 @@ _RESERVATIONS_TAB = OptionalViewTab(
 
 
 @register_model_view(Server, "reservations4")
-class ServerReservations4View(generic.ObjectView):
+class ServerReservations4View(ServerFamilyMixin, generic.ObjectView):
     """Show bounded DHCPv4 Reservation Snapshots."""
+
+    workspace_section = "reservations"
+    dhcp_version = 4
 
     queryset = Server.objects.all()
     tab = _RESERVATIONS_TAB
@@ -700,8 +703,6 @@ class ServerReservations4View(generic.ObjectView):
     def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
         """Redirect v6-only servers, export, or render the list."""
         instance = self.get_object(**kwargs)
-        if not instance.dhcp4 and instance.dhcp6:
-            return redirect(reverse("plugins:netbox_kea:server_reservations6", args=[instance.pk]))
         if "export" in request.GET:
             return _reservation_export_response(request, instance, 4)
         return super().get(request, **kwargs)
@@ -712,8 +713,11 @@ class ServerReservations4View(generic.ObjectView):
 
 
 @register_model_view(Server, "reservations6")
-class ServerReservations6View(generic.ObjectView):
+class ServerReservations6View(ServerFamilyMixin, generic.ObjectView):
     """Show bounded DHCPv6 Reservation Snapshots."""
+
+    workspace_section = "reservations"
+    dhcp_version = 6
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_reservations.html"

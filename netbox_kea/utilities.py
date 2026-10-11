@@ -12,7 +12,6 @@ from datetime import datetime
 from typing import Any, Protocol
 
 from django.http import HttpResponse
-from django.shortcuts import redirect
 from django_tables2 import Table
 from django_tables2.export import TableExport
 from pydantic import ValidationError as PydanticValidationError
@@ -34,7 +33,6 @@ from .leases import (
     request_errors,
     shown_lease,
 )
-from .models import Server
 
 logger = logging.getLogger(__name__)
 
@@ -229,13 +227,6 @@ def parse_delegated_prefixes(value: str, separator: str = ",") -> list[str]:
     if len(prefixes) > MAX_DELEGATED_PREFIXES:
         raise ValueError(f"At most {MAX_DELEGATED_PREFIXES} delegated prefixes per reservation.")
     return prefixes
-
-
-def check_dhcp_enabled(instance: Server, version: Family) -> HttpResponse | None:
-    """Return a redirect to the server detail page if the requested DHCP version is disabled, else ``None``."""
-    if (version == 6 and instance.dhcp6) or (version == 4 and instance.dhcp4):
-        return None
-    return redirect(instance.get_absolute_url())
 
 
 def kea_error_hint(exc: Any) -> str:
