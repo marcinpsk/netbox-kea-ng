@@ -54,7 +54,6 @@ from .reservations import (
     _RESERVATIONS_TAB,
     _build_reservation_options_formset,
     _client_capabilities,
-    _configured_capabilities,
 )
 
 logger = logging.getLogger(__name__)
@@ -572,7 +571,13 @@ class _ReservationAddView(_ReservationMutationView):
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        capabilities = _configured_capabilities(server, self.dhcp_version)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except ValueError as exc:
+            messages.error(request, _client_settings_error(server, exc))
+            capabilities = None
+        else:
+            capabilities = _client_capabilities(server, client, self.dhcp_version)
         snapshot = subnet_catalogue.display(server, self.dhcp_version)
         show_notices(request, notice(snapshot))
         initial_fields = (
@@ -705,6 +710,11 @@ class _ReservationEditView(_ReservationMutationView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
+        try:
+            client = server.get_client(version=self.dhcp_version)
+        except ValueError as exc:
+            messages.error(request, _client_settings_error(server, exc))
+            return redirect(self._return_url(server))
         identity = _identity_from_request(request, self.dhcp_version)
         catalogue = subnet_catalogue.display(server, self.dhcp_version)
         show_notices(request, notice(catalogue))
@@ -715,7 +725,7 @@ class _ReservationEditView(_ReservationMutationView):
             logger.exception("Could not load the Reservation edit target")
             messages.error(request, "The Reservation could not be loaded. See server logs.")
             return redirect(self._return_url(server))
-        capabilities = _configured_capabilities(server, self.dhcp_version)
+        capabilities = _client_capabilities(server, client, self.dhcp_version)
         form = self._form_for(reservation, suffix, capabilities)
         return self._render(
             request,
@@ -845,6 +855,11 @@ class _ReservationDeleteView(_ReservationMutationView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
+        try:
+            server.get_client(version=self.dhcp_version)
+        except ValueError as exc:
+            messages.error(request, _client_settings_error(server, exc))
+            return redirect(self._return_url(server))
         identity = _identity_from_request(request, self.dhcp_version)
         try:
             reservation = _load_target(server, self.dhcp_version, subnet_id, identity)

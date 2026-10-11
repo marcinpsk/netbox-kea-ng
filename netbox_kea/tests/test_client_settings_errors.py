@@ -120,3 +120,28 @@ reservations:
                 self.assertEqual(response.status_code, 302)
                 self.assertEqual(kea.commands(), [])
                 self.assertEqual(_messages(response), [expected])
+
+    def test_reservation_add_pages_name_the_client_settings(self):
+        for family in (4, 6):
+            with self.subTest(family):
+                self._fresh_client()
+                expected = save_key_without_certificate(self.server)
+                with stub_kea({}) as kea:
+                    response = self.client.get(self._url(f"server_reservation{family}_add"))
+                self.assertEqual(kea.commands(), [])
+                self.assertContains(response, escape(expected))
+                self.assertContains(
+                    response, '<button type="submit" class="btn btn-primary" disabled aria-disabled="true">'
+                )
+
+    def test_reservation_edit_and_delete_pages_name_the_client_settings(self):
+        for family, action in ((4, "edit"), (6, "edit"), (4, "delete"), (6, "delete")):
+            with self.subTest(family=family, action=action):
+                self._fresh_client()
+                expected = save_key_without_certificate(self.server)
+                query = "?identifier_type=hw-address&identifier=aa:bb:cc:dd:ee:ff"
+                with stub_kea({}) as kea:
+                    response = self.client.get(self._url(f"server_reservation{family}_{action}", 20) + query)
+                self.assertEqual(kea.commands(), [])
+                self.assertEqual(_messages(response), [expected])
+                self.assertRedirects(response, self._url(f"server_reservations{family}"), fetch_redirect_response=False)
