@@ -429,10 +429,12 @@ def open_subnets(page: Page, version: Literal[4, 6]) -> None:
     page.get_by_role("link", name="Shared Networks", exact=True).wait_for()
 
 
-def search_lease(page: Page, version: Literal[4, 6], by: str, q: str) -> None:
+def search_lease(page: Page, version: Literal[4, 6], by: str, q: str, *, filter_attribute: bool = False) -> None:
     open_leases(page, version)
     page.locator("#id_q").fill(q)
     page.locator("#id_by + div.form-select").click()
+    if filter_attribute:
+        page.locator("#id_by-ts-control").fill(by)
     page.locator("#id_by-ts-dropdown").get_by_role("option", name=by, exact=True).click()
     with page.expect_response(re.compile(f"/leases{version}/")) as r:
         page.get_by_role("button", name="Search").click()
@@ -1261,10 +1263,18 @@ def test_lease_search_eui_formats(
     expect(page.locator(".object-list > tbody > tr > td").nth(1)).to_have_text(lease["ip-address"])
 
 
-def test_lease_search_cisco_style_mac(page: Page, lease4: dict[str, Any]) -> None:
+@pytest.mark.parametrize(
+    ("viewport_width", "filter_attribute"),
+    [(1280, False), (1024, False), (768, False), (390, False), pytest.param(390, True, id="390-filter")],
+)
+def test_lease_search_cisco_style_mac(
+    page: Page, lease4: dict[str, Any], viewport_width: int, filter_attribute: bool
+) -> None:
+    page.set_viewport_size({"width": viewport_width, "height": 720})
     mac = lease4["hw-address"].replace(":", "")
     cisco_mac = f"{mac[:4]}.{mac[4:8]}.{mac[8:]}"
-    search_lease(page, 4, "Hardware Address", cisco_mac)
+    search_lease(page, 4, "Hardware Address", cisco_mac, filter_attribute=filter_attribute)
+    expect(page).to_have_url(re.compile(rf"q={re.escape(cisco_mac)}&by=hw"))
     expect(page.locator(".object-list > tbody > tr")).to_have_count(1)
     expect(page.locator(".object-list > tbody > tr > td").nth(1)).to_have_text(lease4["ip-address"])
 
@@ -1513,7 +1523,7 @@ def test_lease_pagination_location(
 
 
 def test_dhcpv6_lease_long_duid(page: Page, kea: KeaClient, with_test_server_only6: None) -> None:
-    """Regression test for long DUIDs (#154)."""
+    """Long DUIDs wrap so every Lease action remains visible."""
     lease_ip = "2001:db8:1::dead:beef"
     kea.command(
         "lease6-add",
@@ -1543,8 +1553,13 @@ def test_dhcpv6_lease_long_duid(page: Page, kea: KeaClient, with_test_server_onl
     if _version_ge_43(page):
         search()
 
-    # The last column should not be off the page.
-    expect(page.locator("table.object-list > tbody > tr > td").last).to_be_in_viewport()
+    cells = page.locator("table.object-list > tbody > tr > td")
+    # Bring the row into view without scrolling to its rightmost cell.
+    cells.first.scroll_into_view_if_needed()
+    expect(cells.last).to_be_in_viewport()
+    responsive = page.locator(".table-responsive").filter(has=page.locator("table.object-list"))
+    dimensions = responsive.evaluate("element => ({width: element.clientWidth, scrollWidth: element.scrollWidth})")
+    assert dimensions["scrollWidth"] <= dimensions["width"], dimensions
 
 
 # ─────────────────────────────────────────────────────────────────────────────

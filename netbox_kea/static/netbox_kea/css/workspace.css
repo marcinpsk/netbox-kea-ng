@@ -6,6 +6,15 @@
   z-index: 1020;
 }
 
+/* Keep the Lease attribute control height stable when its search input loses focus. */
+#lease-search #id_by + .ts-wrapper .ts-control {
+  flex-wrap: nowrap;
+}
+
+#lease-search #id_by + .ts-wrapper .ts-control > input {
+  min-width: 0;
+}
+
 /* The desktop NetBox navbar stays above the workspace shell. */
 @media (min-width: 992px) {
   .kea-workspace-shell {
