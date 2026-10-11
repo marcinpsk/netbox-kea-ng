@@ -129,6 +129,8 @@ of each built page. It fails on a page that shows a file that the site does not 
 recording that no page shows, and on a README image under the `site_url` that the site does not hold. Each page builds
 to `<page>/index.html`. Zensical rewrites a `<source src>` like a Markdown link, but not a `<video poster>`, so a page
 names `<source src="assets/recordings/<name>.mp4">` and `poster="../assets/recordings/<name>.png"`.
+`docs/guide/assets/js/autoplay-videos.js` plays each `muted` video while half of it is on the screen, and pauses it
+when it goes away. It does nothing when the reader prefers reduced motion.
 
 Start the harness with `docker-compose.docs.yml` on top of the two base files. It runs each Kea daemon on a writable
 copy of its configuration, so `config-write` succeeds and the clips show no persistence failure. The suite refuses a
