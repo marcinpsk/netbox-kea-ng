@@ -30,7 +30,6 @@ from .kea_stub import (
     _catalogue_responses,
     _catalogue_responses_for_subnets,
     _res_page,
-    _reservation_mutation_commands,
     queued,
     stub_kea,
 )
@@ -881,20 +880,19 @@ class TestCombinedReservationCapabilityConcurrency(_ViewTestBase):
         barrier = threading.Barrier(2)
         completed_probes = []
 
-        def simultaneous_capability_response(_body):
+        configuration = _catalogue_responses(4, 1, "198.18.0.0/24")["config-get"]
+
+        def simultaneous_configuration_response(_body):
             barrier.wait(timeout=30)
             completed_probes.append(True)
-            return {
-                "result": 0,
-                "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
-            }
+            return configuration
 
         hosts = [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer"}]
         responses = {
             **_catalogue_responses(4, 1, "198.18.0.0/24"),
             "reservation-get-page": _res_page(hosts),
             "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
-            "list-commands": simultaneous_capability_response,
+            "config-get": simultaneous_configuration_response,
         }
         url = reverse("plugins:netbox_kea:combined_reservations4")
         url += f"?server={self.server.pk}&server={second_server.pk}"
@@ -903,7 +901,8 @@ class TestCombinedReservationCapabilityConcurrency(_ViewTestBase):
             response = self.client.get(url)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(completed_probes), 2)
+        # Each Server reads its Catalogue, then its capabilities, in pairs across the two Servers.
+        self.assertEqual(len(completed_probes), 4)
         self.assertEqual(response.context["mutation_unavailable_servers"], [])
 
     def test_a_failed_capability_read_does_not_hide_the_reservations(self):
@@ -912,8 +911,9 @@ class TestCombinedReservationCapabilityConcurrency(_ViewTestBase):
             **_catalogue_responses(4, 1, "198.18.0.0/24"),
             "reservation-get-page": _res_page(hosts),
             "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
-            "list-commands": requests.ConnectionError,
         }
+        # The Catalogue read succeeds; the capability read of the Server Configuration fails.
+        responses["config-get"] = queued(responses["config-get"], requests.ConnectionError)
 
         with stub_kea(responses):
             response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"))
@@ -922,7 +922,7 @@ class TestCombinedReservationCapabilityConcurrency(_ViewTestBase):
         self.assertContains(response, "printer")
         self.assertEqual(
             response.context["mutation_unavailable_servers"],
-            [(self.server.name, "Live Reservation mutation capabilities could not be confirmed.")],
+            [(self.server.name, "Reservation mutation capabilities could not be confirmed.")],
         )
 
 
@@ -935,7 +935,6 @@ class TestCombinedReservationFanOut(_ViewTestBase):
             **_catalogue_responses(4, 1, "198.18.0.0/24"),
             "reservation-get-page": _res_page(hosts),
             "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
-            "list-commands": _reservation_mutation_commands(),
         }
         url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.server.pk}&server={broken.pk}"
 
@@ -952,7 +951,6 @@ class TestCombinedReservationFanOut(_ViewTestBase):
         responses = {
             **_catalogue_responses(4, 1, "198.18.0.0/24"),
             "reservation-get-page": requests.ConnectionError,
-            "list-commands": _reservation_mutation_commands(),
         }
         url = reverse("plugins:netbox_kea:combined_reservations4")
 
@@ -961,7 +959,8 @@ class TestCombinedReservationFanOut(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["errors"], [(self.server.name, HEADLINES["reservation"])])
-        self.assertNotIn("list-commands", kea.commands())
+        # Only the Catalogue read sends config-get.
+        self.assertEqual(kea.commands().count("config-get"), 1)
 
 
 class TestCombinedReservationSyncControl(_ViewTestBase):

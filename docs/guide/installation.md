@@ -13,7 +13,7 @@ SPDX-License-Identifier: Apache-2.0
 - [`lease_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-lease-cmds) hook library (for lease search and management)
 - [`stat_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-stat-cmds) hook library (for guarded Subnet lease searches unless `lease_query_max_unpaged_leases` is `0`)
 - Kea 3.1.5+ for state-filtered Subnet lease searches. Earlier releases do not provide the scoped state commands, so these searches fail closed.
-- [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-host-cmds) hook library (optional, for reservation management — also requires `subnet_cmds` to resolve a reservation's subnet from its CIDR)
+- [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-host-cmds) hook library (optional, for reservation management; it also requires `subnet_cmds` to resolve a reservation's subnet from its CIDR). The plugin finds it in `hooks-libraries`: the library path must contain `libdhcp_host_cmds`.
 - [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-subnet-cmds) hook library (optional, for subnet add/edit/delete, reservation management, and the subnet suggestions on the lease search and reservation forms)
 
 The plugin degrades gracefully when optional hooks are absent — tabs for unavailable features are hidden automatically. Two pages offer the server's configured subnets as suggestions and read them through `subnet_cmds`; without that hook each says so in a banner rather than silently offering nothing:

@@ -16,7 +16,6 @@ from .kea_stub import (
     _catalogue_responses,
     _res_get,
     _res_page,
-    _reservation_mutation_commands,
     complete_lease,
     queued,
     stub_kea,
@@ -39,7 +38,6 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
             {
                 "reservation-get-page": _res_page([host]),
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
-                "list-commands": _reservation_mutation_commands(),
             }
         )
         with stub_kea(responses):
@@ -52,13 +50,32 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertEqual(_return_url(row["edit_url"]), [search])
         self.assertEqual(_return_url(row["delete_url"]), [search])
 
+    def test_a_warm_cache_render_reads_neither_the_configuration_nor_the_command_list(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        host = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "cached.example.invalid"}
+        responses.update(
+            {
+                "reservation-get-page": _res_page([host]),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            }
+        )
+        with stub_kea(responses):
+            self.client.get(self._url())
+
+        with stub_kea(responses) as kea:
+            response = self.client.get(self._url())
+
+        self.assertContains(response, "cached.example.invalid")
+        self.assertIsNotNone(response.context["add_url"])
+        self.assertNotIn("config-get", kea.commands())
+        self.assertNotIn("list-commands", kea.commands())
+
     def test_the_add_button_returns_to_the_reservation_search(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         responses.update(
             {
                 "reservation-get-page": _res_page([]),
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
-                "list-commands": _reservation_mutation_commands(),
             }
         )
         with stub_kea(responses):
@@ -73,7 +90,6 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         responses.update(
             {
                 "reservation-get-page": {"result": 1, "text": "Unable to read the host database"},
-                "list-commands": _reservation_mutation_commands(),
             }
         )
         with stub_kea(responses):
@@ -105,7 +121,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertEqual(response.context["table"].data.data, [])
         self.assertEqual(
             response.context["mutation_unavailable_reason"],
-            "Live Reservation mutation capabilities could not be confirmed.",
+            "Reservation mutation capabilities could not be confirmed.",
         )
 
     def test_the_tab_and_the_combined_view_present_the_same_row(self):
@@ -350,7 +366,8 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
                     ]
                 ),
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
-                "list-commands": RuntimeError("capability discovery failed"),
+                # The Catalogue read succeeds; the capability read of the Server Configuration fails.
+                "config-get": queued(responses["config-get"], RuntimeError("capability discovery failed")),
             }
         )
 
@@ -366,7 +383,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertIsNone(response.context["add_url"])
         self.assertIsNone(response.context["import_url"])
         self.assertEqual(kea.commands().count("reservation-get-page"), 1)
-        self.assertEqual(kea.commands().count("list-commands"), 1)
+        self.assertEqual(kea.commands().count("config-get"), 2)
 
     def test_renders_every_exposed_dhcp_option_fact(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
@@ -391,7 +408,6 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
                         }
                     ]
                 ),
-                "list-commands": _reservation_mutation_commands(),
             }
         )
 
@@ -660,7 +676,8 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
                     ]
                 ),
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
-                "list-commands": RuntimeError("capability discovery failed"),
+                # The Catalogue read succeeds; the capability read of the Server Configuration fails.
+                "config-get": queued(responses["config-get"], RuntimeError("capability discovery failed")),
             }
         )
         url = reverse("plugins:netbox_kea:combined_reservations4")
@@ -675,7 +692,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
         self.assertIsNone(row["edit_url"])
         self.assertIsNone(row["delete_url"])
         self.assertEqual(kea.commands().count("reservation-get-page"), 1)
-        self.assertEqual(kea.commands().count("list-commands"), 1)
+        self.assertEqual(kea.commands().count("config-get"), 2)
 
     def test_scope_only_filter_can_be_cleared_without_losing_server_selection(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
@@ -692,7 +709,6 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
                     ]
                 ),
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
-                "list-commands": _reservation_mutation_commands(),
             }
         )
         url = reverse("plugins:netbox_kea:combined_reservations4")

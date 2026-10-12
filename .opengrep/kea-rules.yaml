@@ -1159,3 +1159,10 @@ rules:
       - pattern-not-inside: |
           def _published_name_preview(...):
               ...
+      # Reservation capabilities gate the mutation controls; an unconfirmed read hides them with a reason.
+      - pattern-not-inside: |
+          def _display_capabilities(...):
+              ...
+      - pattern-not-inside: |
+          def _live_capabilities(...):
+              ...

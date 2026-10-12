@@ -436,9 +436,8 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Kea command names come from a real Kea.** The script also records the
   `list-commands` reply of each daemon. The coverage configurations load the same hook
   libraries as `tests/docker/kea_configs/`. `WIRE_COMMANDS` in `kea_wire_discipline.py`
-  is that recorded set, and `stub_kea()` fails a command outside it: registered, sent, or
-  listed in a stubbed `list-commands` reply. Never add a command name by hand. The
-  black-box test `tests/test_kea_commands.py` compares the live harness daemons with the
+  is that recorded set, and `stub_kea()` fails a command outside it, registered or sent.
+  Never add a command name by hand. The black-box test `tests/test_kea_commands.py` compares the live harness daemons with the
   recording in CI. When you change `KEA_VERSION` or the harness hook libraries, run the
   script again.
 - **Type-check gate.** `scripts/mypy-gate.sh` (+ `test_mypy_gate.py`, a pre-push hook,
@@ -573,9 +572,10 @@ resort, reserved for true external boundaries you cannot run locally.
 ## Kea API Reference
 
 - **Primary**: `kea.readthedocs.io/en/latest/api.html` — full JSON command schemas.
-- **Live discovery**: run `list-commands` against the target daemon/service to confirm
-  which hook libraries are loaded; cache per request; show a warning banner in the UI
-  when a required command is absent. Only set `hook_available=False` on result code 2.
+- **Hook discovery**: the Server Configuration Snapshot holds the `hooks-libraries` paths.
+  `server_configuration.reservation_capabilities()` reads `host_cmds` and `flex_id` from them; the plugin sends no
+  `list-commands`. A page render uses `display()`, and a write uses `for_verification()`. A read of another hook's
+  command treats result code 2 as "hook not loaded" (`KeaException.unsupported_command`).
 - **Key hooks** and the commands they gate:
   - `host_cmds` — all `reservation-*` commands (open source since Kea 2.7.7 / MPL 2.0)
   - `lease_cmds` — `lease4/6-get-by-hostname/hw-address/state`, `lease4/6-update/add`

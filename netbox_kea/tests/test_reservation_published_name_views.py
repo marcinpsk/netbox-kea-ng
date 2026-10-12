@@ -39,7 +39,6 @@ def _address_field(family: int) -> str:
 def _recorded(family: int) -> dict[str, Any]:
     recording = _recording(family)
     return {
-        "list-commands": recording["list-commands"],
         f"subnet{family}-list": recording[f"subnet{family}-list"],
         "config-get": recording["config-get"],
         "config-test": {"result": 0},

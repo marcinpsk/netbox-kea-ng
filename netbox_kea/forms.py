@@ -930,7 +930,7 @@ class Reservation4Form(_ReservationForm):
             network = ipaddress.IPv4Network(value, strict=True)
         except ValueError as exc:
             raise forms.ValidationError("Enter a valid IPv4 subnet CIDR (e.g. 10.0.0.0/24).") from exc
-        # Use the canonical CIDR form accepted by configured_subnet_id_from_cidr().
+        # Use the canonical CIDR form that the Subnet Catalogue find_by_cidr() compares.
         return str(network)
 
     def clean_ip_address(self) -> str:
@@ -1019,7 +1019,7 @@ class Reservation6Form(_ReservationForm):
             network = ipaddress.IPv6Network(value, strict=True)
         except ValueError as exc:
             raise forms.ValidationError("Enter a valid IPv6 subnet CIDR (e.g. 2001:db8::/48).") from exc
-        # Use the canonical CIDR form accepted by configured_subnet_id_from_cidr().
+        # Use the canonical CIDR form that the Subnet Catalogue find_by_cidr() compares.
         return str(network)
 
     def clean_ip_addresses(self) -> str:

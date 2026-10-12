@@ -26,7 +26,7 @@ from ..constants import Family
 from ..dhcp_mapping_lifecycle import MetadataBusy
 from ..integrations import dhcp_plugin
 from ..ipam_reconciliation import complete_import_observation
-from ..kea import KeaCommand, KeaException, KeaResponse
+from ..kea import KeaException
 from ..mappers.kea_to_dhcp import parse_dhcp_config
 from ..models import Server
 from ..sync_permissions import sync_gate
@@ -65,39 +65,27 @@ def _enabled_versions(server: Server) -> list[Family]:
     return versions
 
 
-def _extract_dhcp_conf(resp: list[KeaResponse], version: Family) -> dict | None:
-    """Pull the ``Dhcp4``/``Dhcp6`` block out of a checked ``config-get`` reply, or ``None`` when it is absent.
-
-    Raises ``RuntimeError`` when ``arguments`` is not a mapping.
-    """
-    args = resp[0].get("arguments") or {}
-    if not isinstance(args, dict):
-        raise RuntimeError("Malformed Kea config-get response: 'arguments' must be a dict")
-    conf = args.get(f"Dhcp{version}")
-    return conf if isinstance(conf, dict) else None
-
-
 def _fetch_config_intent(server: Server, version: Family):
-    """Read live ``config-get`` for one version and parse it to intent (read-only).
+    """Read live configuration for one version and parse it to intent (read-only).
 
     ``config-get`` is issued exactly once here. Reservations use their separate
     typed Snapshot read. Returns the :class:`ServerConfigIntent`, or ``None`` if
     Kea could not be read.
     """
-    try:
-        client = server.get_client(version=version)
-        resp = client.command(KeaCommand.CONFIG_GET, version)
-        conf = _extract_dhcp_conf(resp, version)
-        if conf is None:
-            return None
-        intent = parse_dhcp_config(conf, version)
-        observed = server_configuration.observed_snapshot(server, version, conf)
-        intent.configuration_complete = not observed.subnet_diagnostics
-    except (KeaException, requests.RequestException, ValueError, RuntimeError):
-        logger.warning("DHCP-plugin sync: config-get failed for %s (v%s)", server.name, version, exc_info=True)
+    read = server_configuration.for_import(server, version)
+    if read is None:
+        logger.warning("DHCP-plugin sync: config-get failed for %s (v%s)", server.name, version)
         return None
-    else:
-        return intent
+    try:
+        intent = parse_dhcp_config(read.configuration, version)
+    except (ValueError, RuntimeError):
+        logger.warning(
+            "DHCP-plugin sync: could not parse the configuration of %s (v%s)", server.name, version, exc_info=True
+        )
+        return None
+    intent.configuration_complete = not read.snapshot.subnet_diagnostics
+    intent.host_reservation_identifiers = read.snapshot.host_reservation_identifiers
+    return intent
 
 
 def _read_reservation_observation(server: Server, version: Family):

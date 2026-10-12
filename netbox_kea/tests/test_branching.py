@@ -1631,9 +1631,6 @@ def _recorded_kea() -> dict:
     def config_get(body):
         return recorded[_family(body)]["config-get"]
 
-    def list_commands(body):
-        return recorded[_family(body)]["list-commands"]
-
     def reservation_page(body):
         return _res_page([_KEA_OBJECTS[_family(body)].reservation])
 
@@ -1642,7 +1639,6 @@ def _recorded_kea() -> dict:
 
     responses: dict = {
         "config-get": config_get,
-        "list-commands": list_commands,
         "status-get": {"result": 0, "arguments": {"pid": 1, "uptime": 3600, "reload": 0}},
         "version-get": {"result": 0, "text": "3.2.0", "arguments": {"extended": "3.2.0"}},
         "reservation-get-page": reservation_page,

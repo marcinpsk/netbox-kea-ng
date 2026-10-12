@@ -84,7 +84,6 @@ KEA_SETTINGS_KEYS: tuple[str, ...] = (
     "rapid-commit",
     # server-level globals
     "decline-probation-period",
-    "host-reservation-identifiers",
     "echo-client-id",
     "relay-supplied-options",
     "server-id",
@@ -170,6 +169,8 @@ class ServerConfigIntent:
 
     family: int
     configuration_complete: bool = False
+    # From the Server Configuration Snapshot. None: the key is absent or invalid.
+    host_reservation_identifiers: tuple[str, ...] | None = None
     shared_networks: list[SharedNetworkIntent] = field(default_factory=list)
     subnets: list[SubnetIntent] = field(default_factory=list)
     client_classes: list[ClientClassIntent] = field(default_factory=list)

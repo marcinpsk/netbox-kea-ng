@@ -839,6 +839,12 @@ def display(server: Server, family: int) -> CatalogueSnapshot:
     return snapshot
 
 
+def for_verification(server: Server, family: int) -> CatalogueSnapshot:
+    """Read the live Catalogue without consulting or filling the cache."""
+    snapshot, _source = _read_live(server, _validate_family(family))
+    return snapshot
+
+
 def for_synchronization(server: Server, family: int) -> CompleteCatalogueSnapshot:
     """Return one live Complete snapshot pinned for a synchronization run."""
     validated_family = _validate_family(family)

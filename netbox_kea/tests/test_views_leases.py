@@ -25,6 +25,7 @@ connectivity checks.
 import csv
 import html
 import io
+import ipaddress
 import json
 import re
 import threading
@@ -53,6 +54,7 @@ from .kea_stub import (
     _catalogue_responses,
     _catalogue_responses_for_subnets,
     _http_response,
+    _leases_per_subnet,
     _raw_http_response,
     _subnet_list,
     _subnet_stats,
@@ -1940,7 +1942,115 @@ class TestLeaseSearchHostBitsSubnet(_ViewTestBase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("lease4-get-all", kea.commands())
-        _assert_lease_read_failed(self, response)
+        # The Subnet Catalogue omits both Subnets, so the search shows its Notice in place of the table.
+        self.assertContains(response, f"<strong>{HEADLINES['catalogue']}</strong>", html=True)
+        self.assertContains(response, "Multiple Subnets use CIDR 198.18.1.0/24")
+        self.assertNotContains(response, 'id="lease-delete-form"')
+
+
+@override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
+class TestLeaseSearchSubnetCatalogue(_ViewTestBase):
+    """A Subnet CIDR search finds the Subnet ID in a live read of the Subnet Catalogue."""
+
+    _UNKNOWN = "This Subnet CIDR is not configured on the Kea server. Search by Subnet ID instead."
+
+    def _responses(self, subnets=None, **catalogue) -> dict:
+        subnets = subnets or [{"id": 1, "subnet": "10.0.0.0/24"}, {"id": 2, "subnet": "10.0.9.0/24"}]
+        leases = {
+            subnet["id"]: [
+                complete_lease(
+                    {
+                        "ip-address": str(ipaddress.ip_network(subnet["subnet"])[10]),
+                        "hostname": f"in-{subnet['id']}",
+                        "subnet-id": subnet["id"],
+                    }
+                )
+            ]
+            for subnet in subnets
+        }
+        return {
+            **_catalogue_responses_for_subnets(4, subnets, **catalogue),
+            "lease4-get-all": _leases_per_subnet(leases),
+            "reservation-get": {"result": 3},
+        }
+
+    def _url(self) -> str:
+        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+
+    def _search(self, cidr: str):
+        return self.client.get(self._url(), {"by": "subnet", "q": cidr}, HTTP_HX_REQUEST="true")
+
+    def test_a_cidr_in_a_shared_network_resolves_through_a_live_read(self):
+        responses = self._responses(shared_networks=[{"name": "office"}], members={1: "office"})
+        with stub_kea(responses) as kea:
+            response = self._search("10.0.0.0/24")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.bodies("lease4-get-all")[0]["arguments"], {"subnets": [1]})
+        self.assertContains(response, "in-1")
+
+    def test_a_subnet_id_that_kea_moved_after_the_cache_filled_is_read_live(self):
+        with stub_kea(self._responses([{"id": 1, "subnet": "198.18.1.0/24"}])):
+            self.client.get(self._url())
+        moved = [{"id": 1, "subnet": "198.18.2.0/24"}, {"id": 2, "subnet": "198.18.1.0/24"}]
+        with stub_kea(self._responses(moved)) as kea:
+            response = self._search("198.18.1.0/24")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.bodies("lease4-get-all")[0]["arguments"], {"subnets": [2]})
+        self.assertContains(response, "in-2")
+        self.assertNotContains(response, "in-1")
+
+    def test_the_export_reads_a_moved_subnet_id_live(self):
+        with stub_kea(self._responses([{"id": 1, "subnet": "198.18.1.0/24"}])):
+            self.client.get(self._url())
+        moved = [{"id": 1, "subnet": "198.18.2.0/24"}, {"id": 2, "subnet": "198.18.1.0/24"}]
+        with stub_kea(self._responses(moved)) as kea:
+            response = self.client.get(self._url(), {"export": "form", "by": "subnet", "q": "198.18.1.0/24"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.bodies("lease4-get-all")[0]["arguments"], {"subnets": [2]})
+
+    def test_an_unknown_cidr_names_the_subnet_id_search(self):
+        with stub_kea(self._responses()) as kea:
+            response = self._search("10.0.5.0/24")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, self._UNKNOWN)
+        self.assertNotIn("lease4-get-all", kea.commands())
+
+    def test_an_unknown_cidr_names_the_subnet_id_search_without_subnet_cmds(self):
+        responses = self._responses()
+        responses["subnet4-list"] = {"result": 2, "text": "'subnet4-list' command not supported."}
+        with stub_kea(responses) as kea:
+            response = self._search("10.0.5.0/24")
+        self.assertContains(response, self._UNKNOWN)
+        self.assertNotIn("lease4-get-all", kea.commands())
+
+    def test_an_unknown_cidr_with_a_malformed_subnet_entry_shows_the_catalogue_notice(self):
+        responses = self._responses()
+        responses["config-get"]["arguments"]["Dhcp4"]["subnet4"].append({"id": 3, "subnet": "not-a-network"})
+        with stub_kea(responses) as kea:
+            response = self._search("10.0.5.0/24")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Kea returned an invalid Subnet CIDR.")
+        self.assertNotContains(response, self._UNKNOWN)
+        self.assertNotContains(response, "that could not be read")
+        self.assertNotContains(response, 'id="lease-delete-form"')
+        self.assertNotIn("lease4-get-all", kea.commands())
+
+    def test_the_export_of_an_unknown_cidr_names_the_subnet_id_search(self):
+        with stub_kea(self._responses()) as kea:
+            response = self.client.get(self._url(), {"export": "form", "by": "subnet", "q": "10.0.5.0/24"})
+        self.assertRedirects(response, self._url(), fetch_redirect_response=False)
+        self.assertEqual([str(message) for message in get_messages(response.wsgi_request)], [self._UNKNOWN])
+        self.assertNotIn("lease4-get-all", kea.commands())
+
+    def test_an_unavailable_catalogue_shows_its_notice(self):
+        failure = {"result": 1, "text": "unavailable"}
+        with stub_kea({**self._responses(), "subnet4-list": failure, "config-get": failure}) as kea:
+            response = self._search("10.0.0.0/24")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, HEADLINES["catalogue"])
+        self.assertNotContains(response, HEADLINES["lease"])
+        self.assertNotContains(response, self._UNKNOWN)
+        self.assertNotIn("lease4-get-all", kea.commands())
 
 
 # ---------------------------------------------------------------------------

@@ -12,7 +12,7 @@ from typing import get_args
 import yaml
 from django.test import SimpleTestCase
 
-from netbox_kea import kea
+from netbox_kea import kea, server_configuration
 from netbox_kea.dhcp_options import DHCPOption, parse_dhcp_options
 from netbox_kea.kea import KeaCommand
 from netbox_kea.reservations import (
@@ -46,7 +46,16 @@ from netbox_kea.subnet_catalogue import (
 )
 from netbox_kea.subnet_settings import SubnetSettings
 
-from .kea_stub import _res_get, _res_page, _typed_reservation, kea_client, queued, stub_kea
+from .kea_stub import (
+    _host_cmds_hooks,
+    _res_get,
+    _res_page,
+    _typed_reservation,
+    kea_client,
+    observed_configuration,
+    queued,
+    stub_kea,
+)
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 #: The statements that bind the name in their ``name`` attribute.
@@ -1447,22 +1456,20 @@ class TestReservationMutation(SimpleTestCase):
         self.assertNotIn("config-write", kea.commands())
 
 
-class TestReservationCapabilities(SimpleTestCase):
-    def test_uses_live_family_configuration_and_flex_id_hook(self):
-        client = kea_client(url="http://kea.example.invalid", send_service=False)
-        commands = ["reservation-get", "reservation-add", "reservation-update", "reservation-del"]
-        config = {
-            "result": 0,
-            "arguments": {
-                "Dhcp4": {
-                    "host-reservation-identifiers": ["hw-address", "flex-id", "remote-id"],
-                    "hooks-libraries": [{"library": "/usr/lib/kea/hooks/libdhcp_flex_id.so"}],
-                }
-            },
-        }
+def _capabilities(family: Family, configuration: dict) -> ReservationCapabilities | None:
+    """Return the Reservation capabilities that the parsed *configuration* shows."""
+    return server_configuration.reservation_capabilities(observed_configuration(family, configuration))
 
-        with stub_kea({"list-commands": {"result": 0, "arguments": commands}, "config-get": config}):
-            capabilities = client.reservation_capabilities(4)
+
+class TestReservationCapabilities(SimpleTestCase):
+    def test_uses_the_family_configuration_and_the_flex_id_hook(self):
+        capabilities = _capabilities(
+            4,
+            {
+                "host-reservation-identifiers": ["hw-address", "flex-id", "remote-id"],
+                "hooks-libraries": [{"library": "/usr/lib/kea/hooks/libdhcp_flex_id.so"}, *_host_cmds_hooks()],
+            },
+        )
 
         self.assertIsInstance(capabilities, ReservationCapabilities)
         self.assertEqual(capabilities.family, 4)
@@ -1474,38 +1481,33 @@ class TestReservationCapabilities(SimpleTestCase):
             capabilities.unavailable_identifiers,
         )
 
-    def test_missing_host_command_disables_mutation(self):
-        client = kea_client(url="http://kea.example.invalid", send_service=False)
-        config = {"result": 0, "arguments": {"Dhcp6": {"host-reservation-identifiers": ["duid"]}}}
-
-        with stub_kea(
-            {
-                "list-commands": {"result": 0, "arguments": ["reservation-get"]},
-                "config-get": config,
-            }
-        ):
-            capabilities = client.reservation_capabilities(6)
+    def test_without_the_host_cmds_hook_mutation_is_unavailable(self):
+        capabilities = _capabilities(6, {"host-reservation-identifiers": ["duid", "flex-id"]})
 
         self.assertFalse(capabilities.mutation_available)
         self.assertEqual(capabilities.identifiers, ("duid",))
-        self.assertIn("host_cmds", capabilities.explanation)
+        self.assertEqual(capabilities.explanation, "The host_cmds hook is not loaded.")
+        self.assertIn(("flex-id", "The Flex ID hook is not configured."), capabilities.unavailable_identifiers)
 
-    def test_rejects_explicit_null_host_reservation_identifiers(self):
-        client = kea_client(url="http://kea.example.invalid", send_service=False)
-        config = {"result": 0, "arguments": {"Dhcp4": {"host-reservation-identifiers": None}}}
-
-        with stub_kea({"list-commands": {"result": 0, "arguments": []}, "config-get": config}):
-            with self.assertRaisesRegex(RuntimeError, "host-reservation-identifiers"):
-                client.reservation_capabilities(4)
+    def test_an_invalid_reservation_fact_leaves_the_capabilities_unconfirmed(self):
+        for configuration in (
+            {"host-reservation-identifiers": None, "hooks-libraries": _host_cmds_hooks()},
+            {"hooks-libraries": "libdhcp_host_cmds.so"},
+            {"hooks-libraries": [*_host_cmds_hooks(), {"library": 1}]},
+        ):
+            with self.subTest(configuration=configuration):
+                snapshot = observed_configuration(4, configuration)
+                self.assertIsNone(server_configuration.reservation_capabilities(snapshot))
+                # The other pages show no Notice for a fact that only the Reservation capabilities read.
+                self.assertTrue(snapshot.complete)
+                self.assertEqual(snapshot.diagnostics, ())
+                self.assertEqual(len(snapshot.reservation_diagnostics), 1)
 
     def test_uses_family_defaults_when_host_reservation_identifiers_are_absent(self):
-        client = kea_client(url="http://kea.example.invalid", send_service=False)
-        config = {"result": 0, "arguments": {"Dhcp6": {}}}
-
-        with stub_kea({"list-commands": {"result": 0, "arguments": []}, "config-get": config}):
-            capabilities = client.reservation_capabilities(6)
+        capabilities = _capabilities(6, {"hooks-libraries": _host_cmds_hooks()})
 
         self.assertEqual(capabilities.identifiers, ("duid", "hw-address"))
+        self.assertTrue(capabilities.mutation_available)
 
 
 class TestApplyReservationChange(SimpleTestCase):
@@ -1837,7 +1839,6 @@ class TestSingleServiceReadsNeedOneReply(SimpleTestCase):
         host = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
         subnet = {"id": 20, "subnet": "198.18.0.0/24"}
         cases = (
-            ("list-commands", {"result": 0, "arguments": ["config-get"]}, lambda: self.kea.get_available_commands(4)),
             ("reservation-get-page", _res_page([host]), lambda: self.kea.reservation_page(4, self.catalogue)),
             (
                 "reservation-get-by-hostname",
@@ -1853,11 +1854,6 @@ class TestSingleServiceReadsNeedOneReply(SimpleTestCase):
                 "reservation-get",
                 _res_get(host),
                 lambda: self.kea.reservation_by_address(4, self.catalogue, self.scope, "198.18.0.20"),
-            ),
-            (
-                "config-get",
-                {"result": 0, "arguments": {"Dhcp4": {"subnet4": [subnet]}}},
-                lambda: self.kea.configured_subnet_id_from_cidr(4, "198.18.0.0/24"),
             ),
             ("subnet4-get", {"result": 0, "arguments": {"subnet4": [subnet]}}, lambda: self.kea.subnet_get(4, 20)),
         )

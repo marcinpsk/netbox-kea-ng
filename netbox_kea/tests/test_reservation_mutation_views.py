@@ -14,7 +14,7 @@ from django.utils.html import escape
 from netbox_kea import constants, server_configuration
 from netbox_kea.subnet_catalogue import display
 
-from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, _subnet_list, queued, stub_kea
+from .kea_stub import _host_cmds_hooks, _res_get, _res_page, _subnet_list, queued, stub_kea
 from .utils import _ViewTestBase, active_tabs
 
 
@@ -25,7 +25,7 @@ def _live_config(version: int, subnet_id: int, cidr: str, identifiers: list[str]
             f"Dhcp{version}": {
                 f"subnet{version}": [{"id": subnet_id, "subnet": cidr, "pools": pools or []}],
                 "host-reservation-identifiers": identifiers,
-                "hooks-libraries": [{"library": "/usr/lib/kea/hooks/libdhcp_flex_id.so"}],
+                "hooks-libraries": [{"library": "/usr/lib/kea/hooks/libdhcp_flex_id.so"}, *_host_cmds_hooks()],
             },
             "hash": "reservation-mutation-config",
         },
@@ -36,7 +36,6 @@ def _mutation_responses(
     version: int, subnet_id: int, cidr: str, identifiers: list[str], pools: list | None = None
 ) -> dict:
     return {
-        "list-commands": _reservation_mutation_commands(),
         f"subnet{version}-list": _subnet_list(version, [{"id": subnet_id, "subnet": cidr}]),
         "config-get": _live_config(version, subnet_id, cidr, identifiers, pools),
         "config-test": {"result": 0},
@@ -123,9 +122,30 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertIn("For relay remote ID, configure Kea flex-id.", " ".join(help_text.get_text().split()))
         self.assertEqual(help_text.a["href"], constants.FLEX_ID_DOCUMENTATION_URL)
 
+    def test_a_post_reads_the_capabilities_live_with_a_warm_cache(self):
+        from django.contrib.messages import get_messages
+
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        with stub_kea(responses):
+            self.assertTrue(self.client.get(url).context["mutation_available"])
+        # Kea no longer loads host_cmds; only the cached Server Configuration still shows it.
+        unloaded = _live_config(4, 20, "198.18.0.0/24", ["hw-address"])
+        unloaded["arguments"]["Dhcp4"]["hooks-libraries"] = []
+        data = {"subnet_cidr": "198.18.0.0/24", "identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"}
+
+        with stub_kea({**responses, "config-get": unloaded, "reservation-add": {"result": 0}}) as kea:
+            response = self.client.post(url, data)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands(), ["config-get"])
+        self.assertIn(
+            "Reservation mutation capabilities are unavailable.",
+            [str(message) for message in get_messages(response.wsgi_request)],
+        )
+
     def test_capability_failure_leaves_the_add_form_visible_but_disables_save(self):
         responses = {
-            "list-commands": RuntimeError("capability read failed"),
             "config-get": RuntimeError("configuration read failed"),
             "subnet4-list": _subnet_list(4, [{"id": 20, "subnet": "198.18.0.0/24"}]),
         }
@@ -1301,7 +1321,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
     def test_delete_fails_closed_when_mutation_capabilities_are_incomplete(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
-        responses["list-commands"] = {"result": 0, "arguments": ["reservation-get"]}
+        responses["config-get"]["arguments"]["Dhcp4"]["hooks-libraries"] = []
         url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
         query = _identity_query()
 
@@ -1554,12 +1574,10 @@ class TestMutationCapabilityGate(_ViewTestBase):
     replayed or hand-built POST cannot slip past the disabled save control.
     """
 
-    #: ``list-commands`` without any ``reservation-*`` entry: host_cmds is not loaded.
-    NO_MUTATION_COMMANDS = {"result": 0, "arguments": ["config-get", "subnet4-list"]}
-
     def _responses_without_mutation(self, subnet_id=20, cidr="198.18.0.0/24"):
         responses = _mutation_responses(4, subnet_id, cidr, ["hw-address"])
-        responses["list-commands"] = self.NO_MUTATION_COMMANDS
+        # The host_cmds hook is not loaded.
+        responses["config-get"]["arguments"]["Dhcp4"]["hooks-libraries"] = []
         # The rejection redirects to the reservation list, which renders on follow.
         responses["reservation-get-page"] = _res_page([])
         responses["lease4-get-by-state"] = {"result": 0, "arguments": {"leases": []}}
@@ -1588,8 +1606,14 @@ class TestMutationCapabilityGate(_ViewTestBase):
     def test_add_post_is_rejected_when_the_capability_read_fails(self):
         url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
         return_url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
-        responses = self._responses_without_mutation()
-        responses["list-commands"] = RuntimeError("capability read failed")
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        responses.update(
+            {
+                "config-get": queued(RuntimeError("capability read failed"), responses["config-get"]),
+                "reservation-get-page": _res_page([]),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            }
+        )
 
         with stub_kea(responses) as kea:
             response = self.client.post(url, self._add_payload(), follow=True)

@@ -113,3 +113,13 @@ def good_exact_and_synchronization_reads(client, server, identity):
     # ok: kea-snapshot-read-without-notice
     catalogue = for_synchronization(server, 4)
     return found, catalogue
+
+
+def _display_capabilities(server, family):
+    # ok: kea-snapshot-read-without-notice
+    return server_configuration.reservation_capabilities(server_configuration.display(server, family))
+
+
+def _live_capabilities(server, family):
+    # ok: kea-snapshot-read-without-notice
+    return server_configuration.reservation_capabilities(server_configuration.for_verification(server, family))
