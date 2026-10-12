@@ -19,7 +19,7 @@ from ..utilities import export_table
 from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
 from .fan_out import fan_out
 from .notices import Notice, notice
-from .reservations import ReservationQuery
+from .reservations import ReservationQuery, reservation_subnet_choices
 from .reservations import empty_text as reservation_empty_text
 from .reservations import fetch as fetch_reservations
 from .reservations import present as present_reservations
@@ -536,9 +536,18 @@ class _CombinedReservationsView(_CombinedViewMixin):
             )
             return response
 
+        # A Server whose Reservations are exhausted is not read on later pages, but its Subnets stay choices.
+        choices = {server.pk: server_read.subnet_choices for server, server_read in read.results}
+        exhausted = [server for server in servers if server.pk not in queries]
+        choices.update(
+            (server.pk, server_choices)
+            for server, server_choices in fan_out(
+                exhausted, "catalogue", lambda server: reservation_subnet_choices(server, self.dhcp_version)
+            ).results
+        )
         search_form.offer_subnets(
             forms.combined_subnet_id_options(
-                (server.name, server_read.subnet_choices) for server, server_read in read.results
+                (server.name, choices[server.pk]) for server in servers if server.pk in choices
             )
         )
         # Present in the main thread so Django ORM queries see the test transaction.

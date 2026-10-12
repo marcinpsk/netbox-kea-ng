@@ -450,8 +450,16 @@ def fetch(server: Server, family: Family, query: ReservationQuery) -> Reservatio
     if query.mutations and not unreachable:
         capabilities = _configured_capabilities(server, family)
     # The Reservation read cached the Catalogue, so this is a cache read unless the Catalogue was unsettled.
-    subnet_choices = () if unreachable else subnet_catalogue(server, family).subnet_choices
+    subnet_choices = () if unreachable else reservation_subnet_choices(server, family)
     return ReservationRead(query, loaded, capabilities, subnet_choices)
+
+
+def reservation_subnet_choices(server: Server, family: Family) -> tuple[tuple[str, int], ...]:
+    """Return the ``(cidr, subnet_id)`` choices of the Server's Subnet Catalogue for the Subnet ID filter.
+
+    It is safe in a worker thread. The Catalogue is cached, so a recent read of the Server costs no Kea request.
+    """
+    return subnet_catalogue(server, family).subnet_choices
 
 
 @dataclass(frozen=True)

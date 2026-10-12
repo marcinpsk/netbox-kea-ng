@@ -114,6 +114,41 @@ class TestCombinedReservationSubnetIdFilter(_ViewTestBase):
         # The filter still means this Subnet ID on every selected Server.
         self.assertEqual({body["arguments"].get("subnet-id") for body in kea.bodies("reservation-get-page")}, {1})
 
+    def test_a_server_whose_reservations_are_exhausted_keeps_its_subnets_on_later_pages(self):
+        second = _make_db_server(name="kea-b", ca_url="https://kea-b.example.com")
+        self.server.name = "kea-a"
+        self.server.save()
+        for server, subnets in (
+            (self.server, [{"id": 1, "subnet": "10.63.125.0/24"}, {"id": 5, "subnet": "10.63.5.0/24"}]),
+            (second, [{"id": 1, "subnet": "10.1.0.0/24"}]),
+        ):
+            with stub_kea(_catalogue_responses_for_subnets(4, subnets)):
+                subnet_catalogue.display(server, 4)
+        responses = {
+            "reservation-get-page": _res_page([]),
+            "list-commands": _reservation_mutation_commands(),
+            "config-get": _catalogue_responses_for_subnets(4, [])["config-get"],
+        }
+        query = {
+            "server": [self.server.pk, second.pk],
+            f"reservation_cursor_{self.server.pk}": "done",
+            f"reservation_cursor_{second.pk}": "WzEsNV0",
+        }
+        with stub_kea(responses) as kea:
+            response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"), query)
+        self.assertEqual(response.status_code, 200)
+        # Page 2 reads the Reservations of kea-b only.
+        self.assertEqual(len(kea.bodies("reservation-get-page")), 1)
+        self.assertNotIn("subnet4-list", kea.commands())
+        self.assertEqual(
+            _options(response, "#id_subnet_id"),
+            [
+                ("", "All subnets", True),
+                ("1", "1: 10.63.125.0/24 (kea-a), 10.1.0.0/24 (kea-b)", False),
+                ("5", "5: 10.63.5.0/24 (kea-a)", False),
+            ],
+        )
+
 
 class TestReservationFormSubnetDropdown(_ViewTestBase):
     """The Reservation form picks its Subnet from a dropdown labelled with CIDR and Kea Subnet ID."""
