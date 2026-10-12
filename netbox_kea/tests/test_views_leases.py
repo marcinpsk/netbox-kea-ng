@@ -2098,6 +2098,23 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("sync_to_netbox", response.content.decode())
 
+    def test_the_automatic_ipam_sync_state_is_checkbox_help_not_an_alert(self):
+        for version in (4, 6):
+            for enabled in (True, False):
+                with self.subTest(version=version, enabled=enabled):
+                    self.server.sync_enabled = enabled
+                    self.server.sync_leases_enabled = True
+                    self.server.save()
+                    response = self.client.get(self._url(version=version))
+                    page = BeautifulSoup(response.content, "html.parser")
+                    self.assertNotIn("Automatic IPAM sync", " ".join(a.get_text() for a in page.select(".alert")))
+                    help_text = page.select_one("#id_sync_to_netbox_helptext")
+                    state = "enabled" if enabled else "disabled"
+                    self.assertIn(f"Automatic IPAM sync is {state} for this Server.", help_text.get_text())
+                    tip = help_text.select_one("button")
+                    self.assertEqual(tip["data-bs-toggle"], "tooltip")
+                    self.assertEqual("The next scheduled sync run records this lease." in tip["data-bs-title"], enabled)
+
     def test_post_lease4_add_with_sync_links_the_created_ip(self):
         from netbox_kea.models import IPAMOwnershipLink
 

@@ -824,31 +824,36 @@ UNAVAILABLE_IDENTIFIERS_TIP = "Disabled types are not in the live host-reservati
 
 
 class _SyncToNetBoxForm(forms.Form):
-    """A form with a ``sync_to_netbox`` checkbox. A non-empty *sync_refusal* shows it disabled, with the reason."""
+    """A form with a ``sync_to_netbox`` checkbox whose help states the automatic IPAM sync.
 
-    def __init__(self, *args, sync_refusal: str = "", **kwargs):
+    A non-empty *sync_refusal* disables the checkbox, and the help starts with the reason.
+    """
+
+    #: The tooltip sentences: what the checkbox does now, what the scheduled sync run records, and a closing note.
+    sync_now_tip: ClassVar[str]
+    scheduled_sync_tip: ClassVar[str]
+    sync_note_tip: ClassVar[str] = ""
+
+    def __init__(self, *args, automatic_sync: bool = False, sync_refusal: str = "", **kwargs):
         super().__init__(*args, **kwargs)
+        field = self.fields["sync_to_netbox"]
         if sync_refusal:
-            field = self.fields["sync_to_netbox"]
             field.widget.attrs["disabled"] = True
-            field.help_text = sync_refusal
+        field.help_text = self._sync_help(sync_refusal, automatic_sync)
 
-
-def reservation_sync_help(sync_refusal: str, automatic_sync: bool) -> SafeString:
-    """Return the Sync to NetBox IPAM help: the refusal, if any, and whether automatic IPAM sync is on."""
-    state = "enabled" if automatic_sync else "disabled"
-    tip = []
-    if not sync_refusal:
-        tip.append("Select this to create or update the IP address in NetBox IPAM now, with status Reserved.")
-    if automatic_sync:
-        tip.append("The next scheduled sync run records a fixed address.")
-    tip.append("A Reservation with no address is skipped.")
-    return format_html(
-        "{}Automatic IPAM sync is {} for this Server. {}",
-        format_html("{} ", sync_refusal) if sync_refusal else "",
-        state,
-        help_tip(" ".join(tip)),
-    )
+    def _sync_help(self, sync_refusal: str, automatic_sync: bool) -> SafeString:
+        """Return the help: the refusal, if any, and whether automatic IPAM sync is on, with the details in a tip."""
+        tip = [
+            "" if sync_refusal else self.sync_now_tip,
+            self.scheduled_sync_tip if automatic_sync else "",
+            self.sync_note_tip,
+        ]
+        return format_html(
+            "{}Automatic IPAM sync is {} for this Server. {}",
+            format_html("{} ", sync_refusal) if sync_refusal else "",
+            "enabled" if automatic_sync else "disabled",
+            help_tip(" ".join(sentence for sentence in tip if sentence)),
+        )
 
 
 class _ReservationForm(_SyncToNetBoxForm):
@@ -856,19 +861,14 @@ class _ReservationForm(_SyncToNetBoxForm):
 
     family: ClassVar[Family]
     reservation_capabilities: ReservationCapabilities | None = None
+    sync_now_tip = "Select this to create or update the IP address in NetBox IPAM now, with status Reserved."
+    scheduled_sync_tip = "The next scheduled sync run records a fixed address."
+    sync_note_tip = "A Reservation with no address is skipped."
 
-    def __init__(
-        self,
-        *args,
-        capabilities: ReservationCapabilities | None = None,
-        automatic_sync: bool = False,
-        sync_refusal: str = "",
-        **kwargs,
-    ):
-        """Apply the live identifier capabilities and the IPAM sync help."""
-        super().__init__(*args, sync_refusal=sync_refusal, **kwargs)
+    def __init__(self, *args, capabilities: ReservationCapabilities | None = None, **kwargs):
+        """Apply the live identifier capabilities."""
+        super().__init__(*args, **kwargs)
         _configure_identifier_capabilities(self, capabilities, self.family)
-        self.fields["sync_to_netbox"].help_text = reservation_sync_help(sync_refusal, automatic_sync)
 
     def offer_subnets(self, subnet_choices: SubnetChoices) -> None:
         """Show Subnet CIDR as a dropdown of the configured Subnets; without them keep the text input."""
@@ -1818,11 +1818,9 @@ class _LeaseAddForm(_SyncToNetBoxForm):
         required=False,
         help_text="Client hostname (optional).",
     )
-    sync_to_netbox = forms.BooleanField(
-        label="Sync to NetBox IPAM",
-        required=False,
-        help_text="Create/update IPAddress in NetBox with status=active.",
-    )
+    sync_to_netbox = forms.BooleanField(label="Sync to NetBox IPAM", required=False)
+    sync_now_tip = "Select this to create or update the IP address in NetBox IPAM now, with status Active."
+    scheduled_sync_tip = "The next scheduled sync run records this lease."
 
     def _request(self, data: dict[str, Any]) -> DHCPv4LeaseRequest | DHCPv6LeaseRequest:
         raise NotImplementedError

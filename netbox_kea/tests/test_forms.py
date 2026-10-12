@@ -1980,3 +1980,26 @@ class TestReservationSyncHelp(SimpleTestCase):
         self.assertTrue(field.widget.attrs["disabled"])
         self.assertTrue(field.help_text.startswith("Needs &lt;permission&gt;. Automatic IPAM sync is enabled"))
         self.assertNotIn("Select this", field.help_text)
+
+
+class TestLeaseAddSyncHelp(SimpleTestCase):
+    """The Add Lease Sync to NetBox IPAM help escapes a refusal and states the automatic IPAM sync."""
+
+    def test_a_refusal_disables_the_checkbox_and_keeps_its_escaped_reason(self):
+        from netbox_kea.forms import Lease4AddForm, Lease6AddForm
+
+        for form_class in (Lease4AddForm, Lease6AddForm):
+            with self.subTest(form=form_class.__name__):
+                field = form_class(sync_refusal="Needs <permission>.").fields["sync_to_netbox"]
+                self.assertTrue(field.widget.attrs["disabled"])
+                self.assertTrue(field.help_text.startswith("Needs &lt;permission&gt;. Automatic IPAM sync is disabled"))
+                self.assertNotIn("Select this", field.help_text)
+
+    def test_the_tip_names_the_scheduled_sync_only_when_it_is_on(self):
+        from netbox_kea.forms import Lease4AddForm
+
+        for automatic_sync in (True, False):
+            with self.subTest(automatic_sync=automatic_sync):
+                help_text = Lease4AddForm(automatic_sync=automatic_sync).fields["sync_to_netbox"].help_text
+                self.assertIn("with status Active", help_text)
+                self.assertEqual("The next scheduled sync run records this lease." in help_text, automatic_sync)

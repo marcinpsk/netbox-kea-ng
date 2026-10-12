@@ -19,7 +19,7 @@ from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError
 from django.http import HttpResponse, HttpResponseForbidden
-from django.http.request import HttpRequest
+from django.http.request import HttpRequest, QueryDict
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
@@ -976,6 +976,14 @@ class _BaseLeaseAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     def _leases_url(self, server: Server) -> str:
         return reverse(f"plugins:netbox_kea:server_leases{self.dhcp_version}", args=[server.pk])
 
+    def _form(self, server: Server, gate: SyncGate, data: QueryDict | None = None) -> forms._LeaseAddForm:
+        """Build the form with the user's manual Sync rule and the Server's automatic IPAM sync."""
+        return self.form_class(
+            data,
+            sync_refusal=gate.reason,
+            automatic_sync=server.sync_enabled and server.sync_leases_enabled,
+        )
+
     def _render(self, request: HttpRequest, server: Server, form: forms._LeaseAddForm) -> HttpResponse:
         return render(
             request,
@@ -993,16 +1001,14 @@ class _BaseLeaseAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
         """Render the empty add form."""
         server = self.get_object(pk=pk)
 
-        return self._render(
-            request, server, self.form_class(sync_refusal=sync_gate(request.user, claim_permissions(LEASE)).reason)
-        )
+        return self._render(request, server, self._form(server, sync_gate(request.user, claim_permissions(LEASE))))
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Create the Lease of the typed request, read it back, and report both outcomes."""
         server = self.get_object(pk=pk)
 
         gate = sync_gate(request.user, claim_permissions(LEASE))
-        form = self.form_class(request.POST, sync_refusal=gate.reason)
+        form = self._form(server, gate, request.POST)
         if not form.is_valid():
             return self._render(request, server, form)
         creation: LeaseRequest = form.cleaned_data["request"]
