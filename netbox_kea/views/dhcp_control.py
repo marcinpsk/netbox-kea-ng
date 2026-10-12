@@ -8,7 +8,6 @@ from django.contrib import messages
 from django.http import HttpResponse
 from django.http.request import HttpRequest
 from django.shortcuts import redirect, render
-from django.urls import reverse
 from netbox.views import generic
 
 from .. import forms
@@ -19,20 +18,22 @@ from ..utilities import (
     kea_error_hint,
 )
 from ._base import _client_settings_error, _KeaChangeMixin
-from .server import _STATUS_TAB
+from .workspace import ServerFamilyMixin, server_family_url
 
 logger = logging.getLogger(__name__)
 
 
-class _BaseServerDHCPEnableView(_KeaChangeMixin, generic.ObjectView):
+class _BaseServerDHCPEnableView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     """Confirmation view to re-enable a Kea DHCP service that was previously disabled."""
+
+    workspace_section = "overview"
 
     queryset = Server.objects.all()
     dhcp_version: Family
     template_name = "netbox_kea/server_dhcp_enable.html"
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
-        return {"dhcp_version": self.dhcp_version, "tab": _STATUS_TAB}
+        return {"dhcp_version": self.dhcp_version}
 
     def post(self, request: HttpRequest, pk: int, **kwargs: Any) -> HttpResponse:
         instance = self.get_object(pk=pk)
@@ -40,7 +41,7 @@ class _BaseServerDHCPEnableView(_KeaChangeMixin, generic.ObjectView):
             client = instance.get_client(version=self.dhcp_version)
         except ValueError as exc:
             messages.error(request, _client_settings_error(instance, exc))
-            return redirect(reverse("plugins:netbox_kea:server_status", args=[pk]))
+            return redirect(server_family_url(request, instance, self, "server"))
         try:
             client.dhcp_enable(self.dhcp_version)
             messages.success(request, f"DHCPv{self.dhcp_version} service re-enabled on {instance}.")
@@ -49,7 +50,7 @@ class _BaseServerDHCPEnableView(_KeaChangeMixin, generic.ObjectView):
         except (requests.RequestException, RuntimeError, ValueError):
             logger.exception("Unexpected error enabling DHCPv%s on server %s", self.dhcp_version, pk)
             messages.error(request, "An internal error occurred.")
-        return redirect(reverse("plugins:netbox_kea:server_status", args=[pk]))
+        return redirect(server_family_url(request, instance, self, "server"))
 
 
 class ServerDHCP4EnableView(_BaseServerDHCPEnableView):
@@ -64,8 +65,10 @@ class ServerDHCP6EnableView(_BaseServerDHCPEnableView):
     dhcp_version = 6
 
 
-class _BaseServerDHCPDisableView(_KeaChangeMixin, generic.ObjectView):
+class _BaseServerDHCPDisableView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     """Confirmation form to temporarily disable a Kea DHCP service."""
+
+    workspace_section = "overview"
 
     queryset = Server.objects.all()
     dhcp_version: Family
@@ -73,7 +76,7 @@ class _BaseServerDHCPDisableView(_KeaChangeMixin, generic.ObjectView):
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
         form = forms.DHCPDisableForm(request.POST or None)
-        return {"dhcp_version": self.dhcp_version, "form": form, "tab": _STATUS_TAB}
+        return {"dhcp_version": self.dhcp_version, "form": form}
 
     def post(self, request: HttpRequest, pk: int, **kwargs: Any) -> HttpResponse:
         instance = self.get_object(pk=pk)
@@ -89,7 +92,7 @@ class _BaseServerDHCPDisableView(_KeaChangeMixin, generic.ObjectView):
             client = instance.get_client(version=self.dhcp_version)
         except ValueError as exc:
             messages.error(request, _client_settings_error(instance, exc))
-            return redirect(reverse("plugins:netbox_kea:server_status", args=[pk]))
+            return redirect(server_family_url(request, instance, self, "server"))
         try:
             client.dhcp_disable(self.dhcp_version, max_period=max_period)
             if max_period:
@@ -104,7 +107,7 @@ class _BaseServerDHCPDisableView(_KeaChangeMixin, generic.ObjectView):
         except (requests.RequestException, RuntimeError, ValueError):
             logger.exception("Unexpected error disabling DHCPv%s on server %s", self.dhcp_version, pk)
             messages.error(request, "An internal error occurred.")
-        return redirect(reverse("plugins:netbox_kea:server_status", args=[pk]))
+        return redirect(server_family_url(request, instance, self, "server"))
 
 
 class ServerDHCP4DisableView(_BaseServerDHCPDisableView):

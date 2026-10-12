@@ -12,10 +12,17 @@ real request/response path.
 """
 
 import threading
+from enum import Enum
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import requests
-from django.urls import reverse
+from bs4 import BeautifulSoup
+from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
+from django.urls import clear_script_prefix, reverse, set_script_prefix
+from users.models import ObjectPermission
 
+from netbox_kea.models import Server
 from netbox_kea.views.notices import HEADLINES
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE, ReservationQuery, fetch
 
@@ -30,22 +37,142 @@ from .kea_stub import (
 from .utils import _make_db_server, _ViewTestBase
 
 # ---------------------------------------------------------------------------
-# Combined fetch helpers — response-shape guards
+# Lease Server chooser
 # ---------------------------------------------------------------------------
 
 
-class TestCombinedResponseShapeGuards(_ViewTestBase):
-    """The combined Lease view reports an empty Kea response list as the error of its Server."""
+class TestLeaseServerChooser(_ViewTestBase):
+    def test_chooser_never_reads_leases_even_with_search_state(self):
+        for family in (4, 6):
+            for search in (
+                {},
+                {"q": "198.18.0.1" if family == 4 else "2001:db8::1", "by": "ip", "state": "0"},
+                {"state": "0"},
+            ):
+                with self.subTest(family=family, search=search), stub_kea({}) as kea:
+                    response = self.client.get(reverse(f"plugins:netbox_kea:combined_leases{family}"), search)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(kea.commands(), [])
+                    self.assertContains(
+                        response, reverse(f"plugins:netbox_kea:server_leases{family}", args=[self.server.pk])
+                    )
 
-    def test_an_empty_lease_reply_is_the_error_of_its_server(self):
-        url = reverse("plugins:netbox_kea:combined_leases4")
-        cases = (({"q": "10.0.0.1", "by": "ip"}, "lease4-get"), ({"state": "0"}, "lease4-get-page"))
-        for query, command in cases:
-            with self.subTest(command=command), stub_kea({command: []}):
-                response = self.client.get(url, {**query, "server": self.server.pk})
+    def test_search_state_is_explained_and_carried_to_each_server(self):
+        second = _make_db_server(name="another-server")
+        search = {"q": '<script>" & host</script>', "by": "unvalidated-selector", "state": "unknown"}
+        for family in (4, 6):
+            for selection in ({}, {"server": [self.server.pk, second.pk]}):
+                with self.subTest(family=family, selection=selection), stub_kea({}) as kea:
+                    response = self.client.get(
+                        reverse(f"plugins:netbox_kea:combined_leases{family}"),
+                        {**selection, **search, "page": "2", "export": "table", "unrelated": "drop"},
+                    )
+                    self.assertEqual(response.status_code, 200)
+                    page = BeautifulSoup(response.content, "html.parser")
+                    explanation = page.select_one(".alert-info")
+                    self.assertIsNotNone(explanation)
+                    self.assertIn(search["q"], explanation.get_text())
+                    self.assertIn("Choose a Server", explanation.get_text())
+                    self.assertNotContains(response, '<script>" & host</script>')
+                    links = page.select(".list-group a")
+                    self.assertEqual([link.get_text(strip=True) for link in links], [second.name, self.server.name])
+                    for server, link in zip((second, self.server), links, strict=True):
+                        target = urlsplit(link["href"])
+                        self.assertEqual(
+                            target.path, reverse(f"plugins:netbox_kea:server_leases{family}", args=[server.pk])
+                        )
+                        query = parse_qs(target.query)
+                        self.assertEqual(query.pop("return_url"), [response.wsgi_request.get_full_path()])
+                        self.assertEqual(query, {key: [value] for key, value in search.items()})
+                    self.assertEqual(page.select('a[href*="export="]'), [])
+                    self.assertEqual(kea.commands(), [])
 
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.context["errors"], [(self.server.name, HEADLINES["lease"])])
+    def test_one_server_redirect_ignores_export_and_keeps_compatible_fields(self):
+        search = {"q": "host & spaces", "by": "hostname", "state": "1", "sort": "-hostname", "per_page": "50"}
+        for family in (4, 6):
+            for htmx in (False, True):
+                with self.subTest(family=family, htmx=htmx), stub_kea({}) as kea:
+                    response = self.client.get(
+                        reverse(f"plugins:netbox_kea:combined_leases{family}"),
+                        {"server": self.server.pk, **search, "export": "table", "page": "2", "other": "drop"},
+                        headers={"HX-Request": "true"} if htmx else {},
+                    )
+                    self.assertEqual(response.status_code, 200 if htmx else 302)
+                    target = urlsplit(response["HX-Redirect" if htmx else "Location"])
+                    self.assertEqual(
+                        target.path, reverse(f"plugins:netbox_kea:server_leases{family}", args=[self.server.pk])
+                    )
+                    self.assertEqual(parse_qs(target.query), {key: [value] for key, value in search.items()})
+                    self.assertEqual(kea.commands(), [])
+
+    def test_export_is_ignored_when_a_selected_server_lacks_the_family(self):
+        for family in (4, 6):
+            Server.objects.filter(pk=self.server.pk).update(**{f"dhcp{family}": False})
+            with self.subTest(family=family), stub_kea({}) as kea:
+                response = self.client.get(
+                    reverse(f"plugins:netbox_kea:combined_leases{family}"),
+                    {"server": self.server.pk, "export": "table"},
+                    follow=True,
+                )
+                self.assertContains(response, "Protocol not enabled")
+                self.assertNotContains(response, "Export refused")
+                self.assertEqual(kea.commands(), [])
+
+    def test_each_search_field_alone_explains_the_pending_search(self):
+        for field, value, text in (
+            ("q", "needle", "Search: <strong>needle</strong>"),
+            ("by", "hostname", "Attribute: <strong>Hostname</strong>"),
+            ("state", "1", "State: <strong>Declined</strong>"),
+        ):
+            with self.subTest(field=field, value=value), stub_kea({}):
+                response = self.client.get(reverse("plugins:netbox_kea:combined_leases4"), {field: value})
+                self.assertContains(response, "Choose a Server to run it.")
+                self.assertContains(response, text)
+
+    def test_a_repeated_search_field_keeps_its_last_value(self):
+        query = "state=1&state=&by=ip&by=hostname&q=first&q=last"
+        with stub_kea({}):
+            chooser = self.client.get(f"{reverse('plugins:netbox_kea:combined_leases4')}?{query}")
+            redirect = self.client.get(
+                f"{reverse('plugins:netbox_kea:combined_leases4')}?server={self.server.pk}&{query}"
+            )
+        link = BeautifulSoup(chooser.content, "html.parser").select_one(".list-group a")
+        target = parse_qs(urlsplit(link["href"]).query)
+        self.assertEqual(target.pop("return_url"), [chooser.wsgi_request.get_full_path()])
+        self.assertEqual(target, {"by": ["hostname"], "q": ["last"]})
+        explanation = BeautifulSoup(chooser.content, "html.parser").select_one(".alert-info").get_text()
+        self.assertNotIn("Declined", explanation)
+        self.assertContains(chooser, "Attribute: <strong>Hostname</strong>")
+        self.assertNotIn("first", explanation)
+        target = parse_qs(urlsplit(redirect["Location"]).query, keep_blank_values=True)
+        self.assertEqual((target["state"][-1], target["by"][-1], target["q"][-1]), ("", "hostname", "last"))
+
+    def test_an_empty_search_field_is_not_a_pending_search(self):
+        with stub_kea({}):
+            response = self.client.get(reverse("plugins:netbox_kea:combined_leases4"), {"q": "", "state": ""})
+        self.assertNotContains(response, "Choose a Server to run it.")
+        link = BeautifulSoup(response.content, "html.parser").select_one(".list-group a")
+        self.assertEqual(
+            parse_qs(urlsplit(link["href"]).query), {"return_url": [response.wsgi_request.get_full_path()]}
+        )
+
+    def test_an_anonymous_user_is_sent_to_login(self):
+        self.client.logout()
+        for family in (4, 6):
+            with self.subTest(family=family), stub_kea({}) as kea:
+                response = self.client.get(reverse(f"plugins:netbox_kea:combined_leases{family}"))
+                self.assertEqual(response.status_code, 302)
+                self.assertIn("login", response.url)
+                self.assertEqual(kea.commands(), [])
+
+    def test_overview_never_reads_leases(self):
+        for selection in ({}, {"server": [self.server.pk, _make_db_server(name="other-server").pk]}):
+            with self.subTest(selection=selection), stub_kea({}) as kea:
+                response = self.client.get(
+                    reverse("plugins:netbox_kea:combined"), {**selection, "q": "198.18.0.1", "by": "ip", "state": "0"}
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(kea.commands(), [])
 
 
 class TestCombinedServerSelection(_ViewTestBase):
@@ -56,7 +183,420 @@ class TestCombinedServerSelection(_ViewTestBase):
             with self.subTest(selection=selection), stub_kea(responses):
                 response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"), {"server": selection})
                 self.assertEqual(response.status_code, 200)
-                self.assertEqual(response.context["selected_server_pks"], set())
+                self.assertEqual(response.context["server_scope"].selected_pks, set())
+                self.assertContains(response, "Invalid Server selection")
+                self.assertNotContains(response, "198.18.0.0/24")
+
+
+class TestServerScope(_ViewTestBase):
+    sections = ("subnets", "shared_networks", "reservations", "leases")
+
+    def setUp(self):
+        super().setUp()
+        self.second = _make_db_server(name="other")
+        self.hidden = _make_db_server(name="hidden")
+        self.viewer = get_user_model().objects.create_user(username="server-scope-viewer")
+        permission = ObjectPermission.objects.create(
+            name="view-selected-servers", actions=["view"], constraints={"name__in": [self.server.name, "other"]}
+        )
+        permission.object_types.add(ContentType.objects.get_for_model(Server))
+        permission.users.add(self.viewer)
+        self.client.force_login(self.viewer)
+
+    def _url(self, section="subnets", family=4):
+        name = "combined" if section == "overview" else f"combined_{section}{family}"
+        return reverse(f"plugins:netbox_kea:{name}")
+
+    def test_lease_chooser_lists_only_permitted_selected_servers_with_the_family(self):
+        for family in (4, 6):
+            unavailable = _make_db_server(name=f"unavailable-family-{family}", **{f"dhcp{family}": False})
+            unselected = _make_db_server(name=f"unselected-{family}")
+            permission = ObjectPermission.objects.get(name="view-selected-servers")
+            permission.constraints = {
+                "name__in": [self.server.name, self.second.name, unavailable.name, unselected.name]
+            }
+            permission.save()
+            self.client.force_login(self.viewer)
+            for selection, expected in (
+                ({}, [self.second, self.server, unselected]),
+                ({"server": [self.server.pk, self.second.pk]}, [self.second, self.server]),
+                ({"server": [self.server.pk, unavailable.pk]}, [self.server]),
+                ({"server": [self.second.pk, unavailable.pk]}, [self.second]),
+                ({"server": [self.server.pk, self.hidden.pk]}, []),
+                ({"server": "invalid"}, []),
+            ):
+                with self.subTest(family=family, selection=selection), stub_kea({}) as kea:
+                    response = self.client.get(self._url("leases", family), {**selection, "state": "0"})
+                    self.assertEqual(response.status_code, 200)
+                    page = BeautifulSoup(response.content, "html.parser")
+                    links = page.select(".list-group a")
+                    self.assertEqual(
+                        [link.get_text(strip=True) for link in links], [server.name for server in expected]
+                    )
+                    self.assertEqual(
+                        [urlsplit(link["href"]).path for link in links],
+                        [reverse(f"plugins:netbox_kea:server_leases{family}", args=[server.pk]) for server in expected],
+                    )
+                    if not expected:
+                        self.assertContains(response, "Invalid Server selection")
+                    self.assertEqual(kea.commands(), [])
+
+    def test_server_selector_waits_for_apply(self):
+        response = self.client.get(self._url("overview"), {"server": [self.server.pk, self.second.pk]})
+        form = BeautifulSoup(response.content, "html.parser").select_one("#server-filter-form")
+        self.assertIsNotNone(form)
+        submit = form.select_one('button[type="submit"]')
+        self.assertIsNotNone(submit)
+        self.assertEqual(submit.get_text(strip=True), "Apply")
+        self.assertFalse(form.select("[onchange]"))
+        self.assertEqual(len(form.select('input[name="server"]')), 2)
+        self.assertIn("Show all servers", form.get_text())
+
+    def test_valid_selection_normalizes_the_tab_query_string(self):
+        response = self.client.get(
+            self._url("overview"), {"server": [f"0{self.second.pk}", f"0{self.server.pk}", str(self.server.pk)]}
+        )
+        page = BeautifulSoup(response.content, "html.parser")
+        query = "&".join(f"server={pk}" for pk in sorted((self.server.pk, self.second.pk)))
+        links = page.select(".nav-tabs a")
+        self.assertEqual(len(links), 6)
+        for link in links:
+            self.assertEqual(urlsplit(link["href"]).query, query)
+
+    def test_invalid_selection_preserves_raw_ids_in_the_tab_links(self):
+        selection = [f"0{self.server.pk}", "abc", ""]
+        response = self.client.get(self._url("overview"), {"server": selection})
+        self.assertContains(response, "Invalid Server selection")
+        page = BeautifulSoup(response.content, "html.parser")
+        links = page.select(".nav-tabs a")
+        self.assertEqual(len(links), 6)
+        for link in links:
+            self.assertEqual(parse_qs(urlsplit(link["href"]).query, keep_blank_values=True), {"server": selection})
+
+    def test_context_exposes_server_scope_without_duplicate_facts(self):
+        response = self.client.get(self._url("overview"))
+        server_scope = response.context["server_scope"]
+        self.assertIsInstance(server_scope.kind, Enum)
+        self.assertTrue(server_scope.is_all)
+        self.assertFalse(server_scope.is_one)
+        self.assertFalse(server_scope.is_invalid)
+        self.assertEqual(set(server_scope.all_servers), {self.server, self.second})
+        for key in ("all_servers", "selected_server_pks", "server_qs", "scope_warnings"):
+            self.assertNotIn(key, response.context)
+        self.assertEqual(response.context["server_scope_warnings"], [])
+
+    def test_invalid_selections_show_an_explicit_state_on_every_section(self):
+        selections = (
+            ["abc"],
+            ["999999999"],
+            [str(self.hidden.pk)],
+            [""],
+            [str(self.server.pk), "abc"],
+            [str(self.server.pk), str(self.hidden.pk)],
+            [str(self.server.pk), "999999999"],
+            [str(self.server.pk), ""],
+            ["9" * 100],
+        )
+        for section in (*self.sections, "overview"):
+            families = (4,) if section == "overview" else (4, 6)
+            for family in families:
+                for selection in selections:
+                    with self.subTest(section=section, family=family, selection=selection), stub_kea({}) as kea:
+                        response = self.client.get(self._url(section, family), {"server": selection, "q": "needle"})
+                        self.assertContains(response, "Invalid Server selection")
+                        self.assertTrue(response.context["server_scope"].is_invalid)
+                        self.assertContains(response, f'href="{self._url(section, family)}?q=needle"')
+                        self.assertNotContains(response, '<div class="table-responsive')
+                        self.assertEqual(kea.commands(), [])
+
+    def _apply(self, response, checked):
+        """Submit the Server selector as a browser does, with only the *checked* Server IDs ticked."""
+        form = BeautifulSoup(response.content, "html.parser").select_one("#server-filter-form")
+        data = [(field["name"], field["value"]) for field in form.select('input[type="hidden"]')]
+        data += [
+            ("server", box["value"]) for box in form.select('input[name="server"]') if int(box["value"]) in checked
+        ]
+        return self.client.get(f"{form['action']}?{urlencode(data)}")
+
+    def test_apply_without_a_checked_server_shows_the_invalid_state(self):
+        for section in (*self.sections, "overview"):
+            for family in (4,) if section == "overview" else (4, 6):
+                with self.subTest(section=section, family=family), stub_kea({}) as kea:
+                    page = self.client.get(self._url(section, family), {"server": "abc", "q": "needle"})
+                    response = self._apply(page, checked=())
+                    self.assertContains(response, "Invalid Server selection")
+                    if section not in ("shared_networks", "overview"):
+                        self.assertContains(response, f'href="{self._url(section, family)}?q=needle"')
+                    tab = BeautifulSoup(response.content, "html.parser").select_one(".nav-tabs a.active")
+                    self.assertContains(self.client.get(tab["href"]), "Invalid Server selection")
+                    self.assertEqual(kea.commands(), [])
+
+    def test_apply_keeps_the_filters_of_the_section(self):
+        filters = {
+            "q": "needle",
+            "subnet_id": "1",
+            "scope": "global",
+            "by": "hostname",
+            "state": "0",
+            "sort": "name",
+            "per_page": "25",
+            "page": "2",
+            "cursor": "abc",
+            f"reservation_cursor_{self.server.pk}": "abc",
+            "export": "csv",
+        }
+        expected = {
+            "overview": set(),
+            "subnets": {"q", "subnet_id", "sort", "per_page"},
+            "shared_networks": {"sort", "per_page"},
+            "reservations": {"q", "subnet_id", "scope", "sort", "per_page"},
+            "leases": {"q", "by", "state", "sort", "per_page"},
+        }
+        for section, fields in expected.items():
+            with self.subTest(section=section):
+                page = self.client.get(self._url(section), {"server": "abc", **filters})
+                form = BeautifulSoup(page.content, "html.parser").select_one("#server-filter-form")
+                hidden = {field["name"]: field["value"] for field in form.select('input[type="hidden"]')}
+                hidden.pop("server_selection")
+                self.assertEqual(hidden, {key: filters[key] for key in fields})
+
+    def test_apply_of_one_server_keeps_the_lease_search(self):
+        page = self.client.get(self._url("leases"), {"q": "needle", "by": "hostname", "state": "0"})
+        response = self._apply(page, checked={self.server.pk})
+        self.assertEqual(response.status_code, 302)
+        location = urlsplit(response["Location"])
+        self.assertEqual(location.path, reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]))
+        self.assertEqual(parse_qs(location.query), {"q": ["needle"], "by": ["hostname"], "state": ["0"]})
+
+    def test_show_all_servers_in_the_selector_keeps_the_filters(self):
+        page = self.client.get(self._url(), {"server": [self.server.pk, self.second.pk], "q": "needle"})
+        form = BeautifulSoup(page.content, "html.parser").select_one("#server-filter-form")
+        (link,) = (link for link in form.select("a") if "Show all servers" in link.get_text())
+        self.assertEqual(link["href"], f"{self._url()}?q=needle")
+
+    def test_no_selection_reads_all_permitted_servers(self):
+        responses = _catalogue_responses(4, 1, "198.18.0.0/24")
+        responses["stat-lease4-get"] = {"result": 2, "text": "unsupported"}
+        with stub_kea(responses):
+            response = self.client.get(self._url())
+        rows = list(response.context["table"].data)
+        self.assertEqual({row["server_pk"] for row in rows}, {self.server.pk, self.second.pk})
+
+    def test_several_valid_servers_are_the_only_servers_read(self):
+        self.client.force_login(self.user)
+        responses = _catalogue_responses(4, 1, "198.18.0.0/24")
+        responses["stat-lease4-get"] = {"result": 2, "text": "unsupported"}
+        with stub_kea(responses):
+            response = self.client.get(self._url(), {"server": [self.server.pk, self.second.pk]})
+        rows = list(response.context["table"].data)
+        self.assertEqual({row["server_pk"] for row in rows}, {self.server.pk, self.second.pk})
+        server_scope = response.context["server_scope"]
+        self.assertIsInstance(server_scope.kind, Enum)
+        self.assertFalse(server_scope.is_all)
+        self.assertFalse(server_scope.is_one)
+        self.assertFalse(server_scope.is_invalid)
+
+    def test_one_server_redirects_to_each_family_tab_with_only_compatible_filters(self):
+        expected_filters = {
+            "subnets": {"page", "per_page", "sort"},
+            "shared_networks": {"page", "per_page", "sort"},
+            "reservations": {"q", "subnet_id", "scope", "per_page", "sort"},
+            "leases": {"q", "by", "state", "per_page", "sort"},
+        }
+        filters = {
+            "q": "needle & spaces",
+            "subnet_id": "1",
+            "scope": "global",
+            "by": "hostname",
+            "state": "0",
+            "page": "2",
+            "per_page": "50",
+            "sort": "-hostname",
+            "unrelated": "drop",
+            f"reservation_cursor_{self.server.pk}": "done",
+        }
+        for section in self.sections:
+            for family in (4, 6):
+                with self.subTest(section=section, family=family), stub_kea({}) as kea:
+                    response = self.client.get(self._url(section, family), {"server": self.server.pk, **filters})
+                    self.assertEqual(response.status_code, 302)
+                    location = urlsplit(response["Location"])
+                    self.assertEqual(
+                        location.path, reverse(f"plugins:netbox_kea:server_{section}{family}", args=[self.server.pk])
+                    )
+                    self.assertEqual(
+                        parse_qs(location.query), {key: [filters[key]] for key in expected_filters[section]}
+                    )
+                    self.assertEqual(kea.commands(), [])
+
+    def test_duplicate_decimal_ids_still_select_one_server(self):
+        response = self.client.get(self._url(), {"server": [str(self.server.pk), f"0{self.server.pk}"]})
+        self.assertRedirects(
+            response,
+            reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]),
+            fetch_redirect_response=False,
+        )
+
+    def test_lease_redirect_preserves_state_in_the_canonical_search_form(self):
+        for family, cidr in ((4, "198.18.0.0/24"), (6, "2001:db8::/64")):
+            with self.subTest(family=family), stub_kea(_catalogue_responses(family, 1, cidr)):
+                response = self.client.get(
+                    self._url("leases", family), {"server": self.server.pk, "state": "1"}, follow=True
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.context["form"]["state"].value(), "1")
+
+    def test_htmx_single_server_uses_a_navigation_response(self):
+        for section in (*self.sections, "overview"):
+            families = (4,) if section == "overview" else (4, 6)
+            for family in families:
+                with self.subTest(section=section, family=family), stub_kea({}) as kea:
+                    response = self.client.get(
+                        self._url(section, family), {"server": self.server.pk}, HTTP_HX_REQUEST="true"
+                    )
+                    target = "server" if section == "overview" else f"server_{section}{family}"
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(
+                        response["HX-Redirect"],
+                        reverse(f"plugins:netbox_kea:{target}", args=[self.server.pk])
+                        + (f"?family={family}" if section == "overview" else ""),
+                    )
+                    self.assertEqual(response.content, b"")
+                    self.assertEqual(kea.commands(), [])
+
+    def test_an_export_with_a_selected_server_without_the_family_is_refused(self):
+        Server.objects.filter(pk=self.second.pk).update(dhcp6=False)
+        exports = {"subnets": "table", "shared_networks": "table", "reservations": "json"}
+        for selection in ([self.second.pk], [self.server.pk, self.second.pk]):
+            for section, export in exports.items():
+                with self.subTest(selection=selection, section=section), stub_kea({}) as kea:
+                    response = self.client.get(self._url(section, 6), {"server": selection, "export": export})
+                    expected = f"{self._url(section, 6)}?" + "&".join(f"server={pk}" for pk in sorted(selection))
+                    self.assertRedirects(response, expected, fetch_redirect_response=False)
+                    self.assertEqual(kea.commands(), [])
+        response = self.client.get(self._url("subnets", 6), {"server": self.second.pk, "export": "table"}, follow=True)
+        self.assertContains(response, "Export refused: DHCPv6 is not enabled on other.")
+
+    def test_export_refusal_keeps_hostile_query_values_inside_the_local_route(self):
+        Server.objects.filter(pk=self.second.pk).update(dhcp6=False)
+        for section in ("subnets", "shared_networks", "reservations"):
+            for value in (
+                "//outside.example/path",
+                "https://outside.example/path",
+                "/\\outside.example",
+                "\r\nLocation: //outside.example",
+            ):
+                with self.subTest(section=section, value=value), stub_kea({}) as kea:
+                    response = self.client.get(
+                        self._url(section, 6),
+                        {"server": self.second.pk, "export": "table", "q": value, "return_url": value},
+                    )
+                    self.assertEqual(response.status_code, 302)
+                    location = urlsplit(response["Location"])
+                    self.assertEqual(location.scheme, "")
+                    self.assertEqual(location.netloc, "")
+                    self.assertEqual(location.path, self._url(section, 6))
+                    self.assertEqual(
+                        parse_qs(location.query), {"server": [str(self.second.pk)], "q": [value], "return_url": [value]}
+                    )
+                    self.assertEqual(kea.commands(), [])
+
+    def test_export_refusal_preserves_repeated_values_on_each_combined_route(self):
+        exports = {"subnets": "table", "shared_networks": "table", "reservations": "json"}
+        for family in (4, 6):
+            Server.objects.filter(pk=self.second.pk).update(**{f"dhcp{family}": False})
+            for section, export in exports.items():
+                for selection in ([self.second.pk], [self.server.pk, self.second.pk, self.second.pk]):
+                    query = {
+                        "server": list(map(str, selection)),
+                        "export": [export, export],
+                        "q": ["//outside.example/path", "", "percent% & spaces + #fragment"],
+                        "return_url": ["https://outside.example/path", "/\\outside.example"],
+                        "sort": ["hostname", "-hostname"],
+                        "page": ["2", "3"],
+                    }
+                    with self.subTest(family=family, section=section, selection=selection), stub_kea({}) as kea:
+                        response = self.client.get(self._url(section, family), query)
+                        self.assertEqual(response.status_code, 302)
+                        location = urlsplit(response["Location"])
+                        self.assertEqual(location.scheme, "")
+                        self.assertEqual(location.netloc, "")
+                        self.assertEqual(location.fragment, "")
+                        self.assertEqual(location.path, self._url(section, family))
+                        self.assertEqual(
+                            parse_qs(location.query, keep_blank_values=True),
+                            {key: values for key, values in query.items() if key != "export"},
+                        )
+                        self.assertEqual(kea.commands(), [])
+
+    def test_export_refusal_keeps_the_deployment_prefix_on_each_combined_route(self):
+        for family in (4, 6):
+            Server.objects.filter(pk=self.second.pk).update(**{f"dhcp{family}": False})
+            for section in ("subnets", "shared_networks", "reservations"):
+                url = self._url(section, family)
+                query = {"server": [str(self.server.pk), str(self.second.pk)], "q": ["needle & spaces", ""]}
+                # The test client skips WSGIHandler, which sets this from SCRIPT_NAME.
+                set_script_prefix("/netbox/")
+                try:
+                    with self.subTest(family=family, section=section), stub_kea({}) as kea:
+                        response = self.client.get(url, {**query, "export": "table"}, SCRIPT_NAME="/netbox")
+                        self.assertEqual(response.status_code, 302)
+                        location = urlsplit(response["Location"])
+                        self.assertEqual(location.path, self._url(section, family))
+                        self.assertEqual(location.path, f"/netbox{url}")
+                        self.assertEqual(parse_qs(location.query, keep_blank_values=True), query)
+                        self.assertEqual(kea.commands(), [])
+                finally:
+                    clear_script_prefix()
+
+    def test_export_refusal_renders_the_warning_and_reads_only_the_supported_selection(self):
+        Server.objects.filter(pk=self.second.pk).update(dhcp4=False)
+        responses = _catalogue_responses(4, 1, "198.18.0.0/24")
+        responses["stat-lease4-get"] = {"result": 2, "text": "unsupported"}
+        with stub_kea(responses):
+            response = self.client.get(
+                self._url(), {"server": [self.server.pk, self.second.pk], "export": "table"}, follow=True
+            )
+        self.assertContains(response, "Export refused: DHCPv4 is not enabled on other.")
+        self.assertEqual({row["server_pk"] for row in response.context["table"].data}, {self.server.pk})
+
+    def test_selected_server_without_the_family_has_a_notice_even_without_a_lease_query(self):
+        for family in (4, 6):
+            Server.objects.filter(pk=self.server.pk).update(**{f"dhcp{family}": False})
+            for section in self.sections:
+                with self.subTest(section=section, family=family), stub_kea({}) as kea:
+                    response = self.client.get(self._url(section, family), {"server": self.server.pk}, follow=True)
+                    self.assertContains(response, "Protocol not enabled")
+                    self.assertEqual(
+                        response.wsgi_request.path,
+                        reverse(f"plugins:netbox_kea:server_{section}{family}", args=[self.server.pk]),
+                    )
+                    self.assertEqual(kea.commands(), [])
+
+    def test_no_selection_skips_a_server_without_the_family_without_a_notice(self):
+        Server.objects.filter(pk__in=[self.server.pk, self.second.pk]).update(dhcp6=False)
+        for section in self.sections:
+            with self.subTest(section=section), stub_kea({}) as kea:
+                response = self.client.get(self._url(section, 6))
+                self.assertEqual(response.status_code, 200)
+                self.assertNotContains(response, "is not enabled on this Server")
+                self.assertEqual(response.context["server_scope_warnings"], [])
+                self.assertEqual(kea.commands(), [])
+
+    def test_overview_honors_a_selection_of_several_servers(self):
+        self.client.force_login(self.user)
+        response = self.client.get(self._url("overview"), {"server": [self.server.pk, self.second.pk]})
+        self.assertEqual(set(response.context["server_scope"].servers), {self.server, self.second})
+
+    def test_overview_without_selection_shows_only_permitted_servers(self):
+        response = self.client.get(self._url("overview"))
+        self.assertContains(response, self.server.get_absolute_url())
+        self.assertContains(response, self.second.get_absolute_url())
+        self.assertNotContains(response, self.hidden.get_absolute_url())
+
+    def test_overview_with_one_server_redirects_to_its_detail_page(self):
+        response = self.client.get(self._url("overview"), {"server": self.server.pk, "q": "drop"})
+        self.assertRedirects(response, self.server.get_absolute_url() + "?family=4", fetch_redirect_response=False)
 
 
 class TestCombinedSubnetDiagnostics(_ViewTestBase):
@@ -75,34 +615,42 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
         if not verified:
             responses["subnet4-list"] = {"result": 2, "text": "unsupported"}
         with stub_kea(responses):
-            return self.client.get(reverse("plugins:netbox_kea:combined_subnets4"), {"server": self.server.pk})
+            return self.client.get(reverse("plugins:netbox_kea:combined_subnets4"))
 
     def test_writable_verified_subnet_offers_options_and_identity_actions(self):
         response = self._subnet_actions_response()
         self.assertEqual(response.status_code, 200)
+        page = BeautifulSoup(response.content, "html.parser")
         for action in ("options_edit", "wipe_leases"):
             url = reverse(f"plugins:netbox_kea:server_subnet4_{action}", args=[self.server.pk, 7])
-            self.assertTrue(f'href="{url}"' in response.content.decode(), f"Missing {action} action")
+            links = [link for link in page.select("td a") if urlsplit(link["href"]).path == url]
+            self.assertEqual(len(links), 1, f"Missing {action} action")
+            self.assertEqual(
+                parse_qs(urlsplit(links[0]["href"]).query).get("return_url"),
+                [reverse("plugins:netbox_kea:combined_subnets4")],
+            )
 
     def test_writable_configured_subnet_offers_no_options_or_identity_actions(self):
         """A Subnet options change needs a Verified Subnet, so a Subnet that Kea did not confirm has no form."""
         response = self._subnet_actions_response(verified=False)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "198.18.0.0/24")
+        paths = {urlsplit(link["href"]).path for link in BeautifulSoup(response.content, "html.parser").select("td a")}
         for action in ("options_edit", "wipe_leases"):
             url = reverse(f"plugins:netbox_kea:server_subnet4_{action}", args=[self.server.pk, 7])
-            self.assertNotContains(response, f'href="{url}"')
+            self.assertNotIn(url, paths)
 
     def test_readonly_subnet_has_no_mutation_actions(self):
         response = self._subnet_actions_response(writable=False)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "198.18.0.0/24")
+        paths = {urlsplit(link["href"]).path for link in BeautifulSoup(response.content, "html.parser").select("td a")}
         for action in ("options_edit", "wipe_leases"):
             url = reverse(f"plugins:netbox_kea:server_subnet4_{action}", args=[self.server.pk, 7])
-            self.assertNotContains(response, f'href="{url}"')
+            self.assertNotIn(url, paths)
 
     def test_complete_catalogue_is_reused_for_unchanged_requests(self):
-        url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
+        url = reverse("plugins:netbox_kea:combined_subnets4")
         responses = _catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "198.18.1.0/24", "pools": []}])
         responses["stat-lease4-get"] = {"result": 2, "text": "unknown command"}
 
@@ -116,7 +664,7 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
         self.assertEqual(kea.commands().count("config-get"), 1)
 
     def test_unavailable_catalogue_preserves_specific_diagnostics(self):
-        url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
+        url = reverse("plugins:netbox_kea:combined_subnets4")
 
         with stub_kea(
             {
@@ -141,7 +689,7 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
                 "stat-lease4-get": {"result": 2, "text": "unknown command"},
             }
         ):
-            response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"), {"server": self.server.pk})
+            response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"))
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(list(response.context["table"].data), [])
@@ -151,7 +699,7 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
     def test_incomplete_catalogue_explains_omitted_facts(self):
         responses = _catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "198.18.0.0/24", "pools": "not-a-list"}])
         responses["stat-lease4-get"] = {"result": 2, "text": "unknown command"}
-        url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
+        url = reverse("plugins:netbox_kea:combined_subnets4")
 
         with stub_kea(responses):
             response = self.client.get(url)
@@ -171,7 +719,7 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
             [{"id": 1, "subnet": "198.18.0.0/24", "pools": ["invalid-one", "invalid-two"]}],
         )
         responses["stat-lease4-get"] = {"result": 2, "text": "unknown command"}
-        url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.server.pk}"
+        url = reverse("plugins:netbox_kea:combined_subnets4")
 
         with stub_kea(responses):
             response = self.client.get(url)
@@ -182,7 +730,7 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
 
 class TestCombinedSharedNetworkDiagnostics(_ViewTestBase):
     def _url(self):
-        return reverse("plugins:netbox_kea:combined_shared_networks4") + f"?server={self.server.pk}"
+        return reverse("plugins:netbox_kea:combined_shared_networks4")
 
     def test_unreachable_server_is_reported_with_its_snapshot_diagnostic(self):
         with stub_kea({"config-get": requests.ConnectionError("unreachable")}):
@@ -263,7 +811,7 @@ class TestCombinedReservationsWithoutAddress(_ViewTestBase):
     """The global reservations tab hits the same address-less crash as the per-server tab (#110)."""
 
     def _url(self, version=4):
-        return reverse(f"plugins:netbox_kea:combined_reservations{version}") + f"?server={self.server.pk}"
+        return reverse(f"plugins:netbox_kea:combined_reservations{version}")
 
     def test_v4_identifier_only_reservation_renders(self):
         page = _res_page([{"subnet-id": 3742, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer-1"}])
@@ -299,8 +847,8 @@ class TestCombinedReservationsShowWhatIsReserved(_ViewTestBase):
     """
 
     def _url(self, version=4, query=""):
-        base = reverse(f"plugins:netbox_kea:combined_reservations{version}") + f"?server={self.server.pk}"
-        return base + query
+        base = reverse(f"plugins:netbox_kea:combined_reservations{version}")
+        return base + (f"?{query.removeprefix('&')}" if query else "")
 
     def _stub(self, hosts, version=4):
         cidr = "198.18.0.0/24" if version == 4 else "2001:db8::/48"
@@ -406,7 +954,7 @@ class TestCombinedReservationFanOut(_ViewTestBase):
             "reservation-get-page": requests.ConnectionError,
             "list-commands": _reservation_mutation_commands(),
         }
-        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.server.pk}"
+        url = reverse("plugins:netbox_kea:combined_reservations4")
 
         with stub_kea(responses) as kea:
             response = self.client.get(url)
@@ -425,7 +973,7 @@ class TestCombinedReservationSyncControl(_ViewTestBase):
     """
 
     def _url(self, version=4):
-        return reverse(f"plugins:netbox_kea:combined_reservations{version}") + f"?server={self.server.pk}"
+        return reverse(f"plugins:netbox_kea:combined_reservations{version}")
 
     def test_unsynchronized_row_offers_the_sync_control(self):
         hosts = [{"subnet-id": 1, "hw-address": "aa:bb:cc:00:00:01", "ip-address": "198.18.0.10"}]
@@ -449,7 +997,9 @@ class TestCombinedReservationCursorPagination(_ViewTestBase):
     """The Next page link must carry the encoded per-server cursor, not just exist."""
 
     def _url(self, version=4, query=""):
-        return reverse(f"plugins:netbox_kea:combined_reservations{version}") + f"?server={self.server.pk}{query}"
+        return reverse(f"plugins:netbox_kea:combined_reservations{version}") + (
+            f"?{query.removeprefix('&')}" if query else ""
+        )
 
     #: Only a full page can carry a next cursor.
     PAGE_SIZE = _RESERVATION_PAGE_SIZE
@@ -646,7 +1196,7 @@ class TestReservationIdentifierColumns(_ViewTestBase):
         }
 
     def _table(self, version, hosts):
-        url = reverse(f"plugins:netbox_kea:combined_reservations{version}") + f"?server={self.server.pk}"
+        url = reverse(f"plugins:netbox_kea:combined_reservations{version}")
         with stub_kea(self._stub(hosts, version=version)):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)

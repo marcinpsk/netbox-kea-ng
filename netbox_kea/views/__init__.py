@@ -19,8 +19,11 @@ from . import (
     reservation_mutations,
     reservations,
     server,
+    server_scope,
+    server_switch,
     shared_networks,
     subnets,
     sync_jobs,
     sync_views,
+    workspace,
 )

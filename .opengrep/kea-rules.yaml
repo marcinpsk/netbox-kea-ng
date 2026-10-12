@@ -7,6 +7,17 @@
 #
 # Rule-test fixtures live in .opengrep/tests/; run them with scripts/opengrep-test.sh.
 rules:
+  - id: kea-row-return-url-empty-fallback
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Give row action return URLs the current request path as their fallback.
+      An empty fallback loses the list query after a mutation or cancellation.
+    paths:
+      exclude:
+        - "**/tests/**"
+    pattern: $ROW["return_url"] = _safe_return_url($REQUEST, "")
+
   - id: kea-queryset-model-attribute-discriminator
     languages: [python]
     severity: ERROR

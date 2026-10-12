@@ -157,13 +157,11 @@ class TestServerSubnets4View(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertIs(response.context["tab"], ServerDHCP4SubnetsView.tab)
 
-    def test_get_with_dhcp4_disabled_redirects_with_valid_pk(self):
+    def test_get_with_dhcp4_disabled_shows_protocol_not_enabled(self):
         v6_only = _make_db_server(name="v6-only-subnets", dhcp4=False, dhcp6=True)
         url = reverse("plugins:netbox_kea:server_subnets4", args=[v6_only.pk])
         response = self.client.get(url)
-        self.assertEqual(response.status_code, 302)
-        self._assert_no_none_pk_redirect(response)
-        self.assertIn(str(v6_only.pk), response.url)
+        self.assertContains(response, "Protocol not enabled")
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -213,9 +211,7 @@ class TestSubnetEnrichment(_ViewTestBase):
         }
         with stub_kea({**_ABSENT_READ_HOOKS, **responses}):
             tab_response = self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
-            combined_response = self.client.get(
-                reverse("plugins:netbox_kea:combined_subnets4"), {"server": self.server.pk}
-            )
+            combined_response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"))
 
         self.assertEqual(tab_response.status_code, 200)
         self.assertEqual(combined_response.status_code, 200)
@@ -327,6 +323,16 @@ class TestSubnetOptionsColumn(_ViewTestBase):
             {field: shown.data for field, shown in row["options"].items()},
             {field: initial[field] for field in ("gateway", "dns_servers", "ntp_servers")},
         )
+
+    def test_the_edit_form_help_renders_its_code_markup(self):
+        daemon = SubnetDaemon(4, [{"id": 42, "subnet": "192.0.2.0/24", "pools": [], "option-data": []}])
+        with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}):
+            response = self.client.get(reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42]))
+
+        content = response.content.decode()
+        self.assertIn("<code>10.0.0.100-10.0.0.200</code>", content)
+        self.assertIn("<code>routers</code>", content)
+        self.assertNotIn("&lt;code&gt;", content)
 
     def test_more_than_one_fitting_entry_shows_a_badge_and_no_value(self):
         content = self._page(
@@ -2760,7 +2766,7 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
     def _run(self, responses):
         """Render the combined Subnet table through its public HTTP view."""
         with stub_kea({**_ABSENT_READ_HOOKS, **responses}):
-            response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"), {"server": self.server.pk})
+            response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"))
         self.assertEqual(response.status_code, 200)
         return list(response.context["table"].data)
 

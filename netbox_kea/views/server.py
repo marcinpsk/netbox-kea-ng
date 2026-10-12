@@ -6,10 +6,12 @@ from typing import Any
 
 import requests
 from django.http.request import HttpRequest
+from django.shortcuts import redirect
+from django.template.loader import render_to_string
 from django.urls import reverse
 from netbox.views import generic
 from utilities.exceptions import PermissionsViolation
-from utilities.views import ViewTab, register_model_view
+from utilities.views import register_model_view
 
 from .. import forms, server_configuration, tables
 from ..constants import Family
@@ -21,7 +23,9 @@ from ..server_connection import connection_values, validate_connection_change
 from ..utilities import (
     format_duration,
 )
-from .notices import Notice, notice, show_notices
+from ._base import _safe_return_url
+from .notices import Notice, inline_notices, notice
+from .workspace import ServerFamilyMixin, server_context, with_return_url
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +59,11 @@ class GlobalOptionRow:
     option: DHCPOption
 
 
-def _get_global_options(request: HttpRequest, server: "Server") -> dict[str, list[GlobalOptionRow]]:
+def _get_global_options(server: Server) -> tuple[dict[str, list[GlobalOptionRow]], list[Notice | None]]:
     """Return one row per server-global DHCP Option entry for each enabled DHCP version that has entries.
 
-    A failed read is logged and skipped, so the status page always renders. The snapshot diagnostics go to the
-    request as messages.
+    A failed read is logged and skipped, so the status partial always renders. It shows the Snapshot diagnostics
+    through the inline notice channel.
     """
     families: dict[str, Family] = {}
     if server.dhcp4:
@@ -82,12 +86,11 @@ def _get_global_options(request: HttpRequest, server: "Server") -> dict[str, lis
             result[label] = [
                 GlobalOptionRow(option_name(option, version), option) for option in snapshot.global_options
             ]
-    show_notices(request, *notices)
-    return result
+    return result, notices
 
 
 @register_model_view(Server)
-class ServerView(generic.ObjectView):
+class ServerView(ServerFamilyMixin, generic.ObjectView):
     """Detail view for a single Kea Server."""
 
     queryset = Server.objects.all()
@@ -98,6 +101,7 @@ class ServerEditView(generic.ObjectEditView):
     """Create/edit view for a Kea Server."""
 
     queryset = Server.objects.all()
+    template_name = "netbox_kea/server_edit.html"
     form = forms.ServerForm
 
 
@@ -105,7 +109,29 @@ class ServerEditView(generic.ObjectEditView):
 class ServerDeleteView(generic.ObjectDeleteView):
     """Delete confirmation view for a Kea Server."""
 
+    template_name = "netbox_kea/server_delete.html"
+
     queryset = Server.objects.all()
+
+    def get(self, request, *args, **kwargs):
+        """Keep the scope inside the native modal's selected deletion form."""
+        response = super().get(request, *args, **kwargs)
+        if request.headers.get("HX-Request") != "true" or response.status_code != 200:
+            return response
+        content = response.content.decode(response.charset)
+        form_start = content.find("<form ")
+        if form_start < 0:
+            return response
+        obj = self.get_object(**kwargs)
+        context = server_context(request, obj)
+        context["workspace_shell_id"] = "kea-modal-workspace-shell"
+        shell = render_to_string("netbox_kea/inc/workspace_shell.html", context, request=request)
+        form_end = content.index(">", form_start) + 1
+        content = content[:form_end] + shell + content[form_end:]
+        url = reverse("plugins:netbox_kea:server_delete", args=[obj.pk])
+        family = context["workspace_family"]
+        response.content = content.replace(f'action="{url}"', f'action="{url}?family={family}"')
+        return response
 
 
 class ServerListView(generic.ObjectListView):
@@ -153,15 +179,22 @@ class ServerBulkImportView(generic.BulkImportView):
     table = tables.ServerTable
 
 
-_STATUS_TAB = ViewTab(label="Status", weight=1000)
-
-
 @register_model_view(Server, "status")
+class ServerStatusRedirectView(generic.ObjectView):
+    """Send the former Status entry point to the Server Overview."""
+
+    queryset = Server.objects.all()
+
+    def get(self, request: HttpRequest, **kwargs):
+        """Preserve native view permission checks before redirecting."""
+        return redirect(self.get_object(**kwargs).get_absolute_url())
+
+
+@register_model_view(Server, "status_data")
 class ServerStatusView(generic.ObjectView):
     """Server status tab: shows daemon uptime, versions and HA state."""
 
     queryset = Server.objects.all()
-    tab = _STATUS_TAB
     template_name = "netbox_kea/server_status.html"
 
     def _get_ca_status(self, client: KeaClient) -> dict[str, Any]:
@@ -285,11 +318,12 @@ class ServerStatusView(generic.ObjectView):
         # Build the services list from the configured service URLs (config-driven),
         # not from live status data. This ensures enable/disable buttons always render
         # even when the status fetch fails.
+        return_url = _safe_return_url(request, "")
         services = [
             {
                 "name": name,
                 "status_data": statuses.get(name, {}),
-                **urls,
+                **{key: with_return_url(url, return_url) for key, url in urls.items()},
             }
             for name, urls in service_urls.items()
         ]
@@ -297,9 +331,11 @@ class ServerStatusView(generic.ObjectView):
         if instance.has_control_agent:
             services.insert(0, {"name": "Control Agent", "status_data": statuses.get("Control Agent", {})})
 
+        global_options, notices = _get_global_options(instance)
         can_change = Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists()
         return {
             "services": services,
-            "global_options": _get_global_options(request, instance),
+            "global_options": global_options,
+            "inline_notices": inline_notices(*notices),
             "can_change_server": can_change,
         }

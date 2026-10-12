@@ -1,9 +1,10 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
-{% extends "generic/object.html" %}
+{% extends "netbox_kea/server_workspace.html" %}
 {% load helpers %}
 
 {% block content %}
+{% include "netbox_kea/inc/sync_nav.html" %}
 <div class="row">
   <div class="col-md-12">
 
@@ -27,55 +28,59 @@
             subnets, pools, reservations, supported settings, client classes, and DHCP options.
             The import reads Kea without changing it. You can run the import more than once.
           </p>
-          <div class="d-flex align-items-center gap-2 mb-2">
-            <i class="mdi mdi-information-outline" aria-hidden="true"></i>
-            <h6 class="mb-0">Import mapping notes</h6>
-          </div>
-          <div class="row row-cols-1 row-cols-lg-3 g-2 mb-3">
-            <div class="col">
-              <div class="card h-100 border-warning">
-                <div class="card-body p-3">
-                  <h6 class="card-title d-flex align-items-center gap-2">
-                    <span class="badge text-bg-warning">1</span>
-                    Shared Network grouping
-                  </h6>
-                  <p class="card-text small mb-0">
-                    Kea <strong>shared-networks</strong> define a DHCP link and subnet-selection domain.
-                    They do not map to the DHCP plugin's <em>Shared Networks</em>. The DHCP plugin's
-                    Shared Networks require an aggregate Prefix. Member Subnets are imported individually
-                    and remain attached directly to the DHCP Server.
-                  </p>
+          <h6 class="mb-2">
+            <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse"
+                    data-bs-target="#import-mapping-notes" aria-expanded="false" aria-controls="import-mapping-notes">
+              <i class="mdi mdi-information-outline" aria-hidden="true"></i> Import mapping notes
+            </button>
+          </h6>
+          <div class="collapse" id="import-mapping-notes">
+            <div class="row row-cols-1 row-cols-lg-3 g-2 mb-3">
+              <div class="col">
+                <div class="card h-100 border-warning">
+                  <div class="card-body p-3">
+                    <h6 class="card-title d-flex align-items-center gap-2">
+                      <span class="badge text-bg-warning">1</span>
+                      Shared Network grouping
+                    </h6>
+                    <p class="card-text small mb-0">
+                      Kea <strong>shared-networks</strong> define a DHCP link and subnet-selection domain.
+                      They do not map to the DHCP plugin's <em>Shared Networks</em>. The DHCP plugin's
+                      Shared Networks require an aggregate Prefix. Member Subnets are imported individually
+                      and remain attached directly to the DHCP Server.
+                    </p>
+                  </div>
                 </div>
               </div>
-            </div>
-            <div class="col">
-              <div class="card h-100 border-warning">
-                <div class="card-body p-3">
-                  <h6 class="card-title d-flex align-items-center gap-2">
-                    <span class="badge text-bg-warning">2</span>
-                    Direct-interface mapping
-                  </h6>
-                  <p class="card-text small mb-0">
-                    A direct-interface selector has a partial representation. When it resolves to a
-                    NetBox device or virtual-machine interface, <code>DHCPServerInterface</code> can
-                    represent that server attachment. It does not preserve Shared Network identity,
-                    membership, relay selection, inherited settings or options, or allocation behavior.
-                    NetBox Kea remains the authority for those facts.
-                  </p>
+              <div class="col">
+                <div class="card h-100 border-warning">
+                  <div class="card-body p-3">
+                    <h6 class="card-title d-flex align-items-center gap-2">
+                      <span class="badge text-bg-warning">2</span>
+                      Direct-interface mapping
+                    </h6>
+                    <p class="card-text small mb-0">
+                      A direct-interface selector has a partial representation. When it resolves to a
+                      NetBox device or virtual-machine interface, <code>DHCPServerInterface</code> can
+                      represent that server attachment. It does not preserve Shared Network identity,
+                      membership, relay selection, inherited settings or options, or allocation behavior.
+                      NetBox Kea remains the authority for those facts.
+                    </p>
+                  </div>
                 </div>
               </div>
-            </div>
-            <div class="col">
-              <div class="card h-100 border-warning">
-                <div class="card-body p-3">
-                  <h6 class="card-title d-flex align-items-center gap-2">
-                    <span class="badge text-bg-warning">3</span>
-                    DHCP option mapping
-                  </h6>
-                  <p class="card-text small mb-0">
-                    DHCP options are imported at supported scopes when the import can resolve a matching
-                    standard or custom Option Definition. Unsupported options are skipped and reported.
-                  </p>
+              <div class="col">
+                <div class="card h-100 border-warning">
+                  <div class="card-body p-3">
+                    <h6 class="card-title d-flex align-items-center gap-2">
+                      <span class="badge text-bg-warning">3</span>
+                      DHCP option mapping
+                    </h6>
+                    <p class="card-text small mb-0">
+                      DHCP options are imported at supported scopes when the import can resolve a matching
+                      standard or custom Option Definition. Unsupported options are skipped and reported.
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>

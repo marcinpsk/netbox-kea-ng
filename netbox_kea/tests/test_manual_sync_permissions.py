@@ -239,13 +239,13 @@ class TestLeaseAddSync(_PermissionTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertRegex(response.content.decode(), r'<input[^>]*name="sync_to_netbox"[^>]*disabled')
         self.assertContains(response, _reason(_ADDRESS_WRITES))
-        self.assertNotContains(response, "checkbox below")
+        self.assertNotContains(response, "Select this to create or update")
 
     def test_an_unconstrained_user_is_offered_the_checkbox(self):
         self._grant_address_writes(user=self.user)
         response = self.client.get(self._url())
         self.assertNotRegex(response.content.decode(), r'<input[^>]*name="sync_to_netbox"[^>]*disabled')
-        self.assertContains(response, "checkbox below")
+        self.assertContains(response, "Select this to create or update")
 
     def test_a_constrained_user_creates_the_lease_without_a_sync(self):
         self._grant_address_writes(user=self.user, constraints=_CONSTRAINT)
@@ -336,7 +336,7 @@ class TestReservationSyncControls(_PermissionTestBase):
 
     def test_the_combined_tab_shows_a_disabled_sync_with_the_reason(self):
         self._grant_address_writes(user=self.user, constraints=_CONSTRAINT)
-        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.server.pk}"
+        url = reverse("plugins:netbox_kea:combined_reservations4")
         with stub_kea(self._responses()):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -367,7 +367,7 @@ class TestReservationAddSync(_PermissionTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertRegex(response.content.decode(), r'<input[^>]*name="sync_to_netbox"[^>]*disabled')
         self.assertContains(response, _reason(_ADDRESS_WRITES))
-        self.assertNotContains(response, "checkbox below")
+        self.assertNotContains(response, "Select this to create or update")
 
     def test_a_constrained_user_creates_the_reservation_without_a_sync(self):
         self._grant_address_writes(user=self.user, constraints=_CONSTRAINT)

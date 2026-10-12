@@ -54,6 +54,7 @@ from ._base import ConditionalLoginRequiredMixin, _client_settings_error, _KeaCh
 from .leases import _LEASES_TAB, _add_lease_journal, lease_sync_gates
 from .reservation_mutations import _confirmed_side_effects, _identity_from_request, _reservation_target_scope
 from .reservations import _RESERVATIONS_TAB
+from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +65,21 @@ def _row_error(request: HttpRequest, message: str) -> HttpResponse:
     return render(request, "netbox_kea/inc/row_action_error.html", {"message": message})
 
 
-class _BaseSyncView(ConditionalLoginRequiredMixin, View):
+class _BaseSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Claim one fresh Current Lease: an address as an IP Address, a delegated prefix as a Prefix."""
 
+    workspace_section = "leases"
+
     dhcp_version: Family
+
+    def server_scope_access(self, request: HttpRequest) -> HttpResponse | None:
+        """Preserve the manual claim permission of the selected Lease allocation kind."""
+        try:
+            _, identity = parse_selection(self.dhcp_version, request.POST.get("ip_address", "").strip())
+        except ValueError:
+            return None
+        gate = lease_sync_gates(request.user)[identity.kind]
+        return None if gate.allowed else _row_error(request, gate.reason)
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         selected = request.POST.get("ip_address", "").strip()
@@ -144,10 +156,17 @@ class ServerLease6SyncView(_BaseSyncView):
     dhcp_version: Family = 6
 
 
-class _BaseReservationSyncView(ConditionalLoginRequiredMixin, View):
+class _BaseReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Synchronize one exact typed Reservation and all its allocation addresses."""
 
+    workspace_section = "reservations"
+
     dhcp_version: Family
+
+    def server_scope_access(self, request: HttpRequest) -> HttpResponse | None:
+        """Preserve manual Reservation claim permissions before the Server lookup."""
+        gate = sync_gate(request.user, claim_permissions(RESERVATION))
+        return None if gate.allowed else _row_error(request, gate.reason)
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         gate = sync_gate(request.user, claim_permissions(RESERVATION))
@@ -204,16 +223,22 @@ class ServerReservation6SyncView(_BaseReservationSyncView):
     dhcp_version = 6
 
 
-class _BaseBulkReservationSyncView(ConditionalLoginRequiredMixin, View):
+class _BaseBulkReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Fetch one full typed Snapshot and synchronize every valid Reservation."""
+
+    workspace_section = "reservations"
 
     dhcp_version: Family = 4  # overridden in subclasses
 
+    def disabled_family_access(self, request: HttpRequest, server: Server) -> HttpResponse | None:
+        """Preserve all manual reconciliation permissions on a disabled family."""
+        gate = sync_gate(request.user, reconcile_permissions(server, ReservationPhase.source))
+        return None if gate.allowed else HttpResponseForbidden(gate.reason)
+
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        gate = sync_gate(request.user, reconcile_permissions(server, ReservationPhase.source))
-        if not gate.allowed:
-            return HttpResponseForbidden(gate.reason)
+        if refusal := self.disabled_family_access(request, server):
+            return refusal
 
         catalogue = None
         try:
@@ -313,8 +338,10 @@ class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class _BaseBulkReservationImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Validate one document, then create typed Reservations until the first failure."""
+
+    workspace_section = "reservations"
 
     dhcp_version: Family
     form_class: type
@@ -496,13 +523,15 @@ class ServerReservation6BulkImportView(_BaseBulkReservationImportView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class _BaseBulkLeaseImportView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+class _BaseBulkLeaseImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Upload a CSV file and create one Lease for each row via ``lease_add``.
 
     **GET**: render the upload form.
     **POST**: parse each row into a typed creation request → loop :meth:`KeaClient.lease_add` → show summary.
     A row that is not a valid request rejects the whole file before Kea sees any row.
     """
+
+    workspace_section = "leases"
 
     dhcp_version: Family
     form_class: type

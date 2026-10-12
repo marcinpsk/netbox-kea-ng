@@ -1,7 +1,7 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-FileCopyrightText: 2026 Andrew Backeby <andrew@backeby.eu> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
-{% extends "generic/object.html" %}
+{% extends "netbox_kea/server_workspace.html" %}
 {% load form_helpers %}
 {% load kea_options %}
 
@@ -24,57 +24,14 @@
             Existing Reservations remain available in the read-only list.
           </div>
         </div>
-        {% elif reservation_capabilities.unavailable_identifiers %}
-        <div class="alert alert-secondary d-flex align-items-start mb-3" role="status">
-          <i class="mdi mdi-information-outline me-2 mt-1" aria-hidden="true"></i>
-          <div>
-            The identifier list reflects the live <code>host-reservation-identifiers</code> configuration.
-            Unavailable identifiers are disabled.
-          </div>
-        </div>
         {% endif %}
-        <div class="alert alert-info d-flex align-items-start mb-3" role="note">
-          <i class="mdi mdi-help-circle-outline me-2 mt-1" aria-hidden="true"></i>
-          <div>
-            <p class="mb-1">Relay remote ID is not a native Reservation Identity.</p>
-            Configure Kea to derive <code>flex-id</code> from relay remote ID instead.
-            See
-            <a href="{{ flex_id_documentation_url }}" target="_blank" rel="noopener">
-              Flexible Identifiers for Host Reservations
-            </a>.
-          </div>
-        </div>
         {% if not subnet_cmds_available %}
         <div class="alert alert-warning d-flex align-items-start mb-3" role="alert">
           <i class="mdi mdi-alert-circle-outline me-2 mt-1" aria-hidden="true"></i>
           <div>
             <strong>The <code>subnet_cmds</code> hook library is not loaded on this Kea server.</strong>
-            Subnet suggestions come from the running configuration.
+            The subnet list comes from the running configuration.
             Saving an in-Subnet Reservation requires this hook to verify Subnet identity.
-          </div>
-        </div>
-        {% endif %}
-        {# Both banners promise an IPAM record, which only holds for a reservation that #}
-        {# actually reserves an address. Identifier-only and prefix-only hosts have none. #}
-        {% if object.sync_enabled and object.sync_reservations_enabled %}
-        <div class="alert alert-info d-flex align-items-start mb-3" role="alert">
-          <i class="mdi mdi-sync me-2 mt-1" aria-hidden="true"></i>
-          <div>
-            <strong>Automatic IPAM sync is enabled for this server.</strong>
-            A reservation with a fixed IP address will be synced to NetBox IPAM on the next
-            scheduled sync run (not instantly).
-            {% if not form.sync_to_netbox.field.widget.attrs.disabled %}You can also use the checkbox below to sync immediately.{% endif %}
-            Reservations that reserve no address are skipped — there is nothing
-            to record in IPAM.
-          </div>
-        </div>
-        {% else %}
-        <div class="alert alert-secondary d-flex align-items-start mb-3" role="alert">
-          <i class="mdi mdi-sync-off me-2 mt-1" aria-hidden="true"></i>
-          <div>
-            <strong>Automatic IPAM sync is disabled for this server.</strong>
-            {% if not form.sync_to_netbox.field.widget.attrs.disabled %}Use the checkbox below to sync this reservation to NetBox IPAM immediately.{% endif %}
-            A reservation that reserves no address has nothing to sync.
           </div>
         </div>
         {% endif %}
@@ -94,16 +51,6 @@
           </div>
           {% endif %}
           {% endfor %}
-          {% if subnet_choices %}
-          {# Suggests the server's configured subnets on the Subnet CIDR field. Free typing #}
-          {# stays allowed: a datalist only suggests, it never constrains. #}
-          <datalist id="{{ subnet_datalist_id }}">
-            {% for cidr, sid in subnet_choices %}
-            <option value="{{ cidr }}">id {{ sid }}</option>
-            {% endfor %}
-          </datalist>
-          {% endif %}
-
           {# Advisory NetBox IPAM conflict check (Add mode only) — populated on IP blur. #}
           <div id="netbox-ip-check"></div>
 

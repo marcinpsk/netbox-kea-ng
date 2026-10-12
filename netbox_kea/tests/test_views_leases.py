@@ -33,6 +33,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import requests
+from bs4 import BeautifulSoup
 from django.contrib.messages import get_messages
 from django.test import SimpleTestCase, override_settings
 from django.urls import reverse
@@ -164,18 +165,14 @@ class TestServerLeases4View(_ViewTestBase):
             with self.subTest(name):
                 self.assertContains(response, f'href="{reverse(f"plugins:netbox_kea:{name}", args=[self.server.pk])}"')
 
-    def test_get_with_dhcp4_disabled_redirects_to_server_with_valid_pk(self):
-        """When DHCPv4 is disabled the view must redirect to the server detail page.
-
-        The redirect URL must contain an integer pk — this is the pattern that
-        would fail with servers/None if the instance had pk=None.
-        """
+    def test_get_with_dhcp4_disabled_shows_protocol_not_enabled(self):
+        """A disabled DHCPv4 family shows the protocol-disabled state without a Kea read."""
         v6_only = _make_db_server(name="v6-only", dhcp4=False, dhcp6=True)
         url = reverse("plugins:netbox_kea:server_leases4", args=[v6_only.pk])
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, 302)
-        self._assert_no_none_pk_redirect(response)
-        self.assertIn(str(v6_only.pk), response.url)
+        with stub_kea({}) as kea:
+            response = self.client.get(url)
+        self.assertContains(response, "Protocol not enabled")
+        self.assertEqual(kea.commands(), [])
 
     def test_get_nonexistent_returns_404(self):
         url = reverse("plugins:netbox_kea:server_leases4", args=[99999])
@@ -192,13 +189,13 @@ class TestServerLeases6View(_ViewTestBase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
-    def test_get_with_dhcp6_disabled_redirects_to_server_with_valid_pk(self):
+    def test_get_with_dhcp6_disabled_shows_protocol_not_enabled(self):
         v4_only = _make_db_server(name="v4-only", dhcp4=True, dhcp6=False)
         url = reverse("plugins:netbox_kea:server_leases6", args=[v4_only.pk])
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, 302)
-        self._assert_no_none_pk_redirect(response)
-        self.assertIn(str(v4_only.pk), response.url)
+        with stub_kea({}) as kea:
+            response = self.client.get(url)
+        self.assertContains(response, "Protocol not enabled")
+        self.assertEqual(kea.commands(), [])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -356,8 +353,8 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
             response = self._htmx_get(url, {"by": "ip", "q": "192.168.1.100"})
 
         self.assertEqual(response.status_code, 200)
-        # HX-Push-Url is set only on the success render path, and the lease row must
-        # appear — together these prove the table rendered, not the exception partial.
+        # A user search pushes its URL, and the lease row must
+        # appear. Together, these prove the table rendered instead of the exception partial.
         self.assertIn("HX-Push-Url", response.headers)
         self.assertContains(response, "192.168.1.100")
         # The column header says "Reserved" — check no badge link is rendered
@@ -1167,8 +1164,8 @@ class TestDelegatedPrefixSyncBadges(_ViewTestBase):
         )
         self.assertIsNone(rows["delegated-prefix"].get("netbox_prefix_url"))
         posted = self._sync_values(response)
-        # The search container pushes its URL, so the Sync button opts out.
-        self.assertEqual(response.content.decode().count('hx-push-url="false"'), 2)
+        # The search container pushes its URL, so each Sync button and the Attribute control opt out.
+        self.assertEqual(response.content.decode().count('hx-push-url="false"'), 3)
         self.assertEqual([values["ip_address"] for values in posted], ["2001:db8:1::10", _PD_LABEL])
         # The button posts what the Sync view reads, end to end.
         with stub_kea(self._responses()):
@@ -2101,6 +2098,23 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("sync_to_netbox", response.content.decode())
 
+    def test_the_automatic_ipam_sync_state_is_checkbox_help_not_an_alert(self):
+        for version in (4, 6):
+            for enabled in (True, False):
+                with self.subTest(version=version, enabled=enabled):
+                    self.server.sync_enabled = enabled
+                    self.server.sync_leases_enabled = True
+                    self.server.save()
+                    response = self.client.get(self._url(version=version))
+                    page = BeautifulSoup(response.content, "html.parser")
+                    self.assertNotIn("Automatic IPAM sync", " ".join(a.get_text() for a in page.select(".alert")))
+                    help_text = page.select_one("#id_sync_to_netbox_helptext")
+                    state = "enabled" if enabled else "disabled"
+                    self.assertIn(f"Automatic IPAM sync is {state} for this Server.", help_text.get_text())
+                    tip = help_text.select_one("button")
+                    self.assertEqual(tip["data-bs-toggle"], "tooltip")
+                    self.assertEqual("The next scheduled sync run records this lease." in tip["data-bs-title"], enabled)
+
     def test_post_lease4_add_with_sync_links_the_created_ip(self):
         from netbox_kea.models import IPAMOwnershipLink
 
@@ -2939,35 +2953,6 @@ class TestFetchLeaseSearch(_ViewTestBase):
         )
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestFetchEveryLease(_ViewTestBase):
-    """The Lease fetch of every Lease reads every page through KeaClient.lease_get_all, up to its cap."""
-
-    def _run(self, page, max_leases=1000):
-        with _lease_stub({"lease4-get-page": page}):
-            return fetch(self.server, 4, LeaseSearch(max_leases=max_leases))
-
-    def test_an_empty_daemon_is_exhaustive(self):
-        snapshot = self._run({"result": 3, "arguments": None})
-        self.assertEqual((snapshot.records, snapshot.coverage), ((), "exhaustive"))
-
-    def test_null_args_is_an_unavailable_notice(self):
-        """Null arguments from lease-get-page fail the read."""
-        loaded = self._run({"result": 0, "arguments": None})
-        self.assertIsInstance(loaded, Notice)
-        self.assertTrue(loaded.unavailable)
-
-    def test_reaching_the_cap_before_the_end_is_page_coverage(self):
-        records = [lease_record("10.0.0.1"), lease_record("10.0.0.2")]
-        snapshot = self._run(lease_pages(records), max_leases=1)
-        self.assertEqual((len(snapshot.records), snapshot.coverage), (1, "page"))
-
-    def test_pages_continue_until_a_short_page(self):
-        records = [lease_record(f"10.0.{index // 256}.{index % 256}") for index in range(1, 252)]
-        snapshot = self._run(lease_pages(records))
-        self.assertEqual((len(snapshot.records), snapshot.coverage), (251, "exhaustive"))
-
-
 # ---------------------------------------------------------------------------
 # Lease CSV bulk import — form invalid, parse error, generic exception
 # ---------------------------------------------------------------------------
@@ -3244,25 +3229,6 @@ class TestFetchOneEmptyLease(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(_lease_lines(response))
         self.assertNotIn("reservation-get", kea.commands())
-
-
-# ---------------------------------------------------------------------------
-# Combined leases view — truncated server
-# ---------------------------------------------------------------------------
-
-
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestCombinedLeasesTruncated(_ViewTestBase):
-    """A server with more leases than the combined cap is named as truncated."""
-
-    def test_truncated_server_name_in_context(self):
-        records = [lease_record(f"10.0.{index // 256}.{index % 256}") for index in range(1, 1002)]
-        url = reverse("plugins:netbox_kea:combined_leases4") + f"?state=0&server={self.server.pk}"
-        with _lease_stub({"lease4-get-page": lease_pages(records)}):
-            response = self.client.get(url)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["truncated_servers"], [self.server.name])
-        self.assertEqual(len(response.context["table"].data), 1000)
 
 
 # ---------------------------------------------------------------------------
@@ -4274,62 +4240,119 @@ class TestGetLeasesPageGlobalEdgeCases(_ViewTestBase):
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestLeaseSearchSubnetCombobox(_ViewTestBase):
-    """Lease search form renders an editable Subnet/Subnet-ID combobox on the Search field.
+class TestLeaseSearchSubnetDropdown(_ViewTestBase):
+    """For the Subnet and Subnet ID Attributes the Search value is a dropdown of the Server's Subnets."""
 
-    There is no separate subnet selector — the attribute selector drives which
-    (if any) datalist the Search field is associated with.
-    """
+    _LISTING = _subnet_list(4, [{"id": 3, "subnet": "10.0.2.0/24"}, {"id": 2, "subnet": "10.0.1.0/24"}])
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    def test_datalists_and_toggle_script_rendered(self):
-        listing = _subnet_list(4, [{"id": 2, "subnet": "10.0.1.0/24"}, {"id": 3, "subnet": "10.0.2.0/24"}])
-        with _lease_stub({"subnet4-list": listing}):
-            body = self.client.get(self._url()).content.decode()
-        # Both comboboxes present with the right values.
-        self.assertIn('id="kea-lease-subnet-cidrs"', body)
-        self.assertIn('id="kea-lease-subnet-ids"', body)
-        self.assertIn('value="10.0.1.0/24"', body)  # CIDR option (by=subnet)
-        self.assertIn('value="2"', body)  # subnet-id option (by=subnet_id)
-        # The toggle script wires the Search field (q) to the attribute selector (by).
-        self.assertIn("syncSubnetCombobox", body)
-        self.assertIn('getElementById("id_by")', body)
+    def _search_value(self, response):
+        return BeautifulSoup(response.content, "html.parser").select_one("#lease-search-value")
 
-    def test_suggestions_come_from_the_catalogue(self):
-        """The lease and reservation datalists must describe the same set of subnets."""
-        listing = _subnet_list(4, [{"id": 2, "subnet": "10.0.1.0/24"}])
-        with _lease_stub({"subnet4-list": listing}) as kea:
-            body = self.client.get(self._url()).content.decode()
-        self.assertIn('value="10.0.1.0/24"', body)
-        self.assertIn("config-get", kea.commands())
+    @staticmethod
+    def _options(control) -> list[tuple[str, str, bool]]:
+        return [(o["value"], o.get_text(), o.has_attr("selected")) for o in control.select("#id_q option")]
 
-    def test_no_separate_subnet_select_field(self):
-        listing = _subnet_list(4, [{"id": 2, "subnet": "10.0.1.0/24"}])
-        with _lease_stub({"subnet4-list": listing}):
-            body = self.client.get(self._url()).content.decode()
-        # The old standalone subnet quick-select is gone.
-        self.assertNotIn('name="subnet"', body)
-        self.assertNotIn("Select a subnet", body)
+    def test_each_subnet_attribute_offers_the_subnets_with_cidr_and_id_labels(self):
+        for by, values in (("subnet", ["10.0.1.0/24", "10.0.2.0/24"]), ("subnet_id", ["2", "3"])):
+            with self.subTest(by=by), _lease_stub({"subnet4-list": self._LISTING}):
+                control = self._search_value(self.client.get(self._url(), {"by": by, "q": values[1]}))
+            self.assertEqual(
+                self._options(control),
+                [
+                    ("", "---------", False),
+                    (values[0], "10.0.1.0/24 (ID 2)", False),
+                    (values[1], "10.0.2.0/24 (ID 3)", True),
+                ],
+            )
+            self.assertEqual(control.select("datalist"), [])
 
-    def test_no_datalists_when_no_subnets(self):
+    def test_other_attributes_keep_the_text_input(self):
+        with _lease_stub({"subnet4-list": self._LISTING}):
+            response = self.client.get(self._url(), {"by": "hostname", "q": "printer"})
+        control = self._search_value(response)
+        self.assertEqual(control.select_one("#id_q").name, "input")
+        self.assertEqual(control.select_one("#id_q")["value"], "printer")
+        self.assertNotContains(response, "<datalist")
+        self.assertNotContains(response, "<script>")
+
+    def test_a_value_that_the_catalogue_does_not_list_stays_selected_and_searches(self):
+        empty = {"result": 3, "arguments": {"leases": []}}
+        with _lease_stub({"subnet4-list": self._LISTING, "lease4-get-all": empty}) as kea:
+            response = self.client.get(self._url(), {"by": "subnet_id", "q": "9"}, HTTP_HX_REQUEST="true")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(("9", "9 (not listed)", True), self._options(self._search_value(response)))
+        # The form is valid, so the Subnet read reaches Kea.
+        self.assertIn("lease4-get-all", kea.commands())
+
+    def test_without_catalogue_subnets_the_search_value_stays_a_text_input(self):
         with _lease_stub({"subnet4-list": {"result": 3, "text": "no subnets"}}):
-            body = self.client.get(self._url()).content.decode()
-        self.assertNotIn("kea-lease-subnet-cidrs", body)
-        self.assertNotIn("syncSubnetCombobox", body)
-        # An empty subnet list is not a missing hook — no warning.
-        self.assertNotIn("hook library is not loaded", body)
+            response = self.client.get(self._url(), {"by": "subnet_id", "q": "4"})
+        control = self._search_value(response).select_one("#id_q")
+        self.assertEqual((control.name, control["value"]), ("input", "4"))
+        # An empty subnet list is not a missing hook: no warning.
+        self.assertNotContains(response, "hook library is not loaded")
 
-    def test_missing_hook_explains_why_suggestions_are_gone(self):
+    def test_the_attribute_control_requests_its_value_control_with_htmx(self):
+        with _lease_stub({"subnet4-list": self._LISTING}):
+            response = self.client.get(self._url())
+        by = BeautifulSoup(response.content, "html.parser").select_one("#id_by")
+        self.assertEqual(
+            {
+                name: by[name]
+                for name in ("hx-get", "hx-trigger", "hx-include", "hx-target", "hx-push-url", "hx-disabled-elt")
+            },
+            {
+                "hx-get": "?value_control=1",
+                "hx-trigger": "change",
+                "hx-include": "#id_q",
+                "hx-target": "#lease-search-value",
+                "hx-push-url": "false",
+                # The request disables the value control, so no input is typed into a control that it replaces.
+                "hx-disabled-elt": "#lease-search-value, #lease-search-btn",
+            },
+        )
+        value_control = BeautifulSoup(response.content, "html.parser").select_one("#lease-search-value")
+        self.assertEqual(value_control.name, "fieldset")
+        self.assertIsNotNone(value_control.select_one("#id_q"))
+
+    def test_value_control_swaps_the_search_value_for_the_selected_attribute(self):
+        cases = (
+            # A typed value carries over to another text Attribute.
+            ({"by": "hostname", "q": "printer"}, "input", "printer"),
+            # A dropdown keeps a listed value and drops a value of the previous Attribute.
+            ({"by": "subnet", "q": "10.0.1.0/24"}, "select", "10.0.1.0/24"),
+            ({"by": "subnet_id", "q": "10.0.1.0/24"}, "select", ""),
+            ({"by": "subnet_id", "q": "printer"}, "select", ""),
+        )
+        for query, element, selected in cases:
+            with self.subTest(query), _lease_stub({"subnet4-list": self._LISTING}) as kea:
+                response = self.client.get(self._url(), {"value_control": "1", **query}, HTTP_HX_REQUEST="true")
+            self.assertEqual(response.status_code, 200)
+            control = BeautifulSoup(response.content, "html.parser")
+            self.assertEqual(control.find(id=True)["id"], "lease-search-value")
+            self.assertEqual(control.find(id="lease-search-value").name, "fieldset")
+            q = control.select_one("#id_q")
+            self.assertEqual(q.name, element)
+            if element == "select":
+                chosen = q.select_one("option[selected]")
+                self.assertEqual(chosen["value"] if chosen else "", selected)
+                self.assertNotIn("(not listed)", response.content.decode())
+            else:
+                self.assertEqual(q["value"], selected)
+            # A control that the user has not submitted shows no validation error.
+            self.assertNotContains(response, "text-danger")
+            self.assertFalse([command for command in kea.commands() if command.startswith("lease")])
+
+    def test_missing_hook_explains_where_the_subnet_list_comes_from(self):
         """Without subnet_cmds the search still works, so say that rather than fail silently."""
         with _lease_stub({"subnet4-list": {"result": 2, "text": "unknown command 'subnet4-list'"}}):
             response = self.client.get(self._url())
-        body = response.content.decode()
         self.assertEqual(response.status_code, 200)
-        self.assertIn("subnet_cmds", body)
-        self.assertIn("hook library is not loaded", body)
-        self.assertNotIn("kea-lease-subnet-cidrs", body)
+        self.assertContains(response, "hook library is not loaded")
+        self.assertContains(response, "The subnet list comes from the running configuration.")
 
 
 class TestIdentityLookupMemoization(SimpleTestCase):

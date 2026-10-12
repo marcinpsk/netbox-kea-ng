@@ -6,11 +6,12 @@ from unittest.mock import patch
 from urllib.parse import urlencode
 
 import requests
+from bs4 import BeautifulSoup
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 from django.utils.html import escape
 
-from netbox_kea import server_configuration
+from netbox_kea import constants, server_configuration
 from netbox_kea.subnet_catalogue import display
 
 from .kea_stub import _res_get, _res_page, _reservation_mutation_commands, _subnet_list, queued, stub_kea
@@ -118,8 +119,9 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertContains(response, "hw-address")
         self.assertContains(response, "flex-id")
         self.assertNotContains(response, 'value="remote-id"')
-        self.assertContains(response, "relay remote ID")
-        self.assertContains(response, "Flexible Identifiers for Host Reservations")
+        help_text = BeautifulSoup(response.content, "html.parser").select_one("#id_identifier_type_helptext")
+        self.assertIn("For relay remote ID, configure Kea flex-id.", " ".join(help_text.get_text().split()))
+        self.assertEqual(help_text.a["href"], constants.FLEX_ID_DOCUMENTATION_URL)
 
     def test_capability_failure_leaves_the_add_form_visible_but_disables_save(self):
         responses = {
@@ -1630,3 +1632,48 @@ class TestMutationCapabilityGate(_ViewTestBase):
 
         self.assertNotIn("reservation-del", kea.commands())
         self.assertContains(response, "Reservation mutation capabilities are unavailable.")
+
+
+class TestReservationFormFieldHelp(_ViewTestBase):
+    """The Reservation form explains identifiers and IPAM sync in field help, not in alert boxes."""
+
+    def _add_page(self, identifiers: list[str]) -> BeautifulSoup:
+        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        with stub_kea(_mutation_responses(4, 20, "198.18.0.0/24", identifiers)):
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        return BeautifulSoup(response.content, "html.parser")
+
+    def test_no_info_alerts_remain(self):
+        page = self._add_page(["hw-address"])
+        alerts = " ".join(alert.get_text() for alert in page.select(".alert"))
+        for text in ("Relay remote ID", "host-reservation-identifiers", "Automatic IPAM sync is"):
+            self.assertNotIn(text, alerts)
+        self.assertIn("Automatic IPAM sync is", page.select_one("#id_sync_to_netbox_helptext").get_text())
+        self.assertIn("host-reservation-identifiers", page.select_one("#id_identifier_type_helptext").get_text())
+
+    def test_unavailable_identifiers_add_a_keyboard_reachable_tooltip(self):
+        tip = self._add_page(["hw-address"]).select_one("#id_identifier_type_helptext button")
+        self.assertEqual(tip["type"], "button")
+        self.assertEqual(tip["data-bs-toggle"], "tooltip")
+        expected = "Disabled types are not in the live host-reservation-identifiers configuration."
+        self.assertEqual(tip["data-bs-title"], expected)
+        self.assertEqual(tip.select_one(".visually-hidden").get_text(), expected)
+
+    def test_all_identifiers_available_show_no_tooltip(self):
+        page = self._add_page(["hw-address", "duid", "circuit-id", "client-id", "flex-id"])
+        self.assertIsNone(page.select_one("#id_identifier_type_helptext button"))
+        self.assertIsNotNone(page.select_one("#id_identifier_type_helptext a"))
+
+    def test_sync_help_states_whether_automatic_ipam_sync_is_on(self):
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                self.server.sync_enabled = enabled
+                self.server.sync_reservations_enabled = True
+                self.server.save()
+                help_text = self._add_page(["hw-address"]).select_one("#id_sync_to_netbox_helptext")
+                state = "enabled" if enabled else "disabled"
+                self.assertIn(f"Automatic IPAM sync is {state} for this Server.", help_text.get_text())
+                tip = help_text.select_one("button")["data-bs-title"]
+                self.assertIn("A Reservation with no address is skipped.", tip)
+                self.assertEqual("The next scheduled sync run records a fixed address." in tip, enabled)

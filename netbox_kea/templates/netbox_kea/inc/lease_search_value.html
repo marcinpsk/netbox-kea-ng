@@ -1,0 +1,6 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% load form_helpers %}
+{# A change of Attribute swaps this block: a Subnet dropdown or a text input. #}
+{# A fieldset, so that disabling it during the swap request disables the control inside. #}
+<fieldset id="lease-search-value">{% render_field form.q %}</fieldset>

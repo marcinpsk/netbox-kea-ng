@@ -1,16 +1,16 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-FileCopyrightText: 2026 Andrew Backeby <andrew@backeby.eu> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
-{% extends "generic/object.html" %}
+{% extends "netbox_kea/server_workspace.html" %}
 
 {% block content %}
 {% include "netbox_kea/includes/persist_config_warning.html" %}
 <div class="row">
   <div class="col-md-8">
     <div class="card">
-      <h5 class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
         Edit DHCPv{{ dhcp_version }} Subnet
-        <span class="badge text-bg-secondary font-monospace">{{ subnet_cidr }}</span>
+        <span class="badge text-bg-secondary font-monospace text-wrap text-break text-start">{{ subnet_cidr }}</span>
       </h5>
       <div class="card-body">
         {% if subnet_cidr %}

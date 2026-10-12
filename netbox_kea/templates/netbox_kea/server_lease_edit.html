@@ -1,14 +1,14 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
-{% extends "generic/object.html" %}
+{% extends "netbox_kea/server_workspace.html" %}
 
 {% block content %}
 <div class="row">
   <div class="col-md-8">
     <div class="card">
-      <h5 class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
         Edit DHCPv{{ dhcp_version }} Lease
-        <span class="badge text-bg-secondary font-monospace">{{ lease_label }}</span>
+        <span class="badge text-bg-secondary font-monospace text-wrap text-break text-start">{{ lease_label }}</span>
       </h5>
       <div class="card-body">
         <p class="text-muted small mb-3">

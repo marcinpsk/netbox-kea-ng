@@ -42,12 +42,45 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 
 - Enable/disable DHCPv4 and DHCPv6 daemons from the NetBox UI
 
-**Global / Cross-Server Views**
+## Kea Workspace
 
-- Combined dashboard, lease, reservation, subnet and shared-network views across all servers
+Open **Kea Workspace** from the plugin menu. The scope bar shows the **Server Scope**: all permitted Servers or the selected
+Servers. It stays visible while scrolling. Use its DHCPv4/DHCPv6 switch to change the family and keep
+the Server selection and compatible filters. Selecting one Server opens its own workspace.
 
-![The combined view lists each Kea Server with its endpoint URLs and the online state of each DHCP daemon](assets/screenshots/combined-dashboard-light.png#only-light)
-![The combined view lists each Kea Server with its endpoint URLs and the online state of each DHCP daemon](assets/screenshots/combined-dashboard-dark.png#only-dark)
+The sections are Overview, Leases, Subnets, Reservations, Configuration, and Sync. Shared Networks
+is a subsection of Subnets. Leases and Configuration choose a Server for the selected family.
+Sync shows the latest recorded results for each Server in the scope. A sync run covers all enabled
+families on its Server. Unknown counts remain unknown.
+
+Open a combined Subnet, Shared Network or Reservation row to enter its owning Server.
+The Server page keeps a **Back to workspace** link to the same combined page and filters.
+Row actions open the owning Server's forms and return to that combined page after the change.
+
+The Servers inventory and global Sync Jobs page remain in the plugin menu.
+
+Use **Servers** in the scope bar to select several Servers, then select **Apply**.
+Use **Show all servers** to clear that selection. A selection of one Server opens its canonical workspace.
+An unknown or inaccessible selection shows an explicit error. It does not expand to all Servers.
+The selected DHCP family stays visible. A Server without that family shows **Protocol not enabled**.
+
+![The workspace shows two selected Servers and the Subnets section](assets/screenshots/workspace-selection-light.png#only-light)
+![The workspace shows two selected Servers and the Subnets section](assets/screenshots/workspace-selection-dark.png#only-dark)
+
+### Keyboard, narrow layouts and themes
+
+Use **Tab** and **Shift+Tab** to move through the scope bar, DHCP family switch and sections.
+The focused control has a visible outline or focus ring. Use **Enter** to open a section or a dropdown.
+In **Servers**, use **Space** to change a checkbox, then select **Apply**.
+Use **Escape** to close a dropdown and return focus to its button.
+
+The scope bar wraps on narrow screens. The section bar scrolls within the workspace.
+Moving keyboard focus to a section brings that section into view.
+The controls use the selected NetBox light or dark theme.
+See [Kea Servers](servers.md) for Server switching and the return to a previous workspace.
+
+![The workspace Overview lists each Kea Server with its endpoint URLs and daemon states](assets/screenshots/combined-dashboard-light.png#only-light)
+![The workspace Overview lists each Kea Server with its endpoint URLs and daemon states](assets/screenshots/combined-dashboard-dark.png#only-dark)
 
 ## License
 

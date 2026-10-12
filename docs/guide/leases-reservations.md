@@ -113,7 +113,8 @@ Integrations that read leases from the plugin must change with the typed lease r
 ## Host Reservations
 
 - Full CRUD for DHCPv4 and DHCPv6 reservations via [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-host-cmds) and [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-subnet-cmds) hooks
-- Identifier types: hw-address (v4), DUID (v6), client-id, flex-id, circuit-id, remote-id
+- Identifier types: hw-address, DUID and flex-id (DHCPv4 and DHCPv6), circuit-id and client-id (DHCPv4 only).
+  Relay remote ID is not an identifier type: configure Kea `flex-id` to derive one from it
 - Reservations that reserve no address — an identifier-only host (hostname, options or
   client classes only) and a DHCPv6 host that only delegates prefixes. Both are listed,
   created, edited and deleted by client identifier instead of by IP, and the IPAM sync

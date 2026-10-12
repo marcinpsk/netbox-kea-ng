@@ -32,7 +32,6 @@ from ..subnet_catalogue import (
 )
 from ..utilities import (
     OptionalViewTab,
-    check_dhcp_enabled,
     export_table,
     kea_error_hint,
 )
@@ -43,8 +42,10 @@ from ._base import (
     _enrich_subnet_statistics,
     _KeaChangeMixin,
     _run_config_change,
+    _safe_return_url,
 )
 from .notices import notice, show_notices
+from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +56,16 @@ _NO_SUBNET_CIDR = (
 # Single consolidated "Subnets" tab covering subnets AND shared networks for both
 # protocols. Owned by ServerDHCP4SubnetsView (the one class-level tab); the other
 # three list views (subnets6, shared_networks4/6) inject it via render context.
-# Two in-page toggles — section (Subnets | Shared Networks) and family (v4 | v6) —
-# switch between the four underlying URLs, which are all unchanged.
+# The subsection navigation selects Subnets or Shared Networks.
+# The workspace shell selects the DHCP family.
 _SUBNETS_TAB = OptionalViewTab(label="Subnets", weight=1020, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
 
 
 def subnets_nav_context(server_pk: int, section: str, dhcp_version: Family) -> dict[str, Any]:
-    """Build context for the Subnets/Shared-Networks section+family toggle nav.
+    """Build context for the Subnets and Shared Networks subsection navigation.
 
     ``section`` is ``"subnets"`` or ``"shared_networks"``. Returns the shared tab
-    plus the four URLs the toggles link to.
+    plus the URLs of the two subsections.
     """
     return {
         "tab": _SUBNETS_TAB,
@@ -72,13 +73,13 @@ def subnets_nav_context(server_pk: int, section: str, dhcp_version: Family) -> d
         "dhcp_version": dhcp_version,
         "nav_subnets_url": reverse(f"plugins:netbox_kea:server_subnets{dhcp_version}", args=[server_pk]),
         "nav_shared_url": reverse(f"plugins:netbox_kea:server_shared_networks{dhcp_version}", args=[server_pk]),
-        "nav_v4_url": reverse(f"plugins:netbox_kea:server_{section}4", args=[server_pk]),
-        "nav_v6_url": reverse(f"plugins:netbox_kea:server_{section}6", args=[server_pk]),
     }
 
 
-class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
+class BaseServerDHCPSubnetsView(ServerFamilyMixin, generic.ObjectChildrenView):
     """Base view for the subnet list tab; fetches subnet data from Kea config."""
+
+    workspace_section = "subnets"
 
     table = tables.SubnetTable
     queryset = Server.objects.all()
@@ -93,15 +94,14 @@ class BaseServerDHCPSubnetsView(generic.ObjectChildrenView):
         can_change = Server.objects.restrict(request.user, "change").filter(pk=parent.pk).exists()
         subnets: tuple[VerifiedSubnet | ConfiguredSubnet, ...] = (*snapshot.subnets, *snapshot.configured_subnets)
         rows = [_catalogue_subnet_row(subnet, parent, self.dhcp_version, can_change) for subnet in subnets]
+        for row in rows:
+            row["return_url"] = _safe_return_url(request, request.get_full_path())
         _enrich_subnet_statistics(rows, parent, self.dhcp_version)
         return rows
 
     def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
         """Handle GET: check DHCP enabled, then render table or export."""
         instance = self.get_object(**kwargs)
-        if resp := check_dhcp_enabled(instance, self.dhcp_version):
-            return resp
-
         # We can't use the original get() since it calls get_table_configs which requires a NetBox model.
         snapshot = subnet_catalogue.display(instance, self.dhcp_version)
         subnet_notice = notice(snapshot)
@@ -159,13 +159,6 @@ class ServerDHCP4SubnetsView(BaseServerDHCPSubnetsView):
 
     tab = _SUBNETS_TAB
     dhcp_version = 4
-
-    def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
-        """Redirect to the v6 view on v6-only servers so the merged tab works."""
-        instance = self.get_object(**kwargs)
-        if not instance.dhcp4 and instance.dhcp6:
-            return redirect(reverse("plugins:netbox_kea:server_subnets6", args=[instance.pk]))
-        return super().get(request, **kwargs)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -238,8 +231,10 @@ def _displayed_subnet(
     return catalogue, None
 
 
-class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
+class _BasePoolAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     """Base view for adding a pool to a subnet."""
+
+    workspace_section = "subnets"
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_pool_add.html"
@@ -258,7 +253,7 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
                 "subnet_id": subnet_id,
                 "subnet_cidr": form.subnet.cidr if form.subnet is not None else "",
                 "dhcp_version": self.dhcp_version,
-                "return_url": self._subnets_url(server.pk),
+                "return_url": _safe_return_url(request, self._subnets_url(server.pk)),
                 "tab": self.tab,
             },
         )
@@ -267,7 +262,7 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
         server = self.get_object(pk=pk)
         catalogue, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
         if subnet is None:
-            return _unconfirmed_subnet(request, subnet_id, self._subnets_url(pk))
+            return _unconfirmed_subnet(request, subnet_id, _safe_return_url(request, self._subnets_url(pk)))
         show_notices(request, notice(catalogue))
         form = forms.PoolAddForm(
             initial={"subnet_cidr": subnet.cidr}, subnet=subnet, absence_confirmed=catalogue.confirms_absence
@@ -292,7 +287,7 @@ class _BasePoolAddView(_KeaChangeMixin, generic.ObjectView):
         )
         if outcome is not None:
             _warn_reservations_in_pool(request, server, catalogue, form.subnet, pool)
-        return redirect(self._subnets_url(pk))
+        return redirect(_safe_return_url(request, self._subnets_url(pk)))
 
 
 class ServerSubnet4PoolAddView(_BasePoolAddView):
@@ -309,8 +304,10 @@ class ServerSubnet6PoolAddView(_BasePoolAddView):
     tab = _SUBNETS_TAB
 
 
-class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
+class _BasePoolDeleteView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     """Base view for deleting a pool from a subnet."""
+
+    workspace_section = "subnets"
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_pool_delete.html"
@@ -326,7 +323,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
         server = self.get_object(pk=pk)
         catalogue, subnet = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
         if subnet is None:
-            return _unconfirmed_subnet(request, subnet_id, self._subnets_url(pk))
+            return _unconfirmed_subnet(request, subnet_id, _safe_return_url(request, self._subnets_url(pk)))
         show_notices(request, notice(catalogue))
         return render(
             request,
@@ -338,7 +335,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
                 "subnet_cidr": subnet.cidr,
                 "form": forms.SubnetConfirmForm(initial={"subnet_cidr": subnet.cidr}, family=self.dhcp_version),
                 "dhcp_version": self.dhcp_version,
-                "return_url": self._subnets_url(pk),
+                "return_url": _safe_return_url(request, self._subnets_url(pk)),
                 "tab": self.tab,
             },
         )
@@ -348,7 +345,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, generic.ObjectView):
         if not _POOL_RE.match(re.sub(r"\s+", "", pool)):
             return HttpResponse("Invalid pool format.", status=400)
         server = self.get_object(pk=pk)
-        return_url = self._subnets_url(pk)
+        return_url = _safe_return_url(request, self._subnets_url(pk))
         form = forms.SubnetConfirmForm(request.POST, family=self.dhcp_version)
         if not form.is_valid():
             messages.error(request, _NO_SUBNET_CIDR)
@@ -445,8 +442,10 @@ def _inherited_subnet_options(
     return {field: hint for field, hint in inherited.items() if not form_values.get(field)}
 
 
-class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
+class _BaseSubnetAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     """Base view for adding a new subnet to Kea."""
+
+    workspace_section = "subnets"
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_subnet_add.html"
@@ -463,7 +462,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
                 "object": server,
                 "form": form,
                 "dhcp_version": self.dhcp_version,
-                "return_url": self._subnets_url(server.pk),
+                "return_url": _safe_return_url(request, self._subnets_url(server.pk)),
                 "tab": self.tab,
             },
         )
@@ -525,7 +524,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, generic.ObjectView):
         if outcome is None:
             # A rejected change is not live, so the form keeps the input for another try.
             return self._render_post(request, server, form)
-        return redirect(self._subnets_url(pk))
+        return redirect(_safe_return_url(request, self._subnets_url(pk)))
 
 
 class ServerSubnet4AddView(_BaseSubnetAddView):
@@ -542,8 +541,10 @@ class ServerSubnet6AddView(_BaseSubnetAddView):
     tab = _SUBNETS_TAB
 
 
-class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
+class _BaseSubnetEditView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     """Base view for editing an existing subnet's configuration in Kea."""
+
+    workspace_section = "subnets"
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_subnet_edit.html"
@@ -579,7 +580,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
             messages.error(
                 request, f"NetBox cannot show the configuration of Subnet {subnet_id}, so the edit form cannot open."
             )
-            return redirect(self._subnets_url(pk))
+            return redirect(_safe_return_url(request, self._subnets_url(pk)))
         # Only an available configuration declares the target.
         membership_confirmed = configured_target is not None
         if not membership_confirmed:
@@ -611,7 +612,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 "subnet_id": subnet_id,
                 "subnet_cidr": subnet_cidr,
                 "dhcp_version": self.dhcp_version,
-                "return_url": self._subnets_url(pk),
+                "return_url": _safe_return_url(request, self._subnets_url(pk)),
                 "inherited_options": inherited_options,
                 "tab": self.tab,
             },
@@ -643,7 +644,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
                 "subnet_id": subnet_id,
                 "subnet_cidr": form.data.get("subnet_cidr", ""),
                 "dhcp_version": self.dhcp_version,
-                "return_url": self._subnets_url(server.pk),
+                "return_url": _safe_return_url(request, self._subnets_url(server.pk)),
                 "inherited_options": inherited_options,
                 "tab": self.tab,
             },
@@ -677,7 +678,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, generic.ObjectView):
         if outcome is None:
             # A rejected change is not live, so the form keeps the input for another try.
             return self._render_post(request, server, subnet_id, form)
-        return redirect(self._subnets_url(pk))
+        return redirect(_safe_return_url(request, self._subnets_url(pk)))
 
 
 class ServerSubnet4EditView(_BaseSubnetEditView):
@@ -694,8 +695,10 @@ class ServerSubnet6EditView(_BaseSubnetEditView):
     tab = _SUBNETS_TAB
 
 
-class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
+class _BaseSubnetDeleteView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     """Base view for deleting a subnet from Kea."""
+
+    workspace_section = "subnets"
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_subnet_delete.html"
@@ -710,7 +713,7 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
         show_notices(request, notice(configuration))
         declared = [subnet for subnet in configuration.subnets if subnet.declared_subnet_id == subnet_id]
         if len(declared) != 1:
-            return _unconfirmed_subnet(request, subnet_id, self._subnets_url(pk))
+            return _unconfirmed_subnet(request, subnet_id, _safe_return_url(request, self._subnets_url(pk)))
         subnet_cidr = declared[0].declared_cidr
         return render(
             request,
@@ -721,14 +724,14 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, generic.ObjectView):
                 "subnet_cidr": subnet_cidr,
                 "form": forms.SubnetConfirmForm(initial={"subnet_cidr": subnet_cidr}, family=self.dhcp_version),
                 "dhcp_version": self.dhcp_version,
-                "return_url": self._subnets_url(pk),
+                "return_url": _safe_return_url(request, self._subnets_url(pk)),
                 "tab": self.tab,
             },
         )
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        return_url = self._subnets_url(pk)
+        return_url = _safe_return_url(request, self._subnets_url(pk))
         form = forms.SubnetConfirmForm(request.POST, family=self.dhcp_version)
         if not form.is_valid():
             messages.error(request, _NO_SUBNET_CIDR)
@@ -756,8 +759,10 @@ class ServerSubnet6DeleteView(_BaseSubnetDeleteView):
     tab = _SUBNETS_TAB
 
 
-class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
+class _BaseSubnetWipeView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     """Base view for wiping all leases in a subnet."""
+
+    workspace_section = "subnets"
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_subnet_wipe.html"
@@ -780,14 +785,14 @@ class _BaseSubnetWipeView(_KeaChangeMixin, generic.ObjectView):
                 "subnet_id": subnet_id,
                 "subnet_cidr": subnet_cidr,
                 "dhcp_version": self.dhcp_version,
-                "return_url": self._subnets_url(pk),
+                "return_url": _safe_return_url(request, self._subnets_url(pk)),
                 "tab": self.tab,
             },
         )
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        return_url = self._subnets_url(pk)
+        return_url = _safe_return_url(request, self._subnets_url(pk))
         try:
             client = server.get_client(version=self.dhcp_version)
         except ValueError as exc:

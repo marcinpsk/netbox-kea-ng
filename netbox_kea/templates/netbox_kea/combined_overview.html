@@ -4,11 +4,11 @@
 
 {% block tab_content %}
 <div class="row row-cols-1 row-cols-md-2 row-cols-xl-3 g-3 mt-0">
-  {% for server in all_servers %}
+  {% for server, overview_url, reservations_url, subnets_url in server_cards %}
   <div class="col">
     <div class="card h-100">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <strong><a href="{{ server.get_absolute_url }}">{{ server.name }}</a></strong>
+      <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <strong><a href="{{ overview_url }}">{{ server.name }}</a></strong>
         <span
           hx-get="{% url 'plugins:netbox_kea:combined_server_status_badge' server.pk %}"
           hx-trigger="load"
@@ -36,27 +36,17 @@
         </dl>
       </div>
       <div class="card-footer d-flex flex-wrap gap-1">
-        <a href="{{ server.get_absolute_url }}" class="btn btn-sm btn-outline-secondary">
+        <a href="{{ overview_url }}" class="btn btn-sm btn-outline-secondary">
           <i class="mdi mdi-eye"></i> Detail
         </a>
-        {% if server.dhcp4 %}
-        <a href="{% url 'plugins:netbox_kea:combined_reservations4' %}?server={{ server.pk }}"
+        {% if workspace_family == 4 and server.dhcp4 or workspace_family == 6 and server.dhcp6 %}
+        <a href="{{ reservations_url }}"
            class="btn btn-sm btn-outline-primary">
-          <i class="mdi mdi-bookmark-multiple"></i> v4 Reservations
+          <i class="mdi mdi-bookmark-multiple"></i> Reservations
         </a>
-        <a href="{% url 'plugins:netbox_kea:combined_subnets4' %}?server={{ server.pk }}"
+        <a href="{{ subnets_url }}"
            class="btn btn-sm btn-outline-primary">
-          <i class="mdi mdi-ip-network"></i> v4 Subnets
-        </a>
-        {% endif %}
-        {% if server.dhcp6 %}
-        <a href="{% url 'plugins:netbox_kea:combined_reservations6' %}?server={{ server.pk }}"
-           class="btn btn-sm btn-outline-info">
-          <i class="mdi mdi-bookmark-multiple"></i> v6 Reservations
-        </a>
-        <a href="{% url 'plugins:netbox_kea:combined_subnets6' %}?server={{ server.pk }}"
-           class="btn btn-sm btn-outline-info">
-          <i class="mdi mdi-ip-network"></i> v6 Subnets
+          <i class="mdi mdi-ip-network"></i> Subnets
         </a>
         {% endif %}
       </div>

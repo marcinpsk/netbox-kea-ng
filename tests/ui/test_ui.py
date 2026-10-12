@@ -9,7 +9,7 @@ import re
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any, Literal
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import quote_plus, urlencode, urljoin
 
 import pynetbox
 import pytest
@@ -416,47 +416,47 @@ def open_kea_menu(page: Page):
 
 
 def open_leases(page: Page, version: Literal[4, 6]) -> None:
-    """Open the consolidated Leases tab and select the DHCPv4/DHCPv6 family pill.
-
-    The per-protocol tabs were merged into a single "Leases" tab with an in-page
-    v4/v6 nav-pill toggle that is rendered only on dual-stack servers. On a
-    single-protocol server there is no pill — the tab already lands on the one
-    enabled protocol — so the pill click is skipped.
-    """
-    page.get_by_role("link", name="Leases", exact=True).click()
-    # Wait until the leases page has loaded (search field is present on single + dual)
-    # before probing for the family pill, so .count() reflects the new page.
+    """Open Leases and select its family in the shared Server scope bar."""
+    page.get_by_role("navigation", name="Workspace sections").get_by_role("link", name="Leases", exact=True).click()
+    page.get_by_role("navigation", name="DHCP family").get_by_role("link", name=f"DHCPv{version}", exact=True).click()
     page.locator("#id_q").wait_for()
-    pill = page.get_by_role("link", name=f"DHCPv{version}", exact=True)
-    if pill.count():
-        pill.click()
-        page.locator("#id_q").wait_for()
 
 
 def open_subnets(page: Page, version: Literal[4, 6]) -> None:
-    """Open the consolidated Subnets tab and select the DHCPv4/DHCPv6 family pill.
-
-    Like :func:`open_leases`, the v4/v6 family pill is rendered only on dual-stack
-    servers; on a single-protocol server the tab already lands on the one enabled
-    protocol, so the pill click is skipped.
-    """
-    page.get_by_role("link", name="Subnets", exact=True).click()
-    # Wait until the subnets page has loaded (section nav present on single + dual)
-    # before probing for the family pill, so .count() reflects the new page.
+    """Open Subnets and select its family in the shared Server scope bar."""
+    page.get_by_role("navigation", name="Workspace sections").get_by_role("link", name="Subnets", exact=True).click()
+    page.get_by_role("navigation", name="DHCP family").get_by_role("link", name=f"DHCPv{version}", exact=True).click()
     page.get_by_role("link", name="Shared Networks", exact=True).wait_for()
-    pill = page.get_by_role("link", name=f"DHCPv{version}", exact=True)
-    if pill.count():
-        pill.click()
-        page.get_by_role("link", name="Shared Networks", exact=True).wait_for()
 
 
-def search_lease(page: Page, version: Literal[4, 6], by: str, q: str) -> None:
-    open_leases(page, version)
-    page.locator("#id_q").fill(q)
+def choose_lease_attribute(page: Page, by: str, *, filter_attribute: bool = False) -> None:
+    """Pick the lease search Attribute and wait for the Search value control that it brings."""
     page.locator("#id_by + div.form-select").click()
-    page.locator("#id_by-ts-dropdown").get_by_role("option", name=by, exact=True).click()
+    if filter_attribute:
+        page.locator("#id_by-ts-control").fill(by)
+    with page.expect_response(re.compile(r"value_control=1")):
+        page.locator("#id_by-ts-dropdown").get_by_role("option", name=by, exact=True).click()
+
+
+def set_lease_search_value(page: Page, q: str) -> None:
+    """Type the Search value, or pick it from the Subnet dropdown of the Subnet Attributes."""
+    if page.locator("#id_q").evaluate("node => node.tagName") == "SELECT":
+        page.locator("#id_q + div.form-select").click()
+        page.locator(f'#id_q-ts-dropdown [data-value="{q}"]').click()
+    else:
+        page.locator("#id_q").fill(q)
+
+
+def search_lease(page: Page, version: Literal[4, 6], by: str, q: str, *, filter_attribute: bool = False) -> None:
+    open_leases(page, version)
+    choose_lease_attribute(page, by, filter_attribute=filter_attribute)
+    set_lease_search_value(page, q)
     with page.expect_response(re.compile(f"/leases{version}/")) as r:
-        page.get_by_role("button", name="Search").click()
+        if filter_attribute:
+            # After a filtered pick, NetBox's TomSelect opens again over the form and takes focus back.
+            page.locator("#id_q").press("Enter")
+        else:
+            page.get_by_role("button", name="Search").click()
         assert r.value.ok
 
 
@@ -467,7 +467,7 @@ def search_lease_related(page: Page, model: str) -> None:
 
 
 def expect_form_error_search(page: Page, b: bool) -> None:
-    expect(page.locator("#id_q + div.form-text.text-danger")).to_have_count(int(b))
+    expect(page.locator("#lease-search-value div.form-text.text-danger")).to_have_count(int(b))
 
 
 def _version_ge_43(page: Page) -> bool:
@@ -666,7 +666,7 @@ def test_server_edit(page: Page, kea: KeaClient) -> None:
 
 
 def test_server_status(page: Page, kea: _DualEndpointKeaClient) -> None:
-    page.get_by_role("link", name="Status", exact=True).click()
+    page.get_by_role("navigation", name="Workspace sections").get_by_role("link", name="Overview", exact=True).click()
 
     # has_control_agent=False (Kea 3.0): the status view shows the daemon versions, not a CA row.
     dhcp4_version = kea.command("version-get", 4)[0]["arguments"]["extended"]
@@ -806,6 +806,9 @@ def test_dhcp_subnets_configure_table(page: Page, kea: KeaClient, family: int) -
     expect(page.locator(".object-list > thead > tr > th > a")).to_have_text(["Subnet", "Shared Network", ""])
 
 
+_SUBNET_ATTRIBUTES = {"Subnet": "subnet", "Subnet ID": "subnet_id"}
+
+
 @pytest.mark.parametrize(
     ("version", "by", "q"),
     (
@@ -848,13 +851,17 @@ def test_dhcp_subnets_configure_table(page: Page, kea: KeaClient, family: int) -
 )
 def test_dhcp_lease_invalid_search_values(page: Page, kea: KeaClient, version: int, by: str, q: str) -> None:
     open_leases(page, version)
-    page.locator("#id_q").fill(q)
-    page.locator("#id_by + div.form-select").click()
-    page.locator("#id_by-ts-dropdown").get_by_role("option", name=by, exact=True).click()
-    # Wait for the search response before asserting the server-rendered validation error,
-    # so the assertion doesn't race the htmx form re-render (mirrors search_lease()).
-    with page.expect_response(re.compile(f"/leases{version}/")):
-        page.get_by_role("button", name="Search").click()
+    if by in _SUBNET_ATTRIBUTES:
+        # The Subnet dropdown offers only configured Subnets, so a typed value comes from a shared URL.
+        page.goto(f"{page.url.split('?')[0]}?{urlencode({'by': _SUBNET_ATTRIBUTES[by], 'q': q})}")
+        expect(page.locator("#id_q option[selected]")).to_have_text(f"{q} (not listed)")
+    else:
+        choose_lease_attribute(page, by)
+        page.locator("#id_q").fill(q)
+        # Wait for the search response before asserting the server-rendered validation error,
+        # so the assertion doesn't race the htmx form re-render (mirrors search_lease()).
+        with page.expect_response(re.compile(f"/leases{version}/")):
+            page.get_by_role("button", name="Search").click()
     expect_form_error_search(page, True)
     expect(page.locator("div.table-container")).to_have_count(0)
 
@@ -1282,10 +1289,18 @@ def test_lease_search_eui_formats(
     expect(page.locator(".object-list > tbody > tr > td").nth(1)).to_have_text(lease["ip-address"])
 
 
-def test_lease_search_cisco_style_mac(page: Page, lease4: dict[str, Any]) -> None:
+@pytest.mark.parametrize(
+    ("viewport_width", "filter_attribute"),
+    [(1280, False), (1024, False), (768, False), (390, False), pytest.param(390, True, id="390-filter")],
+)
+def test_lease_search_cisco_style_mac(
+    page: Page, lease4: dict[str, Any], viewport_width: int, filter_attribute: bool
+) -> None:
+    page.set_viewport_size({"width": viewport_width, "height": 720})
     mac = lease4["hw-address"].replace(":", "")
     cisco_mac = f"{mac[:4]}.{mac[4:8]}.{mac[8:]}"
-    search_lease(page, 4, "Hardware Address", cisco_mac)
+    search_lease(page, 4, "Hardware Address", cisco_mac, filter_attribute=filter_attribute)
+    expect(page).to_have_url(re.compile(rf"q={re.escape(cisco_mac)}&by=hw"))
     expect(page.locator(".object-list > tbody > tr")).to_have_count(1)
     expect(page.locator(".object-list > tbody > tr > td").nth(1)).to_have_text(lease4["ip-address"])
 
@@ -1405,33 +1420,34 @@ def test_one_service_only(page: Page, version: Literal[6, 4], request: pytest.Fi
 
     server_url = page.url
 
-    # The consolidated Leases/Subnets tabs are present for a single-protocol server.
+    # Both family choices remain available. A disabled family has an explicit page.
     expect(page.get_by_role("link", name="Leases", exact=True)).to_have_count(1)
     expect(page.get_by_role("link", name="Subnets", exact=True)).to_have_count(1)
-
-    # The Leases tab lands on the one enabled protocol, with no v4/v6 family pills.
     page.get_by_role("link", name="Leases", exact=True).click()
     expect(page).to_have_url(re.compile(rf"/leases{version}/$"))
-    expect(page.get_by_role("link", name="DHCPv4", exact=True)).to_have_count(0)
-    expect(page.get_by_role("link", name="DHCPv6", exact=True)).to_have_count(0)
-
-    # The Subnets tab mirrors the same single-service landing behavior.
-    page.goto(server_url)
-    page.get_by_role("link", name="Subnets", exact=True).click()
-    expect(page).to_have_url(re.compile(rf"/subnets{version}/$"))
-
-    if version == 6:
-        # v4 is disabled: the v4 URL redirects to the enabled v6 page (merged-tab UX).
-        page.goto(urljoin(server_url, "leases4/"))
-        expect(page).to_have_url(urljoin(server_url, "leases6/"))
-        page.goto(urljoin(server_url, "subnets4/"))
-        expect(page).to_have_url(urljoin(server_url, "subnets6/"))
-    else:
-        # v6 is disabled: the v6 URL redirects back to the server detail page.
-        page.goto(urljoin(server_url, "leases6/"))
-        expect(page).to_have_url(server_url)
-        page.goto(urljoin(server_url, "subnets6/"))
-        expect(page).to_have_url(server_url)
+    families = page.get_by_role("navigation", name="DHCP family")
+    expect(families.get_by_role("link", name="DHCPv4", exact=True)).to_be_visible()
+    expect(families.get_by_role("link", name="DHCPv6", exact=True)).to_be_visible()
+    disabled = 4 if version == 6 else 6
+    for section in ("leases{family}/", "subnets{family}/", "reservations{family}/", "dhcp{family}/option-def/"):
+        disabled_url = urljoin(server_url, section.format(family=disabled))
+        page.goto(disabled_url)
+        expect(page).to_have_url(disabled_url)
+        state = page.locator("#kea-protocol-disabled")
+        expect(state).to_contain_text(re.compile("protocol not enabled", re.IGNORECASE))
+        expect(
+            page.locator("#kea-workspace-shell").get_by_role("link", name=f"DHCPv{disabled}", exact=True)
+        ).to_have_attribute("aria-current", "page")
+        state.get_by_role("link", name=re.compile(rf"DHCPv{version}")).click()
+        expect(page).to_have_url(urljoin(server_url, section.format(family=version)))
+    for section in ("", "sync_status/"):
+        disabled_url = urljoin(server_url, section) + f"?family={disabled}"
+        page.goto(disabled_url)
+        expect(page).to_have_url(disabled_url)
+        state = page.locator("#kea-protocol-disabled")
+        expect(state).to_contain_text(re.compile("protocol not enabled", re.IGNORECASE))
+        state.get_by_role("link", name=re.compile(rf"DHCPv{version}")).click()
+        expect(page).to_have_url(urljoin(server_url, section) + f"?family={version}")
 
 
 @pytest.mark.parametrize("version", (6, 4))
@@ -1533,7 +1549,7 @@ def test_lease_pagination_location(
 
 
 def test_dhcpv6_lease_long_duid(page: Page, kea: KeaClient, with_test_server_only6: None) -> None:
-    """Regression test for long DUIDs (#154)."""
+    """Long DUIDs wrap so every Lease action remains visible."""
     lease_ip = "2001:db8:1::dead:beef"
     kea.command(
         "lease6-add",
@@ -1563,8 +1579,13 @@ def test_dhcpv6_lease_long_duid(page: Page, kea: KeaClient, with_test_server_onl
     if _version_ge_43(page):
         search()
 
-    # The last column should not be off the page.
-    expect(page.locator("table.object-list > tbody > tr > td").last).to_be_in_viewport()
+    cells = page.locator("table.object-list > tbody > tr > td")
+    # Bring the row into view without scrolling to its rightmost cell.
+    cells.first.scroll_into_view_if_needed()
+    expect(cells.last).to_be_in_viewport()
+    responsive = page.locator(".table-responsive").filter(has=page.locator("table.object-list"))
+    dimensions = responsive.evaluate("element => ({width: element.clientWidth, scrollWidth: element.scrollWidth})")
+    assert dimensions["scrollWidth"] <= dimensions["width"], dimensions
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1670,7 +1691,7 @@ def _add_reservation4_without_address(
 ) -> None:
     """Create a DHCPv4 host keyed by MAC with no fixed address, through the add form."""
     page.goto(f"{plugin_base}/servers/{server_id}/reservations4/add/")
-    page.locator("#id_subnet_cidr").fill(RESERVATION_SUBNET_CIDR_V4)
+    page.locator("#id_subnet_cidr").select_option(RESERVATION_SUBNET_CIDR_V4)
     _select_identifier_type(page, "Hardware Address")
     page.locator("#id_identifier").fill(identifier)
     page.locator("#id_hostname").fill(hostname)
@@ -1685,7 +1706,7 @@ def _add_reservation6_prefix_only(
 ) -> None:
     """Create a DHCPv6 host that delegates a prefix and reserves no address."""
     page.goto(f"{plugin_base}/servers/{server_id}/reservations6/add/")
-    page.locator("#id_subnet_cidr").fill(RESERVATION_SUBNET_CIDR_V6)
+    page.locator("#id_subnet_cidr").select_option(RESERVATION_SUBNET_CIDR_V6)
     page.locator("#id_prefixes").fill(prefix)
     _select_identifier_type(page, "DUID")
     page.locator("#id_identifier").fill(identifier)
@@ -1850,10 +1871,13 @@ def test_reservation_add_form_explains_relay_remote_id_flex_id(
     """The live add form excludes remote ID and links to the Kea Flex ID guidance."""
     page.goto(f"{plugin_base}/servers/{reservation_server.id}/reservations4/add/")
 
-    expect(page.get_by_text("Relay remote ID is not a native Reservation Identity.", exact=True)).to_be_visible()
-    expect(page.get_by_role("link", name="Flexible Identifiers for Host Reservations")).to_have_attribute(
+    # NetBox 4.3 gives the help text no id, so find it in the row of its field.
+    help_text = page.locator("div.row.mb-3", has=page.locator("#id_identifier_type")).locator("span.form-text")
+    expect(help_text).to_contain_text("For relay remote ID, configure Kea flex-id.")
+    expect(help_text.get_by_role("link", name="Kea flex-id")).to_have_attribute(
         "href", re.compile(r"kea\.readthedocs\.io/.+flex-id")
     )
+    expect(page.locator(".alert", has_text="remote ID")).to_have_count(0)
     expect(page.locator('#id_identifier_type option[value="remote-id"]')).to_have_count(0)
 
 
@@ -1862,6 +1886,7 @@ def test_global_reservation_is_visible_and_read_only(
     plugin_base: str,
     kea_client: _DualEndpointKeaClient,
     reservation_server,
+    kea_server,
     reservation_keys: list,
 ) -> None:
     """Per-server and combined views keep a live Global Reservation read-only."""
@@ -1882,11 +1907,14 @@ def test_global_reservation_is_visible_and_read_only(
 
     urls = (
         f"{plugin_base}/servers/{reservation_server.id}/reservations4/",
-        f"{plugin_base}/combined/reservations4/?server={reservation_server.id}",
+        f"{plugin_base}/combined/reservations4/?server={reservation_server.id}&server={kea_server.id}",
     )
     for url in urls:
         page.goto(url)
         row = page.locator("table.object-list > tbody > tr").filter(has_text=mac)
+        if "/combined/" in url:
+            expect(page).to_have_url(url)
+            row = row.filter(has_text=reservation_server.name)
 
         expect(row).to_have_count(1)
         expect(row.get_by_text("Global", exact=True)).to_be_visible()

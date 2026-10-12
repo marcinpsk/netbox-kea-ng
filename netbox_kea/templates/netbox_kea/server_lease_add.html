@@ -1,6 +1,7 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
-{% extends "generic/object.html" %}
+{% extends "netbox_kea/server_workspace.html" %}
+{% load form_helpers %}
 
 {% block content %}
 <div class="row">
@@ -10,24 +11,6 @@
         Add DHCPv{{ dhcp_version }} Lease
       </h5>
       <div class="card-body">
-        {% if object.sync_enabled and object.sync_leases_enabled %}
-        <div class="alert alert-info d-flex align-items-start mb-3" role="alert">
-          <i class="mdi mdi-sync me-2 mt-1" aria-hidden="true"></i>
-          <div>
-            <strong>Automatic IPAM sync is enabled for this server.</strong>
-            This lease will be synced to NetBox IPAM on the next scheduled sync run
-            (not instantly).{% if not form.sync_to_netbox.field.widget.attrs.disabled %} You can also use the checkbox below to sync immediately.{% endif %}
-          </div>
-        </div>
-        {% else %}
-        <div class="alert alert-secondary d-flex align-items-start mb-3" role="alert">
-          <i class="mdi mdi-sync-off me-2 mt-1" aria-hidden="true"></i>
-          <div>
-            <strong>Automatic IPAM sync is disabled for this server.</strong>
-            {% if not form.sync_to_netbox.field.widget.attrs.disabled %}Use the checkbox below to sync this lease to NetBox IPAM immediately.{% endif %}
-          </div>
-        </div>
-        {% endif %}
         <form method="post">
           {% csrf_token %}
           {% if form.non_field_errors %}
@@ -36,12 +19,7 @@
             </div>
           {% endif %}
           {% for field in form %}
-            <div class="mb-3">
-              <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}</label>
-              {{ field }}
-              {% if field.help_text %}<div class="form-text text-muted">{{ field.help_text }}</div>{% endif %}
-              {% for err in field.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
-            </div>
+            {% render_field field %}
           {% endfor %}
 
           <div class="d-flex gap-2">

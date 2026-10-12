@@ -213,9 +213,7 @@ class TestServerSharedNetworks4View(_ViewTestBase):
 
         with stub_kea(responses) as kea:
             server_list = self.client.get(self._url())
-            combined_list = self.client.get(
-                reverse("plugins:netbox_kea:combined_shared_networks4"), {"server": self.server.pk}
-            )
+            combined_list = self.client.get(reverse("plugins:netbox_kea:combined_shared_networks4"))
             subnet_add = self.client.get(reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk]))
 
         self.assertContains(server_list, "empty-clients")
@@ -255,21 +253,14 @@ class TestServerSharedNetworks4View(_ViewTestBase):
         self.assertNotContains(response, "legacy note")
         self.assertContains(response, "Kea returned an invalid user-context setting.")
 
-    def test_get_with_dhcp4_disabled_redirects(self):
+    def test_get_with_dhcp4_disabled_shows_protocol_not_enabled(self):
         v6_only = _make_db_server(name="v6-only-sn", dhcp4=False, dhcp6=True)
         url = reverse("plugins:netbox_kea:server_shared_networks4", args=[v6_only.pk])
-        # v4→v6 redirect happens before any client is built, so no Kea traffic.
+        # A disabled protocol shows the explicit state before any client is built.
         with stub_kea({}) as kea:
             response = self.client.get(url)
-        self.assertEqual(response.status_code, 302)
-        self._assert_no_none_pk_redirect(response)
+        self.assertContains(response, "Protocol not enabled")
         self.assertEqual(kea.commands(), [])
-        # Merged-tab contract: a v6-only server's v4 shared-networks URL redirects to
-        # the v6 route (not the server detail page), mirroring leases4/subnets4.
-        self.assertEqual(
-            response.url,
-            reverse("plugins:netbox_kea:server_shared_networks6", args=[v6_only.pk]),
-        )
 
     def test_get_sets_tab_in_context(self):
         """F2: shared networks render under the shared 'Subnets' tab."""
@@ -1267,13 +1258,13 @@ class TestSharedNetworkEditSnapshotFailures(_ViewTestBase):
 class TestSharedNetworkListEdgeCases(_ViewTestBase):
     """Shared Network list when DHCP is disabled."""
 
-    def test_dhcp4_disabled_redirects(self):
-        """When dhcp4 disabled, the v4 list view redirects to the v6 route (no Kea)."""
+    def test_dhcp4_disabled_shows_protocol_not_enabled(self):
+        """A disabled DHCPv4 family shows the protocol-disabled state without a Kea read."""
         server_no4 = _make_db_server(name="no-dhcp4", ca_url="https://kea.example.com", dhcp4=False, dhcp6=True)
         url = reverse("plugins:netbox_kea:server_shared_networks4", args=[server_no4.pk])
         with stub_kea({}) as kea:
             response = self.client.get(url)
-        self.assertEqual(response.status_code, 302)
+        self.assertContains(response, "Protocol not enabled")
         self.assertEqual(kea.commands(), [])
 
 

@@ -22,6 +22,8 @@ from utilities.views import ViewTab, register_model_view
 from .. import forms
 from ..jobs import KeaIpamSyncJob
 from ..models import Server, SyncConfig
+from .dhcp_plugin_sync import sync_nav_context
+from .workspace import ServerFamilyMixin, server_family_url
 
 logger = logging.getLogger(__name__)
 
@@ -211,8 +213,10 @@ class SyncJobsView(LoginRequiredMixin, View):
 
 
 @register_model_view(Server, "sync_status")
-class ServerSyncStatusView(generic.ObjectView):
+class ServerSyncStatusView(ServerFamilyMixin, generic.ObjectView):
     """Per-server Sync Status tab."""
+
+    workspace_section = "sync"
 
     queryset = Server.objects.all()
     tab = ViewTab(label="Sync", weight=1005)
@@ -231,7 +235,11 @@ class ServerSyncStatusView(generic.ObjectView):
             "latest_job": latest,
             "jobs_list_url": jobs_list_url,
             "can_change_server": Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists(),
+            "server_edit_url": server_family_url(request, instance, self, "server_edit"),
+            "sync_toggle_url": server_family_url(request, instance, self, "server_sync_toggle"),
+            "sync_now_url": server_family_url(request, instance, self, "server_sync_now"),
             "sync_cfg": sync_cfg,
+            **sync_nav_context(request, instance, self, "ipam"),
         }
 
 
@@ -249,7 +257,7 @@ class ServerSyncNowView(LoginRequiredMixin, View):
         except Exception:
             logger.exception("Failed to enqueue sync job for server %s", server.name)
             messages.error(request, "An internal error occurred when enqueuing the sync job.")
-        return HttpResponseRedirect(reverse("plugins:netbox_kea:server_sync_status", args=[pk]))
+        return HttpResponseRedirect(server_family_url(request, server, self, "server_sync_status"))
 
 
 class ServerSyncToggleView(LoginRequiredMixin, View):
@@ -267,10 +275,10 @@ class ServerSyncToggleView(LoginRequiredMixin, View):
         except Exception:
             logger.exception("Failed to toggle sync for server %s", server.name)
             messages.error(request, "An internal error occurred when toggling sync.")
-            return HttpResponseRedirect(reverse("plugins:netbox_kea:server_sync_status", args=[pk]))
+            return HttpResponseRedirect(server_family_url(request, server, self, "server_sync_status"))
         state = "enabled" if server.sync_enabled else "disabled"
         messages.success(request, f"IPAM sync {state} for {server.name}.")
-        return HttpResponseRedirect(reverse("plugins:netbox_kea:server_sync_status", args=[pk]))
+        return HttpResponseRedirect(server_family_url(request, server, self, "server_sync_status"))
 
 
 def _replace_auto_jobs_view(model, replacement_view) -> None:

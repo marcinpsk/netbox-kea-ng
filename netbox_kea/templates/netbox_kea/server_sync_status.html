@@ -1,9 +1,10 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
-{% extends "generic/object.html" %}
+{% extends "netbox_kea/server_workspace.html" %}
 {% load helpers %}
 
 {% block content %}
+{% include "netbox_kea/inc/sync_nav.html" %}
 <div class="row">
   <div class="col-md-10">
     <div class="row g-3">
@@ -67,7 +68,7 @@
               for this server.
             </p>
             {% if can_change_server %}
-            <form method="post" action="{% url 'plugins:netbox_kea:server_sync_toggle' object.pk %}" class="mb-2">
+            <form method="post" action="{{ sync_toggle_url }}" class="mb-2">
               {% csrf_token %}
               <button type="submit" class="btn btn-sm btn-outline-secondary">
                 {% if object.sync_enabled %}
@@ -77,7 +78,7 @@
                 {% endif %}
               </button>
             </form>
-            <form method="post" action="{% url 'plugins:netbox_kea:server_sync_now' object.pk %}">
+            <form method="post" action="{{ sync_now_url }}">
               {% csrf_token %}
               <button type="submit" class="btn btn-sm btn-primary">
                 <i class="mdi mdi-play-circle-outline" aria-hidden="true"></i> Run Now
@@ -101,7 +102,7 @@
               <span class="badge {% if sync_cfg.sync_enabled and sync_cfg.sync_ip_ranges_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">IP Ranges</span>
             </div>
             <p class="small text-muted mb-1">Server overrides{% if can_change_server %}
-              (<a href="{% url 'plugins:netbox_kea:server_edit' object.pk %}">configure</a>){% endif %}:
+              (<a href="{{ server_edit_url }}">configure</a>){% endif %}:
             </p>
             <div class="d-flex flex-wrap gap-1">
               <span class="badge {% if sync_cfg.sync_enabled and object.sync_leases_enabled and sync_cfg.sync_leases_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">Leases</span>
@@ -120,9 +121,9 @@
       {# Job history card #}
       <div class="col-md-4">
         <div class="card h-100">
-          <h5 class="card-header">
+          <h5 class="card-header d-flex justify-content-between align-items-center gap-2">
             Recent Runs
-            <a href="{{ jobs_list_url }}" class="float-end small text-muted">View manual runs →</a>
+            <a href="{{ jobs_list_url }}" class="small text-muted">View manual runs →</a>
           </h5>
           <div class="card-body p-0">
             {% if recent_jobs %}

@@ -12,8 +12,10 @@ from __future__ import annotations
 import re
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 import requests
+from bs4 import BeautifulSoup
 from django.apps import apps
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
@@ -290,6 +292,36 @@ class SyncNowEndToEndTest(TestCase):
         self.assertContains(resp, "DHCP options are imported")
         self.assertContains(resp, "Unsupported options are skipped")
         self.assertNotContains(resp, "are not imported")
+
+    def test_the_page_is_the_dhcp_plugin_subsection_of_sync(self):
+        conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]}}
+        with stub_kea(_sync_responses(conf)):
+            resp = self.client.get(
+                reverse("plugins:netbox_kea:server_dhcp_plugin", args=[self.server.pk]), {"family": 4}
+            )
+        page = BeautifulSoup(resp.content, "html.parser")
+        self.assertEqual(
+            [a.get_text() for a in page.select('[aria-label="Workspace sections"] [aria-current="page"]')], ["Sync"]
+        )
+        subsections = page.select('[aria-label="Sync subsections"] a')
+        self.assertEqual([a.get_text() for a in subsections], ["IPAM", "DHCP Plugin"])
+        self.assertEqual(
+            [a.get_text() for a in page.select('[aria-label="Sync subsections"] [aria-current]')], ["DHCP Plugin"]
+        )
+        self.assertEqual(parse_qs(urlsplit(subsections[0]["href"]).query)["family"], ["4"])
+        self.assertNotIn("DHCP Plugin", page.select_one('[aria-label="Server object tabs"]').get_text())
+
+    def test_import_mapping_notes_start_collapsed_behind_a_toggle(self):
+        conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]}}
+        with stub_kea(_sync_responses(conf)):
+            resp = self.client.get(reverse("plugins:netbox_kea:server_dhcp_plugin", args=[self.server.pk]))
+        page = BeautifulSoup(resp.content, "html.parser")
+        toggle = page.find("button", attrs={"data-bs-target": "#import-mapping-notes"})
+        self.assertEqual(" ".join(toggle.get_text().split()), "Import mapping notes")
+        self.assertEqual((toggle["aria-expanded"], toggle["aria-controls"]), ("false", "import-mapping-notes"))
+        notes = page.select_one("#import-mapping-notes")
+        self.assertEqual(notes["class"], ["collapse"])
+        self.assertIn("Shared Network grouping", notes.get_text())
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

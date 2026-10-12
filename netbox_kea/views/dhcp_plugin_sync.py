@@ -10,10 +10,11 @@ and the sync action refuses.  All reads against Kea are read-only (``config-get`
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import requests
 from django.contrib import messages
-from django.http import HttpResponseForbidden, HttpResponseRedirect
+from django.http import HttpRequest, HttpResponseForbidden, HttpResponseRedirect
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from django.views import View
@@ -29,14 +30,29 @@ from ..kea import KeaCommand, KeaException, KeaResponse
 from ..mappers.kea_to_dhcp import parse_dhcp_config
 from ..models import Server
 from ..sync_permissions import sync_gate
-from ..utilities import OptionalViewTab
+from .workspace import server_family_url
 
 logger = logging.getLogger(__name__)
 
 
 def _tab_enabled(server: Server) -> bool:
-    """Show the DHCP-plugin tab only when the plugin is installed and the server opts in."""
+    """Show the DHCP Plugin subsection only when the plugin is installed and the server opts in."""
     return dhcp_plugin.is_available() and server.sync_dhcp_plugin_enabled
+
+
+def sync_nav_context(request: HttpRequest, server: Server, view: object, subsection: str) -> dict[str, Any]:
+    """Return the Sync subsections, IPAM and DHCP Plugin, or none when DHCP Plugin is hidden."""
+    if not _tab_enabled(server):
+        return {"sync_subsections": []}
+    return {
+        "sync_subsections": [
+            (key, label, server_family_url(request, server, view, name), key == subsection)
+            for key, label, name in (
+                ("ipam", "IPAM", "server_sync_status"),
+                ("dhcp_plugin", "DHCP Plugin", "server_dhcp_plugin"),
+            )
+        ]
+    }
 
 
 def _enabled_versions(server: Server) -> list[Family]:
@@ -223,15 +239,12 @@ def _link_cidr(link) -> str:
     return str(getattr(prefix, "prefix", "")) if prefix is not None else ""
 
 
-_DHCP_PLUGIN_TAB = OptionalViewTab(label="DHCP Plugin", weight=1060, is_enabled=_tab_enabled)
-
-
 @register_model_view(Server, "dhcp_plugin")
 class ServerDhcpPluginView(generic.ObjectView):
-    """Per-server tab: import status + drift between live Kea and DHCP-plugin records."""
+    """Sync subsection: import status + drift between live Kea and DHCP-plugin records."""
 
+    workspace_section = "sync"
     queryset = Server.objects.all()
-    tab = _DHCP_PLUGIN_TAB
     template_name = "netbox_kea/server_dhcp_plugin.html"
 
     def get_extra_context(self, request, instance):
@@ -251,6 +264,7 @@ class ServerDhcpPluginView(generic.ObjectView):
             "mapping_unavailable": unavailable,
             "drift": drift,
             "sync_refusal": _sync_refusal(request.user, instance),
+            **sync_nav_context(request, instance, self, "dhcp_plugin"),
         }
 
 

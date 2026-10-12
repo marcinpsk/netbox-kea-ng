@@ -40,9 +40,10 @@ LEASE_SELECTOR_BY_IDENTIFIER: dict[int, dict[str, str]] = {
 
 HEX_STRING_REGEX = r"^([0-9A-Fa-f]{2}[:-]?)*([0-9A-Fa-f]{2})$"
 
-# id of the <datalist> that suggests subnet CIDRs on the reservation add form.
-# Shared by the form widget's `list` attribute and the template that emits the element.
-RESERVATION_SUBNET_DATALIST_ID = "kea-reservation-subnet-cidrs"
+# Kea guide to deriving a Reservation identifier from relay data, such as the relay remote ID.
+FLEX_ID_DOCUMENTATION_URL = (
+    "https://kea.readthedocs.io/en/latest/arm/hooks.html#flex-id-flexible-identifiers-for-host-reservations"
+)
 
 # Cache namespaces shared by the producers and test cleanup.
 SERVER_CONFIGURATION_CACHE_PREFIX = "netbox_kea:server_configuration:"
