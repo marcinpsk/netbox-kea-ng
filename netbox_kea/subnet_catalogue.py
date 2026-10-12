@@ -325,7 +325,7 @@ def _validate_family(family: int) -> Family:
 
 
 def _cache_key(server: Server, family: Family, generation: str | None = None) -> str:
-    generation = generation or server_configuration._cache_generation(server, family)
+    generation = generation or server_configuration.display_generation(server, family)
     return f"{constants.SUBNET_CATALOGUE_CACHE_PREFIX}v2:{_require_persisted_server(server)}:{family}:snapshot:{generation}"
 
 
@@ -826,7 +826,7 @@ def _read_live(server: Server, family: Family) -> tuple[CatalogueSnapshot, Serve
 def display(server: Server, family: int) -> CatalogueSnapshot:
     """Return a cached Complete or Incomplete snapshot for presentation."""
     validated_family = _validate_family(family)
-    generation = server_configuration._cache_generation(server, validated_family)
+    generation = server_configuration.display_generation(server, validated_family)
     key = _cache_key(server, validated_family, generation)
     cached = cache.get(key)
     if isinstance(cached, CatalogueSnapshot):

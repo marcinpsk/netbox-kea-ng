@@ -176,8 +176,15 @@ def _cache_generation(server: Server, family: Family) -> str:
     return generation if isinstance(generation, str) else candidate
 
 
+def display_generation(server: Server, family: int) -> str:
+    """Return the display cache generation: the rotated generation and the connection that the read uses."""
+    validated_family = _validate_family(family)
+    # A Server instance with old connection settings fills only the entry of those settings.
+    return f"{_cache_generation(server, validated_family)}:{server.kea_connection(validated_family).fingerprint()}"
+
+
 def _cache_key(server: Server, family: Family, generation: str | None = None) -> str:
-    generation = generation or _cache_generation(server, family)
+    generation = generation or display_generation(server, family)
     return f"{constants.SERVER_CONFIGURATION_CACHE_PREFIX}v2:{_require_persisted_server(server)}:{family}:snapshot:{generation}"
 
 
