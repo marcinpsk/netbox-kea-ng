@@ -1,0 +1,14 @@
+/* SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> */
+/* SPDX-License-Identifier: Apache-2.0 */
+.kea-workspace-shell {
+  position: sticky;
+  top: 0;
+  z-index: 1020;
+}
+
+/* The desktop NetBox navbar stays above the workspace shell. */
+@media (min-width: 992px) {
+  .kea-workspace-shell {
+    top: 3.5rem;
+  }
+}

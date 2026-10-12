@@ -13,6 +13,11 @@ This context manages Kea DHCP configuration and mirrors selected live Kea state 
 A configured Kea server that provides DHCPv4, DHCPv6, or both.
 _Avoid_: Kea instance, endpoint
 
+**Server Scope**:
+The Servers that a combined page covers: all permitted Servers, an explicit selection of several Servers, or one Server.
+An explicit selection is invalid if any selected Server is unknown or inaccessible, or any selected ID is empty or invalid.
+_Avoid_: Scope, Server filter
+
 **Subnet**:
 A Kea-managed IP network for one address family. Within a Server and address family, its CIDR and Kea subnet ID identify the same Subnet.
 _Avoid_: Network
@@ -76,7 +81,7 @@ Within a Server and address family, the Reservation Scope together with exactly 
 _Avoid_: Identifier priority, reservation key
 
 **Reservation Scope**:
-The place where Kea applies a Reservation. It is either Global or one specific Subnet.
+The place where Kea applies a Reservation. It is either Global or one specific Subnet. "Scope" alone means Reservation Scope.
 _Avoid_: Subnet ID, reservation location
 
 **Published Name**:

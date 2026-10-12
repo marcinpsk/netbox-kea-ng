@@ -21,7 +21,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _ViewTestBase
+from .utils import _make_db_server, _ViewTestBase
 
 
 def _return_url(url: str) -> list[str]:
@@ -84,7 +84,8 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
 
     def test_combined_row_actions_return_to_the_combined_search(self):
         url = reverse("plugins:netbox_kea:combined_reservations4")
-        row, search = self._searched_row(url, {"server": self.server.pk, "q": "searched"})
+        other = _make_db_server(name="search-other", dhcp4=False)
+        row, search = self._searched_row(url, {"server": [self.server.pk, other.pk], "q": "searched"})
         self.assertEqual(_return_url(row["edit_url"]), [search])
         self.assertEqual(_return_url(row["delete_url"]), [search])
 
@@ -110,7 +111,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
     def test_the_tab_and_the_combined_view_present_the_same_row(self):
         tab_row, _ = self._searched_row(self._url(), {})
         url = reverse("plugins:netbox_kea:combined_reservations4")
-        combined_row, _ = self._searched_row(url, {"server": self.server.pk})
+        combined_row, _ = self._searched_row(url, {})
 
         # The return URL of each action is the page that shows the row.
         actions = {"edit_url", "delete_url"}
@@ -600,7 +601,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
         url = reverse("plugins:netbox_kea:combined_reservations4")
 
         with stub_kea(responses):
-            response = self.client.get(url, {"server": self.server.pk})
+            response = self.client.get(url)
 
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.context["snapshot_complete"])
@@ -630,7 +631,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
         url = reverse("plugins:netbox_kea:combined_reservations6")
 
         with stub_kea(responses) as kea:
-            response = self.client.get(url, {"server": self.server.pk})
+            response = self.client.get(url)
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "2001:db8::20")
@@ -659,7 +660,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
         url = reverse("plugins:netbox_kea:combined_reservations4")
 
         with stub_kea(responses) as kea:
-            response = self.client.get(url, {"server": self.server.pk})
+            response = self.client.get(url)
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "combined-read-only.example.invalid")
@@ -691,7 +692,8 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
         url = reverse("plugins:netbox_kea:combined_reservations4")
 
         with stub_kea(responses):
-            response = self.client.get(url, {"server": self.server.pk, "scope": "global"})
+            other = _make_db_server(name="scope-only-other", dhcp4=False)
+            response = self.client.get(url, {"server": [self.server.pk, other.pk], "scope": "global"})
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "global.example.invalid")
@@ -712,7 +714,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
         url = reverse("plugins:netbox_kea:combined_reservations4")
 
         with stub_kea(responses) as kea:
-            response = self.client.get(url, {"server": self.server.pk, "export": "json"})
+            response = self.client.get(url, {"export": "json"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(

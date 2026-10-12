@@ -213,9 +213,7 @@ class TestSubnetEnrichment(_ViewTestBase):
         }
         with stub_kea({**_ABSENT_READ_HOOKS, **responses}):
             tab_response = self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
-            combined_response = self.client.get(
-                reverse("plugins:netbox_kea:combined_subnets4"), {"server": self.server.pk}
-            )
+            combined_response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"))
 
         self.assertEqual(tab_response.status_code, 200)
         self.assertEqual(combined_response.status_code, 200)
@@ -2760,7 +2758,7 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
     def _run(self, responses):
         """Render the combined Subnet table through its public HTTP view."""
         with stub_kea({**_ABSENT_READ_HOOKS, **responses}):
-            response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"), {"server": self.server.pk})
+            response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"))
         self.assertEqual(response.status_code, 200)
         return list(response.context["table"].data)
 

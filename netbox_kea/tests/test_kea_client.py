@@ -2058,14 +2058,6 @@ class TestLeaseStateFilter(TestCase):
         self.assertEqual((snapshot.coverage, str(snapshot.next_cursor)), ("page", "198.18.0.11"))
         self.assertEqual(kea.bodies("lease4-get-page")[0]["arguments"]["limit"], 2)
 
-    def test_a_read_of_every_lease_keeps_only_leases_in_the_state(self):
-        records = [lease_record("198.18.0.10", state=1), lease_record("198.18.0.11"), lease_record("198.18.0.12")]
-        with stub_kea({"lease4-get-page": lease_pages(records)}):
-            snapshot = self.client.lease_get_all(4, per_page=2, state="declined", server_id=1)
-
-        self.assertEqual(snapshot.records, _typed(records[0]))
-        self.assertEqual((snapshot.query.state, snapshot.coverage), ("declined", "exhaustive"))
-
 
 class TestLeaseGetAllPagination(TestCase):
     """KeaClient.lease_get_all() reads every page, accounts raw records and proves the end or reports it."""

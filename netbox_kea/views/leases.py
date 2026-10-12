@@ -239,7 +239,7 @@ class LeaseSearch:
     """What one Lease read asks of a Server.
 
     A selector *by* searches by the value *q*. Without one, the read covers every Lease: the page of *per_page*
-    Leases after *cursor*, or with *max_leases* every page until that many raw records.
+    Leases after *cursor*.
     """
 
     by: str = ""
@@ -247,7 +247,6 @@ class LeaseSearch:
     state: LeaseState | None = None
     cursor: str | None = None
     per_page: int = 250
-    max_leases: int | None = None
 
 
 def _read_leases(client: KeaClient, family: Family, search: LeaseSearch, server_id: int) -> LeaseSnapshot:
@@ -255,10 +254,6 @@ def _read_leases(client: KeaClient, family: Family, search: LeaseSearch, server_
     if search.by:
         value = str(search.q.cidr) if search.by == constants.BY_SUBNET else search.q
         return client.lease_search(family, search.by, value, state=search.state, server_id=server_id)
-    if search.max_leases is not None:
-        return client.lease_get_all(
-            family, per_page=search.per_page, max_leases=search.max_leases, state=search.state, server_id=server_id
-        )
     return client.lease_get_page(
         family, limit=search.per_page, cursor=search.cursor, state=search.state, server_id=server_id
     )
@@ -347,7 +342,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         # For non-htmx requests.
 
         table = self.get_table([], request)
-        form = self._make_search_form(instance, request.GET if "q" in request.GET else None)
+        form = self._make_search_form(instance, request.GET if "q" in request.GET or "state" in request.GET else None)
         can_change = Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists()
         ctx: dict[str, Any] = {
             "form": form,

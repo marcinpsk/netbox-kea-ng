@@ -1,138 +1,184 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-import concurrent.futures
-import contextlib
-import logging
-from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
+from urllib.parse import urlencode
 
+from django.contrib import messages
+from django.forms import ChoiceField, Field
 from django.http import HttpResponse
 from django.http.request import HttpRequest
-from django.shortcuts import render
+from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.views import View
 
 from .. import forms, server_configuration, subnet_catalogue, tables
-from ..constants import Family, LeaseState
-from ..decimal_text import parse_decimal
-from ..kea import LeaseQueryGuardError, lease_query_guard_message
-from ..leases import LeaseSnapshot
+from ..constants import Family
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
-from ..utilities import (
-    export_table,
-    snapshot_rows,
-)
+from ..utilities import export_table
 from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
 from .fan_out import fan_out
-from .leases import LeaseSearch, _enrich_leases_with_badges, lease_sync_gates
-from .leases import fetch as fetch_leases
-from .notices import HEADLINES, Notice, ServerNotices, notice
+from .notices import Notice, notice
 from .reservations import ReservationQuery
 from .reservations import empty_text as reservation_empty_text
 from .reservations import fetch as fetch_reservations
 from .reservations import present as present_reservations
+from .server_scope import SELECTION_FIELD, ServerScope, resolve
+from .sync_jobs import get_all_jobs_for_server
 
-logger = logging.getLogger(__name__)
-
-
-#: The raw Lease records that a read of every Lease takes from each Server; reaching it gives ``page`` coverage.
-_COMBINED_MAX_LEASES = 1000
-
-
-def _server_lease_rows(server: Server, snapshot: LeaseSnapshot) -> list[dict[str, Any]]:
-    """Return the presentation rows of one server's Snapshot, tagged with the server."""
-    rows = snapshot_rows(snapshot)
-    for row in rows:
-        row["server_name"] = server.name
-        row["server_pk"] = server.pk
-    return rows
+_LEASE_SEARCH_FIELDS = ("q", "by", "state")
+_SECTIONS = (
+    ("overview", "Overview"),
+    ("leases", "Leases"),
+    ("subnets", "Subnets"),
+    ("reservations", "Reservations"),
+    ("configuration", "Configuration"),
+    ("sync", "Sync"),
+)
 
 
-@dataclass
-class _CombinedLeaseRead:
-    """The lease rows of several servers and why some servers are missing or partial."""
-
-    rows: list[dict[str, Any]] = field(default_factory=list)
-    notices: ServerNotices = field(default_factory=ServerNotices)
-    truncated_servers: list[str] = field(default_factory=list)
-
-    def add(self, server: Server, snapshot: LeaseSnapshot) -> None:
-        """Add the valid Leases of one server and its Notice."""
-        self.rows.extend(_server_lease_rows(server, snapshot))
-        self.notices.add(server, notice(snapshot))
-        if snapshot.coverage != "exhaustive":
-            self.truncated_servers.append(server.name)
-
-
-def _read_combined_leases(
-    servers: list[Server], version: Family, q: Any, by: str | None, state_filter: LeaseState | None
-) -> _CombinedLeaseRead:
-    """Search each server, or read each one up to its cap for a state-only filter."""
-    read = _CombinedLeaseRead()
-    if q and by:
-        search = LeaseSearch(by, q, state_filter)
-    else:
-        search = LeaseSearch(state=state_filter, max_leases=_COMBINED_MAX_LEASES)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(fetch_leases, s, version, search): s for s in servers}
-        for future in concurrent.futures.as_completed(futures):
-            server = futures[future]
-            # A refused query and a ValueError are outside the notice rule; each keeps its own message.
-            try:
-                loaded = future.result()
-            except LeaseQueryGuardError as exc:
-                read.notices.warnings.append((server.name, lease_query_guard_message(exc, state_filter)))
-            except ValueError:
-                logger.exception("Failed to query server %s", server.name)
-                read.notices.errors.append((server.name, HEADLINES["lease"]))
-            else:
-                if isinstance(loaded, Notice):
-                    read.notices.add(server, loaded)
-                else:
-                    read.add(server, loaded)
-    return read
-
-
-def _selected_server_pks(request: HttpRequest) -> set[int]:
-    """Return the Server primary keys that the ``server`` query parameters select."""
-    selected = set()
-    for text in request.GET.getlist("server"):
-        with contextlib.suppress(ValueError):
-            selected.add(parse_decimal(text))
-    return selected
+def _search_value_label(field: Field, value: str) -> str:
+    """Return the choice label of *value*, or *value* itself for free text or an unknown choice."""
+    if not isinstance(field, ChoiceField):
+        return value
+    # The lease search forms use flat (value, label) choices.
+    return dict(cast("list[tuple[str, str]]", field.choices)).get(value, value)
 
 
 class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
-    """Shared mixin for all combined multi-server views.
-
-    Provides:
-    - ``active_tab`` class attribute used by the template tab bar
-    - ``_combined_context`` — injects all_servers, selected_server_pks, server_qs, active_tab
-    - ``_get_servers`` — returns servers to query (all, or selected via ?server=)
-    """
+    """Resolve the Server Scope once before a combined page reads live data."""
 
     active_tab: str = "overview"
+    dhcp_version: Family | None = None
+    server_scope: ServerScope
+    has_combined_export = True
+
+    def get(self, request: HttpRequest) -> HttpResponse:
+        """Resolve the Server Scope and show an explicit state for an invalid selection."""
+        self.server_scope = resolve(request, self.dhcp_version)
+        if self.server_scope.is_invalid:
+            return render(request, "netbox_kea/combined_base.html", self._combined_context(request))
+        is_export = self.has_combined_export and "export" in request.GET
+        if is_export and self.server_scope.missing_family and not self.server_scope.is_all:
+            names = ", ".join(server.name for server in self.server_scope.missing_family)
+            messages.warning(request, f"Export refused: DHCPv{self.dhcp_version} is not enabled on {names}.")
+            query = request.GET.copy()
+            query.pop("export")
+            url = reverse(f"plugins:netbox_kea:combined_{self.active_tab}")
+            return redirect(url + "?" + query.urlencode())
+        # A download stays on a section that supports combined exports.
+        if self.server_scope.is_one and not self.server_scope.missing_family and not is_export:
+            target = self._single_server_url(request)
+            if request.headers.get("HX-Request") == "true":
+                response = HttpResponse()
+                response["HX-Redirect"] = target
+                return response
+            return redirect(target)
+        return self.get_server_scoped(request)
+
+    def _single_server_url(self, request: HttpRequest) -> str:
+        """Keep only query fields that the canonical Server tab understands."""
+        server = self.server_scope.servers[0]
+        if self.active_tab == "overview":
+            return server.get_absolute_url()
+        if self.active_tab.startswith("configuration"):
+            return reverse(f"plugins:netbox_kea:server_option_def{self.dhcp_version}", args=[server.pk])
+        if self.active_tab.startswith("sync"):
+            return reverse("plugins:netbox_kea:server_sync_status", args=[server.pk])
+        compatible = {"sort", "per_page"}
+        if self.active_tab.startswith("leases"):
+            # The chooser has no per-Server Lease cursor.
+            compatible.update(_LEASE_SEARCH_FIELDS)
+        elif self.active_tab.startswith("reservations"):
+            # Combined table pagination is not a per-Server Reservation cursor.
+            compatible.update(forms.ReservationSearchForm.base_fields)
+        else:
+            compatible.add("page")
+        query = request.GET.copy()
+        for key in list(query):
+            if key not in compatible:
+                query.pop(key)
+        url = reverse(f"plugins:netbox_kea:server_{self.active_tab}", args=[server.pk])
+        return url + (f"?{query.urlencode()}" if query else "")
+
+    def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
+        """Render a combined section within its resolved Server Scope."""
+        raise NotImplementedError
+
+    def _filter_fields(self) -> set[str]:
+        """Return the query fields that filter or order this combined section; pagination is not one."""
+        if self.active_tab == "overview" or self.active_tab.startswith(("configuration", "sync")):
+            return set()
+        fields = {"sort", "per_page"}
+        if self.active_tab.startswith("leases"):
+            fields.update(_LEASE_SEARCH_FIELDS)
+        elif self.active_tab.startswith("reservations"):
+            fields.update(forms.ReservationSearchForm.base_fields)
+        elif self.active_tab.startswith("subnets"):
+            fields.update(forms.SubnetSearchForm.base_fields)
+        return fields
 
     def _combined_context(self, request: HttpRequest) -> dict[str, Any]:
         """Build context vars shared by every combined view."""
-        all_servers = list(Server.objects.restrict(request.user, "view").order_by("name"))
-        selected_server_pks = _selected_server_pks(request)
-        server_qs = "&".join(f"server={pk}" for pk in sorted(selected_server_pks))
-        return {
-            "all_servers": all_servers,
-            "selected_server_pks": selected_server_pks,
-            "server_qs": server_qs,
-            "active_tab": self.active_tab,
-        }
+        server_scope_warnings: list[tuple[str, str]] = []
+        # All permitted Servers skip a Server without the family; only an explicit selection reports it.
+        if not self.server_scope.is_all:
+            server_scope_warnings.extend(
+                (server.name, f"DHCPv{self.dhcp_version} is not enabled on this Server.")
+                for server in self.server_scope.missing_family
+            )
+        filter_fields = self._filter_fields()
+        family = self.dhcp_version or 4
+        subsection = self.active_tab.rstrip("46")
+        section = "subnets" if subsection == "shared_networks" else subsection
+        label = dict(_SECTIONS)[section]
+        scope_label = (
+            "Invalid Server selection"
+            if self.server_scope.is_invalid
+            else "All Servers"
+            if self.server_scope.is_all
+            else self.server_scope.servers[0].name
+            if self.server_scope.is_one
+            else f"{len(self.server_scope.servers)} Servers selected"
+        )
 
-    def _get_servers(self, request: HttpRequest, dhcp_version: Family) -> list["Server"]:
-        """Return servers to query: selected ones if ?server= provided, else all dhcp-flagged."""
-        dhcp_kwarg = f"dhcp{dhcp_version}"
-        selected_pks = _selected_server_pks(request)
-        base_qs = Server.objects.restrict(request.user, "view").filter(**{dhcp_kwarg: True})
-        if selected_pks:
-            return list(base_qs.filter(pk__in=selected_pks))
-        return list(base_qs)
+        def section_url(key: str, version: Family, *, filters: bool = False) -> str:
+            query = request.GET.copy()
+            for name in list(query):
+                if name not in {"server", SELECTION_FIELD} and (not filters or name not in filter_fields):
+                    query.pop(name)
+                elif name in filter_fields:
+                    query.setlist(name, [request.GET[name]])
+            # Use the resolver's normalized IDs, or its raw invalid selection.
+            query.pop("server", None)
+            query.pop(SELECTION_FIELD, None)
+            suffix = "&".join(value for value in (self.server_scope.server_qs, query.urlencode()) if value)
+            url = reverse(f"plugins:netbox_kea:combined_{key}{version}")
+            return url + (f"?{suffix}" if suffix else "")
+
+        return {
+            "server_scope": self.server_scope,
+            "server_selector_fields": [
+                (SELECTION_FIELD, "1"),
+                *((key, request.GET[key]) for key in request.GET if key in filter_fields),
+            ],
+            "server_scope_warnings": server_scope_warnings,
+            "active_tab": self.active_tab,
+            "workspace_title": f"{scope_label} · {label} · DHCPv{family}",
+            "workspace_scope_label": scope_label,
+            "workspace_section_label": label,
+            "workspace_section": section,
+            "workspace_subsection": subsection,
+            "workspace_family": family,
+            "workspace_sections": [(key, text, section_url(key, family)) for key, text in _SECTIONS],
+            "workspace_families": [(version, section_url(subsection, version, filters=True)) for version in (4, 6)],
+            "workspace_subsections": [
+                (key, text, section_url(key, family))
+                for key, text in (("subnets", "Subnets"), ("shared_networks", "Shared Networks"))
+            ]
+            if section == "subnets"
+            else [],
+        }
 
 
 class CombinedDashboardView(_CombinedViewMixin):
@@ -143,13 +189,91 @@ class CombinedDashboardView(_CombinedViewMixin):
     """
 
     active_tab = "overview"
+    dhcp_version: Family = 4
+    has_combined_export = False
     template_name = "netbox_kea/combined_overview.html"
 
-    def get(self, request: HttpRequest) -> HttpResponse:
-        """Render the overview with all configured servers."""
+    def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
+        """Render the overview with the Servers in the resolved Server Scope."""
         ctx = self._combined_context(request)
         ctx["page_title"] = "All Kea Servers"
         return render(request, self.template_name, ctx)
+
+
+class CombinedDashboard6View(CombinedDashboardView):
+    """Combined overview with DHCPv6 selected in the workspace shell."""
+
+    dhcp_version = 6
+
+
+class _ConfigurationServerChooserView(_CombinedViewMixin):
+    """Choose a permitted Server for family-specific DHCP configuration."""
+
+    has_combined_export = False
+    dhcp_version: Family = 4
+
+    def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
+        """List only selected Servers that serve this family, without reading Kea."""
+        ctx = self._combined_context(request)
+        ctx["configuration_servers"] = [
+            (server, reverse(f"plugins:netbox_kea:server_option_def{self.dhcp_version}", args=[server.pk]))
+            for server in self.server_scope.query_servers
+        ]
+        return render(request, "netbox_kea/combined_configuration.html", ctx)
+
+
+class CombinedConfiguration4View(_ConfigurationServerChooserView):
+    """Server chooser for DHCPv4 configuration."""
+
+    active_tab = "configuration4"
+
+
+class CombinedConfiguration6View(_ConfigurationServerChooserView):
+    """Server chooser for DHCPv6 configuration."""
+
+    active_tab = "configuration6"
+    dhcp_version = 6
+
+
+class _CombinedSyncView(_CombinedViewMixin):
+    """Show recorded sync results for selected Servers without reading Kea."""
+
+    has_combined_export = False
+    dhcp_version: Family = 4
+
+    def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
+        """Show each Server's latest job and its own summary, including unknown results."""
+        ctx = self._combined_context(request)
+        servers = self.server_scope.query_servers
+        rows = []
+        for server in servers:
+            job = get_all_jobs_for_server(server.pk).first()
+            summaries = job.data.get("summary", []) if job and isinstance(job.data, dict) else []
+            summary = (
+                next((item for item in summaries if isinstance(item, dict) and item.get("pk") == server.pk), None)
+                if isinstance(summaries, list)
+                else None
+            )
+            counts = {
+                key: summary.get(key) if summary else None
+                for key in ("created", "updated", "errors", "prefix_errors", "conflicts")
+            }
+            rows.append((server, job, counts))
+        ctx["sync_results"] = rows
+        return render(request, "netbox_kea/combined_sync.html", ctx)
+
+
+class CombinedSync4View(_CombinedSyncView):
+    """Recorded sync results with DHCPv4 selected."""
+
+    active_tab = "sync4"
+
+
+class CombinedSync6View(_CombinedSyncView):
+    """Recorded sync results with DHCPv6 selected."""
+
+    active_tab = "sync6"
+    dhcp_version = 6
 
 
 def _filter_subnets(subnets: list[dict[str, Any]], q: str, subnet_id: int | None) -> list[dict[str, Any]]:
@@ -195,10 +319,10 @@ class _CombinedSubnetsView(_CombinedViewMixin):
     template_name = "netbox_kea/combined_subnets.html"
     dhcp_version: Family = 4
 
-    def get(self, request: HttpRequest) -> HttpResponse:
+    def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """Merge subnet lists from all queried servers into one table."""
         ctx = self._combined_context(request)
-        servers = self._get_servers(request, self.dhcp_version)
+        servers = self.server_scope.query_servers
 
         all_subnets: list[dict[str, Any]] = []
         read = fan_out(servers, "catalogue", lambda server: _fetch_subnets_from_server(server, self.dhcp_version))
@@ -267,10 +391,10 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
     template_name = "netbox_kea/combined_shared_networks.html"
     dhcp_version: Family = 4
 
-    def get(self, request: HttpRequest) -> HttpResponse:
+    def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """Merge shared network lists from all queried servers into one table."""
         ctx = self._combined_context(request)
-        servers = self._get_servers(request, self.dhcp_version)
+        servers = self.server_scope.query_servers
 
         all_networks: list[dict[str, Any]] = []
         writable_pks = set(
@@ -333,10 +457,10 @@ class _CombinedReservationsView(_CombinedViewMixin):
     template_name = "netbox_kea/combined_reservations.html"
     dhcp_version: Family = 4
 
-    def get(self, request: HttpRequest) -> HttpResponse:
+    def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """Merge reservation lists from all queried servers into one table."""
         ctx = self._combined_context(request)
-        servers = self._get_servers(request, self.dhcp_version)
+        servers = self.server_scope.query_servers
 
         is_export = "export" in request.GET
         search_form = forms.ReservationSearchForm(request.GET or None)
@@ -451,102 +575,49 @@ class CombinedReservations6View(_CombinedReservationsView):
     active_tab = "reservations6"
 
 
-class _CombinedLeasesView(_CombinedViewMixin):
-    """Base view: broadcast a lease search query across multiple Kea servers."""
+class _LeaseServerChooserView(_CombinedViewMixin):
+    """Choose one Server in the Server Scope for a lease search."""
 
+    has_combined_export = False
     template_name = "netbox_kea/combined_leases.html"
     dhcp_version: Family = 4
 
-    def get(self, request: HttpRequest) -> HttpResponse:
-        """Render the search form or, when a query is supplied, merge results."""
-        search_form_cls = forms.Leases4SearchForm if self.dhcp_version == 4 else forms.Leases6SearchForm
-        table_cls = tables.GlobalLeaseTable4 if self.dhcp_version == 4 else tables.GlobalLeaseTable6
-
+    def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
+        """List the Servers that serve the requested family without reading Kea."""
         ctx = self._combined_context(request)
-        has_query = "q" in request.GET and bool(request.GET.get("q"))
-        has_state = "state" in request.GET and request.GET.get("state", "") != ""
-        search_form = search_form_cls(request.GET) if (has_query or has_state) else search_form_cls()
-
+        # Django forms read the last value of a repeated field, so the chooser does too.
+        search = {key: value for key in _LEASE_SEARCH_FIELDS if (value := request.GET.get(key))}
+        search_suffix = f"?{urlencode(search)}" if search else ""
+        fields = (forms.Leases4SearchForm if self.dhcp_version == 4 else forms.Leases6SearchForm).base_fields
         ctx.update(
             {
-                "search_form": search_form,
+                "pending_search": [
+                    (fields[key].label, _search_value_label(fields[key], value)) for key, value in search.items()
+                ],
+                "lease_servers": [
+                    (
+                        server,
+                        reverse(f"plugins:netbox_kea:server_leases{self.dhcp_version}", args=[server.pk])
+                        + search_suffix,
+                    )
+                    for server in self.server_scope.query_servers
+                ],
                 "dhcp_version": self.dhcp_version,
                 "page_title": f"DHCPv{self.dhcp_version} Leases",
             }
         )
-
-        if not has_query and not has_state:
-            t = table_cls([], user=request.user)
-            t.configure(request)
-            if "export" in request.GET:
-                return export_table(t, filename=f"kea-dhcpv{self.dhcp_version}-leases.csv")
-            ctx["table"] = t
-            ctx["errors"] = []
-            ctx["truncated_servers"] = []
-            return render(request, self.template_name, ctx)
-
-        if not search_form.is_valid():
-            t = table_cls([], user=request.user)
-            t.configure(request)
-            ctx["table"] = t
-            ctx["errors"] = []
-            ctx["truncated_servers"] = []
-            return render(request, self.template_name, ctx)
-
-        q = search_form.cleaned_data.get("q")
-        by = search_form.cleaned_data.get("by")
-        state_filter = search_form.cleaned_data.get("state")
-        servers = self._get_servers(request, self.dhcp_version)
-
-        read = _read_combined_leases(servers, self.dhcp_version, q, by, state_filter)
-        all_leases = read.rows
-
-        # Enrich in the main thread so Django ORM queries see the test transaction.
-        server_map = {s.pk: s for s in servers}
-        sync = lease_sync_gates(request.user)
-        for server_pk, server in server_map.items():
-            server_leases = [entry for entry in all_leases if entry.get("server_pk") == server_pk]
-            if server_leases:
-                can_delete = request.user.has_perm("netbox_kea.bulk_delete_lease_from_server", server)
-                can_change = request.user.has_perm("netbox_kea.change_server", server)
-                _enrich_leases_with_badges(
-                    server_leases,
-                    server,
-                    self.dhcp_version,
-                    can_delete=can_delete,
-                    can_change=can_change,
-                    sync=sync,
-                    return_url=request.get_full_path(),
-                )
-
-        table = table_cls(all_leases, user=request.user)
-        table.configure(request)
-
-        if "export" in request.GET:
-            # Each server is a capped or scoped observation, so the export has limited coverage.
-            return export_table(
-                table,
-                filename=f"kea-dhcpv{self.dhcp_version}-leases-limited-coverage.csv",
-                use_selected_columns=request.GET["export"] == "table",
-            )
-
-        ctx["table"] = table
-        ctx["errors"] = read.notices.errors
-        ctx["warnings"] = read.notices.warnings
-        ctx["truncated_servers"] = read.truncated_servers
-        ctx["incomplete_servers"] = read.notices.records
         return render(request, self.template_name, ctx)
 
 
-class CombinedLeases4View(_CombinedLeasesView):
-    """Combined DHCPv4 lease search across all selected servers."""
+class CombinedLeases4View(_LeaseServerChooserView):
+    """Server chooser for DHCPv4 leases."""
 
     dhcp_version = 4
     active_tab = "leases4"
 
 
-class CombinedLeases6View(_CombinedLeasesView):
-    """Combined DHCPv6 lease search across all selected servers."""
+class CombinedLeases6View(_LeaseServerChooserView):
+    """Server chooser for DHCPv6 leases."""
 
     dhcp_version = 6
     active_tab = "leases6"

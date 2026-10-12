@@ -7,7 +7,7 @@ from netbox.plugins import PluginMenu, PluginMenuButton, PluginMenuItem
 _items = (
     PluginMenuItem(
         link="plugins:netbox_kea:combined",
-        link_text="Combined View",
+        link_text="Kea Workspace",
         permissions=["netbox_kea.view_server"],
     ),
     PluginMenuItem(

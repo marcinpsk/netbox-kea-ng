@@ -1,0 +1,55 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% if server_scope.is_invalid %}
+<div class="alert alert-warning mt-3" role="alert">
+  <h2 class="h5 mb-1">Invalid Server selection</h2>
+  <p class="mb-2">The selection is empty or contains a Server ID that is invalid, unknown, or unavailable to you.</p>
+  <a href="{{ server_scope.all_servers_url }}">Show all Servers</a>
+</div>
+{% endif %}
+{% if server_scope_warnings or warnings %}
+<div class="alert alert-warning mt-3" role="alert">
+  <strong>Some server data is incomplete:</strong>
+  <ul class="mb-0 mt-1">
+    {% for name, message in server_scope_warnings %}<li>{{ name }}: {{ message }}</li>{% endfor %}
+    {% for name, message in warnings %}<li><strong>{{ name }}</strong>: {{ message }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+{% if errors %}
+<div class="alert alert-danger mt-3" role="alert">
+  <strong>Some server data is unavailable or incomplete:</strong>
+  <ul class="mb-0 mt-1">
+    {% for name, message in errors %}<li><strong>{{ name }}</strong>: {{ message }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+{% if mutation_unavailable_servers %}
+<div class="alert alert-warning mt-3" role="alert">
+  <strong>Mutation controls are unavailable for some servers.</strong>
+  Existing Reservations remain visible for read-only use.
+  <ul class="mb-0 mt-1">
+    {% for name, reason in mutation_unavailable_servers %}<li><strong>{{ name }}</strong>: {{ reason }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+{% if snapshot_incomplete %}
+<div class="alert alert-warning mt-3" role="alert">
+  <strong>Snapshot is incomplete.</strong>
+  The Reservation Snapshot could not be read completely.
+  {% if reservation_diagnostics %}
+  See the {{ reservation_diagnostics|length }} diagnostic{{ reservation_diagnostics|length|pluralize }} below.
+  <ul class="mb-0 mt-2">
+    {% for server_name, diagnostic in reservation_diagnostics %}
+    <li><strong>{{ server_name }}</strong>: <code>{{ diagnostic.code }}</code> at
+      <code>{{ diagnostic.source_position }}</code>: {{ diagnostic.message }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
+{% elif snapshot_complete %}
+<div class="alert alert-success py-2 mt-3" role="status">
+  <i class="mdi mdi-check-circle-outline" aria-hidden="true"></i>
+  This bounded Snapshot is complete for the current page.
+</div>
+{% endif %}

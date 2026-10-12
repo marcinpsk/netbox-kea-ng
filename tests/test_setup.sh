@@ -57,3 +57,8 @@ for name in HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy; do
 done
 docker compose build "${build_args[@]}"
 docker compose up -d
+
+# The base image collects static files before the plugin wheel is installed.
+# Use the mounted plugin configuration and root-owned static directory.
+echo "Collecting plugin static files"
+docker compose exec --user root -T netbox /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py collectstatic --no-input

@@ -8,6 +8,7 @@ The sweep walks the URL resolver, so a new Server page fails until someone names
 import re
 
 import requests
+from bs4 import BeautifulSoup
 from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
 from django.urls import URLPattern, URLResolver, get_resolver, reverse
@@ -22,6 +23,15 @@ _NAMESPACE = "plugins:netbox_kea:"
 
 #: Each Server GET route that shows no Snapshot Notice, with the reason.
 _EXEMPT = {
+    "combined": "The Overview reads no Snapshot; badges have their own route.",
+    "combined_overview4": "The Overview reads no Snapshot; badges have their own route.",
+    "combined_overview6": "The Overview reads no Snapshot; badges have their own route.",
+    "combined_leases4": "A Server chooser that reads no Kea data.",
+    "combined_leases6": "A Server chooser that reads no Kea data.",
+    "combined_configuration4": "A Server chooser that reads no Kea data.",
+    "combined_configuration6": "A Server chooser that reads no Kea data.",
+    "combined_sync4": "Recorded NetBox jobs, with no live Kea read.",
+    "combined_sync6": "Recorded NetBox jobs, with no live Kea read.",
     "combined_server_status_badge": "An htmx badge that reads version-get, not a Snapshot.",
     "ipaddress_kea_reservations": "Its pk names an IP address, and it reads no Kea data.",
     "reservation_check_ip": "An htmx fragment that reads NetBox IPAM, not Kea.",
@@ -63,6 +73,9 @@ _EXEMPT = {
 
 #: The Snapshot kinds whose error headline each page must show, by route name without its family.
 _EXPECTED: dict[str, frozenset[SnapshotKind]] = {
+    "combined_subnets": frozenset({"catalogue"}),
+    "combined_shared_networks": frozenset({"configuration"}),
+    "combined_reservations": frozenset({"reservation"}),
     "server_status": frozenset({"configuration"}),
     "server_dhcp_options_edit": frozenset({"configuration"}),
     "server_option_def": frozenset({"configuration"}),
@@ -109,7 +122,11 @@ def _server_routes(resolver: URLResolver | None = None, namespace: str = "", par
         found = (*parameters, *entry.pattern.regex.groupindex)
         if isinstance(entry, URLResolver):
             yield from _server_routes(entry, f"{namespace}{entry.namespace}:" if entry.namespace else namespace, found)
-        elif isinstance(entry, URLPattern) and f"{namespace}{entry.name}".startswith(_NAMESPACE) and "pk" in found:
+        elif (
+            isinstance(entry, URLPattern)
+            and f"{namespace}{entry.name}".startswith(_NAMESPACE)
+            and ("pk" in found or str(entry.name).startswith("combined"))
+        ):
             view = getattr(entry.callback, "view_class", None) or getattr(entry.callback, "cls", None)
             if hasattr(view, "get"):
                 yield f"{namespace}{entry.name}".removeprefix(_NAMESPACE), found
@@ -119,10 +136,12 @@ def _shown_error_kinds(response) -> set[SnapshotKind]:
     """Return each Snapshot kind whose headline the page shows at the error level, as a message or an inline alert."""
     shown = {str(m) for m in get_messages(response.wsgi_request) if m.level == django_messages.ERROR}
     page = response.content.decode() if response.status_code == 200 else ""
+    alerts = BeautifulSoup(page, "html.parser").select(".alert-danger")
     return {
         kind
         for kind, text in HEADLINES.items()
         if text in shown
+        or any(text in alert.get_text() for alert in alerts)
         or re.search(rf'class="alert alert-danger[^"]*"[^>]*>\s*(?:<(?:div|strong)>\s*)*{re.escape(text)}', page)
     }
 

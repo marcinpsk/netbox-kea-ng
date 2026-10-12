@@ -336,7 +336,7 @@ class TestReservationSyncControls(_PermissionTestBase):
 
     def test_the_combined_tab_shows_a_disabled_sync_with_the_reason(self):
         self._grant_address_writes(user=self.user, constraints=_CONSTRAINT)
-        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.server.pk}"
+        url = reverse("plugins:netbox_kea:combined_reservations4")
         with stub_kea(self._responses()):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
