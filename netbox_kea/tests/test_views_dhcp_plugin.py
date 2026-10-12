@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 
 import requests
+from bs4 import BeautifulSoup
 from django.apps import apps
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
@@ -290,6 +291,18 @@ class SyncNowEndToEndTest(TestCase):
         self.assertContains(resp, "DHCP options are imported")
         self.assertContains(resp, "Unsupported options are skipped")
         self.assertNotContains(resp, "are not imported")
+
+    def test_import_mapping_notes_start_collapsed_behind_a_toggle(self):
+        conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]}}
+        with stub_kea(_sync_responses(conf)):
+            resp = self.client.get(reverse("plugins:netbox_kea:server_dhcp_plugin", args=[self.server.pk]))
+        page = BeautifulSoup(resp.content, "html.parser")
+        toggle = page.find("button", attrs={"data-bs-target": "#import-mapping-notes"})
+        self.assertEqual(" ".join(toggle.get_text().split()), "Import mapping notes")
+        self.assertEqual((toggle["aria-expanded"], toggle["aria-controls"]), ("false", "import-mapping-notes"))
+        notes = page.select_one("#import-mapping-notes")
+        self.assertEqual(notes["class"], ["collapse"])
+        self.assertIn("Shared Network grouping", notes.get_text())
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
