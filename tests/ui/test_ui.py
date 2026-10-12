@@ -452,7 +452,11 @@ def search_lease(page: Page, version: Literal[4, 6], by: str, q: str, *, filter_
     choose_lease_attribute(page, by, filter_attribute=filter_attribute)
     set_lease_search_value(page, q)
     with page.expect_response(re.compile(f"/leases{version}/")) as r:
-        page.get_by_role("button", name="Search").click()
+        if filter_attribute:
+            # After a filtered pick, NetBox's TomSelect opens again over the form and takes focus back.
+            page.locator("#id_q").press("Enter")
+        else:
+            page.get_by_role("button", name="Search").click()
         assert r.value.ok
 
 
@@ -1867,7 +1871,8 @@ def test_reservation_add_form_explains_relay_remote_id_flex_id(
     """The live add form excludes remote ID and links to the Kea Flex ID guidance."""
     page.goto(f"{plugin_base}/servers/{reservation_server.id}/reservations4/add/")
 
-    help_text = page.locator("#id_identifier_type_helptext")
+    # NetBox 4.3 gives the help text no id, so find it in the row of its field.
+    help_text = page.locator("div.row.mb-3", has=page.locator("#id_identifier_type")).locator("span.form-text")
     expect(help_text).to_contain_text("For relay remote ID, configure Kea flex-id.")
     expect(help_text.get_by_role("link", name="Kea flex-id")).to_have_attribute(
         "href", re.compile(r"kea\.readthedocs\.io/.+flex-id")
