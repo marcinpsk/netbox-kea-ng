@@ -2,6 +2,7 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% extends "netbox_kea/server_workspace.html" %}
+{% load kea_workspace %}
 
 {% block content %}
   <div class="row mb-3">
@@ -38,7 +39,8 @@
       {% include "inc/panels/tags.html" %}
     </div>
   </div>
-  <div id="kea-server-status" hx-get="{% url 'plugins:netbox_kea:server_status_data' object.pk %}" hx-trigger="load" hx-swap="innerHTML">
+  {% url 'plugins:netbox_kea:server_status_data' object.pk as status_url %}
+  <div id="kea-server-status" hx-get="{% workspace_url status_url %}" hx-trigger="load" hx-swap="innerHTML">
     <p role="status">Loading daemon status…</p>
   </div>
 {% endblock content %}

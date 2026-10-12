@@ -23,8 +23,9 @@ from ..server_connection import connection_values, validate_connection_change
 from ..utilities import (
     format_duration,
 )
+from ._base import _safe_return_url
 from .notices import Notice, inline_notices, notice
-from .workspace import ServerFamilyMixin, server_context
+from .workspace import ServerFamilyMixin, server_context, with_return_url
 
 logger = logging.getLogger(__name__)
 
@@ -317,11 +318,12 @@ class ServerStatusView(generic.ObjectView):
         # Build the services list from the configured service URLs (config-driven),
         # not from live status data. This ensures enable/disable buttons always render
         # even when the status fetch fails.
+        return_url = _safe_return_url(request, "")
         services = [
             {
                 "name": name,
                 "status_data": statuses.get(name, {}),
-                **urls,
+                **{key: with_return_url(url, return_url) for key, url in urls.items()},
             }
             for name, urls in service_urls.items()
         ]

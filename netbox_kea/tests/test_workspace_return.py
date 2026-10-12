@@ -9,6 +9,7 @@ from django.test import override_settings
 from django.urls import reverse
 
 from .kea_stub import SubnetDaemon, _catalogue_responses_for_subnets, _network_present, _res_page, stub_kea
+from .test_views_server import _status_stub
 from .utils import _make_db_server, _page_data, _ViewTestBase
 
 
@@ -444,6 +445,24 @@ class TestChooserWorkspaceOrigin(_ViewTestBase):
         page = BeautifulSoup(response.content, "html.parser")
         target = next(link for link in page.select(".card-header a") if link.text.strip() == other.name)
         self.assertEqual(parse_qs(urlsplit(target["href"]).query).get("return_url"), [origin])
+
+    def test_overview_status_controls_keep_workspace_origin(self):
+        origin = reverse("plugins:netbox_kea:combined_overview4") + "?" + urlencode([("server", self.server.pk)])
+        overview = self.client.get(self.server.get_absolute_url(), {"family": 4, "return_url": origin})
+        status = BeautifulSoup(overview.content, "html.parser").select_one("#kea-server-status")["hx-get"]
+        self.assertEqual(parse_qs(urlsplit(status).query).get("return_url"), [origin])
+        with _status_stub():
+            controls = BeautifulSoup(self.client.get(status).content, "html.parser").select('[role="group"] a')
+        self.assertEqual(len(controls), 6)
+        for link in controls:
+            with self.subTest(control=link["href"]):
+                self.assertEqual(parse_qs(urlsplit(link["href"]).query).get("return_url"), [origin])
+                with _status_stub():
+                    shell = BeautifulSoup(self.client.get(link["href"]).content, "html.parser")
+                back = next(
+                    node for node in shell.select("#kea-workspace-shell a") if node.text.strip() == "Back to workspace"
+                )
+                self.assertEqual(back["href"], origin)
 
     def _disabled_canonical(self, family):
         setattr(self.server, f"dhcp{family}", False)
