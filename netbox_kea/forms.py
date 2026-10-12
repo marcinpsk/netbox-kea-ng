@@ -1171,13 +1171,13 @@ class _SubnetBaseForm(forms.Form):
         label="Pools",
         required=False,
         widget=forms.Textarea(attrs={"rows": 3}),
-        help_text="One pool per line, e.g. <code>10.0.0.100-10.0.0.200</code>",
+        help_text=format_html("One pool per line, e.g. <code>{}</code>", "10.0.0.100-10.0.0.200"),
     )
     gateway = _GatewayField(
         label="Default gateway",
         required=False,
         max_length=50,
-        help_text="IP address of the default gateway (option <code>routers</code>).",
+        help_text=format_html("IP address of the default gateway (option <code>{}</code>).", "routers"),
     )
     dns_servers = _AddressListField(
         label="DNS servers",

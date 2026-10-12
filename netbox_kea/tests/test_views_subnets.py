@@ -324,6 +324,16 @@ class TestSubnetOptionsColumn(_ViewTestBase):
             {field: initial[field] for field in ("gateway", "dns_servers", "ntp_servers")},
         )
 
+    def test_the_edit_form_help_renders_its_code_markup(self):
+        daemon = SubnetDaemon(4, [{"id": 42, "subnet": "192.0.2.0/24", "pools": [], "option-data": []}])
+        with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}):
+            response = self.client.get(reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42]))
+
+        content = response.content.decode()
+        self.assertIn("<code>10.0.0.100-10.0.0.200</code>", content)
+        self.assertIn("<code>routers</code>", content)
+        self.assertNotIn("&lt;code&gt;", content)
+
     def test_more_than_one_fitting_entry_shows_a_badge_and_no_value(self):
         content = self._page(
             4,
