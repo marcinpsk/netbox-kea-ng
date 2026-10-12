@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Exercise the Server workspace through real requests and rendered navigation."""
 
+from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -9,7 +10,7 @@ import requests
 from bs4 import BeautifulSoup
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.messages import get_messages
-from django.test import override_settings
+from django.test import SimpleTestCase, override_settings
 from django.urls import reverse
 from users.models import ObjectPermission
 
@@ -524,3 +525,21 @@ class TestWorkspaceTabRow(_ViewTestBase):
         # NetBox makes a card header a flex container, where float-end has no effect.
         self.assertTrue({"d-flex", "justify-content-between"} <= set(header["class"]))
         self.assertNotIn("float-end", header.a["class"])
+
+
+class TestCardHeaderBadges(SimpleTestCase):
+    """A card header with a badge keeps a gap to the badge and wraps it below the title on a narrow screen."""
+
+    def test_each_header_badge_has_a_gap_and_wraps(self):
+        templates = Path(__file__).resolve().parents[1] / "templates"
+        checked = 0
+        for template in sorted(templates.rglob("*.html")):
+            for header in BeautifulSoup(template.read_text(), "html.parser").select(".card-header"):
+                for badge in header.select(".badge"):
+                    checked += 1
+                    with self.subTest(template=template.name, badge=badge.get_text(" ", strip=True)):
+                        self.assertTrue({"flex-wrap", "gap-2"} <= set(header["class"]))
+                        # A data badge (a CIDR, an address, a name) can be longer than the card is wide.
+                        if "font-monospace" in badge["class"]:
+                            self.assertTrue({"text-wrap", "text-break"} <= set(badge["class"]))
+        self.assertGreaterEqual(checked, 6)
