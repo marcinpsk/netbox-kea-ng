@@ -21,7 +21,7 @@ from .utils import _make_db_server, _ViewTestBase
 
 def _options(response, selector: str) -> list[tuple[str, str, bool]]:
     page = BeautifulSoup(response.content, "html.parser")
-    return [(o["value"], o.get_text(), o.has_attr("selected")) for o in page.select(f"{selector} option")]
+    return [(str(o["value"]), o.get_text(), o.has_attr("selected")) for o in page.select(f"{selector} option")]
 
 
 def _list_responses(family: int, subnets: list[dict]) -> dict:

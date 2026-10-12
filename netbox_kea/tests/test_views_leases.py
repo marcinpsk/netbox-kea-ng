@@ -4231,7 +4231,7 @@ class TestLeaseSearchSubnetDropdown(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    def _search_value(self, response) -> "BeautifulSoup":
+    def _search_value(self, response):
         return BeautifulSoup(response.content, "html.parser").select_one("#lease-search-value")
 
     @staticmethod

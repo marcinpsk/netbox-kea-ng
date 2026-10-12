@@ -791,7 +791,7 @@ class ReservationIdentifierSelect(forms.Select):
 
 
 def _configure_identifier_capabilities(
-    form: "Reservation4Form | Reservation6Form",
+    form: "_ReservationForm",
     capabilities: ReservationCapabilities | None,
     version: Family,
 ) -> None:
