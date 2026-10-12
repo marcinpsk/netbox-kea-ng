@@ -30,35 +30,30 @@ def workspace_return_field(context):
 
 @register.inclusion_tag("netbox_kea/inc/workspace_shell.html", takes_context=True)
 def server_workspace(context, server, out_of_band=False):
-    """Render the same scope bar as combined pages for one saved Server."""
-    workspace = server_context(context["request"], server) if server and server.pk else {}
-    return {**workspace, "workspace_oob": out_of_band}
-
-
-@register.inclusion_tag("netbox_kea/inc/server_object_tabs.html", takes_context=True)
-def server_object_tabs(context, server):
-    """Preserve native extra tabs after the workspace's six sections."""
+    """Render the same scope bar as combined pages for one saved Server, with its native object tabs."""
     if not server or not server.pk:
-        return {"tabs": []}
-    tabs = model_view_tabs(context, server)["tabs"]
+        return {"workspace_oob": out_of_band}
+    workspace = server_context(context["request"], server)
+    object_tabs = _object_tabs(context, server, workspace["workspace_family"])
+    if any(tab["is_active"] for tab in object_tabs):
+        # A native tab page, such as the Journal, is not one of the workspace sections.
+        workspace["workspace_section"] = None
+    return {**workspace, "workspace_object_tabs": object_tabs, "workspace_oob": out_of_band}
+
+
+def _object_tabs(context, server, family) -> list[dict]:
+    """Return the native tabs that follow the workspace sections, such as Journal, Changelog and Jobs."""
     workspace_tabs = {"status", "leases4", "subnets4", "reservations4", "option_def4", "sync_status"}
-    family = server_context(context["request"], server)["workspace_family"]
-    extra_tabs = []
-    for tab in tabs:
+    return_url = _safe_return_url(context["request"], "")
+    tabs = []
+    for tab in model_view_tabs(context, server)["tabs"]:
         if tab["name"] in workspace_tabs:
             continue
         url = urlsplit(tab["url"])
         query = QueryDict(url.query, mutable=True)
         query["family"] = str(family)
-        extra_tabs.append(
-            {
-                **tab,
-                "url": with_return_url(
-                    urlunsplit(url._replace(query=query.urlencode())), _safe_return_url(context["request"], "")
-                ),
-            }
-        )
-    return {"tabs": extra_tabs}
+        tabs.append({**tab, "url": with_return_url(urlunsplit(url._replace(query=query.urlencode())), return_url)})
+    return tabs
 
 
 @register.simple_tag(takes_context=True)
