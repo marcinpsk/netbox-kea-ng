@@ -2204,7 +2204,7 @@ class TestSubnetManagement:
             for row in rows_after_add:
                 for link in row.locator("a[href*='subnets4/'][href*='/delete/']").all():
                     href = link.get_attribute("href") or ""
-                    m = re.search(r"/subnets4/(\d+)/delete/$", href)
+                    m = re.search(r"/subnets4/(\d+)/delete/$", urlparse(href).path)
                     if m:
                         all_added_ids.append(int(m.group(1)))
             assert all_added_ids, f"Could not find any subnet delete links for {test_subnet}"
