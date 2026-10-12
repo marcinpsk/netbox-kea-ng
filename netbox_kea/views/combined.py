@@ -566,6 +566,8 @@ class _CombinedReservationsView(_CombinedViewMixin):
                 next_query[f"reservation_cursor_{server.pk}"] = presented.next_cursor
                 has_next = True
 
+        # A Catalogue only feeds the Subnet ID filter, so its errors do not make the Reservations incomplete.
+        reservations_read = not notices.errors
         self._offer_subnets(
             search_form, servers, read.results, exhausted=[s for s in servers if s.pk not in queries], notices=notices
         )
@@ -582,9 +584,10 @@ class _CombinedReservationsView(_CombinedViewMixin):
                 "table": table,
                 "search_form": search_form,
                 "errors": notices.errors,
+                "warnings": notices.warnings,
                 "mutation_unavailable_servers": mutation_unavailable_servers,
                 "reservation_diagnostics": notices.record_diagnostics,
-                "snapshot_complete": not notices.errors and all(snapshot.complete for snapshot in snapshots),
+                "snapshot_complete": reservations_read and all(snapshot.complete for snapshot in snapshots),
                 # A failed Server read is already in the error list, so only a read Snapshot can be incomplete.
                 "snapshot_incomplete": any(not snapshot.complete for snapshot in snapshots),
                 "next_page_url": f"{request.path}?{next_query.urlencode()}" if has_next else None,
@@ -615,13 +618,12 @@ class _CombinedReservationsView(_CombinedViewMixin):
         for server, read_snapshot in catalogue_read.results:
             catalogues[server.pk] = read_snapshot
             notices.add(server, notice(read_snapshot))
-        known = [(server, catalogues.get(server.pk)) for server in servers]
         search_form.offer_subnets(
             forms.combined_subnet_id_options(
-                (server.name, snapshot.subnet_choices) for server, snapshot in known if snapshot is not None
-            ),
-            # Only a full set of Catalogues shows that a Subnet ID is absent from the configuration.
-            confirmed=all(snapshot is not None and not snapshot.unavailable for _server, snapshot in known),
+                (server.name, snapshot.subnet_choices)
+                for server in servers
+                if (snapshot := catalogues.get(server.pk)) is not None
+            )
         )
 
 

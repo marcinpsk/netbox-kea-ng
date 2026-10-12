@@ -4266,7 +4266,7 @@ class TestLeaseSearchSubnetDropdown(_ViewTestBase):
         with _lease_stub({"subnet4-list": self._LISTING, "lease4-get-all": empty}) as kea:
             response = self.client.get(self._url(), {"by": "subnet_id", "q": "9"}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
-        self.assertIn(("9", "9 (not in the current configuration)", True), self._options(self._search_value(response)))
+        self.assertIn(("9", "9 (not listed)", True), self._options(self._search_value(response)))
         # The form is valid, so the Subnet read reaches Kea.
         self.assertIn("lease4-get-all", kea.commands())
 
@@ -4322,7 +4322,7 @@ class TestLeaseSearchSubnetDropdown(_ViewTestBase):
             if element == "select":
                 chosen = q.select_one("option[selected]")
                 self.assertEqual(chosen["value"] if chosen else "", selected)
-                self.assertNotIn("not in the current configuration", response.content.decode())
+                self.assertNotIn("(not listed)", response.content.decode())
             else:
                 self.assertEqual(q["value"], selected)
             # A control that the user has not submitted shows no validation error.

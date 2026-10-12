@@ -850,7 +850,7 @@ def test_dhcp_lease_invalid_search_values(page: Page, kea: KeaClient, version: i
     if by in _SUBNET_ATTRIBUTES:
         # The Subnet dropdown offers only configured Subnets, so a typed value comes from a shared URL.
         page.goto(f"{page.url.split('?')[0]}?{urlencode({'by': _SUBNET_ATTRIBUTES[by], 'q': q})}")
-        expect(page.locator("#id_q option[selected]")).to_have_text(f"{q} (not in the current configuration)")
+        expect(page.locator("#id_q option[selected]")).to_have_text(f"{q} (not listed)")
     else:
         choose_lease_attribute(page, by)
         page.locator("#id_q").fill(q)

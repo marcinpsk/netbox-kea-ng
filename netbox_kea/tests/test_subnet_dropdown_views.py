@@ -60,7 +60,7 @@ class TestReservationSubnetIdFilter(_ViewTestBase):
 
     def test_a_filter_value_that_the_catalogue_does_not_list_stays_selected(self):
         response = self._get({"subnet_id": "42"})
-        self.assertIn(("42", "42 (not in the current configuration)", True), _options(response, "#id_subnet_id"))
+        self.assertIn(("42", "42 (not listed)", True), _options(response, "#id_subnet_id"))
         self.assertEqual(response.context["search_form"].cleaned_data["subnet_id"], 42)
 
     def test_without_catalogue_subnets_the_filter_stays_a_number_input(self):
@@ -152,17 +152,21 @@ class TestCombinedReservationSubnetIdFilter(_ViewTestBase):
             ],
         )
 
-    def test_an_exhausted_server_whose_catalogue_fails_is_reported_and_unlisted_ids_are_not_called_absent(self):
+    def _page_two_with_kea_a_failing(self, failing: set[str], kea_a_subnets: list[dict]):
+        """Get page 2 where kea-a is exhausted with an expired Catalogue and *failing* commands to kea-a fail.
+
+        kea-b has a cached Catalogue and answers. Return the response, the stub and the commands kea-a failed.
+        """
         second = _make_db_server(name="kea-b", ca_url="https://kea-b.example.com")
         self.server.name = "kea-a"
         self.server.save()
-        # Only kea-b has a cached Catalogue; the Catalogue cache of kea-a has expired.
         with stub_kea(_catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "10.1.0.0/24"}])):
             subnet_catalogue.display(second, 4)
         responses = {
             "reservation-get-page": _res_page([]),
             "list-commands": _reservation_mutation_commands(),
-            **_catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "10.1.0.0/24"}]),
+            # kea-b answers the configuration of its capability read, and kea-a its Subnet list.
+            **_catalogue_responses_for_subnets(4, kea_a_subnets),
         }
         query = {
             "server": [self.server.pk, second.pk],
@@ -175,19 +179,23 @@ class TestCombinedReservationSubnetIdFilter(_ViewTestBase):
             unanswered = []
 
             def post(session, url, **kwargs):
-                # kea-a does not answer.
-                if url.startswith(self.server.ca_url):
-                    unanswered.append(kwargs["json"]["command"])
-                    raise requests.ConnectionError("kea-a is down")
+                command = kwargs["json"]["command"]
+                if url.startswith(self.server.ca_url) and command in failing:
+                    unanswered.append(command)
+                    raise requests.ConnectionError("kea-a does not answer")
                 return answered(session, url, **kwargs)
 
             with patch("netbox_kea.kea.requests.Session.post", new=post):
                 response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"), query)
         self.assertEqual(response.status_code, 200)
+        self.assertNotIn("reservation-get-page", unanswered)
+        return response, kea, unanswered
+
+    def test_an_exhausted_server_whose_catalogue_fails_is_reported_and_its_subnets_are_not_listed(self):
+        response, kea, unanswered = self._page_two_with_kea_a_failing({"subnet4-list", "config-get"}, [])
         # kea-a is read only for its expired Catalogue; kea-b answers from its cached Catalogue.
         self.assertIn("subnet4-list", unanswered)
-        self.assertNotIn("reservation-get-page", unanswered)
-        self.assertNotIn("subnet4-list", kea.commands())
+        self.assertEqual([command for command in kea.commands() if command == "subnet4-list"], [])
         self.assertIn(("kea-a", HEADLINES["catalogue"]), response.context["errors"])
         self.assertContains(response, HEADLINES["catalogue"])
         self.assertEqual(
@@ -198,6 +206,23 @@ class TestCombinedReservationSubnetIdFilter(_ViewTestBase):
                 ("5", "5 (not listed)", True),
             ],
         )
+        # The Catalogue only feeds the filter: the Reservations of the page are complete.
+        self.assertContains(response, "This bounded Snapshot is complete for the current page.")
+
+    def test_a_usable_catalogue_with_a_warning_of_an_exhausted_server_renders_as_a_warning(self):
+        response, _kea, unanswered = self._page_two_with_kea_a_failing(
+            {"config-get"}, [{"id": 7, "subnet": "10.7.0.0/24"}]
+        )
+        self.assertIn("config-get", unanswered)
+        # The HTML first: the page must render the warning, with warning styling.
+        alerts = BeautifulSoup(response.content, "html.parser").select(".alert-warning")
+        rendered = [alert.get_text(" ", strip=True) for alert in alerts if "kea-a" in alert.get_text()]
+        self.assertEqual(len(rendered), 1, [alert.get_text(" ", strip=True) for alert in alerts])
+        warnings = [message for name, message in response.context["warnings"] if name == "kea-a"]
+        self.assertTrue(warnings)
+        self.assertIn(warnings[0], rendered[0])
+        self.assertNotIn("kea-a", " ".join(name for name, _message in response.context["errors"]))
+        self.assertIn(("7", "7: 10.7.0.0/24 (kea-a)", False), _options(response, "#id_subnet_id"))
 
 
 class TestReservationFormSubnetDropdown(_ViewTestBase):

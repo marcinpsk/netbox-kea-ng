@@ -466,9 +466,8 @@ class ServerImportForm(_ServerConnectionFormMixin, NetBoxModelImportForm):
         )
 
 
-#: The label suffix of a dropdown value that the Subnet Catalogue does not list.
-NOT_IN_CONFIGURATION = "not in the current configuration"
-#: The label suffix of an unlisted value when a Catalogue could not be read, so its absence is not confirmed.
+#: The label suffix of a dropdown value that the Subnet Catalogue does not list. A Catalogue can leave out a
+#: Subnet that Kea has (a quarantined duplicate, a failed read), so the label never claims that it is absent.
 NOT_LISTED = "not listed"
 
 SubnetChoices = tuple[tuple[str, int], ...]
@@ -501,14 +500,11 @@ def combined_subnet_id_options(server_choices: Iterable[tuple[str, SubnetChoices
     return [(str(subnet_id), f"{subnet_id}: {', '.join(by_id[subnet_id])}") for subnet_id in sorted(by_id)]
 
 
-def offer_choices(
-    form: forms.Form, name: str, options: Sequence[tuple[str, str]], blank_label: str, *, confirmed: bool = True
-) -> None:
+def offer_choices(form: forms.Form, name: str, options: Sequence[tuple[str, str]], blank_label: str) -> None:
     """Show the field *name* of *form* as a dropdown of *options*; without options keep its input.
 
     A current value that is not among *options* stays selectable with a label that says so, so a shared
-    search still runs. Without *confirmed* (a Catalogue could not be read) the label does not claim that the
-    value is absent from the configuration. The field keeps its own validation.
+    search still runs. The field keeps its own validation.
     """
     if not options:
         return
@@ -516,7 +512,7 @@ def offer_choices(
     current = "" if value is None else str(value)
     choices = [("", blank_label), *options]
     if current and current not in {option for option, _label in options}:
-        choices.append((current, f"{current} ({NOT_IN_CONFIGURATION if confirmed else NOT_LISTED})"))
+        choices.append((current, f"{current} ({NOT_LISTED})"))
     form.fields[name].widget = forms.Select(choices=choices)
 
 
@@ -1497,9 +1493,9 @@ class ReservationSearchForm(forms.Form):
         help_text="Search a bounded batch by Reservation Scope. Continue with Next page if more records remain.",
     )
 
-    def offer_subnets(self, options: Sequence[tuple[str, str]], *, confirmed: bool = True) -> None:
+    def offer_subnets(self, options: Sequence[tuple[str, str]]) -> None:
         """Show Subnet ID as a dropdown of *options*; without options keep the number input."""
-        offer_choices(self, "subnet_id", options, "All subnets", confirmed=confirmed)
+        offer_choices(self, "subnet_id", options, "All subnets")
 
 
 class SubnetSearchForm(forms.Form):
