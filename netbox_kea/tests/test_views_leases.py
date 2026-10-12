@@ -4283,15 +4283,23 @@ class TestLeaseSearchSubnetDropdown(_ViewTestBase):
             response = self.client.get(self._url())
         by = BeautifulSoup(response.content, "html.parser").select_one("#id_by")
         self.assertEqual(
-            {name: by[name] for name in ("hx-get", "hx-trigger", "hx-include", "hx-target", "hx-push-url")},
+            {
+                name: by[name]
+                for name in ("hx-get", "hx-trigger", "hx-include", "hx-target", "hx-push-url", "hx-disabled-elt")
+            },
             {
                 "hx-get": "?value_control=1",
                 "hx-trigger": "change",
                 "hx-include": "#id_q",
                 "hx-target": "#lease-search-value",
                 "hx-push-url": "false",
+                # The request disables the value control, so no input is typed into a control that it replaces.
+                "hx-disabled-elt": "#lease-search-value, #lease-search-btn",
             },
         )
+        value_control = BeautifulSoup(response.content, "html.parser").select_one("#lease-search-value")
+        self.assertEqual(value_control.name, "fieldset")
+        self.assertIsNotNone(value_control.select_one("#id_q"))
 
     def test_value_control_swaps_the_search_value_for_the_selected_attribute(self):
         cases = (
@@ -4307,7 +4315,8 @@ class TestLeaseSearchSubnetDropdown(_ViewTestBase):
                 response = self.client.get(self._url(), {"value_control": "1", **query}, HTTP_HX_REQUEST="true")
             self.assertEqual(response.status_code, 200)
             control = BeautifulSoup(response.content, "html.parser")
-            self.assertEqual([div["id"] for div in control.find_all("div", id=True)], ["lease-search-value"])
+            self.assertEqual(control.find(id=True)["id"], "lease-search-value")
+            self.assertEqual(control.find(id="lease-search-value").name, "fieldset")
             q = control.select_one("#id_q")
             self.assertEqual(q.name, element)
             if element == "select":

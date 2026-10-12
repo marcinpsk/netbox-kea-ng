@@ -570,6 +570,8 @@ class BaseLeasesSarchForm(forms.Form):
                 "hx-swap": "outerHTML",
                 "hx-push-url": "false",
                 "hx-sync": "this:replace",
+                # No input lands in the control that the reply replaces.
+                "hx-disabled-elt": "#lease-search-value, #lease-search-btn",
             }
         )
 
