@@ -536,6 +536,11 @@ class _CombinedReservationsView(_CombinedViewMixin):
             )
             return response
 
+        search_form.offer_subnets(
+            forms.combined_subnet_id_options(
+                (server.name, server_read.subnet_choices) for server, server_read in read.results
+            )
+        )
         # Present in the main thread so Django ORM queries see the test transaction.
         all_records: list[dict[str, Any]] = []
         mutation_unavailable_servers: list[tuple[str, str]] = []

@@ -9,7 +9,7 @@ import re
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any, Literal
-from urllib.parse import quote_plus, urljoin
+from urllib.parse import quote_plus, urlencode, urljoin
 
 import pynetbox
 import pytest
@@ -429,13 +429,28 @@ def open_subnets(page: Page, version: Literal[4, 6]) -> None:
     page.get_by_role("link", name="Shared Networks", exact=True).wait_for()
 
 
-def search_lease(page: Page, version: Literal[4, 6], by: str, q: str, *, filter_attribute: bool = False) -> None:
-    open_leases(page, version)
-    page.locator("#id_q").fill(q)
+def choose_lease_attribute(page: Page, by: str, *, filter_attribute: bool = False) -> None:
+    """Pick the lease search Attribute and wait for the Search value control that it brings."""
     page.locator("#id_by + div.form-select").click()
     if filter_attribute:
         page.locator("#id_by-ts-control").fill(by)
-    page.locator("#id_by-ts-dropdown").get_by_role("option", name=by, exact=True).click()
+    with page.expect_response(re.compile(r"value_control=1")):
+        page.locator("#id_by-ts-dropdown").get_by_role("option", name=by, exact=True).click()
+
+
+def set_lease_search_value(page: Page, q: str) -> None:
+    """Type the Search value, or pick it from the Subnet dropdown of the Subnet Attributes."""
+    if page.locator("#id_q").evaluate("node => node.tagName") == "SELECT":
+        page.locator("#id_q + div.form-select").click()
+        page.locator(f'#id_q-ts-dropdown [data-value="{q}"]').click()
+    else:
+        page.locator("#id_q").fill(q)
+
+
+def search_lease(page: Page, version: Literal[4, 6], by: str, q: str, *, filter_attribute: bool = False) -> None:
+    open_leases(page, version)
+    choose_lease_attribute(page, by, filter_attribute=filter_attribute)
+    set_lease_search_value(page, q)
     with page.expect_response(re.compile(f"/leases{version}/")) as r:
         page.get_by_role("button", name="Search").click()
         assert r.value.ok
@@ -448,7 +463,7 @@ def search_lease_related(page: Page, model: str) -> None:
 
 
 def expect_form_error_search(page: Page, b: bool) -> None:
-    expect(page.locator("#id_q + div.form-text.text-danger")).to_have_count(int(b))
+    expect(page.locator("#lease-search-value div.form-text.text-danger")).to_have_count(int(b))
 
 
 def _version_ge_43(page: Page) -> bool:
@@ -787,6 +802,9 @@ def test_dhcp_subnets_configure_table(page: Page, kea: KeaClient, family: int) -
     expect(page.locator(".object-list > thead > tr > th > a")).to_have_text(["Subnet", "Shared Network", ""])
 
 
+_SUBNET_ATTRIBUTES = {"Subnet": "subnet", "Subnet ID": "subnet_id"}
+
+
 @pytest.mark.parametrize(
     ("version", "by", "q"),
     (
@@ -829,13 +847,17 @@ def test_dhcp_subnets_configure_table(page: Page, kea: KeaClient, family: int) -
 )
 def test_dhcp_lease_invalid_search_values(page: Page, kea: KeaClient, version: int, by: str, q: str) -> None:
     open_leases(page, version)
-    page.locator("#id_q").fill(q)
-    page.locator("#id_by + div.form-select").click()
-    page.locator("#id_by-ts-dropdown").get_by_role("option", name=by, exact=True).click()
-    # Wait for the search response before asserting the server-rendered validation error,
-    # so the assertion doesn't race the htmx form re-render (mirrors search_lease()).
-    with page.expect_response(re.compile(f"/leases{version}/")):
-        page.get_by_role("button", name="Search").click()
+    if by in _SUBNET_ATTRIBUTES:
+        # The Subnet dropdown offers only configured Subnets, so a typed value comes from a shared URL.
+        page.goto(f"{page.url.split('?')[0]}?{urlencode({'by': _SUBNET_ATTRIBUTES[by], 'q': q})}")
+        expect(page.locator("#id_q option[selected]")).to_have_text(f"{q} (not in the current configuration)")
+    else:
+        choose_lease_attribute(page, by)
+        page.locator("#id_q").fill(q)
+        # Wait for the search response before asserting the server-rendered validation error,
+        # so the assertion doesn't race the htmx form re-render (mirrors search_lease()).
+        with page.expect_response(re.compile(f"/leases{version}/")):
+            page.get_by_role("button", name="Search").click()
     expect_form_error_search(page, True)
     expect(page.locator("div.table-container")).to_have_count(0)
 
@@ -1665,7 +1687,7 @@ def _add_reservation4_without_address(
 ) -> None:
     """Create a DHCPv4 host keyed by MAC with no fixed address, through the add form."""
     page.goto(f"{plugin_base}/servers/{server_id}/reservations4/add/")
-    page.locator("#id_subnet_cidr").fill(RESERVATION_SUBNET_CIDR_V4)
+    page.locator("#id_subnet_cidr").select_option(RESERVATION_SUBNET_CIDR_V4)
     _select_identifier_type(page, "Hardware Address")
     page.locator("#id_identifier").fill(identifier)
     page.locator("#id_hostname").fill(hostname)
@@ -1680,7 +1702,7 @@ def _add_reservation6_prefix_only(
 ) -> None:
     """Create a DHCPv6 host that delegates a prefix and reserves no address."""
     page.goto(f"{plugin_base}/servers/{server_id}/reservations6/add/")
-    page.locator("#id_subnet_cidr").fill(RESERVATION_SUBNET_CIDR_V6)
+    page.locator("#id_subnet_cidr").select_option(RESERVATION_SUBNET_CIDR_V6)
     page.locator("#id_prefixes").fill(prefix)
     _select_identifier_type(page, "DUID")
     page.locator("#id_identifier").fill(identifier)
@@ -1845,10 +1867,12 @@ def test_reservation_add_form_explains_relay_remote_id_flex_id(
     """The live add form excludes remote ID and links to the Kea Flex ID guidance."""
     page.goto(f"{plugin_base}/servers/{reservation_server.id}/reservations4/add/")
 
-    expect(page.get_by_text("Relay remote ID is not a native Reservation Identity.", exact=True)).to_be_visible()
-    expect(page.get_by_role("link", name="Flexible Identifiers for Host Reservations")).to_have_attribute(
+    help_text = page.locator("#id_identifier_type_helptext")
+    expect(help_text).to_contain_text("For relay remote ID, configure Kea flex-id.")
+    expect(help_text.get_by_role("link", name="Kea flex-id")).to_have_attribute(
         "href", re.compile(r"kea\.readthedocs\.io/.+flex-id")
     )
+    expect(page.locator(".alert", has_text="remote ID")).to_have_count(0)
     expect(page.locator('#id_identifier_type option[value="remote-id"]')).to_have_count(0)
 
 

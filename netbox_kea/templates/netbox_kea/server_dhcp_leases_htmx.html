@@ -31,51 +31,15 @@
           <i class="mdi mdi-alert-circle-outline me-2" aria-hidden="true"></i>
           <div>
             The <code>subnet_cmds</code> hook library is not loaded on this Kea server.
-            Subnet suggestions come from the running configuration.
+            The subnet list comes from the running configuration.
             Searching by subnet CIDR or ID does not require this hook.
           </div>
         </div>
         {% endif %}
         {% if form.subnet_notice %}{% include "netbox_kea/inc/notice_alert.html" with notice=form.subnet_notice %}{% endif %}
-        {% render_form form %}
-        {% if form.subnet_choices %}
-        {% comment %}
-          Editable comboboxes for the Search field: offered only when the
-          selected attribute is Subnet (CIDR) or Subnet ID. Free typing stays
-          allowed — a <datalist> only suggests, it never constrains.
-        {% endcomment %}
-        <datalist id="kea-lease-subnet-cidrs">
-          {% for cidr, sid in form.subnet_choices %}
-          <option value="{{ cidr }}">id {{ sid }}</option>
-          {% endfor %}
-        </datalist>
-        <datalist id="kea-lease-subnet-ids">
-          {% for cidr, sid in form.subnet_choices %}
-          <option value="{{ sid }}">{{ cidr }}</option>
-          {% endfor %}
-        </datalist>
-        <script>
-        (function () {
-          var by = document.getElementById("id_by");
-          var q = document.getElementById("id_q");
-          if (!by || !q) { return; }
-          function syncSubnetCombobox() {
-            if (by.value === "subnet") {
-              q.setAttribute("list", "kea-lease-subnet-cidrs");
-              q.setAttribute("placeholder", "Select or type an exact subnet CIDR");
-            } else if (by.value === "subnet_id") {
-              q.setAttribute("list", "kea-lease-subnet-ids");
-              q.setAttribute("placeholder", "Select or type a subnet ID");
-            } else {
-              q.removeAttribute("list");
-              q.removeAttribute("placeholder");
-            }
-          }
-          by.addEventListener("change", syncSubnetCombobox);
-          syncSubnetCombobox();
-        })();
-        </script>
-        {% endif %}
+        {% include "netbox_kea/inc/lease_search_value.html" %}
+        {% render_field form.state %}
+        {% render_field form.by %}
         <div class="text-end">
           <div id="search-indicator" class="spinner-border d-inline-block align-middle htmx-indicator me-2" role="status">
             <span class="visually-hidden">Loading...</span>

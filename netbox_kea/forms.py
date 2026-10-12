@@ -4,10 +4,13 @@
 # SPDX-License-Identifier: Apache-2.0
 import copy
 import ipaddress
+from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
 from django import forms
 from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
+from django.utils.html import format_html
+from django.utils.safestring import SafeString
 from ipam.models import VRF
 from netaddr import EUI, AddrFormatError, IPAddress, IPNetwork, mac_unix_expanded
 from netbox.forms import NetBoxModelBulkEditForm, NetBoxModelFilterSetForm, NetBoxModelForm, NetBoxModelImportForm
@@ -463,6 +466,66 @@ class ServerImportForm(_ServerConnectionFormMixin, NetBoxModelImportForm):
         )
 
 
+#: The label suffix of a dropdown value that the Subnet Catalogue does not list.
+NOT_IN_CONFIGURATION = "not in the current configuration"
+
+SubnetChoices = tuple[tuple[str, int], ...]
+
+
+def subnet_label(cidr: str, subnet_id: int) -> str:
+    """Return the dropdown label of one Subnet, for example ``10.0.0.0/24 (ID 1)``."""
+    return f"{cidr} (ID {subnet_id})"
+
+
+def subnet_cidr_options(subnet_choices: SubnetChoices) -> list[tuple[str, str]]:
+    """Return one dropdown option per Subnet whose value is the CIDR."""
+    return [(cidr, subnet_label(cidr, subnet_id)) for cidr, subnet_id in subnet_choices]
+
+
+def subnet_id_options(subnet_choices: SubnetChoices) -> list[tuple[str, str]]:
+    """Return one dropdown option per Subnet whose value is the Kea Subnet ID."""
+    return [(str(subnet_id), subnet_label(cidr, subnet_id)) for cidr, subnet_id in subnet_choices]
+
+
+def combined_subnet_id_options(server_choices: Iterable[tuple[str, SubnetChoices]]) -> list[tuple[str, str]]:
+    """Return one option per Subnet ID that names the CIDR of that ID on each Server, in ID order.
+
+    For example ``1: 10.0.0.0/24 (kea-a), 10.1.0.0/24 (kea-b)``.
+    """
+    by_id: dict[int, list[str]] = {}
+    for server_name, subnet_choices in server_choices:
+        for cidr, subnet_id in subnet_choices:
+            by_id.setdefault(subnet_id, []).append(f"{cidr} ({server_name})")
+    return [(str(subnet_id), f"{subnet_id}: {', '.join(by_id[subnet_id])}") for subnet_id in sorted(by_id)]
+
+
+def offer_choices(form: forms.Form, name: str, options: Sequence[tuple[str, str]], blank_label: str) -> None:
+    """Show the field *name* of *form* as a dropdown of *options*; without options keep its input.
+
+    A current value that is not among *options* stays selectable with a label that says so, so a shared
+    search still runs. The field keeps its own validation.
+    """
+    if not options:
+        return
+    value = form[name].value()
+    current = "" if value is None else str(value)
+    choices = [("", blank_label), *options]
+    if current and current not in {option for option, _label in options}:
+        choices.append((current, f"{current} ({NOT_IN_CONFIGURATION})"))
+    form.fields[name].widget = forms.Select(choices=choices)
+
+
+def help_tip(text: str) -> SafeString:
+    """Return an information icon that shows *text* in a tooltip on hover and focus, and to screen readers."""
+    return format_html(
+        '<button type="button" class="btn btn-link p-0 border-0 align-baseline lh-1 kea-help-tip"'
+        ' data-bs-toggle="tooltip" data-bs-title="{0}">'
+        '<i class="mdi mdi-information-outline" aria-hidden="true"></i>'
+        '<span class="visually-hidden">{0}</span></button>',
+        text,
+    )
+
+
 class BaseLeasesSarchForm(forms.Form):
     """Base search form for DHCP lease queries; subclassed per IP version."""
 
@@ -480,24 +543,44 @@ class BaseLeasesSarchForm(forms.Form):
     def __init__(
         self,
         *args,
-        subnet_choices: tuple[tuple[str, int], ...] = (),
+        subnet_choices: SubnetChoices = (),
         subnet_cmds_available: bool = True,
         subnet_notice: "Notice | None" = None,
         **kwargs,
     ) -> None:
-        """Stash the configured-subnet list so the template can build the Search combobox.
+        """Show the Search value as a dropdown of the configured Subnets when the Attribute is Subnet or Subnet ID.
 
-        The choices drive an editable ``<datalist>`` on the Search field (``q``)
-        that the template wires up only when the selected attribute is *Subnet*
-        or *Subnet ID* — there is no separate subnet selector field.
         ``subnet_cmds_available`` is False when the hook that supplies those choices is
-        not loaded, which the template reports instead of showing an empty combobox.
+        not loaded, which the template reports instead of showing an empty dropdown.
         ``subnet_notice`` is the Notice of the Subnet Catalogue, which the template shows inline.
         """
         super().__init__(*args, **kwargs)
         self.subnet_choices = subnet_choices
         self.subnet_cmds_available = subnet_cmds_available
         self.subnet_notice = subnet_notice
+        self.subnet_options = self.options_for(self["by"].value(), subnet_choices)
+        offer_choices(self, "q", self.subnet_options, "---------")
+        # A change of Attribute replaces the Search value control: see BaseServerLeasesView.get.
+        self.fields["by"].widget.attrs.update(
+            {
+                "hx-get": "?value_control=1",
+                "hx-trigger": "change",
+                "hx-include": "#id_q",
+                "hx-target": "#lease-search-value",
+                "hx-swap": "outerHTML",
+                "hx-push-url": "false",
+                "hx-sync": "this:replace",
+            }
+        )
+
+    @staticmethod
+    def options_for(by: str | None, subnet_choices: SubnetChoices) -> list[tuple[str, str]]:
+        """Return the Search dropdown options of the Attribute *by*; no options means a text input."""
+        if by == constants.BY_SUBNET:
+            return subnet_cidr_options(subnet_choices)
+        if by == constants.BY_SUBNET_ID:
+            return subnet_id_options(subnet_choices)
+        return []
 
     def clean(self) -> dict[str, Any] | None:
         """Validate and normalise search fields according to the selected search type."""
@@ -723,7 +806,18 @@ def _configure_identifier_capabilities(
         choices=identifier_field.choices,
         unavailable=unavailable,
     )
+    help_text = format_html(
+        'For relay remote ID, configure <a href="{}" target="_blank" rel="noopener">Kea flex-id</a>.',
+        constants.FLEX_ID_DOCUMENTATION_URL,
+    )
+    # Without confirmed capabilities the page shows the mutation warning instead.
+    if capabilities is not None and capabilities.mutation_available and capabilities.unavailable_identifiers:
+        help_text = format_html("{} {}", help_text, help_tip(UNAVAILABLE_IDENTIFIERS_TIP))
+    identifier_field.help_text = help_text
     form.reservation_capabilities = capabilities
+
+
+UNAVAILABLE_IDENTIFIERS_TIP = "Disabled types are not in the live host-reservation-identifiers configuration."
 
 
 class _SyncToNetBoxForm(forms.Form):
@@ -737,16 +831,56 @@ class _SyncToNetBoxForm(forms.Form):
             field.help_text = sync_refusal
 
 
-class Reservation4Form(_SyncToNetBoxForm):
+def reservation_sync_help(sync_refusal: str, automatic_sync: bool) -> SafeString:
+    """Return the Sync to NetBox IPAM help: the refusal, if any, and whether automatic IPAM sync is on."""
+    state = "enabled" if automatic_sync else "disabled"
+    tip = []
+    if not sync_refusal:
+        tip.append("Select this to create or update the IP address in NetBox IPAM now, with status Reserved.")
+    if automatic_sync:
+        tip.append("The next scheduled sync run records a fixed address.")
+    tip.append("A Reservation with no address is skipped.")
+    return format_html(
+        "{}Automatic IPAM sync is {} for this Server. {}",
+        format_html("{} ", sync_refusal) if sync_refusal else "",
+        state,
+        help_tip(" ".join(tip)),
+    )
+
+
+class _ReservationForm(_SyncToNetBoxForm):
+    """The fields and live capabilities that the DHCPv4 and DHCPv6 Reservation forms share."""
+
+    family: ClassVar[Family]
+    reservation_capabilities: ReservationCapabilities | None = None
+
+    def __init__(
+        self,
+        *args,
+        capabilities: ReservationCapabilities | None = None,
+        automatic_sync: bool = False,
+        sync_refusal: str = "",
+        **kwargs,
+    ):
+        """Apply the live identifier capabilities and the IPAM sync help."""
+        super().__init__(*args, sync_refusal=sync_refusal, **kwargs)
+        _configure_identifier_capabilities(self, capabilities, self.family)
+        self.fields["sync_to_netbox"].help_text = reservation_sync_help(sync_refusal, automatic_sync)
+
+    def offer_subnets(self, subnet_choices: SubnetChoices) -> None:
+        """Show Subnet CIDR as a dropdown of the configured Subnets; without them keep the text input."""
+        offer_choices(self, "subnet_cidr", subnet_cidr_options(subnet_choices), "---------")
+
+
+class Reservation4Form(_ReservationForm):
     """Form for creating or editing a DHCPv4 host reservation."""
 
-    reservation_capabilities: ReservationCapabilities | None = None
+    family = 4
 
     subnet_cidr = forms.CharField(
         label="Subnet CIDR",
         max_length=50,
         help_text="Subnet the reservation belongs to (e.g. <code>10.0.0.0/24</code>).",
-        widget=forms.TextInput(attrs={"list": constants.RESERVATION_SUBNET_DATALIST_ID}),
     )
     ip_address = forms.CharField(
         label="IP Address",
@@ -759,7 +893,6 @@ class Reservation4Form(_SyncToNetBoxForm):
     identifier_type = forms.ChoiceField(
         label="Identifier Type",
         choices=_IDENTIFIER_TYPE_CHOICES_V4,
-        help_text="Method used to identify the DHCP client.",
     )
     identifier = forms.CharField(
         label="Identifier",
@@ -770,18 +903,8 @@ class Reservation4Form(_SyncToNetBoxForm):
         required=False,
         help_text=_RESERVATION_HOSTNAME_HELP,
     )
-    sync_to_netbox = forms.BooleanField(
-        label="Sync to NetBox IPAM",
-        required=False,
-        help_text="Create or update an IPAddress in NetBox with status=reserved.",
-    )
+    sync_to_netbox = forms.BooleanField(label="Sync to NetBox IPAM", required=False)
     managed_fingerprint = forms.CharField(required=False, widget=forms.HiddenInput())
-
-    def __init__(self, *args, **kwargs):
-        """Apply live DHCPv4 Reservation identifier capabilities."""
-        capabilities = kwargs.pop("capabilities", None)
-        super().__init__(*args, **kwargs)
-        _configure_identifier_capabilities(self, capabilities, 4)
 
     def clean_subnet_cidr(self) -> str:
         """Validate the value is a valid IPv4 subnet CIDR.
@@ -833,16 +956,15 @@ class Reservation4Form(_SyncToNetBoxForm):
         return cleaned
 
 
-class Reservation6Form(_SyncToNetBoxForm):
+class Reservation6Form(_ReservationForm):
     """Form for creating or editing a DHCPv6 host reservation."""
 
-    reservation_capabilities: ReservationCapabilities | None = None
+    family = 6
 
     subnet_cidr = forms.CharField(
         label="Subnet CIDR",
         max_length=50,
         help_text="Subnet the reservation belongs to (e.g. <code>2001:db8::/48</code>).",
-        widget=forms.TextInput(attrs={"list": constants.RESERVATION_SUBNET_DATALIST_ID}),
     )
     ip_addresses = forms.CharField(
         label="IPv6 Addresses",
@@ -860,7 +982,6 @@ class Reservation6Form(_SyncToNetBoxForm):
     identifier_type = forms.ChoiceField(
         label="Identifier Type",
         choices=_IDENTIFIER_TYPE_CHOICES_V6,
-        help_text="Method used to identify the DHCP client.",
     )
     identifier = forms.CharField(
         label="Identifier",
@@ -871,18 +992,8 @@ class Reservation6Form(_SyncToNetBoxForm):
         required=False,
         help_text=_RESERVATION_HOSTNAME_HELP,
     )
-    sync_to_netbox = forms.BooleanField(
-        label="Sync to NetBox IPAM",
-        required=False,
-        help_text="Create or update an IPAddress in NetBox with status=reserved.",
-    )
+    sync_to_netbox = forms.BooleanField(label="Sync to NetBox IPAM", required=False)
     managed_fingerprint = forms.CharField(required=False, widget=forms.HiddenInput())
-
-    def __init__(self, *args, **kwargs):
-        """Apply live DHCPv6 Reservation identifier capabilities."""
-        capabilities = kwargs.pop("capabilities", None)
-        super().__init__(*args, **kwargs)
-        _configure_identifier_capabilities(self, capabilities, 6)
 
     def clean_subnet_cidr(self) -> str:
         """Validate the value is a valid IPv6 subnet CIDR.
@@ -1374,6 +1485,10 @@ class ReservationSearchForm(forms.Form):
         choices=(("", "All scopes"), ("global", "Global"), ("in-subnet", "In-Subnet")),
         help_text="Search a bounded batch by Reservation Scope. Continue with Next page if more records remain.",
     )
+
+    def offer_subnets(self, options: Sequence[tuple[str, str]]) -> None:
+        """Show Subnet ID as a dropdown of *options*; without options keep the number input."""
+        offer_choices(self, "subnet_id", options, "All subnets")
 
 
 class SubnetSearchForm(forms.Form):

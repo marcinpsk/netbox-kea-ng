@@ -344,24 +344,27 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
         table.configure(request)
         return table
 
-    def _make_search_form(self, server: Server, data: Any | None = None):
-        """Build the lease-search form with the subnet quick-select choices and their diagnostics."""
+    def _make_search_form(self, server: Server, data: Any | None = None, initial: dict[str, str] | None = None):
+        """Build the lease-search form with the Subnet dropdown choices and their diagnostics."""
         snapshot = subnet_catalogue.display(server, self.dhcp_version)
-        kwargs = {
-            "subnet_choices": snapshot.subnet_choices,
-            "subnet_cmds_available": snapshot.subnet_cmds_available,
-            "subnet_notice": notice(snapshot),
-        }
-        if data is None:
-            return self.form(**kwargs)
-        return self.form(data, **kwargs)
+        return self.form(
+            data,
+            initial=initial,
+            subnet_choices=snapshot.subnet_choices,
+            subnet_cmds_available=snapshot.subnet_cmds_available,
+            subnet_notice=notice(snapshot),
+        )
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
         """Return an empty table, the search form, and the add-lease URL for the initial (non-HTMX) page load."""
         # For non-htmx requests.
 
         table = self.get_table([], request)
-        form = self._make_search_form(instance, request.GET if "q" in request.GET or "state" in request.GET else None)
+        bound = "q" in request.GET or "state" in request.GET
+        # A link that names only the Attribute opens with its Search value control.
+        form = self._make_search_form(
+            instance, request.GET if bound else None, initial={"by": request.GET.get("by", "")}
+        )
         can_change = Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists()
         ctx: dict[str, Any] = {
             "form": form,
@@ -499,6 +502,17 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
         )
         return _search_history(request, response, _strip_empty_params(request.get_full_path()))
 
+    def _search_value_control(self, request: HttpRequest, server: Server) -> HttpResponse:
+        """Render the Search value control of the Attribute that the user selected: a dropdown or a text input."""
+        by = request.GET.get("by", "")
+        q = request.GET.get("q", "")
+        # An unbound form: a control that the user has not submitted shows no validation error.
+        form = self._make_search_form(server, initial={"by": by, "q": q})
+        if form.subnet_options and q not in dict(form.subnet_options):
+            # The value belongs to the previous Attribute, so the dropdown starts empty.
+            form = self.form(initial={"by": by}, subnet_choices=form.subnet_choices)
+        return render(request, "netbox_kea/inc/lease_search_value.html", {"form": form})
+
     def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
         """Dispatch to export, HTMX partial, or full page render as appropriate."""
         instance: Server = self.get_object(**kwargs)
@@ -511,6 +525,9 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
 
         if not request.htmx:
             return super().get(request, **kwargs)
+
+        if "value_control" in request.GET:
+            return self._search_value_control(request, instance)
 
         # Outside the try: the LeaseQueryGuardError handler below reads both `form` and
         # `form.cleaned_data`, so neither may depend on how far into the try we got.
