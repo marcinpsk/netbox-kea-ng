@@ -43,13 +43,14 @@ Every authority read (verification, synchronization, mutation scopes, post-write
 - A generation per read kind. Rejected: each write command needs a list of the kinds it affects, and the
   list drifts (`subnet4-del` also removes Reservations and Leases).
 - Clearing other Servers that are HA partners or share a hosts database. Rejected: the plugin does not model
-  those links. Changes from outside this NetBox lag by at most one TTL.
+  those links. A change from outside this NetBox shows on the first read after the entry's TTL ends.
 - A browser or htmx history cache, or per-request memoization. Rejected: a write cannot invalidate the first,
   and the second does not help a tab switch.
 
 ## Consequences
 
 - An operator sees their own writes at once. Changes from kea-shell, another NetBox or an HA partner, and
-  Leases that Kea allocates, appear after at most one TTL or a Refresh.
+  Leases that Kea allocates, appear on the first read after the entry's TTL ends, or after a Refresh.
+  A table that is already open does not reread when the TTL ends.
 - The ADR 0003 cache rules now apply to every display read.
 - The test cache hygiene fixture clears one key prefix.
