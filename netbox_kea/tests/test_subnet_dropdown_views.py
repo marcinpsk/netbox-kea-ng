@@ -176,19 +176,22 @@ class TestCombinedReservationSubnetIdFilter(_ViewTestBase):
         }
         with stub_kea(responses) as kea:
             answered = requests.Session.post
+            sent_to_a = []
             unanswered = []
 
             def post(session, url, **kwargs):
                 command = kwargs["json"]["command"]
-                if url.startswith(self.server.ca_url) and command in failing:
-                    unanswered.append(command)
-                    raise requests.ConnectionError("kea-a does not answer")
+                if url.startswith(self.server.ca_url):
+                    sent_to_a.append(command)
+                    if command in failing:
+                        unanswered.append(command)
+                        raise requests.ConnectionError("kea-a does not answer")
                 return answered(session, url, **kwargs)
 
             with patch("netbox_kea.kea.requests.Session.post", new=post):
                 response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"), query)
         self.assertEqual(response.status_code, 200)
-        self.assertNotIn("reservation-get-page", unanswered)
+        self.assertNotIn("reservation-get-page", sent_to_a)
         return response, kea, unanswered
 
     def test_an_exhausted_server_whose_catalogue_fails_is_reported_and_its_subnets_are_not_listed(self):
