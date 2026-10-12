@@ -698,14 +698,14 @@ class TestServerOptionDef4ListView(_ViewTestBase):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
 
-    def test_get_with_dhcp4_disabled_redirects(self):
-        """Server with dhcp4=False redirects away from option_def4 tab (before any Kea call)."""
+    def test_get_with_dhcp4_disabled_shows_protocol_not_enabled(self):
+        """A disabled DHCPv4 family shows the protocol-disabled state without a Kea read."""
         v6_only = _make_db_server(name="v6only-od", dhcp4=False, dhcp6=True)
         url = reverse("plugins:netbox_kea:server_option_def4", args=[v6_only.pk])
-        with stub_kea({}):
+        with stub_kea({}) as kea:
             response = self.client.get(url)
-        self.assertEqual(response.status_code, 302)
-        self._assert_no_none_pk_redirect(response)
+        self.assertContains(response, "Protocol not enabled")
+        self.assertEqual(kea.commands(), [])
 
     def test_get_requires_login(self):
         """Unauthenticated GET redirects to login."""

@@ -1,25 +1,15 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
+{% load kea_workspace %}
 {% comment %}
-Config tab navigation: section toggle (Server Options | Option Definitions) plus a
-DHCPv4/DHCPv6 family toggle (only when the server runs both protocols).
-Context: config_section, dhcp_version, nav_options_url, nav_optiondef_url, nav_v4_url, nav_v6_url.
+Configuration subsection navigation: Server Options and Option Definitions.
+Context: config_section, nav_options_url, nav_optiondef_url.
 {% endcomment %}
 <ul class="nav nav-tabs mb-3">
   <li class="nav-item">
-    <a class="nav-link{% if config_section == 'options' %} active{% endif %}" href="{{ nav_options_url }}">Server Options</a>
+    <a class="nav-link{% if config_section == 'options' %} active{% endif %}" href="{% workspace_url nav_options_url %}">Server Options</a>
   </li>
   <li class="nav-item">
-    <a class="nav-link{% if config_section == 'option_def' %} active{% endif %}" href="{{ nav_optiondef_url }}">Option Definitions</a>
+    <a class="nav-link{% if config_section == 'option_def' %} active{% endif %}" href="{% workspace_url nav_optiondef_url %}">Option Definitions</a>
   </li>
 </ul>
-{% if object.dhcp4 and object.dhcp6 %}
-<ul class="nav nav-pills justify-content-center mb-3">
-  <li class="nav-item">
-    <a class="nav-link{% if dhcp_version == 4 %} active{% endif %}" href="{{ nav_v4_url }}">DHCPv4</a>
-  </li>
-  <li class="nav-item">
-    <a class="nav-link{% if dhcp_version == 6 %} active{% endif %}" href="{{ nav_v6_url }}">DHCPv6</a>
-  </li>
-</ul>
-{% endif %}

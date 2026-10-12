@@ -40,6 +40,8 @@ class TestCombinedWorkspace(_ViewTestBase):
                 parse_qs(urlsplit(link["href"]).query), {"server": list(map(str, self.selection["server"]))}
             )
         self.assertEqual(len(shell.select('[aria-label="DHCP family"] a')), 2)
+        self.assertEqual(len(page.select('[aria-label="DHCP family"]')), 1)
+        self.assertEqual(len(page.select('[aria-label="Workspace sections"]')), 1)
         self.assertEqual(kea.commands(), [])
         self.assertContains(response, "2 Servers selected · Overview · DHCPv4")
         breadcrumb = page.select_one('[aria-label="Breadcrumb"]')
@@ -54,6 +56,9 @@ class TestCombinedWorkspace(_ViewTestBase):
             switched = self.client.get(link["href"])
         self.assertContains(switched, "Choose a Server for DHCPv6 leases")
         self.assertContains(switched, "printer")
+        chooser = BeautifulSoup(switched.content, "html.parser")
+        self.assertIsNone(chooser.select_one("#lease-search"))
+        self.assertIsNone(chooser.select_one("table.object-list"))
         self.assertEqual(
             parse_qs(urlsplit(link["href"]).query),
             {"server": list(map(str, self.selection["server"])), **{key: [value] for key, value in filters.items()}},
@@ -96,12 +101,15 @@ class TestCombinedWorkspace(_ViewTestBase):
     def test_new_sections_report_unsupported_families_and_offer_the_other_family(self):
         Server.objects.filter(pk=self.server.pk).update(dhcp6=False)
         for section in ("overview", "configuration", "sync"):
-            response = self.client.get(reverse(f"plugins:netbox_kea:combined_{section}6"), {"server": self.server.pk})
-            self.assertContains(response, f"{self.server.name}: DHCPv6 is not enabled on this Server.")
+            response = self.client.get(
+                reverse(f"plugins:netbox_kea:combined_{section}6"), {"server": self.server.pk}, follow=True
+            )
+            self.assertContains(response, "Protocol not enabled")
             page = BeautifulSoup(response.content, "html.parser")
             enabled = page.select('[aria-label="DHCP family"] a')[0]
-            redirected = self.client.get(enabled["href"])
-            self.assertEqual(redirected.status_code, 302)
+            self.assertIn(f"/servers/{self.server.pk}/", enabled["href"])
+            self.assertNotIn("/combined/", enabled["href"])
+            self.assertEqual(enabled.text.strip(), "DHCPv4")
 
     def test_family_switch_keeps_selection_section_and_compatible_filters(self):
         for section, filters in (
@@ -171,7 +179,8 @@ class TestCombinedWorkspace(_ViewTestBase):
                 )
                 self.assertRedirects(
                     response,
-                    reverse(f"plugins:netbox_kea:{target}", args=[self.server.pk]),
+                    reverse(f"plugins:netbox_kea:{target}", args=[self.server.pk])
+                    + (f"?family={family}" if section == "sync" else ""),
                     fetch_redirect_response=False,
                 )
 

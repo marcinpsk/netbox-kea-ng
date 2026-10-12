@@ -1,21 +1,24 @@
 {# SPDX-FileCopyrightText: 2023-2025 Devon Mar <devon-mar@users.noreply.github.com> #}
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
-{% load form_helpers %}
+{% load form_helpers kea_workspace %}
 {% load get_key from helpers %}
 {% load render_table from django_tables2 %}
 
 {# NetBox's table header sorts by swapping the closest .htmx-container: this whole block. #}
 <div id="lease-search" class="htmx-container" hx-target="#lease-search" hx-swap="outerHTML" hx-push-url="true">
   <div class="row px-3">
-    <div class="col col-6 offset-3 py-3">
+    <div class="col-12 col-xl-8 offset-xl-2 col-xxl-6 offset-xxl-3 py-3">
       <form
         class="form form-horizontal"
         hx-get="."
         hx-indicator="#search-indicator"
         hx-disabled-elt="#lease-search-btn"
-        {% if form.is_bound and is_embedded and form.is_valid %}hx-trigger="load"{% endif %}
+        {% if form.is_bound and is_embedded and form.is_valid %}hx-trigger="load" hx-headers='{"Kea-Initial-Search": "true"}'{% endif %}
       >
+        {% workspace_return_field %}
+        {% if request.GET.sort %}<input type="hidden" name="sort" value="{{ request.GET.sort }}">{% endif %}
+        {% if request.GET.per_page %}<input type="hidden" name="per_page" value="{{ request.GET.per_page }}">{% endif %}
         {% if form.cleaned_data.page %}
           {# Only include on full page load so that the user lands on the correct page. #}
           <input type="hidden" id="id_page" name="page" value="{{ form.cleaned_data.page }}">
@@ -136,3 +139,5 @@
     {% endwith %}
   {% endif %}
 </div>
+
+{% if not is_embedded %}{% server_workspace object out_of_band=True %}{% endif %}

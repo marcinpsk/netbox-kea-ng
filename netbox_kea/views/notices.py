@@ -139,6 +139,16 @@ def _worst_levels(notices: tuple[Notice | None, ...]) -> dict[str, int]:
     return levels
 
 
+def inline_notices(*notices: Notice | None) -> list[tuple[str, tuple[str, ...]]]:
+    """Group each distinct Snapshot message at its worst level for an inline partial."""
+    levels = _worst_levels(notices)
+    return [
+        (css, lines)
+        for level, css in ((messages.ERROR, "danger"), (messages.WARNING, "warning"))
+        if (lines := tuple(line for line, found in levels.items() if found == level))
+    ]
+
+
 def show_notices(request: HttpRequest, *notices: Notice | None) -> None:
     """Show the Notices of one Server's Snapshots as Django messages."""
     for line, level in _worst_levels(notices).items():

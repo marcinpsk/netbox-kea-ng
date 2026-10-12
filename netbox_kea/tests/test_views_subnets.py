@@ -157,13 +157,11 @@ class TestServerSubnets4View(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertIs(response.context["tab"], ServerDHCP4SubnetsView.tab)
 
-    def test_get_with_dhcp4_disabled_redirects_with_valid_pk(self):
+    def test_get_with_dhcp4_disabled_shows_protocol_not_enabled(self):
         v6_only = _make_db_server(name="v6-only-subnets", dhcp4=False, dhcp6=True)
         url = reverse("plugins:netbox_kea:server_subnets4", args=[v6_only.pk])
         response = self.client.get(url)
-        self.assertEqual(response.status_code, 302)
-        self._assert_no_none_pk_redirect(response)
-        self.assertIn(str(v6_only.pk), response.url)
+        self.assertContains(response, "Protocol not enabled")
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

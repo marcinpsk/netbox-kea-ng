@@ -8,8 +8,37 @@ SPDX-License-Identifier: Apache-2.0
 
 A `Server` object holds the connection to one Kea deployment. This page lists its fields.
 
-![The Status tab of a Server shows the version and the status of the DHCPv4 and the DHCPv6 daemon, and their global DHCP options](assets/screenshots/server-status-light.png#only-light)
-![The Status tab of a Server shows the version and the status of the DHCPv4 and the DHCPv6 daemon, and their global DHCP options](assets/screenshots/server-status-dark.png#only-dark)
+Each Server has the shared workspace navigation: Overview, Leases, Subnets, Reservations, Configuration and Sync.
+The scope bar shows the Server name and one DHCP family switch on section pages and mutation forms.
+Journal, Changelog, Jobs and the NetBox object controls stay available below the workspace sections.
+
+Opening a record from a combined page enters its owning Server for the selected DHCP family.
+Use **Back to workspace** to restore the previous Server selection, section and filters.
+Forms opened from that page return to the same workspace after a change or when you select **Cancel**.
+
+Use **Switch Server** in the scope bar to open the same section and DHCP family on another permitted Server.
+Compatible search filters stay selected. Pagination starts again on the target Server.
+Subnet searches are checked against the target Server's live Subnet identities.
+If the target cannot confirm the Subnet, the filter is dropped and the page explains why.
+Switching from a record form opens the section list and explains that the record selection was dropped.
+Use **All Servers** to open that section in the combined workspace, or **Back to workspace** to restore the previous selection.
+
+![The Server switcher offers another permitted Server and All Servers](assets/screenshots/server-switch-light.png#only-light)
+![The Server switcher offers another permitted Server and All Servers](assets/screenshots/server-switch-dark.png#only-dark)
+
+The scope bar and section links use the NetBox light or dark theme.
+On narrow screens, the Server name wraps and the section bar scrolls within the workspace.
+Use **Tab** to reach **Switch Server**, then **Enter** to open it.
+Use **Tab** to reach a Server link, then **Enter** to switch.
+Use **Escape** to close the switcher and return focus to its button.
+See the [workspace keyboard guide](index.md#keyboard-narrow-layouts-and-themes) for the full navigation sequence.
+
+Overview loads the status of each enabled daemon without blocking the Server details.
+An existing Status URL redirects to Overview.
+If you open a disabled family, the page shows "Protocol not enabled" and a link to the enabled family.
+
+![Server Overview shows the version and status of the DHCPv4 and DHCPv6 daemons, and their global DHCP options](assets/screenshots/server-status-light.png#only-light)
+![Server Overview shows the version and status of the DHCPv4 and DHCPv6 daemons, and their global DHCP options](assets/screenshots/server-status-dark.png#only-dark)
 
 ## Single-URL (Control Agent, or a single-protocol daemon)
 

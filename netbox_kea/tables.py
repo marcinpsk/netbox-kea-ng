@@ -37,28 +37,28 @@ SUBNET_ACTIONS = """<span class="btn-group dropdown">
     <li><hr class="dropdown-divider"></li>
     {% if record.dhcp_version == 4 %}
     <li>
-      <a href="{% url "plugins:netbox_kea:server_subnet4_edit" record.server_pk record.id %}"
+      <a href="{% url "plugins:netbox_kea:server_subnet4_edit" record.server_pk record.id %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"
          class="dropdown-item">
         <i class="mdi mdi-pencil-outline" aria-hidden="true"></i>
         Edit subnet
       </a>
     </li>
     <li>
-      <a href="{% url "plugins:netbox_kea:server_subnet4_pool_add" record.server_pk record.id %}"
+      <a href="{% url "plugins:netbox_kea:server_subnet4_pool_add" record.server_pk record.id %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"
          class="dropdown-item">
         <i class="mdi mdi-plus-circle-outline" aria-hidden="true"></i>
         Add pool
       </a>
     </li>
     <li>
-      <a href="{% url "plugins:netbox_kea:server_subnet4_wipe_leases" record.server_pk record.id %}"
+      <a href="{% url "plugins:netbox_kea:server_subnet4_wipe_leases" record.server_pk record.id %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"
          class="dropdown-item text-warning">
         <i class="mdi mdi-delete-sweep-outline" aria-hidden="true"></i>
         Wipe leases
       </a>
     </li>
     <li>
-      <a href="{% url "plugins:netbox_kea:server_subnet4_delete" record.server_pk record.id %}"
+      <a href="{% url "plugins:netbox_kea:server_subnet4_delete" record.server_pk record.id %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"
          class="dropdown-item text-danger">
         <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i>
         Delete subnet
@@ -66,28 +66,28 @@ SUBNET_ACTIONS = """<span class="btn-group dropdown">
     </li>
     {% else %}
     <li>
-      <a href="{% url "plugins:netbox_kea:server_subnet6_edit" record.server_pk record.id %}"
+      <a href="{% url "plugins:netbox_kea:server_subnet6_edit" record.server_pk record.id %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"
          class="dropdown-item">
         <i class="mdi mdi-pencil-outline" aria-hidden="true"></i>
         Edit subnet
       </a>
     </li>
     <li>
-      <a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}"
+      <a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"
          class="dropdown-item">
         <i class="mdi mdi-plus-circle-outline" aria-hidden="true"></i>
         Add pool
       </a>
     </li>
     <li>
-      <a href="{% url "plugins:netbox_kea:server_subnet6_wipe_leases" record.server_pk record.id %}"
+      <a href="{% url "plugins:netbox_kea:server_subnet6_wipe_leases" record.server_pk record.id %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"
          class="dropdown-item text-warning">
         <i class="mdi mdi-delete-sweep-outline" aria-hidden="true"></i>
         Wipe leases
       </a>
     </li>
     <li>
-      <a href="{% url "plugins:netbox_kea:server_subnet6_delete" record.server_pk record.id %}"
+      <a href="{% url "plugins:netbox_kea:server_subnet6_delete" record.server_pk record.id %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"
          class="dropdown-item text-danger">
         <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i>
         Delete subnet
@@ -97,7 +97,7 @@ SUBNET_ACTIONS = """<span class="btn-group dropdown">
     {% endif %}
     {% if record.server_pk and record.id and record.can_edit_options %}
     <li>
-      <a href="{% if record.dhcp_version == 4 %}{% url 'plugins:netbox_kea:server_subnet4_options_edit' record.server_pk record.id %}{% else %}{% url 'plugins:netbox_kea:server_subnet6_options_edit' record.server_pk record.id %}{% endif %}"
+      <a href="{% if record.dhcp_version == 4 %}{% url 'plugins:netbox_kea:server_subnet4_options_edit' record.server_pk record.id %}{% else %}{% url 'plugins:netbox_kea:server_subnet6_options_edit' record.server_pk record.id %}{% endif %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"
          class="dropdown-item">
         <i class="mdi mdi-tune" aria-hidden="true"></i>
         Edit options
@@ -282,7 +282,8 @@ class SubnetTable(GenericTable):
     subnet = tables.Column(
         order_by="_subnet_sort_key",
         linkify=lambda record, table: (
-            (
+            record.get("record_url")
+            or (
                 reverse(
                     f"plugins:netbox_kea:server_leases{record['dhcp_version']}",
                     args=[record["server_pk"]],
@@ -307,13 +308,13 @@ class SubnetTable(GenericTable):
             "{% if record.server_pk and record.id and record.can_change %}"
             "{% if record.dhcp_version == 4 %}"
             '<a href="{% url "plugins:netbox_kea:server_subnet4_pool_delete"'
-            ' record.server_pk record.id pool %}"'
+            ' record.server_pk record.id pool %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"'
             ' class="text-danger ms-1 lh-1" aria-label="Delete pool {{ pool }}">'
             '<i class="mdi mdi-close" style="font-size:0.8em" aria-hidden="true"></i>'
             "</a>"
             "{% else %}"
             '<a href="{% url "plugins:netbox_kea:server_subnet6_pool_delete"'
-            ' record.server_pk record.id pool %}"'
+            ' record.server_pk record.id pool %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"'
             ' class="text-danger ms-1 lh-1" aria-label="Delete pool {{ pool }}">'
             '<i class="mdi mdi-close" style="font-size:0.8em" aria-hidden="true"></i>'
             "</a>"
@@ -323,12 +324,12 @@ class SubnetTable(GenericTable):
             "{% endfor %}"
             "{% if record.server_pk and record.id and record.can_change %}"
             "{% if record.dhcp_version == 4 %}"
-            '<a href="{% url "plugins:netbox_kea:server_subnet4_pool_add" record.server_pk record.id %}"'
+            '<a href="{% url "plugins:netbox_kea:server_subnet4_pool_add" record.server_pk record.id %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"'
             ' class="text-muted small text-decoration-none" aria-label="Add pool">'
             '<i class="mdi mdi-plus-circle-outline" aria-hidden="true"></i> Add pool'
             "</a>"
             "{% else %}"
-            '<a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}"'
+            '<a href="{% url "plugins:netbox_kea:server_subnet6_pool_add" record.server_pk record.id %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"'
             ' class="text-muted small text-decoration-none" aria-label="Add pool">'
             '<i class="mdi mdi-plus-circle-outline" aria-hidden="true"></i> Add pool'
             "</a>"
@@ -590,7 +591,8 @@ _LEASE_STATUS_LINK = (
 #: flex-id is indistinguishable from a hardware address.
 _IDENTIFIER_CELL = (
     "{% if record.identifier %}"
-    '<span class="font-monospace">{{ record.identifier }}</span>'
+    '{% if record.record_url %}<a href="{{ record.record_url }}" class="font-monospace">{{ record.identifier }}</a>'
+    '{% else %}<span class="font-monospace">{{ record.identifier }}</span>{% endif %}'
     '<br><span class="text-muted small">{{ record.identifier_type }}</span>'
     "{% endif %}"
 )
@@ -815,9 +817,7 @@ class ReservationTable6(GenericTable):
 def _server_column() -> tables.TemplateColumn:
     """Create a Server column linking to the server detail page."""
     return tables.TemplateColumn(
-        template_code=(
-            "<a href=\"{% url 'plugins:netbox_kea:server' record.server_pk %}\">{{ record.server_name }}</a>"
-        ),
+        template_code=('<a href="{{ record.record_url }}">{{ record.server_name }}</a>'),
         verbose_name="Server",
         orderable=False,
     )
@@ -895,17 +895,17 @@ class SharedNetworkTable(GenericTable):
         template_code=(
             "{% if record.can_change %}"
             "{% if record.dhcp_version == 4 %}"
-            '<a href="{% url "plugins:netbox_kea:server_shared_network4_edit" record.server_pk record.name %}"'
+            '<a href="{% url "plugins:netbox_kea:server_shared_network4_edit" record.server_pk record.name %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"'
             ' class="btn btn-sm btn-warning me-1" aria-label="Edit {{ record.name }}">'
             '<i class="mdi mdi-pencil" aria-hidden="true"></i></a>'
-            '<a href="{% url "plugins:netbox_kea:server_shared_network4_delete" record.server_pk record.name %}"'
+            '<a href="{% url "plugins:netbox_kea:server_shared_network4_delete" record.server_pk record.name %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"'
             ' class="btn btn-sm btn-danger" aria-label="Delete {{ record.name }}">'
             '<i class="mdi mdi-delete" aria-hidden="true"></i></a>'
             "{% else %}"
-            '<a href="{% url "plugins:netbox_kea:server_shared_network6_edit" record.server_pk record.name %}"'
+            '<a href="{% url "plugins:netbox_kea:server_shared_network6_edit" record.server_pk record.name %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"'
             ' class="btn btn-sm btn-warning me-1" aria-label="Edit {{ record.name }}">'
             '<i class="mdi mdi-pencil" aria-hidden="true"></i></a>'
-            '<a href="{% url "plugins:netbox_kea:server_shared_network6_delete" record.server_pk record.name %}"'
+            '<a href="{% url "plugins:netbox_kea:server_shared_network6_delete" record.server_pk record.name %}{% if record.return_url %}?return_url={{ record.return_url|urlencode }}{% endif %}"'
             ' class="btn btn-sm btn-danger" aria-label="Delete {{ record.name }}">'
             '<i class="mdi mdi-delete" aria-hidden="true"></i></a>'
             "{% endif %}"
@@ -927,6 +927,7 @@ class GlobalSharedNetworkTable(SharedNetworkTable):
     """
 
     server = _server_column()
+    name = tables.Column(linkify=lambda record: record["record_url"], verbose_name="Name")
 
     class Meta(SharedNetworkTable.Meta):
         fields = ("server", *SharedNetworkTable.Meta.fields)

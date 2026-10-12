@@ -240,15 +240,13 @@ class TestStatusPageNotices(_ViewTestBase):
     def test_one_failure_of_both_families_shows_once(self):
         failure = requests.ConnectionError("unreachable")
         with stub_kea({"status-get": failure, "version-get": failure, "config-get": failure}):
-            response = self.client.get(reverse("plugins:netbox_kea:server_status", args=[self.server.pk]))
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            _page_messages(response),
-            [
-                (django_messages.ERROR, HEADLINES["configuration"]),
-                (django_messages.ERROR, "Kea configuration facts are unavailable."),
-            ],
-        )
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_status_data", args=[self.server.pk]), HTTP_HX_REQUEST="true"
+            )
+        self.assertContains(response, HEADLINES["configuration"], count=1)
+        self.assertContains(response, "Kea configuration facts are unavailable.", count=1)
+        self.assertContains(response, "alert-danger")
+        self.assertEqual(_page_messages(response), [])
 
 
 class TestLeaseSearchFormNotice(_ViewTestBase):

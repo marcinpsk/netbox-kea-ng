@@ -14,23 +14,27 @@ from utilities.views import register_model_view
 from .. import config_write, forms, server_configuration, tables
 from ..constants import Family
 from ..models import Server
-from ..utilities import check_dhcp_enabled
 from ._base import (
     ConditionalLoginRequiredMixin,
     _KeaChangeMixin,
     _run_config_change,
+    _safe_return_url,
     _shared_network_row,
 )
 from .notices import notice, show_notices
 from .subnets import _SUBNETS_TAB, subnets_nav_context
+from .workspace import ServerFamilyMixin
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared Networks views
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class BaseServerSharedNetworksView(generic.ObjectChildrenView):
+class BaseServerSharedNetworksView(ServerFamilyMixin, generic.ObjectChildrenView):
     """Read-only tab listing shared networks from the Kea config."""
+
+    workspace_section = "subnets"
+    workspace_subsection = "shared_networks"
 
     table = tables.SharedNetworkTable
     queryset = Server.objects.all()
@@ -39,23 +43,23 @@ class BaseServerSharedNetworksView(generic.ObjectChildrenView):
 
     def get_children(self, request: HttpRequest, parent: Server) -> list[dict[str, Any]]:
         """Return Shared Network rows from the Server Configuration snapshot."""
-        if check_dhcp_enabled(parent, self.dhcp_version) is not None:
+        if not (parent.dhcp4 if self.dhcp_version == 4 else parent.dhcp6):
             return []
         snapshot = server_configuration.display(parent, self.dhcp_version)
         show_notices(request, notice(snapshot))
         if snapshot.unavailable:
             return []
         can_change = Server.objects.restrict(request.user, "change").filter(pk=parent.pk).exists()
-        return [
+        rows = [
             _shared_network_row(network, parent, self.dhcp_version, can_change) for network in snapshot.shared_networks
         ]
+        for row in rows:
+            row["return_url"] = _safe_return_url(request, request.get_full_path())
+        return rows
 
     def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
         """Handle GET: check DHCP enabled, then render shared-network table."""
         instance = self.get_object(**kwargs)
-        if resp := check_dhcp_enabled(instance, self.dhcp_version):
-            return resp
-
         child_objects = self.get_children(request, instance)
         table_data = self.prep_table_data(request, child_objects, instance)
         table = self.get_table(table_data, request, False)
@@ -91,19 +95,15 @@ class ServerSharedNetworks4View(BaseServerSharedNetworksView):
 
     dhcp_version = 4
 
-    def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
-        """Redirect to the v6 view on v6-only servers so the merged tab works."""
-        instance = self.get_object(**kwargs)
-        if not instance.dhcp4 and instance.dhcp6:
-            return redirect(reverse("plugins:netbox_kea:server_shared_networks6", args=[instance.pk]))
-        return super().get(request, **kwargs)
 
-
-class BaseServerSharedNetworkAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+class BaseServerSharedNetworkAddView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Add a new shared network to a Kea server.
 
     Subclasses set ``dhcp_version`` to 4 or 6.
     """
+
+    workspace_section = "subnets"
+    workspace_subsection = "shared_networks"
 
     dhcp_version: Family
 
@@ -122,7 +122,7 @@ class BaseServerSharedNetworkAddView(_KeaChangeMixin, ConditionalLoginRequiredMi
                 "server": server,
                 "form": form,
                 "dhcp_version": self.dhcp_version,
-                "cancel_url": self._success_url(server),
+                "cancel_url": _safe_return_url(request, self._success_url(server)),
                 "tab": self.tab,
             },
         )
@@ -140,7 +140,7 @@ class BaseServerSharedNetworkAddView(_KeaChangeMixin, ConditionalLoginRequiredMi
                     "server": server,
                     "form": form,
                     "dhcp_version": self.dhcp_version,
-                    "cancel_url": self._success_url(server),
+                    "cancel_url": _safe_return_url(request, self._success_url(server)),
                     "tab": self.tab,
                 },
             )
@@ -150,7 +150,7 @@ class BaseServerSharedNetworkAddView(_KeaChangeMixin, ConditionalLoginRequiredMi
             f"Shared network '{name}' created.",
             lambda: config_write.add_shared_network(server, self.dhcp_version, name),
         )
-        return redirect(self._success_url(server))
+        return redirect(_safe_return_url(request, self._success_url(server)))
 
 
 class ServerSharedNetwork6AddView(BaseServerSharedNetworkAddView):
@@ -167,12 +167,15 @@ class ServerSharedNetwork4AddView(BaseServerSharedNetworkAddView):
     tab = _SUBNETS_TAB
 
 
-class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Delete a shared network from a Kea server.
 
     The network name is passed as a URL kwarg ``network_name``.  Subnets that
     belonged to the deleted network fall back to the global address pool.
     """
+
+    workspace_section = "subnets"
+    workspace_subsection = "shared_networks"
 
     dhcp_version: Family
 
@@ -190,7 +193,7 @@ class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ConditionalLoginRequire
                 "server": server,
                 "network_name": network_name,
                 "dhcp_version": self.dhcp_version,
-                "cancel_url": self._success_url(server),
+                "cancel_url": _safe_return_url(request, self._success_url(server)),
                 "tab": self.tab,
             },
         )
@@ -203,7 +206,7 @@ class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ConditionalLoginRequire
             f"Shared network '{network_name}' deleted.",
             lambda: config_write.delete_shared_network(server, self.dhcp_version, network_name),
         )
-        return redirect(self._success_url(server))
+        return redirect(_safe_return_url(request, self._success_url(server)))
 
 
 class ServerSharedNetwork6DeleteView(BaseServerSharedNetworkDeleteView):
@@ -220,8 +223,11 @@ class ServerSharedNetwork4DeleteView(BaseServerSharedNetworkDeleteView):
     tab = _SUBNETS_TAB
 
 
-class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+class BaseServerSharedNetworkEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Edit a Shared Network's managed configuration fields."""
+
+    workspace_section = "subnets"
+    workspace_subsection = "shared_networks"
 
     dhcp_version: Family
 
@@ -236,7 +242,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
         shown = server_configuration.shown_shared_network(configuration, network_name)
         if shown is None:
             messages.error(request, f"Shared network '{network_name}' not found or could not be retrieved.")
-            return redirect(self._success_url(server))
+            return redirect(_safe_return_url(request, self._success_url(server)))
 
         form = forms.SharedNetworkEditForm(
             initial={"name": network_name, **forms.SharedNetworkEditForm.initial_for(shown)}
@@ -249,7 +255,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
                 "form": form,
                 "network_name": network_name,
                 "dhcp_version": self.dhcp_version,
-                "cancel_url": self._success_url(server),
+                "cancel_url": _safe_return_url(request, self._success_url(server)),
                 "tab": self.tab,
             },
         )
@@ -267,7 +273,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
                     "form": form,
                     "network_name": network_name,
                     "dhcp_version": self.dhcp_version,
-                    "cancel_url": self._success_url(server),
+                    "cancel_url": _safe_return_url(request, self._success_url(server)),
                     "tab": self.tab,
                 },
             )
@@ -278,7 +284,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ConditionalLoginRequiredM
             f"Shared network '{network_name}' updated.",
             lambda: config_write.edit_shared_network(server, self.dhcp_version, network_name, edit, shown=shown),
         )
-        return redirect(self._success_url(server))
+        return redirect(_safe_return_url(request, self._success_url(server)))
 
 
 class ServerSharedNetwork6EditView(BaseServerSharedNetworkEditView):

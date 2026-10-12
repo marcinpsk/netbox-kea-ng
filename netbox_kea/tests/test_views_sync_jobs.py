@@ -172,7 +172,7 @@ class TestServerSyncNowView(TestCase):
         MockJob.enqueue.assert_called_once_with(instance=self.server, user=self.user, server_pk=self.server.pk)
         self.assertRedirects(
             response,
-            reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk]),
+            reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk]) + "?family=4",
             fetch_redirect_response=False,
         )
 
@@ -236,7 +236,7 @@ class TestServerSyncToggleView(TestCase):
         response = self.client.post(url)
         self.assertRedirects(
             response,
-            reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk]),
+            reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk]) + "?family=4",
             fetch_redirect_response=False,
         )
 
@@ -308,7 +308,7 @@ class TestServerSyncToggleViewErrorHandling(TestCase):
         self.assertContains(response, "internal error")
         self.assertRedirects(
             response,
-            reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk]),
+            reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk]) + "?family=4",
             fetch_redirect_response=False,
             target_status_code=200,
         )

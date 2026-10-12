@@ -1,20 +1,11 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
-{% extends "generic/object.html" %}
+{% extends "netbox_kea/server_workspace.html" %}
 {% load render_table from django_tables2 %}
+{% load kea_workspace %}
 
 {% block content %}
 {% include "netbox_kea/includes/persist_config_warning.html" %}
-{% if object.dhcp4 and object.dhcp6 %}
-<ul class="nav nav-pills justify-content-center mb-3">
-  <li class="nav-item">
-    <a class="nav-link{% if dhcp_version == 4 %} active{% endif %}" href="{% url 'plugins:netbox_kea:server_reservations4' object.pk %}">DHCPv4</a>
-  </li>
-  <li class="nav-item">
-    <a class="nav-link{% if dhcp_version == 6 %} active{% endif %}" href="{% url 'plugins:netbox_kea:server_reservations6' object.pk %}">DHCPv6</a>
-  </li>
-</ul>
-{% endif %}
 <div class="row mb-3">
   <div class="col">
     {% if not hook_available %}
@@ -41,6 +32,7 @@
   </div>
   <div class="card-body">
     <form method="get" class="row g-2 align-items-end">
+      {% workspace_return_field %}
       <div class="col-auto flex-grow-1">
         <label for="id_q" class="form-label">{{ search_form.q.label }}</label>
         {{ search_form.q }}
@@ -67,7 +59,7 @@
           <i class="mdi mdi-magnify"></i> Filter
         </button>
         {% if request.GET %}
-        <a href="{{ request.path }}" class="btn btn-outline-secondary btn-sm">
+        <a href="{% workspace_url request.path %}" class="btn btn-outline-secondary btn-sm">
           <i class="mdi mdi-close"></i> Clear
         </a>
         {% endif %}

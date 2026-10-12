@@ -20,10 +20,11 @@ from ..constants import Family
 from ..dhcp_options import DHCPOption, DHCPOptionConflict, DHCPOptionNameChange
 from ..kea import KeaCommand, KeaException
 from ..models import Server
-from ..utilities import OptionalViewTab, check_dhcp_enabled
-from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _run_config_change
+from ..utilities import OptionalViewTab
+from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _run_config_change, _safe_return_url
 from .notices import notice, show_notices
 from .subnets import _NO_SUBNET_CIDR, _SUBNETS_TAB, _displayed_subnet
+from .workspace import ServerFamilyMixin
 
 # One Config tab for both sections and both families; ServerOptionDef4View owns it.
 _CONFIG_TAB = OptionalViewTab(label="Config", weight=1050, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
@@ -36,15 +37,12 @@ def config_nav_context(server_pk: int, section: str, dhcp_version: Family) -> di
     """
     options_name = "server_dhcp{}_options_edit"
     optiondef_name = "server_option_def{}"
-    family_name = options_name if section == "options" else optiondef_name
     return {
         "tab": _CONFIG_TAB,
         "config_section": section,
         "dhcp_version": dhcp_version,
         "nav_options_url": reverse(f"plugins:netbox_kea:{options_name.format(dhcp_version)}", args=[server_pk]),
         "nav_optiondef_url": reverse(f"plugins:netbox_kea:{optiondef_name.format(dhcp_version)}", args=[server_pk]),
-        "nav_v4_url": reverse(f"plugins:netbox_kea:{family_name.format(4)}", args=[server_pk]),
-        "nav_v6_url": reverse(f"plugins:netbox_kea:{family_name.format(6)}", args=[server_pk]),
     }
 
 
@@ -58,8 +56,10 @@ def _run_option_change(request: HttpRequest, confirmed: str, change: Callable[[]
         messages.error(request, "A coded DHCP Option cannot be renamed. Delete it and add a new option instead.")
 
 
-class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+class _BaseSubnetOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """GET/POST view for editing the DHCP Options of one Subnet."""
+
+    workspace_section = "subnets"
 
     dhcp_version: Family = 4
 
@@ -79,7 +79,9 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
             Server.objects.restrict(request.user, "change"),
             pk=pk,
         )
-        return_url = reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
+        return_url = _safe_return_url(
+            request, reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
+        )
         catalogue, verified = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
         if verified is None:
             reason = ", because the subnet_cmds hook is not loaded" if not catalogue.subnet_cmds_available else ""
@@ -129,9 +131,8 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin,
             Server.objects.restrict(request.user, "change"),
             pk=pk,
         )
-        return_url = reverse(
-            f"plugins:netbox_kea:server_subnets{self.dhcp_version}",
-            args=[pk],
+        return_url = _safe_return_url(
+            request, reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
         )
         formset = forms.SubnetOptionsFormSet(request.POST)
         form = forms.SubnetConfirmForm(request.POST, family=self.dhcp_version)
@@ -169,8 +170,11 @@ class ServerSubnet6OptionsEditView(_BaseSubnetOptionsEditView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class _BaseServerOptionsEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+class _BaseServerOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """GET/POST view for editing server-global DHCP Options."""
+
+    workspace_section = "configuration"
+    workspace_subsection = "options"
 
     dhcp_version: Family = 4
 
@@ -340,19 +344,19 @@ class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):
 # ---------------------------------------------------------------------------
 
 
-class BaseServerOptionDefView(ConditionalLoginRequiredMixin, View):
+class BaseServerOptionDefView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """List Option Definitions for a Kea Server.
 
     Subclasses set ``dhcp_version`` to 4 or 6.
     """
+
+    workspace_section = "configuration"
 
     dhcp_version: Family
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the Option Definition list."""
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        if resp := check_dhcp_enabled(server, self.dhcp_version):
-            return resp
         snapshot = server_configuration.display(server, self.dhcp_version)
         show_notices(request, notice(snapshot))
         # Add delete URLs here because templates do not construct dynamic URL names.
@@ -404,19 +408,14 @@ class ServerOptionDef4View(BaseServerOptionDefView):
     tab = _CONFIG_TAB
     dhcp_version = 4
 
-    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
-        """Redirect to the v6 view on v6-only servers so the merged tab works."""
-        server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        if not server.dhcp4 and server.dhcp6:
-            return redirect(reverse("plugins:netbox_kea:server_option_def6", args=[pk]))
-        return super().get(request, pk=pk)
 
-
-class BaseServerOptionDefAddView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+class BaseServerOptionDefAddView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Add a custom option definition to a Kea server.
 
     Subclasses set ``dhcp_version`` to 4 or 6.
     """
+
+    workspace_section = "configuration"
 
     dhcp_version: Family
 
@@ -487,11 +486,13 @@ class ServerOptionDef4AddView(BaseServerOptionDefAddView):
     tab = _CONFIG_TAB
 
 
-class BaseServerOptionDefDeleteView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+class BaseServerOptionDefDeleteView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Delete a custom option definition from a Kea server.
 
     The option code and space are passed as URL kwargs.
     """
+
+    workspace_section = "configuration"
 
     dhcp_version: Family
 

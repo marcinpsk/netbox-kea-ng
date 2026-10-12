@@ -22,7 +22,6 @@ to the real test database. Server submissions use the real forms and Kea client.
 
 import requests
 from core.models import ObjectType
-from django.contrib import messages as django_messages
 from django.test import override_settings
 from django.urls import reverse
 
@@ -315,7 +314,7 @@ class TestServerStatusView(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/status/"""
 
     def test_get_returns_200(self):
-        url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_status_data", args=[self.server.pk])
         with _status_stub():
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -323,13 +322,13 @@ class TestServerStatusView(_ViewTestBase):
     def test_get_without_control_agent_returns_200(self):
         """Status view with has_control_agent=False must still return 200."""
         server = _make_db_server(name="direct-daemon", has_control_agent=False)
-        url = reverse("plugins:netbox_kea:server_status", args=[server.pk])
+        url = reverse("plugins:netbox_kea:server_status_data", args=[server.pk])
         with _status_stub():
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_get_nonexistent_returns_404(self):
-        url = reverse("plugins:netbox_kea:server_status", args=[99999])
+        url = reverse("plugins:netbox_kea:server_status_data", args=[99999])
         response = self.client.get(url)
         self.assertEqual(response.status_code, 404)
 
@@ -511,7 +510,7 @@ class TestServerStatusGlobalOptions(_ViewTestBase):
 
     def test_global_options_present_in_context(self):
         """``global_options`` context key must exist and contain parsed option dicts."""
-        url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_status_data", args=[self.server.pk])
         with _global_options_stub():
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -522,14 +521,14 @@ class TestServerStatusGlobalOptions(_ViewTestBase):
 
     def test_global_options_dns_rendered_in_html(self):
         """DNS server IP must appear somewhere in the rendered status page."""
-        url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_status_data", args=[self.server.pk])
         with _global_options_stub():
             response = self.client.get(url)
         self.assertContains(response, "8.8.8.8")
 
     def test_global_options_domain_name_rendered(self):
         """Domain name option must also appear in the status page HTML."""
-        url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_status_data", args=[self.server.pk])
         with _global_options_stub():
             response = self.client.get(url)
         self.assertContains(response, "example.com")
@@ -540,7 +539,7 @@ class TestServerStatusGlobalOptions(_ViewTestBase):
             "dhcp6": _catalogue_responses_for_subnets(6, [], global_options=options6)["config-get"],
         }
         with _global_options_stub(**{"config-get": lambda body: configs[body["service"][0]]}):
-            response = self.client.get(reverse("plugins:netbox_kea:server_status", args=[self.server.pk]))
+            response = self.client.get(reverse("plugins:netbox_kea:server_status_data", args=[self.server.pk]))
         self.assertEqual(response.status_code, 200)
         return response
 
@@ -587,7 +586,7 @@ class TestServerStatusGlobalOptions(_ViewTestBase):
     def test_status_still_200_when_config_get_fails(self):
         """If ``config-get`` raises, the status page must still return 200 (graceful degradation)."""
         # config-get result 1 → real KeaException → _get_global_options swallows it → {}.
-        url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_status_data", args=[self.server.pk])
         with (
             _global_options_stub(**{"config-get": {"result": 1, "text": "internal error"}}),
             self.assertLogs("netbox_kea.views.server", level="WARNING") as logs,
@@ -753,7 +752,7 @@ class TestStatusViewNullArgs(_ViewTestBase):
     """ServerStatusView: status-get returns empty or null arguments."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_status_data", args=[self.server.pk])
 
     def test_get_ca_status_empty_args_degrades_gracefully(self):
         """_get_ca_status degrades gracefully when arguments is empty."""
@@ -915,7 +914,7 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
     """A failed Server Configuration read leaves the status page without global options."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_status_data", args=[self.server.pk])
 
     def test_generic_exception_swallowed(self):
         """A transport error in config-get for global options is swallowed; the page renders normally."""
@@ -961,8 +960,8 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
             response = self.client.get(self._url())
 
         self.assertEqual(response.status_code, 200)
-        errors = [str(m) for m in response.context["messages"] if m.level == django_messages.ERROR]
-        self.assertIn("Kea did not return a Dhcp4 configuration object.", errors)
+        self.assertContains(response, "Kea did not return a Dhcp4 configuration object.")
+        self.assertContains(response, "alert-danger")
 
     def test_incomplete_global_options_render_valid_values_with_a_warning(self):
         config = _catalogue_responses_for_subnets(
@@ -976,8 +975,7 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
             [(row.name, row.option.data) for row in response.context["global_options"]["DHCPv4"]],
             [("domain-name", "example.com")],
         )
-        warnings = [str(m) for m in response.context["messages"] if m.level == django_messages.WARNING]
-        self.assertTrue(warnings, list(response.context["messages"]))
+        self.assertContains(response, "alert-warning")
 
     def test_invalid_pool_does_not_log_global_options_as_incomplete(self):
         subnet = {"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": "192.0.2.1-192.0.2.9"}]}
@@ -993,8 +991,8 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["global_options"]["DHCPv4"][0].option.data, "8.8.8.8, 8.8.4.4")
-        warnings = [str(m) for m in response.context["messages"] if m.level == django_messages.WARNING]
-        self.assertIn("Kea returned an invalid Pool.", warnings)
+        self.assertContains(response, "Kea returned an invalid Pool.")
+        self.assertContains(response, "alert-warning")
 
 
 # ---------------------------------------------------------------------------
@@ -1068,7 +1066,7 @@ class TestStatusViewNullVersionArgs(_ViewTestBase):
     def test_ca_version_get_null_args_returns_200(self):
         """CA version-get returns None args → RuntimeError caught in get_extra_context."""
         stub = {"status-get": _ok_status(uptime=60), "version-get": {"result": 0, "arguments": None}}
-        url = reverse("plugins:netbox_kea:server_status", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_status_data", args=[self.server.pk])
         with _status_stub(**stub):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -1085,7 +1083,7 @@ class TestStatusViewNullVersionArgs(_ViewTestBase):
             dhcp4=True,
             dhcp6=False,
         )
-        url = reverse("plugins:netbox_kea:server_status", args=[server_dhcp_only.pk])
+        url = reverse("plugins:netbox_kea:server_status_data", args=[server_dhcp_only.pk])
         with _status_stub(**stub):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)

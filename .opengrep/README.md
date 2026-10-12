@@ -37,6 +37,7 @@ out of CI so CodeRabbit can run its own analysis on pull requests.
 
 | Rule id | Severity | Catches |
 | --- | --- | --- |
+| `kea-row-return-url-empty-fallback` | error | A row's `return_url` assigned from `_safe_return_url()` with an empty fallback. Row actions must retain the current list query. Limit: the rule checks this direct assignment only; it does not follow aliases or intermediate values. |
 | `kea-queryset-model-attribute-discriminator` | error | A `model` attribute check used to distinguish querysets from model instances. Model fields can use the same name. |
 | `kea-config-phase-without-reply-validation` | error | Direct config-test, config-set, or config-write calls that bypass `_one_command()` or `_config_mutation_command()` and their single-reply validation. |
 | `kea-sync-hostname-unpublished` | error | A `.hostname` of a lease, Reservation or record passed as a call argument or in a `(hardware, hostname)` pair in `ipam_reconciliation.py` or `integrations/dhcp_plugin.py`, except to `lease_published_name()`. The IPAM and MAC sync report the name that Kea publishes (`published_name.py`), so both sources agree. Limits: it matches receiver names that end in `lease`, `reservation` or `record`, and it does not follow a hostname through a local variable. |

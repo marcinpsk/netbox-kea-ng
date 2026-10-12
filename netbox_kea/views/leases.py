@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
 from typing import Any, Generic, Literal, TypeVar
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 from urllib.parse import urlencode as _urlencode
 
 import requests
@@ -77,7 +78,6 @@ from ..subnet_catalogue import CatalogueUnavailable, VerifiedSubnet
 from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import (
     OptionalViewTab,
-    check_dhcp_enabled,
     diagnostic_reasons,
     export_table,
     kea_error_hint,
@@ -93,11 +93,28 @@ from ._base import (
 )
 from .notices import Notice, load_snapshot, notice
 from .reservations import empty_text
+from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseTable)
 _LEASE_EXPORT_MAX_LEASES = 50_000
+
+
+def _search_history(request: HttpRequest, response: HttpResponse, url: str) -> HttpResponse:
+    """Replace automatic or unchanged searches; push user searches that change the URL."""
+    current = urlsplit(_strip_empty_params(request.headers.get("HX-Current-URL", "")))
+    target = urlsplit(url)
+    unchanged = current.path == target.path and parse_qs(current.query, keep_blank_values=True) == parse_qs(
+        target.query, keep_blank_values=True
+    )
+    if unchanged:
+        # The same parameters in the reader's order: a reorder would change the URL of the current history entry.
+        response["HX-Replace-Url"] = urlunsplit(("", "", current.path, current.query, ""))
+        return response
+    initial_search = request.headers.get("Kea-Initial-Search") == "true"
+    response["HX-Replace-Url" if initial_search else "HX-Push-Url"] = url
+    return response
 
 
 def lease_sync_gates(user: Any) -> dict[AllocationKind, SyncGate]:
@@ -312,8 +329,10 @@ def present(
     return PresentedLeases(table, can_delete, return_url)
 
 
-class BaseServerLeasesView(generic.ObjectView, Generic[T]):
+class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
     """Generic base view for DHCP lease search tabs; specialised by IP version."""
+
+    workspace_section = "leases"
 
     template_name = "netbox_kea/server_dhcp_leases.html"
     queryset = Server.objects.all()
@@ -347,7 +366,6 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         ctx: dict[str, Any] = {
             "form": form,
             "table": table,
-            # Drives the in-page v4/v6 protocol toggle on the merged Leases tab.
             "dhcp_version": self.dhcp_version,
         }
         if can_change:
@@ -463,26 +481,27 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             snapshot.records, family=self.dhcp_version, evaluated_at=snapshot.evaluated_at, filename="leases_all.csv"
         )
 
-    def _search_without_table(self, request: HttpRequest, form, lease_notice: Notice | None = None) -> HttpResponse:
+    def _search_without_table(
+        self, request: HttpRequest, server: Server, form, lease_notice: Notice | None = None
+    ) -> HttpResponse:
         """Render the search partial with the form and an empty table: a refused search or a failed read."""
-        return render(
+        response = render(
             request,
             "netbox_kea/server_dhcp_leases_htmx.html",
             {
                 "is_embedded": False,
+                "object": server,
                 "form": form,
                 "table": self.get_table([], request),
                 "paginate": False,
                 "lease_notice": lease_notice,
             },
         )
+        return _search_history(request, response, _strip_empty_params(request.get_full_path()))
 
     def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
         """Dispatch to export, HTMX partial, or full page render as appropriate."""
         instance: Server = self.get_object(**kwargs)
-
-        if resp := check_dhcp_enabled(instance, self.dhcp_version):
-            return resp
 
         if "export" in request.GET:
             return self.get_export(request, **kwargs)
@@ -497,7 +516,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
         # `form.cleaned_data`, so neither may depend on how far into the try we got.
         form = self._make_search_form(instance, request.GET)
         if not form.is_valid():
-            return self._search_without_table(request, form)
+            return self._search_without_table(request, instance, form)
 
         try:
             by = form.cleaned_data["by"]
@@ -510,7 +529,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
             )
             loaded = fetch(instance, self.dhcp_version, search)
             if isinstance(loaded, Notice):
-                return self._search_without_table(request, form, loaded)
+                return self._search_without_table(request, instance, form, loaded)
             snapshot = loaded
             # A search reads its whole scope and pages here; a read of every Lease reads one page from Kea.
             presented = present(request, instance, snapshot, self.table, visible_only=by != "")
@@ -526,6 +545,7 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                 {
                     "can_delete": presented.can_delete,
                     "is_embedded": False,
+                    "object": instance,
                     "delete_action": (
                         reverse(
                             f"plugins:netbox_kea:server_leases{self.dhcp_version}_delete",
@@ -543,16 +563,12 @@ class BaseServerLeasesView(generic.ObjectView, Generic[T]):
                     "page_lengths": EnhancedPaginator.default_page_lengths,
                 },
             )
-            # Tell HTMX which URL to push to the browser history.  The request
-            # URL may include empty params (e.g. state=) that HTMX would otherwise
-            # push verbatim; sending the stripped URL as HX-Push-Url overrides
-            # that so the address bar always shows the clean URL.
-            response["HX-Push-Url"] = presented.return_url
+            _search_history(request, response, presented.return_url)
         except LeaseQueryGuardError as exc:
             logger.info("Rejected unsafe Subnet lease query on server %s: %s", instance.pk, exc)
             field = "q" if isinstance(exc, LeaseQueryUnknownSubnet) else "state"
             form.add_error(field, lease_query_guard_message(exc, form.cleaned_data.get("state")))
-            return self._search_without_table(request, form)
+            return self._search_without_table(request, instance, form)
         # A Kea, transport or malformed-reply failure of the read is a Notice above; this is a request error.
         except ValueError:
             error_id = str(uuid.uuid4())
@@ -598,13 +614,6 @@ class ServerLeases4View(BaseServerLeasesView[tables.LeaseTable4]):
     table = tables.LeaseTable4
     dhcp_version = 4
 
-    def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
-        """Redirect to the v6 leases view on v6-only servers so the merged tab works."""
-        instance = self.get_object(**kwargs)
-        if not instance.dhcp4 and instance.dhcp6:
-            return redirect(reverse("plugins:netbox_kea:server_leases6", args=[instance.pk]))
-        return super().get(request, **kwargs)
-
 
 class FakeLeaseModelMeta:
     """Minimal ``_meta`` shim so bulk_delete.html can introspect the lease pseudo-model."""
@@ -621,11 +630,19 @@ class FakeLeaseModel:
     _meta = FakeLeaseModelMeta
 
 
-class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclass=ABCMeta):
+class BaseServerLeasesDeleteView(ServerFamilyMixin, GetReturnURLMixin, generic.ObjectView, metaclass=ABCMeta):
     """Base view for confirming and processing bulk deletion of DHCP leases."""
+
+    workspace_section = "leases"
 
     queryset = Server.objects.all()
     default_return_url = "plugins:netbox_kea:server_list"
+
+    def disabled_family_access(self, request: HttpRequest, server: Server) -> HttpResponse | None:
+        """Preserve the Lease deletion permission on a disabled family."""
+        if not request.user.has_perm("netbox_kea.bulk_delete_lease_from_server", obj=server):
+            return HttpResponseForbidden("This user does not have permission to delete DHCP leases.")
+        return None
 
     def get(self, request: HttpRequest, **kwargs):
         """Redirect back to the server on GET (this view is POST-only)."""
@@ -635,11 +652,8 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
         """Show confirmation page or delete leases if confirmed."""
         instance: Server = self.get_object(**kwargs)
 
-        if check_dhcp_enabled(instance, self.dhcp_version):
-            return _after_lease_delete(request, instance.get_absolute_url())
-
-        if not request.user.has_perm("netbox_kea.bulk_delete_lease_from_server", obj=instance):
-            return HttpResponseForbidden("This user does not have permission to delete DHCP leases.")
+        if refusal := self.disabled_family_access(request, instance):
+            return refusal
 
         form = self.form(request.POST)
 
@@ -654,6 +668,7 @@ class BaseServerLeasesDeleteView(GetReturnURLMixin, generic.ObjectView, metaclas
                 request,
                 "netbox_kea/server_lease_bulk_delete.html",
                 {
+                    "object": instance,
                     "model": FakeLeaseModel,
                     "table": tables.LeaseDeleteTable([_shown_row(shown) for shown in selected], orderable=False),
                     "form": form,
@@ -791,13 +806,15 @@ def _shown_row(shown: ShownLease) -> dict[str, Any]:
     }
 
 
-class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
+class _BaseLeaseEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Base view for editing a single Lease via ``lease{v}-update``.
 
     The route target is the address, or ``address/length`` for a delegated prefix. The page carries the
     shown Lease facts, and the save writes only the fields that differ from them.
     Subclasses must set ``dhcp_version`` and ``form_class``.
     """
+
+    workspace_section = "leases"
 
     dhcp_version: Family
     form_class: type[forms._LeaseEditForm]
@@ -830,9 +847,6 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     def get(self, request: HttpRequest, pk: int, ip_address: str) -> HttpResponse:
         """Render the edit form pre-filled with the current lease values and the shown facts."""
         server = self._get_server(pk)
-
-        if resp := check_dhcp_enabled(server, self.dhcp_version):
-            return resp
 
         try:
             client = server.get_client(version=self.dhcp_version)
@@ -875,9 +889,6 @@ class _BaseLeaseEditView(_KeaChangeMixin, ConditionalLoginRequiredMixin, View):
     def post(self, request: HttpRequest, pk: int, ip_address: str) -> HttpResponse:
         """Write the changed fields via ``lease{v}-update`` after a fresh read agrees with the shown facts."""
         server = self._get_server(pk)
-
-        if resp := check_dhcp_enabled(server, self.dhcp_version):
-            return resp
 
         form = self.form_class(request.POST)
         valid = form.is_valid()
@@ -931,8 +942,10 @@ class ServerLease6EditView(_BaseLeaseEditView):
     tab = _LEASES_TAB
 
 
-class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
+class _BaseLeaseAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     """Base view for creating a new lease via ``lease{v}-add``."""
+
+    workspace_section = "leases"
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_lease_add.html"
@@ -963,9 +976,6 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
         """Render the empty add form."""
         server = self.get_object(pk=pk)
 
-        if resp := check_dhcp_enabled(server, self.dhcp_version):
-            return resp
-
         return self._render(
             request, server, self.form_class(sync_refusal=sync_gate(request.user, claim_permissions(LEASE)).reason)
         )
@@ -973,9 +983,6 @@ class _BaseLeaseAddView(_KeaChangeMixin, generic.ObjectView):
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Create the Lease of the typed request, read it back, and report both outcomes."""
         server = self.get_object(pk=pk)
-
-        if resp := check_dhcp_enabled(server, self.dhcp_version):
-            return resp
 
         gate = sync_gate(request.user, claim_permissions(LEASE))
         form = self.form_class(request.POST, sync_refusal=gate.reason)

@@ -25,16 +25,9 @@ from .reservations import fetch as fetch_reservations
 from .reservations import present as present_reservations
 from .server_scope import SELECTION_FIELD, ServerScope, resolve
 from .sync_jobs import get_all_jobs_for_server
+from .workspace import SECTIONS, server_section_url, with_return_url
 
 _LEASE_SEARCH_FIELDS = ("q", "by", "state")
-_SECTIONS = (
-    ("overview", "Overview"),
-    ("leases", "Leases"),
-    ("subnets", "Subnets"),
-    ("reservations", "Reservations"),
-    ("configuration", "Configuration"),
-    ("sync", "Sync"),
-)
 
 
 def _search_value_label(field: Field, value: str) -> str:
@@ -67,7 +60,7 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
             url = reverse(f"plugins:netbox_kea:combined_{self.active_tab}")
             return redirect(url + "?" + query.urlencode())
         # A download stays on a section that supports combined exports.
-        if self.server_scope.is_one and not self.server_scope.missing_family and not is_export:
+        if self.server_scope.is_one and not is_export:
             target = self._single_server_url(request)
             if request.headers.get("HX-Request") == "true":
                 response = HttpResponse()
@@ -80,11 +73,11 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
         """Keep only query fields that the canonical Server tab understands."""
         server = self.server_scope.servers[0]
         if self.active_tab == "overview":
-            return server.get_absolute_url()
+            return server.get_absolute_url() + f"?family={self.dhcp_version}"
         if self.active_tab.startswith("configuration"):
             return reverse(f"plugins:netbox_kea:server_option_def{self.dhcp_version}", args=[server.pk])
         if self.active_tab.startswith("sync"):
-            return reverse("plugins:netbox_kea:server_sync_status", args=[server.pk])
+            return reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]) + f"?family={self.dhcp_version}"
         compatible = {"sort", "per_page"}
         if self.active_tab.startswith("leases"):
             # The chooser has no per-Server Lease cursor.
@@ -131,7 +124,7 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
         family = self.dhcp_version or 4
         subsection = self.active_tab.rstrip("46")
         section = "subnets" if subsection == "shared_networks" else subsection
-        label = dict(_SECTIONS)[section]
+        label = dict(SECTIONS)[section]
         scope_label = (
             "Invalid Server selection"
             if self.server_scope.is_invalid
@@ -170,7 +163,7 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
             "workspace_section": section,
             "workspace_subsection": subsection,
             "workspace_family": family,
-            "workspace_sections": [(key, text, section_url(key, family)) for key, text in _SECTIONS],
+            "workspace_sections": [(key, text, section_url(key, family)) for key, text in SECTIONS],
             "workspace_families": [(version, section_url(subsection, version, filters=True)) for version in (4, 6)],
             "workspace_subsections": [
                 (key, text, section_url(key, family))
@@ -197,6 +190,21 @@ class CombinedDashboardView(_CombinedViewMixin):
         """Render the overview with the Servers in the resolved Server Scope."""
         ctx = self._combined_context(request)
         ctx["page_title"] = "All Kea Servers"
+        ctx["server_cards"] = [
+            (
+                server,
+                with_return_url(server.get_absolute_url() + f"?family={self.dhcp_version}", request.get_full_path()),
+                with_return_url(
+                    reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk]),
+                    request.get_full_path(),
+                ),
+                with_return_url(
+                    reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[server.pk]),
+                    request.get_full_path(),
+                ),
+            )
+            for server in self.server_scope.servers
+        ]
         return render(request, self.template_name, ctx)
 
 
@@ -216,7 +224,12 @@ class _ConfigurationServerChooserView(_CombinedViewMixin):
         """List only selected Servers that serve this family, without reading Kea."""
         ctx = self._combined_context(request)
         ctx["configuration_servers"] = [
-            (server, reverse(f"plugins:netbox_kea:server_option_def{self.dhcp_version}", args=[server.pk]))
+            (
+                server,
+                with_return_url(
+                    server_section_url(server, "configuration", self.dhcp_version), request.get_full_path()
+                ),
+            )
             for server in self.server_scope.query_servers
         ]
         return render(request, "netbox_kea/combined_configuration.html", ctx)
@@ -258,7 +271,8 @@ class _CombinedSyncView(_CombinedViewMixin):
                 key: summary.get(key) if summary else None
                 for key in ("created", "updated", "errors", "prefix_errors", "conflicts")
             }
-            rows.append((server, job, counts))
+            url = with_return_url(server_section_url(server, "sync", self.dhcp_version), request.get_full_path())
+            rows.append((server, job, counts, url))
         ctx["sync_results"] = rows
         return render(request, "netbox_kea/combined_sync.html", ctx)
 
@@ -338,6 +352,11 @@ class _CombinedSubnetsView(_CombinedViewMixin):
             .values_list("pk", flat=True)
         )
         for subnet in all_subnets:
+            subnet["return_url"] = request.get_full_path()
+            subnet["record_url"] = with_return_url(
+                reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[subnet["server_pk"]]),
+                request.get_full_path(),
+            )
             can_change = subnet.get("server_pk") in writable_pks
             subnet["can_change"] = bool(subnet.get("identity_verified")) and can_change
             subnet["can_edit_options"] = subnet["can_change"] and bool(subnet.get("configuration_available"))
@@ -419,6 +438,12 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
                 for network in snapshot.shared_networks
             )
 
+        for row in all_networks:
+            row["return_url"] = request.get_full_path()
+            row["record_url"] = with_return_url(
+                reverse(f"plugins:netbox_kea:server_shared_networks{self.dhcp_version}", args=[row["server_pk"]]),
+                request.get_full_path(),
+            )
         table = tables.GlobalSharedNetworkTable(all_networks, user=request.user)
         table.configure(request)
 
@@ -522,6 +547,11 @@ class _CombinedReservationsView(_CombinedViewMixin):
         for server, server_read in read.results:
             presented = present_reservations(request.user, server, server_read, return_url=request.get_full_path())
             notices.add(server, presented.notice)
+            for row in presented.rows:
+                row["record_url"] = with_return_url(
+                    reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk]),
+                    request.get_full_path(),
+                )
             all_records.extend(presented.rows)
             partial = partial or presented.partial
             if presented.rows and presented.mutation_unavailable_reason:
@@ -597,8 +627,10 @@ class _LeaseServerChooserView(_CombinedViewMixin):
                 "lease_servers": [
                     (
                         server,
-                        reverse(f"plugins:netbox_kea:server_leases{self.dhcp_version}", args=[server.pk])
-                        + search_suffix,
+                        with_return_url(
+                            server_section_url(server, "leases", self.dhcp_version) + search_suffix,
+                            request.get_full_path(),
+                        ),
                     )
                     for server in self.server_scope.query_servers
                 ],

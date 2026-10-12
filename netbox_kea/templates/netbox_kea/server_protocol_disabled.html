@@ -1,0 +1,11 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends "netbox_kea/server_workspace.html" %}
+{% load kea_workspace %}
+{% block content %}
+<div id="kea-protocol-disabled" class="alert alert-info" role="status">
+  <h2>Protocol not enabled</h2>
+  {% if enabled_family %}<a href="{{ enabled_family.1 }}">Open DHCPv{{ enabled_family.0 }}</a>{% endif %}
+  <p>This Server does not serve the requested DHCP family. Select an enabled family in the scope bar.</p>
+</div>
+{% endblock %}

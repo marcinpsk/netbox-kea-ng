@@ -1743,9 +1743,11 @@ def _route_arguments(route: _Route, server: Server, ip: IPAddress) -> dict[str, 
     return arguments
 
 
-def _route_query(route: _Route, ip: IPAddress) -> str:
+def _route_query(route: _Route, server: Server, ip: IPAddress) -> str:
     """Return the query string that a page of *route* needs to show a real object."""
     short = route.name.rsplit(":", 1)[-1]
+    if short == "server_switch":
+        return urlencode({"target": server.pk, "section": "overview", "family": 4})
     if short.startswith(("server_reservation4_edit", "server_reservation4_delete")):
         return urlencode({"identifier_type": "hw-address", "identifier": _KEA_OBJECTS[4].reservation["hw-address"]})
     if short.startswith(("server_reservation6_edit", "server_reservation6_delete")):
@@ -1776,14 +1778,21 @@ def _route_url(route: _Route, server: Server, ip: IPAddress) -> str:
         str(match.kwargs.get(k)) != str(v) for k, v in arguments.items()
     ):
         raise AssertionError(f"Guard 1 built {url} for {route.name} ({route.pattern}), but it resolves elsewhere.")
-    query = _route_query(route, ip)
+    query = _route_query(route, server, ip)
     return f"{url}?{query}" if query else url
 
 
 # A page GET that main answers with a redirect: NetBox's bulk views, and the lease delete confirmation.
 _MAIN_GET_REDIRECTS = frozenset(
     f"plugins:netbox_kea:{name}"
-    for name in ("server_bulk_delete", "server_bulk_edit", "server_leases4_delete", "server_leases6_delete")
+    for name in (
+        "server_bulk_delete",
+        "server_bulk_edit",
+        "server_leases4_delete",
+        "server_leases6_delete",
+        "server_status",
+        "server_switch",
+    )
 )
 
 
@@ -1986,8 +1995,8 @@ class RenderedBranchControlsTest(TransactionTestCase):
         client = Client()
         client.force_login(user)
         url = reverse("plugins:netbox_kea:server", args=[server.pk])
-        edit = reverse("plugins:netbox_kea:server_edit", args=[server.pk])
-        delete = reverse("plugins:netbox_kea:server_delete", args=[server.pk])
+        edit = reverse("plugins:netbox_kea:server_edit", args=[server.pk]) + "?family=4"
+        delete = reverse("plugins:netbox_kea:server_delete", args=[server.pk]) + "?family=4"
 
         with stub_kea(_recorded_kea()):
             on_main = client.get(url)
