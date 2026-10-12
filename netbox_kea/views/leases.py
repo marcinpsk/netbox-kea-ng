@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import partial
 from typing import Any, Generic, Literal, TypeVar
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 from urllib.parse import urlencode as _urlencode
 
 import requests
@@ -108,8 +108,12 @@ def _search_history(request: HttpRequest, response: HttpResponse, url: str) -> H
     unchanged = current.path == target.path and parse_qs(current.query, keep_blank_values=True) == parse_qs(
         target.query, keep_blank_values=True
     )
+    if unchanged:
+        # The same parameters in the reader's order: a reorder would change the URL of the current history entry.
+        response["HX-Replace-Url"] = urlunsplit(("", "", current.path, current.query, ""))
+        return response
     initial_search = request.headers.get("Kea-Initial-Search") == "true"
-    response["HX-Replace-Url" if initial_search or unchanged else "HX-Push-Url"] = url
+    response["HX-Replace-Url" if initial_search else "HX-Push-Url"] = url
     return response
 
 

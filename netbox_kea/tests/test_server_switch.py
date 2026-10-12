@@ -125,7 +125,8 @@ class TestServerSwitch(_ViewTestBase):
         current = "http://testserver" + url + "?by=hostname&q=printer"
         with stub_kea(responses):
             response = self.client.get(url, query, HTTP_HX_REQUEST="true", HTTP_HX_CURRENT_URL=current)
-        self.assertEqual(response.get("HX-Replace-Url"), url + "?q=printer&by=hostname")
+        # Same search: keep the address bar as it is, so the history entry does not change under the reader.
+        self.assertEqual(response.get("HX-Replace-Url"), url + "?by=hostname&q=printer")
         self.assertNotIn("HX-Push-Url", response.headers)
         with stub_kea(responses):
             changed = self.client.get(url, query, HTTP_HX_REQUEST="true", HTTP_HX_CURRENT_URL="http://testserver" + url)
