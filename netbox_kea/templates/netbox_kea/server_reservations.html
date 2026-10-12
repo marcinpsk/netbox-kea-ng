@@ -40,7 +40,7 @@
         <div class="text-danger small">{{ search_form.q.errors }}</div>
         {% endif %}
       </div>
-      <div class="col-auto">
+      <div class="col-12 col-md-4">
         <label for="id_subnet_id" class="form-label">{{ search_form.subnet_id.label }}</label>
         {{ search_form.subnet_id }}
         {% if search_form.subnet_id.errors %}

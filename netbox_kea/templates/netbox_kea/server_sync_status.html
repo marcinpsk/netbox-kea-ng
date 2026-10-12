@@ -4,6 +4,7 @@
 {% load helpers %}
 
 {% block content %}
+{% include "netbox_kea/inc/sync_nav.html" %}
 <div class="row">
   <div class="col-md-10">
     <div class="row g-3">
@@ -120,9 +121,9 @@
       {# Job history card #}
       <div class="col-md-4">
         <div class="card h-100">
-          <h5 class="card-header">
+          <h5 class="card-header d-flex justify-content-between align-items-center gap-2">
             Recent Runs
-            <a href="{{ jobs_list_url }}" class="float-end small text-muted">View manual runs →</a>
+            <a href="{{ jobs_list_url }}" class="small text-muted">View manual runs →</a>
           </h5>
           <div class="card-body p-0">
             {% if recent_jobs %}

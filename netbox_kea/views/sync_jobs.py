@@ -22,6 +22,7 @@ from utilities.views import ViewTab, register_model_view
 from .. import forms
 from ..jobs import KeaIpamSyncJob
 from ..models import Server, SyncConfig
+from .dhcp_plugin_sync import sync_nav_context
 from .workspace import ServerFamilyMixin, server_family_url
 
 logger = logging.getLogger(__name__)
@@ -238,6 +239,7 @@ class ServerSyncStatusView(ServerFamilyMixin, generic.ObjectView):
             "sync_toggle_url": server_family_url(request, instance, self, "server_sync_toggle"),
             "sync_now_url": server_family_url(request, instance, self, "server_sync_now"),
             "sync_cfg": sync_cfg,
+            **sync_nav_context(request, instance, self, "ipam"),
         }
 
 

@@ -15,11 +15,12 @@ from .. import forms, server_configuration, subnet_catalogue, tables
 from ..constants import Family
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
+from ..subnet_catalogue import CatalogueSnapshot
 from ..utilities import export_table
 from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
 from .fan_out import fan_out
-from .notices import Notice, notice
-from .reservations import ReservationQuery
+from .notices import Notice, ServerNotices, notice
+from .reservations import ReservationQuery, ReservationRead
 from .reservations import empty_text as reservation_empty_text
 from .reservations import fetch as fetch_reservations
 from .reservations import present as present_reservations
@@ -565,6 +566,11 @@ class _CombinedReservationsView(_CombinedViewMixin):
                 next_query[f"reservation_cursor_{server.pk}"] = presented.next_cursor
                 has_next = True
 
+        # A Catalogue only feeds the Subnet ID filter, so its errors do not make the Reservations incomplete.
+        reservations_read = not notices.errors
+        self._offer_subnets(
+            search_form, servers, read.results, exhausted=[s for s in servers if s.pk not in queries], notices=notices
+        )
         table_cls = tables.GlobalReservationTable4 if self.dhcp_version == 4 else tables.GlobalReservationTable6
         table = table_cls(
             all_records,
@@ -578,9 +584,10 @@ class _CombinedReservationsView(_CombinedViewMixin):
                 "table": table,
                 "search_form": search_form,
                 "errors": notices.errors,
+                "warnings": notices.warnings,
                 "mutation_unavailable_servers": mutation_unavailable_servers,
                 "reservation_diagnostics": notices.record_diagnostics,
-                "snapshot_complete": not notices.errors and all(snapshot.complete for snapshot in snapshots),
+                "snapshot_complete": reservations_read and all(snapshot.complete for snapshot in snapshots),
                 # A failed Server read is already in the error list, so only a read Snapshot can be incomplete.
                 "snapshot_incomplete": any(not snapshot.complete for snapshot in snapshots),
                 "next_page_url": f"{request.path}?{next_query.urlencode()}" if has_next else None,
@@ -589,6 +596,35 @@ class _CombinedReservationsView(_CombinedViewMixin):
             }
         )
         return render(request, self.template_name, ctx)
+
+    def _offer_subnets(
+        self,
+        search_form: forms.ReservationSearchForm,
+        servers: list[Server],
+        results: list[tuple[Server, ReservationRead]],
+        *,
+        exhausted: list[Server],
+        notices: ServerNotices,
+    ) -> None:
+        """Offer the Subnet IDs of every selected Server, and report a Catalogue that could not be read."""
+        catalogues: dict[int, CatalogueSnapshot | None] = {
+            server.pk: server_read.catalogue for server, server_read in results
+        }
+        # A Server whose Reservations are exhausted is not read on later pages, but its Subnets stay choices.
+        catalogue_read = fan_out(
+            exhausted, "catalogue", lambda server: subnet_catalogue.display(server, self.dhcp_version)
+        )
+        notices.errors.extend(catalogue_read.notices.errors)
+        for server, read_snapshot in catalogue_read.results:
+            catalogues[server.pk] = read_snapshot
+            notices.add(server, notice(read_snapshot))
+        search_form.offer_subnets(
+            forms.combined_subnet_id_options(
+                (server.name, snapshot.subnet_choices)
+                for server in servers
+                if (snapshot := catalogues.get(server.pk)) is not None
+            )
+        )
 
 
 class CombinedReservations4View(_CombinedReservationsView):

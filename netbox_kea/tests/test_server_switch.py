@@ -223,7 +223,7 @@ class TestServerSwitch(_ViewTestBase):
             self.assertEqual(destination.status_code, 200)
             page = BeautifulSoup(destination.content, "html.parser")
             self.assertEqual(page.select_one("#id_q")["value"], "printer")
-            self.assertEqual(page.select_one("#id_subnet_id")["value"], "7")
+            self.assertEqual(page.select_one("#id_subnet_id option[selected]")["value"], "7")
             self.assertEqual(page.select_one("#id_scope option[selected]")["value"], "in-subnet")
             self.assertEqual(page.select_one('[aria-label="Server Scope"]').text, target.name)
 

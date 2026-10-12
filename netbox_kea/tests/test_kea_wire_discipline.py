@@ -114,7 +114,6 @@ _NON_WIRE_HYPHENATED = {
     "text-break": "Bootstrap CSS class",
     "text-danger": "Bootstrap CSS class",
     "text-warning": "Bootstrap CSS class",
-    "kea-reservation-subnet-cidrs": "NetBox custom-field name",
     "utf-8": "Transfer document encoding",
     "stat-lease": "Static fragment of a family-specific command f-string",
     "kea-rejected": "Configuration Change rejection reason",

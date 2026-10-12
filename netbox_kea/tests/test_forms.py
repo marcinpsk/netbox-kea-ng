@@ -6,6 +6,7 @@
 import ipaddress
 import re
 
+from django import forms
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase
@@ -1603,20 +1604,29 @@ class TestSharedNetworkEditForm(SimpleTestCase):
         )
 
 
-class TestLeasesSearchFormSubnetCombobox(SimpleTestCase):
-    """The lease search form has no standalone subnet field; choices feed the template combobox."""
+class TestLeasesSearchFormSubnetDropdown(SimpleTestCase):
+    """The lease search form shows the Search value as a Subnet dropdown for the Subnet Attributes only."""
 
     def test_no_subnet_field_even_when_choices_supplied(self):
-        # Previously a separate ``subnet`` quick-select field was added; it's gone now.
         form = Leases4SearchForm(subnet_choices=(("198.18.0.0/24", 1),))
         self.assertNotIn("subnet", form.fields)
 
-    def test_subnet_choices_exposed_for_template(self):
-        form = Leases6SearchForm(subnet_choices=(("2001:db8::/64", 5),))
-        self.assertEqual(form.subnet_choices, (("2001:db8::/64", 5),))
+    def test_the_subnet_attributes_get_a_select_with_cidr_and_id_labels(self):
+        choices = (("2001:db8::/64", 5),)
+        for by, value in (("subnet", "2001:db8::/64"), ("subnet_id", "5")):
+            with self.subTest(by=by):
+                form = Leases6SearchForm(data={"by": by, "q": value}, subnet_choices=choices)
+                widget = form.fields["q"].widget
+                self.assertIsInstance(widget, forms.Select)
+                self.assertEqual(list(widget.choices), [("", "---------"), (value, "2001:db8::/64 (ID 5)")])
+                self.assertTrue(form.is_valid(), form.errors)
 
-    def test_subnet_choices_defaults_to_empty(self):
-        self.assertEqual(Leases4SearchForm().subnet_choices, ())
+    def test_text_attributes_and_an_empty_catalogue_keep_the_text_input(self):
+        for data, choices in (({"by": "hostname", "q": "a"}, (("2001:db8::/64", 5),)), ({"by": "subnet"}, ())):
+            with self.subTest(data=data):
+                form = Leases6SearchForm(data=data, subnet_choices=choices)
+                self.assertIsInstance(form.fields["q"].widget, forms.TextInput)
+                self.assertEqual(form.subnet_options, [])
 
     def test_subnet_search_still_validates(self):
         form = Leases4SearchForm(data={"by": "subnet", "q": "192.168.1.0/24"})
@@ -1955,3 +1965,41 @@ class TestReservationHostnameHelp(TestCase):
                 help_text = str(form.base_fields["hostname"].help_text)
                 for source in ("Pool", "Subnet", "shared network", "global"):
                     self.assertIn(source, help_text)
+
+
+class TestReservationSyncHelp(SimpleTestCase):
+    """The Sync to NetBox IPAM help keeps a refusal and states the automatic IPAM sync."""
+
+    def test_a_refusal_disables_the_checkbox_and_keeps_its_reason(self):
+        from netbox_kea.forms import Reservation4Form
+
+        form = Reservation4Form(
+            capabilities=_reservation_capabilities(4), sync_refusal="Needs <permission>.", automatic_sync=True
+        )
+        field = form.fields["sync_to_netbox"]
+        self.assertTrue(field.widget.attrs["disabled"])
+        self.assertTrue(field.help_text.startswith("Needs &lt;permission&gt;. Automatic IPAM sync is enabled"))
+        self.assertNotIn("Select this", field.help_text)
+
+
+class TestLeaseAddSyncHelp(SimpleTestCase):
+    """The Add Lease Sync to NetBox IPAM help escapes a refusal and states the automatic IPAM sync."""
+
+    def test_a_refusal_disables_the_checkbox_and_keeps_its_escaped_reason(self):
+        from netbox_kea.forms import Lease4AddForm, Lease6AddForm
+
+        for form_class in (Lease4AddForm, Lease6AddForm):
+            with self.subTest(form=form_class.__name__):
+                field = form_class(sync_refusal="Needs <permission>.").fields["sync_to_netbox"]
+                self.assertTrue(field.widget.attrs["disabled"])
+                self.assertTrue(field.help_text.startswith("Needs &lt;permission&gt;. Automatic IPAM sync is disabled"))
+                self.assertNotIn("Select this", field.help_text)
+
+    def test_the_tip_names_the_scheduled_sync_only_when_it_is_on(self):
+        from netbox_kea.forms import Lease4AddForm
+
+        for automatic_sync in (True, False):
+            with self.subTest(automatic_sync=automatic_sync):
+                help_text = Lease4AddForm(automatic_sync=automatic_sync).fields["sync_to_netbox"].help_text
+                self.assertIn("with status Active", help_text)
+                self.assertEqual("The next scheduled sync run records this lease." in help_text, automatic_sync)

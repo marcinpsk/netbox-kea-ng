@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Subnet pickers follow catalogue invalidation across configuration writes."""
 
+from bs4 import BeautifulSoup
 from django.contrib import messages
 from django.urls import reverse
 
@@ -9,6 +10,12 @@ from .kea_stub import _catalogue_responses_for_subnets, stub_kea
 from .utils import _ViewTestBase
 
 _DISAGREEMENT = "Kea subnet identity and configuration facts disagree after a fresh retry."
+
+
+def _picker_url(view_name: str, pk: int, by: str = "subnet") -> str:
+    """Return the page that shows the Subnet dropdown: a lease search shows it for a Subnet Attribute only."""
+    url = reverse(f"plugins:netbox_kea:{view_name}", args=[pk])
+    return f"{url}?by={by}" if "_leases" in view_name else url
 
 
 class TestSubnetPickerViews(_ViewTestBase):
@@ -25,10 +32,10 @@ class TestSubnetPickerViews(_ViewTestBase):
                     responses = _catalogue_responses_for_subnets(family, [{"id": 1, "subnet": cidr}])
                     responses[f"subnet{family}-list"] = {"result": 2, "text": "Command not supported"}
                     with stub_kea(responses):
-                        response = self.client.get(reverse(f"plugins:netbox_kea:{view_name}", args=[self.server.pk]))
-                    self.assertContains(response, f'value="{cidr}"')
+                        response = self.client.get(_picker_url(view_name, self.server.pk))
+                    self.assertContains(response, f'<option value="{cidr}">{cidr} (ID 1)</option>', html=True)
                     self.assertContains(response, "hook library is not loaded")
-                    self.assertContains(response, "Subnet suggestions come from the running configuration.")
+                    self.assertContains(response, "The subnet list comes from the running configuration.")
                     self.assertNotContains(response, "cannot offer the configured subnets")
                     self.assertNotContains(response, "saving will fail")
                     if view_name.startswith("server_reservation"):
@@ -86,18 +93,22 @@ class TestSubnetPickerViews(_ViewTestBase):
         subnets = [{"id": 10, "subnet": "2001:db8:10::/64"}, {"id": 2, "subnet": "2001:db8:2::/64"}]
         with stub_kea(_catalogue_responses_for_subnets(6, subnets)) as kea:
             for view_name in ("server_leases6", "server_reservation6_add"):
-                response = self.client.get(reverse(f"plugins:netbox_kea:{view_name}", args=[self.server.pk]))
+                response = self.client.get(_picker_url(view_name, self.server.pk))
                 self.assertContains(response, 'value="2001:db8:2::/64"')
-                if view_name == "server_leases6":
-                    self.assertContains(response, 'value="2"')
-                    self.assertContains(response, 'value="10"')
                 body = response.content.decode()
                 self.assertLess(body.index('value="2001:db8:2::/64"'), body.index('value="2001:db8:10::/64"'))
+            page = BeautifulSoup(
+                self.client.get(_picker_url("server_leases6", self.server.pk, "subnet_id")).content, "html.parser"
+            )
+            self.assertEqual(
+                [option.get_text() for option in page.select("#id_q option")],
+                ["---------", "2001:db8:2::/64 (ID 2)", "2001:db8:10::/64 (ID 10)"],
+            )
             self.assertEqual(kea.commands().count("subnet6-list"), 1)
             self.assertEqual(kea.bodies("subnet6-list")[0]["service"], ["dhcp6"])
 
     def _assert_refreshes_after_subnet_creation(self, view_name):
-        url = reverse(f"plugins:netbox_kea:{view_name}", args=[self.server.pk])
+        url = _picker_url(view_name, self.server.pk)
         subnets = [{"id": 1, "subnet": "198.18.1.0/24"}]
         responses = _catalogue_responses_for_subnets(4, subnets)
         with stub_kea(responses) as kea:

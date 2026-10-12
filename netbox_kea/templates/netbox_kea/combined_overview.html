@@ -7,7 +7,7 @@
   {% for server, overview_url, reservations_url, subnets_url in server_cards %}
   <div class="col">
     <div class="card h-100">
-      <div class="card-header d-flex justify-content-between align-items-center">
+      <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
         <strong><a href="{{ overview_url }}">{{ server.name }}</a></strong>
         <span
           hx-get="{% url 'plugins:netbox_kea:combined_server_status_badge' server.pk %}"

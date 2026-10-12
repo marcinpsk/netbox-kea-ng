@@ -65,7 +65,7 @@ def _assert_no_none_pk(page: Page) -> None:
 
 
 def _subnet_cidr_for_id(page: Page, subnet_id: int) -> str:
-    """Return the subnet CIDR for *subnet_id*, read from the reservation add form's datalist.
+    """Return the subnet CIDR for *subnet_id*, read from the reservation add form's Subnet dropdown.
 
     The reservation form takes a CIDR, but the edit/delete routes are still keyed by
     subnet id. Reading the mapping off the page keeps the test independent of whatever
@@ -73,12 +73,8 @@ def _subnet_cidr_for_id(page: Page, subnet_id: int) -> str:
     """
     cidr = page.evaluate(
         """(subnetId) => {
-            const input = document.querySelector('input[name="subnet_cidr"][list]');
-            const datalistId = input ? input.getAttribute('list') : '';
-            const datalist = datalistId ? document.getElementById(datalistId) : null;
-            if (!datalist) return '';
-            const opts = [...datalist.querySelectorAll('option')];
-            const match = opts.find((o) => o.textContent.trim() === `id ${subnetId}`);
+            const opts = [...document.querySelectorAll('select[name="subnet_cidr"] option')];
+            const match = opts.find((o) => o.textContent.trim().endsWith(`(ID ${subnetId})`));
             return match ? match.value : '';
         }""",
         subnet_id,
@@ -350,7 +346,8 @@ class TestKeaServerTabs:
                     filters.update({"sort": "ip_address", "per_page": "50"})
                 page.goto(f"{plugin_base}/servers/{kea_server.id}/{section}{family}/?{urlencode(filters)}")
                 if section == "leases":
-                    page.locator("#id_by").select_option(label="Hostname")
+                    with page.expect_response(re.compile(r"value_control=1")):
+                        page.locator("#id_by").select_option(label="Hostname")
                     page.locator("#id_q").fill("scope-switch-client")
                     page.locator("#lease-search-btn").click()
                     page.wait_for_url(re.compile(r"q=scope-switch-client"))
@@ -396,7 +393,8 @@ class TestKeaServerTabs:
         """HTMX search keeps filters on family switches and family on native forms."""
         server_url = f"{plugin_base}/servers/{kea_server.id}/"
         page.goto(f"{server_url}leases4/")
-        page.locator("#id_by").select_option(label="Hostname")
+        with page.expect_response(re.compile(r"value_control=1")):
+            page.locator("#id_by").select_option(label="Hostname")
         page.locator("#id_q").fill("printer.example")
         page.locator("#lease-search-btn").click()
         page.wait_for_url(re.compile(r"q=printer"))
@@ -866,7 +864,7 @@ class TestCombinedViewsWithKea:
             )
             page.goto(f"{plugin_base}/combined/reservations4/?server={kea_server.id}&server={second.id}")
             page.locator("#id_q").fill("workspace-return")
-            page.locator("#id_subnet_id").fill("1")
+            page.locator("#id_subnet_id").select_option("1")
             page.locator("#id_scope").select_option("in-subnet")
             page.get_by_role("button", name=re.compile(r"Filter$")).click()
             page.wait_for_load_state("networkidle")
@@ -1053,7 +1051,8 @@ class TestCombinedViewsWithKea:
         _check_no_django_error(page)
         page.locator("#id_q").fill(reserved_lease4)
         page.locator("#id_by + div.form-select").click()
-        page.locator("#id_by-ts-dropdown").get_by_role("option", name="IP Address", exact=True).click()
+        with page.expect_response(re.compile(r"value_control=1")):
+            page.locator("#id_by-ts-dropdown").get_by_role("option", name="IP Address", exact=True).click()
         with page.expect_response(re.compile(r"/leases4/")) as response:
             page.get_by_role("button", name="Search", exact=True).click()
         assert response.value.ok
@@ -1537,7 +1536,7 @@ class TestReservationCRUD:
         We set it via JavaScript on the underlying ``<select>`` then dispatch
         a 'change' event so the Tom Select widget syncs its display.
         """
-        page.locator("#id_subnet_cidr").fill(cidr)
+        page.locator("#id_subnet_cidr").select_option(cidr)
         page.locator("#id_ip_address").fill(ip)
         # Tom Select wraps identifier_type — set via JS
         page.evaluate(

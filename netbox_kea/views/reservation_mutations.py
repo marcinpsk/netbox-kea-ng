@@ -19,7 +19,7 @@ from django.urls import reverse
 from django.views import View
 from netbox.views import generic
 
-from .. import constants, forms, subnet_catalogue
+from .. import forms, subnet_catalogue
 from ..constants import Family, IPAddressValue
 from ..dhcp_options import DHCPOption
 from ..ipam_reconciliation import RESERVATION, claim, claim_permissions
@@ -60,9 +60,6 @@ from .workspace import ServerFamilyMixin
 logger = logging.getLogger(__name__)
 
 _FINGERPRINT_SALT = "netbox_kea.reservation-managed-facts"
-FLEX_ID_DOCUMENTATION_URL = (
-    "https://kea.readthedocs.io/en/latest/arm/hooks.html#flex-id-flexible-identifiers-for-host-reservations"
-)
 
 
 def _warn_addresses_in_pools(
@@ -506,9 +503,14 @@ class _ReservationMutationView(_KeaChangeMixin, ServerFamilyMixin, generic.Objec
             self.request, reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk])
         )
 
-    def _sync_refusal(self) -> str:
-        """Return why the manual Sync rule refuses the user a Reservation claim, or an empty string."""
-        return sync_gate(self.request.user, claim_permissions(RESERVATION)).reason
+    def _form(self, server: Server, capabilities: ReservationCapabilities | None, **kwargs: Any):
+        """Build the Reservation form with the user's manual Sync rule and the Server's automatic IPAM sync."""
+        return self.form_class(
+            capabilities=capabilities,
+            sync_refusal=sync_gate(self.request.user, claim_permissions(RESERVATION)).reason,
+            automatic_sync=server.sync_enabled and server.sync_reservations_enabled,
+            **kwargs,
+        )
 
     def _mutation_capabilities(self, request: HttpRequest, server: Server) -> ReservationCapabilities | HttpResponse:
         """Return the confirmed mutation capabilities, or the response that refuses the mutation."""
@@ -530,7 +532,6 @@ class _ReservationMutationView(_KeaChangeMixin, ServerFamilyMixin, generic.Objec
         options_formset: Any,
         capabilities: ReservationCapabilities | None,
         *,
-        subnet_choices: tuple[tuple[str, int], ...] = (),
         subnet_cmds_available: bool = True,
         published_name_query: str = "",
     ) -> dict[str, Any]:
@@ -545,12 +546,8 @@ class _ReservationMutationView(_KeaChangeMixin, ServerFamilyMixin, generic.Objec
             "action": self.form_action,
             "dhcp_version": self.dhcp_version,
             "tab": self.tab,
-            "subnet_choices": subnet_choices,
             "subnet_cmds_available": subnet_cmds_available,
-            "subnet_datalist_id": constants.RESERVATION_SUBNET_DATALIST_ID,
-            "reservation_capabilities": capabilities,
             "mutation_available": bool(capabilities and capabilities.mutation_available),
-            "flex_id_documentation_url": FLEX_ID_DOCUMENTATION_URL,
             "published_name_url": f"{preview_url}?{published_name_query}" if published_name_query else preview_url,
         }
 
@@ -590,14 +587,14 @@ class _ReservationAddView(_ReservationMutationView):
             else ("subnet_cidr", "ip_addresses", "prefixes", "identifier_type", "identifier", "hostname")
         )
         initial = {field: request.GET.get(field, "") for field in initial_fields if request.GET.get(field)}
-        form = self.form_class(initial=initial, capabilities=capabilities, sync_refusal=self._sync_refusal())
+        form = self._form(server, capabilities, initial=initial)
+        form.offer_subnets(snapshot.subnet_choices)
         return self._render(
             request,
             server,
             form,
             forms.ReservationOptionsFormSet(prefix="options"),
             capabilities,
-            subnet_choices=snapshot.subnet_choices,
             subnet_cmds_available=snapshot.subnet_cmds_available,
         )
 
@@ -606,7 +603,7 @@ class _ReservationAddView(_ReservationMutationView):
         capabilities = self._mutation_capabilities(request, server)
         if isinstance(capabilities, HttpResponse):
             return capabilities
-        form = self.form_class(data=request.POST, capabilities=capabilities, sync_refusal=self._sync_refusal())
+        form = self._form(server, capabilities, data=request.POST)
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         if form.is_valid() and options_valid:
             try:
@@ -633,13 +630,13 @@ class _ReservationAddView(_ReservationMutationView):
                 messages.error(request, "The Reservation could not be created. See server logs.")
         snapshot = subnet_catalogue.display(server, self.dhcp_version)
         show_notices(request, notice(snapshot))
+        form.offer_subnets(snapshot.subnet_choices)
         return self._render(
             request,
             server,
             form,
             options_formset,
             capabilities,
-            subnet_choices=snapshot.subnet_choices,
             subnet_cmds_available=snapshot.subnet_cmds_available,
         )
 
@@ -730,7 +727,8 @@ class _ReservationEditView(_ReservationMutationView):
             messages.error(request, "The Reservation could not be loaded. See server logs.")
             return redirect(self._return_url(server))
         capabilities = _client_capabilities(server, client, self.dhcp_version)
-        form = self._form_for(reservation, suffix, capabilities)
+        form = self._form_for(server, reservation, suffix, capabilities)
+        form.offer_subnets(catalogue.subnet_choices)
         return self._render(
             request,
             server,
@@ -752,12 +750,13 @@ class _ReservationEditView(_ReservationMutationView):
                 client,
                 catalogue,
             ):
-                form = self.form_class(
+                form = self._form(
+                    server,
+                    capabilities,
                     data=request.POST,
                     initial=self._initial(current, _shown_suffix(current, catalogue)),
-                    capabilities=capabilities,
-                    sync_refusal=self._sync_refusal(),
                 )
+                form.offer_subnets(catalogue.subnet_choices)
                 for field in ("subnet_cidr", "identifier_type", "identifier"):
                     form.fields[field].disabled = True
                 options_formset, options_valid = _build_reservation_options_formset(request.POST)
@@ -817,10 +816,14 @@ class _ReservationEditView(_ReservationMutationView):
             initial["prefixes"] = ",".join(str(prefix) for prefix in reservation.delegated_prefixes)
         return initial
 
-    def _form_for(self, reservation: Reservation, suffix: str | None, capabilities: ReservationCapabilities | None):
-        form = self.form_class(
-            initial=self._initial(reservation, suffix), capabilities=capabilities, sync_refusal=self._sync_refusal()
-        )
+    def _form_for(
+        self,
+        server: Server,
+        reservation: Reservation,
+        suffix: str | None,
+        capabilities: ReservationCapabilities | None,
+    ):
+        form = self._form(server, capabilities, initial=self._initial(reservation, suffix))
         for field in ("subnet_cidr", "identifier_type", "identifier"):
             form.fields[field].disabled = True
         return form

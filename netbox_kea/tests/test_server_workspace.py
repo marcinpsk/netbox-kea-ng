@@ -2,13 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 """Exercise the Server workspace through real requests and rendered navigation."""
 
+from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.messages import get_messages
-from django.test import override_settings
+from django.test import SimpleTestCase, override_settings
 from django.urls import reverse
 from users.models import ObjectPermission
 
@@ -458,3 +460,86 @@ class TestServerWorkspace(_ViewTestBase):
             response = self.client.get(reverse("plugins:netbox_kea:server_status", args=[self.server.pk]))
         self.assertRedirects(response, self.server.get_absolute_url(), fetch_redirect_response=False)
         self.assertEqual(kea.commands(), [])
+
+
+class TestWorkspaceTabRow(_ViewTestBase):
+    """Native object tabs share the workspace tab row, and DHCP Plugin is a Sync subsection."""
+
+    def _page(self, name: str, **query) -> BeautifulSoup:
+        with stub_kea({}) as kea:
+            response = self.client.get(reverse(f"plugins:netbox_kea:{name}", args=[self.server.pk]), query)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), [])
+        return BeautifulSoup(response.content, "html.parser")
+
+    def test_native_tabs_are_at_the_end_of_the_workspace_tab_row(self):
+        page = self._page("server_sync_status", family=4)
+        shell = page.select_one("#kea-workspace-shell")
+        object_tabs = shell.select_one('[aria-label="Server object tabs"]')
+        self.assertIs(object_tabs.parent, shell.select_one('[aria-label="Workspace sections"]').parent)
+        self.assertIsNone(object_tabs.find_next_sibling())
+        labels = [" ".join(a.get_text().split()) for a in object_tabs.select("a")]
+        self.assertEqual([label.split()[0] for label in labels], ["Journal", "Changelog", "Jobs"])
+        # One row: no tab list outside the workspace shell above the page content.
+        self.assertEqual(len(page.select('[aria-label="Server object tabs"]')), 1)
+        for link in object_tabs.select("a"):
+            self.assertEqual(parse_qs(urlsplit(link["href"]).query)["family"], ["4"])
+
+    def test_a_native_tab_page_marks_only_its_own_tab_current(self):
+        page = self._page("server_journal", family=4)
+        self.assertEqual(page.select('[aria-label="Workspace sections"] [aria-current="page"]'), [])
+        current = page.select('[aria-label="Server object tabs"] [aria-current="page"]')
+        self.assertEqual([a.get_text().split()[0] for a in current], ["Journal"])
+
+    def test_the_dhcp_plugin_subsection_follows_the_import_enable_rule(self):
+        from netbox_kea.views import dhcp_plugin_sync
+
+        for available, enabled, shown in ((True, True, True), (True, False, False), (False, True, False)):
+            with self.subTest(available=available, enabled=enabled):
+                self.server.sync_dhcp_plugin_enabled = enabled
+                self.server.save()
+                with patch.object(dhcp_plugin_sync.dhcp_plugin, "is_available", return_value=available, autospec=True):
+                    page = self._page("server_sync_status", family=4)
+                subsections = [a.get_text() for a in page.select('[aria-label="Sync subsections"] a')]
+                self.assertEqual(subsections, ["IPAM", "DHCP Plugin"] if shown else [])
+                self.assertNotIn("DHCP Plugin", page.select_one('[aria-label="Server object tabs"]').get_text())
+                if shown:
+                    current = page.select('[aria-label="Sync subsections"] [aria-current="page"]')
+                    self.assertEqual([a.get_text() for a in current], ["IPAM"])
+
+    def test_the_dhcp_plugin_page_keeps_sync_current_without_the_plugin(self):
+        from netbox_kea.views import dhcp_plugin_sync
+
+        with patch.object(dhcp_plugin_sync.dhcp_plugin, "is_available", return_value=False, autospec=True):
+            page = self._page("server_dhcp_plugin", family=4)
+        current = page.select('[aria-label="Workspace sections"] [aria-current="page"]')
+        self.assertEqual([a.get_text() for a in current], ["Sync"])
+        self.assertIn("is not installed", page.get_text())
+
+    def test_the_recent_runs_header_spaces_its_link_with_flex(self):
+        header = next(
+            h
+            for h in self._page("server_sync_status", family=4).select(".card-header")
+            if "Recent Runs" in h.get_text()
+        )
+        # NetBox makes a card header a flex container, where float-end has no effect.
+        self.assertTrue({"d-flex", "justify-content-between"} <= set(header["class"]))
+        self.assertNotIn("float-end", header.a["class"])
+
+
+class TestCardHeaderBadges(SimpleTestCase):
+    """A card header with a badge keeps a gap to the badge and wraps it below the title on a narrow screen."""
+
+    def test_each_header_badge_has_a_gap_and_wraps(self):
+        templates = Path(__file__).resolve().parents[1] / "templates"
+        checked = 0
+        for template in sorted(templates.rglob("*.html")):
+            for header in BeautifulSoup(template.read_text(), "html.parser").select(".card-header"):
+                for badge in header.select(".badge"):
+                    checked += 1
+                    with self.subTest(template=template.name, badge=badge.get_text(" ", strip=True)):
+                        self.assertTrue({"flex-wrap", "gap-2"} <= set(header["class"]))
+                        # A data badge (a CIDR, an address, a name) can be longer than the card is wide.
+                        if "font-monospace" in badge["class"]:
+                            self.assertTrue({"text-wrap", "text-break"} <= set(badge["class"]))
+        self.assertGreaterEqual(checked, 6)

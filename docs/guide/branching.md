@@ -42,7 +42,7 @@ NetBox 4.7 with netbox-branching 1.2.1. List `netbox_branching` last in `PLUGINS
 whole action if main has conflicting changes, history is incomplete, a source Server is missing,
 an identity has been reused, or restoration would violate a source or target constraint. A busy
 transaction refuses with a retry message. Resolve the reported conflict before retrying; newer main
-state is preserved. Older branches keep independent read pages, but their DHCP Plugin tab requires
+state is preserved. Older branches keep independent read pages, but their DHCP Plugin page (under Sync) requires
 a fresh branch. A mapping, target or required Tag branching exemption also requires a fresh branch after
 the exemption is removed. Existing branch schemas and missing history are not retrofitted.
 Apply Tag changes separately on main or in a Tag-only branch, then create a fresh branch for DHCP
