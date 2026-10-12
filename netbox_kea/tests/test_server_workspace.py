@@ -514,3 +514,13 @@ class TestWorkspaceTabRow(_ViewTestBase):
         current = page.select('[aria-label="Workspace sections"] [aria-current="page"]')
         self.assertEqual([a.get_text() for a in current], ["Sync"])
         self.assertIn("is not installed", page.get_text())
+
+    def test_the_recent_runs_header_spaces_its_link_with_flex(self):
+        header = next(
+            h
+            for h in self._page("server_sync_status", family=4).select(".card-header")
+            if "Recent Runs" in h.get_text()
+        )
+        # NetBox makes a card header a flex container, where float-end has no effect.
+        self.assertTrue({"d-flex", "justify-content-between"} <= set(header["class"]))
+        self.assertNotIn("float-end", header.a["class"])
