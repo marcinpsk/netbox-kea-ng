@@ -41,7 +41,7 @@ from ..reservations import (
     lease_identifier_types,
     lease_identities,
 )
-from ..subnet_catalogue import VerifiedSubnet
+from ..subnet_catalogue import CatalogueSnapshot, VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
 from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import OptionalViewTab
@@ -335,8 +335,8 @@ class ReservationRead:
     loaded: ReservationSnapshot | Notice
     #: ``None`` when the query did not ask for them or Kea could not confirm them.
     capabilities: ReservationCapabilities | None
-    #: The ``(cidr, subnet_id)`` choices of the Subnet Catalogue; empty when the Server did not answer.
-    subnet_choices: tuple[tuple[str, int], ...] = ()
+    #: The Subnet Catalogue for the Subnet ID filter; ``None`` when the Server did not answer.
+    catalogue: CatalogueSnapshot | None = None
 
 
 def _empty_reservation_snapshot(version: Family) -> ReservationSnapshot:
@@ -450,16 +450,8 @@ def fetch(server: Server, family: Family, query: ReservationQuery) -> Reservatio
     if query.mutations and not unreachable:
         capabilities = _configured_capabilities(server, family)
     # The Reservation read cached the Catalogue, so this is a cache read unless the Catalogue was unsettled.
-    subnet_choices = () if unreachable else reservation_subnet_choices(server, family)
-    return ReservationRead(query, loaded, capabilities, subnet_choices)
-
-
-def reservation_subnet_choices(server: Server, family: Family) -> tuple[tuple[str, int], ...]:
-    """Return the ``(cidr, subnet_id)`` choices of the Server's Subnet Catalogue for the Subnet ID filter.
-
-    It is safe in a worker thread. The Catalogue is cached, so a recent read of the Server costs no Kea request.
-    """
-    return subnet_catalogue(server, family).subnet_choices
+    catalogue = None if unreachable else subnet_catalogue(server, family)
+    return ReservationRead(query, loaded, capabilities, catalogue)
 
 
 @dataclass(frozen=True)
@@ -644,7 +636,7 @@ def _reservation_list_context(
         logger.exception("Unexpected error fetching DHCPv%s Reservations", version)
         messages.error(request, HEADLINES["reservation"])
         read = ReservationRead(query, _empty_reservation_snapshot(version), capabilities=None)
-    search_form.offer_subnets(forms.subnet_id_options(read.subnet_choices))
+    search_form.offer_subnets(forms.subnet_id_options(read.catalogue.subnet_choices if read.catalogue else ()))
     presented = present(request.user, server, read, return_url=_safe_return_url(request, request.get_full_path()))
     # A missing host_cmds hook has its own panel, so one cause shows one banner.
     hook_available = not (presented.notice is not None and presented.notice.unsupported_command)

@@ -15,11 +15,12 @@ from .. import forms, server_configuration, subnet_catalogue, tables
 from ..constants import Family
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
+from ..subnet_catalogue import CatalogueSnapshot
 from ..utilities import export_table
 from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
 from .fan_out import fan_out
-from .notices import Notice, notice
-from .reservations import ReservationQuery, reservation_subnet_choices
+from .notices import Notice, ServerNotices, notice
+from .reservations import ReservationQuery, ReservationRead
 from .reservations import empty_text as reservation_empty_text
 from .reservations import fetch as fetch_reservations
 from .reservations import present as present_reservations
@@ -536,20 +537,6 @@ class _CombinedReservationsView(_CombinedViewMixin):
             )
             return response
 
-        # A Server whose Reservations are exhausted is not read on later pages, but its Subnets stay choices.
-        choices = {server.pk: server_read.subnet_choices for server, server_read in read.results}
-        exhausted = [server for server in servers if server.pk not in queries]
-        choices.update(
-            (server.pk, server_choices)
-            for server, server_choices in fan_out(
-                exhausted, "catalogue", lambda server: reservation_subnet_choices(server, self.dhcp_version)
-            ).results
-        )
-        search_form.offer_subnets(
-            forms.combined_subnet_id_options(
-                (server.name, choices[server.pk]) for server in servers if server.pk in choices
-            )
-        )
         # Present in the main thread so Django ORM queries see the test transaction.
         all_records: list[dict[str, Any]] = []
         mutation_unavailable_servers: list[tuple[str, str]] = []
@@ -579,6 +566,9 @@ class _CombinedReservationsView(_CombinedViewMixin):
                 next_query[f"reservation_cursor_{server.pk}"] = presented.next_cursor
                 has_next = True
 
+        self._offer_subnets(
+            search_form, servers, read.results, exhausted=[s for s in servers if s.pk not in queries], notices=notices
+        )
         table_cls = tables.GlobalReservationTable4 if self.dhcp_version == 4 else tables.GlobalReservationTable6
         table = table_cls(
             all_records,
@@ -603,6 +593,36 @@ class _CombinedReservationsView(_CombinedViewMixin):
             }
         )
         return render(request, self.template_name, ctx)
+
+    def _offer_subnets(
+        self,
+        search_form: forms.ReservationSearchForm,
+        servers: list[Server],
+        results: list[tuple[Server, ReservationRead]],
+        *,
+        exhausted: list[Server],
+        notices: ServerNotices,
+    ) -> None:
+        """Offer the Subnet IDs of every selected Server, and report a Catalogue that could not be read."""
+        catalogues: dict[int, CatalogueSnapshot | None] = {
+            server.pk: server_read.catalogue for server, server_read in results
+        }
+        # A Server whose Reservations are exhausted is not read on later pages, but its Subnets stay choices.
+        catalogue_read = fan_out(
+            exhausted, "catalogue", lambda server: subnet_catalogue.display(server, self.dhcp_version)
+        )
+        notices.errors.extend(catalogue_read.notices.errors)
+        for server, read_snapshot in catalogue_read.results:
+            catalogues[server.pk] = read_snapshot
+            notices.add(server, notice(read_snapshot))
+        known = [(server, catalogues.get(server.pk)) for server in servers]
+        search_form.offer_subnets(
+            forms.combined_subnet_id_options(
+                (server.name, snapshot.subnet_choices) for server, snapshot in known if snapshot is not None
+            ),
+            # Only a full set of Catalogues shows that a Subnet ID is absent from the configuration.
+            confirmed=all(snapshot is not None and not snapshot.unavailable for _server, snapshot in known),
+        )
 
 
 class CombinedReservations4View(_CombinedReservationsView):

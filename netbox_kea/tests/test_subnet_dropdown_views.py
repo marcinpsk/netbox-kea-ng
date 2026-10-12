@@ -2,11 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Reservation pages offer the configured Subnets as dropdowns labelled with CIDR and Kea Subnet ID."""
 
+from unittest.mock import patch
+
 import requests
 from bs4 import BeautifulSoup
 from django.urls import reverse
 
 from netbox_kea import subnet_catalogue
+from netbox_kea.views.notices import HEADLINES
 
 from .kea_stub import (
     _catalogue_responses_for_subnets,
@@ -146,6 +149,53 @@ class TestCombinedReservationSubnetIdFilter(_ViewTestBase):
                 ("", "All subnets", True),
                 ("1", "1: 10.63.125.0/24 (kea-a), 10.1.0.0/24 (kea-b)", False),
                 ("5", "5: 10.63.5.0/24 (kea-a)", False),
+            ],
+        )
+
+    def test_an_exhausted_server_whose_catalogue_fails_is_reported_and_unlisted_ids_are_not_called_absent(self):
+        second = _make_db_server(name="kea-b", ca_url="https://kea-b.example.com")
+        self.server.name = "kea-a"
+        self.server.save()
+        # Only kea-b has a cached Catalogue; the Catalogue cache of kea-a has expired.
+        with stub_kea(_catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "10.1.0.0/24"}])):
+            subnet_catalogue.display(second, 4)
+        responses = {
+            "reservation-get-page": _res_page([]),
+            "list-commands": _reservation_mutation_commands(),
+            **_catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "10.1.0.0/24"}]),
+        }
+        query = {
+            "server": [self.server.pk, second.pk],
+            "subnet_id": "5",
+            f"reservation_cursor_{self.server.pk}": "done",
+            f"reservation_cursor_{second.pk}": "WzEsNV0",
+        }
+        with stub_kea(responses) as kea:
+            answered = requests.Session.post
+            unanswered = []
+
+            def post(session, url, **kwargs):
+                # kea-a does not answer.
+                if url.startswith(self.server.ca_url):
+                    unanswered.append(kwargs["json"]["command"])
+                    raise requests.ConnectionError("kea-a is down")
+                return answered(session, url, **kwargs)
+
+            with patch("netbox_kea.kea.requests.Session.post", new=post):
+                response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"), query)
+        self.assertEqual(response.status_code, 200)
+        # kea-a is read only for its expired Catalogue; kea-b answers from its cached Catalogue.
+        self.assertIn("subnet4-list", unanswered)
+        self.assertNotIn("reservation-get-page", unanswered)
+        self.assertNotIn("subnet4-list", kea.commands())
+        self.assertIn(("kea-a", HEADLINES["catalogue"]), response.context["errors"])
+        self.assertContains(response, HEADLINES["catalogue"])
+        self.assertEqual(
+            _options(response, "#id_subnet_id"),
+            [
+                ("", "All subnets", False),
+                ("1", "1: 10.1.0.0/24 (kea-b)", False),
+                ("5", "5 (not listed)", True),
             ],
         )
 
