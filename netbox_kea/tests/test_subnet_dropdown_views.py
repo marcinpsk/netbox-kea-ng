@@ -129,7 +129,11 @@ class TestReservationFormSubnetDropdown(_ViewTestBase):
                 )
                 self.assertNotContains(response, '<datalist id="kea-reservation-subnet-cidrs"')
                 self.assertNotContains(response, 'list="kea-reservation')
-                preview = BeautifulSoup(response.content, "html.parser").select_one("#published-name-preview")
+                page = BeautifulSoup(response.content, "html.parser")
+                self.assertEqual(
+                    page.select_one("#id_subnet_cidr_helptext").get_text(), "Subnet the reservation belongs to."
+                )
+                preview = page.select_one("#published-name-preview")
                 self.assertIn("change from:#id_subnet_cidr", preview["hx-trigger"])
 
     def test_without_catalogue_subnets_the_add_form_keeps_the_text_input(self):

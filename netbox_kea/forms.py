@@ -869,7 +869,11 @@ class _ReservationForm(_SyncToNetBoxForm):
 
     def offer_subnets(self, subnet_choices: SubnetChoices) -> None:
         """Show Subnet CIDR as a dropdown of the configured Subnets; without them keep the text input."""
-        offer_choices(self, "subnet_cidr", subnet_cidr_options(subnet_choices), "---------")
+        options = subnet_cidr_options(subnet_choices)
+        if options:
+            # The CIDR example helps only a typed value. Set it first: a bound field copies the help text.
+            self.fields["subnet_cidr"].help_text = "Subnet the reservation belongs to."
+        offer_choices(self, "subnet_cidr", options, "---------")
 
 
 class Reservation4Form(_ReservationForm):
