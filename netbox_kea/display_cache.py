@@ -75,8 +75,10 @@ def rotate_records(server: Server, family: Family | None) -> None:
 def _entry_key(server: Server, family: Family, kind: Kind, config: DisplayCacheConfig) -> str:
     # A Server instance with old connection settings fills only the entry of those settings.
     connection = server.kea_connection(family).fingerprint()
+    if config.last_updated is None:
+        raise RuntimeError("The Display Cache settings row has no last_updated, so no key can show its last save.")
     # Every save of the settings row writes last_updated, so a save makes every older entry unreachable.
-    settings = config.last_updated.isoformat() if config.last_updated else "-"
+    settings = config.last_updated.isoformat()
     return (
         f"{KEY_PREFIX}entry:{require_persisted_server(server)}:{family}:{kind}:"
         f"{_generation(server, family, 'configuration')}:{connection}:{settings}"
@@ -96,7 +98,12 @@ def _generation(server: Server, family: Family, generation: _Generation) -> str:
     # add() keeps a generation that a concurrent read stored first.
     cache.add(key, candidate, timeout=None)
     value = cache.get(key)
-    return value if isinstance(value, str) else candidate
+    if isinstance(value, str):
+        return value
+    if value is None:
+        # Evicted between add() and get(): an entry keyed on the candidate is never found again, which is a miss.
+        return candidate
+    raise RuntimeError(f"The display cache holds a {type(value).__name__} at {key}, not a generation.")
 
 
 def _rotate(server: Server, family: Family, generation: _Generation) -> None:

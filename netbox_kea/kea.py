@@ -946,7 +946,7 @@ class KeaClient:
             body["arguments"] = arguments
 
         if command.is_write:
-            self._notify_write(command, target)
+            self._notify_write(command, target, "before")
         try:
             resp = self._session.post(self.url, json=body, timeout=self.timeout, verify=self.verify, cert=self.cert)
         except requests.RequestException:
@@ -956,7 +956,7 @@ class KeaClient:
         finally:
             # Kea can apply a write whose reply is lost, so a display read during the send must not stay cached.
             if command.is_write:
-                self._notify_write(command, target)
+                self._notify_write(command, target, "after")
         resp.raise_for_status()
         try:
             resp_json = resp.json()
@@ -996,12 +996,12 @@ class KeaClient:
         if command.is_write:
             self.write_guard.refuse(f"Kea command {command.value}")
 
-    def _notify_write(self, command: KeaCommand, target: Family | None) -> None:
+    def _notify_write(self, command: KeaCommand, target: Family | None, when: Literal["before", "after"]) -> None:
         """Tell the owner about a write command without interrupting it."""
         try:
             self.on_write(target)
         except Exception:
-            logger.exception("Kea command %s was sent, but the display cache rotation failed", command.value)
+            logger.exception("The display cache rotation %s Kea command %s failed", when, command.value)
 
     def _notify_config_change(self, family: Family) -> None:
         """Notify the owner without interrupting persistence of a live change."""

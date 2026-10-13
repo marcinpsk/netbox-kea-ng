@@ -107,7 +107,10 @@ class RecordsGenerationTest(TestCase):
 
         self.assertEqual(reply, [_DELETED])
         self.assertEqual(kea.commands(), ["reservation-del"])
-        self.assertEqual(len(logs.records), 2, "one failure before and one after the send")
+        self.assertEqual(
+            [record.getMessage() for record in logs.records],
+            [f"The display cache rotation {when} Kea command reservation-del failed" for when in ("before", "after")],
+        )
 
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)
@@ -190,6 +193,20 @@ class DisplayCacheSettingsTest(TestCase):
             self.assertFalse(snapshot.settled)
             self.assertEqual(kea.commands(), ["subnet4-list", "config-get"])
         self.assertEqual(self._entries(), [])
+
+    def test_a_settings_row_without_last_updated_refuses_the_display_read(self):
+        DisplayCacheConfig.objects.filter(pk=1).update(last_updated=None)
+
+        with stub_kea(self.responses) as kea, self.assertRaisesMessage(RuntimeError, "no last_updated"):
+            server_configuration.display(self.server, 4)
+        self.assertEqual(kea.commands(), [])
+
+    def test_a_generation_that_is_not_a_string_refuses_the_display_read(self):
+        cache.set(display_cache._generation_key(self.server, 4, "configuration"), 7, None)
+
+        with stub_kea(self.responses) as kea, self.assertRaisesMessage(RuntimeError, "not a generation"):
+            server_configuration.display(self.server, 4)
+        self.assertEqual(kea.commands(), [])
 
     def test_a_rotation_of_the_records_generation_keeps_the_configuration_entries(self):
         self._assert_warm()
