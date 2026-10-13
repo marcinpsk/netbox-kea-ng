@@ -70,6 +70,9 @@
 </div>
 {% endif %}
 
+{% if read_error %}
+<div class="alert alert-danger" role="alert">{{ read_error }}</div>
+{% endif %}
 {% if hook_available %}
 {% if reservation_notice.unavailable %}
 <div class="alert alert-danger" role="alert">{{ reservation_notice.headline }}</div>

@@ -105,7 +105,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertEqual(_return_url(row["edit_url"]), [search])
         self.assertEqual(_return_url(row["delete_url"]), [search])
 
-    def test_a_client_that_cannot_be_built_shows_the_headline_as_a_message(self):
+    def test_a_client_that_cannot_be_built_shows_the_headline_in_the_section(self):
         # A client certificate without its key fails the client construction with a ValueError.
         self.server.client_cert_path = "/cert"
         self.server.save()
@@ -115,7 +115,10 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
-        self.assertIn(HEADLINES["reservation"], [str(message) for message in response.context["messages"]])
+        self.assertContains(
+            response, f'<div class="alert alert-danger" role="alert">{HEADLINES["reservation"]}</div>', html=True
+        )
+        self.assertNotIn(HEADLINES["reservation"], [str(message) for message in response.context["messages"]])
         self.assertIsNone(response.context["reservation_notice"])
         self.assertFalse(response.context["snapshot_complete"])
         self.assertEqual(response.context["table"].data.data, [])

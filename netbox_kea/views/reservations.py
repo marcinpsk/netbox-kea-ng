@@ -14,7 +14,6 @@ from typing import Any
 from urllib.parse import urlencode
 
 import requests
-from django.contrib import messages
 from django.core.exceptions import BadRequest
 from django.db import DatabaseError
 from django.http import HttpRequest, HttpResponse
@@ -685,11 +684,13 @@ def _reservation_list_context(
         cursor=request.GET.get("cursor"), mutations=can_change, refresh=refresh_requested(request), **filters
     )
     read_started = None
+    # Shown inside the section, because a Refresh swaps only the section and never shows a flash message.
+    read_error = ""
     try:
         read = fetch(server, version, query)
     except ValueError:
         logger.exception("Unexpected error fetching DHCPv%s Reservations", version)
-        messages.error(request, HEADLINES["reservation"])
+        read_error = HEADLINES["reservation"]
         read = ReservationRead(query, _empty_reservation_snapshot(version, timezone.now()), capabilities=None)
     else:
         read_started = None if isinstance(read.loaded, Notice) else read.loaded.read_started
@@ -704,6 +705,7 @@ def _reservation_list_context(
     table.configure(request)
     return {
         **read_age_context(read_started),
+        "read_error": read_error,
         "table": table,
         "dhcp_version": version,
         "hook_available": hook_available,

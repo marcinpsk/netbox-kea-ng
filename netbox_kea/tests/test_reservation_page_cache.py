@@ -14,6 +14,7 @@ from django.urls import reverse
 
 from netbox_kea import display_cache
 from netbox_kea.models import DisplayCacheConfig
+from netbox_kea.views.notices import HEADLINES
 
 from .kea_stub import _catalogue_responses, _catalogue_responses_for_subnets, _res_get, _res_page, queued, stub_kea
 from .utils import _make_db_server, _ViewTestBase, with_display_cache_config
@@ -312,6 +313,18 @@ class ServerReservationPageCacheTest(_ViewTestBase):
         section = _section(page, _refresh_control(page))
         self.assertIn("Reservation mutation controls are unavailable", section.get_text())
         self.assertIsNotNone(section.select_one("#id_subnet_id"), "the search card is swapped too")
+
+    def test_a_refresh_that_cannot_build_the_client_shows_the_headline_in_the_section(self):
+        page, _ = self._render(_res_page([_OLD]))
+        self.server.client_cert_path = "/cert"
+        self.server.save()
+
+        with self.assertLogs("netbox_kea.views.reservations", "ERROR"):
+            refreshed, reads = self._refresh(page, _res_page([_NEW]))
+
+        self.assertEqual(reads, 0)
+        self.assertIn(HEADLINES["reservation"], _section(refreshed, _refresh_control(page)).get_text())
+        self.assertNotIn(HEADLINES["reservation"], [str(message) for message in refreshed.context["messages"]])
 
     @with_display_cache_config(reservations_ttl=0)
     def test_a_ttl_of_0_reads_every_render(self):
