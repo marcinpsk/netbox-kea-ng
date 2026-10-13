@@ -361,10 +361,10 @@ class TestSettingsPermissions(TestCase):
         self.assertContains(self.client.get(reverse("plugins:netbox_kea:sync_jobs")), self.link)
 
     def test_each_section_has_a_menu_item_for_a_user_who_can_view_that_section(self):
-        """The Settings menu group holds one item per section, so a new section gets its item and its permission."""
+        """The Settings menu group holds one item per available section, so a new section gets its item and its permission."""
         from netbox_kea.views.settings_page import SECTIONS
 
-        for section in SECTIONS:
+        for section in (section for section in SECTIONS if section.available()):
             with self.subTest(section=section.slug):
                 user = User.objects.create_user(f"settings-only-{section.slug}")
                 _grant([section.model], ["view"], user=user)
