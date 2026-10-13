@@ -7,6 +7,7 @@ import ipaddress
 import json
 from collections.abc import Collection
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
 from .constants import Family, IPAddressValue, Persistence
@@ -338,6 +339,8 @@ RESERVATION_INVALID_IDENTIFIER = "invalid-identifier"
 TRAVERSAL_DIAGNOSTIC_CODES: frozenset[str] = frozenset(
     {RESERVATION_PAGE_FETCH_FAILED, RESERVATION_PAGINATION_STALLED, RESERVATION_PAGE_LIMIT_REACHED}
 )
+#: The traversal diagnostics of a walk that an error stopped. A walk stopped at its configured limit is not one.
+_TRAVERSAL_ERROR_CODES: frozenset[str] = TRAVERSAL_DIAGNOSTIC_CODES - {RESERVATION_PAGE_LIMIT_REACHED}
 
 
 @dataclass(frozen=True)
@@ -349,11 +352,22 @@ class ReservationSnapshot:
     diagnostics: tuple[ReservationDiagnostic, ...]
     complete: bool
     next_cursor: str | None
+    #: The aware time at which the read of the first page started.
+    read_started: datetime
+
+    def __post_init__(self) -> None:
+        if self.read_started.tzinfo is None:
+            raise ValueError("A Reservation Snapshot needs an aware read time.")
 
     @property
     def traversal_truncated(self) -> bool:
         """Report whether Reservation page traversal stopped early."""
         return any(diagnostic.code in TRAVERSAL_DIAGNOSTIC_CODES for diagnostic in self.diagnostics)
+
+    @property
+    def settled(self) -> bool:
+        """Return false for a page walk that an error stopped; the display cache never stores it."""
+        return not any(diagnostic.code in _TRAVERSAL_ERROR_CODES for diagnostic in self.diagnostics)
 
 
 #: Display label to stable machine key. Templates and Python branch on the key, so
@@ -778,6 +792,7 @@ def _parse_reservation_page(
     catalogue: CatalogueSnapshot,
     next_cursor: str | None,
     *,
+    read_started: datetime,
     expected_hostname: str | None = None,
 ) -> ReservationSnapshot:
     """Build one typed Snapshot and quarantine malformed records individually."""
@@ -798,4 +813,5 @@ def _parse_reservation_page(
         diagnostics=tuple(diagnostics),
         complete=not diagnostics,
         next_cursor=next_cursor,
+        read_started=read_started,
     )

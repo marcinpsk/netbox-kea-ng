@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 SnapshotKind = Literal["catalogue", "configuration", "reservation", "lease"]
 RecordKind = Literal["reservation", "lease"]
 Snapshot = CatalogueSnapshot | ServerConfigurationSnapshot | ReservationSnapshot | LeaseSnapshot
-RecordSnapshot = TypeVar("RecordSnapshot", ReservationSnapshot, LeaseSnapshot)
+#: What a Reservation or Lease read returns: a Snapshot, or a display cache entry that holds one.
+RecordRead = TypeVar("RecordRead")
 
 #: The first line of an unavailable Notice, one per Snapshot kind.
 HEADLINES: dict[SnapshotKind, str] = {
@@ -106,7 +107,7 @@ def notice(snapshot: Snapshot) -> Notice | None:
     return None
 
 
-def load_snapshot(server: Server, kind: RecordKind, read: Callable[[], RecordSnapshot]) -> RecordSnapshot | Notice:
+def load_snapshot(server: Server, kind: RecordKind, read: Callable[[], RecordRead]) -> RecordRead | Notice:
     """Run a Reservation or Lease read, and return an unavailable Notice when Kea, the transport or the reply fails.
 
     A refused Lease query (``LeaseQueryGuardError``) and a ``ValueError`` are outside the rule and still raise.

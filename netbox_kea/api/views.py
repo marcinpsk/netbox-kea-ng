@@ -6,6 +6,7 @@ import logging
 from typing import cast
 
 import requests
+from django.utils import timezone
 from netbox.api.viewsets import NetBoxModelViewSet
 from rest_framework import status
 from rest_framework.decorators import action
@@ -105,6 +106,7 @@ def _single_reservation_response(version: int, reservation: Reservation | None) 
         diagnostics=(),
         complete=True,
         next_cursor=None,
+        read_started=timezone.now(),
     )
     return Response(_reservation_snapshot_data(snapshot))
 

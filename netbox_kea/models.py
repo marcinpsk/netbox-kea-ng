@@ -555,10 +555,7 @@ class DisplayCacheConfig(SettingsSingleton):
     reservations_ttl: models.PositiveIntegerField = models.PositiveIntegerField(
         verbose_name="Reservations TTL (seconds)",
         default=300,
-        help_text=(
-            "How long a page shows cached Reservations (seconds). 0 turns off caching for them."
-            " The Reservation pages do not use the cache yet."
-        ),
+        help_text="How long a page shows cached Reservations (seconds). 0 turns off caching for them.",
     )
     leases_ttl: models.PositiveIntegerField = models.PositiveIntegerField(
         verbose_name="Leases TTL (seconds)",

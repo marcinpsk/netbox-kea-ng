@@ -916,7 +916,11 @@ class TestCombinedViewsWithKea:
             expect(page.locator("#id_scope")).to_have_value("in-subnet")
             assert set(parse_qs(urlparse(page.url).query)["server"]) == {str(kea_server.id), str(second.id)}
             expect(page.locator("table.object-list > tbody > tr").filter(has_text=identifier)).to_have_count(2)
+            # Both Servers read one daemon, but the edit rotates only the generation of its own Server (ADR 0009).
+            expect(page.get_by_text("workspace-return-edited", exact=True)).to_have_count(1)
+            page.get_by_role("button", name="Refresh").click()
             expect(page.get_by_text("workspace-return-edited", exact=True)).to_have_count(2)
+            expect(page).to_have_url(workspace_url)
             _assert_no_http_errors(track_http_errors)
         finally:
             kea_client.command(

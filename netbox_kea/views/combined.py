@@ -20,6 +20,7 @@ from ..utilities import export_table
 from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
 from .fan_out import fan_out
 from .notices import Notice, ServerNotices, notice
+from .read_age import read_age_context, refresh_requested
 from .reservations import ReservationQuery, ReservationRead
 from .reservations import empty_text as reservation_empty_text
 from .reservations import fetch as fetch_reservations
@@ -507,6 +508,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
                 server.pk: ReservationQuery(
                     cursor=request.GET.get(f"reservation_cursor_{server.pk}"),
                     mutations=server.pk in writable_pks,
+                    refresh=refresh_requested(request),
                     **filters,
                 )
                 for server in servers
@@ -579,8 +581,11 @@ class _CombinedReservationsView(_CombinedViewMixin):
         )
         table.configure(request)
 
+        # One line shows the oldest read of the Servers in scope, and its Refresh reads each of them again.
+        oldest = min((snapshot.read_started for snapshot in snapshots), default=None)
         ctx.update(
             {
+                **read_age_context(oldest),
                 "table": table,
                 "search_form": search_form,
                 "errors": notices.errors,

@@ -199,6 +199,7 @@ URL request
   → views/              (view modules; each calls server.get_client() → KeaClient)
       _base.py          (ConditionalLoginRequiredMixin, _KeaChangeMixin, shared helpers)
       notices.py        (the one Snapshot notice rule: notice(), load_snapshot() and the channels; ADR 0003)
+      read_age.py       (the read age line and Refresh control of a cached table; ADR 0009)
       server.py         (Server CRUD, status tab)
       leases.py         (DHCPv4/v6 lease search, add, edit, delete, badge enrichment)
       reservations.py   (DHCPv4/v6 reservation CRUD)
@@ -282,13 +283,25 @@ URL request
   rejects a `service` that does not match the daemon the request lands on.
 - **Display cache** (`display_cache.py`, ADR 0009): the only module that touches the Django cache. The OpenGrep
   rule `kea-cache-outside-display-cache` refuses `django.core.cache` and the private names of the module in other
-  modules. `cached(server, family, kind, read)` serves the `display()` reads of `server_configuration` (kind
-  `configuration`) and `subnet_catalogue` (kind `catalogue`). It stores only a value whose `settled` property is
-  true (the `Cacheable` protocol), so a failed read is never stored. The TTL of a kind comes from
-  `DisplayCacheConfig`; 0 sends every read to Kea. A key holds the Server, the family, the kind, the configuration
-  generation, a keyed digest of `Server.kea_connection()`, and `last_updated` of the settings row, so a settings
-  save makes every entry unreachable. Both kinds read the Kea configuration only, so their keys do not hold the
-  records generation; a kind that Reservation or Lease writes change must add it. `KeaClient.command()` calls
+  modules. `cached(server, family, kind, read, query=, refresh=)` serves the `display()` reads of
+  `server_configuration` (kind `configuration`) and `subnet_catalogue` (kind `catalogue`), and each Reservation page
+  of the Server tab and the combined page (kind `reservations`, in `views/reservations.fetch()`). It stores only a
+  value whose `settled` property is true (the `Cacheable` protocol). A failed read raises, so it is never stored. A
+  Reservation entry (`_ReservationPage`) holds the page Snapshot and the Subnet Catalogue it was parsed against, so a
+  hit sends no Catalogue read; it is settled only when both are. A Reservation walk that an error stopped
+  (`page-fetch-failed`, `pagination-stalled`) is not settled; a walk stopped at its limit is. `_KINDS` names the
+  TTL field of `DisplayCacheConfig` and the generations of each kind; a TTL of 0 sends every read to Kea. A key holds the Server, the family, the kind, `netbox_kea.__version__` (an upgrade makes
+  entries of the old class shapes unreachable), its generations, a keyed digest of
+  `Server.kea_connection()`, `last_updated` of the settings row (a settings save makes every entry unreachable), and
+  a digest of the query parts (the cursor, search, Subnet ID and Scope of a Reservation page). The configuration
+  kinds hold the configuration generation; `reservations` also holds the records generation, because a Reservation
+  write changes it. A Lease kind needs one more `_KINDS` line. `refresh=True` removes the entry and reads live, so a
+  refresh that fails or is not settled leaves no entry; a Reservation Refresh also reads the Catalogue live
+  (`subnet_catalogue.display(refresh=True)`). The Refresh control (`views/read_age.py`,
+  `inc/read_age.html`) sends an htmx GET of the same URL with the `X-Kea-Refresh` header and swaps the Reservation
+  section, which holds the warnings, the search card and the table; the page shows "Read N s ago" from `ReservationSnapshot.read_started` (the oldest one on a combined
+  page). Exports (`ReservationQuery(full=True)`), the API, `ipam_reconciliation`, the edit and delete target loads
+  and the Lease badges of Reservation rows read live. `KeaClient.command()` calls
   `on_write(family, configuration=False)` before and after each write command, also when the send fails, and
   `_config_mutation_command` calls `on_write(family, configuration=True)` around a live configuration mutation.
   `Server.get_client()` binds it to `rotate_after_write`, which rotates the records generation (both families for

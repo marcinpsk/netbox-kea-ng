@@ -8,24 +8,40 @@ scopes and checks after a write) never call it. Callers pass a validated ``Famil
 
 from __future__ import annotations
 
+import hashlib
+import json
 import secrets
 from collections.abc import Callable
-from typing import Literal, Protocol, TypeVar
+from typing import Literal, NamedTuple, Protocol, TypeVar
 
 from django.core.cache import cache
 
+from . import __version__
 from .constants import Family
 from .models import DisplayCacheConfig, Server, require_persisted_server
 
 #: The prefix of every key of the display cache. The test cache hygiene fixture clears it.
 KEY_PREFIX = "netbox_kea:display:"
 
-Kind = Literal["configuration", "catalogue"]
+Kind = Literal["configuration", "catalogue", "reservations"]
 _Generation = Literal["configuration", "records"]
+#: The parts of the query of one entry, such as a cursor and the search filters.
+QueryParts = tuple[str | int | None, ...]
 
-#: The DisplayCacheConfig field that holds the TTL of each kind. Both kinds read the Kea configuration only, so
-#: their keys hold the configuration generation and not the records generation.
-_TTL_FIELDS: dict[Kind, str] = {"configuration": "configuration_ttl", "catalogue": "configuration_ttl"}
+
+class _KindRule(NamedTuple):
+    #: The DisplayCacheConfig field that holds the TTL of the kind.
+    ttl_field: str
+    #: The generations that the key holds; a write that rotates one of them makes the entry unreachable.
+    generations: tuple[_Generation, ...]
+
+
+_KINDS: dict[Kind, _KindRule] = {
+    "configuration": _KindRule("configuration_ttl", ("configuration",)),
+    "catalogue": _KindRule("configuration_ttl", ("configuration",)),
+    # Records are parsed against the Subnet Catalogue, so their keys also hold the configuration generation.
+    "reservations": _KindRule("reservations_ttl", ("configuration", "records")),
+}
 
 
 class Cacheable(Protocol):
@@ -40,20 +56,32 @@ class Cacheable(Protocol):
 T = TypeVar("T", bound=Cacheable)
 
 
-def cached(server: Server, family: Family, kind: Kind, read: Callable[[], T]) -> T:
-    """Return the entry of *kind* for *server* and *family*, or call *read* and store its result when it is settled.
+def cached(
+    server: Server,
+    family: Family,
+    kind: Kind,
+    read: Callable[[], T],
+    *,
+    query: QueryParts = (),
+    refresh: bool = False,
+) -> T:
+    """Return the entry of *kind* for *server*, *family* and *query*, or call *read* and store a settled result.
 
     The key is built before *read* runs, so a rotation during the read leaves the result in an older generation.
-    A TTL of 0 sends every call to *read* and stores nothing.
+    A TTL of 0 sends every call to *read* and stores nothing. With *refresh* the call removes the entry and reads
+    again, so a refresh read that fails or is not settled leaves no entry.
     """
     config = DisplayCacheConfig.get()
-    ttl = getattr(config, _TTL_FIELDS[kind])
+    ttl = getattr(config, _KINDS[kind].ttl_field)
     if not ttl:
         return read()
-    key = _entry_key(server, family, kind, config)
-    entry = cache.get(key)
-    if entry is not None:
-        return entry
+    key = _entry_key(server, family, kind, config, query)
+    if refresh:
+        cache.delete(key)
+    else:
+        entry = cache.get(key)
+        if entry is not None:
+            return entry
     value = read()
     if value.settled:
         cache.set(key, value, ttl)
@@ -77,16 +105,19 @@ def rotate_after_write(server: Server, family: Family | None, *, configuration: 
             _rotate(server, each, "configuration")
 
 
-def _entry_key(server: Server, family: Family, kind: Kind, config: DisplayCacheConfig) -> str:
+def _entry_key(server: Server, family: Family, kind: Kind, config: DisplayCacheConfig, query: QueryParts) -> str:
     # A Server instance with old connection settings fills only the entry of those settings.
     connection = server.kea_connection(family).fingerprint()
     if config.last_updated is None:
         raise RuntimeError("The Display Cache settings row has no last_updated, so no key can show its last save.")
     # Every save of the settings row writes last_updated, so a save makes every older entry unreachable.
     settings = config.last_updated.isoformat()
+    generations = ":".join(_generation(server, family, generation) for generation in _KINDS[kind].generations)
+    digest = hashlib.sha256(json.dumps(query).encode()).hexdigest()
+    # An entry pickled by another plugin version can hold another shape of its classes.
     return (
-        f"{KEY_PREFIX}entry:{require_persisted_server(server)}:{family}:{kind}:"
-        f"{_generation(server, family, 'configuration')}:{connection}:{settings}"
+        f"{KEY_PREFIX}entry:{require_persisted_server(server)}:{family}:{kind}:{__version__}:"
+        f"{generations}:{connection}:{settings}:{digest}"
     )
 
 

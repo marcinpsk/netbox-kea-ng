@@ -123,3 +123,9 @@ def _display_capabilities(server, family):
 def _live_capabilities(server, family):
     # ok: kea-snapshot-read-without-notice
     return server_configuration.reservation_capabilities(server_configuration.for_verification(server, family))
+
+
+def _read_reservation_page(server, version, query):
+    catalogue = subnet_catalogue.display(server, version)
+    # ok: kea-snapshot-read-without-notice
+    return _read_reservations(server, version, query, catalogue)

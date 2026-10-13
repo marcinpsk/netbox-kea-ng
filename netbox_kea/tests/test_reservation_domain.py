@@ -323,6 +323,17 @@ class TestReservationPage(SimpleTestCase):
         self.assertEqual(snapshot.records, ())
         self.assertEqual([diagnostic.code for diagnostic in snapshot.diagnostics], ["unverified-scope"])
 
+    def test_a_page_records_the_aware_time_at_which_its_read_started(self):
+        before = datetime.now(timezone.utc)
+        with stub_kea({"reservation-get-page": _res_page([])}):
+            snapshot = self.kea.reservation_page(4, _catalogue(4, 20, "198.18.0.0/24"))
+
+        self.assertTrue(before <= snapshot.read_started <= datetime.now(timezone.utc))
+
+    def test_a_snapshot_refuses_a_naive_read_time(self):
+        with self.assertRaisesMessage(ValueError, "aware read time"):
+            ReservationSnapshot(4, (), (), True, None, datetime(2026, 1, 1))  # noqa: DTZ001
+
     def test_returns_typed_snapshot_and_quarantines_one_malformed_record(self):
         page = _res_page(
             [

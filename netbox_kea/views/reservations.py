@@ -9,19 +9,20 @@ import concurrent.futures
 import ipaddress
 import logging
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlencode
 
 import requests
-from django.contrib import messages
 from django.core.exceptions import BadRequest
 from django.db import DatabaseError
 from django.http import HttpRequest, HttpResponse
 from django.urls import NoReverseMatch, reverse
+from django.utils import timezone
 from netbox.views import generic
 from utilities.views import register_model_view
 
-from .. import constants, forms, server_configuration, tables
+from .. import constants, display_cache, forms, server_configuration, tables
 from ..constants import Family, LeaseState
 from ..ipam_reconciliation import RESERVATION, ReservationPhase, claim_permissions, reconcile_permissions
 from ..kea import KeaClient, KeaException, LeaseQueryGuardError
@@ -47,6 +48,7 @@ from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import OptionalViewTab
 from ._base import _safe_return_url
 from .notices import HEADLINES, Notice, load_snapshot, notice
+from .read_age import read_age_context, refresh_requested
 from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
@@ -309,9 +311,10 @@ def _reservation_table_record(reservation: Reservation, server: Server) -> dict[
 class ReservationQuery:
     """What one Reservation read asks of a Server.
 
-    It reads the page after *cursor* that matches *q*, *subnet_id* and *scope*, or with *full* the complete
-    Snapshot for a transfer. With *mutations* it also reads the mutation capabilities that the cached Server
-    Configuration shows, for a user who can change the Server.
+    It reads the page after *cursor* that matches *q*, *subnet_id* and *scope* through the display cache, or with
+    *full* the complete Snapshot for a transfer, always live. With *refresh* it reads the page live and replaces its
+    cached entry. With *mutations* it also reads the mutation capabilities that the cached Server Configuration
+    shows, for a user who can change the Server.
     """
 
     cursor: str | None = None
@@ -320,11 +323,17 @@ class ReservationQuery:
     scope: str = ""
     full: bool = False
     mutations: bool = False
+    refresh: bool = False
 
     @property
     def filtered(self) -> bool:
         """Return whether the query searches for matches instead of browsing every Reservation."""
         return bool(self.q or self.subnet_id is not None or self.scope)
+
+    @property
+    def page_parts(self) -> display_cache.QueryParts:
+        """Return the parts that select the page, which key its display cache entry."""
+        return (self.cursor, self.q, self.subnet_id, self.scope)
 
 
 @dataclass(frozen=True)
@@ -339,21 +348,41 @@ class ReservationRead:
     catalogue: CatalogueSnapshot | None = None
 
 
-def _empty_reservation_snapshot(version: Family) -> ReservationSnapshot:
-    return ReservationSnapshot(family=version, records=(), diagnostics=(), complete=False, next_cursor=None)
+def _empty_reservation_snapshot(version: Family, read_started: datetime) -> ReservationSnapshot:
+    return ReservationSnapshot(
+        family=version, records=(), diagnostics=(), complete=False, next_cursor=None, read_started=read_started
+    )
 
 
-def _read_reservations(server: Server, version: Family, query: ReservationQuery) -> ReservationSnapshot:
-    """Read the complete Snapshot, a browse page, or scan a bounded batch until a filtered page matches."""
+@dataclass(frozen=True)
+class _ReservationPage:
+    """One display cache entry: a Reservation page and the Subnet Catalogue that its records were parsed against."""
+
+    snapshot: ReservationSnapshot
+    catalogue: CatalogueSnapshot
+
+    @property
+    def settled(self) -> bool:
+        """Return false when the page walk or the Catalogue read did not settle; the cache never stores it."""
+        return self.snapshot.settled and self.catalogue.settled
+
+
+def _read_reservations(
+    server: Server, version: Family, query: ReservationQuery, catalogue: CatalogueSnapshot
+) -> ReservationSnapshot:
+    """Read the complete Snapshot, a browse page, or scan a bounded batch until a filtered page matches.
+
+    The records are parsed against *catalogue*. A browse page has the time of its own read. A search, and a page
+    that needs no read, have the time at which this call started.
+    """
     q, subnet_id, scope, cursor = query.q, query.subnet_id, query.scope, query.cursor
     if query.full:
-        catalogue = subnet_catalogue(server, version)
         return server.get_client(version=version).reservation_snapshot(
             version, catalogue, page_size=_RESERVATION_PAGE_SIZE
         )
+    started = timezone.now()
     if subnet_id is not None and subnet_id > 0 and scope == "global":
-        return replace(_empty_reservation_snapshot(version), complete=True)
-    catalogue = subnet_catalogue(server, version)
+        return replace(_empty_reservation_snapshot(version, started), complete=True)
     read_subnet_id = 0 if scope == "global" else subnet_id
     if (
         read_subnet_id is not None
@@ -361,7 +390,7 @@ def _read_reservations(server: Server, version: Family, query: ReservationQuery)
         and not isinstance(catalogue.find_by_id(read_subnet_id), VerifiedSubnet)
     ):
         if catalogue.identity_complete and catalogue.consistent:
-            return replace(_empty_reservation_snapshot(version), complete=True)
+            return replace(_empty_reservation_snapshot(version, started), complete=True)
         read_subnet_id = None
     client = server.get_client(version=version)
     if not query.filtered:
@@ -390,7 +419,12 @@ def _read_reservations(server: Server, version: Family, query: ReservationQuery)
                 )
             )
             return ReservationSnapshot(
-                family=version, records=(), diagnostics=tuple(diagnostics), complete=False, next_cursor=cursor
+                family=version,
+                records=(),
+                diagnostics=tuple(diagnostics),
+                complete=False,
+                next_cursor=cursor,
+                read_started=started,
             )
         matches = tuple(record for record in page.records if _reservation_matches(record, q, subnet_id, scope))
         diagnostics.extend(page.diagnostics)
@@ -411,7 +445,13 @@ def _read_reservations(server: Server, version: Family, query: ReservationQuery)
             )
         if matches or cursor is None or page_index + 1 == _RESERVATION_SEARCH_PAGE_LIMIT:
             break
-    return replace(page, records=matches, diagnostics=tuple(diagnostics), complete=complete)
+    return replace(page, records=matches, diagnostics=tuple(diagnostics), complete=complete, read_started=started)
+
+
+def _read_reservation_page(server: Server, version: Family, query: ReservationQuery) -> _ReservationPage:
+    """Read the Subnet Catalogue, live on a Refresh, and the page of *query* parsed against it."""
+    catalogue = subnet_catalogue(server, version, refresh=query.refresh)
+    return _ReservationPage(_read_reservations(server, version, query, catalogue), catalogue)
 
 
 def _display_capabilities(server: Server, version: Family) -> ReservationCapabilities | None:
@@ -434,14 +474,34 @@ def fetch(server: Server, family: Family, query: ReservationQuery) -> Reservatio
         ValueError: If the Server configuration or the query is not valid.
 
     """
-    loaded = load_snapshot(server, "reservation", lambda: _read_reservations(server, family, query))
+    loaded: ReservationSnapshot | Notice
+    catalogue: CatalogueSnapshot | None = None
+    if query.full:
+        loaded = load_snapshot(
+            server, "reservation", lambda: _read_reservations(server, family, query, subnet_catalogue(server, family))
+        )
+    else:
+        page = load_snapshot(
+            server,
+            "reservation",
+            lambda: display_cache.cached(
+                server,
+                family,
+                "reservations",
+                lambda: _read_reservation_page(server, family, query),
+                query=query.page_parts,
+                refresh=query.refresh,
+            ),
+        )
+        loaded, catalogue = (page, None) if isinstance(page, Notice) else (page.snapshot, page.catalogue)
     capabilities = None
     # A second read of a Server that did not answer would only add its timeout.
     unreachable = isinstance(loaded, Notice) and loaded.unreachable
     if query.mutations and not unreachable:
         capabilities = _display_capabilities(server, family)
-    # The Reservation read cached the Catalogue, so this is a cache read unless the Catalogue was unsettled.
-    catalogue = None if unreachable else subnet_catalogue(server, family)
+    # A page comes with the Catalogue it was parsed against; only a failed read or an export reads it here.
+    if catalogue is None and not unreachable:
+        catalogue = subnet_catalogue(server, family)
     return ReservationRead(query, loaded, capabilities, catalogue)
 
 
@@ -620,13 +680,20 @@ def _reservation_list_context(
     search_form = forms.ReservationSearchForm(request.GET or None)
     filters = search_form.cleaned_data if search_form.is_valid() else {}
     can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
-    query = ReservationQuery(cursor=request.GET.get("cursor"), mutations=can_change, **filters)
+    query = ReservationQuery(
+        cursor=request.GET.get("cursor"), mutations=can_change, refresh=refresh_requested(request), **filters
+    )
+    read_started = None
+    # Shown inside the section, because a Refresh swaps only the section and never shows a flash message.
+    read_error = ""
     try:
         read = fetch(server, version, query)
     except ValueError:
         logger.exception("Unexpected error fetching DHCPv%s Reservations", version)
-        messages.error(request, HEADLINES["reservation"])
-        read = ReservationRead(query, _empty_reservation_snapshot(version), capabilities=None)
+        read_error = HEADLINES["reservation"]
+        read = ReservationRead(query, _empty_reservation_snapshot(version, timezone.now()), capabilities=None)
+    else:
+        read_started = None if isinstance(read.loaded, Notice) else read.loaded.read_started
     search_form.offer_subnets(forms.subnet_id_options(read.catalogue.subnet_choices if read.catalogue else ()))
     presented = present(request.user, server, read, return_url=_safe_return_url(request, request.get_full_path()))
     # A missing host_cmds hook has its own panel, so one cause shows one banner.
@@ -637,6 +704,8 @@ def _reservation_list_context(
     table = table_class(presented.rows, user=request.user, empty_text=empty_text(query.filtered, presented.partial))
     table.configure(request)
     return {
+        **read_age_context(read_started),
+        "read_error": read_error,
         "table": table,
         "dhcp_version": version,
         "hook_available": hook_available,
@@ -666,7 +735,7 @@ def _reservation_export_response(request: HttpRequest, server: Server, version: 
     if format_name not in ("yaml", "json"):
         raise BadRequest("Reservation export format must be YAML or JSON.")
     try:
-        snapshot = _read_reservations(server, version, ReservationQuery(full=True))
+        snapshot = _read_reservations(server, version, ReservationQuery(full=True), subnet_catalogue(server, version))
     except (KeaException, requests.RequestException, RuntimeError, ValueError):
         logger.exception("Could not export DHCPv%s Reservations", version)
         return HttpResponse("The Reservation Snapshot could not be exported.", status=502)
