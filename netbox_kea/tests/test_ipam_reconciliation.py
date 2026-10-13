@@ -1608,10 +1608,10 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         from django.db import DatabaseError, transaction
 
         from netbox_kea.jobs import _sync_one_server
-        from netbox_kea.models import SyncConfig
+        from netbox_kea.models import DhcpIntegrationConfig, SyncConfig
 
         policy_server = _server("policy-server", sync_enabled=False)
-        for index, policy in enumerate(("server", "sync-config"), start=1):
+        for index, policy in enumerate(("server", "sync-config", "dhcp-integration"), start=1):
             with self.subTest(policy=policy):
                 owner = _server(f"owner-{policy}")
                 _run_job(owner, [])
@@ -1631,10 +1631,12 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
                             current = type(policy_server).objects.get(pk=policy_server.pk)
                             current.name = "policy-server-saved"
                             current.save(update_fields=["name"])
-                        else:
+                        elif policy == "sync-config":
                             current = SyncConfig.get()
                             current.interval_minutes += 1
                             current.save(update_fields=["interval_minutes"])
+                        else:
+                            DhcpIntegrationConfig.get().save(update_fields=["enabled"])
                         saved.set()
                         if not resume_save.wait(timeout=30):
                             raise TimeoutError("Policy save was not resumed")

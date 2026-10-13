@@ -18,7 +18,7 @@ from netbox_kea.models import Server
 
 from .kea_stub import LeaseDaemon, _catalogue_responses_for_subnets, stub_kea
 from .test_views_server import _status_stub
-from .utils import _make_db_server, _ViewTestBase
+from .utils import _make_db_server, _ViewTestBase, with_dhcp_integration_config
 
 
 class TestServerWorkspace(_ViewTestBase):
@@ -494,11 +494,19 @@ class TestWorkspaceTabRow(_ViewTestBase):
     def test_the_dhcp_plugin_subsection_follows_the_import_enable_rule(self):
         from netbox_kea.views import dhcp_plugin_sync
 
-        for available, enabled, shown in ((True, True, True), (True, False, False), (False, True, False)):
-            with self.subTest(available=available, enabled=enabled):
+        for available, enabled, switch, shown in (
+            (True, True, True, True),
+            (True, False, True, False),
+            (False, True, True, False),
+            (True, True, False, False),
+        ):
+            with self.subTest(available=available, enabled=enabled, switch=switch):
                 self.server.sync_dhcp_plugin_enabled = enabled
                 self.server.save()
-                with patch.object(dhcp_plugin_sync.dhcp_plugin, "is_available", return_value=available, autospec=True):
+                with (
+                    with_dhcp_integration_config(enabled=switch),
+                    patch.object(dhcp_plugin_sync.dhcp_plugin, "is_available", return_value=available, autospec=True),
+                ):
                     page = self._page("server_sync_status", family=4)
                 subsections = [a.get_text() for a in page.select('[aria-label="Sync subsections"] a')]
                 self.assertEqual(subsections, ["IPAM", "DHCP Plugin"] if shown else [])

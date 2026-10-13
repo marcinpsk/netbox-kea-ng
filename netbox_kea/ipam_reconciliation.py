@@ -425,14 +425,14 @@ def _effective_sources(server: Server, config: SyncConfig) -> dict[Workflow, Sou
         for family in families
         if lease_prefixes_enabled(family, (family, "lease") in job, (family, "subnet") in job)
     }
-    imported = frozenset(
-        (family, source)
-        for family in families
-        for source in ("reservation", "subnet", "pool", "delegated-prefix")
-        if server.sync_dhcp_plugin_enabled
-        and dhcp_plugin.is_available()
-        and (source != "delegated-prefix" or family == 6)
-    )
+    imported: SourceScope = frozenset()
+    if dhcp_plugin.runs_for(server):
+        imported = frozenset(
+            (family, source)
+            for family in families
+            for source in ("reservation", "subnet", "pool", "delegated-prefix")
+            if source != "delegated-prefix" or family == 6
+        )
     return {"job": job, "import": imported}
 
 
@@ -538,7 +538,9 @@ def _cleanup_adoption_waits(link: IPAMOwnershipLink, object_field: str) -> bool:
         return False
     with connection.cursor() as cursor:
         # Table locks also cover new Servers and bulk configuration updates.
-        cursor.execute("LOCK TABLE netbox_kea_server, netbox_kea_syncconfig IN SHARE MODE NOWAIT")
+        cursor.execute(
+            "LOCK TABLE netbox_kea_server, netbox_kea_syncconfig, netbox_kea_dhcpintegrationconfig IN SHARE MODE NOWAIT"
+        )
     return _adoption_waits(link, object_field, _pending_adoptions())
 
 
