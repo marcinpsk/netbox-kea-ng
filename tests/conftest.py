@@ -60,7 +60,7 @@ class NoBranchGuard:
         """Refuse nothing."""
 
 
-def no_display_cache(family: int | None) -> None:
+def no_display_cache(family: int | None, *, configuration: bool) -> None:
     """The KeaClient ``on_write`` of the host harness: it has no NetBox, so it has no display cache to rotate."""
 
 

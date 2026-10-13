@@ -54,7 +54,7 @@ from netbox_kea.subnet_catalogue import SubnetIdentity
 from netbox_kea.tests.kea_wire_discipline import WIRE_COMMANDS
 
 
-def no_display_cache(family: int | None) -> None:
+def no_display_cache(family: int | None, *, configuration: bool) -> None:
     """The ``on_write`` of a KeaClient that no Server owns: it has no display cache entries to rotate."""
 
 

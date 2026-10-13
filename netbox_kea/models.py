@@ -307,8 +307,6 @@ class Server(JobsMixin, NetBoxModel):
         # Imported here: display_cache imports this module.
         from . import display_cache
 
-        on_config_change = partial(display_cache.rotate_configuration, self, version) if version in (4, 6) else None
-
         connection = self.kea_connection(version)
         config = request_client_config.get() or KeaClientConfig.get()
         return KeaClient(
@@ -322,9 +320,8 @@ class Server(JobsMixin, NetBoxModel):
             persist_config=self.persist_config,
             send_service=connection.send_service,
             max_unpaged_leases=config.lease_query_max_unpaged_leases or None,
-            on_config_change=on_config_change,
             write_guard=branching.bind(),
-            on_write=partial(display_cache.rotate_records, self),
+            on_write=partial(display_cache.rotate_after_write, self),
         )
 
     def clean(self) -> None:

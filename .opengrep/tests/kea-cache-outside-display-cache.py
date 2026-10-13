@@ -29,7 +29,7 @@ from ..display_cache import _entry_key
 from netbox_kea.display_cache import _generation_key, cached
 
 # ok: kea-cache-outside-display-cache
-from .display_cache import cached, rotate_configuration, rotate_records
+from .display_cache import cached, rotate_after_write, rotate_configuration
 
 # ok: kea-cache-outside-display-cache
 from ..display_cache import KEY_PREFIX
@@ -43,7 +43,7 @@ from .display_cache import (
 # ok: kea-cache-outside-display-cache
 from .display_cache import (
     rotate_configuration as rotate_configuration_again,
-    rotate_records as rotate_records_again,
+    rotate_after_write as rotate_after_write_again,
 )
 
 
@@ -72,15 +72,15 @@ def reads_a_generation(server):
 
 def uses_the_module(server, read):
     # ok: kea-cache-outside-display-cache
-    display_cache.rotate_records(server, 4)
+    display_cache.rotate_after_write(server, 4, configuration=False)
     # ok: kea-cache-outside-display-cache
     relative_cache.rotate_configuration(server, 4)
     # ok: kea-cache-outside-display-cache
-    absolute_cache.rotate_records(server, None)
+    absolute_cache.rotate_after_write(server, None, configuration=True)
     # ok: kea-cache-outside-display-cache
     netbox_kea.display_cache.rotate_configuration(server, 6)
     # ok: kea-cache-outside-display-cache
-    rotate_records(server, 6)
+    rotate_after_write(server, 6, configuration=False)
     # ok: kea-cache-outside-display-cache
     cached(server, 4, "catalogue", read)
     # ok: kea-cache-outside-display-cache

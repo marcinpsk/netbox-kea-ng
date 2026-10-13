@@ -65,11 +65,16 @@ def rotate_configuration(server: Server, family: Family) -> None:
     _rotate(server, family, "configuration")
 
 
-def rotate_records(server: Server, family: Family | None) -> None:
-    """Make every entry that depends on Reservations or Leases unreachable. ``None`` rotates both families."""
+def rotate_after_write(server: Server, family: Family | None, *, configuration: bool) -> None:
+    """Rotate the records generation of *family*, and its configuration generation for a configuration change.
+
+    ``None`` rotates both families. ``KeaClient`` calls this before and after each write command.
+    """
     families: tuple[Family, ...] = (4, 6) if family is None else (family,)
     for each in families:
         _rotate(server, each, "records")
+        if configuration:
+            _rotate(server, each, "configuration")
 
 
 def _entry_key(server: Server, family: Family, kind: Kind, config: DisplayCacheConfig) -> str:

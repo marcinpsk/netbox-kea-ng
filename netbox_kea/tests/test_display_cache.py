@@ -113,6 +113,44 @@ class RecordsGenerationTest(TestCase):
         )
 
 
+class ConfigurationWriteTest(TestCase):
+    """A configuration mutation rotates the configuration generation and the records generation around its send."""
+
+    def setUp(self):
+        self.server = _make_db_server()
+
+    def _generations(self) -> tuple[str, str]:
+        return display_cache._generation(self.server, 4, "configuration"), display_cache._generation(
+            self.server, 4, "records"
+        )
+
+    def test_a_configuration_mutation_rotates_both_generations_before_and_after_the_send(self):
+        before = self._generations()
+        at_send = []
+
+        def answer(body: dict) -> object:
+            at_send.append(self._generations())
+            return {"result": 0, "text": "Subnet deleted."}
+
+        with stub_kea({"subnet4-del": answer}) as kea:
+            self.server.get_client(version=4).subnet_del(4, 1)
+
+        self.assertEqual(kea.commands(), ["subnet4-del"])
+        after = self._generations()
+        for index, name in enumerate(("configuration", "records")):
+            with self.subTest(generation=name):
+                self.assertNotEqual(at_send[0][index], before[index], "rotated before the send")
+                self.assertNotEqual(after[index], at_send[0][index], "rotated after the reply")
+
+    def test_a_configuration_mutation_from_a_client_without_a_family_rotates_its_family(self):
+        before = display_cache._generation(self.server, 6, "configuration")
+
+        with stub_kea({"subnet6-del": {"result": 0, "text": "Subnet deleted."}}):
+            self.server.get_client().subnet_del(6, 1)
+
+        self.assertNotEqual(display_cache._generation(self.server, 6, "configuration"), before)
+
+
 @with_kea_client_config(lease_query_max_unpaged_leases=0)
 class DisplayCacheSettingsTest(TestCase):
     """Each TTL comes from the DisplayCacheConfig row, and a save of the row makes every entry unused."""
@@ -208,10 +246,22 @@ class DisplayCacheSettingsTest(TestCase):
             server_configuration.display(self.server, 4)
         self.assertEqual(kea.commands(), [])
 
+    def test_a_plain_write_keeps_the_configuration_entries(self):
+        self._assert_warm()
+
+        with stub_kea({"reservation-del": {"result": 0, "text": "Host deleted."}}):
+            self.server.get_client(version=4).command(
+                KeaCommand.RESERVATION_DEL,
+                4,
+                arguments={"subnet-id": 1, "identifier-type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"},
+            )
+
+        self.assertEqual(self._read_display(), [])
+
     def test_a_rotation_of_the_records_generation_keeps_the_configuration_entries(self):
         self._assert_warm()
 
-        display_cache.rotate_records(self.server, 4)
+        display_cache.rotate_after_write(self.server, 4, configuration=False)
 
         self.assertEqual(self._read_display(), [])
 

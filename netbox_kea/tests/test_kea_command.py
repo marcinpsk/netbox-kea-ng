@@ -167,7 +167,7 @@ def _bound_client(on_write=no_display_cache) -> KeaClient:
 def test_a_branch_bound_client_refuses_every_write_before_any_send(command):
     writes = []
     with stub_kea({}) as kea, pytest.raises(BranchActive) as refused:
-        _bound_client(on_write=writes.append).command(command, 4)
+        _bound_client(on_write=lambda family, configuration: writes.append(family)).command(command, 4)
 
     assert refused.value.branch == _BRANCH
     assert kea.requests == []
@@ -191,8 +191,7 @@ def test_a_config_mutation_in_a_branch_is_refused_before_the_cache_invalidation(
         timeout=30,
         max_unpaged_leases=1000,
         write_guard=BranchBinding(_BRANCH),
-        on_config_change=lambda: invalidations.append("invalidated"),
-        on_write=lambda family: invalidations.append(f"write {family}"),
+        on_write=lambda family, configuration: invalidations.append(f"write {family} {configuration}"),
     )
     with stub_kea({}) as kea, pytest.raises(BranchActive):
         client.subnet_del(4, 1)

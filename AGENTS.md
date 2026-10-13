@@ -266,8 +266,8 @@ URL request
   `None` for the Control Agent itself. A family-specific command comes from a per-family mapping
   in `kea.py`, such as `SUBNET_LIST[family]`; never format a command name. A new member needs an
   entry in the pinned read or write set of `test_kea_command.py`. `write_guard` and `on_write` are
-  required keyword arguments: `Server.get_client()` passes the branch binding and the records rotation of
-  the display cache, and unit tests build clients through `kea_stub.kea_client()`, which passes both (its
+  required keyword arguments: `Server.get_client()` passes the branch binding and the generation rotation
+  of the display cache, and unit tests build clients through `kea_stub.kea_client()`, which passes both (its
   `on_write` does nothing). Responses are `list[KeaResponse]`; `check_response()` raises `KeaException`
   if any result code is not in `check`. `command()` passes the TLS settings (`verify`, `cert`) on each request, so the
   `REQUESTS_CA_BUNDLE` environment variable cannot replace a CA file or `ssl_verify=False`. A TLS file
@@ -286,8 +286,10 @@ URL request
   generation, a keyed digest of `Server.kea_connection()`, and `last_updated` of the settings row, so a settings
   save makes every entry unreachable. Both kinds read the Kea configuration only, so their keys do not hold the
   records generation; a kind that Reservation or Lease writes change must add it. `KeaClient.command()` calls
-  `on_write` before and after each write command, also when the send fails, and `Server.get_client()` binds it to
-  `rotate_records`; a target of `None` rotates both families. `_config_mutation_command` and `MutationScope` call
+  `on_write(family, configuration=False)` before and after each write command, also when the send fails, and
+  `_config_mutation_command` calls `on_write(family, configuration=True)` around a live configuration mutation.
+  `Server.get_client()` binds it to `rotate_after_write`, which rotates the records generation (both families for
+  `None`) and, for a configuration change, the configuration generation. `MutationScope` calls
   `rotate_configuration`. A rotation failure is logged, and the write continues. The callers validate the family;
   the module takes a `Family`. Authority reads (`for_verification`, `for_synchronization`, `for_import`,
   `read_identity`, mutation scopes) never read or fill the cache. `fan_out` reads the settings row on the request
