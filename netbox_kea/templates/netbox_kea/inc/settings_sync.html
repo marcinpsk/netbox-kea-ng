@@ -1,0 +1,16 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% load form_helpers %}
+<div class="field-group mb-4">
+  {% render_field form.interval_minutes %}
+  {% render_field form.sync_enabled %}
+</div>
+<div class="field-group" role="group" aria-label="Sync Types">
+  <div class="row">
+    <h2 class="col-9 offset-3">Sync Types</h2>
+  </div>
+  {% render_field form.sync_leases_enabled %}
+  {% render_field form.sync_reservations_enabled %}
+  {% render_field form.sync_prefixes_enabled %}
+  {% render_field form.sync_ip_ranges_enabled %}
+</div>

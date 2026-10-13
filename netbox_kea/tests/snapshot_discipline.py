@@ -50,6 +50,7 @@ SITES = (
     SaveSite("ipam_reconciliation.py", "_remove_stale_network_link", "locked", "loaded", count=2),
     SaveSite("sync.py", "sync_mac_address", "mac_obj", "loaded"),
     SaveSite("views/sync_jobs.py", "ServerSyncToggleView.post", "server", "loaded"),
+    SaveSite("views/settings_page.py", "SettingsView.post", "instance", "loaded"),
     SaveSite("integrations/dhcp_plugin.py", "upsert_options", "obj", "loaded", constructors=("Option",)),
     SaveSite("integrations/dhcp_plugin.py", "_apply_global_settings", "dhcp_server", "loaded"),
     SaveSite("integrations/dhcp_plugin.py", "upsert_client_class", "obj", "loaded", constructors=("ClientClass",)),
@@ -62,7 +63,6 @@ SITES = (
     SaveSite("ipam_reconciliation.py", "_remove_stale_link", "link", "plain"),
     SaveSite("ipam_reconciliation.py", "_remove_stale_network_link", "link", "plain"),
     SaveSite("ipam_reconciliation.py", "_classify_links", "link", "plain"),
-    SaveSite("views/sync_jobs.py", "SyncJobsView.post", "sync_cfg", "plain"),
     SaveSite("jobs.py", "KeaIpamSyncJob._run_sync", "self.job", "framework"),
     SaveSite("models.py", "Server.save", "super()", "framework"),
     SaveSite("models.py", "SyncConfig.save", "super()", "framework"),
@@ -141,6 +141,9 @@ class Sequence:
                 and call.args
                 and self.receiver(call.args[0])
             ):
+                state = self.mutate(state)
+            # A ModelForm bound with instance= copies its data onto the receiver when it validates.
+            if any(keyword.arg == "instance" and self.receiver(keyword.value) for keyword in call.keywords):
                 state = self.mutate(state)
         return state
 

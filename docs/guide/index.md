@@ -57,7 +57,7 @@ Open a combined Subnet, Shared Network or Reservation row to enter its owning Se
 The Server page keeps a **Back to workspace** link to the same combined page and filters.
 Row actions open the owning Server's forms and return to that combined page after the change.
 
-The Servers inventory and global Sync Jobs page remain in the plugin menu.
+The Servers inventory, the global Sync Jobs page and the Settings page remain in the plugin menu.
 
 Use **Servers** in the scope bar to select several Servers, then select **Apply**.
 Use **Show all servers** to clear that selection. A selection of one Server opens its canonical workspace.

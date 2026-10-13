@@ -27,8 +27,10 @@ Every authority read (verification, synchronization, mutation scopes, post-write
 - Each Server and address family has a configuration generation (today's) and one records generation.
   `KeaClient.command()` rotates the records generation before and after every write command. A write with
   no family target rotates both families. Configuration changes keep rotating the configuration generation.
-- A Server save rotates every generation of that Server. A save that writes only workflow receipt fields or
-  `sync_enabled` does not.
+- Every key holds a keyed digest of the Server connection settings that the read uses (`Server.kea_connection()`).
+  A change of URL, credentials or TLS settings makes every older entry unreachable. A Server instance that
+  still holds old settings fills only the entry of those settings. A save that changes no connection setting
+  keeps the entries.
 - Authority reads never read or fill the cache. A cached entry never authorizes a write.
 - The cache admits an incomplete result. It never admits a failed read or a page walk stopped by an error.
   A walk stopped at its configured limit is settled and is admitted.
@@ -44,6 +46,9 @@ Every authority read (verification, synchronization, mutation scopes, post-write
   list drifts (`subnet4-del` also removes Reservations and Leases).
 - Clearing other Servers that are HA partners or share a hosts database. Rejected: the plugin does not model
   those links. A change from outside this NetBox shows on the first read after the entry's TTL ends.
+- Rotating the generations in `Server.save()`. Rejected: a request that loaded the Server before the save
+  reads through the old URL after the rotation and fills the new generation. Keying by `last_updated` has
+  the same gap when a stale instance saves another field.
 - A browser or htmx history cache, or per-request memoization. Rejected: a write cannot invalidate the first,
   and the second does not help a tab switch.
 

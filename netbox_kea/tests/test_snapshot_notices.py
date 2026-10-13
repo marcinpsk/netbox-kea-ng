@@ -369,7 +369,7 @@ class TestReservationEditNotice(_ViewTestBase):
 
     def test_an_unavailable_catalogue_is_an_error_before_the_failed_target_read(self):
         failure = requests.ConnectionError("unreachable")
-        response = self._edit({"subnet4-list": failure, "config-get": failure, "list-commands": failure})
+        response = self._edit({"subnet4-list": failure, "config-get": failure})
         self.assertEqual(response.status_code, 302)
         self.assertEqual(_page_messages(response)[0], (django_messages.ERROR, HEADLINES["catalogue"]))
         self.assertIn(

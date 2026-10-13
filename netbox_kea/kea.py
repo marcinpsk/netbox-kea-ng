@@ -68,11 +68,9 @@ from .reservations import (
     RESERVATION_PAGE_LIMIT_REACHED,
     RESERVATION_PAGINATION_STALLED,
     GlobalReservationScope,
-    IdentifierType,
     InSubnetReservationScope,
     MalformedReservation,
     Reservation,
-    ReservationCapabilities,
     ReservationChange,
     ReservationConflict,
     ReservationDiagnostic,
@@ -487,48 +485,6 @@ def subnet_network(value: Any, family: int) -> IPNetworkValue:
     if network.version != family:
         raise ValueError(f"Subnet CIDR {value!r} is IPv{network.version}, not IPv{family}.")
     return network
-
-
-def _configured_subnet_network(subnet: Any, version: int) -> IPNetworkValue:
-    """Return one validated configured Subnet network for the requested family."""
-    if not isinstance(subnet, dict):
-        raise RuntimeError("config-get returned a malformed Subnet entry.")
-    try:
-        return subnet_network(subnet.get("subnet"), version)
-    except ValueError as exc:
-        raise RuntimeError(f"config-get returned a Subnet without a valid IPv{version} CIDR.") from exc
-
-
-def _configured_subnet_id_for_network(
-    subnet_collections: list[list[Any]],
-    version: int,
-    network: ipaddress.IPv4Network | ipaddress.IPv6Network,
-) -> int | None:
-    """Find one Subnet ID while retaining malformed-entry evidence if no match exists."""
-    malformed_entry_error: RuntimeError | None = None
-    matching_ids: set[int] = set()
-    for subnets in subnet_collections:
-        for subnet in subnets:
-            try:
-                configured_network = _configured_subnet_network(subnet, version)
-            except RuntimeError as exc:
-                if malformed_entry_error is None:
-                    malformed_entry_error = exc
-                continue
-            if configured_network != network:
-                continue
-            subnet_id = subnet.get("id")
-            if isinstance(subnet_id, bool) or not isinstance(subnet_id, int) or subnet_id < 1:
-                raise RuntimeError("config-get returned a Subnet without a valid ID.")
-            matching_ids.add(subnet_id)
-    # Kea keeps host bits, so two declared prefixes can name one network.
-    if len(matching_ids) > 1:
-        raise RuntimeError(f"config-get declares more than one Subnet for {network}: IDs {sorted(matching_ids)}.")
-    if matching_ids:
-        return matching_ids.pop()
-    if malformed_entry_error is not None:
-        raise malformed_entry_error
-    return None
 
 
 def _replace_managed_option(
@@ -1059,86 +1015,6 @@ class KeaClient:
     def __exit__(self, *args: object) -> None:
         self.close()
 
-    def get_available_commands(self, family: Family) -> set[str]:
-        """Return the set of commands available on the daemon of *family*.
-
-        Returns:
-            Set of command name strings reported by ``list-commands``.
-
-        """
-        reply = self._one_command(KeaCommand.LIST_COMMANDS, family)
-        arguments = reply.get("arguments")
-        if not isinstance(arguments, list) or any(not isinstance(command, str) for command in arguments):
-            raise RuntimeError(f"list-commands returned malformed arguments: {reply!r}")
-        return set(arguments)
-
-    def reservation_capabilities(self, version: Family) -> ReservationCapabilities:
-        """Read live identifier configuration and host command availability."""
-        if version not in (4, 6):
-            raise ValueError(f"version must be 4 or 6, got {version!r}")
-        commands = self.get_available_commands(version)
-        response = self.command(KeaCommand.CONFIG_GET, version)
-        if not response or not isinstance(response[0], dict):
-            raise RuntimeError("config-get returned a malformed response.")
-        arguments = response[0].get("arguments")
-        dhcp = arguments.get(f"Dhcp{version}") if isinstance(arguments, dict) else None
-        if not isinstance(dhcp, dict):
-            raise RuntimeError("config-get returned malformed DHCP configuration.")
-        if "host-reservation-identifiers" in dhcp:
-            configured = dhcp["host-reservation-identifiers"]
-        else:
-            configured = ["hw-address", "duid", "circuit-id", "client-id"] if version == 4 else ["duid", "hw-address"]
-        if not isinstance(configured, list) or any(not isinstance(identifier, str) for identifier in configured):
-            raise RuntimeError("config-get returned malformed host-reservation-identifiers.")
-
-        supported = reservation_identifier_types(version)
-        hooks = dhcp.get("hooks-libraries", [])
-        if not isinstance(hooks, list):
-            raise RuntimeError("config-get returned malformed hooks-libraries.")
-        flex_hook = any(
-            isinstance(hook, dict) and isinstance(hook.get("library"), str) and "libdhcp_flex_id" in hook["library"]
-            for hook in hooks
-        )
-        available: tuple[IdentifierType, ...] = tuple(
-            cast(IdentifierType, identifier)
-            for identifier in configured
-            if identifier in supported and (identifier != "flex-id" or flex_hook)
-        )
-        unavailable = tuple(
-            (
-                cast(IdentifierType, identifier),
-                "The Flex ID hook is not configured."
-                if identifier == "flex-id" and identifier in configured
-                else "This identifier is not enabled in host-reservation-identifiers.",
-            )
-            for identifier in supported
-            if identifier not in available
-        )
-        required_commands = {
-            member.value
-            for member in (
-                KeaCommand.RESERVATION_GET,
-                KeaCommand.RESERVATION_ADD,
-                KeaCommand.RESERVATION_UPDATE,
-                KeaCommand.RESERVATION_DEL,
-            )
-        }
-        missing_commands = required_commands - commands
-        mutation_available = bool(available) and not missing_commands
-        if missing_commands:
-            explanation = "The host_cmds hook does not provide all required Reservation commands."
-        elif not available:
-            explanation = "No supported Reservation identifier is enabled."
-        else:
-            explanation = ""
-        return ReservationCapabilities(
-            family=version,
-            identifiers=available,
-            mutation_available=mutation_available,
-            explanation=explanation,
-            unavailable_identifiers=unavailable,
-        )
-
     def _reservation_raw_page(
         self,
         family: Family,
@@ -1581,38 +1457,6 @@ class KeaClient:
             verification=self._verify_reservation(None, target, catalogue),
         )
 
-    def configured_subnet_id_from_cidr(self, version: Family, cidr: str) -> int | None:
-        """Resolve a CIDR from the running config without requiring ``subnet_cmds``."""
-        if version not in (4, 6):
-            raise ValueError(f"version must be 4 or 6, got {version!r}")
-        try:
-            network = ipaddress.ip_network(cidr, strict=True)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"subnet must be a valid IPv{version} CIDR.") from exc
-        if network.version != version:
-            raise ValueError(f"Subnet family IPv{network.version} does not match DHCPv{version}.")
-
-        arguments = self._one_command(KeaCommand.CONFIG_GET, version).get("arguments")
-        dhcp_config = arguments.get(f"Dhcp{version}") if isinstance(arguments, dict) else None
-        if not isinstance(dhcp_config, dict):
-            raise RuntimeError(f"config-get returned malformed Dhcp{version} configuration.")
-
-        subnet_key = f"subnet{version}"
-        top_level = dhcp_config.get(subnet_key, [])
-        shared_networks = dhcp_config.get("shared-networks", [])
-        if not isinstance(top_level, list) or not isinstance(shared_networks, list):
-            raise RuntimeError("config-get returned malformed Subnet collections.")
-        subnet_collections = [top_level]
-        for shared_network in shared_networks:
-            if not isinstance(shared_network, dict):
-                raise RuntimeError("config-get returned a malformed shared-network entry.")
-            shared_subnets = shared_network.get(subnet_key, [])
-            if not isinstance(shared_subnets, list):
-                raise RuntimeError("config-get returned a malformed shared-network entry.")
-            subnet_collections.append(shared_subnets)
-
-        return _configured_subnet_id_for_network(subnet_collections, version, network)
-
     def subnet_add(self, version: Family, subnet_id: int, cidr: str, fields: SubnetFields) -> None:
         """Send one ``subnet{v}-add`` for the Subnet *cidr* with *subnet_id*. It does not persist.
 
@@ -1873,7 +1717,8 @@ class KeaClient:
     ) -> LeaseSnapshot:
         """Return the Lease Snapshot of one supported selector; it covers the query scope, never the whole daemon.
 
-        A *state* keeps only the Leases in that state. Kea filters a Subnet query; the client filters every other one.
+        A Subnet query takes the Subnet Identity that the caller resolved. A *state* keeps only the Leases in that
+        state. Kea filters a Subnet query; the client filters every other one.
 
         Raises:
             ValueError: If the selector, value or state does not fit the family.
@@ -1897,12 +1742,12 @@ class KeaClient:
             if state is not None and state not in constants.LEASE_QUERY_STATES:
                 raise LeaseQueryNotMeasurable(state)
             if selector == constants.BY_SUBNET:
-                if not isinstance(value, str) or not value:
-                    raise ValueError("subnet must be a non-empty CIDR string.")
-                query = self._lease_query(version, selector, value, state)
-                subnet_id = self.configured_subnet_id_from_cidr(version, value)
-                if subnet_id is None:
-                    raise LeaseQueryUnknownSubnet
+                from .subnet_catalogue import SubnetIdentity  # subnet_catalogue imports this module
+
+                if not isinstance(value, SubnetIdentity) or value.network.version != version:
+                    raise ValueError(f"A Subnet query takes the Subnet Identity of a DHCPv{version} Subnet.")
+                query = self._lease_query(version, selector, value.cidr, state)
+                subnet_id = value.subnet_id
             else:
                 subnet_id = _subnet_id_value(value)
                 query = self._lease_query(version, selector, subnet_id, state)

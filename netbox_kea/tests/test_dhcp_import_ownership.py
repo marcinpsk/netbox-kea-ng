@@ -30,7 +30,7 @@ from netbox_kea.models import IPAMOwnershipLink, next_confirmation_number
 from netbox_kea.pools import parse_pool
 from netbox_kea.views.dhcp_plugin_sync import _summary_problems, run_dhcp_plugin_import
 
-from .kea_stub import stub_kea
+from .kea_stub import observed_configuration, stub_kea
 from .test_integration_dhcp_plugin import _reservation_snapshot
 from .test_views_dhcp_plugin import _sync_responses
 from .utils import _make_db_server, plugins_config
@@ -62,7 +62,6 @@ class ImportOwnershipTest(TestCase):
         self.assertIn("import", self.server.ipam_initial_observations)
 
     def test_global_option_diagnostics_do_not_block_network_import_completion(self):
-        from netbox_kea import server_configuration
 
         prefix = Prefix.objects.create(prefix="2001:db8:1::/64", description="[kea-sync: subnet]")
         ip_range = IPRange.objects.create(
@@ -81,7 +80,7 @@ class ImportOwnershipTest(TestCase):
                     ],
                     field: invalid,
                 }
-                observed = server_configuration.observed_snapshot(server, 6, config)
+                observed = observed_configuration(6, config, server)
                 self.assertFalse(observed.complete)
                 self.assertTrue(observed.diagnostics)
                 self.assertEqual(observed.subnet_diagnostics, ())
@@ -102,7 +101,6 @@ class ImportOwnershipTest(TestCase):
                 self.assertEqual(IPRange.objects.get(pk=ip_range.pk).status, "active")
 
     def test_subnet_option_diagnostics_keep_network_import_incomplete(self):
-        from netbox_kea import server_configuration
 
         self.server.sync_enabled = False
         self.server.sync_dhcp_plugin_enabled = True
@@ -117,7 +115,7 @@ class ImportOwnershipTest(TestCase):
                 }
             ]
         }
-        observed = server_configuration.observed_snapshot(self.server, 6, config)
+        observed = observed_configuration(6, config, self.server)
         self.assertTrue(observed.subnet_diagnostics)
         with stub_kea(_sync_responses({6: config}, {6: []})):
             results = run_dhcp_plugin_import(self.server)

@@ -68,9 +68,25 @@ def test_recognized_mutators_start_the_direct_receiver_change(helper):
     assert any("snapshot after mutation" in hit.message for hit in scan_source(bad, "ipam_reconciliation.py"))
 
 
+def test_a_model_form_bound_to_the_receiver_changes_it():
+    """Validation copies the form data onto the instance, so the snapshot must come before the binding."""
+    good = _observation_update(
+        "current.snapshot()\nform=Form(data, instance=current)\nif form.is_valid():\n    current.save()"
+    )
+    bad = _observation_update(
+        "form=Form(data, instance=current)\ncurrent.snapshot()\nif form.is_valid():\n    current.save()"
+    )
+    other = _observation_update(
+        "current.snapshot()\nform=Form(data, instance=server)\nif form.is_valid():\n    current.save()"
+    )
+    assert scan_source(good, "ipam_reconciliation.py") == []
+    assert any("snapshot after mutation" in hit.message for hit in scan_source(bad, "ipam_reconciliation.py"))
+    assert scan_source(other, "ipam_reconciliation.py") == []
+
+
 def test_inventory_accounts_for_loaded_creates_and_bookkeeping():
-    assert sum(site.count for site in SITES if site.kind == "loaded") == 16
-    assert sum(site.count for site in SITES if site.kind != "loaded") == 12
+    assert sum(site.count for site in SITES if site.kind == "loaded") == 17
+    assert sum(site.count for site in SITES if site.kind != "loaded") == 11
     assert {site.kind for site in SITES} == {"loaded", "create", "plain", "framework"}
 
 
@@ -116,7 +132,7 @@ def _snapshot_sites(*, inventoried=True):
 @pytest.mark.parametrize("late", [False, True], ids=["removed", "moved-after-mutation"])
 def test_every_inventoried_direct_save_snapshot_is_load_bearing(late):
     sites = _snapshot_sites()
-    assert len(sites) == 16
+    assert len(sites) == 17
     for path, lineno, receiver in sites:
         tree = ast.parse(path.read_text())
         snapshot = next(node for node in ast.walk(tree) if isinstance(node, ast.Expr) and node.lineno == lineno)

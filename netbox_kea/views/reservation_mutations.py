@@ -53,7 +53,8 @@ from .notices import notice, show_notices
 from .reservations import (
     _RESERVATIONS_TAB,
     _build_reservation_options_formset,
-    _client_capabilities,
+    _display_capabilities,
+    _live_capabilities,
 )
 from .workspace import ServerFamilyMixin
 
@@ -513,13 +514,13 @@ class _ReservationMutationView(_KeaChangeMixin, ServerFamilyMixin, generic.Objec
         )
 
     def _mutation_capabilities(self, request: HttpRequest, server: Server) -> ReservationCapabilities | HttpResponse:
-        """Return the confirmed mutation capabilities, or the response that refuses the mutation."""
+        """Return the live confirmed mutation capabilities, or the response that refuses the mutation."""
         try:
-            client = server.get_client(version=self.dhcp_version)
+            server.get_client(version=self.dhcp_version)
         except ValueError as exc:
             messages.error(request, _client_settings_error(server, exc))
             return redirect(self._return_url(server))
-        capabilities = _client_capabilities(server, client, self.dhcp_version)
+        capabilities = _live_capabilities(server, self.dhcp_version)
         if capabilities is None or not capabilities.mutation_available:
             messages.error(request, "Reservation mutation capabilities are unavailable.")
             return redirect(self._return_url(server))
@@ -573,12 +574,12 @@ class _ReservationAddView(_ReservationMutationView):
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         try:
-            client = server.get_client(version=self.dhcp_version)
+            server.get_client(version=self.dhcp_version)
         except ValueError as exc:
             messages.error(request, _client_settings_error(server, exc))
             capabilities = None
         else:
-            capabilities = _client_capabilities(server, client, self.dhcp_version)
+            capabilities = _display_capabilities(server, self.dhcp_version)
         snapshot = subnet_catalogue.display(server, self.dhcp_version)
         show_notices(request, notice(snapshot))
         initial_fields = (
@@ -712,7 +713,7 @@ class _ReservationEditView(_ReservationMutationView):
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         try:
-            client = server.get_client(version=self.dhcp_version)
+            server.get_client(version=self.dhcp_version)
         except ValueError as exc:
             messages.error(request, _client_settings_error(server, exc))
             return redirect(self._return_url(server))
@@ -726,7 +727,7 @@ class _ReservationEditView(_ReservationMutationView):
             logger.exception("Could not load the Reservation edit target")
             messages.error(request, "The Reservation could not be loaded. See server logs.")
             return redirect(self._return_url(server))
-        capabilities = _client_capabilities(server, client, self.dhcp_version)
+        capabilities = _display_capabilities(server, self.dhcp_version)
         form = self._form_for(server, reservation, suffix, capabilities)
         form.offer_subnets(catalogue.subnet_choices)
         return self._render(

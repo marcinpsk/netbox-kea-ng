@@ -14,13 +14,12 @@ from unittest.mock import patch
 from dcim.models import MACAddress
 from django.apps import apps
 from django.contrib.auth import get_user_model
-from django.contrib.contenttypes.models import ContentType
 from django.contrib.messages import get_messages
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils.html import escape
 from ipam.models import IPAddress, IPRange, Prefix
-from users.models import Group, ObjectPermission
+from users.models import Group
 
 from netbox_kea import ipam_reconciliation
 from netbox_kea.ipam_reconciliation import LEASE, RESERVATION
@@ -33,7 +32,7 @@ from .test_reservation_mutation_views import _mutation_responses
 from .test_sync_views import _lease_get
 from .test_views_dhcp_plugin import _sync_responses
 from .test_views_leases import _lease_stub, _reservation_stub
-from .utils import _PLUGINS_CONFIG, _make_db_server, plugins_config
+from .utils import _PLUGINS_CONFIG, _grant, _make_db_server, plugins_config
 
 User = get_user_model()
 
@@ -58,21 +57,6 @@ def _reason(names: str) -> str:
     return (
         f"Manual Sync needs unconstrained {names} {noun}: the automatic sync is not limited by permission constraints."
     )
-
-
-def _grant(models, actions, *, user=None, group=None, constraints=None, enabled=True) -> ObjectPermission:
-    permission = ObjectPermission.objects.create(
-        name=f"grant-{ObjectPermission.objects.count()}",
-        actions=list(actions),
-        constraints=constraints,
-        enabled=enabled,
-    )
-    permission.object_types.add(*(ContentType.objects.get_for_model(model) for model in models))
-    if user is not None:
-        permission.users.add(user)
-    if group is not None:
-        permission.groups.add(group)
-    return permission
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

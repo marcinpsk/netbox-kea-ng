@@ -6,7 +6,7 @@ Registers periodic Kea→NetBox IPAM sync jobs using NetBox's built-in
 ``JobRunner`` / ``@system_job`` infrastructure so they run automatically via
 ``manage.py rqworker`` without any external scheduler.
 
-The sync interval comes from ``SyncConfig.interval_minutes``, which the Sync Jobs
+The sync interval comes from ``SyncConfig.interval_minutes``, which the Settings
 page edits. ``enqueue_once`` and each periodic run read it, so a saved value
 applies after the next scheduled run.
 

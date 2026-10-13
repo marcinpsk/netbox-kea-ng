@@ -53,7 +53,7 @@ from ..utilities import (
 from ._base import ConditionalLoginRequiredMixin, _client_settings_error, _KeaChangeMixin
 from .leases import _LEASES_TAB, _add_lease_journal, lease_sync_gates
 from .reservation_mutations import _confirmed_side_effects, _identity_from_request, _reservation_target_scope
-from .reservations import _RESERVATIONS_TAB
+from .reservations import _RESERVATIONS_TAB, _live_capabilities
 from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
@@ -438,8 +438,8 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
         return created, failure
 
     def _execute_import(self, request, instance, client, proposals):
-        capabilities = client.reservation_capabilities(self.dhcp_version)
-        if not capabilities.mutation_available:
+        capabilities = _live_capabilities(instance, self.dhcp_version)
+        if capabilities is None or not capabilities.mutation_available:
             raise RuntimeError("Reservation mutation commands are unavailable.")
         with MutationScope(instance, self.dhcp_version) as mutation_scope:
             catalogue = mutation_scope.snapshot

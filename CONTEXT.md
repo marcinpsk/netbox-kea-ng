@@ -149,7 +149,8 @@ _Avoid_: option-def, custom option
 
 **Server Configuration**:
 The complete declared DHCP configuration that one Server applies for one address family. It includes Subnets,
-Shared Networks, server-global DHCP Option values, and Option Definitions.
+Shared Networks, server-global DHCP Option values, Option Definitions, the Reservation identifier types, and the
+loaded hook libraries.
 _Avoid_: Raw config, config-get response
 
 **Server Configuration Snapshot**:

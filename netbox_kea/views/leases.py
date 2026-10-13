@@ -7,7 +7,7 @@ import threading
 import uuid
 from abc import ABCMeta
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import partial
 from typing import Any, Generic, Literal, TypeVar
@@ -91,7 +91,7 @@ from ._base import (
     _safe_return_url,
     _strip_empty_params,
 )
-from .notices import Notice, load_snapshot, notice
+from .notices import Notice, load_snapshot, notice, show_notices
 from .reservations import empty_text
 from .workspace import ServerFamilyMixin
 
@@ -266,11 +266,34 @@ class LeaseSearch:
     per_page: int = 250
 
 
+def _resolved_search(server: Server, family: Family, search: LeaseSearch) -> LeaseSearch | Notice:
+    """Resolve the CIDR of a Subnet search to its Subnet Identity through a live read of the Subnet Catalogue.
+
+    The read is live because the Lease query that follows is live. Return the Notice of the Catalogue when it is
+    unavailable, or when it shows no Subnet with the CIDR and its configuration facts are incomplete.
+
+    Raises:
+        LeaseQueryUnknownSubnet: If the complete, consistent configuration facts show no Subnet with the CIDR.
+
+    """
+    if search.by != constants.BY_SUBNET:
+        return search
+    catalogue = subnet_catalogue.for_verification(server, family)
+    catalogue_notice = notice(catalogue)
+    if catalogue_notice is not None and catalogue_notice.unavailable:
+        return catalogue_notice
+    subnet = catalogue.find_by_cidr(str(search.q.cidr))
+    if subnet is not None:
+        return replace(search, q=subnet.identity)
+    if catalogue_notice is not None and not catalogue.configuration_confirms_absence:
+        return catalogue_notice
+    raise LeaseQueryUnknownSubnet
+
+
 def _read_leases(client: KeaClient, family: Family, search: LeaseSearch, server_id: int) -> LeaseSnapshot:
-    """Run the Kea read of *search*; the client applies its state."""
+    """Run the Kea read of a resolved *search*; the client applies its state."""
     if search.by:
-        value = str(search.q.cidr) if search.by == constants.BY_SUBNET else search.q
-        return client.lease_search(family, search.by, value, state=search.state, server_id=server_id)
+        return client.lease_search(family, search.by, search.q, state=search.state, server_id=server_id)
     return client.lease_get_page(
         family, limit=search.per_page, cursor=search.cursor, state=search.state, server_id=server_id
     )
@@ -284,8 +307,11 @@ def fetch(server: Server, family: Family, search: LeaseSearch) -> LeaseSnapshot 
         ValueError: If the Server configuration or the search is not valid.
 
     """
+    resolved = _resolved_search(server, family, search)
+    if isinstance(resolved, Notice):
+        return resolved
     return load_snapshot(
-        server, "lease", lambda: _read_leases(server.get_client(version=family), family, search, server.pk)
+        server, "lease", lambda: _read_leases(server.get_client(version=family), family, resolved, server.pk)
     )
 
 
@@ -402,7 +428,12 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             messages.error(request, _client_settings_error(instance, exc))
             return redirect(request.path)
         try:
-            search = LeaseSearch(by, form.cleaned_data["q"], state_filter)
+            search = _resolved_search(
+                instance, self.dhcp_version, LeaseSearch(by, form.cleaned_data["q"], state_filter)
+            )
+            if isinstance(search, Notice):
+                show_notices(request, search)
+                return redirect(request.path)
             snapshot = _read_leases(client, self.dhcp_version, search, instance.pk)
         except LeaseQueryGuardError as exc:
             messages.warning(request, lease_query_guard_message(exc, state_filter))

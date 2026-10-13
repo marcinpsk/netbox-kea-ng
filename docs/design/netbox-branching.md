@@ -377,7 +377,7 @@ The sinks follow the design, with these facts from the code:
 | Model | Branchable | Reason |
 |---|---|---|
 | `Server` | No (resolver) | One row per pk: the Kea client and the Redis keys use main's current connection fields; sync never copies censored passwords into a branch |
-| `SyncConfig` | No (plain model) | Global singleton |
+| `SyncConfig` | No (resolver) | Global singleton, change-logged; the Settings page edits it |
 | `KeaDhcpLink` | Yes, unless configured exempt | Change-logged association that must recover with its imported target; ADR 0008 |
 | ADR 0006 ownership link | No (resolver) | `CASCADE` keys to IPAddress, Prefix, IPRange. A delete of a linked object in a branch reaches main's link table, and the `pre_delete` receiver refuses it. Merge and revert delete on main, where `CASCADE` removes the links. Design: `docs/design/ipam-ownership-branching.md` |
 

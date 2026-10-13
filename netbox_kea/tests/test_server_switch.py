@@ -15,7 +15,7 @@ from users.models import ObjectPermission
 from netbox_kea import subnet_catalogue
 from netbox_kea.models import Server
 
-from .kea_stub import _catalogue_responses_for_subnets, _res_page, _reservation_mutation_commands, stub_kea
+from .kea_stub import _catalogue_responses_for_subnets, _res_page, stub_kea
 from .utils import _make_db_server, _ViewTestBase
 
 
@@ -216,7 +216,6 @@ class TestServerSwitch(_ViewTestBase):
                 {
                     **_catalogue_responses_for_subnets(family, [{"id": 7, "subnet": cidr}]),
                     "reservation-get-page": _res_page([]),
-                    "list-commands": _reservation_mutation_commands(),
                 }
             ):
                 destination = self.client.get(response.url)

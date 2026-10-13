@@ -401,10 +401,8 @@ def _server_id_type(value):
     return value.get("type") if isinstance(value, dict) else value
 
 
-def _hr_identifiers(value):
+def _hr_identifiers(value: tuple[str, ...]) -> list[str] | None:
     """Keep only host-reservation identifier types the plugin's choice set knows."""
-    if not isinstance(value, list):
-        return None
     valid = {"circuit-id", "hw-address", "duid", "client-id"}
     return [x for x in value if x in valid] or None
 
@@ -462,7 +460,6 @@ _SUBNET_FIELDS: tuple[tuple[str, str, object], ...] = (
 _SERVER_FIELDS: tuple[tuple[str, str, object], ...] = (
     *_COMMON_FIELDS,
     ("decline-probation-period", "decline_probation_period", None),
-    ("host-reservation-identifiers", "host_reservation_identifiers", _hr_identifiers),
     ("echo-client-id", "echo_client_id", None),
     ("relay-supplied-options", "relay_supplied_options", None),
     ("server-id", "server_id", _server_id_type),
@@ -485,7 +482,21 @@ def _transform_value(transform, raw, kea_key: str, summary: ImportSummary):
         return None
 
 
-def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary, *, primary: bool) -> None:
+def _server_values(config: ServerConfigIntent, model_fields: set[str], summary: ImportSummary) -> dict:
+    """Return each value that *config* sets for a field in *model_fields* of ``DHCPServer``, by field name."""
+    settings = config.global_settings
+    values = {
+        attr: _transform_value(transform, settings[kea_key], kea_key, summary)
+        for kea_key, attr, transform in _SERVER_FIELDS
+        if attr in model_fields and kea_key in settings
+    }
+    identifiers = config.host_reservation_identifiers
+    if "host_reservation_identifiers" in model_fields and identifiers is not None:
+        values["host_reservation_identifiers"] = _hr_identifiers(identifiers)
+    return values
+
+
+def _apply_global_settings(dhcp_server, config: ServerConfigIntent, summary: ImportSummary, *, primary: bool) -> None:
     """Populate ``DHCPServer`` global tuning fields from a Kea config block.
 
     netbox_dhcp has a single ``DHCPServer`` row spanning both protocols, so one
@@ -499,14 +510,9 @@ def _apply_global_settings(dhcp_server, settings: dict, summary: ImportSummary, 
     ``preferred-lifetime``) on a dual-stack server is not re-synced, since the
     secondary family is fill-only for an already-set field.
     """
-    if not settings:
-        return
     model_fields = {f.name for f in dhcp_server._meta.get_fields()}
     changed: dict = {}
-    for kea_key, attr, transform in _SERVER_FIELDS:
-        if attr not in model_fields or kea_key not in settings:
-            continue
-        value = _transform_value(transform, settings[kea_key], kea_key, summary)
+    for attr, value in _server_values(config, model_fields, summary).items():
         if _is_unset(value):
             continue
         current = getattr(dhcp_server, attr, None)
@@ -1093,7 +1099,7 @@ def import_server_config(
     # Global (server-level) tuning fields + options + client classes. DHCPv4 (or the
     # only enabled family) is authoritative for the shared, single DHCPServer row.
     primary = config.family == 4 or not server.dhcp4
-    _apply_global_settings(dhcp_server, config.global_settings, summary, primary=primary)
+    _apply_global_settings(dhcp_server, config, summary, primary=primary)
     upsert_options(dhcp_server, config.global_options, config.family, dhcp_server, custom_defs, summary)
     for cc_intent in config.client_classes:
         upsert_client_class(server, dhcp_server, cc_intent, custom_defs, summary)

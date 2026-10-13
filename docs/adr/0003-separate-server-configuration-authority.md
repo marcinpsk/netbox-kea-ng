@@ -15,6 +15,11 @@ _Amended 2026-09-27 by ADR 0005, which gives Configuration Changes to a `config_
 _Amended 2026-10-09 (#313): the Presentation rule covers every Snapshot kind and lives in one function._
 _Amended 2026-10-09 (#319): `SubnetSettings` and the Kea key of each scalar field live in `subnet_settings`. No module
 re-exports `SubnetSettings`._
+_Amended 2026-10-12 (#38): the Snapshot also carries `host-reservation-identifiers` and the `hooks-libraries` paths.
+Reservation capabilities come from it, and `list-commands` is not sent. `for_import` serves the DHCP plugin import.
+A Lease search by Subnet CIDR finds the Subnet ID in a live read of the Subnet Catalogue
+(`subnet_catalogue.for_verification`), because the Lease query is live. The Reservation facts have their own
+diagnostics, so an invalid one adds no Notice to the other pages._
 
 ## Context
 
@@ -51,12 +56,15 @@ Two purpose-named reads. There is no freshness argument. ADR 0001 rejected mode 
 ```text
 display(server, family)           -> ServerConfigurationSnapshot
 for_verification(server, family)  -> ServerConfigurationSnapshot
+for_import(server, family)        -> ImportRead | None
 invalidate(server, family)        -> None
 ```
 
 - `display` serves interactive presentation from the cache.
 - `for_verification` is live and uncached. The Subnet Catalogue uses it for identity reconciliation, for
   `for_synchronization`, and inside a mutation scope.
+- `for_import` is live and uncached. It returns the Snapshot and the raw `Dhcp4` or `Dhcp6` block of one read,
+  because `mappers/kea_to_dhcp.py` keeps its own parse (see Scope). It returns None when Kea could not be read.
 - `invalidate` rotates the cache generation. Both modules key their cache entries on that generation, so one
   rotation clears both. `Server.get_client` wires `on_config_change` to it.
 
