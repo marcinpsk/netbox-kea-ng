@@ -340,7 +340,7 @@ TRAVERSAL_DIAGNOSTIC_CODES: frozenset[str] = frozenset(
     {RESERVATION_PAGE_FETCH_FAILED, RESERVATION_PAGINATION_STALLED, RESERVATION_PAGE_LIMIT_REACHED}
 )
 #: The traversal diagnostics of a walk that an error stopped. A walk stopped at its configured limit is not one.
-_TRAVERSAL_ERROR_CODES: frozenset[str] = frozenset({RESERVATION_PAGE_FETCH_FAILED, RESERVATION_PAGINATION_STALLED})
+_TRAVERSAL_ERROR_CODES: frozenset[str] = TRAVERSAL_DIAGNOSTIC_CODES - {RESERVATION_PAGE_LIMIT_REACHED}
 
 
 @dataclass(frozen=True)
