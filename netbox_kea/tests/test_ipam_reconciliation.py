@@ -17,6 +17,7 @@ from core.exceptions import JobFailed
 from core.models import Job
 from django.db import connection, connections
 from django.test import TestCase, TransactionTestCase
+from django.utils import timezone
 from ipam.models import VRF, Prefix
 from ipam.models import IPAddress as NbIP
 
@@ -1818,7 +1819,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         with stub_kea(_catalogue_responses_for_subnets(6, [])):
             catalogue = subnet_catalogue.for_synchronization(owner, 6)
         observation = ReservationObservation(
-            ReservationSnapshot(6, (), (), True, None), next_confirmation_number(), catalogue
+            ReservationSnapshot(6, (), (), True, None, timezone.now()), next_confirmation_number(), catalogue
         )
         cascaded = threading.Event()
         resume_delete = threading.Event()
@@ -1905,7 +1906,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         with stub_kea(_catalogue_responses_for_subnets(6, [])):
             catalogue = subnet_catalogue.for_synchronization(owner, 6)
         observation = ReservationObservation(
-            ReservationSnapshot(6, (), (), True, None), next_confirmation_number(), catalogue
+            ReservationSnapshot(6, (), (), True, None, timezone.now()), next_confirmation_number(), catalogue
         )
         later_row = threading.Event()
         resume_import = threading.Event()

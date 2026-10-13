@@ -9,6 +9,7 @@ import concurrent.futures
 import ipaddress
 import logging
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlencode
 
@@ -18,6 +19,7 @@ from django.core.exceptions import BadRequest
 from django.db import DatabaseError
 from django.http import HttpRequest, HttpResponse
 from django.urls import NoReverseMatch, reverse
+from django.utils import timezone
 from netbox.views import generic
 from utilities.views import register_model_view
 
@@ -339,20 +341,26 @@ class ReservationRead:
     catalogue: CatalogueSnapshot | None = None
 
 
-def _empty_reservation_snapshot(version: Family) -> ReservationSnapshot:
-    return ReservationSnapshot(family=version, records=(), diagnostics=(), complete=False, next_cursor=None)
+def _empty_reservation_snapshot(version: Family, read_started: datetime) -> ReservationSnapshot:
+    return ReservationSnapshot(
+        family=version, records=(), diagnostics=(), complete=False, next_cursor=None, read_started=read_started
+    )
 
 
 def _read_reservations(server: Server, version: Family, query: ReservationQuery) -> ReservationSnapshot:
-    """Read the complete Snapshot, a browse page, or scan a bounded batch until a filtered page matches."""
+    """Read the complete Snapshot, a browse page, or scan a bounded batch until a filtered page matches.
+
+    A page has the time at which this call started, also when a search reads more than one page.
+    """
     q, subnet_id, scope, cursor = query.q, query.subnet_id, query.scope, query.cursor
     if query.full:
         catalogue = subnet_catalogue(server, version)
         return server.get_client(version=version).reservation_snapshot(
             version, catalogue, page_size=_RESERVATION_PAGE_SIZE
         )
+    started = timezone.now()
     if subnet_id is not None and subnet_id > 0 and scope == "global":
-        return replace(_empty_reservation_snapshot(version), complete=True)
+        return replace(_empty_reservation_snapshot(version, started), complete=True)
     catalogue = subnet_catalogue(server, version)
     read_subnet_id = 0 if scope == "global" else subnet_id
     if (
@@ -361,11 +369,12 @@ def _read_reservations(server: Server, version: Family, query: ReservationQuery)
         and not isinstance(catalogue.find_by_id(read_subnet_id), VerifiedSubnet)
     ):
         if catalogue.identity_complete and catalogue.consistent:
-            return replace(_empty_reservation_snapshot(version), complete=True)
+            return replace(_empty_reservation_snapshot(version, started), complete=True)
         read_subnet_id = None
     client = server.get_client(version=version)
     if not query.filtered:
-        return client.reservation_page(version, catalogue, cursor=cursor, limit=_RESERVATION_PAGE_SIZE)
+        page = client.reservation_page(version, catalogue, cursor=cursor, limit=_RESERVATION_PAGE_SIZE)
+        return replace(page, read_started=started)
     diagnostics = []
     complete = True
     for page_index in range(_RESERVATION_SEARCH_PAGE_LIMIT):
@@ -390,7 +399,12 @@ def _read_reservations(server: Server, version: Family, query: ReservationQuery)
                 )
             )
             return ReservationSnapshot(
-                family=version, records=(), diagnostics=tuple(diagnostics), complete=False, next_cursor=cursor
+                family=version,
+                records=(),
+                diagnostics=tuple(diagnostics),
+                complete=False,
+                next_cursor=cursor,
+                read_started=started,
             )
         matches = tuple(record for record in page.records if _reservation_matches(record, q, subnet_id, scope))
         diagnostics.extend(page.diagnostics)
@@ -411,7 +425,7 @@ def _read_reservations(server: Server, version: Family, query: ReservationQuery)
             )
         if matches or cursor is None or page_index + 1 == _RESERVATION_SEARCH_PAGE_LIMIT:
             break
-    return replace(page, records=matches, diagnostics=tuple(diagnostics), complete=complete)
+    return replace(page, records=matches, diagnostics=tuple(diagnostics), complete=complete, read_started=started)
 
 
 def _display_capabilities(server: Server, version: Family) -> ReservationCapabilities | None:
@@ -626,7 +640,7 @@ def _reservation_list_context(
     except ValueError:
         logger.exception("Unexpected error fetching DHCPv%s Reservations", version)
         messages.error(request, HEADLINES["reservation"])
-        read = ReservationRead(query, _empty_reservation_snapshot(version), capabilities=None)
+        read = ReservationRead(query, _empty_reservation_snapshot(version, timezone.now()), capabilities=None)
     search_form.offer_subnets(forms.subnet_id_options(read.catalogue.subnet_choices if read.catalogue else ()))
     presented = present(request.user, server, read, return_url=_safe_return_url(request, request.get_full_path()))
     # A missing host_cmds hook has its own panel, so one cause shows one banner.

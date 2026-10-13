@@ -1096,6 +1096,7 @@ class KeaClient:
         ):
             raise ValueError("max_raw_pages must be a positive integer.")
         source_index, from_index = _decode_reservation_cursor(cursor)
+        started = _now()
         hosts: list[dict[str, Any]] = []
         next_source, next_from = source_index, from_index
         seen_cursors = {(next_source, next_from)}
@@ -1134,7 +1135,7 @@ class KeaClient:
                 next_cursor = _encode_reservation_cursor(next_source, next_from)
                 break
             seen_cursors.add(candidate)
-        return _parse_reservation_page(hosts, version, catalogue, next_cursor)
+        return _parse_reservation_page(hosts, version, catalogue, next_cursor, read_started=started)
 
     def reservation_by_identity(
         self,
@@ -1252,9 +1253,10 @@ class KeaClient:
             raise ValueError(f"version must be 4 or 6, got {version!r}")
         if not isinstance(hostname, str) or not hostname:
             raise ValueError("hostname must be a non-empty string.")
+        started = _now()
         reply = self._one_command(KeaCommand.RESERVATION_GET_BY_HOSTNAME, version, {"hostname": hostname}, (0, 3))
         if reply["result"] == 3:
-            return _parse_reservation_page([], version, catalogue, None)
+            return _parse_reservation_page([], version, catalogue, None, read_started=started)
         arguments = reply.get("arguments")
         if not isinstance(arguments, dict):
             raise RuntimeError("reservation-get-by-hostname returned malformed arguments.")
@@ -1263,6 +1265,7 @@ class KeaClient:
             version,
             catalogue,
             None,
+            read_started=started,
             expected_hostname=hostname,
         )
 
@@ -1281,6 +1284,7 @@ class KeaClient:
         """
         if version not in (4, 6):
             raise ValueError(f"version must be 4 or 6, got {version!r}")
+        started = _now()
         records: list[Reservation] = []
         diagnostics: list[ReservationDiagnostic] = []
         cursor = None
@@ -1337,6 +1341,7 @@ class KeaClient:
             diagnostics=tuple(diagnostics),
             complete=not diagnostics,
             next_cursor=None,
+            read_started=started,
         )
 
     def _reservation_mutation_command(self, command: KeaCommand, version: Family, arguments: dict[str, Any]) -> None:
