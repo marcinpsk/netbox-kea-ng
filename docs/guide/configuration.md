@@ -33,6 +33,10 @@ The DHCP plugin integration runs for a Server only when the NetBox DHCP plugin i
 DHCP plugin import before it removes an adopted object. Objects that DHCP plugin records refer to stay protected from
 stale cleanup while the switch is off.
 
+Turning the switch off does not stop an import that already runs. While the switch is off, the sync can remove an
+adopted object that would otherwise wait for an import, and turning the switch on again does not bring it back. An
+import receipt that a Server already has stays valid when the switch goes on again, so the Server needs no new import.
+
 Subnet lease searches use `stat-lease4-get` or `stat-lease6-get` before an
 unpaged lease command. Kea statistics can reject a query that is already too
 large. They cannot prove that an unqualified query is below the limit because
