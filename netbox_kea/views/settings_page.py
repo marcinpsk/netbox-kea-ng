@@ -42,6 +42,8 @@ class SettingsSection:
     template_name: str = "netbox_kea/inc/settings_fields.html"
     #: False hides the section, its menu item and its save, for a setting whose integration is not installed.
     available: Callable[[], bool] = _always
+    #: One sentence under the heading, for a fact about the whole section rather than one field.
+    description: str = ""
 
     def _permission(self, action: str) -> str:
         options = self.model._meta
@@ -71,7 +73,12 @@ class SettingsSection:
 SECTIONS = (
     SettingsSection("sync", SyncConfig, "Sync", template_name="netbox_kea/inc/settings_sync.html"),
     SettingsSection("kea-client", KeaClientConfig, "Kea Client"),
-    SettingsSection("display-cache", DisplayCacheConfig, "Display Cache"),
+    SettingsSection(
+        "display-cache",
+        DisplayCacheConfig,
+        "Display Cache",
+        description="A save of this section makes every cached entry unused, also when no value changes.",
+    ),
     SettingsSection("dhcp-integration", DhcpIntegrationConfig, "DHCP Plugin", available=_dhcp_plugin_installed),
 )
 _BY_SLUG = {section.slug: section for section in SECTIONS}

@@ -542,7 +542,7 @@ class DisplayCacheConfig(SettingsSingleton):
         default=300,
         help_text=(
             "How long a page shows a cached Server configuration and Subnet list (seconds)."
-            " 0 turns off caching for them. A save of this section empties the display cache."
+            " 0 turns off caching for them."
         ),
     )
     reservations_ttl: models.PositiveIntegerField = models.PositiveIntegerField(

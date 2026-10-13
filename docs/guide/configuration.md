@@ -31,8 +31,8 @@ A section shows to a user with the view permission of its model (`netbox_kea.vie
 `netbox_kea.view_keaclientconfig`, `netbox_kea.view_displaycacheconfig`, `netbox_kea.view_dhcpintegrationconfig`). A save needs the change permission of the model too. Without it, the section
 shows the values read-only. Each save writes a change log record. While a branch is active, the page refuses a save.
 
-A save of the Display Cache section empties the display cache, also when no value changes. A change that the plugin
-sends to Kea empties the cached entries that the change affects at once. A change from outside this NetBox, such as
+A save of the Display Cache section makes every cached entry unused, also when no value changes. A change that the
+plugin sends to Kea makes the cached entries that the change affects unused at once. A change from outside this NetBox, such as
 kea-shell or an HA partner, shows when the TTL of the entry ends.
 
 The DHCP plugin integration runs for a Server only when the NetBox DHCP plugin is installed, the Server has

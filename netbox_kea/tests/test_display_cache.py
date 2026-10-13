@@ -115,7 +115,7 @@ class RecordsGenerationTest(TestCase):
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)
 class DisplayCacheSettingsTest(TestCase):
-    """The TTL of each display read comes from the DisplayCacheConfig row, and a save of the row empties the cache."""
+    """Each TTL comes from the DisplayCacheConfig row, and a save of the row makes every entry unused."""
 
     def setUp(self):
         self.server = _make_db_server()
@@ -217,7 +217,7 @@ class DisplayCacheSettingsTest(TestCase):
 
 
 class DisplayCacheSettingsPageTest(_ViewTestBase):
-    """A save of the Display Cache section on the Settings page empties the display cache."""
+    """A save of the Display Cache section on the Settings page makes every cached entry unused."""
 
     def test_a_save_of_the_section_makes_a_warm_entry_miss(self):
         responses = _catalogue_responses_for_subnets(4, [{"id": 1, "subnet": "198.18.1.0/24"}])
