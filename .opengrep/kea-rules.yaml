@@ -1183,3 +1183,32 @@ rules:
         - "**/views/**"
         - "**/subnet_catalogue.py"
     pattern: not $CATALOGUE.configuration_complete
+
+  - id: kea-cache-outside-display-cache
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Reach the Django cache through netbox_kea/display_cache.py only. It owns every key, the configuration and
+      records generations, the TTLs of the Display Cache settings and the admission rule (ADR 0009). A key built in
+      another module has none of the generations, so a Kea write or a settings save cannot make it unreachable.
+      Limits: the rule sees django.core.cache and the private names of display_cache only; another cache library
+      is not seen.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/**"
+        - "kea-cache-outside-display-cache.py"
+      exclude:
+        - "netbox_kea/display_cache.py"
+        - "**/tests/**"
+    pattern-either:
+      - pattern: django.core.cache.cache
+      - pattern: django.core.cache.caches
+      - pattern: from django.core.cache import $NAME
+      - patterns:
+          - pattern: netbox_kea.display_cache.$NAME
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^_
