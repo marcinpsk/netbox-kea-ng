@@ -574,6 +574,23 @@ class StatusAndUtilizationCacheTest(_ViewTestBase):
         self.assertContains(second, "25%")
         self.assertNotRegex(second.content.decode(), r"Read \d+ s ago")
 
+    def test_a_subnets_export_reads_utilization_live(self):
+        other = _make_db_server(name="test-kea-other", ca_url="https://kea-other.example.com")
+        pages = (
+            (reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]), {}, 1),
+            (reverse("plugins:netbox_kea:combined_subnets4"), {"server": [self.server.pk, other.pk]}, 2),
+        )
+        for url, query, servers in pages:
+            with self.subTest(url=url):
+                with stub_kea({**_catalogue_responses(4, 20, _CIDR), "stat-lease4-get": _stats(25)}):
+                    self.assertContains(self.client.get(url, query), "25%")
+
+                with stub_kea({**_catalogue_responses(4, 20, _CIDR), "stat-lease4-get": _stats(50)}) as kea:
+                    exported = self.client.get(url, {**query, "export": ""})
+
+                self.assertEqual(kea.commands().count("stat-lease4-get"), servers)
+                self.assertIn("50%", exported.content.decode())
+
     def test_the_status_badge_is_online_for_any_successful_version_reply(self):
         url = reverse("plugins:netbox_kea:combined_server_status_badge", args=[self.server.pk])
         for reply in ({"result": 0}, {"result": 0, "arguments": {"extended": 3}}, {"result": 0, "arguments": []}):

@@ -300,11 +300,14 @@ def daemon_version(client: LazyClient) -> DaemonVersion:
     )
 
 
-def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, version: Family) -> None:
-    """Add available utilization measurements to Subnet presentation rows, through the display cache."""
+def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, version: Family, *, live: bool) -> None:
+    """Add available utilization measurements to Subnet presentation rows, through the display cache.
+
+    With *live*, for an export, it reads Kea live and replaces the entry.
+    """
     try:
         utilization = display_cache.cached(
-            server, version, "utilization", lambda: _read_utilization(server, version)
+            server, version, "utilization", lambda: _read_utilization(server, version), refresh=live
         ).counts
     except KeaException as exc:
         if exc.unsupported_command:
