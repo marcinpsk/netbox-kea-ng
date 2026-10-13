@@ -31,8 +31,8 @@ toggles once, when it creates the Sync Configuration. After that, the **Settings
 and a later change to these settings in `PLUGINS_CONFIG` has no effect.
 
 The **Settings** page shows the Sync Configuration to a user with the `netbox_kea.view_syncconfig` permission.
-A save needs `netbox_kea.change_syncconfig`. Without it, the page shows the values read-only. Each save writes a
-change log record. While a branch is active, the page refuses a save.
+A save needs both `netbox_kea.view_syncconfig` and `netbox_kea.change_syncconfig`. Without the change permission,
+the page shows the values read-only. Each save writes a change log record. While a branch is active, the page refuses a save.
 
 Subnet lease searches use `stat-lease4-get` or `stat-lease6-get` before an
 unpaged lease command. Kea statistics can reject a query that is already too
