@@ -3,8 +3,8 @@
 """Views for the optional "Sync to DHCP plugin" integration (import + drift, v1).
 
 These are inert unless ``dhcp_plugin.runs_for`` allows the integration for the server:
-the per-server tab hides itself and the sync action refuses.  All reads against Kea are
-read-only (``config-get``).
+the per-server tab hides itself, the page reads no Kea and shows why, and the sync action
+refuses.  All reads against Kea are read-only (``config-get``).
 """
 
 from __future__ import annotations
@@ -231,22 +231,22 @@ class ServerDhcpPluginView(generic.ObjectView):
     template_name = "netbox_kea/server_dhcp_plugin.html"
 
     def get_extra_context(self, request, instance):
-        """Return drift context for the template (live, read-only Kea read)."""
+        """Return drift context for the template (live, read-only Kea read). A refused integration reads no Kea."""
         from ..dhcp_mapping_lifecycle import MappingUnavailable
 
-        available = dhcp_plugin.is_available()
+        refusal = dhcp_plugin.integration_refusal(instance)
         unavailable = None
         drift = None
-        if available:
+        if not refusal:
             try:
                 drift = compute_drift(instance)
             except MappingUnavailable as error:
                 unavailable = str(error)
         return {
-            "plugin_available": available,
+            "integration_refusal": refusal,
             "mapping_unavailable": unavailable,
             "drift": drift,
-            "sync_refusal": dhcp_plugin.integration_refusal(instance) or _sync_refusal(request.user, instance),
+            "sync_refusal": _sync_refusal(request.user, instance),
             **sync_nav_context(request, instance, self, "dhcp_plugin"),
         }
 

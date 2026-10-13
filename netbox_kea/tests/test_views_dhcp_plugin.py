@@ -24,6 +24,7 @@ from django.utils import timezone
 
 from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.kea import KeaException
+from netbox_kea.models import Server
 from netbox_kea.views import dhcp_plugin_sync as dps
 
 from .kea_stub import _res_page, _subnet_list, stub_kea
@@ -187,19 +188,30 @@ class SyncNowGuardTest(TestCase):
         self.assertIn("DHCP Kea > Settings", str(message))
         self.assertEqual(kea.commands(), [])
 
-    @with_dhcp_integration_config(enabled=False)
-    def test_the_page_offers_no_sync_button_when_the_global_switch_is_off(self):
+    def _refused_page(self) -> tuple[BeautifulSoup, list[str]]:
+        """GET the DHCP Plugin page with the plugin installed; return the page and the Kea commands it sent."""
         page_url = reverse("plugins:netbox_kea:server_dhcp_plugin", args=[self.server.pk])
-        with (
-            patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True),
-            stub_kea(_sync_responses({4: {"subnet4": []}, 6: {"subnet6": []}})),
-        ):
+        with patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True), stub_kea({}) as kea:
             resp = self.client.get(page_url)
+        self.assertEqual(resp.status_code, 200)
+        return BeautifulSoup(resp.content, "html.parser"), kea.commands()
 
-        page = BeautifulSoup(resp.content, "html.parser")
+    def _assert_refused(self, page: BeautifulSoup, commands: list[str], reason: str) -> None:
+        self.assertEqual(commands, [])
         self.assertIsNone(page.select_one(f'form[action="{self.url}"]'))
-        (refused,) = [span for span in page.select("span[title]") if "Sync to DHCP plugin now" in span.get_text()]
-        self.assertIn("DHCP Kea > Settings", refused["title"])
+        self.assertNotIn("Sync to DHCP plugin now", page.get_text())
+        self.assertNotIn("Drift", page.get_text())
+        (alert,) = page.select(".page-body .alert-warning")
+        self.assertIn(reason, alert.get_text())
+
+    @with_dhcp_integration_config(enabled=False)
+    def test_the_page_reads_no_kea_and_shows_the_refusal_when_the_global_switch_is_off(self):
+        self._assert_refused(*self._refused_page(), "DHCP Kea > Settings")
+
+    def test_the_page_reads_no_kea_and_shows_the_refusal_when_the_server_opts_out(self):
+        Server.objects.filter(pk=self.server.pk).update(sync_dhcp_plugin_enabled=False)
+
+        self._assert_refused(*self._refused_page(), "Enable 'Sync to DHCP plugin' on this server first.")
 
 
 class SyncNowEndToEndTest(TestCase):
