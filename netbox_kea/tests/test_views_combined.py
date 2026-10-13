@@ -33,7 +33,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _make_db_server, _ViewTestBase, with_kea_client_config
+from .utils import _make_db_server, _ViewTestBase, with_display_cache_config, with_kea_client_config
 
 # ---------------------------------------------------------------------------
 # Lease Server chooser
@@ -960,6 +960,25 @@ class TestCombinedReservationFanOut(_ViewTestBase):
 
         # A worker that read the row itself would open a connection and miss the uncommitted test value.
         self.assertEqual(read.results, [(self.server, (7, 250, True))])
+
+    @with_display_cache_config(configuration_ttl=0)
+    def test_a_worker_reads_the_display_cache_ttl_from_the_request_read_of_the_settings_row(self):
+        from django.db import connection
+
+        from netbox_kea import server_configuration
+        from netbox_kea.views.fan_out import fan_out
+
+        def fetch(server):
+            for _ in range(2):
+                server_configuration.display(server, 4)
+            return connection.connection is None
+
+        with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": {}}}}) as kea:
+            read = fan_out([self.server], "configuration", fetch)
+
+        # A worker that read the row itself would open a connection and cache with the committed TTL.
+        self.assertEqual(read.results, [(self.server, True)])
+        self.assertEqual(kea.commands(), ["config-get", "config-get"])
 
     def test_a_server_that_cannot_be_reached_gets_no_capability_read(self):
         # A second read of an unreachable Server only adds its timeout to the page.

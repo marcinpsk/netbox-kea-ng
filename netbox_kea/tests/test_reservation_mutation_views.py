@@ -11,7 +11,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 from django.utils.html import escape
 
-from netbox_kea import constants, server_configuration
+from netbox_kea import constants, display_cache, server_configuration
 from netbox_kea.subnet_catalogue import display
 
 from .kea_stub import _host_cmds_hooks, _res_get, _res_page, _subnet_list, queued, stub_kea
@@ -56,7 +56,7 @@ class TestReservationMutationViews(_ViewTestBase):
         ):
             for action in ("edit", "delete"):
                 with self.subTest(version=version, action=action):
-                    server_configuration.invalidate(self.server, version)
+                    display_cache.rotate_configuration(self.server, version)
                     responses = _mutation_responses(version, 20, cidr, [identifier_type])
                     responses["reservation-get"] = _res_get({"subnet-id": 20, identifier_type: identifier})
                     url = reverse(f"plugins:netbox_kea:server_reservation{version}_{action}", args=[self.server.pk, 20])
@@ -77,7 +77,7 @@ class TestReservationMutationViews(_ViewTestBase):
         ):
             for action in ("edit", "delete"):
                 with self.subTest(version=version, action=action):
-                    server_configuration.invalidate(self.server, version)
+                    display_cache.rotate_configuration(self.server, version)
                     current = {"subnet-id": 20, identifier_type: identifier, "hostname": "old.example.invalid"}
                     responses = _mutation_responses(version, 20, cidr, [identifier_type])
                     url = reverse(f"plugins:netbox_kea:server_reservation{version}_{action}", args=[self.server.pk, 20])

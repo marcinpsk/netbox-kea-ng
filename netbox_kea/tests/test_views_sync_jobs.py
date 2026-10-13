@@ -972,7 +972,7 @@ class TestDhcpIntegrationSettingsView(TestCase):
         with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True):
             self.assertIn("dhcp-integration", self._slugs())
         with patch.object(dhcp_plugin, "is_available", return_value=False, autospec=True):
-            self.assertEqual(self._slugs(), ["sync", "kea-client"])
+            self.assertEqual(self._slugs(), ["sync", "kea-client", "display-cache"])
             response = self.client.post(self.url, _section_data("dhcp-integration", {"enabled": False}))
 
         self.assertEqual(response.status_code, 400)
@@ -985,9 +985,9 @@ class TestDhcpIntegrationSettingsView(TestCase):
             return [item.link_text for item in navigation._settings_items()]
 
         with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True):
-            self.assertEqual(menu_texts(), ["Sync", "Kea Client", "DHCP Plugin"])
+            self.assertEqual(menu_texts(), ["Sync", "Kea Client", "Display Cache", "DHCP Plugin"])
         with patch.object(dhcp_plugin, "is_available", return_value=False, autospec=True):
-            self.assertEqual(menu_texts(), ["Sync", "Kea Client"])
+            self.assertEqual(menu_texts(), ["Sync", "Kea Client", "Display Cache"])
 
 
 class TestSettingsSectionsCoverEverySingleton(SimpleTestCase):

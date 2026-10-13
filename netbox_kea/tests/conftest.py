@@ -26,7 +26,6 @@ from unittest.mock import patch
 import pytest
 from django.db.models.signals import post_migrate
 
-from netbox_kea import constants
 from netbox_kea.tests.parallel import MAX_PARALLEL_WORKERS, isolated_test_database_name
 
 logger = logging.getLogger(__name__)
@@ -238,30 +237,25 @@ def django_db_setup(request, django_test_environment, django_db_blocker):
             teardown_databases(db_cfg, verbosity=verbosity)
 
 
-#: The plugin's own cache key prefixes. Each is keyed on a Server ID.
-_PLUGIN_CACHE_PATTERNS = (
-    f"{constants.SERVER_CONFIGURATION_CACHE_PREFIX}*",
-    f"{constants.SUBNET_CATALOGUE_CACHE_PREFIX}*",
-)
-
-
 def _drop_plugin_cache_entries() -> None:
-    """Delete every cache entry the plugin owns, for any Server ID.
+    """Delete every cache entry the plugin owns, for any Server ID: the keys of the display cache module.
 
-    Scoped to the plugin's prefixes so NetBox's own cached state is untouched. Uses
+    Scoped to the plugin's prefix so NetBox's own cached state is untouched. Uses
     ``delete_pattern`` from django_redis, which NetBox requires; a backend without it
     fails loudly here rather than silently skipping the cleanup and letting the
     cross-test leak return.
     """
     from django.core.cache import cache
 
+    # Imported here: this file loads before Django is set up, and the module imports the models.
+    from netbox_kea.display_cache import KEY_PREFIX
+
+    pattern = f"{KEY_PREFIX}*"
     if not hasattr(cache, "delete_pattern"):
         raise RuntimeError(
-            "The cache backend has no delete_pattern(); netbox_kea test cache hygiene "
-            f"needs it to clear {_PLUGIN_CACHE_PATTERNS}."
+            f"The cache backend has no delete_pattern(); netbox_kea test cache hygiene needs it to clear {pattern}."
         )
-    for pattern in _PLUGIN_CACHE_PATTERNS:
-        cache.delete_pattern(pattern)
+    cache.delete_pattern(pattern)
 
 
 @pytest.fixture(autouse=True)

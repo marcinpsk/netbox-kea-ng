@@ -18,7 +18,7 @@ from django.shortcuts import redirect, render
 from django.views import View
 
 from ..integrations import dhcp_plugin
-from ..models import DhcpIntegrationConfig, KeaClientConfig, SettingsSingleton, SyncConfig
+from ..models import DhcpIntegrationConfig, DisplayCacheConfig, KeaClientConfig, SettingsSingleton, SyncConfig
 
 
 def _always() -> bool:
@@ -71,6 +71,7 @@ class SettingsSection:
 SECTIONS = (
     SettingsSection("sync", SyncConfig, "Sync", template_name="netbox_kea/inc/settings_sync.html"),
     SettingsSection("kea-client", KeaClientConfig, "Kea Client"),
+    SettingsSection("display-cache", DisplayCacheConfig, "Display Cache"),
     SettingsSection("dhcp-integration", DhcpIntegrationConfig, "DHCP Plugin", available=_dhcp_plugin_installed),
 )
 _BY_SLUG = {section.slug: section for section in SECTIONS}

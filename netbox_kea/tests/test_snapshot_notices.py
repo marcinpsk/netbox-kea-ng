@@ -9,7 +9,7 @@ from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
 from django.urls import reverse
 
-from netbox_kea import server_configuration, subnet_catalogue
+from netbox_kea import display_cache, server_configuration, subnet_catalogue
 from netbox_kea.kea import LeaseQueryPreflightUnavailable
 from netbox_kea.server_configuration import Diagnostic
 from netbox_kea.views.notices import HEADLINES, Notice, ServerNotices, load_snapshot, notice, show_notices
@@ -58,7 +58,7 @@ class TestConfigurationSnapshotNotices(_ViewTestBase):
 
     def _catalogue(self, responses: dict):
         # The display read caches a usable Catalogue, so each case starts a new cache generation.
-        server_configuration.invalidate(self.server, 4)
+        display_cache.rotate_configuration(self.server, 4)
         with stub_kea(responses):
             return subnet_catalogue.display(self.server, 4)
 
@@ -265,7 +265,7 @@ class TestLeaseSearchFormNotice(_ViewTestBase):
                 self.assertContains(response, f"<li>{_IDENTITY_UNAVAILABLE}</li>", html=True)
 
     def test_an_incomplete_catalogue_is_an_inline_warning_without_a_headline(self):
-        server_configuration.invalidate(self.server, 4)
+        display_cache.rotate_configuration(self.server, 4)
         with stub_kea(_INCOMPLETE):
             response = self.client.get(reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]))
         self.assertContains(response, 'class="alert alert-warning py-2 px-3 mb-3 small"', count=1)
@@ -386,7 +386,7 @@ class TestNoticeGapsFromReview(_ViewTestBase):
     def test_a_subnets_table_refresh_shows_the_notice_out_of_band_and_queues_no_message(self):
         # NetBox renders htmx/table.html without messages, so a queued one would surface on the next page.
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        server_configuration.invalidate(self.server, 4)
+        display_cache.rotate_configuration(self.server, 4)
         with stub_kea(_UNAVAILABLE):
             failed = self.client.get(url, HTTP_HX_REQUEST="true")
         self.assertEqual(failed.status_code, 200)
@@ -395,13 +395,13 @@ class TestNoticeGapsFromReview(_ViewTestBase):
         self.assertContains(failed, f"<strong>{HEADLINES['catalogue']}</strong>", html=True)
         self.assertContains(failed, f"<li>{_IDENTITY_UNAVAILABLE}</li>", html=True)
         # A later refresh with a complete Catalogue clears the slot.
-        server_configuration.invalidate(self.server, 4)
+        display_cache.rotate_configuration(self.server, 4)
         with stub_kea({**_COMPLETE, "stat-lease4-get": {"result": 2, "text": "unknown command"}}):
             recovered = self.client.get(url, HTTP_HX_REQUEST="true")
         self.assertContains(recovered, '<div id="subnet-notice" hx-swap-oob="true"></div>', html=True)
 
     def test_the_subnets_page_has_an_empty_notice_slot_and_shows_the_notice_as_messages(self):
-        server_configuration.invalidate(self.server, 4)
+        display_cache.rotate_configuration(self.server, 4)
         with stub_kea(_UNAVAILABLE):
             response = self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
         self.assertContains(response, '<div id="subnet-notice"></div>', html=True)
@@ -416,7 +416,7 @@ class TestNoticeGapsFromReview(_ViewTestBase):
         )
         for url in urls:
             with self.subTest(url=url):
-                server_configuration.invalidate(self.server, 4)
+                display_cache.rotate_configuration(self.server, 4)
                 with stub_kea(_IDENTITY_ONLY):
                     response = self.client.get(url)
                 self.assertEqual(response.status_code, 200)

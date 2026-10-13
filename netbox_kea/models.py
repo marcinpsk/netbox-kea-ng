@@ -4,7 +4,7 @@
 from contextvars import ContextVar
 from dataclasses import astuple, dataclass
 from dataclasses import field as dataclass_field
-from functools import reduce
+from functools import partial, reduce
 from operator import or_
 from pathlib import Path
 from typing import TypeVar, get_args
@@ -303,14 +303,10 @@ class Server(JobsMixin, NetBoxModel):
                 configured, ``ca_url`` and CA-level credentials are always used.
 
         """
-        if version in (4, 6):
-            from .server_configuration import invalidate
+        # Imported here: display_cache imports this module.
+        from . import display_cache
 
-            def on_config_change() -> None:
-                invalidate(self, version)
-
-        else:
-            on_config_change = None
+        on_config_change = partial(display_cache.rotate_configuration, self, version) if version in (4, 6) else None
 
         connection = self.kea_connection(version)
         config = request_client_config.get() or KeaClientConfig.get()
@@ -372,6 +368,13 @@ class Server(JobsMixin, NetBoxModel):
                     )
 
         return objectchange
+
+
+def require_persisted_server(server: Server) -> int:
+    """Return the pk of *server*. A Snapshot and a display cache key belong to a saved Server."""
+    if server.pk is None:
+        raise ValueError("A Kea Snapshot requires a persisted Server.")
+    return server.pk
 
 
 _Singleton = TypeVar("_Singleton", bound="SettingsSingleton")
@@ -526,8 +529,65 @@ class DhcpIntegrationConfig(SettingsSingleton):
         return "DHCP Plugin Integration"
 
 
-# The row a fan-out read on its request thread, so its worker threads open no database connection.
+class DisplayCacheConfig(SettingsSingleton):
+    """Singleton TTLs of the display cache, one for each read kind (ADR 0009). 0 turns off caching for that kind.
+
+    ``display_cache`` keys each entry on ``last_updated``, so a save makes every existing entry unreachable.
+    """
+
+    configuration_ttl: models.PositiveIntegerField = models.PositiveIntegerField(
+        verbose_name="Configuration TTL (seconds)",
+        default=300,
+        help_text=(
+            "How long a page shows a cached Server configuration and Subnet list (seconds)."
+            " 0 turns off caching for them. A save of this section empties the display cache."
+        ),
+    )
+    reservations_ttl: models.PositiveIntegerField = models.PositiveIntegerField(
+        verbose_name="Reservations TTL (seconds)",
+        default=300,
+        help_text=(
+            "How long a page shows cached Reservations (seconds). 0 turns off caching for them."
+            " The Reservation pages do not use the cache yet."
+        ),
+    )
+    leases_ttl: models.PositiveIntegerField = models.PositiveIntegerField(
+        verbose_name="Leases TTL (seconds)",
+        default=30,
+        help_text=(
+            "How long a page shows cached Leases (seconds). 0 turns off caching for them."
+            " The Lease pages do not use the cache yet."
+        ),
+    )
+    status_ttl: models.PositiveIntegerField = models.PositiveIntegerField(
+        verbose_name="Utilization and Status TTL (seconds)",
+        default=15,
+        help_text=(
+            "How long a page shows cached utilization and daemon status (seconds). 0 turns off caching for them."
+            " These pages do not use the cache yet."
+        ),
+    )
+
+    class Meta:
+        app_label = "netbox_kea"
+        verbose_name = "Display Cache"
+
+    def __str__(self) -> str:
+        return "Display Cache"
+
+    def save(self, *args, **kwargs) -> None:
+        """Write ``last_updated`` on every save, also a save with ``update_fields``, because the cache keys hold it."""
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            kwargs["update_fields"] = {*update_fields, "last_updated"}
+        super().save(*args, **kwargs)
+
+
+# The rows a fan-out read on its request thread, so its worker threads open no database connection.
 request_client_config: ContextVar[KeaClientConfig | None] = ContextVar("request_client_config", default=None)
+request_display_cache_config: ContextVar[DisplayCacheConfig | None] = ContextVar(
+    "request_display_cache_config", default=None
+)
 
 
 class KeaDhcpLink(ChangeLoggingMixin):
