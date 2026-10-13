@@ -3,14 +3,14 @@
 import ipaddress
 
 import requests
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from netbox_kea import server_configuration
 from netbox_kea.tests.kea_stub import _raw_http_response, stub_kea
-from netbox_kea.tests.utils import _PLUGINS_CONFIG, _make_db_server
+from netbox_kea.tests.utils import _make_db_server, with_kea_client_config
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestServerConfiguration(TestCase):
     def setUp(self):
         self.server = _make_db_server()

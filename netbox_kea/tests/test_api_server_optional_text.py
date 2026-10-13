@@ -10,16 +10,15 @@ taking null and storing it as "".
 """
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
 
 from .kea_stub import stub_kea
-from .utils import _make_db_server, plugins_config
+from .utils import _make_db_server
 
 User = get_user_model()
 
-_PLUGINS_CONFIG = plugins_config()
 
 #: The columns 0016 moved from NULL-or-blank to blank only.
 OPTIONAL_TEXT_FIELDS = (
@@ -37,7 +36,6 @@ OPTIONAL_TEXT_FIELDS = (
 )
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerOptionalTextFieldsAcceptNull(TestCase):
     """A null for any optional text field must be stored as "", not rejected."""
 

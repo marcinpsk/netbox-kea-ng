@@ -50,7 +50,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _PLUGINS_CONFIG
+from .utils import with_kea_client_config
 
 User = get_user_model()
 
@@ -98,7 +98,7 @@ def _make_server(**kwargs) -> Server:
 _ROW_ERROR_BADGE = '<span class="badge text-bg-danger'
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class _SyncViewBase(TestCase):
     def setUp(self):
         self.user = User.objects.create_superuser(
@@ -122,7 +122,6 @@ class _SyncViewBase(TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestMalformedLeaseSyncView(_SyncViewBase):
     def test_nonstring_hostname_returns_a_generic_error_without_claiming(self):
         for family, address, network in ((4, "198.18.0.10", "198.18.0.0/24"), (6, "2001:db8::10", "2001:db8::/64")):
@@ -145,7 +144,6 @@ class TestMalformedLeaseSyncView(_SyncViewBase):
                     self.assertFalse(IPAMOwnershipLink.objects.exists())
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLease4SyncView(_SyncViewBase):
     """POST to server_lease4_sync creates/updates a NetBox IPAddress."""
 
@@ -330,7 +328,6 @@ class TestLease4SyncView(_SyncViewBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLease6SyncView(_SyncViewBase):
     """POST to server_lease6_sync creates/updates a NetBox IPAddress for IPv6."""
 
@@ -407,7 +404,6 @@ def _lease6_get(*records: dict):
     return respond
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseSyncByKind(_SyncViewBase):
     """The lease Sync claims an address as an IP Address and a delegated prefix as a Prefix in the sync VRF."""
 
@@ -645,7 +641,6 @@ class TestLeaseSyncByKind(_SyncViewBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservation4SyncView(_SyncViewBase):
     """POST to server_reservation4_sync creates/updates NetBox IP with status=reserved."""
 
@@ -745,7 +740,6 @@ class TestReservation4SyncView(_SyncViewBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservation6SyncView(_SyncViewBase):
     """POST to server_reservation6_sync creates/updates NetBox IP for IPv6 reservation."""
 
@@ -817,7 +811,6 @@ class TestReservation6SyncView(_SyncViewBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservation4BulkSyncView(_SyncViewBase):
     """POST to server_reservation4_bulk_sync syncs all reservations to NetBox."""
 
@@ -989,7 +982,6 @@ class TestReservation4BulkSyncView(_SyncViewBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSyncViewPermissionChecks(_SyncViewBase):
     """Sync endpoints must reject users without IPAM write permissions."""
 
@@ -1037,7 +1029,6 @@ class TestSyncViewPermissionChecks(_SyncViewBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservation6BulkSyncView(_SyncViewBase):
     """POST to server_reservation6_bulk_sync syncs all v6 reservations to NetBox."""
 
@@ -1077,7 +1068,6 @@ class TestReservation6BulkSyncView(_SyncViewBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservationBulkSyncConflictProtection(_SyncViewBase):
     """Bulk reservation sync must not overwrite foreign NetBox IPs; conflicts are counted."""
 
@@ -1145,7 +1135,6 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
         self.assertEqual(claimed.status, "reserved")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservationCheckNetboxIPView(_SyncViewBase):
     """GET endpoint that advises whether an IP already exists in NetBox IPAM."""
 
@@ -1288,7 +1277,7 @@ class TestLeaseSyncByKindWithAutomaticSync(TestLeaseSyncByKind):
     automatic_sync = True
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestLeaseSyncEventDispatch(TransactionTestCase):
     """A claim row is a unit at the top level of the request, so its events dispatch after its own commit."""
 

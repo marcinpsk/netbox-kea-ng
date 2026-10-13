@@ -10,7 +10,7 @@ Kea's on-disk configuration.
 """
 
 from django.contrib.auth import get_user_model
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from ipam.models import VRF
 from rest_framework.test import APIClient
@@ -19,11 +19,10 @@ from netbox_kea.api.serializers import ServerSerializer
 from netbox_kea.models import Server
 
 from .kea_stub import stub_kea
-from .utils import _make_db_server, plugins_config
+from .utils import _make_db_server
 
 User = get_user_model()
 
-_PLUGINS_CONFIG = plugins_config()
 _VERSION_OK = {"version-get": {"result": 0, "arguments": {"extended": "2.4.0"}}}
 
 #: Every boolean the periodic sync job and the DHCP-plugin tab gate read.
@@ -57,7 +56,6 @@ class TestServerSerializerCoversEveryEditableField(SimpleTestCase):
         self.assertEqual(editable - writable, {"custom_field_data", "persist_config"})
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSyncFieldsOverRest(TestCase):
     """Round-trip the sync fields through the real serializer, view and database."""
 

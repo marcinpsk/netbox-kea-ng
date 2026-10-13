@@ -5,12 +5,13 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
-from ..models import Server
+from ..models import KeaClientConfig, Server, request_client_config
 from .notices import HEADLINES, ServerNotices, SnapshotKind
 
 logger = logging.getLogger(__name__)
@@ -35,8 +36,9 @@ def fan_out(servers: Sequence[Server], kind: SnapshotKind, fetch: Callable[[Serv
     configuration or argument error outside the Notice rule, becomes the error headline of *kind* for its Server.
     """
     read: FanOut[T] = FanOut()
+    client_config = KeaClientConfig.get()
     with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
-        futures = [(server, executor.submit(fetch, server)) for server in servers]
+        futures = [(server, executor.submit(_in_context(client_config).run, fetch, server)) for server in servers]
     for server, future in futures:
         try:
             read.results.append((server, future.result()))
@@ -44,3 +46,10 @@ def fan_out(servers: Sequence[Server], kind: SnapshotKind, fetch: Callable[[Serv
             logger.exception("Failed to query server %s", server.name)
             read.notices.errors.append((server.name, HEADLINES[kind]))
     return read
+
+
+def _in_context(client_config: KeaClientConfig) -> contextvars.Context:
+    """Return a copy of this context in which ``get_client()`` uses *client_config*."""
+    context = contextvars.copy_context()
+    context.run(request_client_config.set, client_config)
+    return context

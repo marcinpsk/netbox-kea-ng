@@ -31,7 +31,6 @@ from unittest.mock import patch
 import requests
 from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
-from django.test import override_settings
 from django.urls import reverse
 
 from ..dhcp_options import ShownOption
@@ -48,7 +47,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _PLUGINS_CONFIG, _make_db_server, _page_data, _ViewTestBase, save_key_without_certificate
+from .utils import _make_db_server, _page_data, _ViewTestBase, save_key_without_certificate
 
 # Shared stub responses for the subnet list/table views, which issue config-get
 # (subnets + shared-networks) then stat-lease{v}-get (utilisation; degrades if the
@@ -112,7 +111,6 @@ def _pool_add_registry(subnet_id: int, cidr: str) -> dict:
     }
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSubnets4View(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/subnets4/"""
 
@@ -164,7 +162,6 @@ class TestServerSubnets4View(_ViewTestBase):
         self.assertContains(response, "Protocol not enabled")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSubnets6View(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/subnets6/"""
 
@@ -189,7 +186,6 @@ class TestServerSubnets6View(_ViewTestBase):
         self.assertIs(response.context["tab"], ServerDHCP4SubnetsView.tab)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetEnrichment(_ViewTestBase):
     """Subnet views must pass option-data and pool information through to the table."""
 
@@ -450,7 +446,6 @@ def _config_with_one_subnet(service=None):
     ]
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetUtilizationStats(_ViewTestBase):
     """Subnet table must show a utilization column when ``stat_cmds`` hook is loaded."""
 
@@ -520,7 +515,6 @@ class TestSubnetUtilizationStats(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSubnet4WipeView(_ViewTestBase):
     """Tests for ServerSubnet4WipeView (GET confirmation + POST wipe)."""
 
@@ -619,7 +613,6 @@ class TestServerSubnet4WipeView(_ViewTestBase):
         self.assertIn(response.status_code, (302, 403))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSubnet6WipeView(_ViewTestBase):
     """Tests for ServerSubnet6WipeView — verifies v6 variant uses correct Kea commands."""
 
@@ -684,7 +677,6 @@ _SUBNET6_GET_FULL = [
 ]
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSubnet4EditView(_ViewTestBase):
     """Tests for ServerSubnet4EditView (GET prefill + POST update)."""
 
@@ -1144,7 +1136,6 @@ class TestServerSubnet4EditView(_ViewTestBase):
         self.assertIn("net-alpha", inherited["dns_servers"]["source"])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSubnet6EditView(_ViewTestBase):
     """Tests for ServerSubnet6EditView — verifies v6 variant uses correct version."""
 
@@ -1255,7 +1246,6 @@ _CONFIG6_NO_NETWORKS = [
 ]
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSubnet4EditViewNetworkAssignment(_ViewTestBase):
     """Tests for shared-network assignment in ServerSubnet4EditView."""
 
@@ -1312,7 +1302,6 @@ class TestServerSubnet4EditViewNetworkAssignment(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
     """GET/POST /plugins/kea/servers/<pk>/subnets4/add/ — shared_network field."""
 
@@ -1348,7 +1337,6 @@ class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
     """Subnet facts prefill the edit form when Server Configuration is unavailable."""
 
@@ -1453,7 +1441,6 @@ _SUBNET4_GET_ZERO_TIMERS = [
 _CONFIG4_NO_NETWORKS_RESP = [{"result": 0, "arguments": {"Dhcp4": {"shared-networks": [], "subnet4": []}}}]
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetEditZeroTimers(_ViewTestBase):
     """Renew/rebind timer value of 0 must round-trip through subnet edit GET."""
 
@@ -1488,7 +1475,6 @@ class TestSubnetEditZeroTimers(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestPoolDeleteExceptions(_ViewTestBase):
     """_BasePoolDeleteView checks the Pool text in the URL."""
 
@@ -1537,7 +1523,6 @@ class TestPoolDeleteExceptions(_ViewTestBase):
         )
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetAddAllocatesThroughCatalogue(_ViewTestBase):
     """The add view takes each new Subnet identity from a live Subnet Catalogue observation."""
 
@@ -1707,7 +1692,6 @@ _INVALID_SERVER_SETTINGS = (
 )
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetAddExceptionPaths(_ViewTestBase):
     """_BaseSubnetAddView GET/POST paths around the change."""
 
@@ -1759,7 +1743,6 @@ _RESTART = "It is live, but it may not survive a Kea restart, because Kea did no
 _ADD_PERSIST = ["config-get", "config-test", "config-write"]
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetAddMessages(_ViewTestBase):
     """One POST per Configuration Change outcome and per rejection, for a Subnet add.
 
@@ -1999,7 +1982,6 @@ _EDITED_SUBNET = "Subnet 42 (10.0.0.0/24) updated."
 _SCOPE = ["subnet4-list", "config-get"]
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetEditMessages(_ViewTestBase):
     """One POST per Configuration Change outcome and per rejection, for a Subnet edit.
 
@@ -2321,7 +2303,6 @@ _SUBNET4_EDIT_POST = {
 }
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetEditPostExceptions(_ViewTestBase):
     """_BaseSubnetEditView POST with Pools and Subnet facts that Kea declares in unusual ways."""
 
@@ -2449,7 +2430,6 @@ class TestSubnetEditPostExceptions(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetListViewEdgeCases(_ViewTestBase):
     """Subnet list view: null config, CSV export, and the HTMX partial."""
 
@@ -2513,7 +2493,6 @@ def _change_responses(*states: dict | None, **overrides) -> dict:
     return responses
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
     """Subnet delete, Pool add and Pool delete run only on the Subnet whose ID and CIDR the page showed.
 
@@ -2738,7 +2717,6 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
         )
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetDeleteExceptionPaths(_ViewTestBase):
     """Subnet delete GET when the configuration read fails."""
 
@@ -2759,7 +2737,6 @@ class TestSubnetDeleteExceptionPaths(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchSubnetsFromServer(_ViewTestBase):
     """_fetch_subnets_from_server edge cases, through the combined Subnets view."""
 
@@ -2921,7 +2898,6 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetEditNonCanonicalCidr(_ViewTestBase):
     """Kea accepts a prefix with host bits set and returns it as configured, so editing must too."""
 
@@ -2987,7 +2963,6 @@ class TestSubnetEditNonCanonicalCidr(_ViewTestBase):
         )
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetEditFormInitialFields(_ViewTestBase):
     """SubnetEditForm.initial_for fills the NTP and lease time fields."""
 
@@ -3033,7 +3008,6 @@ class TestSubnetEditFormInitialFields(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetNetworkDataUnnamedNetwork(_ViewTestBase):
     """The edit GET offers a named Shared Network when another entry has no name."""
 
@@ -3069,7 +3043,6 @@ class TestGetNetworkDataUnnamedNetwork(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchNetworkNonDictArgs(_ViewTestBase):
     """config-get returning non-dict arguments makes the edit GET redirect."""
 
@@ -3091,7 +3064,6 @@ class TestFetchNetworkNonDictArgs(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetNetworkChoicesKeaException(_ViewTestBase):
     """The add GET renders when server_configuration.display() cannot read config-get."""
 
@@ -3108,7 +3080,6 @@ class TestGetNetworkChoicesKeaException(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetInheritedOptionsParseOpts(_ViewTestBase):
     """_inherited_subnet_options shows global 'routers' and 'ntp-servers' as hints."""
 
@@ -3146,7 +3117,6 @@ class TestGetInheritedOptionsParseOpts(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetAddNetworkChoicesError(_ViewTestBase):
     """The add GET disables the Shared Network field and warns when config-get is unusable."""
 
@@ -3174,7 +3144,6 @@ class TestSubnetAddNetworkChoicesError(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetEditNetworkDataErrors(_ViewTestBase):
     """The edit view degrades when the Server Configuration has unreadable Shared Networks."""
 
@@ -3357,7 +3326,6 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetDeleteClientError(_ViewTestBase):
     """Subnet delete handlers must handle get_client() failures gracefully."""
 
@@ -3369,7 +3337,6 @@ class TestSubnetDeleteClientError(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetWipeClientError(_ViewTestBase):
     """Subnet wipe handlers must handle get_client() failures gracefully."""
 
@@ -3393,7 +3360,6 @@ class TestSubnetWipeClientError(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetSubnetsConfigShapeGuard(_ViewTestBase):
     """get_subnets() returns [] when config-get arguments is non-dict."""
 
@@ -3425,7 +3391,6 @@ class TestGetSubnetsConfigShapeGuard(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestPoolDeltaHostBitsSubnet(_ViewTestBase):
     """The delta commands must echo the Subnet prefix exactly as Kea declares it, host bits included.
 
@@ -3474,7 +3439,6 @@ class TestPoolDeltaHostBitsSubnet(_ViewTestBase):
         self.assertIn("config-write", kea.commands())
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestPoolAddPostErrors(_ViewTestBase):
     """Cover pool add POST error handling."""
 
@@ -3558,7 +3522,6 @@ def _pool_add_catalogue(pools: tuple[str, ...] = ("10.0.0.10-10.0.0.20",), *, co
     return registry
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestPoolAddChecksTheVerifiedSubnet(_ViewTestBase):
     """The Pool add form parses the Pool against the Verified Subnet before Kea sees it."""
 
@@ -3706,7 +3669,6 @@ class TestPoolAddChecksTheVerifiedSubnet(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetAddGetClientError(_ViewTestBase):
     """Cover subnet add GET when client creation fails."""
 
@@ -3740,7 +3702,6 @@ class TestSubnetAddGetClientError(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetSubnetsError(_ViewTestBase):
     """Cover get_subnets() error path."""
 
@@ -3757,7 +3718,6 @@ class TestGetSubnetsError(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetListNonDictItems(_ViewTestBase):
     """F9: Non-dict items in top-level subnets list and shared-networks list."""
 
@@ -3818,7 +3778,6 @@ class TestSubnetListNonDictItems(_ViewTestBase):
         self.assertContains(response, "10.0.0.0/24")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetNetworkDataNonDictSubnet(_ViewTestBase):
     """The edit GET survives a Shared Network that holds a non-dict member Subnet."""
 
@@ -3853,7 +3812,6 @@ class TestGetNetworkDataNonDictSubnet(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetViewCoverageGaps(_ViewTestBase):
     """Edge cases of the Subnet list, edit, and pool add views."""
 
@@ -4074,7 +4032,6 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         self.assertTrue(any(m.level == django_messages.ERROR for m in msgs))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestPersistConfigBanner(_ViewTestBase):
     """Tests that the persist_config warning banner appears when disabled."""
 
@@ -4122,7 +4079,6 @@ _SUBNET4_GET_LIFETIMES = {
 }
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetLifetimeKeaParameterNames(_ViewTestBase):
     """The subnet edit path must use Kea's subnet lifetime parameter names."""
 

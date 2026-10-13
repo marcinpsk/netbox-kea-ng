@@ -64,10 +64,7 @@ def main() -> None:
     databases, plugins = f"DATABASE = {_DATABASE}\n", arguments.plugins
     if arguments.branching:
         databases, plugins = _BRANCHING_DATABASES, [*plugins, _BRANCHING_PLUGIN]
-    arguments.output.write_text(
-        f"{_COMMON_CONFIGURATION}{databases}PLUGINS = {plugins!r}\n"
-        "PLUGINS_CONFIG = {'netbox_kea': {'kea_timeout': 30, 'lease_query_max_unpaged_leases': 1000}}\n"
-    )
+    arguments.output.write_text(f"{_COMMON_CONFIGURATION}{databases}PLUGINS = {plugins!r}\n")
 
 
 if __name__ == "__main__":

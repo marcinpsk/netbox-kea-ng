@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import requests
 from django.db import OperationalError, connection, connections
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import TestCase, TransactionTestCase
 from urllib3.exceptions import ProtocolError
 
 from netbox_kea import config_write, subnet_catalogue
@@ -48,7 +48,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _PLUGINS_CONFIG, _make_db_server
+from .utils import _make_db_server, with_kea_client_config
 
 _OK = {"result": 0, "text": "ok"}
 _PERSIST = ["config-get", "config-test", "config-write"]
@@ -85,7 +85,7 @@ def _reset_during_reply() -> requests.ConnectionError:
     return requests.ConnectionError(ProtocolError("Connection aborted.", ConnectionResetError(104, "reset")))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class OutcomeMatrixTests(TestCase):
     """Application applied or unknown, times each persistence state."""
 
@@ -161,7 +161,7 @@ class OutcomeMatrixTests(TestCase):
         self.assertEqual(kea.commands(), ["network4-get", "network4-add"])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class RejectionReasonTests(TestCase):
     """Each rejection reason that a Shared Network add or delete can raise. Nothing is persisted after one."""
 
@@ -272,7 +272,7 @@ class RejectionReasonTests(TestCase):
         self.assertEqual(kea.commands(), ["network4-get", "network4-add"])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class ApplicationTests(TestCase):
     """How the reply to the command that can change the configuration decides the application."""
 
@@ -419,7 +419,7 @@ def _pool(version: int, text: str):
     return parse_pool(text, ipaddress.ip_network(_SEEN[version]))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class SubnetAndPoolChangeTests(TestCase):
     """Subnet delete, Pool add and Pool delete run only on the Verified Subnet with the ID and CIDR the operator saw."""
 
@@ -767,7 +767,7 @@ def _steps(version: int, state: str) -> tuple[str, str]:
     )
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class SubnetAddTests(TestCase):
     """A Subnet add, and its assignment to a Shared Network, as one Configuration Change."""
 
@@ -1395,7 +1395,7 @@ def _moved_back(version: int, where: str = "in Shared Network 'office'") -> str:
     )
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class SubnetEditTests(TestCase):
     """A Subnet edit, with a move between Shared Networks, as one Configuration Change.
 
@@ -2115,7 +2115,7 @@ _NTP_ONLY_EDIT = {
 }
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class SubnetEditPoolTests(TestCase):
     """A Subnet edit keeps the Pool-level fields of each Pool that the form keeps."""
 
@@ -2227,7 +2227,7 @@ class SubnetEditPoolTests(TestCase):
         self.assertEqual(sent["pools"], [{"pool": _OTHER_POOL[6]}])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class PersistStepTests(TestCase):
     """Each phase of the persist step, after an applied add."""
 
@@ -2269,7 +2269,7 @@ class PersistStepTests(TestCase):
         self.assertEqual(persist, _PERSIST)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class LockTests(TransactionTestCase):
     """Operations on one Kea daemon and family run one at a time, from the first read to the end of persist.
 
@@ -2564,7 +2564,7 @@ def _rmw_responses(version: int, *, config_get=None, **overrides) -> dict:
     return responses
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class ReadModifyWriteTests(TestCase):
     """The read-modify-write changes: config-get, an edit in place, config-test and config-set, all under the lock."""
 
@@ -2981,7 +2981,7 @@ def _with_network(version: int, **fields) -> dict:
     return _running(version, **{"shared-networks": [network]})
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class SharedNetworkEditShownValuesTests(TestCase):
     """A Shared Network edit acts only while the live values are the values that the page showed."""
 
@@ -3140,7 +3140,7 @@ class _StatefulKea:
         return _OK
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class ConcurrentReadModifyWriteTests(TransactionTestCase):
     """Two read-modify-write operations on one Kea daemon and family, started so that both could read first.
 

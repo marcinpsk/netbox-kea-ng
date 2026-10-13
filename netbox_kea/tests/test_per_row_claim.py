@@ -3,7 +3,7 @@
 """Per-row HTTP synchronization claims its reported rows without removing other addresses."""
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.urls import reverse
 from ipam.models import IPAddress
 
@@ -17,7 +17,7 @@ from netbox_kea.tests.kea_stub import (
     typed_lease,
 )
 from netbox_kea.tests.test_integration_dhcp_plugin import _catalogue
-from netbox_kea.tests.utils import lease_phase, plugins_config
+from netbox_kea.tests.utils import lease_phase
 
 _LEASE = {"ip-address": "198.18.0.10", "hostname": "host.example.com", "subnet-id": 1}
 
@@ -27,7 +27,6 @@ def _typed(**changes):
     return typed_lease(complete_lease({**_LEASE, **changes}))
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="remove"))
 class PerRowLeaseCleanupTest(TestCase):
     def test_lease_sync_uses_the_same_kea_subnet_facts_as_reconciliation(self):
         from ipam.models import Prefix
@@ -81,7 +80,6 @@ class PerRowLeaseCleanupTest(TestCase):
         self.assertEqual(IPAddress.objects.values().get(pk=reserved.pk), before)
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
 class ClaimOwnershipTest(TestCase):
     def setUp(self):
         self.server = Server.objects.create(name="claim-server", ca_url="https://kea.example.com")

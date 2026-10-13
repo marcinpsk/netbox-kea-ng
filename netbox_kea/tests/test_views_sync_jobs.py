@@ -7,12 +7,20 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from bs4 import BeautifulSoup
-from django.test import TestCase, override_settings, skipUnlessDBFeature
+from django.test import TestCase, skipUnlessDBFeature
 from django.urls import reverse
 from django.utils import timezone
 
-from netbox_kea.models import Server, SyncConfig
-from netbox_kea.tests.utils import _PLUGINS_CONFIG, User, _get_with_writes, _grant, _make_db_server, _sync_page_urls
+from netbox_kea.ipam_reconciliation import _get_stale_cleanup_mode
+from netbox_kea.models import KeaClientConfig, Server, SyncConfig
+from netbox_kea.tests.utils import (
+    User,
+    _get_with_writes,
+    _grant,
+    _make_db_server,
+    _sync_page_urls,
+    with_kea_client_config,
+)
 
 _MAKE_JOB_NO_DATA = object()  # sentinel: caller did not pass data at all
 
@@ -45,16 +53,32 @@ def _make_job(*, name="Kea IPAM Sync", object_id=None, object_type=None, data=_M
     return job
 
 
-def _sync_settings(**values) -> dict[str, object]:
-    """Return the POST data of the Sync section, as a browser sends it: a checkbox that is off is left out."""
-    data: dict[str, object] = {"section": "sync"}
+def _section_data(slug: str, values: dict[str, object]) -> dict[str, object]:
+    """Return the POST data of a Settings section, as a browser sends it: a checkbox that is off is left out."""
+    data: dict[str, object] = {"section": slug}
     for name, value in values.items():
         if value is not False:
-            data[f"sync-{name}"] = "on" if value is True else value
+            data[f"{slug}-{name}"] = "on" if value is True else value
     return data
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+def _defaults(model, *names: str) -> dict[str, object]:
+    return {name: model._meta.get_field(name).default for name in names}
+
+
+def _sync_settings(**values) -> dict[str, object]:
+    """Return the POST data of the Sync section; a field that *values* leaves out has its default value."""
+    return _section_data("sync", {**_defaults(SyncConfig, "sync_max_leases_per_server", "stale_ip_cleanup"), **values})
+
+
+def _kea_client_settings(**values) -> dict[str, object]:
+    """Return the POST data of the Kea Client section; a field that *values* leaves out has its default value."""
+    return _section_data(
+        "kea-client", {**_defaults(KeaClientConfig, "kea_timeout", "lease_query_max_unpaged_leases"), **values}
+    )
+
+
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestSyncJobsView(TestCase):
     """GET /plugins/kea/sync-jobs/: the jobs only, with a link to the Settings page."""
 
@@ -90,7 +114,6 @@ class TestSyncJobsView(TestCase):
         self.assertIn("/login/", response["Location"])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSettingsView(TestCase):
     """GET and POST /plugins/kea/settings/ as a superuser."""
 
@@ -107,14 +130,32 @@ class TestSettingsView(TestCase):
         self.assertTrue(page.find(id="id_sync-sync_reservations_enabled").has_attr("checked"))
         self.assertIsNotNone(page.select_one('form[method="post"] button[type="submit"]'))
 
+    def test_get_shows_each_section_in_a_card_with_its_anchor(self):
+        page = BeautifulSoup(self.client.get(self.url).content, "html.parser")
+        for slug, title in (("sync", "Sync Configuration"), ("kea-client", "Kea Client Configuration")):
+            with self.subTest(section=slug):
+                card = page.find(id=slug)
+                self.assertIn("card", card["class"])
+                self.assertEqual(card.find(class_="card-header").get_text(strip=True), title)
+
     def test_post_saves_every_field_and_redirects(self):
         response = self.client.post(
-            self.url, _sync_settings(interval_minutes=10, sync_enabled=True, sync_prefixes_enabled=True), follow=True
+            self.url,
+            _sync_settings(
+                interval_minutes=10,
+                sync_enabled=True,
+                sync_prefixes_enabled=True,
+                sync_max_leases_per_server=7,
+                stale_ip_cleanup="deprecate",
+            ),
+            follow=True,
         )
         self.assertRedirects(response, self.url)
         self.assertContains(response, "Sync Configuration saved.")
         config = SyncConfig.get()
         self.assertEqual(config.interval_minutes, 10)
+        self.assertEqual(config.sync_max_leases_per_server, 7)
+        self.assertEqual(config.stale_ip_cleanup, "deprecate")
         self.assertTrue(config.sync_enabled)
         self.assertTrue(config.sync_prefixes_enabled)
         self.assertFalse(config.sync_leases_enabled)
@@ -196,11 +237,34 @@ class TestSettingsView(TestCase):
             with self.subTest(interval=interval):
                 response = self.client.post(self.url, _sync_settings(interval_minutes=interval, sync_enabled=False))
                 self.assertEqual(response.status_code, 200)
-                (entry,) = response.context["sections"]
+                (entry,) = [shown for shown in response.context["sections"] if shown.section.slug == "sync"]
                 self.assertIn("interval_minutes", entry.form.errors)
                 self.assertEqual(entry.form["interval_minutes"].value(), str(interval))
                 self.assertEqual(SyncConfig.get().interval_minutes, 5)
                 self.assertTrue(SyncConfig.get().sync_enabled)
+
+    def test_a_posted_stale_ip_cleanup_mode_reaches_the_next_sync_without_a_restart(self):
+        self.assertEqual(_get_stale_cleanup_mode(), "remove")
+
+        self.assertEqual(
+            self.client.post(self.url, _sync_settings(interval_minutes=5, stale_ip_cleanup="none")).status_code, 302
+        )
+
+        self.assertEqual(_get_stale_cleanup_mode(), "none")
+
+    def test_post_invalid_sync_limits_show_the_error_and_change_nothing(self):
+        before = SyncConfig.get()
+        for field, value in (("sync_max_leases_per_server", -1), ("stale_ip_cleanup", "delete")):
+            with self.subTest(field=field, value=value):
+                response = self.client.post(self.url, _sync_settings(**{field: value}))
+                self.assertEqual(response.status_code, 200)
+                (entry,) = [shown for shown in response.context["sections"] if shown.section.slug == "sync"]
+                self.assertIn(field, entry.form.errors)
+                config = SyncConfig.get()
+                self.assertEqual(
+                    (config.sync_max_leases_per_server, config.stale_ip_cleanup),
+                    (before.sync_max_leases_per_server, before.stale_ip_cleanup),
+                )
 
     def test_post_to_an_unknown_section_is_a_bad_request(self):
         response = self.client.post(self.url, {"section": "unknown", "sync-interval_minutes": 9})
@@ -223,7 +287,6 @@ class TestSettingsView(TestCase):
         self.assertIn("/login/", response["Location"])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSettingsPermissions(TestCase):
     """Each section needs its model's view permission to show, and its change permission to save."""
 
@@ -232,6 +295,7 @@ class TestSettingsPermissions(TestCase):
         self.client.force_login(self.user)
         self.url = reverse("plugins:netbox_kea:settings")
         self.link = f'href="{self.url}"'
+        self.menu_link = f'href="{self.url}#'
 
     def test_a_viewer_sees_the_values_read_only_without_a_submit_control(self):
         _grant([SyncConfig], ["view"], user=self.user)
@@ -286,17 +350,17 @@ class TestSettingsPermissions(TestCase):
         self.assertEqual(SyncConfig.get().interval_minutes, 5)
         home = self.client.get(reverse("home"))
         self.assertContains(home, f'href="{reverse("plugins:netbox_kea:server_list")}"')
-        self.assertNotContains(home, self.link)
+        self.assertNotContains(home, self.menu_link)
         self.assertNotContains(self.client.get(reverse("plugins:netbox_kea:sync_jobs")), self.link)
 
     def test_a_viewer_gets_the_menu_item_and_the_sync_jobs_link(self):
         _grant([SyncConfig, Server], ["view"], user=self.user)
 
-        self.assertContains(self.client.get(reverse("home")), self.link)
+        self.assertContains(self.client.get(reverse("home")), f'{self.menu_link}sync"')
         self.assertContains(self.client.get(reverse("plugins:netbox_kea:sync_jobs")), self.link)
 
-    def test_the_menu_item_shows_for_a_user_who_can_view_any_one_section(self):
-        """NetBox shows a menu item only to a user with every permission it lists, so one per section is wrong."""
+    def test_each_section_has_a_menu_item_for_a_user_who_can_view_that_section(self):
+        """The Settings menu group holds one item per section, so a new section gets its item and its permission."""
         from netbox_kea.views.settings_page import SECTIONS
 
         for section in SECTIONS:
@@ -304,7 +368,9 @@ class TestSettingsPermissions(TestCase):
                 user = User.objects.create_user(f"settings-only-{section.slug}")
                 _grant([section.model], ["view"], user=user)
                 self.client.force_login(user)
-                self.assertContains(self.client.get(reverse("home")), self.link)
+                menu = BeautifulSoup(self.client.get(reverse("home")).content, "html.parser")
+                items = {link["href"]: link.get_text(strip=True) for link in menu.select(f'a[href^="{self.url}#"]')}
+                self.assertEqual(items, {f"{self.url}#{section.slug}": section.menu_text})
 
     def test_the_server_sync_tab_links_to_settings_only_for_a_user_who_can_view_them(self):
         server = _make_db_server()
@@ -317,7 +383,7 @@ class TestSettingsPermissions(TestCase):
         self.assertContains(self.client.get(tab), self.link)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestSyncPagesWriteNothingOnGet(TestCase):
     """A GET of a sync page reads the migrated SyncConfig row and writes no row."""
 
@@ -333,7 +399,7 @@ class TestSyncPagesWriteNothingOnGet(TestCase):
                 self.assertEqual(writes, [])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestServerSyncStatusView(TestCase):
     """GET /plugins/kea/servers/{pk}/sync-status/"""
 
@@ -364,7 +430,7 @@ class TestServerSyncStatusView(TestCase):
         self.assertTrue(response.context["can_change_server"])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestServerSyncNowView(TestCase):
     """POST /plugins/kea/servers/{pk}/sync-now/"""
 
@@ -399,7 +465,7 @@ class TestServerSyncNowView(TestCase):
         self.assertContains(response, "internal error")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestServerSyncToggleView(TestCase):
     """POST /plugins/kea/servers/{pk}/sync-toggle/"""
 
@@ -456,7 +522,7 @@ class TestServerSyncToggleView(TestCase):
         self.assertEqual(response.status_code, 403)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestSyncJobsViewAllowedServerPks(TestCase):
     """allowed_server_pks in SyncJobsView context is permission-filtered."""
 
@@ -484,7 +550,7 @@ class TestSyncJobsViewAllowedServerPks(TestCase):
         self.assertNotIn(self.server.pk, response.context["allowed_server_pks"])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestServerSyncToggleViewErrorHandling(TestCase):
     """ServerSyncToggleView.post wraps save() in try/except."""
 
@@ -511,7 +577,7 @@ class TestServerSyncToggleViewErrorHandling(TestCase):
         )
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestMigrationsApplied(TestCase):
     """Regression tests: DB columns/tables from new migrations must exist.
 
@@ -555,7 +621,7 @@ class TestMigrationsApplied(TestCase):
         self.assertTrue(has_feature(Server, "jobs"), "Server must have the 'jobs' feature (JobsMixin)")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestGetRecentJobsForServers(TestCase):
     """Unit tests for get_recent_jobs_for_servers helper."""
 
@@ -669,7 +735,7 @@ class TestGetRecentJobsForServers(TestCase):
         self.assertEqual(len([j for j in result[self.server_b.pk] if j.pk == job.pk]), 1)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 @skipUnlessDBFeature("supports_json_field_contains")
 class TestGetAllJobsForServer(TestCase):
     """Unit tests for get_all_jobs_for_server helper (used by per-server Jobs tab)."""
@@ -723,7 +789,7 @@ class TestGetAllJobsForServer(TestCase):
         self.assertEqual(pks[1], old.pk)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 @skipUnlessDBFeature("supports_json_field_contains")
 class TestServerJobsView(TestCase):
     """Tests for the per-server Jobs tab override (includes periodic jobs)."""
@@ -789,3 +855,129 @@ class TestServerJobsView(TestCase):
         url = reverse("plugins:netbox_kea:server_jobs", args=[self.server.pk])
         r = self.client.get(url)
         self.assertEqual(r.status_code, 403)
+
+
+class TestKeaClientSettingsView(TestCase):
+    """The Kea Client section of the Settings page, as a superuser."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("kea-client-admin", "k@k.com", "pass")
+        self.client.force_login(self.user)
+        self.url = reverse("plugins:netbox_kea:settings")
+
+    def test_get_shows_the_stored_values(self):
+        KeaClientConfig.objects.filter(pk=1).update(kea_timeout=12, lease_query_max_unpaged_leases=0)
+
+        page = BeautifulSoup(self.client.get(self.url).content, "html.parser")
+
+        section = page.find(id="kea-client")
+        self.assertEqual(section.find(id="id_kea-client-kea_timeout")["value"], "12")
+        self.assertEqual(section.find(id="id_kea-client-lease_query_max_unpaged_leases")["value"], "0")
+        self.assertIsNotNone(section.select_one('form[method="post"] button[type="submit"]'))
+
+    def test_a_posted_timeout_reaches_the_next_get_client_without_a_restart(self):
+        server = _make_db_server()
+        before = server.get_client(version=4)
+        self.assertEqual((before.timeout, before.max_unpaged_leases), (30, 1000))
+
+        response = self.client.post(
+            self.url, _kea_client_settings(kea_timeout=10, lease_query_max_unpaged_leases=250), follow=True
+        )
+
+        self.assertRedirects(response, self.url)
+        self.assertContains(response, "Kea Client Configuration saved.")
+        after = Server.objects.get(pk=server.pk).get_client(version=4)
+        self.assertEqual((after.timeout, after.max_unpaged_leases), (10, 250))
+        self.assertEqual(before.timeout, 30, "a client keeps the timeout it was built with")
+
+    def test_post_invalid_values_show_the_error_and_change_nothing(self):
+        for field, value in (
+            ("kea_timeout", 0),
+            ("kea_timeout", -1),
+            ("kea_timeout", "soon"),
+            ("lease_query_max_unpaged_leases", -1),
+        ):
+            with self.subTest(field=field, value=value):
+                response = self.client.post(self.url, _kea_client_settings(**{field: value}))
+                self.assertEqual(response.status_code, 200)
+                (entry,) = [shown for shown in response.context["sections"] if shown.section.slug == "kea-client"]
+                self.assertIn(field, entry.form.errors)
+                config = KeaClientConfig.get()
+                self.assertEqual((config.kea_timeout, config.lease_query_max_unpaged_leases), (30, 1000))
+
+    def test_a_save_records_one_change_that_the_change_log_api_lists(self):
+        from core.models import ObjectChange
+        from django.contrib.contenttypes.models import ContentType
+        from rest_framework.test import APIClient
+
+        self.client.post(self.url, _kea_client_settings(kea_timeout=45))
+
+        change = ObjectChange.objects.get(
+            changed_object_type=ContentType.objects.get_for_model(KeaClientConfig), changed_object_id=1
+        )
+        self.assertEqual(change.action, "update")
+        self.assertEqual((change.prechange_data["kea_timeout"], change.postchange_data["kea_timeout"]), (30, 45))
+        api = APIClient(raise_request_exception=False)
+        api.force_authenticate(user=self.user)
+        response = api.get(reverse("core-api:objectchange-list"))
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        (listed,) = response.json()["results"]
+        self.assertEqual(listed["changed_object"], {"id": 1, "display": "Kea Client Configuration"})
+
+    def test_the_singleton_cannot_be_deleted(self):
+        with self.assertRaisesMessage(TypeError, "KeaClientConfig singleton cannot be deleted."):
+            KeaClientConfig.get().delete()
+        self.assertTrue(KeaClientConfig.objects.filter(pk=1).exists())
+
+
+class TestKeaClientSettingsPermissions(TestCase):
+    """The Kea Client section shows with view_keaclientconfig and saves with change_keaclientconfig as well."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("kea-client-user")
+        self.client.force_login(self.user)
+        self.url = reverse("plugins:netbox_kea:settings")
+
+    def _shown_sections(self) -> list[str]:
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        return [shown.section.slug for shown in response.context["sections"]]
+
+    def test_each_section_shows_only_with_its_own_view_permission(self):
+        _grant([KeaClientConfig], ["view", "change"], user=self.user)
+        self.assertEqual(self._shown_sections(), ["kea-client"])
+        _grant([SyncConfig], ["view"], user=self.user)
+        self.assertEqual(self._shown_sections(), ["sync", "kea-client"])
+
+    def test_a_viewer_sees_the_values_read_only_without_a_submit_control(self):
+        _grant([KeaClientConfig], ["view"], user=self.user)
+        KeaClientConfig.objects.filter(pk=1).update(kea_timeout=12)
+
+        page = BeautifulSoup(self.client.get(self.url).content, "html.parser")
+
+        timeout = page.find(id="id_kea-client-kea_timeout")
+        self.assertEqual(timeout["value"], "12")
+        self.assertTrue(timeout.has_attr("disabled"))
+        self.assertTrue(page.find(id="id_kea-client-lease_query_max_unpaged_leases").has_attr("disabled"))
+        self.assertIsNone(page.select_one('form[method="post"]'))
+
+    def test_a_post_without_both_permissions_is_refused_and_changes_nothing(self):
+        for actions in (["view"], ["change"]):
+            with self.subTest(actions=actions):
+                user = User.objects.create_user(f"kea-client-{'-'.join(actions)}")
+                _grant([KeaClientConfig], actions, user=user)
+                _grant([SyncConfig], ["view", "change"], user=user)
+                self.client.force_login(user)
+
+                response = self.client.post(self.url, _kea_client_settings(kea_timeout=10))
+
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(KeaClientConfig.get().kea_timeout, 30)
+
+    def test_a_user_with_view_and_change_saves(self):
+        _grant([KeaClientConfig], ["view", "change"], user=self.user)
+
+        response = self.client.post(self.url, _kea_client_settings(kea_timeout=10))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(KeaClientConfig.get().kea_timeout, 10)

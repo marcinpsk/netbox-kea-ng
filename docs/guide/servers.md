@@ -107,4 +107,4 @@ Each server has optional overrides for the IPAM sync job:
 | `First complete IPAM observation` (`ipam_first_complete_at`) | None | Read-only time when this server first completed all enabled job and DHCP import observations after the ownership upgrade |
 | `Persist configuration` (`persist_config`) | `True` | Automatically save Kea config after each change via `config-write`. Disable when Kea config is managed externally (e.g. Ansible) |
 
-These fields override the global `PLUGINS_CONFIG` values for that specific server.
+These fields apply to that server. The global switches are in the Sync section of the **Settings** page.

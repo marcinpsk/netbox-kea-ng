@@ -287,12 +287,6 @@ def test_ci_configuration_writer_generates_the_requested_plugins(monkeypatch, tm
     }
     assert namespace["SECRET_KEY"] == "ci-test-secret-key-not-for-production-1234567890123456"
     assert namespace["API_TOKEN_PEPPERS"] == {0: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
-    assert namespace["PLUGINS_CONFIG"] == {
-        "netbox_kea": {
-            "kea_timeout": 30,
-            "lease_query_max_unpaged_leases": 1000,
-        }
-    }
 
 
 def _write_ci_configuration(tmp_path, *arguments: str) -> subprocess.CompletedProcess:

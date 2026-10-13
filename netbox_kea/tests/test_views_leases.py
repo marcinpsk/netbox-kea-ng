@@ -36,7 +36,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 import requests
 from bs4 import BeautifulSoup
 from django.contrib.messages import get_messages
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase
 from django.urls import reverse
 from django.utils.html import escape
 from ipam.models import IPAddress as NbIP
@@ -69,12 +69,11 @@ from .kea_stub import (
     typed_lease,
 )
 from .utils import (
-    _PLUGINS_CONFIG,
     _make_db_server,
     _ViewTestBase,
     active_tabs,
-    plugins_config,
     save_key_without_certificate,
+    with_kea_client_config,
 )
 
 #: The HTMX error template renders a uuid4 reference ID, so a test that stops at the
@@ -112,12 +111,6 @@ def _assert_no_error_template(test, response):
     test.assertNotContains(response, "An internal error occurred. Reference ID:")
 
 
-#: The lease-query guard is off, so a Subnet lease search issues no stat-lease{v}-get
-#: preflight and needs none registered. Tests that register only the lease command name
-#: this dependency here instead of inheriting the value from the shared fixture.
-_UNGUARDED_PLUGINS_CONFIG = plugins_config(lease_query_max_unpaged_leases=0)
-
-
 def _held4(*addresses: str) -> tuple[dict, list[str]]:
     """Return the answers of a Kea that holds a lease at each address, and the list row selection of each."""
     records = [lease_record(address, subnet_id=1) for address in addresses]
@@ -151,7 +144,6 @@ def _reservation_stub(version: int, responses: dict):
     return stub_kea({**_catalogue_responses_for_subnets(version, subnets), **responses})
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerLeases4View(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/leases4/"""
 
@@ -182,7 +174,6 @@ class TestServerLeases4View(_ViewTestBase):
         self.assertEqual(response.status_code, 404)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerLeases6View(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/leases6/"""
 
@@ -205,7 +196,6 @@ class TestServerLeases6View(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerLeases4DeleteView(_ViewTestBase):
     """POST /plugins/kea/servers/<pk>/leases4/delete/"""
 
@@ -243,7 +233,6 @@ class TestServerLeases4DeleteView(_ViewTestBase):
         self.assertEqual(body["service"], ["dhcp4"])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerLeases6DeleteView(_ViewTestBase):
     """POST /plugins/kea/servers/<pk>/leases6/delete/"""
 
@@ -265,7 +254,6 @@ def _close_that_fails(self) -> None:
     raise OSError("connection already gone")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservedBadgeOnLeases(_ViewTestBase):
     """HTMX lease search must show a 'Reserved' badge when a matching reservation exists.
 
@@ -384,7 +372,6 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseSearchPaths(_ViewTestBase):
     """Each search-by type in the Lease fetch must dispatch the
     correct Kea command with correct arguments, via HTMX GET.
@@ -447,7 +434,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
         self.assertEqual(body["arguments"]["hw-address"], "aa:bb:cc:dd:ee:ff")
         self.assertEqual(body["service"], ["dhcp4"])
 
-    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
+    @with_kea_client_config(lease_query_max_unpaged_leases=100)
     def test_a_guard_rejected_subnet_query_renders_the_bound_form(self):
         """The guard handler reads `form` and `form.cleaned_data`, so both must be bound.
 
@@ -541,7 +528,6 @@ class TestLeaseSearchPaths(_ViewTestBase):
         self.assertEqual(body["arguments"]["subnets"], [1])
         self.assertEqual(body["service"], ["dhcp4"])
 
-    @override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
     def test_search_by_subnet_id_paginates_locally_and_enriches_only_visible_page(self):
         """Expose rows after the first table page without repeating their enrichment."""
         leases = [
@@ -584,7 +570,6 @@ class TestLeaseSearchPaths(_ViewTestBase):
         # Rows outside this page are not enriched.
         self.assertEqual(len(kea.bodies("reservation-get")), expected_probes)
 
-    @override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
     def test_one_device_with_several_leases_is_probed_once_per_identity(self):
         """Identity lookups repeat across rows, so resolve each one once for the page."""
         leases = [{**self._LEASE4, "ip-address": f"10.0.0.{index}"} for index in range(1, 6)]
@@ -603,7 +588,6 @@ class TestLeaseSearchPaths(_ViewTestBase):
         # Scopes: every lease carries the same hardware address and Client ID.
         self.assertEqual(len(kea.bodies("reservation-get")), 5 + 4)
 
-    @override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
     def test_reservation_workers_reuse_and_close_one_client_per_thread(self):
         leases = [
             {
@@ -684,7 +668,6 @@ class TestLeaseSearchPaths(_ViewTestBase):
         self.assertEqual(len({id(client) for client in created_clients}), 10)
         self.assertCountEqual([id(client) for client in closed_clients], [id(client) for client in created_clients])
 
-    @override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
     def test_reservation_enrichment_closes_its_source_client(self):
         from netbox_kea.sync_permissions import SyncGate
         from netbox_kea.views.leases import _enrich_leases_with_badges
@@ -707,7 +690,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
 
         self.assertEqual(len(closed_clients), 1)
 
-    @override_settings(PLUGINS_CONFIG=plugins_config())
+    @with_kea_client_config(lease_query_max_unpaged_leases=1000)
     def test_search_by_subnet_id_and_state_filters_in_kea(self):
         lease = dict(self._LEASE4, state=1)
         with _lease_stub(
@@ -727,7 +710,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
             {"subnet-id": 1, "state": 1},
         )
 
-    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
+    @with_kea_client_config(lease_query_max_unpaged_leases=100)
     def test_large_subnet_search_prompts_for_a_state_without_get_all(self):
         with _lease_stub(
             {
@@ -793,7 +776,6 @@ class TestLeaseSearchPaths(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseExport(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/leases4/?export=all must return a CSV file."""
 
@@ -850,7 +832,7 @@ class TestLeaseExport(_ViewTestBase):
             [expected],
         )
 
-    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
+    @with_kea_client_config(lease_query_max_unpaged_leases=100)
     def test_export_by_subnet_uses_the_guarded_subnet_query(self):
         """A Subnet export must not rely on global lease-page ordering."""
         leases = [
@@ -888,7 +870,6 @@ class TestLeaseExport(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseDeleteFullFlow(_ViewTestBase):
     """Full POST flow for lease bulk deletion: confirm page → confirmed delete → Kea error."""
 
@@ -978,7 +959,6 @@ class TestLeaseDeleteFullFlow(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestEnrichLeasesErrorPaths(_ViewTestBase):
     """_enrich_leases_with_badges must degrade gracefully on unexpected errors."""
 
@@ -1105,7 +1085,6 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
 _PD_LABEL = "2001:db8:100:100::/56"
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestDelegatedPrefixSyncBadges(_ViewTestBase):
     """A delegated-prefix row offers Sync, and links the Prefix of the Server's sync VRF once one exists."""
 
@@ -1283,7 +1262,6 @@ class TestDelegatedPrefixSyncBadges(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestStaleMacBadgeEnrichment(_ViewTestBase):
     """_enrich_leases_with_badges must store MAC strings and delete URL on stale-MAC leases."""
 
@@ -1414,7 +1392,6 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseExportAll(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/leases4/?export_all=1 must return a full CSV."""
 
@@ -1525,7 +1502,6 @@ _LEASE4_GET_RESP = [
 ]
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseEditReturnsToTheSearch(_ViewTestBase):
     """An edit starts from a lease search and returns to that search."""
 
@@ -1611,7 +1587,6 @@ class TestLeaseEditReturnsToTheSearch(_ViewTestBase):
         self.assertRedirects(response, self._list_url(), fetch_redirect_response=False)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseEditView(_ViewTestBase):
     """Tests for ServerLease4/6EditView."""
 
@@ -1774,7 +1749,6 @@ _PAGE_LEASES_RESP = [
 ]
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseStateFilter(_ViewTestBase):
     """Tests that the optional state filter correctly limits lease results."""
 
@@ -1880,7 +1854,6 @@ class TestLeaseStateFilter(_ViewTestBase):
 
     # Unguarded on purpose: no stat-lease4-get preflight runs, so the Subnet query is
     # the only command this test measures. State it here instead of inheriting it.
-    @override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
     def test_state_filter_is_sent_with_the_subnet_query(self):
         """A Subnet state filter must run in Kea before it builds the response."""
         declined = next(lease for lease in _PAGE_LEASES_RESP[0]["arguments"]["leases"] if lease["state"] == 1)
@@ -1904,7 +1877,6 @@ class TestLeaseStateFilter(_ViewTestBase):
         )
 
 
-@override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
 class TestLeaseSearchHostBitsSubnet(_ViewTestBase):
     """Kea accepts a Subnet prefix with host bits, so a canonical CIDR search must still find it."""
 
@@ -1948,7 +1920,6 @@ class TestLeaseSearchHostBitsSubnet(_ViewTestBase):
         self.assertNotContains(response, 'id="lease-delete-form"')
 
 
-@override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
 class TestLeaseSearchSubnetCatalogue(_ViewTestBase):
     """A Subnet CIDR search finds the Subnet ID in a live read of the Subnet Catalogue."""
 
@@ -2075,7 +2046,7 @@ class TestLeaseSearchSubnetCatalogue(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
+@with_kea_client_config(lease_query_max_unpaged_leases=1000)
 class TestLeaseAddView(_ViewTestBase):
     """Tests for ServerLease4AddView and ServerLease6AddView."""
 
@@ -2191,7 +2162,7 @@ class TestLeaseAddView(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
+@with_kea_client_config(lease_query_max_unpaged_leases=1000)
 class TestLeaseAddSyncToNetBox(_ViewTestBase):
     """Tests for the sync_to_netbox checkbox on ServerLease4/6AddView."""
 
@@ -2255,7 +2226,6 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual((link.server_id, link.family, link.source), (self.server.pk, 4, "lease"))
         self.assertEqual(link.facts, {"hostname": "newlease.example.com", "prefix_length": 24})
 
-    @override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="remove"))
     def test_lease_add_preserves_reserved_siblings_and_their_ownership(self):
         from netbox_kea.models import IPAMOwnershipLink, next_confirmation_number
 
@@ -2558,7 +2528,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
+@with_kea_client_config(lease_query_max_unpaged_leases=1000)
 class TestBulkLeaseImportView(_ViewTestBase):
     """Tests for ServerLease4/6BulkImportView."""
 
@@ -2777,7 +2747,6 @@ class TestBulkLeaseImportView(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseJournalEntries(_ViewTestBase):
     """Lease add and delete views must create JournalEntry records on the Server."""
 
@@ -2864,7 +2833,6 @@ class TestJournalHelperEdgeCases(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestHTMXExceptionHandler(_ViewTestBase):
     """An exception during the HTMX lease fetch renders the error partial."""
 
@@ -2891,7 +2859,6 @@ class TestHTMXExceptionHandler(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseEditGet(_ViewTestBase):
     """Lease edit GET: Kea errors, a missing lease, and the v6 DUID."""
 
@@ -2939,7 +2906,6 @@ class TestLeaseEditGet(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseEditPostInvalidForm(_ViewTestBase):
     """Lease edit POST with an invalid form re-renders with 200."""
 
@@ -2967,7 +2933,6 @@ class TestLeaseEditPostInvalidForm(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseAddGenericException(_ViewTestBase):
     """A transport error on lease add re-renders the form."""
 
@@ -2995,7 +2960,6 @@ class TestLeaseAddGenericException(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchLeaseSearch(_ViewTestBase):
     """The Lease fetch with each search selector."""
 
@@ -3063,7 +3027,7 @@ class TestFetchLeaseSearch(_ViewTestBase):
         snapshot = self._call(constants.BY_SUBNET_ID, q="1", resp=resp)
         self.assertEqual(len(snapshot.records), 1)
 
-    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
+    @with_kea_client_config(lease_query_max_unpaged_leases=100)
     def test_subnet_state_is_applied_by_kea(self):
         stats = _subnet_stats(4, 1, assigned=501, declined=1)
         response = {
@@ -3085,7 +3049,6 @@ class TestFetchLeaseSearch(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseBulkImportEdgeCases(_ViewTestBase):
     """Lease CSV import: invalid form, parse error, and per-row errors."""
 
@@ -3197,7 +3160,6 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
                 self.assertNotIn("aa:bb:cc:00:00:01", "\n".join(logs.output))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetLeasesPageAllLeasesMode(_ViewTestBase):
     """All-leases browse mode (``by=""``) starts pagination at the address-space root.
 
@@ -3235,7 +3197,6 @@ class TestGetLeasesPageAllLeasesMode(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetLeasesCoverage(_ViewTestBase):
     """Edge cases in the Lease fetch."""
 
@@ -3266,7 +3227,6 @@ class TestGetLeasesCoverage(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetExportCoverage(_ViewTestBase):
     """Edge cases in get_export() and get_export_all()."""
 
@@ -3292,7 +3252,6 @@ class TestGetExportCoverage(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestHTMXInvalidFormCoverage(_ViewTestBase):
     """HTMX GET with invalid form → renders HTMX partial."""
 
@@ -3315,7 +3274,6 @@ class TestHTMXInvalidFormCoverage(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLease6EditDuid(_ViewTestBase):
     """POST lease6 edit with duid → lease6-update carries the duid."""
 
@@ -3341,7 +3299,6 @@ class TestLease6EditDuid(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchOneEmptyLease(_ViewTestBase):
     """A lease reply without the required subnet-id is rejected before enrichment."""
 
@@ -3363,7 +3320,6 @@ class TestFetchOneEmptyLease(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeasePartialDelete(_ViewTestBase):
     """Bulk delete continues past individual KeaExceptions."""
 
@@ -3441,7 +3397,6 @@ class TestLeasePartialDelete(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseExportAllExceptNarrowing(_ViewTestBase):
     """get_export_all() must not swallow local bugs via bare except Exception."""
 
@@ -3456,7 +3411,6 @@ class TestLeaseExportAllExceptNarrowing(_ViewTestBase):
                 self.client.get(self._url(), {"export_all": "1"})
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseExportStateFilter(_ViewTestBase):
     """get_export() must honour the 'state' query parameter."""
 
@@ -3465,7 +3419,6 @@ class TestLeaseExportStateFilter(_ViewTestBase):
 
     # Unguarded on purpose: the export takes the same unpaged Subnet path, with no
     # stat-lease4-get preflight. State it here instead of inheriting it.
-    @override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
     def test_state_filter_applied_to_export(self):
         """Exported CSV must contain only leases matching the requested state."""
         declined = complete_lease(
@@ -3505,7 +3458,6 @@ class TestLeaseExportStateFilter(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
 class TestHtmxHandlerExceptNarrowing(_ViewTestBase):
     """HTMX lease handler must not swallow programming errors via bare except Exception."""
 
@@ -3525,7 +3477,6 @@ class TestHtmxHandlerExceptNarrowing(_ViewTestBase):
                 )
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseDeleteLoopTransportErrors(_ViewTestBase):
     """Bulk delete loop must continue when RequestException/ValueError raised for one IP."""
 
@@ -3570,7 +3521,6 @@ class TestLeaseDeleteLoopTransportErrors(_ViewTestBase):
         self.assertEqual(kea.commands().count("lease4-del"), 2)
 
 
-@override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
 class TestLeaseExportTransportErrors(_ViewTestBase):
     """get_export() must handle RequestException and ValueError gracefully."""
 
@@ -3603,7 +3553,6 @@ class TestLeaseExportTransportErrors(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSingleLeaseGetTransportErrors(_ViewTestBase):
     """Single-lease GET must handle RequestException/ValueError gracefully."""
 
@@ -3629,7 +3578,6 @@ class TestSingleLeaseGetTransportErrors(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseEditPostTransportErrors(_ViewTestBase):
     """Lease edit POST must handle RequestException/ValueError gracefully."""
 
@@ -3666,7 +3614,6 @@ class TestLeaseEditPostTransportErrors(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseAddValueError(_ViewTestBase):
     """Lease add POST must handle ValueError gracefully."""
 
@@ -3692,7 +3639,6 @@ class TestLeaseAddValueError(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseJournalExceptionNarrowing(_ViewTestBase):
     """_add_lease_journal except must only catch DB errors, not all exceptions."""
 
@@ -3728,7 +3674,6 @@ class TestLeaseJournalExceptionNarrowing(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
 class TestLeaseExportClientError(_ViewTestBase):
     """Cover error paths in get_export()."""
 
@@ -3757,7 +3702,6 @@ class TestLeaseExportClientError(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
 class TestLeaseHtmxErrorHandler(_ViewTestBase):
     """Cover HTMX error rendering paths."""
 
@@ -3793,7 +3737,6 @@ class TestLeaseHtmxErrorHandler(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseEditGetValidation(_ViewTestBase):
     """Cover lease edit GET validation paths."""
 
@@ -3842,7 +3785,6 @@ class TestLeaseEditGetValidation(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseAddPostErrors(_ViewTestBase):
     """Cover lease add POST error handling."""
 
@@ -3892,7 +3834,6 @@ class TestLeaseAddPostErrors(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseAddSideEffectErrors(_ViewTestBase):
     """Cover lease add post-creation side effect error paths."""
 
@@ -3919,7 +3860,6 @@ class TestLeaseAddSideEffectErrors(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetLeasesPageDefensiveChecks(_ViewTestBase):
     """Cover the isinstance guards and RuntimeError paths in the Lease page read."""
 
@@ -3953,7 +3893,6 @@ class TestGetLeasesPageDefensiveChecks(_ViewTestBase):
         self.assertNotContains(response, "bad")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestExportAllDefensiveChecks(_ViewTestBase):
     """Cover defensive branches in get_export_all()."""
 
@@ -4003,7 +3942,6 @@ class TestExportAllDefensiveChecks(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetLeasesPageMalformedResponse(_ViewTestBase):
     """The Lease page read must raise RuntimeError on malformed Kea responses.
 
@@ -4065,7 +4003,6 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
         _assert_lease_read_failed(self, response)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetLeasesSingleResultValidation(_ViewTestBase):
     """The single-result paths of a Lease search must raise RuntimeError on bad data.
 
@@ -4123,7 +4060,6 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
         _assert_rendered_error_template(self, response)
 
 
-@override_settings(PLUGINS_CONFIG=_UNGUARDED_PLUGINS_CONFIG)
 class TestExportErrorPaths(_ViewTestBase):
     """Export must redirect with error messages when Kea calls fail."""
 
@@ -4171,7 +4107,6 @@ class TestExportErrorPaths(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseDeletePartialFailure(_ViewTestBase):
     """Bulk delete must handle partial failures gracefully."""
 
@@ -4255,7 +4190,6 @@ class TestLeaseDeletePartialFailure(_ViewTestBase):
         self.assertFalse(has_success, f"Should not have success message when all fail, got: {msg_texts}")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestFetchOneMacValueError(_ViewTestBase):
     """A lease with a non-numeric subnet_id is excluded before any reservation lookup.
 
@@ -4308,7 +4242,6 @@ class TestFetchOneMacValueError(_ViewTestBase):
         self.assertNotIn("reservation-get", kea.commands())
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetLeasesPageGlobalEdgeCases(_ViewTestBase):
     """Additional edge-case tests for global lease-page results."""
 
@@ -4366,7 +4299,6 @@ class TestGetLeasesPageGlobalEdgeCases(_ViewTestBase):
         self.assertContains(response, "10.0.1.5")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseSearchSubnetDropdown(_ViewTestBase):
     """For the Subnet and Subnet ID Attributes the Search value is a dropdown of the Server's Subnets."""
 
@@ -4519,7 +4451,6 @@ class TestIdentityLookupMemoization(SimpleTestCase):
         self.assertEqual(len(calls), 1, "the failing lookup was reissued for a repeated identity")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseSearchHeaderSort(_ViewTestBase):
     """A column header of the lease search sorts the rows in place, through NetBox's htmx table header."""
 

@@ -7,13 +7,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-from django.test import override_settings
 
 from netbox_kea.branching import BranchActive, BranchBinding
 from netbox_kea.kea import KeaClient, KeaCommand
 from netbox_kea.tests.kea_stub import kea_client, stub_kea
 from netbox_kea.tests.kea_wire_discipline import WIRE_COMMANDS
-from netbox_kea.tests.utils import _PLUGINS_CONFIG
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -203,7 +201,7 @@ def test_a_branch_bound_client_sends_a_read():
     assert kea.commands() == ["config-get"]
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@pytest.mark.django_db
 def test_get_client_on_main_binds_no_branch_and_sends_a_write():
     from netbox_kea.models import Server
 

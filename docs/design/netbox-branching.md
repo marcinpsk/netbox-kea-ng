@@ -338,8 +338,8 @@ The middleware follows the contract, with these facts from netbox-branching 1.2.
   branch is active; `clone()` keeps the binding (thread-pool workers do not inherit context
   variables, and `clone()` copies fields explicitly, `K/netbox_kea/kea.py:772-789`). A string
   command is a type error (mypy) and a `TypeError` at runtime.
-- **Main-only plugin models.** `pre_save` and `pre_delete` receivers on `Server`, `SyncConfig` and
-  `IPAMOwnershipLink` call the branch refusal. A `pre_delete` receiver disables Django's fast delete,
+- **Main-only plugin models.** `pre_save` and `pre_delete` receivers on `Server`, `SyncConfig`,
+  `KeaClientConfig` and `IPAMOwnershipLink` call the branch refusal. A `pre_delete` receiver disables Django's fast delete,
   so queryset `delete()` reaches it. `JobsMixin.delete()` runs its job deletion and the collector
   in one transaction (`NB/netbox/models/features.py:513-520`), so the refusal rolls the job
   deletion back.
@@ -378,6 +378,7 @@ The sinks follow the design, with these facts from the code:
 |---|---|---|
 | `Server` | No (resolver) | One row per pk: the Kea client and the Redis keys use main's current connection fields; sync never copies censored passwords into a branch |
 | `SyncConfig` | No (resolver) | Global singleton, change-logged; the Settings page edits it |
+| `KeaClientConfig` | No (resolver) | Global singleton, change-logged; the Settings page edits it (ADR 0010) |
 | `KeaDhcpLink` | Yes, unless configured exempt | Change-logged association that must recover with its imported target; ADR 0008 |
 | ADR 0006 ownership link | No (resolver) | `CASCADE` keys to IPAddress, Prefix, IPRange. A delete of a linked object in a branch reaches main's link table, and the `pre_delete` receiver refuses it. Merge and revert delete on main, where `CASCADE` removes the links. Design: `docs/design/ipam-ownership-branching.md` |
 

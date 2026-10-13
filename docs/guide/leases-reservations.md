@@ -76,7 +76,7 @@ Edit a lease from the row menu of a lease search: change the hostname and save. 
 - A DHCPv6 *IP Address* search reads the address and the delegated prefix at that address. It is
   complete only when Kea confirms both. A *Subnet* search for a CIDR that Kea does not configure is
   refused, because Kea can keep leases under a Subnet ID that is no longer configured: search by
-  *Subnet ID* instead. When `lease_query_max_unpaged_leases` is set, a Subnet read that returns more
+  *Subnet ID* instead. When **Max Unpaged Leases** on the Settings page is not 0, a Subnet read that returns more
   leases than the limit is refused too, because Kea's statistics do not count every lease state.
 - *Export All Leases* and *All Data* are complete exports. They refuse an incomplete observation (a
   malformed record, or more leases than the export limit) and show the reason. Their columns are:

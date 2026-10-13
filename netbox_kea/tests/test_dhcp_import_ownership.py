@@ -13,7 +13,7 @@ from pathlib import Path
 from django.apps import apps
 from django.db import connection
 from django.db.models.signals import post_save
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import SimpleTestCase, TestCase
 from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 
@@ -33,10 +33,9 @@ from netbox_kea.views.dhcp_plugin_sync import _summary_problems, run_dhcp_plugin
 from .kea_stub import observed_configuration, stub_kea
 from .test_integration_dhcp_plugin import _reservation_snapshot
 from .test_views_dhcp_plugin import _sync_responses
-from .utils import _make_db_server, plugins_config
+from .utils import _make_db_server
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
 class ImportOwnershipTest(TestCase):
     @classmethod
     def setUpClass(cls):
@@ -726,7 +725,6 @@ class ImportOwnershipTest(TestCase):
         self.assertTrue(any("unusable range, skipped" in warning for warning in summary.warnings))
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
 class TypedNetworkClaimTest(TestCase):
     def test_oversized_pool_is_skipped_while_supported_pool_is_claimed(self):
         server = _make_db_server()

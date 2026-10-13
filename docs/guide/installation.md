@@ -11,7 +11,7 @@ SPDX-License-Identifier: Apache-2.0
 - NetBox 4.3 – 4.7
 - Kea 3.0+ (recommended) — the plugin connects directly to each daemon's built-in HTTP control socket (`kea-dhcp4` / `kea-dhcp6`). The [Kea Control Agent](https://kea.readthedocs.io/en/latest/arm/agent.html) was deprecated in Kea 3.0 and removed in Kea 3.1.8. Before Kea 3.0, point the server URL at the Control Agent; Kea 3.0 supports both.
 - [`lease_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-lease-cmds) hook library (for lease search and management)
-- [`stat_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-stat-cmds) hook library (for guarded Subnet lease searches unless `lease_query_max_unpaged_leases` is `0`)
+- [`stat_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-stat-cmds) hook library (for guarded Subnet lease searches unless **Max Unpaged Leases** on the Settings page is `0`)
 - Kea 3.1.5+ for state-filtered Subnet lease searches. Earlier releases do not provide the scoped state commands, so these searches fail closed.
 - [`host_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-host-cmds) hook library (optional, for reservation management; it also requires `subnet_cmds` to resolve a reservation's subnet from its CIDR). The plugin finds it in `hooks-libraries`: the library file name must be `libdhcp_host_cmds` followed by an extension, for example `libdhcp_host_cmds.so`.
 - [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-subnet-cmds) hook library (optional, for subnet add/edit/delete, reservation management, and the subnet suggestions on the lease search and reservation forms)
@@ -49,23 +49,8 @@ In `configuration.py`:
 PLUGINS = ["netbox_kea"]
 ```
 
-Optionally configure plugin settings (see [Configuration](configuration.md)):
-
-```python
-PLUGINS_CONFIG = {
-    "netbox_kea": {
-        "kea_timeout": 30,
-        "lease_query_max_unpaged_leases": 1000,
-        "sync_interval_minutes": 5,
-        "sync_leases_enabled": True,
-        "sync_reservations_enabled": True,
-        "sync_prefixes_enabled": True,
-        "sync_ip_ranges_enabled": True,
-        "sync_max_leases_per_server": 50000,
-        "stale_ip_cleanup": "remove",
-    }
-}
-```
+After the migrations, change the plugin settings on the **Settings** page (see [Configuration](configuration.md)).
+The plugin takes no `PLUGINS_CONFIG` settings.
 
 ### 3. Run migrations
 

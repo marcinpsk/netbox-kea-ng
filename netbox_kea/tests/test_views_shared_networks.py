@@ -31,7 +31,6 @@ import copy
 
 import requests
 from django.contrib import messages as django_messages
-from django.test import override_settings
 from django.urls import reverse
 
 from .kea_stub import (
@@ -42,7 +41,13 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _PLUGINS_CONFIG, _make_db_server, _page_data, _ReadModifyWriteMessages, _ViewTestBase
+from .utils import (
+    _make_db_server,
+    _page_data,
+    _ReadModifyWriteMessages,
+    _ViewTestBase,
+    with_kea_client_config,
+)
 
 _CONFIG_OK = {"result": 0}
 
@@ -141,7 +146,6 @@ def _written_sn(kea, version=4):
     return bodies[0]["arguments"][f"Dhcp{version}"]["shared-networks"][0]
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSharedNetworks4View(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/shared_networks4/"""
 
@@ -272,7 +276,6 @@ class TestServerSharedNetworks4View(_ViewTestBase):
         self.assertIs(response.context["tab"], _SUBNETS_TAB)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSharedNetworks6View(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/shared_networks6/"""
 
@@ -317,7 +320,6 @@ class TestServerSharedNetworks6View(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSharedNetwork4AddView(_ViewTestBase):
     """Tests for ServerSharedNetwork4AddView: GET form + POST create."""
 
@@ -367,7 +369,6 @@ class TestServerSharedNetwork4AddView(_ViewTestBase):
         self.assertIn(response.status_code, (302, 403))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSharedNetwork6AddView(_ViewTestBase):
     """Tests for ServerSharedNetwork6AddView — verifies v6 variant uses the dhcp6 service."""
 
@@ -388,7 +389,6 @@ class TestServerSharedNetwork6AddView(_ViewTestBase):
         self.assertEqual(body["service"], ["dhcp6"])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSharedNetwork4DeleteView(_ViewTestBase):
     """Tests for ServerSharedNetwork4DeleteView: GET confirm + POST delete."""
 
@@ -432,7 +432,6 @@ class TestServerSharedNetwork4DeleteView(_ViewTestBase):
         self.assertIn(response.status_code, (302, 403))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSharedNetwork6DeleteView(_ViewTestBase):
     """Tests for ServerSharedNetwork6DeleteView — verifies v6 variant uses the dhcp6 service."""
 
@@ -601,7 +600,6 @@ class _SharedNetworkChangeMessages:
         self.assertEqual(commands, [])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSharedNetworkAddMessages(_SharedNetworkChangeMessages, _ViewTestBase):
     change = "network4-add"
     confirmed = "Shared network 'net-prod' created."
@@ -620,7 +618,6 @@ class TestSharedNetworkAddMessages(_SharedNetworkChangeMessages, _ViewTestBase):
         return _network_present(4, "net-prod")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSharedNetworkDeleteMessages(_SharedNetworkChangeMessages, _ViewTestBase):
     change = "network4-del"
     confirmed = "Shared network 'net-prod' deleted."
@@ -644,7 +641,6 @@ class TestSharedNetworkDeleteMessages(_SharedNetworkChangeMessages, _ViewTestBas
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSharedNetwork4EditView(_ViewTestBase):
     """Tests for ServerSharedNetwork4EditView: GET form + POST update."""
 
@@ -886,7 +882,6 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         self.assertIn(response.status_code, (302, 403))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSharedNetwork6EditView(_ViewTestBase):
     """Tests for ServerSharedNetwork6EditView — verifies the dhcp6 service."""
 
@@ -956,7 +951,6 @@ _DNS_OPTION = {
 }
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSharedNetworkEditStaleValues(_ViewTestBase):
     """Two operators load the same edit page, and each one changes a different field."""
 
@@ -994,7 +988,7 @@ class TestSharedNetworkEditStaleValues(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestSharedNetworkEditMessages(_ReadModifyWriteMessages):
     """One POST per Configuration Change outcome and per rejection, for the Shared Network edit."""
 
@@ -1110,7 +1104,6 @@ class TestSharedNetworkEditAmbiguousWrite(_ViewTestBase):
                         self.assertTrue(any("may not survive a Kea restart" in str(message) for message in messages))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSharedNetworkOptionDataPreservation(_ViewTestBase):
     """Verify non-DNS/NTP option-data entries are preserved on shared network save."""
 
@@ -1151,7 +1144,6 @@ class TestSharedNetworkOptionDataPreservation(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSharedNetworkEditSnapshotFailures(_ViewTestBase):
     """Server Configuration failure paths for GET display and POST verification."""
 
@@ -1254,7 +1246,6 @@ class TestSharedNetworkEditSnapshotFailures(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSharedNetworkListEdgeCases(_ViewTestBase):
     """Shared Network list when DHCP is disabled."""
 
@@ -1273,7 +1264,6 @@ class TestSharedNetworkListEdgeCases(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSharedNetworkEditOptionParsing(_ViewTestBase):
     """GET populates dns_servers/ntp_servers from the fetched option-data."""
 
@@ -1299,7 +1289,6 @@ class TestSharedNetworkEditOptionParsing(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSharedNetworksTabDisabled(_ViewTestBase):
     """server.dhcp4=False → get_children returns [] immediately (before any client)."""
 

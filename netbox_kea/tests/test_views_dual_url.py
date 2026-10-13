@@ -16,13 +16,13 @@ endpoint hit, so a dual-URL regression (falling back to ``ca_url``) fails the te
 Closes: https://github.com/marcinpsk/netbox-kea/issues/40
 """
 
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.urls import reverse
 
 from netbox_kea.models import Server
 
 from .kea_stub import _subnet_list, stub_kea
-from .utils import _PLUGINS_CONFIG, User
+from .utils import User, with_kea_client_config
 
 # Distinct URLs so we can tell which one was selected.
 _SERVER_URL = "https://kea-default.example.com"
@@ -97,7 +97,7 @@ class _DualURLBase(TestCase):
         self.server = _make_dual_url_server()
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestDualURLSubnetViews(_DualURLBase):
     """Subnet views must use dhcp4_url for v4 and dhcp6_url for v6."""
 
@@ -118,7 +118,7 @@ class TestDualURLSubnetViews(_DualURLBase):
         self.assertIn(_DHCP6_URL, kea.urls())
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestDualURLLeaseViews(_DualURLBase):
     """Lease views must use dhcp4_url for v4 and dhcp6_url for v6.
 
@@ -144,7 +144,7 @@ class TestDualURLLeaseViews(_DualURLBase):
         self.assertIn(_DHCP6_URL, kea.urls())
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestDualURLOptionViews(_DualURLBase):
     """Option views must use dhcp4_url for v4 and dhcp6_url for v6."""
 
@@ -181,7 +181,7 @@ class TestDualURLOptionViews(_DualURLBase):
         self.assertIn(_DHCP6_URL, kea.urls())
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestDualURLReservationViews(_DualURLBase):
     """Reservation views must use dhcp4_url for v4 and dhcp6_url for v6."""
 
@@ -202,7 +202,7 @@ class TestDualURLReservationViews(_DualURLBase):
         self.assertIn(_DHCP6_URL, kea.urls())
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestDualURLFallback(_DualURLBase):
     """When protocol-specific URL is not set, fall back to ca_url."""
 

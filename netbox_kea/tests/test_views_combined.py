@@ -33,7 +33,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _make_db_server, _ViewTestBase
+from .utils import _make_db_server, _ViewTestBase, with_kea_client_config
 
 # ---------------------------------------------------------------------------
 # Lease Server chooser
@@ -945,6 +945,21 @@ class TestCombinedReservationFanOut(_ViewTestBase):
         self.assertContains(response, "printer")
         self.assertEqual(response.context["errors"], [("broken-kea", HEADLINES["reservation"])])
         self.assertEqual(response.context["mutation_unavailable_servers"], [])
+
+    @with_kea_client_config(kea_timeout=7, lease_query_max_unpaged_leases=250)
+    def test_a_worker_builds_its_client_from_the_request_read_of_the_settings_row(self):
+        from django.db import connection
+
+        from netbox_kea.views.fan_out import fan_out
+
+        def fetch(server):
+            client = server.get_client(4)
+            return client.timeout, client.max_unpaged_leases, connection.connection is None
+
+        read = fan_out([self.server], "catalogue", fetch)
+
+        # A worker that read the row itself would open a connection and miss the uncommitted test value.
+        self.assertEqual(read.results, [(self.server, (7, 250, True))])
 
     def test_a_server_that_cannot_be_reached_gets_no_capability_read(self):
         # A second read of an unreachable Server only adds its timeout to the page.

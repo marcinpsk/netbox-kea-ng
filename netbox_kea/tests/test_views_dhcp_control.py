@@ -22,11 +22,10 @@ page renders.
 
 import requests
 from django.contrib import messages as django_messages
-from django.test import override_settings
 from django.urls import reverse
 
 from .kea_stub import stub_kea
-from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase, active_tabs
+from .utils import _make_db_server, _ViewTestBase, active_tabs
 
 
 def _config_get_empty(body):
@@ -50,7 +49,6 @@ def _control_stub(**overrides):
     return stub_kea(base)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerDHCP4EnableView(_ViewTestBase):
     """Tests for ServerDHCP4EnableView (GET confirmation + POST enable)."""
 
@@ -112,7 +110,6 @@ class TestServerDHCP4EnableView(_ViewTestBase):
         self.assertIn(response.status_code, (302, 403))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerDHCPEnableMissingTLSFile(_ViewTestBase):
     """A CA file removed after the Server was saved gives the error message of the view, not HTTP 500."""
 
@@ -128,7 +125,6 @@ class TestServerDHCPEnableMissingTLSFile(_ViewTestBase):
         )
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerDHCP6EnableView(_ViewTestBase):
     """Tests for ServerDHCP6EnableView — verifies v6 variant uses the dhcp6 service."""
 
@@ -143,7 +139,6 @@ class TestServerDHCP6EnableView(_ViewTestBase):
         self.assertEqual(kea.bodies("dhcp-enable")[0]["service"], ["dhcp6"])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerDHCP4DisableView(_ViewTestBase):
     """Tests for ServerDHCP4DisableView (GET form + POST disable with optional max_period)."""
 
@@ -236,7 +231,6 @@ class TestServerDHCP4DisableView(_ViewTestBase):
         self.assertIn(response.status_code, (302, 403))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerDHCP6DisableView(_ViewTestBase):
     """Tests for ServerDHCP6DisableView — verifies v6 variant uses the dhcp6 service."""
 

@@ -3,12 +3,11 @@
 """Pytest fixtures/hooks for netbox_kea unit tests.
 
 Force the URL resolver to import every plugin's urlconf while the *real*
-PLUGINS_CONFIG is active (at session start), so the plugin URL namespaces are
-registered and cached in sys.modules before any test enters an
-``@override_settings(PLUGINS_CONFIG=<minimal>)`` block.
+plugin settings are active (at session start), so the plugin URL namespaces are
+registered and cached in sys.modules before any test overrides the plugin settings.
 
 Some co-installed plugins (in a multi-plugin dev container) read their own
-``settings.PLUGINS_CONFIG['<plugin>']`` key at *import* time. When such a
+plugin settings key at *import* time. When such a
 plugin's urlconf is first imported lazily — which, without this hook, happens
 inside an overridden test where its key is absent — it raises ``KeyError`` and
 its namespace never registers, causing ``NoReverseMatch`` when the nav menu is
@@ -183,18 +182,21 @@ def database_lifecycle(config) -> tuple[bool, bool]:
     return (reuse_db and not create_db), (not reuse_db)
 
 
-def _restore_sync_config_row(sender, app_config, using, **kwargs) -> None:
-    """Recreate the SyncConfig row after a flush, with the values of the migration that creates it.
+def _restore_settings_rows(sender, app_config, using, **kwargs) -> None:
+    """Recreate the settings rows after a flush, with the values of the migrations that create them.
 
     A TransactionTestCase flushes every table after each test, and flush sends ``post_migrate``.
-    Without this receiver the next test on that worker, and the next ``--reuse-db`` run, has no row.
+    Without this receiver the next test on that worker, and the next ``--reuse-db`` run, has no rows.
     """
     if app_config.label != "netbox_kea":
         return
-    from netbox_kea.models import SyncConfig
+    from netbox_kea.models import KeaClientConfig, SyncConfig
 
     seed = importlib.import_module("netbox_kea.migrations.0018_seed_syncconfig")
-    SyncConfig.objects.using(using).get_or_create(pk=1, defaults=seed.configured_values())
+    copy = importlib.import_module("netbox_kea.migrations.0025_keaclientconfig_and_sync_settings")
+    sync_values = {**seed.configured_values(), **copy.configured_values(copy.SYNC_KEYS)}
+    SyncConfig.objects.using(using).get_or_create(pk=1, defaults=sync_values)
+    KeaClientConfig.objects.using(using).get_or_create(pk=1, defaults=copy.configured_values(copy.KEA_CLIENT_KEYS))
 
 
 @pytest.fixture(scope="session")
@@ -217,8 +219,8 @@ def django_db_setup(request, django_test_environment, django_db_blocker):
     verbosity = request.config.option.verbose
     with django_db_blocker.unblock():
         db_cfg = setup_databases(verbosity=verbosity, interactive=False, keepdb=keepdb)
-        # Connected after setup, so on a fresh database only migration 0018 can create the row.
-        post_migrate.connect(_restore_sync_config_row, dispatch_uid="netbox_kea_tests_restore_sync_config_row")
+        # Connected after setup, so on a fresh database only the migrations can create the rows.
+        post_migrate.connect(_restore_settings_rows, dispatch_uid="netbox_kea_tests_restore_settings_rows")
         # Populate the URL resolver now that DB access is unblocked — importing some
         # plugin urlconfs touches the DB, so doing this in pytest_configure raised
         # "Database access not allowed". Runs once per session, before any DB test.

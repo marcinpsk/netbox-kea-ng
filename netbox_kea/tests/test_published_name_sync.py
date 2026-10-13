@@ -11,7 +11,7 @@ from core.models import Job, ObjectChange
 from dcim.models import MACAddress
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.urls import reverse
 from ipam.models import IPAddress
 
@@ -27,7 +27,7 @@ from netbox_kea.subnet_catalogue import CatalogueUnavailable, display
 from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, _res_get, complete_lease, stub_kea
 from netbox_kea.tests.test_jobs import _patch_kea
 from netbox_kea.tests.test_kea_recordings import _recording
-from netbox_kea.tests.utils import _make_db_server, plugins_config
+from netbox_kea.tests.utils import _make_db_server
 
 _HW = "aa:bb:cc:dd:ee:42"
 _SUFFIX = "dhcp.example.com"
@@ -101,7 +101,6 @@ class _ChangeRecords(TestCase):
         return ip, mac
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
 class TestSyncJobPublishedName(_ChangeRecords):
     def _run(self) -> Job:
         job = Job.objects.create(name=KeaIpamSyncJob.name, job_id=uuid.uuid4(), status="pending")
@@ -124,7 +123,6 @@ class TestSyncJobPublishedName(_ChangeRecords):
         self.assertEqual(self._changes(ip, mac), before)
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
 class TestPerRowSyncPublishedName(_ChangeRecords):
     def setUp(self):
         self.server = _make_db_server()

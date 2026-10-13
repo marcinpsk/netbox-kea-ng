@@ -5,13 +5,13 @@
 import uuid
 
 from core.models import Job
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from ipam.models import VRF, IPRange, Prefix
 
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import IPAMOwnershipLink, next_confirmation_number
 from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, stub_kea
-from netbox_kea.tests.utils import _make_db_server, plugins_config
+from netbox_kea.tests.utils import _make_db_server
 
 SUBNET = {"id": 1, "subnet": "198.18.0.0/24", "pools": [{"pool": "198.18.0.10 - 198.18.0.20"}]}
 
@@ -23,7 +23,6 @@ def run_job(server, subnets=(SUBNET,)):
     return job.data["summary"][0]
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
 class PrefixPoolJobTest(TestCase):
     def test_job_links_prefix_and_pool_in_server_vrf(self):
         vrf = VRF.objects.create(name="sync")
@@ -542,7 +541,6 @@ class PrefixPoolJobTest(TestCase):
         self.assertEqual((Prefix.objects.count(), IPRange.objects.count()), (2, 2))
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
 class DeprecationSettingFormTest(TestCase):
     def test_model_form_saves_opt_in_and_opt_out(self):
         from netbox_kea.forms import ServerForm
@@ -589,7 +587,6 @@ class DeprecationSettingFormTest(TestCase):
                 self.assertEqual(Server.objects.get(name=name).sync_deprecate_prefixes_and_ranges, value == "true")
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
 class DhcpReferencesTest(TestCase):
     def test_referenced_prefix_and_range_are_not_deprecated(self):
         from django.apps import apps

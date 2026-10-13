@@ -14,7 +14,7 @@ request payloads (command + service) are exercised and asserted.
 """
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
 
@@ -22,7 +22,7 @@ from netbox_kea.constants import MAX_SUBNET_ID
 from netbox_kea.models import Server
 
 from .kea_stub import complete_lease, stub_kea
-from .utils import plugins_config
+from .utils import with_kea_client_config
 
 # A single DHCPv6 lease (result 0) returned by lease6-get.
 _LEASE6_RESPONSE = [
@@ -44,7 +44,6 @@ _LEASE6_RESPONSE = [
 
 User = get_user_model()
 
-_PLUGINS_CONFIG = plugins_config(lease_query_max_unpaged_leases=0)
 
 _LEASE4_RESPONSE = [
     {
@@ -92,7 +91,7 @@ def _make_server(**kwargs):
     return Server.objects.create(**defaults)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class _APITestBase(TestCase):
     """Creates a superuser + API token and a single Server for API tests."""
 
@@ -112,7 +111,6 @@ class _APITestBase(TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseAPIAuth(_APITestBase):
     """API endpoints must reject unauthenticated requests."""
 
@@ -209,7 +207,6 @@ class TestLeaseAPIFormatSuffix(_APITestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLease4API(_APITestBase):
     """Tests for GET /api/plugins/netbox-kea/servers/{pk}/leases4/."""
 
@@ -377,7 +374,6 @@ class TestLeaseAPIState(_APITestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLease6API(_APITestBase):
     """Tests for GET /api/plugins/netbox-kea/servers/{pk}/leases6/."""
 

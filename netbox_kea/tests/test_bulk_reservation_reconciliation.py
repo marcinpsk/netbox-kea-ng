@@ -17,7 +17,7 @@ from netbox_kea.subnet_catalogue import for_synchronization
 
 from .kea_stub import _catalogue_responses, _res_page, queued, stub_kea
 from .test_sync_views import _make_server, _SyncViewBase
-from .utils import lease_phase, plugins_config
+from .utils import lease_phase, with_sync_config
 
 
 def _reservation(address="198.18.0.10", hostname="", *, subnet_id=1):
@@ -81,7 +81,7 @@ class TestBulkReservationOwnership(_SyncViewBase):
 
     def test_bulk_preserves_last_link_until_both_phases_complete(self):
         for index, mode in enumerate(("remove", "deprecate", "none"), start=1):
-            with self.subTest(mode=mode), self.settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup=mode)):
+            with self.subTest(mode=mode), with_sync_config(stale_ip_cleanup=mode):
                 ip = self._owned(f"198.18.0.{index}/24", sources=("reservation",))
                 link = IPAMOwnershipLink.objects.get(ip_address=ip)
                 summary = self._post(_responses())

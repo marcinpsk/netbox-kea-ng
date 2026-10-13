@@ -4,7 +4,7 @@
 
 from django.contrib.auth import get_user_model
 from django.db import connection
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
@@ -16,10 +16,9 @@ from netbox_kea.ipam_reconciliation import claim, upgrade_counts
 from netbox_kea.models import IPAMOwnershipLink, Server
 from netbox_kea.tests.kea_stub import typed_lease
 from netbox_kea.tests.test_ipam_reconciliation import _kea, _lease, _reconcile, _run_job, _server
-from netbox_kea.tests.utils import plugins_config
+from netbox_kea.tests.utils import with_sync_config
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="remove"))
 class UpgradeAdoptionTest(TestCase):
     def test_unowned_count_reads_only_valid_marker_candidates(self):
         expected = set()
@@ -323,7 +322,7 @@ class UpgradeAdoptionTest(TestCase):
         for index, mode in enumerate(("none", "remove", "deprecate"), start=10):
             address = f"10.0.0.{index}"
             existing = IPAddress.objects.create(address=f"{address}/24", description="[kea-sync: lease]")
-            with override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup=mode)):
+            with with_sync_config(stale_ip_cleanup=mode):
                 _reconcile(server, [_lease(address)])
                 _reconcile(server)
             existing.refresh_from_db()

@@ -58,7 +58,7 @@ from netbox_kea.tests.test_branching import (
 )
 from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
 from netbox_kea.tests.test_ipam_reconciliation import _lease, _reconcile, _row
-from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server
+from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server, with_sync_config
 
 
 class DhcpMappingRecoveryTest(TransactionTestCase):
@@ -3444,8 +3444,7 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
         paused.finish()
 
     def _stale_ip_cleanup(self):
-        kea = {**settings.PLUGINS_CONFIG.get("netbox_kea", {}), "stale_ip_cleanup": "remove"}
-        return override_settings(PLUGINS_CONFIG={**settings.PLUGINS_CONFIG, "netbox_kea": kea})
+        return with_sync_config(stale_ip_cleanup="remove")
 
     def _backend_pid(self, pids):
         with connections["default"].cursor() as cursor:

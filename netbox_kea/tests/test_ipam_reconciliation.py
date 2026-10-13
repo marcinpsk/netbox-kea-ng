@@ -16,7 +16,7 @@ from contextlib import suppress
 from core.exceptions import JobFailed
 from core.models import Job
 from django.db import connection, connections
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import TestCase, TransactionTestCase
 from ipam.models import VRF, Prefix
 from ipam.models import IPAddress as NbIP
 
@@ -43,16 +43,12 @@ from netbox_kea.tests.kea_stub import (
     stub_kea,
     typed_lease,
 )
-from netbox_kea.tests.test_jobs import _PLUGINS_CONFIG_CLEANUP, _lease_page, _make_job, _patch_kea
-from netbox_kea.tests.utils import _make_db_server, lease_phase, plugins_config
+from netbox_kea.tests.test_jobs import _lease_page, _make_job, _patch_kea
+from netbox_kea.tests.utils import _make_db_server, lease_phase, with_sync_config
 
 ADDRESS = "10.0.0.5"
 SUBNET = {"id": 1, "subnet": "10.0.0.0/24"}
 BOTH = ("lease", "reservation")
-
-
-def _config(mode: str) -> dict:
-    return plugins_config(stale_ip_cleanup=mode)
 
 
 def _server(name: str, **fields):
@@ -137,7 +133,7 @@ def _run_job(server, leases: list[dict], reservations: list[dict] | None = None)
     return job.data["summary"][0]
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
+@with_sync_config(stale_ip_cleanup="remove")
 class JobLeasePhaseOwnershipTest(TestCase):
     """The job's lease phase: cleanup and lookup stay inside the Server's ownership and sync_vrf."""
 
@@ -251,7 +247,6 @@ class JobLeasePhaseOwnershipTest(TestCase):
         self.assertEqual(summary["errors"], 0)
 
 
-@override_settings(PLUGINS_CONFIG=_config("remove"))
 class JobDisabledReservationCleanupTest(TestCase):
     """A complete lease snapshot can finish cleanup when the Server disables Reservations."""
 
@@ -292,7 +287,7 @@ class JobDisabledReservationCleanupTest(TestCase):
                 self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())
                 self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address_id=ip.pk).exists())
 
-    @override_settings(PLUGINS_CONFIG=_config("deprecate"))
+    @with_sync_config(stale_ip_cleanup="deprecate")
     def test_complete_lease_snapshot_deprecates_and_retains_a_stale_link(self):
         for family in (4, 6):
             with self.subTest(family=family):
@@ -308,7 +303,7 @@ class JobDisabledReservationCleanupTest(TestCase):
                 self.assertEqual(ip.status, "dhcp")
                 self.assertIsNone(link.stale_mark)
 
-    @override_settings(PLUGINS_CONFIG=_config("none"))
+    @with_sync_config(stale_ip_cleanup="none")
     def test_complete_lease_snapshot_unlinks_without_changing_the_address(self):
         for family in (4, 6):
             with self.subTest(family=family):
@@ -343,7 +338,7 @@ class JobDisabledReservationCleanupTest(TestCase):
                 self.assertEqual(len(links), 2)
                 live = "198.18.0.30" if family == 4 else "2001:db8::30"
                 overflow = "198.18.0.31" if family == 4 else "2001:db8::31"
-                with self.settings(PLUGINS_CONFIG=plugins_config(sync_max_leases_per_server=1)):
+                with with_sync_config(sync_max_leases_per_server=1):
                     self._run(server, family, [_lease(live), _lease(overflow)])
                 self.assertEqual(
                     list(
@@ -404,7 +399,7 @@ class JobDisabledReservationCleanupTest(TestCase):
         self.assertEqual(IPAMOwnershipLink.objects.get(ip_address=ip).source, "reservation")
 
 
-@override_settings(PLUGINS_CONFIG=_config("deprecate"))
+@with_sync_config(stale_ip_cleanup="deprecate")
 class JobDeprecatedIPReleaseTest(TestCase):
     def test_operator_release_of_deprecated_ip_drops_the_marked_link_and_reports_conflict(self):
         for source in ("lease", "reservation"):
@@ -442,7 +437,6 @@ class JobDeprecatedIPReleaseTest(TestCase):
                 self.assertEqual(summary["conflict_sample"], [address])
 
 
-@override_settings(PLUGINS_CONFIG=_config("remove"))
 class LeasePhaseOwnersTest(TestCase):
     """Several Servers own one object; each run compares its facts with the other owners' facts."""
 
@@ -520,7 +514,6 @@ class LeasePhaseStaleTest(TestCase):
     def setUp(self):
         self.server = _server("owner")
 
-    @override_settings(PLUGINS_CONFIG=_config("remove"))
     def test_an_expired_lease_is_removed_in_remove_mode(self):
         _reconcile(self.server, [_lease(hostname="host")])
         ip = _row()
@@ -531,7 +524,6 @@ class LeasePhaseStaleTest(TestCase):
         self.assertFalse(IPAMOwnershipLink.objects.exists())
         self.assertEqual(report.removed, 1)
 
-    @override_settings(PLUGINS_CONFIG=_config("remove"))
     def test_a_hostless_lease_is_cleaned_up_too(self):
         _reconcile(self.server, [_lease()])
         ip = _row()
@@ -541,7 +533,7 @@ class LeasePhaseStaleTest(TestCase):
 
         self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())
 
-    @override_settings(PLUGINS_CONFIG=_config("none"))
+    @with_sync_config(stale_ip_cleanup="none")
     def test_an_expired_lease_keeps_its_row_in_none_mode(self):
         _reconcile(self.server, [_lease(hostname="host")])
 
@@ -550,7 +542,6 @@ class LeasePhaseStaleTest(TestCase):
         self.assertEqual(_row().status, "dhcp")
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
-    @override_settings(PLUGINS_CONFIG=_config("remove"))
     def test_an_incomplete_phase_keeps_its_stale_links(self):
         # The Reservation link keeps the lease link from being the last link of the Server.
         _reconcile(self.server, [_lease(hostname="host")], [_reservation(hostname="host")])
@@ -562,7 +553,6 @@ class LeasePhaseStaleTest(TestCase):
         self.assertFalse(report.complete)
         self.assertEqual(_owners(ip), {("owner", "lease"), ("owner", "reservation")})
 
-    @override_settings(PLUGINS_CONFIG=_config("remove"))
     def test_a_failed_lease_snapshot_counts_one_error_and_keeps_the_stale_links(self):
         _reconcile(self.server, [_lease(hostname="host")], [_reservation(hostname="host")])
         ip = _row()
@@ -579,7 +569,7 @@ class LeasePhaseStaleTest(TestCase):
         self.assertEqual(_owners(ip), {("owner", "lease"), ("owner", "reservation")})
 
 
-@override_settings(PLUGINS_CONFIG=_config("deprecate"))
+@with_sync_config(stale_ip_cleanup="deprecate")
 class LeasePhaseDeprecateTest(TestCase):
     """In deprecate mode the last link stays and is marked stale."""
 
@@ -666,7 +656,6 @@ class LeasePhaseReleaseTest(TestCase):
         ip.save()
         return ip
 
-    @override_settings(PLUGINS_CONFIG=_config("remove"))
     def test_removing_the_marker_releases_a_reported_row(self):
         other = _server("other")
         _reconcile(self.server, [_lease(hostname="host")])
@@ -680,7 +669,6 @@ class LeasePhaseReleaseTest(TestCase):
         row = _row()
         self.assertEqual((row.description, row.dns_name, row.status), ("Printer on floor 2", "host", "dhcp"))
 
-    @override_settings(PLUGINS_CONFIG=_config("remove"))
     def test_removing_the_marker_releases_the_last_link_without_removing_the_row(self):
         _reconcile(self.server, [_lease(hostname="host")])
         ip = self._curate("Printer on floor 2")
@@ -693,7 +681,6 @@ class LeasePhaseReleaseTest(TestCase):
         row = _row()
         self.assertEqual((row.pk, row.description, row.status), (ip.pk, "Printer on floor 2", "dhcp"))
 
-    @override_settings(PLUGINS_CONFIG=_config("remove"))
     def test_a_note_after_the_marker_does_not_release_the_row(self):
         _reconcile(self.server, [_lease(hostname="host")])
         ip = self._curate("[kea-sync: lease] printer on floor 2")
@@ -708,7 +695,6 @@ class LeasePhaseReleaseTest(TestCase):
 
         self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())
 
-    @override_settings(PLUGINS_CONFIG=_config("remove"))
     def test_an_unlinked_row_with_a_blank_or_foreign_description_is_a_conflict(self):
         for description in ("", "Router loopback"):
             with self.subTest(description=description):
@@ -725,7 +711,6 @@ class LeasePhaseReleaseTest(TestCase):
                     (f"{ADDRESS}/32", "active", "", description),
                 )
 
-    @override_settings(PLUGINS_CONFIG=_config("remove"))
     def test_an_unlinked_marker_row_in_the_sync_vrf_is_linked_in_place(self):
         ip = NbIP.objects.create(address=f"{ADDRESS}/32", status="dhcp", description="[kea-sync: lease]")
 
@@ -736,7 +721,6 @@ class LeasePhaseReleaseTest(TestCase):
         self.assertEqual(set(_links(ip)), {"owner"})
         self.assertEqual((report.created, report.updated), (0, 1))
 
-    @override_settings(PLUGINS_CONFIG=_config("remove"))
     def test_a_row_outside_the_sync_vrf_is_neither_linked_nor_changed(self):
         self.server.sync_vrf = VRF.objects.create(name="sync")
         self.server.save()
@@ -756,7 +740,6 @@ class LeasePhaseReleaseTest(TestCase):
         self.assertEqual(_links(other_vrf), {})
 
 
-@override_settings(PLUGINS_CONFIG=_config("remove"))
 class LeasePhaseMarkerTest(TestCase):
     """The sync rewrites only the marker block at the start of the description and keeps the operator note."""
 
@@ -836,7 +819,6 @@ class LeasePhaseMarkerTest(TestCase):
         )
 
 
-@override_settings(PLUGINS_CONFIG=_config("remove"))
 class LeasePhaseRowFailureTest(TestCase):
     """A row failure fails only that row, and a phase with a failed row keeps its stale links."""
 
@@ -913,7 +895,6 @@ class LeasePhaseRowFailureTest(TestCase):
 OVERLAPPING = (SUBNET, {"id": 2, "subnet": "10.0.0.0/16"})
 
 
-@override_settings(PLUGINS_CONFIG=_config("remove"))
 class ReservationPhaseTest(TestCase):
     """The Reservation phase links each allocation address of an In-Subnet Reservation with the reservation source."""
 
@@ -980,7 +961,7 @@ class ReservationPhaseTest(TestCase):
             "none": ("reserved", set()),
         }
         for mode, (status, owners) in expected.items():
-            with self.subTest(mode=mode), override_settings(PLUGINS_CONFIG=_config(mode)):
+            with self.subTest(mode=mode), with_sync_config(stale_ip_cleanup=mode):
                 NbIP.objects.all().delete()
                 _reconcile(self.server, reservations=[_reservation(hostname="printer")])
                 ip = _row()
@@ -1241,7 +1222,7 @@ class ReservationPhaseTest(TestCase):
         self.assertEqual(report.disagreements, set())
         self.assertEqual(_row().dns_name, "renamed")
 
-    @override_settings(PLUGINS_CONFIG=_config("deprecate"))
+    @with_sync_config(stale_ip_cleanup="deprecate")
     def test_a_stale_reservation_link_whose_reservation_comes_back_restores_the_status(self):
         _reconcile(self.server, reservations=[_reservation(hostname="printer")])
         _reconcile(self.server)
@@ -1255,7 +1236,7 @@ class ReservationPhaseTest(TestCase):
         self.assertIsNone(_links(row, "reservation")["owner"].stale_mark)
         self.assertEqual(report.updated, 1)
 
-    @override_settings(PLUGINS_CONFIG=_config("deprecate"))
+    @with_sync_config(stale_ip_cleanup="deprecate")
     def test_a_stale_lease_link_goes_when_a_reservation_of_the_same_server_links_the_object(self):
         _reconcile(self.server, [_lease(hostname="host")])
         _reconcile(self.server)
@@ -1301,7 +1282,6 @@ class ReservationPhaseTest(TestCase):
         self.assertEqual((_row().status, _row().description), ("reserved", "[kea-sync: reservation] short note"))
 
 
-@override_settings(PLUGINS_CONFIG=_config("remove"))
 class OwnerFactsTest(TestCase):
     """Owners of one source compare hostnames, all owners compare the prefix length, and a Reservation hostname wins."""
 
@@ -1403,7 +1383,7 @@ class OwnerFactsTest(TestCase):
         self.assertEqual((str(row.address), row.status), (f"{ADDRESS}/24", "dhcp"))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
+@with_sync_config(stale_ip_cleanup="remove")
 class JobReservationPhaseTest(TestCase):
     """The job runs the lease and Reservation phases of each family in one reconcile call."""
 
@@ -1507,7 +1487,6 @@ class ConcurrencyHarness(TransactionTestCase):
         return result
 
 
-@override_settings(PLUGINS_CONFIG=_config("remove"))
 class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
     """Concurrent runs, row locks and operator edits, each on its own connection, in a fixed order."""
 
@@ -1515,7 +1494,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         from netbox_kea.ipam_reconciliation import upgrade_counts
 
         for index, mode in enumerate(("remove", "deprecate", "none"), start=1):
-            with self.subTest(mode=mode), override_settings(PLUGINS_CONFIG=_config(mode)):
+            with self.subTest(mode=mode), with_sync_config(stale_ip_cleanup=mode):
                 owner = _server(f"owner-{mode}")
                 other = _server(f"other-{mode}", sync_reservations_enabled=False)
                 _run_job(owner, [])
@@ -1607,7 +1586,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         _reconcile(owner, [_lease("198.18.0.1")])
         holder = self._hold("LOCK TABLE netbox_kea_ipamownershiplink IN SHARE MODE", [])
 
-        with override_settings(PLUGINS_CONFIG=_config("deprecate")), _kea():
+        with with_sync_config(stale_ip_cleanup="deprecate"), _kea():
             phases = _phases(owner)
             self._start("cleanup", lambda: reconcile(owner, 4, phases))
             self._wait_for_lock_waits(1)
@@ -1725,7 +1704,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
             with connection.execute_wrapper(observe_cleanup):
                 return reconcile(owner, 4, phases)
 
-        with override_settings(PLUGINS_CONFIG=_config("deprecate")), _kea():
+        with with_sync_config(stale_ip_cleanup="deprecate"), _kea():
             if phases is None:
                 phases = _phases(owner)
             self._start("delete-server", delete_server)

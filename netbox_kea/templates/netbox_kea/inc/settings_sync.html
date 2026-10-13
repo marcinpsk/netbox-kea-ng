@@ -4,6 +4,8 @@
 <div class="field-group mb-4">
   {% render_field form.interval_minutes %}
   {% render_field form.sync_enabled %}
+  {% render_field form.sync_max_leases_per_server %}
+  {% render_field form.stale_ip_cleanup %}
 </div>
 <div class="field-group" role="group" aria-label="Sync Types">
   <div class="row">
