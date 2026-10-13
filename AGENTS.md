@@ -315,11 +315,15 @@ URL request
   Lease section (`#lease-search`). An error of a Refresh shows inside the section: `exception_htmx.html` has the id
   `lease-search`. The page shows "Read N s ago" from `read_started` of the Snapshot (the oldest one on a combined
   page). A Refresh also reads the badges of the shown rows live (`ReservationQuery.refresh`, the `refresh` argument
-  of the Lease `present()`), so a badge is never older than its table. Utilization and status have no read age and no
-  Refresh. The badge lookups run in worker threads that pin `DisplayCacheConfig` (and `KeaClientConfig` for the Lease
-  reads). Exports (`ReservationQuery(full=True)`, the Lease `get_export` and `get_export_all`), the API,
-  `ipam_reconciliation`, the edit and delete target loads, `_checked_lease`, the read back of a created Lease and the
-  `version-get` connectivity check of `server_connection` read live. `KeaClient.command()` calls
+  of the Lease `present()`). A badge entry holds its read time, and the badge passes the read time of its table to
+  the `fresh` predicate of `cached()`: an entry read before the table is read again, also on a table miss without a
+  Refresh. So a badge is never older than its table. Utilization and status have no read age and no Refresh. The
+  badge lookups run in worker threads that pin `DisplayCacheConfig` (and `KeaClientConfig` for the Lease reads), and a
+  failed badge lookup logs no traceback (`load_snapshot(quiet=True)`). Each cached Lease, utilization and status read
+  builds its client on a miss only and closes it (`views/_base.LazyClient`); a close that fails is logged. Exports
+  (`ReservationQuery(full=True)`, the Lease `get_export` through `read_leases()` and `get_export_all`, the utilization
+  of a Subnet export), the API, `ipam_reconciliation`, the edit and delete target loads, `_checked_lease`, the read
+  back of a created Lease and the `version-get` connectivity check of `server_connection` read live. `KeaClient.command()` calls
   `on_write(family, configuration=False)` before and after each write command, also when the send fails, and
   `_config_mutation_command` calls `on_write(family, configuration=True)` around a live configuration mutation.
   `Server.get_client()` binds it to `rotate_after_write`, which rotates the records generation (both families for
