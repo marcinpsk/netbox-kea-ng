@@ -1166,3 +1166,20 @@ rules:
       - pattern-not-inside: |
           def _live_capabilities(...):
               ...
+
+  - id: kea-catalogue-absence-without-consistency
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A Subnet Catalogue whose identity and configuration facts disagree omits each disputed Subnet, so a
+      complete configuration alone does not show that a CIDR or an address is absent from Kea. Read
+      configuration_confirms_absence, which also needs consistent.
+      Limits: the rule sees the negated attribute read only, in views/ and subnet_catalogue.py.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "**/views/**"
+        - "**/subnet_catalogue.py"
+    pattern: not $CATALOGUE.configuration_complete

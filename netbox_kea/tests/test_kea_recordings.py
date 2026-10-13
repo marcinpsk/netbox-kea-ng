@@ -296,6 +296,17 @@ class TestRecordedQualifyingSuffix(TestCase):
         self.assertFalse(snapshot.complete)
         self.assertIsNone(self._effective(snapshot)[21])
 
+    def test_an_address_in_a_subnet_the_sources_disagree_on_has_no_known_suffix(self):
+        recording = _recording(4)
+        listed = recording["subnet4-list"]["arguments"]["subnets"]
+        (subnet_21,) = (subnet for subnet in listed if subnet["id"] == 21)
+        subnet_21["id"] = 99
+        with stub_kea({"config-get": recording["config-get"], "subnet4-list": recording["subnet4-list"]}):
+            catalogue = display(self.server, 4)
+        self.assertFalse(catalogue.consistent)
+        with self.assertRaises(CatalogueUnavailable):
+            catalogue.address_qualifying_suffix(ipaddress.ip_address(self._ADDRESSES[4][0]))
+
     def test_an_identity_only_catalogue_does_not_know_a_suffix(self):
         recording = _recording(4)
         with stub_kea({"config-get": RuntimeError("config-get failed"), "subnet4-list": recording["subnet4-list"]}):

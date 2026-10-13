@@ -273,7 +273,7 @@ def _resolved_search(server: Server, family: Family, search: LeaseSearch) -> Lea
     unavailable, or when it shows no Subnet with the CIDR and its configuration facts are incomplete.
 
     Raises:
-        LeaseQueryUnknownSubnet: If the complete configuration facts show no Subnet with the CIDR.
+        LeaseQueryUnknownSubnet: If the complete, consistent configuration facts show no Subnet with the CIDR.
 
     """
     if search.by != constants.BY_SUBNET:
@@ -285,7 +285,7 @@ def _resolved_search(server: Server, family: Family, search: LeaseSearch) -> Lea
     subnet = catalogue.find_by_cidr(str(search.q.cidr))
     if subnet is not None:
         return replace(search, q=subnet.identity)
-    if catalogue_notice is not None and not catalogue.configuration_complete:
+    if catalogue_notice is not None and not catalogue.configuration_confirms_absence:
         return catalogue_notice
     raise LeaseQueryUnknownSubnet
 

@@ -2035,6 +2035,23 @@ class TestLeaseSearchSubnetCatalogue(_ViewTestBase):
         self.assertNotContains(response, 'id="lease-delete-form"')
         self.assertNotIn("lease4-get-all", kea.commands())
 
+    def test_a_cidr_that_the_two_sources_disagree_on_shows_the_catalogue_notice(self):
+        disagree = "Kea subnet identity and configuration facts disagree after a fresh retry."
+        responses = self._responses()
+        configured = responses["config-get"]["arguments"]["Dhcp4"]["subnet4"]
+        configured[0] = {**configured[0], "id": 7}
+        with stub_kea(responses) as kea:
+            response = self._search("10.0.0.0/24")
+            export = self.client.get(self._url(), {"export": "form", "by": "subnet", "q": "10.0.0.0/24"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, disagree)
+        self.assertNotContains(response, self._UNKNOWN)
+        self.assertRedirects(export, self._url(), fetch_redirect_response=False)
+        exported = [str(message) for message in get_messages(export.wsgi_request)]
+        self.assertTrue(any(disagree in message for message in exported), exported)
+        self.assertNotIn(self._UNKNOWN, exported)
+        self.assertNotIn("lease4-get-all", kea.commands())
+
     def test_the_export_of_an_unknown_cidr_names_the_subnet_id_search(self):
         with stub_kea(self._responses()) as kea:
             response = self.client.get(self._url(), {"export": "form", "by": "subnet", "q": "10.0.5.0/24"})
