@@ -13,6 +13,47 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.3.0 (2026-10-13)
+
+### Bug Fixes
+
+- **api**: Give KeaDhcpLink a brief serializer for the change log API
+  ([`6945ff8`](https://github.com/marcinpsk/netbox-kea-ng/commit/6945ff84e39e201ca806c4d5ba063296f306e6f8))
+
+- **cache**: Key display Snapshots by the Server connection settings
+  ([`df270bf`](https://github.com/marcinpsk/netbox-kea-ng/commit/df270bfbb1d9010fa52ca4146c90263918ec3ecc))
+
+- **catalogue**: Treat a CIDR or address as absent only when both sources agree
+  ([`a1640c2`](https://github.com/marcinpsk/netbox-kea-ng/commit/a1640c2e66599d28367adb7e9120491b553cd83a))
+
+- **reservations**: Match a hook by its library name, not by its path
+  ([`0d96d0b`](https://github.com/marcinpsk/netbox-kea-ng/commit/0d96d0b5867ce31aa65fe79ca0cebd2681cbc10d))
+
+### Documentation
+
+- **settings**: Clarify that saving Sync Configuration requires view and change permissions
+  ([`e84146b`](https://github.com/marcinpsk/netbox-kea-ng/commit/e84146bdfa439d55a6a4ce2c049cb778f78ba450))
+
+### Features
+
+- **settings**: Add a Settings page with the change-logged SyncConfig form
+  ([`f90bbc0`](https://github.com/marcinpsk/netbox-kea-ng/commit/f90bbc032a2a3634e92d4bb6cc82cd82e2158d6b))
+
+### Refactoring
+
+- **config**: Read Reservation capabilities and the Lease search Subnet through one config-get
+  authority
+  ([`649252e`](https://github.com/marcinpsk/netbox-kea-ng/commit/649252eb4a7d163870fc1b70fb3045ebb1bf8ad7))
+
+### Testing
+
+- **cache**: Cover the display cache after a Server change through each path
+  ([`713d263`](https://github.com/marcinpsk/netbox-kea-ng/commit/713d2631342c4caabf2c8b1c6f715a6c8a83e1f7))
+
+- **settings**: Require the Settings menu item for a viewer of any section
+  ([`866d3d1`](https://github.com/marcinpsk/netbox-kea-ng/commit/866d3d183d2eabc9e625ec272d4d06b0fbac8d08))
+
+
 ## v3.2.0 (2026-10-12)
 
 ### Bug Fixes
