@@ -1078,6 +1078,24 @@ class TestSyncConfigSeedMigration(_UpgradeTestCase):
                         self._migrate_to_current()
                 self.assertFalse(historical.objects.exists())
 
+    def test_upgrade_refuses_a_switch_that_is_not_a_bool_by_name(self):
+        """No startup check guards these keys now, and the string "false" is truthy."""
+        historical = self._roll_back()
+        for backfill_applied, key in (
+            (None, "sync_enabled"),
+            (None, "sync_leases_enabled"),
+            (False, "sync_prefixes_enabled"),
+        ):
+            for value in ("false", 0, None):
+                with self.subTest(row=backfill_applied, key=key, value=value):
+                    historical.objects.all().delete()
+                    if backfill_applied is not None:
+                        historical.objects.create(pk=1, backfill_applied=backfill_applied)
+                    config = {"netbox_kea": {**self._CONFIG["netbox_kea"], key: value}}
+                    with override_settings(PLUGINS_CONFIG=config):
+                        with self.assertRaisesMessage(ImproperlyConfigured, f"['{key}'] must be True or False"):
+                            self._migrate_to_current()
+
     def test_upgrade_with_a_row_ignores_an_invalid_interval(self):
         """The interval only seeds a new row, so a value no run reads must not block the upgrade."""
         historical = self._roll_back()

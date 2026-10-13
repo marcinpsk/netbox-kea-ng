@@ -62,14 +62,20 @@ def _section_data(slug: str, values: dict[str, object]) -> dict[str, object]:
     return data
 
 
+def _defaults(model, *names: str) -> dict[str, object]:
+    return {name: model._meta.get_field(name).default for name in names}
+
+
 def _sync_settings(**values) -> dict[str, object]:
     """Return the POST data of the Sync section; a field that *values* leaves out has its default value."""
-    return _section_data("sync", {"sync_max_leases_per_server": 50000, "stale_ip_cleanup": "remove", **values})
+    return _section_data("sync", {**_defaults(SyncConfig, "sync_max_leases_per_server", "stale_ip_cleanup"), **values})
 
 
 def _kea_client_settings(**values) -> dict[str, object]:
     """Return the POST data of the Kea Client section; a field that *values* leaves out has its default value."""
-    return _section_data("kea-client", {"kea_timeout": 30, "lease_query_max_unpaged_leases": 1000, **values})
+    return _section_data(
+        "kea-client", {**_defaults(KeaClientConfig, "kea_timeout", "lease_query_max_unpaged_leases"), **values}
+    )
 
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)
@@ -247,6 +253,7 @@ class TestSettingsView(TestCase):
         self.assertEqual(_get_stale_cleanup_mode(), "none")
 
     def test_post_invalid_sync_limits_show_the_error_and_change_nothing(self):
+        before = SyncConfig.get()
         for field, value in (("sync_max_leases_per_server", -1), ("stale_ip_cleanup", "delete")):
             with self.subTest(field=field, value=value):
                 response = self.client.post(self.url, _sync_settings(**{field: value}))
@@ -254,7 +261,10 @@ class TestSettingsView(TestCase):
                 (entry,) = [shown for shown in response.context["sections"] if shown.section.slug == "sync"]
                 self.assertIn(field, entry.form.errors)
                 config = SyncConfig.get()
-                self.assertEqual((config.sync_max_leases_per_server, config.stale_ip_cleanup), (50000, "remove"))
+                self.assertEqual(
+                    (config.sync_max_leases_per_server, config.stale_ip_cleanup),
+                    (before.sync_max_leases_per_server, before.stale_ip_cleanup),
+                )
 
     def test_post_to_an_unknown_section_is_a_bad_request(self):
         response = self.client.post(self.url, {"section": "unknown", "sync-interval_minutes": 9})

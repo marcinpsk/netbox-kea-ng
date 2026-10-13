@@ -111,10 +111,6 @@ def _assert_no_error_template(test, response):
     test.assertNotContains(response, "An internal error occurred. Reference ID:")
 
 
-#: The lease-query guard is off, so a Subnet lease search issues no stat-lease{v}-get
-#: preflight and needs none registered. Tests that register only the lease command name
-
-
 def _held4(*addresses: str) -> tuple[dict, list[str]]:
     """Return the answers of a Kea that holds a lease at each address, and the list row selection of each."""
     records = [lease_record(address, subnet_id=1) for address in addresses]

@@ -47,5 +47,5 @@ while the change runs, so set these timeouts longer.
 Earlier releases read these settings from `PLUGINS_CONFIG["netbox_kea"]`. `./manage.py migrate` copies each value
 that is still there into the Settings page once, so an upgrade keeps it. A value of the wrong type or outside its
 range stops the migration, and the error names the key, the allowed values, and the given value. After that, the
-plugin ignores these keys, and NetBox logs a warning at startup for each key that is still set. Remove them from
+plugin ignores these keys, and the plugin logs a warning at startup for each key that is still set. Remove them from
 the configuration and use the Settings page.

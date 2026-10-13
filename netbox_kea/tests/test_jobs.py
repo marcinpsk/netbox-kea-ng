@@ -547,7 +547,7 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     # ── truncation ─────────────────────────────────────────────────────────
 
-    @with_sync_config(sync_max_leases_per_server=1)
+    @with_sync_config(sync_max_leases_per_server=1, stale_ip_cleanup="remove")
     def test_truncation_warning_skips_cleanup(self):
         """Truncated lease fetch → warning logged and stale IP not removed.
 
@@ -556,6 +556,8 @@ class TestKeaIpamSyncJobRun(TestCase):
         — the real truncation path, not a faked flag or a complete-dataset edge case.
         """
         from ipam.models import IPAddress
+
+        from netbox_kea.models import IPAMOwnershipLink
 
         self._make_db_server()
         stale = IPAddress.objects.create(
@@ -574,6 +576,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         self.assertFalse(IPAddress.objects.filter(address__net_host="10.0.0.2").exists())
         # Cleanup must be skipped when fetch was truncated.
         self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
+        self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address=stale, source="lease").exists())
 
     # ── host_cmds hook absent ─────────────────────────────────────────────
 
