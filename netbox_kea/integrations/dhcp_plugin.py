@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..ipam_reconciliation import ClaimResult, ReservationObservation, SyncReport
-    from ..models import Server
+    from ..models import DhcpIntegrationConfig, Server
     from ..subnet_catalogue import CatalogueSnapshot
 
 from django.apps import apps
@@ -89,8 +89,11 @@ def is_available() -> bool:
     return apps.is_installed(PLUGIN_APP_LABEL)
 
 
-def integration_refusal(server: Server) -> str:
-    """Return why the DHCP plugin integration does not run for *server*, or "" when it runs (ADR 0010)."""
+def integration_refusal(server: Server, switch: DhcpIntegrationConfig | None = None) -> str:
+    """Return why the DHCP plugin integration does not run for *server*, or "" when it runs (ADR 0010).
+
+    A caller that checks many Servers passes the *switch* row that it read once.
+    """
     from ..models import DhcpIntegrationConfig
 
     if not is_available():
@@ -98,14 +101,14 @@ def integration_refusal(server: Server) -> str:
     if not server.sync_dhcp_plugin_enabled:
         return "Enable 'Sync to DHCP plugin' on this server first."
     # Read last, so that a Server that opts out costs no query.
-    if not DhcpIntegrationConfig.get().enabled:
+    if not (switch or DhcpIntegrationConfig.get()).enabled:
         return "The DHCP plugin integration is off for all Servers. Turn it on in DHCP Kea > Settings."
     return ""
 
 
-def runs_for(server: Server) -> bool:
+def runs_for(server: Server, switch: DhcpIntegrationConfig | None = None) -> bool:
     """Return whether the DHCP plugin integration runs for *server*."""
-    return not integration_refusal(server)
+    return not integration_refusal(server, switch)
 
 
 def register_link_cleanup() -> None:

@@ -593,3 +593,13 @@ class DhcpIntegrationSwitchAdoptionTest(TestCase):
         self.assertEqual(effective_sources(owner)["import"], frozenset())
         self.assertEqual(summary["waiting"], 0)
         self.assertFalse(IPAddress.objects.filter(pk=legacy.pk).exists())
+
+    def test_one_policy_snapshot_reads_the_switch_once_for_every_opted_in_server(self):
+        for name in ("dhcp-a", "dhcp-b", "dhcp-c"):
+            _server(name, sync_dhcp_plugin_enabled=True)
+
+        with CaptureQueriesContext(connection) as queries:
+            upgrade_counts()
+
+        reads = [query for query in queries.captured_queries if "netbox_kea_dhcpintegrationconfig" in query["sql"]]
+        self.assertEqual(len(reads), 1)
