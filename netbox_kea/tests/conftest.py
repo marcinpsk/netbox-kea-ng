@@ -190,14 +190,18 @@ def _restore_settings_rows(sender, app_config, using, **kwargs) -> None:
     """
     if app_config.label != "netbox_kea":
         return
-    from netbox_kea.models import DhcpIntegrationConfig, KeaClientConfig, SyncConfig
+    from netbox_kea.models import KeaClientConfig, SettingsSingleton, SyncConfig
 
     seed = importlib.import_module("netbox_kea.migrations.0018_seed_syncconfig")
     copy = importlib.import_module("netbox_kea.migrations.0025_keaclientconfig_and_sync_settings")
-    sync_values = {**seed.configured_values(), **copy.configured_values(copy.SYNC_KEYS)}
-    SyncConfig.objects.using(using).get_or_create(pk=1, defaults=sync_values)
-    KeaClientConfig.objects.using(using).get_or_create(pk=1, defaults=copy.configured_values(copy.KEA_CLIENT_KEYS))
-    DhcpIntegrationConfig.objects.using(using).get_or_create(pk=1)
+    # Only these rows take values from PLUGINS_CONFIG. Every other settings row starts at its model defaults.
+    copied = {
+        SyncConfig: {**seed.configured_values(), **copy.configured_values(copy.SYNC_KEYS)},
+        KeaClientConfig: copy.configured_values(copy.KEA_CLIENT_KEYS),
+    }
+    for model in app_config.get_models():
+        if issubclass(model, SettingsSingleton):
+            model.objects.using(using).get_or_create(pk=1, defaults=copied.get(model, {}))
 
 
 @pytest.fixture(scope="session")

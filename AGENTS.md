@@ -243,7 +243,8 @@ URL request
   model fields. Migrations 0018, 0025 and 0026 create the rows, and 0018 and 0025 copy the values of
   `PLUGINS_CONFIG` once, so `get()` only reads. After that the plugin reads no `PLUGINS_CONFIG` key:
   `NetBoxKeaConfig.ready()` logs a warning for each key of `REMOVED_SETTINGS` that is still set. A TransactionTestCase flush deletes the rows, and a
-  `post_migrate` receiver in `netbox_kea/tests/conftest.py` creates them again with the migrations' values. They
+  `post_migrate` receiver in `netbox_kea/tests/conftest.py` creates each of them again: SyncConfig and
+  KeaClientConfig with the migrations' values, every other row with its model defaults. They
   inherit `ChangeLoggingMixin` (not a `NetBoxModel`), so a save in a request writes an ObjectChange;
   `api/serializers.py` has a brief serializer for each because NetBox's change log API serializes each changed
   object. The Settings page (`views/settings_page.py`) has one section for each row (`SECTIONS`): a section shows
@@ -251,6 +252,9 @@ URL request
   before the form changes the row. A section whose `available()` is false (the DHCP Plugin section without
   `netbox_dhcp`) does not show, and a save of it is refused. `navigation.py` builds one menu item for each available
   section. The adoption cleanup locks the `Server`, `SyncConfig` and `DhcpIntegrationConfig` tables to freeze policy.
+  A new settings row needs a model, a migration that creates the row, a brief serializer and a `SECTIONS` line. The
+  page builds the form from the model fields (`modelform_factory`) and renders them with `inc/settings_fields.html`
+  unless the section names its own include; a test fails while a singleton has no section.
 - **`KeaClient`** (`kea.py`): wraps a `requests.Session`. All API calls go through
   `.command(command, target, arguments, check)`, the only HTTP send of the plugin, which POSTs
   JSON to the **configured endpoint URL** (`self.url`: the daemon's `/` control socket, or a

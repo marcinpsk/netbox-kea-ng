@@ -12,11 +12,11 @@ from django.contrib import messages
 from django.contrib.auth import get_permission_codename
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import PermissionDenied
+from django.forms import modelform_factory
 from django.http import HttpResponse, HttpResponseBadRequest
 from django.shortcuts import redirect, render
 from django.views import View
 
-from .. import forms
 from ..integrations import dhcp_plugin
 from ..models import DhcpIntegrationConfig, KeaClientConfig, SettingsSingleton, SyncConfig
 
@@ -36,10 +36,10 @@ class SettingsSection:
 
     slug: str
     model: type[SettingsSingleton]
-    form_class: type[django_forms.ModelForm]
-    template_name: str
     #: The text of the section's item in the Settings menu group.
     menu_text: str
+    #: The include that renders the form. The default renders each field in model order.
+    template_name: str = "netbox_kea/inc/settings_fields.html"
     #: False hides the section, its menu item and its save, for a setting whose integration is not installed.
     available: Callable[[], bool] = _always
 
@@ -58,28 +58,20 @@ class SettingsSection:
         return self._permission("change")
 
     @property
+    def form_class(self) -> type[django_forms.ModelForm]:
+        """Return a form of every editable field of the model. The model fields give the validators and the help."""
+        return modelform_factory(self.model, fields="__all__")
+
+    @property
     def title(self) -> str:
         """Return the heading of the section."""
         return str(self.model._meta.verbose_name)
 
 
 SECTIONS = (
-    SettingsSection("sync", SyncConfig, forms.SyncConfigForm, "netbox_kea/inc/settings_sync.html", "Sync"),
-    SettingsSection(
-        "kea-client",
-        KeaClientConfig,
-        forms.KeaClientConfigForm,
-        "netbox_kea/inc/settings_kea_client.html",
-        "Kea Client",
-    ),
-    SettingsSection(
-        "dhcp-integration",
-        DhcpIntegrationConfig,
-        forms.DhcpIntegrationConfigForm,
-        "netbox_kea/inc/settings_dhcp_integration.html",
-        "DHCP Plugin",
-        available=_dhcp_plugin_installed,
-    ),
+    SettingsSection("sync", SyncConfig, "Sync", template_name="netbox_kea/inc/settings_sync.html"),
+    SettingsSection("kea-client", KeaClientConfig, "Kea Client"),
+    SettingsSection("dhcp-integration", DhcpIntegrationConfig, "DHCP Plugin", available=_dhcp_plugin_installed),
 )
 _BY_SLUG = {section.slug: section for section in SECTIONS}
 

@@ -2,5 +2,7 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% load form_helpers %}
 <div class="field-group">
-  {% render_field form.enabled %}
+  {% for field in form %}
+    {% render_field field %}
+  {% endfor %}
 </div>

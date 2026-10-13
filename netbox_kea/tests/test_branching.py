@@ -88,6 +88,7 @@ from netbox_kea.models import (  # noqa: E402
     KeaClientConfig,
     KeaDhcpLink,
     Server,
+    SettingsSingleton,
     SyncConfig,
     next_confirmation_number,
 )
@@ -122,6 +123,10 @@ _NON_WRITING_ON_DELETE = (models.PROTECT, models.RESTRICT, models.DO_NOTHING)
 
 def _plugin_models() -> list[type[models.Model]]:
     return list(apps.get_app_config(APP_LABEL).get_models())
+
+
+def _settings_models() -> list[type[SettingsSingleton]]:
+    return [model for model in _plugin_models() if issubclass(model, SettingsSingleton)]
 
 
 def _rule_models() -> list[type[models.Model]]:
@@ -991,6 +996,19 @@ def _save_with(instance: models.Model, **fields: object) -> None:
     instance.save()
 
 
+def _changed_setting(row: SettingsSingleton) -> dict[str, object]:
+    """Return the first switch of *row* flipped, or its first integer plus one, whichever field comes first."""
+    for field in row._meta.concrete_fields:
+        if field.primary_key or not field.editable:
+            continue
+        value = getattr(row, field.attname)
+        if isinstance(field, models.BooleanField):
+            return {field.attname: not value}
+        if isinstance(field, models.IntegerField):
+            return {field.attname: value + 1}
+    raise AssertionError(f"{type(row).__name__} has no switch or integer setting to change.")
+
+
 class DhcpTargetBranchLifecycleTest(TransactionTestCase):
     """DHCP target deletes remove branch mappings and preserve main until merge."""
 
@@ -1051,18 +1069,13 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
             object_type=ContentType.objects.get_for_model(VRF),
             object_id=1,
         )
-        self.config = SyncConfig.get()
-        self.kea_client_config = KeaClientConfig.get()
-        self.dhcp_integration_config = DhcpIntegrationConfig.get()
         self.branch = _provisioned_branch(self, "rows")
 
     def _main(self) -> tuple:
         return (
             list(Server.objects.values_list("pk", "ca_url")),
             list(KeaDhcpLink.objects.values_list("pk", "kea_subnet_id")),
-            list(SyncConfig.objects.values_list("pk", "interval_minutes")),
-            list(KeaClientConfig.objects.values_list("pk", "kea_timeout")),
-            list(DhcpIntegrationConfig.objects.values_list("pk", "enabled")),
+            *(list(model.objects.values()) for model in _settings_models()),
         )
 
     def test_the_receivers_cover_every_main_only_plugin_model(self):
@@ -1092,11 +1105,11 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
         before = self._main()
         changes = {
             "server": lambda: _save_with(self.server, ca_url=_AFTER),
-            "sync config": lambda: _save_with(self.config, interval_minutes=9),
-            "kea client config": lambda: _save_with(self.kea_client_config, kea_timeout=9),
-            "dhcp integration config": lambda: _save_with(self.dhcp_integration_config, enabled=False),
             "new server": lambda: _make_db_server(name="new in branch"),
         }
+        for model in _settings_models():
+            row = model.get()
+            changes[model.__name__] = lambda row=row: _save_with(row, **_changed_setting(row))
         for label, change in changes.items():
             with self.subTest(label):
                 with activate_branch(self.branch), self.assertRaises(branching.BranchActive) as refused:
@@ -1110,10 +1123,9 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
         deletes = {
             "server": lambda: Server.objects.get(pk=self.server.pk).delete(),
             "server queryset": lambda: Server.objects.all().delete(),
-            "sync config queryset": lambda: SyncConfig.objects.all().delete(),
-            "kea client config queryset": lambda: KeaClientConfig.objects.all().delete(),
-            "dhcp integration config queryset": lambda: DhcpIntegrationConfig.objects.all().delete(),
         }
+        for model in _settings_models():
+            deletes[f"{model.__name__} queryset"] = lambda model=model: model.objects.all().delete()
         for label, delete in deletes.items():
             with self.subTest(label), activate_branch(self.branch), self.assertRaises(branching.BranchActive):
                 delete()
@@ -1569,9 +1581,7 @@ class SyncJobInBranchTest(TransactionTestCase):
         self.assertFalse(IPRange.objects.exists())
         sync_tables = (
             "netbox_kea_server",
-            "netbox_kea_syncconfig",
-            "netbox_kea_keaclientconfig",
-            "netbox_kea_dhcpintegrationconfig",
+            *(model._meta.db_table for model in _settings_models()),
             "ipam_ipaddress",
             "ipam_prefix",
             "ipam_iprange",

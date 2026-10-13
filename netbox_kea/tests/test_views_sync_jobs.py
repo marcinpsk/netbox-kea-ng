@@ -7,7 +7,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from bs4 import BeautifulSoup
-from django.test import TestCase, skipUnlessDBFeature
+from django.test import SimpleTestCase, TestCase, skipUnlessDBFeature
 from django.urls import reverse
 from django.utils import timezone
 
@@ -988,6 +988,24 @@ class TestDhcpIntegrationSettingsView(TestCase):
             self.assertEqual(menu_texts(), ["Sync", "Kea Client", "DHCP Plugin"])
         with patch.object(dhcp_plugin, "is_available", return_value=False, autospec=True):
             self.assertEqual(menu_texts(), ["Sync", "Kea Client"])
+
+
+class TestSettingsSectionsCoverEverySingleton(SimpleTestCase):
+    """The Settings page derives each form from its model, so a new singleton needs only its SECTIONS entry."""
+
+    def test_each_settings_singleton_has_exactly_one_section(self):
+        from django.apps import apps
+
+        from netbox_kea.models import SettingsSingleton
+        from netbox_kea.views.settings_page import SECTIONS
+
+        singletons = [
+            model for model in apps.get_app_config("netbox_kea").get_models() if issubclass(model, SettingsSingleton)
+        ]
+        self.assertCountEqual([section.model for section in SECTIONS], singletons)
+        for section in SECTIONS:
+            with self.subTest(section=section.slug):
+                self.assertTrue(issubclass(section.model, SettingsSingleton))
 
 
 class TestKeaClientSettingsPermissions(TestCase):
