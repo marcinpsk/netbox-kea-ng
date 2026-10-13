@@ -10,6 +10,7 @@ from django.core.cache import cache
 from django.test import TestCase
 from django.urls import reverse
 
+import netbox_kea
 from netbox_kea import display_cache, server_configuration, subnet_catalogue
 from netbox_kea.constants import Family
 from netbox_kea.kea import KeaCommand
@@ -320,6 +321,11 @@ class RecordsKindTest(TestCase):
         return display_cache.cached(
             self.server, 4, "reservations", lambda: self._read(settled), query=query, refresh=refresh
         )
+
+    def test_the_key_holds_the_plugin_version(self):
+        key = display_cache._entry_key(self.server, 4, "reservations", DisplayCacheConfig.get(), ("page",))
+
+        self.assertIn(netbox_kea.__version__, key.split(":"))
 
     def test_the_reservations_ttl_of_the_settings_row_reaches_the_cache(self):
         self._reservations()

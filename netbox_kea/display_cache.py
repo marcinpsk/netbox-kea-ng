@@ -16,6 +16,7 @@ from typing import Literal, NamedTuple, Protocol, TypeVar
 
 from django.core.cache import cache
 
+from . import __version__
 from .constants import Family
 from .models import DisplayCacheConfig, Server, require_persisted_server
 
@@ -113,8 +114,9 @@ def _entry_key(server: Server, family: Family, kind: Kind, config: DisplayCacheC
     settings = config.last_updated.isoformat()
     generations = ":".join(_generation(server, family, generation) for generation in _KINDS[kind].generations)
     digest = hashlib.sha256(json.dumps(query).encode()).hexdigest()
+    # An entry pickled by another plugin version can hold another shape of its classes.
     return (
-        f"{KEY_PREFIX}entry:{require_persisted_server(server)}:{family}:{kind}:"
+        f"{KEY_PREFIX}entry:{require_persisted_server(server)}:{family}:{kind}:{__version__}:"
         f"{generations}:{connection}:{settings}:{digest}"
     )
 
