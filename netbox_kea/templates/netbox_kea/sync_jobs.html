@@ -9,64 +9,12 @@
 <div class="row">
   <div class="col-md-12">
 
-    {# Global config card #}
-    <div class="card mb-4">
-      <h5 class="card-header d-flex justify-content-between align-items-center">
-        Global Sync Configuration
-      </h5>
-      <div class="card-body">
-        {% if perms.netbox_kea.change_syncconfig %}
-        <form method="post">
-          {% csrf_token %}
-          <div class="row g-3 align-items-start">
-            <div class="col-auto">
-              <label class="form-label">{{ form.interval_minutes.label }}</label>
-              {{ form.interval_minutes }}
-              {% for err in form.interval_minutes.errors %}
-                <div class="text-danger small">{{ err }}</div>
-              {% endfor %}
-            </div>
-            <div class="col-md-8">
-              <div class="row g-2">
-                <div class="col-12">
-                  <span class="form-label fw-semibold">Sync Types</span>
-                </div>
-                <div class="col-auto d-flex align-items-center gap-2">
-                  {{ form.sync_enabled }}
-                  <label class="form-check-label" for="{{ form.sync_enabled.id_for_label }}">{{ form.sync_enabled.label }}</label>
-                  <span class="text-muted small">&mdash; {{ form.sync_enabled.help_text }}</span>
-                </div>
-                <div class="col-12"><hr class="my-1"></div>
-                <div class="col-auto d-flex align-items-center gap-2">
-                  {{ form.sync_leases_enabled }}
-                  <label class="form-check-label" for="{{ form.sync_leases_enabled.id_for_label }}">{{ form.sync_leases_enabled.label }}</label>
-                </div>
-                <div class="col-auto d-flex align-items-center gap-2">
-                  {{ form.sync_reservations_enabled }}
-                  <label class="form-check-label" for="{{ form.sync_reservations_enabled.id_for_label }}">{{ form.sync_reservations_enabled.label }}</label>
-                </div>
-                <div class="col-auto d-flex align-items-center gap-2">
-                  {{ form.sync_prefixes_enabled }}
-                  <label class="form-check-label" for="{{ form.sync_prefixes_enabled.id_for_label }}">{{ form.sync_prefixes_enabled.label }}</label>
-                </div>
-                <div class="col-auto d-flex align-items-center gap-2">
-                  {{ form.sync_ip_ranges_enabled }}
-                  <label class="form-check-label" for="{{ form.sync_ip_ranges_enabled.id_for_label }}">{{ form.sync_ip_ranges_enabled.label }}</label>
-                </div>
-              </div>
-            </div>
-            <div class="col-auto align-self-end">
-              <button type="submit" class="btn btn-primary">
-                <i class="mdi mdi-content-save-outline" aria-hidden="true"></i> Save
-              </button>
-            </div>
-          </div>
-        </form>
-        {% else %}
-        <p class="text-muted mb-0">You do not have permission to modify sync settings.</p>
-        {% endif %}
-      </div>
-    </div>
+    {% if can_view_settings %}
+    <p>
+      The sync interval and the sync types are on the
+      <a href="{% url 'plugins:netbox_kea:settings' %}">Settings</a> page.
+    </p>
+    {% endif %}
 
     {# Cross-server summary table #}
     <div class="card">

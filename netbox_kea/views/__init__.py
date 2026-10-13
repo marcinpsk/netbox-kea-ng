@@ -21,6 +21,7 @@ from . import (
     server,
     server_scope,
     server_switch,
+    settings_page,
     shared_networks,
     subnets,
     sync_jobs,

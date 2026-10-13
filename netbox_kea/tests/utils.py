@@ -11,10 +11,12 @@ from typing import TYPE_CHECKING
 import requests
 from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
 from django.db import connection
 from django.test import Client, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
+from users.models import ObjectPermission
 from utilities.release import load_release_data
 
 from netbox_kea import NetBoxKeaConfig
@@ -144,9 +146,26 @@ def _refusal_receivers(signal) -> set[str]:
     return {key[0].removeprefix(prefix) for key, *_rest in signal.receivers if str(key[0]).startswith(prefix)}
 
 
-def _sync_page_urls(server: Server) -> tuple[str, str]:
-    """Return the two sync pages that read SyncConfig: the Sync Jobs page and the Server's Sync tab."""
+def _grant(models, actions, *, user=None, group=None, constraints=None, enabled=True) -> ObjectPermission:
+    """Create a real ObjectPermission for *models* and *actions*, and give it to *user* or *group*."""
+    permission = ObjectPermission.objects.create(
+        name=f"grant-{ObjectPermission.objects.count()}",
+        actions=list(actions),
+        constraints=constraints,
+        enabled=enabled,
+    )
+    permission.object_types.add(*(ContentType.objects.get_for_model(model) for model in models))
+    if user is not None:
+        permission.users.add(user)
+    if group is not None:
+        permission.groups.add(group)
+    return permission
+
+
+def _sync_page_urls(server: Server) -> tuple[str, str, str]:
+    """Return the pages that read SyncConfig: the Settings page, the Sync Jobs page and the Server's Sync tab."""
     return (
+        reverse("plugins:netbox_kea:settings"),
         reverse("plugins:netbox_kea:sync_jobs"),
         reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]),
     )

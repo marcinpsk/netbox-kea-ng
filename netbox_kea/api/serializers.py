@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 from django.http import QueryDict
 from ipam.api.serializers import VRFSerializer
-from netbox.api.serializers import NetBoxModelSerializer
+from netbox.api.serializers import BaseModelSerializer, NetBoxModelSerializer
 from rest_framework import serializers
 
-from ..models import Server
+from ..models import Server, SyncConfig
 from ..server_connection import CONNECTION_FIELDS, connection_values, validate_connection_change
 
 #: Columns migration 0016 moved from NULL-or-blank to blank only. Every released
@@ -100,3 +100,12 @@ class ServerSerializer(NetBoxModelSerializer):
             "dhcp4_password": {"write_only": True},
             "dhcp6_password": {"write_only": True},
         }
+
+
+class SyncConfigSerializer(BaseModelSerializer):
+    """The brief SyncConfig that NetBox's change log API shows. The plugin has no SyncConfig endpoint."""
+
+    class Meta:
+        model = SyncConfig
+        fields = ("id", "display")
+        brief_fields = ("id", "display")
