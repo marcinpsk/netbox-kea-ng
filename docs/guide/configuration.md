@@ -21,10 +21,17 @@ restart. The page has one section for each group of settings:
 | Sync | Sync IP Ranges | On | Sync Kea pools to NetBox IPAM as IP Ranges |
 | Kea Client | Kea Timeout (seconds) | `30` | How long each Kea request can take, at least 1. A change applies to the next request |
 | Kea Client | Max Unpaged Leases | `1000` | Refuse an unpaged Subnet lease query when its Kea statistics count exceeds this limit. `0` disables this safety check |
+| DHCP Plugin Integration | Integration Enabled (global) | On | Global switch. Clear it to stop the DHCP plugin integration for all Servers. The section shows only when the NetBox DHCP plugin (`netbox_dhcp`) is installed |
 
 A section shows to a user with the view permission of its model (`netbox_kea.view_syncconfig`,
-`netbox_kea.view_keaclientconfig`). A save needs the change permission of the model too. Without it, the section
+`netbox_kea.view_keaclientconfig`, `netbox_kea.view_dhcpintegrationconfig`). A save needs the change permission of the model too. Without it, the section
 shows the values read-only. Each save writes a change log record. While a branch is active, the page refuses a save.
+
+The DHCP plugin integration runs for a Server only when the NetBox DHCP plugin is installed, the Server has
+**Sync to DHCP plugin** on, and **Integration Enabled (global)** is on. When one of them is off, the Server has no
+**DHCP Plugin** subsection under Sync, **Sync to DHCP plugin now** refuses, and the IPAM sync does not wait for a
+DHCP plugin import before it removes an adopted object. Objects that DHCP plugin records refer to stay protected from
+stale cleanup while the switch is off.
 
 Subnet lease searches use `stat-lease4-get` or `stat-lease6-get` before an
 unpaged lease command. Kea statistics can reject a query that is already too

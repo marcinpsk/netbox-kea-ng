@@ -236,16 +236,21 @@ URL request
 - **Settings singletons** (`models.py`, ADR 0010): every runtime setting is a field of a `SettingsSingleton`
   row (pk=1). `SyncConfig` holds the sync settings (`interval_minutes`, `sync_enabled`, the type toggles,
   `sync_max_leases_per_server`, `stale_ip_cleanup`); `KeaClientConfig` holds `kea_timeout` and
-  `lease_query_max_unpaged_leases`, and `Server.get_client()` reads it on each call. Defaults live on the model
-  fields. Migrations 0018 and 0025 create the rows and copy the values of `PLUGINS_CONFIG` once, so `get()` only
-  reads. After that the plugin reads no `PLUGINS_CONFIG` key: `NetBoxKeaConfig.ready()` logs a warning for each
+  `lease_query_max_unpaged_leases`, and `Server.get_client()` reads it on each call. `DhcpIntegrationConfig` holds
+  `enabled`, the global switch of the DHCP plugin integration. `dhcp_plugin.integration_refusal(server)` is the one
+  rule that combines `is_available()`, `Server.sync_dhcp_plugin_enabled` and that switch; no other code combines
+  them. Guards that keep DHCP plugin references safe from cleanup check `is_available()` only. Defaults live on the
+  model fields. Migrations 0018, 0025 and 0026 create the rows, and 0018 and 0025 copy the values of
+  `PLUGINS_CONFIG` once, so `get()` only reads. After that the plugin reads no `PLUGINS_CONFIG` key: `NetBoxKeaConfig.ready()` logs a warning for each
   key of `REMOVED_SETTINGS` that is still set. A TransactionTestCase flush deletes the rows, and a
   `post_migrate` receiver in `netbox_kea/tests/conftest.py` creates them again with the migrations' values. They
   inherit `ChangeLoggingMixin` (not a `NetBoxModel`), so a save in a request writes an ObjectChange;
   `api/serializers.py` has a brief serializer for each because NetBox's change log API serializes each changed
   object. The Settings page (`views/settings_page.py`) has one section for each row (`SECTIONS`): a section shows
   with the view permission of its model, a save needs the change permission too, and the view calls `snapshot()`
-  before the form changes the row. `navigation.py` builds one menu item for each section.
+  before the form changes the row. A section whose `available()` is false (the DHCP Plugin section without
+  `netbox_dhcp`) does not show, and a save of it is refused. `navigation.py` builds one menu item for each available
+  section. The adoption cleanup locks the `Server`, `SyncConfig` and `DhcpIntegrationConfig` tables to freeze policy.
 - **`KeaClient`** (`kea.py`): wraps a `requests.Session`. All API calls go through
   `.command(command, target, arguments, check)`, the only HTTP send of the plugin, which POSTs
   JSON to the **configured endpoint URL** (`self.url`: the daemon's `/` control socket, or a
@@ -522,8 +527,8 @@ resort, reserved for true external boundaries you cannot run locally.
   tokens use the `nbt_` format).
 - **BulkImportView POST**: requires `data=`, `format='csv'`, `csv_delimiter=','`.
 - **Settings in tests**: `get_client()` reads the `KeaClientConfig` row, so a test that calls it needs the
-  database (`TestCase`, not `SimpleTestCase`). Set a row value with `with_kea_client_config(...)` or
-  `with_sync_config(...)` from `tests/utils.py`: a class, method or `with` decorator that restores the value.
+  database (`TestCase`, not `SimpleTestCase`). Set a row value with `with_kea_client_config(...)`,
+  `with_sync_config(...)` or `with_dhcp_integration_config(...)` from `tests/utils.py`: a class, method or `with` decorator that restores the value.
   `_ViewTestBase` turns the lease-query guard off (`lease_query_max_unpaged_leases=0`).
 
 ## Key Patterns
