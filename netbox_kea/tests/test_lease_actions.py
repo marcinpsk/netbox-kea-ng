@@ -19,7 +19,7 @@ from netbox_kea import signals
 from netbox_kea.leases import DHCPv4LeaseRequest, DHCPv6PrefixLease
 
 from .kea_stub import LeaseDaemon, _catalogue_responses_for_subnets, lease_record, stub_kea
-from .utils import _ViewTestBase
+from .utils import _ViewTestBase, with_display_cache_config
 
 _SUBNETS = {4: [{"id": 10, "subnet": "192.0.2.0/24"}], 6: [{"id": 10, "subnet": "2001:db8:1::/64"}]}
 _PREFIX = "2001:db8:100:600::"
@@ -596,6 +596,8 @@ class LeaseReserveTest(_ViewTestBase):
 
         return reservation_get
 
+    # Each case reads the same search live.
+    @with_display_cache_config(leases_ttl=0)
     def test_a_reservation_that_holds_only_the_other_kind_is_shown_but_not_reserved(self):
         cases = {
             "delegated-prefix": (_prefix(), {"addresses": ["2001:db8:1::99"], "prefixes": []}),

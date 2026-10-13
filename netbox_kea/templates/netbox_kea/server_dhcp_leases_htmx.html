@@ -68,6 +68,9 @@
     </div>
     {% endwith %}
     {% endif %}
+    {% if read_age is not None %}
+    <div class="mb-2">{% include "netbox_kea/inc/read_age.html" with target="#lease-search" %}</div>
+    {% endif %}
     {% include "inc/table_controls_htmx.html" with table_modal="LeasesTable_config" %}
     {% with preferences|get_key:"pagination.placement" as paginator_placement %}
       <form method="post" action="{{ delete_action }}" id="lease-delete-form">

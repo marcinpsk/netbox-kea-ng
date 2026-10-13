@@ -25,9 +25,9 @@ from utilities.views import register_model_view
 from .. import constants, display_cache, forms, server_configuration, tables
 from ..constants import Family, LeaseState
 from ..ipam_reconciliation import RESERVATION, ReservationPhase, claim_permissions, reconcile_permissions
-from ..kea import KeaClient, KeaException, LeaseQueryGuardError
+from ..kea import KeaException, LeaseQueryGuardError
 from ..leases import LeaseSnapshot
-from ..models import Server
+from ..models import DisplayCacheConfig, KeaClientConfig, PinnedSettings, Server
 from ..reservation_transfer import export_reservation_document
 from ..reservations import (
     RESERVATION_PAGE_FETCH_FAILED,
@@ -46,7 +46,9 @@ from ..subnet_catalogue import CatalogueSnapshot, VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
 from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import OptionalViewTab
+from . import lease_reads
 from ._base import _safe_return_url
+from .lease_reads import LeaseSearch
 from .notices import HEADLINES, Notice, load_snapshot, notice
 from .read_age import read_age_context, refresh_requested
 from .workspace import ServerFamilyMixin
@@ -108,23 +110,25 @@ def _current_lease_facts(snapshot: LeaseSnapshot) -> _CurrentLeaseFacts:
     )
 
 
-def _lease_facts_in_subnet(client: KeaClient, version: Family, subnet_id: int, server_id: int) -> Any:
+def _lease_facts(server: Server, version: Family, search: LeaseSearch, refresh: bool) -> Any:
+    """Observe the Current Leases of one cached Lease search, or report why they could not be read."""
+    try:
+        loaded = lease_reads.fetch(server, version, search, refresh=refresh)
+    except (LeaseQueryGuardError, ValueError):
+        return _INDETERMINATE
+    if isinstance(loaded, Notice):
+        return _HOOK_UNAVAILABLE if loaded.unsupported_command else _INDETERMINATE
+    return _current_lease_facts(loaded)
+
+
+def _lease_facts_in_subnet(server: Server, version: Family, subnet_id: int, refresh: bool) -> Any:
     """Observe the Current Leases in one Subnet, or report why they could not be read."""
     # DHCPv6 registered leases are current too, and only an unfiltered Subnet query returns them.
     state: LeaseState | None = "assigned" if version == 4 else None
-    with client.clone() as worker_client:
-        try:
-            snapshot = worker_client.lease_search(
-                version, constants.BY_SUBNET_ID, subnet_id, state=state, server_id=server_id
-            )
-        except KeaException as exc:
-            return _HOOK_UNAVAILABLE if exc.unsupported_command else _INDETERMINATE
-        except (LeaseQueryGuardError, requests.RequestException, RuntimeError, ValueError):
-            return _INDETERMINATE
-    return _current_lease_facts(snapshot)
+    return _lease_facts(server, version, LeaseSearch(constants.BY_SUBNET_ID, subnet_id, state), refresh)
 
 
-def _identity_holds_a_lease(client: KeaClient, version: Family, identity: ReservationIdentity, server_id: int) -> Any:
+def _identity_holds_a_lease(server: Server, version: Family, identity: ReservationIdentity, refresh: bool) -> Any:
     """Ask Kea whether one identity holds a Current Lease in any Subnet.
 
     A Global Reservation has no Subnet, so its address cannot imply one. Only a
@@ -133,27 +137,22 @@ def _identity_holds_a_lease(client: KeaClient, version: Family, identity: Reserv
     selector = constants.LEASE_SELECTOR_BY_IDENTIFIER[version].get(identity.identifier_type)
     if selector is None:
         return _INDETERMINATE
-    with client.clone() as worker_client:
-        try:
-            snapshot = worker_client.lease_search(version, selector, identity.value, server_id=server_id)
-        except KeaException as exc:
-            return _HOOK_UNAVAILABLE if exc.unsupported_command else _INDETERMINATE
-        except (LeaseQueryGuardError, requests.RequestException, RuntimeError, ValueError):
-            return _INDETERMINATE
-    return _current_lease_facts(snapshot)
+    return _lease_facts(server, version, LeaseSearch(selector, identity.value), refresh)
 
 
 def _enrich_reservations_with_lease_status(
-    client: KeaClient,
+    server: Server,
     reservations: list[dict[str, Any]],
     version: Family,
-    server_id: int,
+    *,
+    refresh: bool,
 ) -> None:
     """Report one lease relationship per Reservation, and none where Kea could not be read.
 
     Rows arrive with ``has_active_lease`` at ``None``, which renders no badge. Only a Current
     Lease is a positive answer, and only a complete observation of the relevant query is a
     negative one, so an unreadable or partial observation never renders as "No Lease".
+    Each Lease search is a display cache entry; with *refresh* it reads Kea live and replaces the entry.
     """
     scoped_rows: list[tuple[dict[str, Any], InSubnetReservationScope]] = []
     global_rows: list[dict[str, Any]] = []
@@ -171,14 +170,19 @@ def _enrich_reservations_with_lease_status(
     subnet_facts: dict[int, Any] = {}
     identity_facts: dict[ReservationIdentity, Any] = {}
     lookups = len(subnet_ids) + len(identities)
+    pinned = PinnedSettings.read(KeaClientConfig, DisplayCacheConfig)
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(lookups, 10)) as executor:
             subnet_futures = {
-                executor.submit(_lease_facts_in_subnet, client, version, subnet_id, server_id): subnet_id
+                executor.submit(
+                    pinned.context().run, _lease_facts_in_subnet, server, version, subnet_id, refresh
+                ): subnet_id
                 for subnet_id in subnet_ids
             }
             identity_futures = {
-                executor.submit(_identity_holds_a_lease, client, version, identity, server_id): identity
+                executor.submit(
+                    pinned.context().run, _identity_holds_a_lease, server, version, identity, refresh
+                ): identity
                 for identity in identities
             }
             for future in concurrent.futures.as_completed([*subnet_futures, *identity_futures]):
@@ -549,7 +553,11 @@ def present(user: Any, server: Server, read: ReservationRead, *, return_url: str
         reason = (capabilities.explanation if capabilities is not None else "") or _MUTATION_UNCONFIRMED
     if snapshot is not None and rows:
         _enrich_reservations_with_badges(
-            rows, server, snapshot.family, sync=sync_gate(user, claim_permissions(RESERVATION))
+            rows,
+            server,
+            snapshot.family,
+            sync=sync_gate(user, claim_permissions(RESERVATION)),
+            refresh=read.query.refresh,
         )
         _attach_reservation_action_urls(rows, server.pk, snapshot.family, can_change=can_mutate, return_url=return_url)
     return PresentedReservations(
@@ -609,18 +617,16 @@ def _enrich_reservations_with_badges(
     version: Family,
     *,
     sync: SyncGate,
+    refresh: bool,
 ) -> None:
     """Add active-lease and aggregate NetBox synchronization state to typed rows.
 
     A row that can take a Sync gets ``sync_url`` when *sync* allows it, else ``sync_refusal`` with the reason.
+    With *refresh* the Lease badges read Kea live and replace their entries.
     """
     from ..sync import bulk_fetch_netbox_ips, is_kea_managed_ip, reservation_synchronization_state
 
-    try:
-        client = server.get_client(version=version)
-        _enrich_reservations_with_lease_status(client, reservations, version, server.pk)
-    except (KeaException, requests.RequestException, RuntimeError, ValueError):
-        logger.debug("Failed to enrich Reservation lease state for server %s", server.pk, exc_info=True)
+    _enrich_reservations_with_lease_status(server, reservations, version, refresh=refresh)
 
     addresses = [str(address) for row in reservations for address in row["reservation"].addresses]
     try:

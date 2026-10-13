@@ -23,7 +23,7 @@ from .models import DisplayCacheConfig, Server, require_persisted_server
 #: The prefix of every key of the display cache. The test cache hygiene fixture clears it.
 KEY_PREFIX = "netbox_kea:display:"
 
-Kind = Literal["configuration", "catalogue", "reservations"]
+Kind = Literal["configuration", "catalogue", "reservations", "leases", "reservation_lookups"]
 _Generation = Literal["configuration", "records"]
 #: The parts of the query of one entry, such as a cursor and the search filters.
 QueryParts = tuple[str | int | None, ...]
@@ -41,6 +41,10 @@ _KINDS: dict[Kind, _KindRule] = {
     "catalogue": _KindRule("configuration_ttl", ("configuration",)),
     # Records are parsed against the Subnet Catalogue, so their keys also hold the configuration generation.
     "reservations": _KindRule("reservations_ttl", ("configuration", "records")),
+    # A Subnet search resolves its CIDR through the Subnet Catalogue, so Lease keys also hold the configuration one.
+    "leases": _KindRule("leases_ttl", ("configuration", "records")),
+    # The Reservation of a Lease row is parsed against the Subnet Catalogue, as a Reservation page is.
+    "reservation_lookups": _KindRule("leases_ttl", ("configuration", "records")),
 }
 
 
