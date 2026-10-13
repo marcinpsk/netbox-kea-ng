@@ -373,8 +373,8 @@ def _read_reservations(
 ) -> ReservationSnapshot:
     """Read the complete Snapshot, a browse page, or scan a bounded batch until a filtered page matches.
 
-    The records are parsed against *catalogue*. A page has the time at which this call started, also when a search
-    reads more than one page.
+    The records are parsed against *catalogue*. A browse page has the time of its own read. A search, and a page
+    that needs no read, have the time at which this call started.
     """
     q, subnet_id, scope, cursor = query.q, query.subnet_id, query.scope, query.cursor
     if query.full:
@@ -395,8 +395,7 @@ def _read_reservations(
         read_subnet_id = None
     client = server.get_client(version=version)
     if not query.filtered:
-        page = client.reservation_page(version, catalogue, cursor=cursor, limit=_RESERVATION_PAGE_SIZE)
-        return replace(page, read_started=started)
+        return client.reservation_page(version, catalogue, cursor=cursor, limit=_RESERVATION_PAGE_SIZE)
     diagnostics = []
     complete = True
     for page_index in range(_RESERVATION_SEARCH_PAGE_LIMIT):
