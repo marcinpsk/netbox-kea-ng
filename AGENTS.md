@@ -257,7 +257,10 @@ URL request
   A new settings row needs a model, a migration that creates the row, a brief serializer and a `SECTIONS` line. The
   page builds the form from the model fields (`modelform_factory`) and renders them with `inc/settings_fields.html`
   unless the section names its own include; a test fails while a singleton has no section. A section can give a
-  one-sentence `description` that the page shows under its heading, for a fact about the whole section.
+  one-sentence `description` that the page shows under its heading, for a fact about the whole section. A worker
+  thread opens no database connection: `PinnedSettings.read(*models)` reads rows on the request thread, and in each
+  `PinnedSettings.context()` (one for each worker task) `SettingsSingleton.get()` returns the pinned row and raises
+  `RuntimeError` for a model that is not pinned. `fan_out` pins `KeaClientConfig` and `DisplayCacheConfig`.
 - **`KeaClient`** (`kea.py`): wraps a `requests.Session`. All API calls go through
   `.command(command, target, arguments, check)`, the only HTTP send of the plugin, which POSTs
   JSON to the **configured endpoint URL** (`self.url`: the daemon's `/` control socket, or a
@@ -292,8 +295,8 @@ URL request
   `None`) and, for a configuration change, the configuration generation. `MutationScope` calls
   `rotate_configuration`. A rotation failure is logged, and the write continues. The callers validate the family;
   the module takes a `Family`. Authority reads (`for_verification`, `for_synchronization`, `for_import`,
-  `read_identity`, mutation scopes) never read or fill the cache. `fan_out` reads the settings row on the request
-  thread and gives it to its workers. The test fixture `_plugin_cache_hygiene` clears `display_cache.KEY_PREFIX`
+  `read_identity`, mutation scopes) never read or fill the cache. `fan_out` pins the settings row for its workers
+  (see "Settings singletons"). The test fixture `_plugin_cache_hygiene` clears `display_cache.KEY_PREFIX`
   around each test.
 - **`sync.py`**: reads IPAM rows for synchronization badges and synchronizes DCIM MAC addresses.
   IPAM creation, status changes and cleanup belong to `ipam_reconciliation.py`.

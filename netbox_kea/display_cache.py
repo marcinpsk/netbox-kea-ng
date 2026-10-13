@@ -15,7 +15,7 @@ from typing import Literal, Protocol, TypeVar
 from django.core.cache import cache
 
 from .constants import Family
-from .models import DisplayCacheConfig, Server, request_display_cache_config, require_persisted_server
+from .models import DisplayCacheConfig, Server, require_persisted_server
 
 #: The prefix of every key of the display cache. The test cache hygiene fixture clears it.
 KEY_PREFIX = "netbox_kea:display:"
@@ -46,7 +46,7 @@ def cached(server: Server, family: Family, kind: Kind, read: Callable[[], T]) ->
     The key is built before *read* runs, so a rotation during the read leaves the result in an older generation.
     A TTL of 0 sends every call to *read* and stores nothing.
     """
-    config = request_display_cache_config.get() or DisplayCacheConfig.get()
+    config = DisplayCacheConfig.get()
     ttl = getattr(config, _TTL_FIELDS[kind])
     if not ttl:
         return read()

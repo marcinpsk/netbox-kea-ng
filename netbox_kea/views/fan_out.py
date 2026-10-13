@@ -5,19 +5,12 @@
 from __future__ import annotations
 
 import concurrent.futures
-import contextvars
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
-from ..models import (
-    DisplayCacheConfig,
-    KeaClientConfig,
-    Server,
-    request_client_config,
-    request_display_cache_config,
-)
+from ..models import DisplayCacheConfig, KeaClientConfig, PinnedSettings, Server
 from .notices import HEADLINES, ServerNotices, SnapshotKind
 
 logger = logging.getLogger(__name__)
@@ -40,13 +33,12 @@ def fan_out(servers: Sequence[Server], kind: SnapshotKind, fetch: Callable[[Serv
 
     *fetch* reads Kea only and gives a Kea, transport or reply failure as its own Notice. A ``ValueError``, a
     configuration or argument error outside the Notice rule, becomes the error headline of *kind* for its Server.
+    The workers read the Kea client and display cache rows that this thread read; any other settings row raises.
     """
     read: FanOut[T] = FanOut()
-    client_config, cache_config = KeaClientConfig.get(), DisplayCacheConfig.get()
+    pinned = PinnedSettings.read(KeaClientConfig, DisplayCacheConfig)
     with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_WORKERS) as executor:
-        futures = [
-            (server, executor.submit(_in_context(client_config, cache_config).run, fetch, server)) for server in servers
-        ]
+        futures = [(server, executor.submit(pinned.context().run, fetch, server)) for server in servers]
     for server, future in futures:
         try:
             read.results.append((server, future.result()))
@@ -54,11 +46,3 @@ def fan_out(servers: Sequence[Server], kind: SnapshotKind, fetch: Callable[[Serv
             logger.exception("Failed to query server %s", server.name)
             read.notices.errors.append((server.name, HEADLINES[kind]))
     return read
-
-
-def _in_context(client_config: KeaClientConfig, cache_config: DisplayCacheConfig) -> contextvars.Context:
-    """Return a copy of this context in which ``get_client()`` and the display cache use the rows of the request."""
-    context = contextvars.copy_context()
-    context.run(request_client_config.set, client_config)
-    context.run(request_display_cache_config.set, cache_config)
-    return context

@@ -980,6 +980,26 @@ class TestCombinedReservationFanOut(_ViewTestBase):
         self.assertEqual(read.results, [(self.server, True)])
         self.assertEqual(kea.commands(), ["config-get", "config-get"])
 
+    def test_a_worker_that_reads_an_unpinned_settings_row_fails_loudly(self):
+        from netbox_kea.models import SyncConfig
+        from netbox_kea.views.fan_out import fan_out
+
+        # A worker that read the row would open its own database connection.
+        with self.assertRaisesMessage(RuntimeError, "SyncConfig"):
+            fan_out([self.server], "configuration", lambda server: SyncConfig.get())
+
+    @with_kea_client_config(kea_timeout=7)
+    def test_the_request_thread_reads_the_live_row_after_a_fan_out(self):
+        from netbox_kea.models import KeaClientConfig
+        from netbox_kea.views.fan_out import fan_out
+
+        read = fan_out([self.server], "configuration", lambda server: server.get_client(4).timeout)
+        KeaClientConfig.objects.filter(pk=1).update(kea_timeout=9)
+
+        self.assertEqual(read.results, [(self.server, 7)])
+        self.assertEqual(KeaClientConfig.get().kea_timeout, 9)
+        self.assertEqual(self.server.get_client(4).timeout, 9)
+
     def test_a_server_that_cannot_be_reached_gets_no_capability_read(self):
         # A second read of an unreachable Server only adds its timeout to the page.
         responses = {

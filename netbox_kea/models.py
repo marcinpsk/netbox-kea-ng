@@ -1,13 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-FileCopyrightText: 2023 Devon Mar <devon-mar@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
-from contextvars import ContextVar
+from collections.abc import Mapping
+from contextvars import Context, ContextVar, copy_context
 from dataclasses import astuple, dataclass
 from dataclasses import field as dataclass_field
 from functools import partial, reduce
 from operator import or_
 from pathlib import Path
-from typing import TypeVar, get_args
+from typing import TypeVar, cast, get_args
 
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.core.exceptions import ValidationError
@@ -308,7 +309,7 @@ class Server(JobsMixin, NetBoxModel):
         from . import display_cache
 
         connection = self.kea_connection(version)
-        config = request_client_config.get() or KeaClientConfig.get()
+        config = KeaClientConfig.get()
         return KeaClient(
             url=connection.url,
             username=connection.username,
@@ -400,8 +401,17 @@ class SettingsSingleton(ChangeLoggingMixin):
 
     @classmethod
     def get(cls: type[_Singleton]) -> _Singleton:
-        """Return the singleton row. A migration creates it, so a missing row raises ``DoesNotExist``."""
-        return cls.objects.get(pk=1)
+        """Return the singleton row. A migration creates it, so a missing row raises ``DoesNotExist``.
+
+        In a context from ``PinnedSettings.context()`` it returns the pinned row, and it raises ``RuntimeError`` for a
+        model that is not pinned there, because a worker thread opens no database connection.
+        """
+        pinned = _pinned_settings.get()
+        if pinned is None:
+            return cls.objects.get(pk=1)
+        if cls not in pinned:
+            raise RuntimeError(f"{cls.__name__} is not pinned for this worker thread, which reads no database.")
+        return cast(_Singleton, pinned[cls])
 
 
 class SyncConfig(SettingsSingleton):
@@ -582,11 +592,31 @@ class DisplayCacheConfig(SettingsSingleton):
         super().save(*args, **kwargs)
 
 
-# The rows a fan-out read on its request thread, so its worker threads open no database connection.
-request_client_config: ContextVar[KeaClientConfig | None] = ContextVar("request_client_config", default=None)
-request_display_cache_config: ContextVar[DisplayCacheConfig | None] = ContextVar(
-    "request_display_cache_config", default=None
+# Settings rows read on a request thread for its worker threads; None outside such a worker context.
+_pinned_settings: ContextVar[Mapping[type[SettingsSingleton], SettingsSingleton] | None] = ContextVar(
+    "pinned_settings", default=None
 )
+
+
+@dataclass(frozen=True)
+class PinnedSettings:
+    """Settings rows read on the request thread, so that worker threads open no database connection."""
+
+    rows: Mapping[type[SettingsSingleton], SettingsSingleton]
+
+    @classmethod
+    def read(cls, *models: type[SettingsSingleton]) -> "PinnedSettings":
+        """Read the row of each model now, on the calling thread."""
+        return cls({model: model.get() for model in models})
+
+    def context(self) -> Context:
+        """Return a copy of the current context in which ``SettingsSingleton.get()`` returns these rows only.
+
+        Make one for each worker task: a context can run in one thread at a time.
+        """
+        context = copy_context()
+        context.run(_pinned_settings.set, self.rows)
+        return context
 
 
 class KeaDhcpLink(ChangeLoggingMixin):
