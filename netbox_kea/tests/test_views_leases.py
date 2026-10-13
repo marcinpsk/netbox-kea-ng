@@ -693,7 +693,6 @@ class TestLeaseSearchPaths(_ViewTestBase):
                 4,
                 sync=SyncGate(()),
                 return_url="",
-                refresh=False,
                 read_since=datetime.now(tz=timezone.utc),
             )
 

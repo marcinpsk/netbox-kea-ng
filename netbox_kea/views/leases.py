@@ -271,13 +271,11 @@ def present(
     table_class: type[T],
     *,
     visible_only: bool,
-    refresh: bool,
 ) -> PresentedLeases:
     """Build the Lease table of *snapshot* and fill its badge and action fields. It must run in the main thread.
 
-    With *visible_only*, only the rows of the shown table page get badges, because each badge reads Kea. With
-    *refresh* the Reservation badges read Kea live and replace their entries. A badge read before *snapshot* is read
-    again, so a badge is never older than the table.
+    With *visible_only*, only the rows of the shown table page get badges, because each badge reads Kea. A badge read
+    before *snapshot* is read again, so a badge is never older than the table, also after a Refresh.
     """
     rows = snapshot_rows(snapshot)
     # A state filter keeps the raw continuation, so a batch can hold no match while more Leases remain.
@@ -296,7 +294,6 @@ def present(
         can_change=request.user.has_perm("netbox_kea.change_server", obj=server),
         sync=lease_sync_gates(request.user),
         return_url=return_url,
-        refresh=refresh,
         read_since=snapshot.read_started,
     )
     if not can_delete:
@@ -407,7 +404,7 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             messages.warning(request, _incomplete_export_message(snapshot))
             return redirect(request.path)
         if limited:
-            table = present(request, instance, snapshot, self.table, visible_only=False, refresh=True).table
+            table = present(request, instance, snapshot, self.table, visible_only=False).table
             return export_table(table, "leases_limited_coverage.csv", use_selected_columns=True)
         return lease_csv_response(
             snapshot.records,
@@ -536,7 +533,7 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             if isinstance(loaded, Notice):
                 return self._search_without_table(request, instance, form, loaded)
             snapshot = loaded
-            presented = present(request, instance, snapshot, self.table, visible_only=by != "", refresh=refresh)
+            presented = present(request, instance, snapshot, self.table, visible_only=by != "")
             table = presented.table
             if by == "":
                 next_page = None if snapshot.next_cursor is None else str(snapshot.next_cursor)
@@ -1157,7 +1154,6 @@ class _LeaseRowLookups:
     server: Server
     version: Family
     catalogue: CatalogueSnapshot
-    refresh: bool
     #: The read time of the Lease table; an entry read before it is read again.
     read_since: datetime
     identities: _IdentityLookups
@@ -1175,7 +1171,6 @@ class _LeaseRowLookups:
             "reservation_lookups",
             read,
             query=parts,
-            refresh=self.refresh,
             fresh=lambda entry: entry.read_started >= self.read_since,
         ).reservation
 
@@ -1236,12 +1231,11 @@ def _fetch_reservations_for_leases(
     catalogue: CatalogueSnapshot,
     leases: list[dict[str, Any]],
     *,
-    refresh: bool,
     read_since: datetime,
 ) -> tuple[dict[str, Reservation], bool, set[str]]:
     """Resolve each visible lease through scoped address and normalized Identity queries.
 
-    Each lookup is a display cache entry; with *refresh* it reads Kea live and replaces the entry.
+    Each lookup is a display cache entry; an entry read before *read_since* is read again.
     """
     if not leases:
         return {}, True, set()
@@ -1249,7 +1243,7 @@ def _fetch_reservations_for_leases(
     failed_ips: set[str] = set()
     host_cmds_available = True
     worker_clients = _LeaseReservationWorkerClients(client)
-    lookups = _LeaseRowLookups(server, version, catalogue, refresh, read_since, _IdentityLookups())
+    lookups = _LeaseRowLookups(server, version, catalogue, read_since, _IdentityLookups())
     pinned = PinnedSettings.read(DisplayCacheConfig)
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(leases), 10)) as executor:
@@ -1398,7 +1392,6 @@ def _enrich_leases_with_badges(
     *,
     sync: Mapping[AllocationKind, SyncGate],
     return_url: str,
-    refresh: bool,
     read_since: datetime,
 ) -> None:
     """In-place: add reservation and NetBox IPAM badge fields to lease dicts.
@@ -1415,8 +1408,8 @@ def _enrich_leases_with_badges(
     - ``can_delete``: whether the current user may delete this lease
     - ``can_change``: whether the current user may edit this lease (gates edit_url)
 
-    *return_url* is the lease search page; the lease and Reservation edit forms return to it. With *refresh* the
-    Reservation lookups read Kea live and replace their entries, and each one read before *read_since* is read again.
+    *return_url* is the lease search page; the lease and Reservation edit forms return to it. Each Reservation lookup
+    read before *read_since*, the read time of the Lease table, is read again.
     """
     from ..sync import bulk_fetch_netbox_ips
 
@@ -1429,7 +1422,7 @@ def _enrich_leases_with_badges(
         client = server.get_client(version=version)
         catalogue = subnet_catalogue.display(server, version)
         reservation_by_ip, host_cmds_available, failed_ips = _fetch_reservations_for_leases(
-            client, server, version, catalogue, leases, refresh=refresh, read_since=read_since
+            client, server, version, catalogue, leases, read_since=read_since
         )
     except Exception as exc:
         failed_ips = {_row_address(lease) for lease in leases}

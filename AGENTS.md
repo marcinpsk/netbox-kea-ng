@@ -312,12 +312,11 @@ URL request
   (`subnet_catalogue.display(refresh=True)`), and so does a Leases Refresh, before its search form. The Refresh control
   (`views/read_age.py`, `inc/read_age.html`) sends an htmx GET of the same URL with the `X-Kea-Refresh` header and
   swaps the Reservation section (`#kea-reservations`), which holds the warnings, the search card and the table, or the
-  Lease section (`#lease-search`). An error of a Refresh shows inside the section: `exception_htmx.html` has the id
-  `lease-search`. The page shows "Read N s ago" from `read_started` of the Snapshot (the oldest one on a combined
-  page). A Refresh also reads the badges of the shown rows live (`ReservationQuery.refresh`, the `refresh` argument
-  of the Lease `present()`). A badge entry holds its read time, and the badge passes the read time of its table to
-  the `fresh` predicate of `cached()`: an entry read before the table is read again, also on a table miss without a
-  Refresh. So a badge is never older than its table. Utilization and status have no read age and no Refresh. The
+  Lease section (`#lease-search`). An error of a Refresh shows inside the section: the Leases view passes the section
+  id to `exception_htmx.html`. The page shows "Read N s ago" from `read_started` of the Snapshot (the oldest one on a
+  combined page). A badge entry holds its read time, and the badge passes the read time of its table to the `fresh`
+  predicate of `cached()`: an entry read before the table is read again. So a badge is never older than its table, and
+  a Refresh, which reads the table live, also reads the badges of the shown rows live. No refresh flag reaches a badge. Utilization and status have no read age and no Refresh. The
   badge lookups run in worker threads that pin `DisplayCacheConfig` (and `KeaClientConfig` for the Lease reads), and a
   failed badge lookup logs no traceback (`load_snapshot(quiet=True)`). Each cached Lease, utilization and status read
   builds its client on a miss only and closes it (`views/_base.LazyClient`); a close that fails is logged. Exports
