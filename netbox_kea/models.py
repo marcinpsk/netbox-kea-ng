@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-FileCopyrightText: 2023 Devon Mar <devon-mar@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
+from contextvars import ContextVar
 from dataclasses import astuple, dataclass
 from dataclasses import field as dataclass_field
 from functools import reduce
@@ -312,7 +313,7 @@ class Server(JobsMixin, NetBoxModel):
             on_config_change = None
 
         connection = self.kea_connection(version)
-        config = KeaClientConfig.get()
+        config = request_client_config.get() or KeaClientConfig.get()
         return KeaClient(
             url=connection.url,
             username=connection.username,
@@ -504,6 +505,10 @@ class KeaClientConfig(SettingsSingleton):
 
     def __str__(self) -> str:
         return "Kea Client Configuration"
+
+
+# The row a fan-out read on its request thread, so its worker threads open no database connection.
+request_client_config: ContextVar[KeaClientConfig | None] = ContextVar("request_client_config", default=None)
 
 
 class KeaDhcpLink(ChangeLoggingMixin):
