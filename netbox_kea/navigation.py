@@ -31,6 +31,7 @@ _items = (
     PluginMenuItem(
         link="plugins:netbox_kea:settings",
         link_text="Settings",
+        # NetBox needs every listed permission, so a second Settings section needs another rule (a test checks it).
         permissions=["netbox_kea.view_syncconfig"],
     ),
 )

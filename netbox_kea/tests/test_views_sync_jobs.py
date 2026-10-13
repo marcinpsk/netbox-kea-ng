@@ -295,6 +295,17 @@ class TestSettingsPermissions(TestCase):
         self.assertContains(self.client.get(reverse("home")), self.link)
         self.assertContains(self.client.get(reverse("plugins:netbox_kea:sync_jobs")), self.link)
 
+    def test_the_menu_item_shows_for_a_user_who_can_view_any_one_section(self):
+        """NetBox shows a menu item only to a user with every permission it lists, so one per section is wrong."""
+        from netbox_kea.views.settings_page import SECTIONS
+
+        for section in SECTIONS:
+            with self.subTest(section=section.slug):
+                user = User.objects.create_user(f"settings-only-{section.slug}")
+                _grant([section.model], ["view"], user=user)
+                self.client.force_login(user)
+                self.assertContains(self.client.get(reverse("home")), self.link)
+
     def test_the_server_sync_tab_links_to_settings_only_for_a_user_who_can_view_them(self):
         server = _make_db_server()
         tab = reverse("plugins:netbox_kea:server_sync_status", args=[server.pk])
