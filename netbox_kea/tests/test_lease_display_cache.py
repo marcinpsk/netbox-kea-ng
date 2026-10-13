@@ -574,6 +574,30 @@ class StatusAndUtilizationCacheTest(_ViewTestBase):
         self.assertContains(second, "25%")
         self.assertNotRegex(second.content.decode(), r"Read \d+ s ago")
 
+    def test_the_status_badge_is_online_for_any_successful_version_reply(self):
+        url = reverse("plugins:netbox_kea:combined_server_status_badge", args=[self.server.pk])
+        for reply in ({"result": 0}, {"result": 0, "arguments": {"extended": 3}}, {"result": 0, "arguments": []}):
+            with self.subTest(reply=reply), with_display_cache_config(status_ttl=0), stub_kea({"version-get": reply}):
+                response = self.client.get(url)
+                self.assertContains(response, "Online")
+                self.assertNotContains(response, "Offline")
+
+    def test_a_dhcp_daemon_with_empty_status_arguments_still_shows_its_row(self):
+        def empty_for_daemons(reply: dict[str, Any]):
+            return lambda body: {"result": 0, "arguments": {}} if body.get("service") else reply
+
+        responses = _status_responses()
+        response, _ = self._status(
+            **{
+                "status-get": empty_for_daemons(responses["status-get"]),
+                "version-get": empty_for_daemons(responses["version-get"]),
+            }
+        )
+
+        services = {service["name"]: service["status_data"] for service in response.context["services"]}
+        self.assertEqual((services["DHCPv4"]["PID"], services["DHCPv4"]["Version"]), (None, "unknown"))
+        self.assertEqual(services["Control Agent"]["PID"], 1234)
+
     def test_a_cold_overview_uses_one_closed_kea_session_for_both_reads_of_each_daemon(self):
         sessions = _SessionLog()
         with stub_kea(_status_responses()), sessions.tracking():

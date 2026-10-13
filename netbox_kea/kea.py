@@ -451,15 +451,15 @@ class DaemonVersion:
         return True
 
 
-def _status_arguments(command: KeaCommand, reply: KeaResponse) -> dict[str, Any]:
-    """Return the arguments of one ``status-get`` or ``version-get`` reply, which always hold a fact.
+def _status_arguments(command: KeaCommand, reply: KeaResponse, *, filled: bool) -> dict[str, Any]:
+    """Return the arguments of one ``status-get`` or ``version-get`` reply; with *filled* they must hold a fact.
 
     Raises:
-        MalformedReply: If the arguments are not a non-empty mapping.
+        MalformedReply: If the arguments are not a mapping, or with *filled* an empty one.
 
     """
     arguments = reply.get("arguments")
-    if not isinstance(arguments, dict) or not arguments:
+    if not isinstance(arguments, dict) or (filled and not arguments):
         raise MalformedReply(f"Kea {command.value} returned invalid arguments.")
     return arguments
 
@@ -2004,13 +2004,15 @@ class KeaClient:
     def daemon_status(self, target: Family | None) -> DaemonStatus:
         """Read the ``status-get`` facts of the daemon of *target*, or of the Control Agent for ``None``.
 
+        The Control Agent must report a fact; a DHCP daemon can report none.
+
         Raises:
             KeaException: If Kea returns a failure result.
             MalformedReply: If the reply or a fact is malformed.
 
         """
         command = KeaCommand.STATUS_GET
-        arguments = _status_arguments(command, self._one_command(command, target))
+        arguments = _status_arguments(command, self._one_command(command, target), filled=target is None)
         return DaemonStatus(
             pid=arguments.get("pid"),
             uptime=_status_seconds(arguments, "uptime"),
@@ -2021,17 +2023,23 @@ class KeaClient:
     def daemon_version(self, target: Family | None) -> DaemonVersion:
         """Read the ``version-get`` facts of the daemon of *target*, or of the Control Agent for ``None``.
 
+        For a DHCP daemon any successful reply counts, because the combined status badge reads it to show that the
+        daemon is reachable. The Control Agent must report a fact. An extended version that is not text is unknown.
+
         Raises:
             KeaException: If Kea returns a failure result.
-            MalformedReply: If the reply or the extended version is malformed.
+            MalformedReply: If the reply is malformed, or the Control Agent reports no fact.
 
         """
         command = KeaCommand.VERSION_GET
-        arguments = _status_arguments(command, self._one_command(command, target))
+        reply = self._one_command(command, target)
+        if target is None:
+            arguments = _status_arguments(command, reply, filled=True)
+        else:
+            found = reply.get("arguments")
+            arguments = found if isinstance(found, dict) else {}
         extended = arguments.get("extended")
-        if extended is not None and not isinstance(extended, str):
-            raise MalformedReply(f"Kea {command.value} returned an invalid extended version.")
-        return DaemonVersion(extended=extended)
+        return DaemonVersion(extended=extended if isinstance(extended, str) else None)
 
     def lease_get_page(
         self,

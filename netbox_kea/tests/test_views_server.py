@@ -741,8 +741,8 @@ class TestStatusViewNullArgs(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_status_data", args=[self.server.pk])
 
-    def test_get_ca_status_empty_args_degrades_gracefully(self):
-        """_get_ca_status degrades gracefully when arguments is empty."""
+    def test_empty_control_agent_status_arguments_leave_its_row_empty(self):
+        """The Control Agent needs non-empty status-get arguments; empty ones leave its row without data."""
 
         def _status(body):
             svc = body.get("service")
@@ -751,16 +751,15 @@ class TestStatusViewNullArgs(_ViewTestBase):
             return {"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}}
 
         stub = {"status-get": _status, "version-get": {"result": 0, "arguments": {"extended": "2.0"}}}
-        # The view catches exceptions from _get_ca_status; page still renders with empty statuses
         with _status_stub(**stub):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         services_by_name = {s["name"]: s for s in response.context["services"]}
-        if "Control Agent" in services_by_name:
-            self.assertEqual(services_by_name["Control Agent"]["status_data"], {})
+        self.assertEqual(services_by_name["Control Agent"]["status_data"], {})
+        self.assertEqual(services_by_name["DHCPv4"]["status_data"]["PID"], 1)
 
-    def test_get_dhcp_status_null_args_degrades_gracefully(self):
-        """_get_dhcp_status degrades gracefully when arguments is None."""
+    def test_null_dhcp_status_arguments_leave_its_row_empty(self):
+        """A DHCP daemon whose status-get arguments are null keeps its row, without data."""
 
         def _status(body):
             svc = body.get("service")
@@ -772,8 +771,6 @@ class TestStatusViewNullArgs(_ViewTestBase):
         with _status_stub(**stub):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        # When arguments is None, _get_dhcp_status raises RuntimeError and the view
-        # falls back to empty status_data — the service entry must still exist.
         services_by_name = {s["name"]: s for s in response.context["services"]}
         self.assertIn("DHCPv4", services_by_name)
         self.assertEqual(
@@ -782,7 +779,7 @@ class TestStatusViewNullArgs(_ViewTestBase):
             "DHCPv4 status_data must be empty/degraded when arguments is None",
         )
 
-    def test_get_ca_status_list_args_degrades_gracefully(self):
+    def test_list_control_agent_status_arguments_leave_its_row_empty(self):
         """The status page rejects list-valued Control Agent arguments."""
 
         def _status(body):
@@ -797,7 +794,7 @@ class TestStatusViewNullArgs(_ViewTestBase):
         services_by_name = {service["name"]: service for service in response.context["services"]}
         self.assertEqual(services_by_name["Control Agent"]["status_data"], {})
 
-    def test_get_dhcp_status_list_args_degrades_gracefully(self):
+    def test_list_dhcp_status_arguments_leave_its_row_empty(self):
         """The status page rejects list-valued DHCP daemon arguments."""
 
         def _status(body):
@@ -834,7 +831,7 @@ class TestStatusViewNullArgs(_ViewTestBase):
                 self.assertEqual(services[name]["status_data"]["Uptime"], "")
                 self.assertEqual(services[name]["status_data"]["Time since reload"], "")
 
-    def test_get_dhcp_status_ha_fields_included(self):
+    def test_dhcp_status_shows_the_high_availability_rows(self):
         """HA fields are present when high-availability is in status-get."""
 
         def _status(body):
