@@ -561,17 +561,14 @@ class DisplayCacheConfig(SettingsSingleton):
         verbose_name="Leases TTL (seconds)",
         default=30,
         help_text=(
-            "How long a page shows cached Leases (seconds). 0 turns off caching for them."
-            " The Lease pages do not use the cache yet."
+            "How long a page shows cached Leases and the badges that link Leases and Reservations (seconds)."
+            " 0 turns off caching for them."
         ),
     )
     status_ttl: models.PositiveIntegerField = models.PositiveIntegerField(
         verbose_name="Utilization and Status TTL (seconds)",
         default=15,
-        help_text=(
-            "How long a page shows cached utilization and daemon status (seconds). 0 turns off caching for them."
-            " These pages do not use the cache yet."
-        ),
+        help_text="How long a page shows cached utilization and daemon status (seconds). 0 turns off caching for them.",
     )
 
     class Meta:
