@@ -18,6 +18,7 @@ from .kea_stub import (
     LeaseDaemon,
     _catalogue_responses,
     _catalogue_responses_for_subnets,
+    _res_get,
     _res_page,
     lease_pages,
     lease_record,
@@ -29,6 +30,8 @@ from .utils import _make_db_server, _ViewTestBase, save_key_without_certificate,
 
 _CIDR = "198.18.0.0/24"
 _RESERVED = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "198.18.0.21", "hostname": "old"}
+#: The Reserved badge link of a Lease row; the column header also reads "Reserved".
+_RESERVED_BADGE = 'text-decoration-none">Reserved</a>'
 #: The Leases tab reads every Lease when the search names no Attribute.
 _BROWSE = {"q": "", "by": "", "state": ""}
 
@@ -225,17 +228,18 @@ class LeaseTableCacheTest(_LeaseCacheBase):
         self.assertNotContains(reservations, ">Active Lease<")
 
     def test_refresh_reads_the_leases_and_their_reservation_badges_live_and_refills_the_entries(self):
-        page, _ = self._leases({"lease4-get-page": lease_pages([_lease("198.18.0.21")])})
+        page_reply = {"lease4-get-page": lease_pages([_lease("198.18.0.21")])}
+        page, _ = self._leases({**page_reply, "reservation-get": _res_get(_RESERVED)})
+        self.assertContains(page, _RESERVED_BADGE)
 
-        refreshed, commands = self._refresh_leases(page, {"lease4-get-page": lease_pages([_lease("198.18.0.22")])})
+        refreshed, commands = self._refresh_leases(page, {**page_reply, "reservation-get": {"result": 3}})
         self.assertEqual(_lease_commands(commands), ["lease4-get-page"])
-        self.assertIn("reservation-get", commands, "Refresh rereads the Reservation badges of the shown rows")
         self.assertIn("subnet4-list", commands, "Refresh reads the Subnet Catalogue live")
-        self.assertContains(refreshed, "198.18.0.22")
+        self.assertNotContains(refreshed, _RESERVED_BADGE, msg_prefix="Refresh rereads the badges of the shown rows")
 
-        response, commands = self._leases({"lease4-get-page": lease_pages([_lease("198.18.0.21")])})
+        response, commands = self._leases({**page_reply, "reservation-get": _res_get(_RESERVED)})
         self.assertEqual(commands, [])
-        self.assertContains(response, "198.18.0.22")
+        self.assertNotContains(response, _RESERVED_BADGE)
 
     def test_the_refresh_control_swaps_the_lease_search_section_of_the_same_search(self):
         page, _ = self._leases({"lease4-get-page": lease_pages([_lease("198.18.0.21")])})
