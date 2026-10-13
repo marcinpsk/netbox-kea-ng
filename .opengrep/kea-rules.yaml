@@ -1124,6 +1124,9 @@ rules:
           def _read_reservations(...):
               ...
       - pattern-not-inside: |
+          def _read_reservation_page(...):
+              ...
+      - pattern-not-inside: |
           def _read_leases(...):
               ...
       # The DHCP plugin import reads the Reservation Snapshot to synchronize it, not to show it.

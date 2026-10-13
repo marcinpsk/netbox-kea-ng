@@ -806,10 +806,12 @@ def _read_live(server: Server, family: Family) -> tuple[CatalogueSnapshot, Serve
     return _reconcile(server, family, identity, configuration, disagreement_code), source
 
 
-def display(server: Server, family: int) -> CatalogueSnapshot:
-    """Return a cached Complete or Incomplete snapshot for presentation."""
+def display(server: Server, family: int, *, refresh: bool = False) -> CatalogueSnapshot:
+    """Return a cached Complete or Incomplete snapshot for presentation; *refresh* reads it live and replaces it."""
     validated_family = validate_family(family)
-    return display_cache.cached(server, validated_family, "catalogue", lambda: _read_live(server, validated_family)[0])
+    return display_cache.cached(
+        server, validated_family, "catalogue", lambda: _read_live(server, validated_family)[0], refresh=refresh
+    )
 
 
 def for_verification(server: Server, family: int) -> CatalogueSnapshot:

@@ -13,8 +13,9 @@ from django.core.cache import cache
 from django.urls import reverse
 
 from netbox_kea import display_cache
+from netbox_kea.models import DisplayCacheConfig
 
-from .kea_stub import _catalogue_responses, _res_get, _res_page, queued, stub_kea
+from .kea_stub import _catalogue_responses, _catalogue_responses_for_subnets, _res_get, _res_page, queued, stub_kea
 from .utils import _make_db_server, _ViewTestBase, with_display_cache_config
 
 _CIDR = "198.18.0.0/24"
@@ -49,8 +50,9 @@ def _age_entries(seconds: int) -> None:
     if not keys:
         raise AssertionError("no Reservation page is cached")
     for key in keys:
-        snapshot = cache.get(key)
-        cache.set(key, replace(snapshot, read_started=snapshot.read_started - timedelta(seconds=seconds)), 300)
+        page = cache.get(key)
+        older = replace(page.snapshot, read_started=page.snapshot.read_started - timedelta(seconds=seconds))
+        cache.set(key, replace(page, snapshot=older), 300)
 
 
 class ServerReservationPageCacheTest(_ViewTestBase):
@@ -240,6 +242,51 @@ class ServerReservationPageCacheTest(_ViewTestBase):
                 self.assertGreaterEqual(reads, 1)
                 _, reads = self._render(_res_page([_OLD]), query=query)
                 self.assertEqual(reads, 0)
+
+    def test_a_page_read_against_an_unsettled_catalogue_is_read_again(self):
+        responses = _responses(_res_page([_OLD]))
+        responses["config-get"] = {"result": 1, "text": "Configuration unavailable"}
+        with stub_kea(responses):
+            self.client.get(self._url())
+
+        _, reads = self._render(_res_page([_OLD]))
+
+        self.assertEqual(reads, 1)
+
+    def test_a_warm_render_reads_no_catalogue_after_its_entry_is_gone(self):
+        self._render(_res_page([_OLD]))
+        cache.delete(display_cache._entry_key(self.server, 4, "catalogue", DisplayCacheConfig.get(), ()))
+
+        with stub_kea(_responses(_res_page([_NEW]))) as kea:
+            response = self.client.get(self._url())
+
+        self.assertEqual([command for command in kea.commands() if command != "lease4-get-by-state"], [])
+        self.assertContains(response, "198.18.0.21")
+        labels = [str(label) for _, label in response.context["search_form"].fields["subnet_id"].widget.choices]
+        self.assertTrue(any(_CIDR in label for label in labels), labels)
+
+    def test_refresh_reads_the_catalogue_live(self):
+        page, reads = self._render(_res_page([]), query={"subnet_id": "21"})
+        self.assertEqual(reads, 0, "Subnet 21 is not in the Catalogue, so the page needs no read")
+        responses = _catalogue_responses_for_subnets(
+            4, [{"id": 20, "subnet": _CIDR}, {"id": 21, "subnet": "198.18.1.0/24"}]
+        )
+        added = {"subnet-id": 21, "hw-address": "aa:bb:cc:dd:ee:21", "ip-address": "198.18.1.21"}
+        responses.update(
+            {
+                "reservation-get-page": _res_page([added]),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            }
+        )
+        control = _refresh_control(page)
+
+        with stub_kea(responses) as kea:
+            refreshed = self.client.get(
+                control["hx-get"], headers={"HX-Request": "true", **json.loads(control["hx-headers"])}
+            )
+
+        self.assertEqual(kea.commands().count("reservation-get-page"), 1)
+        self.assertContains(refreshed, "198.18.1.21")
 
     @with_display_cache_config(reservations_ttl=0)
     def test_a_ttl_of_0_reads_every_render(self):

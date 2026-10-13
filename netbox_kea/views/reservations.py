@@ -355,21 +355,35 @@ def _empty_reservation_snapshot(version: Family, read_started: datetime) -> Rese
     )
 
 
-def _read_reservations(server: Server, version: Family, query: ReservationQuery) -> ReservationSnapshot:
+@dataclass(frozen=True)
+class _ReservationPage:
+    """One display cache entry: a Reservation page and the Subnet Catalogue that its records were parsed against."""
+
+    snapshot: ReservationSnapshot
+    catalogue: CatalogueSnapshot
+
+    @property
+    def settled(self) -> bool:
+        """Return false when the page walk or the Catalogue read did not settle; the cache never stores it."""
+        return self.snapshot.settled and self.catalogue.settled
+
+
+def _read_reservations(
+    server: Server, version: Family, query: ReservationQuery, catalogue: CatalogueSnapshot
+) -> ReservationSnapshot:
     """Read the complete Snapshot, a browse page, or scan a bounded batch until a filtered page matches.
 
-    A page has the time at which this call started, also when a search reads more than one page.
+    The records are parsed against *catalogue*. A page has the time at which this call started, also when a search
+    reads more than one page.
     """
     q, subnet_id, scope, cursor = query.q, query.subnet_id, query.scope, query.cursor
     if query.full:
-        catalogue = subnet_catalogue(server, version)
         return server.get_client(version=version).reservation_snapshot(
             version, catalogue, page_size=_RESERVATION_PAGE_SIZE
         )
     started = timezone.now()
     if subnet_id is not None and subnet_id > 0 and scope == "global":
         return replace(_empty_reservation_snapshot(version, started), complete=True)
-    catalogue = subnet_catalogue(server, version)
     read_subnet_id = 0 if scope == "global" else subnet_id
     if (
         read_subnet_id is not None
@@ -436,6 +450,12 @@ def _read_reservations(server: Server, version: Family, query: ReservationQuery)
     return replace(page, records=matches, diagnostics=tuple(diagnostics), complete=complete, read_started=started)
 
 
+def _read_reservation_page(server: Server, version: Family, query: ReservationQuery) -> _ReservationPage:
+    """Read the Subnet Catalogue, live on a Refresh, and the page of *query* parsed against it."""
+    catalogue = subnet_catalogue(server, version, refresh=query.refresh)
+    return _ReservationPage(_read_reservations(server, version, query, catalogue), catalogue)
+
+
 def _display_capabilities(server: Server, version: Family) -> ReservationCapabilities | None:
     """Return the Reservation capabilities that the cached Server Configuration shows, for a page render."""
     return server_configuration.reservation_capabilities(server_configuration.display(server, version))
@@ -457,28 +477,33 @@ def fetch(server: Server, family: Family, query: ReservationQuery) -> Reservatio
 
     """
     loaded: ReservationSnapshot | Notice
+    catalogue: CatalogueSnapshot | None = None
     if query.full:
-        loaded = load_snapshot(server, "reservation", lambda: _read_reservations(server, family, query))
-    else:
         loaded = load_snapshot(
+            server, "reservation", lambda: _read_reservations(server, family, query, subnet_catalogue(server, family))
+        )
+    else:
+        page = load_snapshot(
             server,
             "reservation",
             lambda: display_cache.cached(
                 server,
                 family,
                 "reservations",
-                lambda: _read_reservations(server, family, query),
+                lambda: _read_reservation_page(server, family, query),
                 query=query.page_parts,
                 refresh=query.refresh,
             ),
         )
+        loaded, catalogue = (page, None) if isinstance(page, Notice) else (page.snapshot, page.catalogue)
     capabilities = None
     # A second read of a Server that did not answer would only add its timeout.
     unreachable = isinstance(loaded, Notice) and loaded.unreachable
     if query.mutations and not unreachable:
         capabilities = _display_capabilities(server, family)
-    # The Reservation read cached the Catalogue, so this is a cache read unless the Catalogue was unsettled.
-    catalogue = None if unreachable else subnet_catalogue(server, family)
+    # A page comes with the Catalogue it was parsed against; only a failed read or an export reads it here.
+    if catalogue is None and not unreachable:
+        catalogue = subnet_catalogue(server, family)
     return ReservationRead(query, loaded, capabilities, catalogue)
 
 
@@ -709,7 +734,7 @@ def _reservation_export_response(request: HttpRequest, server: Server, version: 
     if format_name not in ("yaml", "json"):
         raise BadRequest("Reservation export format must be YAML or JSON.")
     try:
-        snapshot = _read_reservations(server, version, ReservationQuery(full=True))
+        snapshot = _read_reservations(server, version, ReservationQuery(full=True), subnet_catalogue(server, version))
     except (KeaException, requests.RequestException, RuntimeError, ValueError):
         logger.exception("Could not export DHCPv%s Reservations", version)
         return HttpResponse("The Reservation Snapshot could not be exported.", status=502)
