@@ -90,8 +90,9 @@ from ._base import (
     _KeaChangeMixin,
     _safe_return_url,
     _strip_empty_params,
+    close_quietly,
 )
-from .lease_reads import LeaseSearch, _read_leases, fetch
+from .lease_reads import LeaseSearch, fetch, read_leases
 from .notices import Notice, notice, show_notices
 from .read_age import read_age_context, refresh_requested
 from .reservations import empty_text
@@ -275,7 +276,8 @@ def present(
     """Build the Lease table of *snapshot* and fill its badge and action fields. It must run in the main thread.
 
     With *visible_only*, only the rows of the shown table page get badges, because each badge reads Kea. With
-    *refresh* the Reservation badges read Kea live and replace their entries.
+    *refresh* the Reservation badges read Kea live and replace their entries. A badge read before *snapshot* is read
+    again, so a badge is never older than the table.
     """
     rows = snapshot_rows(snapshot)
     # A state filter keeps the raw continuation, so a batch can hold no match while more Leases remain.
@@ -295,6 +297,7 @@ def present(
         sync=lease_sync_gates(request.user),
         return_url=return_url,
         refresh=refresh,
+        read_since=snapshot.read_started,
     )
     if not can_delete:
         table.columns.hide("pk")
@@ -380,7 +383,7 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             return redirect(request.path)
         try:
             # An export reads the Leases live.
-            read = _read_leases(
+            read = read_leases(
                 client, instance, self.dhcp_version, LeaseSearch(by, form.cleaned_data["q"], state_filter)
             )
             if isinstance(read.loaded, Notice):
@@ -578,7 +581,7 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             return render(
                 request,
                 "netbox_kea/exception_htmx.html",
-                {"error_id": error_id},
+                {"error_id": error_id, "section_id": "lease-search"},
             )
         else:
             return response
@@ -1096,14 +1099,6 @@ class _IdentityLookups:
             return self._results[key]
 
 
-def _close_worker_client(client: KeaClient) -> None:
-    """Close one worker client, reporting a failure instead of raising it."""
-    try:
-        client.close()
-    except Exception:
-        logger.warning("Could not close a Reservation worker Kea client", exc_info=True)
-
-
 class _LeaseReservationWorkerClients:
     """Keep one private Kea client for each reservation worker thread."""
 
@@ -1132,7 +1127,7 @@ class _LeaseReservationWorkerClients:
         with self._registry:
             clients = tuple(self._clients)
         for client in clients:
-            _close_worker_client(client)
+            close_quietly(client)
 
 
 def _row_address(row: dict[str, Any]) -> str:
@@ -1147,6 +1142,7 @@ class _ReservationLookup:
     reservation: Reservation | None
     #: False when the Reservation was parsed against a Subnet Catalogue that did not settle.
     catalogue_settled: bool
+    read_started: datetime
 
     @property
     def settled(self) -> bool:
@@ -1162,17 +1158,25 @@ class _LeaseRowLookups:
     version: Family
     catalogue: CatalogueSnapshot
     refresh: bool
+    #: The read time of the Lease table; an entry read before it is read again.
+    read_since: datetime
     identities: _IdentityLookups
 
     def cached(self, parts: display_cache.QueryParts, lookup: Callable[[], Reservation | None]) -> Reservation | None:
         """Return the Reservation that *lookup* finds, from the entry of *parts* or from Kea."""
+
+        def read() -> _ReservationLookup:
+            started = datetime.now(tz=timezone.utc)
+            return _ReservationLookup(lookup(), self.catalogue.settled, started)
+
         return display_cache.cached(
             self.server,
             self.version,
             "reservation_lookups",
-            lambda: _ReservationLookup(lookup(), self.catalogue.settled),
+            read,
             query=parts,
             refresh=self.refresh,
+            fresh=lambda entry: entry.read_started >= self.read_since,
         ).reservation
 
 
@@ -1233,6 +1237,7 @@ def _fetch_reservations_for_leases(
     leases: list[dict[str, Any]],
     *,
     refresh: bool,
+    read_since: datetime,
 ) -> tuple[dict[str, Reservation], bool, set[str]]:
     """Resolve each visible lease through scoped address and normalized Identity queries.
 
@@ -1244,7 +1249,7 @@ def _fetch_reservations_for_leases(
     failed_ips: set[str] = set()
     host_cmds_available = True
     worker_clients = _LeaseReservationWorkerClients(client)
-    lookups = _LeaseRowLookups(server, version, catalogue, refresh, _IdentityLookups())
+    lookups = _LeaseRowLookups(server, version, catalogue, refresh, read_since, _IdentityLookups())
     pinned = PinnedSettings.read(DisplayCacheConfig)
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(leases), 10)) as executor:
@@ -1394,6 +1399,7 @@ def _enrich_leases_with_badges(
     sync: Mapping[AllocationKind, SyncGate],
     return_url: str,
     refresh: bool,
+    read_since: datetime,
 ) -> None:
     """In-place: add reservation and NetBox IPAM badge fields to lease dicts.
 
@@ -1410,7 +1416,7 @@ def _enrich_leases_with_badges(
     - ``can_change``: whether the current user may edit this lease (gates edit_url)
 
     *return_url* is the lease search page; the lease and Reservation edit forms return to it. With *refresh* the
-    Reservation lookups read Kea live and replace their entries.
+    Reservation lookups read Kea live and replace their entries, and each one read before *read_since* is read again.
     """
     from ..sync import bulk_fetch_netbox_ips
 
@@ -1423,14 +1429,14 @@ def _enrich_leases_with_badges(
         client = server.get_client(version=version)
         catalogue = subnet_catalogue.display(server, version)
         reservation_by_ip, host_cmds_available, failed_ips = _fetch_reservations_for_leases(
-            client, server, version, catalogue, leases, refresh=refresh
+            client, server, version, catalogue, leases, refresh=refresh, read_since=read_since
         )
     except Exception as exc:
         failed_ips = {_row_address(lease) for lease in leases}
         logger.warning("unexpected error during lease enrichment: %s", exc, exc_info=True)
     finally:
         if client is not None:
-            _close_worker_client(client)
+            close_quietly(client)
 
     for lease in leases:
         ip = _row_address(lease)

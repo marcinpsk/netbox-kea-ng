@@ -21,7 +21,7 @@ from .. import display_cache
 from ..config_write import ConfigChangeOutcome, ConfigChangeRejected, RejectionReason
 from ..constants import Family
 from ..dhcp_options import shown_options
-from ..kea import DaemonStatus, DaemonVersion, KeaCommand, KeaException, SubnetUtilization
+from ..kea import DaemonStatus, DaemonVersion, KeaClient, KeaCommand, KeaException, SubnetUtilization
 from ..models import Server
 from ..server_configuration import SharedNetwork
 from ..subnet_catalogue import ConfiguredSubnet, VerifiedSubnet
@@ -226,12 +226,46 @@ class _Utilization:
         return True
 
 
+def close_quietly(client: KeaClient) -> None:
+    """Close one Kea client, and log a failure instead of raising it, so the page still renders."""
+    try:
+        client.close()
+    except Exception:
+        logger.warning("Could not close a Kea client", exc_info=True)
+
+
+class LazyClient:
+    """The Kea client of one Server and target, built on first use and closed quietly at the end of the block.
+
+    A display cache hit builds no client. A target of ``None`` is the Control Agent.
+    """
+
+    def __init__(self, server: Server, target: Family | None) -> None:
+        self.server = server
+        self.target = target
+        self._client: KeaClient | None = None
+
+    def __call__(self) -> KeaClient:
+        """Return the client, built on the first call."""
+        if self._client is None:
+            self._client = self.server.get_client(version=self.target)
+        return self._client
+
+    def __enter__(self) -> "LazyClient":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        if self._client is not None:
+            close_quietly(self._client)
+
+
 def _read_utilization(server: Server, version: Family) -> _Utilization:
-    return _Utilization(server.get_client(version=version).subnet_utilization(version))
+    with LazyClient(server, version) as client:
+        return _Utilization(client().subnet_utilization(version))
 
 
-def daemon_status(server: Server, target: Family | None) -> DaemonStatus:
-    """Return the ``status-get`` facts of the daemon of *target*, or of the Control Agent, through the display cache.
+def daemon_status(client: LazyClient) -> DaemonStatus:
+    """Return the ``status-get`` facts of the target of *client* through the display cache.
 
     Raises:
         KeaException: If Kea returns a failure result.
@@ -240,16 +274,16 @@ def daemon_status(server: Server, target: Family | None) -> DaemonStatus:
 
     """
     return display_cache.cached(
-        server,
-        target,
+        client.server,
+        client.target,
         "status",
-        lambda: server.get_client(version=target).daemon_status(target),
+        lambda: client().daemon_status(client.target),
         query=(KeaCommand.STATUS_GET.value,),
     )
 
 
-def daemon_version(server: Server, target: Family | None) -> DaemonVersion:
-    """Return the ``version-get`` facts of the daemon of *target*, or of the Control Agent, through the display cache.
+def daemon_version(client: LazyClient) -> DaemonVersion:
+    """Return the ``version-get`` facts of the target of *client* through the display cache.
 
     Raises:
         KeaException: If Kea returns a failure result.
@@ -258,10 +292,10 @@ def daemon_version(server: Server, target: Family | None) -> DaemonVersion:
 
     """
     return display_cache.cached(
-        server,
-        target,
+        client.server,
+        client.target,
         "status",
-        lambda: server.get_client(version=target).daemon_version(target),
+        lambda: client().daemon_version(client.target),
         query=(KeaCommand.VERSION_GET.value,),
     )
 

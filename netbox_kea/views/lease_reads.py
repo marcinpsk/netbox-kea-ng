@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 
 from .. import constants, display_cache, subnet_catalogue
@@ -13,6 +14,7 @@ from ..kea import KeaClient, LeaseQueryUnknownSubnet
 from ..leases import LeaseSnapshot
 from ..models import Server
 from ..subnet_catalogue import CatalogueSnapshot
+from ._base import LazyClient
 from .notices import Notice, load_snapshot, notice
 
 
@@ -77,7 +79,7 @@ def _resolved_search(catalogue: CatalogueSnapshot, search: LeaseSearch) -> Lease
     raise LeaseQueryUnknownSubnet
 
 
-def _read_leases(client: KeaClient, server: Server, family: Family, search: LeaseSearch) -> LeaseRead:
+def read_leases(client: KeaClient, server: Server, family: Family, search: LeaseSearch) -> LeaseRead:
     """Read the Lease Snapshot of *search* from Kea. A Subnet search first resolves through a live Catalogue read.
 
     The Catalogue read is live, so a Subnet that Kea moved since the display Catalogue was cached never answers for
@@ -105,27 +107,45 @@ def _read_leases(client: KeaClient, server: Server, family: Family, search: Leas
     return LeaseRead(snapshot, catalogue_settled)
 
 
-def fetch(server: Server, family: Family, search: LeaseSearch, *, refresh: bool = False) -> LeaseSnapshot | Notice:
+def fetch(
+    server: Server,
+    family: Family,
+    search: LeaseSearch,
+    *,
+    refresh: bool = False,
+    read_since: datetime | None = None,
+    quiet: bool = False,
+) -> LeaseSnapshot | Notice:
     """Read the Lease Snapshot of *search* through the display cache, or the Notice of a failed read.
 
-    A hit sends no Kea command, also for a Subnet search. With *refresh* it reads Kea live and replaces the entry.
-    It is safe in a worker thread that pins the Kea client and the display cache settings.
+    A hit sends no Kea command, also for a Subnet search. With *refresh* it reads Kea live and replaces the entry. A
+    badge passes the read time of its table as *read_since*: an entry read before it is read again. With *quiet* a
+    failed read logs no traceback. It is safe in a worker thread that pins the Kea client and display cache settings.
 
     Raises:
         LeaseQueryGuardError: If Kea cannot answer a Subnet query safely.
         ValueError: If the Server configuration or the search is not valid.
 
     """
-    entry = load_snapshot(
-        server,
-        "lease",
-        lambda: display_cache.cached(
+
+    def fresh(entry: LeaseRead) -> bool:
+        return read_since is None or (
+            isinstance(entry.loaded, LeaseSnapshot) and entry.loaded.read_started >= read_since
+        )
+
+    with LazyClient(server, family) as client:
+        entry = load_snapshot(
             server,
-            family,
-            "leases",
-            lambda: _read_leases(server.get_client(version=family), server, family, search),
-            query=search.parts,
-            refresh=refresh,
-        ),
-    )
+            "lease",
+            lambda: display_cache.cached(
+                server,
+                family,
+                "leases",
+                lambda: read_leases(client(), server, family, search),
+                query=search.parts,
+                refresh=refresh,
+                fresh=fresh,
+            ),
+            quiet=quiet,
+        )
     return entry if isinstance(entry, Notice) else entry.loaded

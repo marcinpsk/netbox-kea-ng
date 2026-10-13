@@ -72,13 +72,15 @@ def cached(
     *,
     query: QueryParts = (),
     refresh: bool = False,
+    fresh: Callable[[T], bool] | None = None,
 ) -> T:
     """Return the entry of *kind* for *server*, *family* and *query*, or call *read* and store a settled result.
 
     A *family* of ``None`` is the Control Agent; only a kind without generations reads it.
     The key is built before *read* runs, so a rotation during the read leaves the result in an older generation.
     A TTL of 0 sends every call to *read* and stores nothing. With *refresh* the call removes the entry and reads
-    again, so a refresh read that fails or is not settled leaves no entry.
+    again, so a refresh read that fails or is not settled leaves no entry. An entry that *fresh* rejects, such as a
+    badge read before the table that shows it, is read again and replaced.
     """
     config = DisplayCacheConfig.get()
     ttl = getattr(config, _KINDS[kind].ttl_field)
@@ -89,7 +91,7 @@ def cached(
         cache.delete(key)
     else:
         entry = cache.get(key)
-        if entry is not None:
+        if entry is not None and (fresh is None or fresh(entry)):
             return entry
     value = read()
     if value.settled:

@@ -23,7 +23,7 @@ from ..server_connection import connection_values, validate_connection_change
 from ..utilities import (
     format_duration,
 )
-from ._base import _safe_return_url, daemon_status, daemon_version
+from ._base import LazyClient, _safe_return_url, daemon_status, daemon_version
 from .notices import Notice, inline_notices, notice
 from .workspace import ServerFamilyMixin, server_context, with_return_url
 
@@ -218,7 +218,8 @@ class ServerStatusView(generic.ObjectView):
         result: dict[str, dict[str, Any]] = {}
         for name, target in targets:
             try:
-                result[name] = _status_rows(daemon_status(server, target), daemon_version(server, target))
+                with LazyClient(server, target) as client:
+                    result[name] = _status_rows(daemon_status(client), daemon_version(client))
             except (KeaException, requests.RequestException, ValueError, RuntimeError):  # noqa: PERF203
                 logger.exception("Failed to fetch the %s status of server %s", name, server.pk)
         return result

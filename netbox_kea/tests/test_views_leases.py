@@ -687,7 +687,15 @@ class TestLeaseSearchPaths(_ViewTestBase):
             # Subnet 99 is not in the Catalogue, so no worker needs a client of its own.
             lease = typed_lease(complete_lease({"ip-address": "10.0.0.5", "subnet-id": 99}))
             rows = lease_rows([lease], evaluated_at=datetime.now(tz=timezone.utc))
-            _enrich_leases_with_badges(rows, self.server, 4, sync=SyncGate(()), return_url="", refresh=False)
+            _enrich_leases_with_badges(
+                rows,
+                self.server,
+                4,
+                sync=SyncGate(()),
+                return_url="",
+                refresh=False,
+                read_since=datetime.now(tz=timezone.utc),
+            )
 
         self.assertEqual(len(closed_clients), 1)
 

@@ -39,7 +39,7 @@ def bad_combined_page_reads_without_notices(executor, servers):
 class BadLeasesView:
     def get(self, request, client, instance, search):
         # ruleid: kea-snapshot-read-without-notice
-        return _read_leases(client, 4, search, instance.pk)
+        return read_leases(client, 4, search, instance.pk)
 
 
 class GoodSubnetsView:
@@ -56,12 +56,12 @@ class GoodSubnetsView:
             instance,
             "lease",
             # ok: kea-snapshot-read-without-notice
-            lambda: _read_leases(client, 4, search, instance.pk),
+            lambda: read_leases(client, 4, search, instance.pk),
         )
         return loaded
 
 
-def _read_leases(client, family, search, server_id):
+def read_leases(client, family, search, server_id):
     # ok: kea-snapshot-read-without-notice
     return client.lease_search(family, search.by, search.q, server_id=server_id)
 

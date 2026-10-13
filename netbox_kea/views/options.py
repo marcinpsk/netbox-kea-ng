@@ -21,7 +21,14 @@ from ..dhcp_options import DHCPOption, DHCPOptionConflict, DHCPOptionNameChange
 from ..kea import KeaException
 from ..models import Server
 from ..utilities import OptionalViewTab
-from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _run_config_change, _safe_return_url, daemon_version
+from ._base import (
+    ConditionalLoginRequiredMixin,
+    LazyClient,
+    _KeaChangeMixin,
+    _run_config_change,
+    _safe_return_url,
+    daemon_version,
+)
 from .notices import notice, show_notices
 from .subnets import _NO_SUBNET_CIDR, _SUBNETS_TAB, _displayed_subnet
 from .workspace import ServerFamilyMixin
@@ -327,7 +334,8 @@ class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):
             if not enabled:
                 continue
             try:
-                daemon_version(server, version)
+                with LazyClient(server, version) as client:
+                    daemon_version(client)
                 online = True
             except (KeaException, requests.RequestException, OSError, RuntimeError, ValueError):
                 online = False

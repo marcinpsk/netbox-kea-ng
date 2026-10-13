@@ -1101,7 +1101,7 @@ rules:
           - pattern: $CLIENT.lease_get_page(...)
           - pattern: $CLIENT.lease_get_all(...)
           - pattern: _read_reservations(...)
-          - pattern: _read_leases(...)
+          - pattern: read_leases(...)
           - patterns:
               - pattern: $EXECUTOR.submit($READ, ...)
               - metavariable-pattern:
@@ -1127,7 +1127,7 @@ rules:
           def _read_reservation_page(...):
               ...
       - pattern-not-inside: |
-          def _read_leases(...):
+          def read_leases(...):
               ...
       # The DHCP plugin import reads the Reservation Snapshot to synchronize it, not to show it.
       - pattern-not-inside: |

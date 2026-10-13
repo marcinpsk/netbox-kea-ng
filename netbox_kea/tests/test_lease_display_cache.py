@@ -4,11 +4,15 @@
 
 import json
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
+from unittest.mock import patch
 
 import requests
 from bs4 import BeautifulSoup
 from django.core.cache import cache
+from django.template.loader import render_to_string
 from django.urls import reverse
 
 from netbox_kea import display_cache
@@ -59,6 +63,45 @@ def _refresh_control(response):
     soup = BeautifulSoup(response.content, "html.parser")
     [control] = [button for button in soup.select("button[hx-get]") if "Refresh" in button.get_text()]
     return control
+
+
+class _SessionLog:
+    """The Kea commands that each ``requests.Session`` of the plugin sent, and the sessions that it closed."""
+
+    def __init__(self) -> None:
+        self.commands: dict[requests.Session, list[str]] = {}
+        self.closed: list[requests.Session] = []
+
+    @contextmanager
+    def tracking(self) -> Iterator[None]:
+        """Record each session that ``KeaClient`` opens while the context runs; enter it inside ``stub_kea``."""
+        log = self
+
+        class Tracked(requests.Session):
+            def __init__(self) -> None:
+                super().__init__()
+                log.commands[self] = []
+
+            def post(self, url, **kwargs):  # type: ignore[override]
+                log.commands[self].append(kwargs["json"]["command"])
+                return super().post(url, **kwargs)
+
+            def close(self) -> None:
+                log.closed.append(self)
+                super().close()
+
+        with patch("netbox_kea.kea.requests.Session", Tracked):
+            yield
+
+    def sending(self, *prefixes: str) -> list[requests.Session]:
+        """Return each session that sent a command that starts with one of *prefixes*."""
+        return [
+            session for session, sent in self.commands.items() if any(command.startswith(prefixes) for command in sent)
+        ]
+
+    def open_sessions(self, *prefixes: str) -> list[list[str]]:
+        """Return the commands of each session that sent one of *prefixes* and was never closed."""
+        return [self.commands[session] for session in self.sending(*prefixes) if session not in self.closed]
 
 
 def _section(response, selector: str) -> Any:
@@ -241,6 +284,47 @@ class LeaseTableCacheTest(_LeaseCacheBase):
         self.assertEqual(commands, [])
         self.assertNotContains(response, _RESERVED_BADGE)
 
+    def test_a_leases_render_closes_each_kea_session_that_it_opens_for_leases_and_badges(self):
+        sessions = _SessionLog()
+        with (
+            stub_kea(
+                {
+                    **_catalogue_responses(4, 20, _CIDR),
+                    "reservation-get": {"result": 3},
+                    "lease4-get-page": lease_pages([_lease("198.18.0.21"), _lease("198.18.0.22")]),
+                }
+            ),
+            sessions.tracking(),
+        ):
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                _BROWSE,
+                headers={"HX-Request": "true"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(sessions.sending("lease4-", "reservation-"))
+        self.assertEqual(sessions.open_sessions("lease4-", "reservation-"), [])
+
+    def test_a_reservation_badge_older_than_a_live_lease_read_is_read_again(self):
+        lease = _lease("198.18.0.21", "alpha")
+        held = {
+            "lease4-get-by-hostname": lease_reply(lease),
+            "lease4-get": {"result": 0, "arguments": lease},
+            "reservation-get": _res_get(_RESERVED),
+        }
+        page, _ = self._leases(held, {"q": "alpha", "by": "hostname", "state": ""})
+        self.assertContains(page, _RESERVED_BADGE)
+
+        # The Reservation is removed outside NetBox, and another search shows the same Lease.
+        response, commands = self._leases(
+            {**held, "reservation-get": {"result": 3}}, {"q": "198.18.0.21", "by": "ip", "state": ""}
+        )
+
+        self.assertEqual(_lease_commands(commands), ["lease4-get"])
+        self.assertIn("reservation-get", commands)
+        self.assertNotContains(response, _RESERVED_BADGE)
+
     def test_the_refresh_control_swaps_the_lease_search_section_of_the_same_search(self):
         page, _ = self._leases({"lease4-get-page": lease_pages([_lease("198.18.0.21")])})
         control = _refresh_control(page)
@@ -276,6 +360,9 @@ class LeaseTableCacheTest(_LeaseCacheBase):
 
         self.assertIn("An internal error occurred", _section(refreshed, "#lease-search").get_text())
 
+    def test_the_shared_error_template_names_no_section(self):
+        self.assertNotIn("lease-search", render_to_string("netbox_kea/exception_htmx.html", {"error_id": "x"}))
+
 
 class LeaseBadgeCacheTest(_LeaseCacheBase):
     """The Lease badges of Reservation rows."""
@@ -300,7 +387,7 @@ class LeaseBadgeCacheTest(_LeaseCacheBase):
         self.assertEqual(_lease_commands(commands), ["lease4-get-by-state"])
         self.assertNotContains(response, ">Active Lease<")
 
-    def test_a_badge_and_the_same_leases_tab_search_share_one_entry(self):
+    def test_a_lease_badge_older_than_a_live_reservation_read_is_read_again(self):
         # The badge of a DHCPv4 In-Subnet Reservation reads the assigned Leases of its Subnet: state code 0.
         self._leases(
             {"lease4-get-by-state": lease_reply(_lease("198.18.0.21"))}, {"q": "20", "by": "subnet_id", "state": "0"}
@@ -308,8 +395,56 @@ class LeaseBadgeCacheTest(_LeaseCacheBase):
 
         response, commands = self._reservations([])
 
+        self.assertIn("reservation-get-page", commands)
+        self.assertEqual(_lease_commands(commands), ["lease4-get-by-state"])
+        self.assertNotContains(response, ">Active Lease<")
+
+    def test_a_leases_tab_search_shares_the_entry_of_the_same_badge(self):
+        self._reservations([_lease("198.18.0.21")])
+
+        response, commands = self._leases(
+            {"lease4-get-by-state": lease_reply()}, {"q": "20", "by": "subnet_id", "state": "0"}
+        )
+
         self.assertEqual(_lease_commands(commands), [])
-        self.assertContains(response, ">Active Lease<")
+        self.assertContains(response, "198.18.0.21")
+
+    def test_failed_badge_lookups_log_no_traceback(self):
+        responses = {
+            **_catalogue_responses(4, 20, _CIDR),
+            "reservation-get-page": _res_page([_RESERVED, {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:02"}]),
+        }
+        for reply in (requests.ConnectionError("kea unreachable"), {"result": 2, "text": "unknown command"}):
+            with (
+                self.subTest(reply=reply),
+                stub_kea({**responses, "lease4-get-by-state": reply, "lease4-get-by-hw-address": reply}) as kea,
+            ):
+                with self.assertNoLogs("netbox_kea.views.notices", "INFO"):
+                    response = self.client.get(
+                        reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+                    )
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("lease4-get-by-hw-address", kea.commands())
+                self.assertNotContains(response, "Lease</span>")
+
+    def test_a_badge_heavy_render_closes_each_kea_session_of_its_lease_reads(self):
+        subnets = [{"id": subnet_id, "subnet": f"198.18.{subnet_id}.0/24"} for subnet_id in (20, 21, 22, 23)]
+        reservations = [
+            {"subnet-id": subnet["id"], "hw-address": f"aa:bb:cc:dd:ee:{subnet['id']:02x}"} for subnet in subnets
+        ]
+        responses = {
+            **_catalogue_responses_for_subnets(4, subnets),
+            "reservation-get-page": _res_page([*reservations, {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:02"}]),
+            "lease4-get-by-state": lease_reply(),
+            "lease4-get-by-hw-address": lease_reply(),
+        }
+        sessions = _SessionLog()
+        with stub_kea(responses), sessions.tracking():
+            response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(sessions.sending("lease4-")), 5, "four Subnets and one Global identity")
+        self.assertEqual(sessions.open_sessions("lease4-"), [])
 
     def test_a_reservations_refresh_rereads_the_lease_badges_of_its_rows(self):
         page, _ = self._reservations([_lease("198.18.0.21")])
@@ -349,6 +484,12 @@ def _status_responses(**overrides: Any) -> dict[str, Any]:
         "config-get": configuration,
     }
     return {**responses, **overrides}
+
+
+def _stats(assigned: int) -> dict[str, Any]:
+    """Return a ``stat-lease4-get`` reply in which Subnet 20 has *assigned* of 100 addresses."""
+    columns = ["subnet-id", "total-addresses", "assigned-addresses"]
+    return {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[20, 100, assigned]]}}}
 
 
 class StatusAndUtilizationCacheTest(_ViewTestBase):
@@ -419,10 +560,7 @@ class StatusAndUtilizationCacheTest(_ViewTestBase):
         self.assertEqual(kea.commands(), [])
 
     def test_a_second_subnets_render_within_the_ttl_sends_no_utilization_read(self):
-        def stats(assigned: int) -> dict[str, Any]:
-            columns = ["subnet-id", "total-addresses", "assigned-addresses"]
-            return {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[20, 100, assigned]]}}}
-
+        stats = _stats
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
         with stub_kea({**_catalogue_responses(4, 20, _CIDR), "stat-lease4-get": stats(25)}) as kea:
             first = self.client.get(url)
@@ -435,3 +573,13 @@ class StatusAndUtilizationCacheTest(_ViewTestBase):
         self.assertNotIn("stat-lease4-get", kea.commands())
         self.assertContains(second, "25%")
         self.assertNotRegex(second.content.decode(), r"Read \d+ s ago")
+
+    def test_a_cold_overview_uses_one_closed_kea_session_for_both_reads_of_each_daemon(self):
+        sessions = _SessionLog()
+        with stub_kea(_status_responses()), sessions.tracking():
+            response = self.client.get(reverse("plugins:netbox_kea:server_status_data", args=[self.server.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        reads = [sorted(sessions.commands[session]) for session in sessions.sending("status-get", "version-get")]
+        self.assertEqual(reads, [["status-get", "version-get"]] * 3)
+        self.assertEqual(sessions.open_sessions("status-get", "version-get"), [])
