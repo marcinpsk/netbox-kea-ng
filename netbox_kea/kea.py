@@ -404,6 +404,102 @@ class SubnetUtilization(NamedTuple):
     assigned: int
 
 
+@dataclass(frozen=True)
+class HighAvailabilityStatus:
+    """The first ``high-availability`` entry of a ``status-get`` reply. Each value is as Kea reports it."""
+
+    mode: object
+    local_role: object
+    local_state: object
+    remote_connection_interrupted: object
+    remote_age: object
+    remote_role: object
+    remote_last_state: object
+    remote_in_touch: object
+    remote_unacked_clients: object
+    remote_unacked_clients_left: object
+    remote_connecting_clients: object
+
+
+@dataclass(frozen=True)
+class DaemonStatus:
+    """The ``status-get`` facts of one DHCP daemon or of the Control Agent."""
+
+    pid: object
+    #: Seconds since the start, or ``None`` when Kea omits it.
+    uptime: int | None
+    #: Seconds since the last configuration reload, or ``None`` when Kea omits it.
+    reload: int | None
+    high_availability: HighAvailabilityStatus | None
+
+    @property
+    def settled(self) -> bool:
+        """Return true: a failed read raises, so the display cache can store each read that returns."""
+        return True
+
+
+@dataclass(frozen=True)
+class DaemonVersion:
+    """The ``version-get`` facts of one DHCP daemon or of the Control Agent."""
+
+    #: The extended version text, or ``None`` when Kea omits it.
+    extended: str | None
+
+    @property
+    def settled(self) -> bool:
+        """Return true: a failed read raises, so the display cache can store each read that returns."""
+        return True
+
+
+def _status_arguments(command: KeaCommand, reply: KeaResponse) -> dict[str, Any]:
+    """Return the arguments of one ``status-get`` or ``version-get`` reply, which always hold a fact.
+
+    Raises:
+        MalformedReply: If the arguments are not a non-empty mapping.
+
+    """
+    arguments = reply.get("arguments")
+    if not isinstance(arguments, dict) or not arguments:
+        raise MalformedReply(f"Kea {command.value} returned invalid arguments.")
+    return arguments
+
+
+def _status_seconds(arguments: dict[str, Any], field: str) -> int | None:
+    """Return one non-negative duration of a ``status-get`` reply, or ``None`` when Kea omits it."""
+    if field not in arguments:
+        return None
+    value = arguments[field]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise MalformedReply(f"Kea status-get returned an invalid {field}.")
+    return value
+
+
+def _high_availability(arguments: dict[str, Any]) -> HighAvailabilityStatus | None:
+    """Return the first ``high-availability`` entry of a ``status-get`` reply; Kea supports one entry only."""
+    entries = arguments.get("high-availability")
+    if not entries or not isinstance(entries, list) or not isinstance(entries[0], dict):
+        return None
+    servers = entries[0].get("ha-servers")
+    servers = servers if isinstance(servers, dict) else {}
+    local = servers.get("local")
+    local = local if isinstance(local, dict) else {}
+    remote = servers.get("remote")
+    remote = remote if isinstance(remote, dict) else {}
+    return HighAvailabilityStatus(
+        mode=entries[0].get("ha-mode"),
+        local_role=local.get("role"),
+        local_state=local.get("state"),
+        remote_connection_interrupted=remote.get("connection-interrupted"),
+        remote_age=remote.get("age"),
+        remote_role=remote.get("role"),
+        remote_last_state=remote.get("last-state"),
+        remote_in_touch=remote.get("in-touch"),
+        remote_unacked_clients=remote.get("unacked-clients"),
+        remote_unacked_clients_left=remote.get("unacked-clients-left"),
+        remote_connecting_clients=remote.get("connecting-clients"),
+    )
+
+
 def _stat_lease_counts(command: KeaCommand, reply: KeaResponse, names: Sequence[str]) -> dict[int, tuple[int, ...]]:
     """Return the *names* counts of each Subnet row of one ``stat-lease{4,6}-get`` reply.
 
@@ -1905,6 +2001,38 @@ class KeaClient:
             for subnet_id, counts in _stat_lease_counts(command, reply, names).items()
         }
 
+    def daemon_status(self, target: Family | None) -> DaemonStatus:
+        """Read the ``status-get`` facts of the daemon of *target*, or of the Control Agent for ``None``.
+
+        Raises:
+            KeaException: If Kea returns a failure result.
+            MalformedReply: If the reply or a fact is malformed.
+
+        """
+        command = KeaCommand.STATUS_GET
+        arguments = _status_arguments(command, self._one_command(command, target))
+        return DaemonStatus(
+            pid=arguments.get("pid"),
+            uptime=_status_seconds(arguments, "uptime"),
+            reload=_status_seconds(arguments, "reload"),
+            high_availability=_high_availability(arguments),
+        )
+
+    def daemon_version(self, target: Family | None) -> DaemonVersion:
+        """Read the ``version-get`` facts of the daemon of *target*, or of the Control Agent for ``None``.
+
+        Raises:
+            KeaException: If Kea returns a failure result.
+            MalformedReply: If the reply or the extended version is malformed.
+
+        """
+        command = KeaCommand.VERSION_GET
+        arguments = _status_arguments(command, self._one_command(command, target))
+        extended = arguments.get("extended")
+        if extended is not None and not isinstance(extended, str):
+            raise MalformedReply(f"Kea {command.value} returned an invalid extended version.")
+        return DaemonVersion(extended=extended)
+
     def lease_get_page(
         self,
         version: Family,
@@ -2057,7 +2185,7 @@ class KeaClient:
     def _one_command(
         self,
         command: KeaCommand,
-        family: Family,
+        family: Family | None,
         arguments: dict[str, Any] | None = None,
         ok_codes: Sequence[int] = (0,),
     ) -> KeaResponse:
@@ -2203,7 +2331,7 @@ class KeaTLSFileError(requests.exceptions.RequestException):
 
 
 def _one_reply(
-    command: KeaCommand, family: Family, response: list[KeaResponse], ok_codes: Sequence[int] = (0,)
+    command: KeaCommand, family: Family | None, response: list[KeaResponse], ok_codes: Sequence[int] = (0,)
 ) -> KeaResponse:
     """Return the one reply of a single-service command, or raise when it is malformed or its result is not ok."""
     if (
@@ -2212,7 +2340,8 @@ def _one_reply(
         or not isinstance(response[0].get("result"), int)
         or isinstance(response[0].get("result"), bool)
     ):
-        raise MalformedReply(f"{command.value} did not return one valid result for dhcp{family}.")
+        service = "the Control Agent" if family is None else f"dhcp{family}"
+        raise MalformedReply(f"{command.value} did not return one valid result for {service}.")
     check_response(response, ok_codes)
     return response[0]
 

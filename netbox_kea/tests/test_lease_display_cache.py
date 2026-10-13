@@ -17,6 +17,7 @@ from netbox_kea.views.notices import HEADLINES
 from .kea_stub import (
     LeaseDaemon,
     _catalogue_responses,
+    _catalogue_responses_for_subnets,
     _res_page,
     lease_pages,
     lease_record,
@@ -331,3 +332,102 @@ class LeaseBadgeCacheTest(_LeaseCacheBase):
         )
 
         self.assertEqual(_lease_commands(commands), ["lease4-get-by-state"] * 2)
+
+
+def _status_responses(**overrides: Any) -> dict[str, Any]:
+    def configuration(body):
+        family = 6 if body.get("service") == ["dhcp6"] else 4
+        return _catalogue_responses_for_subnets(family, [])["config-get"]
+
+    responses = {
+        "status-get": {"result": 0, "arguments": {"pid": 1234, "uptime": 3600, "reload": 60}},
+        "version-get": {"result": 0, "arguments": {"extended": "3.2.0"}},
+        "config-get": configuration,
+    }
+    return {**responses, **overrides}
+
+
+class StatusAndUtilizationCacheTest(_ViewTestBase):
+    """Daemon status, the Overview status badge and Subnet utilization cache silently with the status TTL."""
+
+    def _status(self, **overrides: Any):
+        with stub_kea(_status_responses(**overrides)) as kea:
+            response = self.client.get(reverse("plugins:netbox_kea:server_status_data", args=[self.server.pk]))
+        self.assertEqual(response.status_code, 200)
+        return response, kea.commands()
+
+    def test_the_overview_status_within_the_ttl_sends_no_status_read(self):
+        _, commands = self._status()
+        # The Control Agent, DHCPv6 and DHCPv4.
+        self.assertEqual((commands.count("status-get"), commands.count("version-get")), (3, 3))
+
+        response, commands = self._status(
+            **{"status-get": {"result": 0, "arguments": {"pid": 99, "uptime": 1, "reload": 1}}}
+        )
+
+        self.assertNotIn("status-get", commands)
+        self.assertNotIn("version-get", commands)
+        services = {service["name"]: service["status_data"] for service in response.context["services"]}
+        self.assertEqual(services["DHCPv4"]["PID"], 1234)
+        self.assertEqual(services["Control Agent"]["Uptime"], "01:00:00")
+        self.assertNotRegex(response.content.decode(), r"Read \d+ s ago")
+
+    @with_display_cache_config(status_ttl=1)
+    def test_the_overview_status_reads_again_after_the_status_ttl(self):
+        self._status()
+        _wait_past_ttl(1)
+
+        _, commands = self._status()
+
+        self.assertEqual(commands.count("status-get"), 3)
+
+    def test_a_failed_status_read_is_read_again(self):
+        with self.assertLogs("netbox_kea.views.server", "ERROR"):
+            self._status(**{"status-get": {"result": 0, "arguments": None}})
+
+        response, commands = self._status()
+
+        self.assertEqual(commands.count("status-get"), 3)
+        services = {service["name"]: service["status_data"] for service in response.context["services"]}
+        self.assertEqual(services["DHCPv4"]["Version"], "3.2.0")
+
+    def test_the_status_badge_caches_an_online_answer_and_never_an_offline_one(self):
+        url = reverse("plugins:netbox_kea:combined_server_status_badge", args=[self.server.pk])
+        with stub_kea({"version-get": {"result": 1, "text": "error"}}) as kea:
+            offline = self.client.get(url)
+        self.assertContains(offline, "Offline")
+        with stub_kea(_status_responses()) as kea:
+            self.client.get(url)
+        self.assertEqual(kea.commands(), ["version-get", "version-get"])
+
+        with stub_kea({"version-get": {"result": 1, "text": "error"}}) as kea:
+            online = self.client.get(url)
+
+        self.assertEqual(kea.commands(), [])
+        self.assertNotContains(online, "Offline")
+
+    def test_the_overview_and_the_status_badge_share_the_version_entry(self):
+        self._status()
+
+        with stub_kea(_status_responses()) as kea:
+            self.client.get(reverse("plugins:netbox_kea:combined_server_status_badge", args=[self.server.pk]))
+
+        self.assertEqual(kea.commands(), [])
+
+    def test_a_second_subnets_render_within_the_ttl_sends_no_utilization_read(self):
+        def stats(assigned: int) -> dict[str, Any]:
+            columns = ["subnet-id", "total-addresses", "assigned-addresses"]
+            return {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[20, 100, assigned]]}}}
+
+        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        with stub_kea({**_catalogue_responses(4, 20, _CIDR), "stat-lease4-get": stats(25)}) as kea:
+            first = self.client.get(url)
+        self.assertEqual(kea.commands().count("stat-lease4-get"), 1)
+        self.assertContains(first, "25%")
+
+        with stub_kea({**_catalogue_responses(4, 20, _CIDR), "stat-lease4-get": stats(50)}) as kea:
+            second = self.client.get(url)
+
+        self.assertNotIn("stat-lease4-get", kea.commands())
+        self.assertContains(second, "25%")
+        self.assertNotRegex(second.content.decode(), r"Read \d+ s ago")

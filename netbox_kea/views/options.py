@@ -18,10 +18,10 @@ from .. import config_write, forms, server_configuration
 from ..config_write import ConfigChangeOutcome
 from ..constants import Family
 from ..dhcp_options import DHCPOption, DHCPOptionConflict, DHCPOptionNameChange
-from ..kea import KeaCommand, KeaException
+from ..kea import KeaException
 from ..models import Server
 from ..utilities import OptionalViewTab
-from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _run_config_change, _safe_return_url
+from ._base import ConditionalLoginRequiredMixin, _KeaChangeMixin, _run_config_change, _safe_return_url, daemon_version
 from .notices import notice, show_notices
 from .subnets import _NO_SUBNET_CIDR, _SUBNETS_TAB, _displayed_subnet
 from .workspace import ServerFamilyMixin
@@ -310,7 +310,8 @@ class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):
 
     Returns a small HTML snippet containing one badge per enabled DHCP
     protocol (v4/v6).  Each badge shows "Online" or "Offline" based on
-    whether ``version-get`` can reach the Kea daemon.
+    whether ``version-get`` can reach the Kea daemon. An answer stays in the display cache for the status TTL; a
+    failed read is not stored.
 
     Intended to be called with ``hx-get`` / ``hx-trigger="load"`` from the
     combined dashboard so the main page stays fast.
@@ -321,12 +322,12 @@ class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
 
         statuses: list[dict] = []
-        for version, enabled in ((4, server.dhcp4), (6, server.dhcp6)):
+        families: tuple[tuple[Family, bool], ...] = ((4, server.dhcp4), (6, server.dhcp6))
+        for version, enabled in families:
             if not enabled:
                 continue
             try:
-                client = server.get_client(version=version)
-                client.command(KeaCommand.VERSION_GET, version)
+                daemon_version(server, version)
                 online = True
             except (KeaException, requests.RequestException, OSError, RuntimeError, ValueError):
                 online = False

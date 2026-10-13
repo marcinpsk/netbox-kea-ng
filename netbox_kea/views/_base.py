@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 from urllib.parse import parse_qsl, unquote, urlparse, urlsplit
 from urllib.parse import urlencode as _urlencode
@@ -16,10 +17,11 @@ from django.urls import Resolver404, get_script_prefix, resolve, reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from netbox.tables import BaseTable
 
+from .. import display_cache
 from ..config_write import ConfigChangeOutcome, ConfigChangeRejected, RejectionReason
 from ..constants import Family
 from ..dhcp_options import shown_options
-from ..kea import KeaException
+from ..kea import DaemonStatus, DaemonVersion, KeaCommand, KeaException, SubnetUtilization
 from ..models import Server
 from ..server_configuration import SharedNetwork
 from ..subnet_catalogue import ConfiguredSubnet, VerifiedSubnet
@@ -212,10 +214,64 @@ def _shared_network_row(
     return row
 
 
+@dataclass(frozen=True)
+class _Utilization:
+    """One display cache entry: the ``stat_cmds`` address counts of each Subnet of one family."""
+
+    counts: Mapping[int, SubnetUtilization]
+
+    @property
+    def settled(self) -> bool:
+        """Return true: a failed read raises, so the display cache can store each read that returns."""
+        return True
+
+
+def _read_utilization(server: Server, version: Family) -> _Utilization:
+    return _Utilization(server.get_client(version=version).subnet_utilization(version))
+
+
+def daemon_status(server: Server, target: Family | None) -> DaemonStatus:
+    """Return the ``status-get`` facts of the daemon of *target*, or of the Control Agent, through the display cache.
+
+    Raises:
+        KeaException: If Kea returns a failure result.
+        requests.RequestException: If the transport fails.
+        RuntimeError: If the reply is malformed.
+
+    """
+    return display_cache.cached(
+        server,
+        target,
+        "status",
+        lambda: server.get_client(version=target).daemon_status(target),
+        query=(KeaCommand.STATUS_GET.value,),
+    )
+
+
+def daemon_version(server: Server, target: Family | None) -> DaemonVersion:
+    """Return the ``version-get`` facts of the daemon of *target*, or of the Control Agent, through the display cache.
+
+    Raises:
+        KeaException: If Kea returns a failure result.
+        requests.RequestException: If the transport fails.
+        RuntimeError: If the reply is malformed.
+
+    """
+    return display_cache.cached(
+        server,
+        target,
+        "status",
+        lambda: server.get_client(version=target).daemon_version(target),
+        query=(KeaCommand.VERSION_GET.value,),
+    )
+
+
 def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, version: Family) -> None:
-    """Add available utilization measurements to Subnet presentation rows."""
+    """Add available utilization measurements to Subnet presentation rows, through the display cache."""
     try:
-        utilization = server.get_client(version=version).subnet_utilization(version)
+        utilization = display_cache.cached(
+            server, version, "utilization", lambda: _read_utilization(server, version)
+        ).counts
     except KeaException as exc:
         if exc.unsupported_command:
             logger.debug("stat_cmds hook unavailable", exc_info=True)
