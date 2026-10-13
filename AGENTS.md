@@ -256,7 +256,8 @@ URL request
   section. The adoption cleanup locks the `Server`, `SyncConfig` and `DhcpIntegrationConfig` tables to freeze policy.
   A new settings row needs a model, a migration that creates the row, a brief serializer and a `SECTIONS` line. The
   page builds the form from the model fields (`modelform_factory`) and renders them with `inc/settings_fields.html`
-  unless the section names its own include; a test fails while a singleton has no section.
+  unless the section names its own include; a test fails while a singleton has no section. A section can give a
+  one-sentence `description` that the page shows under its heading, for a fact about the whole section.
 - **`KeaClient`** (`kea.py`): wraps a `requests.Session`. All API calls go through
   `.command(command, target, arguments, check)`, the only HTTP send of the plugin, which POSTs
   JSON to the **configured endpoint URL** (`self.url`: the daemon's `/` control socket, or a
@@ -265,11 +266,10 @@ URL request
   `None` for the Control Agent itself. A family-specific command comes from a per-family mapping
   in `kea.py`, such as `SUBNET_LIST[family]`; never format a command name. A new member needs an
   entry in the pinned read or write set of `test_kea_command.py`. `write_guard` and `on_write` are
-  required keyword arguments: `Server.get_client()` passes the branch binding and the records rotation of the display
-  cache, and unit tests build clients through `kea_stub.kea_client()`, which passes both (its `on_write` does
-  nothing). Responses are
-  `list[KeaResponse]`; `check_response()` raises `KeaException` if any result code is not in
-  `check`. `command()` passes the TLS settings (`verify`, `cert`) on each request, so the
+  required keyword arguments: `Server.get_client()` passes the branch binding and the records rotation of
+  the display cache, and unit tests build clients through `kea_stub.kea_client()`, which passes both (its
+  `on_write` does nothing). Responses are `list[KeaResponse]`; `check_response()` raises `KeaException`
+  if any result code is not in `check`. `command()` passes the TLS settings (`verify`, `cert`) on each request, so the
   `REQUESTS_CA_BUNDLE` environment variable cannot replace a CA file or `ssl_verify=False`. A TLS file
   that requests cannot find raises `KeaTLSFileError`, a `requests.RequestException`, so each
   handler of request errors also handles it. `.clone()` creates a thread-safe copy (fresh `requests.Session`) for
@@ -277,19 +277,22 @@ URL request
   argument only when the server is fronted by a Control Agent
   (`send_service = has_control_agent`); a direct daemon drops it, because Kea 3.2.0+
   rejects a `service` that does not match the daemon the request lands on.
-- **Display cache** (`display_cache.py`, ADR 0009): the only module that touches the Django cache. The OpenGrep rule
-  `kea-cache-outside-display-cache` refuses `django.core.cache` and the private names of the module in other modules.
-  `cached(server, family, kind, read, admit)` serves the `display()` reads of `server_configuration` (kind
-  `configuration`) and `subnet_catalogue` (kind `catalogue`). The TTL of a kind comes from `DisplayCacheConfig`; 0
-  sends every read to Kea. A key holds the Server, the family, the kind, the configuration generation, a keyed
-  digest of `Server.kea_connection()`, and `last_updated` of the settings row, so a settings save makes every entry
-  unreachable. Both kinds read the Kea configuration only, so their keys do not hold the records generation; a kind
-  that Reservation or Lease writes change must add it. `KeaClient.command()` calls `on_write` before and after each write command, also when the send
-  fails, and `Server.get_client()` binds it to `rotate_records`; a target of `None` rotates both families.
-  `_config_mutation_command` and `MutationScope` call `rotate_configuration`. A rotation failure is logged, and
-  the write continues. Authority reads (`for_verification`, `for_synchronization`, `for_import`, `read_identity`,
-  mutation scopes) never read or fill the cache. `fan_out` reads the settings row on the request thread and gives
-  it to its workers. The test fixture `_plugin_cache_hygiene` clears `display_cache.KEY_PREFIX` around each test.
+- **Display cache** (`display_cache.py`, ADR 0009): the only module that touches the Django cache. The OpenGrep
+  rule `kea-cache-outside-display-cache` refuses `django.core.cache` and the private names of the module in other
+  modules. `cached(server, family, kind, read)` serves the `display()` reads of `server_configuration` (kind
+  `configuration`) and `subnet_catalogue` (kind `catalogue`). It stores only a value whose `settled` property is
+  true (the `Cacheable` protocol), so a failed read is never stored. The TTL of a kind comes from
+  `DisplayCacheConfig`; 0 sends every read to Kea. A key holds the Server, the family, the kind, the configuration
+  generation, a keyed digest of `Server.kea_connection()`, and `last_updated` of the settings row, so a settings
+  save makes every entry unreachable. Both kinds read the Kea configuration only, so their keys do not hold the
+  records generation; a kind that Reservation or Lease writes change must add it. `KeaClient.command()` calls
+  `on_write` before and after each write command, also when the send fails, and `Server.get_client()` binds it to
+  `rotate_records`; a target of `None` rotates both families. `_config_mutation_command` and `MutationScope` call
+  `rotate_configuration`. A rotation failure is logged, and the write continues. The callers validate the family;
+  the module takes a `Family`. Authority reads (`for_verification`, `for_synchronization`, `for_import`,
+  `read_identity`, mutation scopes) never read or fill the cache. `fan_out` reads the settings row on the request
+  thread and gives it to its workers. The test fixture `_plugin_cache_hygiene` clears `display_cache.KEY_PREFIX`
+  around each test.
 - **`sync.py`**: reads IPAM rows for synchronization badges and synchronizes DCIM MAC addresses.
   IPAM creation, status changes and cleanup belong to `ipam_reconciliation.py`.
 - **`ipam_reconciliation.py`**: `reconcile(server, family, phases) -> SyncReport` (ADR 0006). The job's
