@@ -11,14 +11,14 @@ from unittest.mock import patch
 
 import requests
 import yaml
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.urls import reverse
 from ipam.models import IPAddress
 
 from netbox_kea.models import Server
 
 from .kea_stub import _res_page, complete_lease, queued, stub_kea
-from .utils import _PLUGINS_CONFIG, User, _make_db_server
+from .utils import User, _make_db_server, with_kea_client_config
 
 # ---------------------------------------------------------------------------
 # Kea response fixtures
@@ -126,7 +126,7 @@ def _reservation_stub(version, responses):
     return stub_kea({**_subnet_responses(version), **responses})
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class _CombinedViewBase(TestCase):
     """Create superuser + one v4-only, one v6-only, one dual-stack server."""
 
@@ -147,7 +147,6 @@ class _CombinedViewBase(TestCase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedDashboardView(_CombinedViewBase):
     """GET /plugins/kea/combined/ — server overview with tab navigation."""
 
@@ -203,7 +202,6 @@ class TestCombinedDashboardView(_CombinedViewBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedServerStatusBadge(_CombinedViewBase):
     """GET /plugins/kea/combined/server-status-badge/<pk>/ — HTMX status fragment."""
 
@@ -290,7 +288,6 @@ class TestCombinedServerStatusBadge(_CombinedViewBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedReservations4View(_CombinedViewBase):
     """GET /plugins/kea/combined/reservations4/ — all DHCPv4 reservations."""
 
@@ -521,7 +518,6 @@ class TestCombinedReservations4View(_CombinedViewBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedReservations6View(_CombinedViewBase):
     """GET /plugins/kea/combined/reservations6/ — all DHCPv6 reservations."""
 
@@ -627,7 +623,6 @@ class TestCombinedReservations6View(_CombinedViewBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedSubnets4View(_CombinedViewBase):
     """GET /plugins/kea/combined/subnets4/ — DHCPv4 subnets across all servers."""
 
@@ -796,7 +791,6 @@ class TestCombinedSubnets4View(_CombinedViewBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedSubnets6View(_CombinedViewBase):
     """GET /plugins/kea/combined/subnets6/ — DHCPv6 subnets across all servers."""
 
@@ -873,7 +867,6 @@ _MOCK_RESERVATION_ENRICHED = {
 }
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedReservations4Enrichment(_CombinedViewBase):
     """Combined DHCPv4 reservation view must include the same badge enrichment as per-server."""
 
@@ -1009,7 +1002,6 @@ _MOCK_RESERVATION_V6_ENRICHED = {
 }
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedReservations6Enrichment(_CombinedViewBase):
     """Combined DHCPv6 reservation view must include the same badge enrichment as DHCPv4."""
 
@@ -1106,7 +1098,6 @@ _MOCK_CONFIG_WITH_SHARED_NET_V6 = [
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedSharedNetworks4View(_CombinedViewBase):
     """GET /plugins/kea/combined/shared-networks4/ — DHCPv4 shared networks across all servers."""
 
@@ -1178,7 +1169,6 @@ class TestCombinedSharedNetworks4View(_CombinedViewBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedSharedNetworks6View(_CombinedViewBase):
     """GET /plugins/kea/combined/shared-networks6/ — DHCPv6 shared networks across all servers."""
 

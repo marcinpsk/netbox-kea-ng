@@ -13,7 +13,7 @@ query. The tests assert the normalized family-neutral response.
 
 import requests
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
 
@@ -21,11 +21,9 @@ from netbox_kea.models import Server
 from netbox_kea.subnet_catalogue import invalidate
 
 from .kea_stub import _catalogue_responses, _http_response, _raw_http_response, _res_get, _res_page, stub_kea
-from .utils import plugins_config
 
 User = get_user_model()
 
-_PLUGINS_CONFIG = plugins_config()
 
 # Not found — reservation-get result=3
 _RESERVATION_NOT_FOUND = [{"result": 3, "text": "Host not found."}]
@@ -43,7 +41,6 @@ def _make_server(**kwargs):
     return Server.objects.create(**defaults)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class _APITestBase(TestCase):
     """Creates a superuser + API client and a single Server for API tests."""
 
@@ -67,7 +64,6 @@ class _APITestBase(TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservationAPIAuth(_APITestBase):
     """API endpoints must reject unauthenticated requests."""
 
@@ -130,7 +126,6 @@ class TestReservationAPIFormatSuffix(_APITestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservation4API(_APITestBase):
     """Tests for GET /api/plugins/netbox-kea/servers/{pk}/reservations4/."""
 
@@ -700,7 +695,6 @@ class TestReservation4API(_APITestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestReservation6API(_APITestBase):
     """Tests for GET /api/plugins/netbox-kea/servers/{pk}/reservations6/."""
 

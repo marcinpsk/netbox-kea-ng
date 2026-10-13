@@ -16,13 +16,12 @@ runs without Kea requests.
 
 from __future__ import annotations
 
-from django.test import override_settings
 from utilities.testing import APIViewTestCases, ViewTestCases, create_tags
 
 from netbox_kea.models import Server
 
 from .kea_stub import stub_kea
-from .utils import _PLUGINS_CONFIG
+from .utils import with_kea_client_config
 
 _VERSION_OK = {"result": 0, "arguments": {"extended": "3.2.0"}}
 
@@ -41,7 +40,7 @@ class _ServerGenericTestMixin:
         self.addCleanup(cm.__exit__, None, None, None)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class ServerViewTestCase(_ServerGenericTestMixin, ViewTestCases.PrimaryObjectViewTestCase):
     """Standard object views for Server: get/list/create/edit/delete, changelog, bulk import/edit/delete."""
 
@@ -97,7 +96,7 @@ class ServerViewTestCase(_ServerGenericTestMixin, ViewTestCases.PrimaryObjectVie
         }
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class ServerAPITestCase(
     _ServerGenericTestMixin,
     APIViewTestCases.GetObjectViewTestCase,

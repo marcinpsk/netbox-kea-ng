@@ -7,7 +7,6 @@ from typing import Any, cast
 import requests
 from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
-from django.test import override_settings
 from django.urls import reverse
 
 from netbox_kea import server_configuration, subnet_catalogue
@@ -25,7 +24,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _ViewTestBase, plugins_config
+from .utils import _ViewTestBase, with_kea_client_config
 
 _IDENTITY_UNAVAILABLE = "Kea subnet identity facts are unavailable."
 _INVALID_POOLS = "Kea returned a non-list Pool collection."
@@ -173,7 +172,7 @@ class TestRecordSnapshotNotices(_ViewTestBase):
             with self.subTest(reply=reply):
                 self.assertEqual(self._leases(reply), Notice("lease", django_messages.ERROR, unreachable=unreachable))
 
-    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
+    @with_kea_client_config(lease_query_max_unpaged_leases=100)
     def test_a_refused_lease_query_and_a_value_error_stay_outside_the_rule(self):
         with stub_kea({"stat-lease4-get": {"result": 2, "text": "unknown command"}}):
             client = self.server.get_client(version=4)
@@ -303,7 +302,7 @@ class TestRecordPagesShowAFailedReadThroughTheLoader(_ViewTestBase):
         )
         self.assertNotContains(response, 'id="lease-delete-form"')
 
-    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100))
+    @with_kea_client_config(lease_query_max_unpaged_leases=100)
     def test_a_refused_lease_query_keeps_its_own_message(self):
         with stub_kea({**_COMPLETE, "stat-lease4-get": {"result": 2, "text": "unknown command"}}):
             response = self.client.get(

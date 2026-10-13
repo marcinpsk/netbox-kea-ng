@@ -9,8 +9,6 @@ Registers periodic Kea→NetBox IPAM sync jobs using NetBox's built-in
 The sync interval comes from ``SyncConfig.interval_minutes``, which the Settings
 page edits. ``enqueue_once`` and each periodic run read it, so a saved value
 applies after the next scheduled run.
-
-The ``PLUGINS_CONFIG["netbox_kea"]`` settings and their rules are in ``plugin_settings.SETTINGS``.
 """
 
 from __future__ import annotations
@@ -36,7 +34,6 @@ if TYPE_CHECKING:
 from . import branching
 from .constants import Family
 from .ipam_reconciliation import SyncReport, complete_job_observation, upgrade_counts
-from .plugin_settings import plugin_setting
 
 logger = logging.getLogger(__name__)
 
@@ -345,7 +342,7 @@ class KeaIpamSyncJob(JobRunner):
             sync_reservations = sync_cfg.sync_reservations_enabled
             sync_prefixes = sync_cfg.sync_prefixes_enabled
             sync_ip_ranges = sync_cfg.sync_ip_ranges_enabled
-            max_leases = plugin_setting("sync_max_leases_per_server")
+            max_leases = sync_cfg.sync_max_leases_per_server
 
             if not any([sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges]):
                 self.logger.info("All sync type flags are False — nothing to do.")

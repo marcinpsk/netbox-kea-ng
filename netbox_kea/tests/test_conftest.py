@@ -11,7 +11,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from netbox_kea import constants
 from netbox_kea.tests.conftest import _prepopulate_url_resolver, _test_database_name
 from netbox_kea.tests.kea_stub import queued, stub_kea
-from netbox_kea.tests.utils import _PLUGINS_CONFIG, _make_db_server
+from netbox_kea.tests.utils import _make_db_server, with_kea_client_config
 
 
 class TestPrepopulateUrlResolver(SimpleTestCase):
@@ -136,7 +136,7 @@ class TestPluginCacheHygieneReachesDjangoTestCases(TestCase):
         )
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestServerConfigurationCacheHygiene(TestCase):
     def test_cleanup_drops_a_populated_configuration_snapshot(self):
         from netbox_kea import server_configuration

@@ -50,8 +50,8 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
     - Global reservations create and change no IP address
     - The description starts with the sync marker `[kea-sync: <kind>]`. Text after the marker is an operator note,
       and the sync keeps it. To release an address from the sync, remove the marker or move it away from the start.
-4. Cleans up stale IPs (configurable via `stale_ip_cleanup`). A server's lease or reservation that Kea no longer
-   reports loses its link. When the last link of every server to an address goes, `stale_ip_cleanup` applies, but
+4. Cleans up stale IPs (the **Stale IP Cleanup** setting). A server's lease or reservation that Kea no longer
+   reports loses its link. When the last link of every server to an address goes, Stale IP Cleanup applies, but
    only after a complete lease sync and a complete reservation sync. If the server disables reservation sync,
    a complete lease sync is sufficient. An unavailable `host_cmds` hook leaves the reservation source incomplete,
    because config-file reservations can still exist. Failed or truncated lease reads keep their stale links.
@@ -145,7 +145,7 @@ count as complete. Disabled sources and families do not hold the barrier. The re
 `ipam_first_complete_at` field shows when a server first completed its enabled observations. Newly enabled
 sources still require complete observations, even when that timestamp is already set.
 
-`stale_ip_cleanup = "remove"` now also removes the rows of expired leases, deleted Reservations and hostless
+Stale IP Cleanup set to Remove now also removes the rows of expired leases, deleted Reservations and hostless
 leases after their final ownership link becomes stale. On upgrade, lease removal applies only to leases that
 expire after adoption. Rows already stale before the upgrade get no link, stay unchanged and count as
 `unowned`. Review these rows before removing them manually.
@@ -159,7 +159,7 @@ unclassified, because the stored facts cannot show the original kind:
 - An address lease that a complete run reads at that address, current or not, classifies the link as an address
   link.
 - A current delegated prefix at that base classifies the link only after a complete run links its Prefix.
-  The normal stale cleanup then retires the old IP address under `stale_ip_cleanup`, and other owners keep it.
+  The normal stale cleanup then retires the old IP address under Stale IP Cleanup, and other owners keep it.
 - Prefix sync off, a failed Prefix claim (for example an operator Prefix without the marker) or an incomplete
   lease read keeps the old link unclassified.
 - An unclassified link that Kea no longer reports stays, and the summary counts it as `unclassified`.

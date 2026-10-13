@@ -1,12 +1,13 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-FileCopyrightText: 2023 Devon Mar <devon-mar@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
+from contextvars import ContextVar
 from dataclasses import astuple, dataclass
 from dataclasses import field as dataclass_field
 from functools import reduce
 from operator import or_
 from pathlib import Path
-from typing import get_args
+from typing import TypeVar, get_args
 
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.core.exceptions import ValidationError
@@ -19,21 +20,10 @@ from netbox.models import NetBoxModel
 from netbox.models.features import ChangeLoggingMixin, JobsMixin
 
 from . import branching
-from .constants import Family
+from .constants import STALE_CLEANUP_MODES, Family
 from .kea import KeaClient
 from .leases import AllocationKind
-from .plugin_settings import plugin_setting
 from .reservations import MAX_IDENTITY_LENGTH
-
-
-def _get_kea_timeout() -> int:
-    """Return the Kea request timeout in seconds."""
-    return plugin_setting("kea_timeout")
-
-
-def _get_max_unpaged_leases() -> int | None:
-    """Return the Subnet lease-query guard limit, or ``None`` when it is disabled."""
-    return plugin_setting("lease_query_max_unpaged_leases") or None
 
 
 @dataclass(frozen=True)
@@ -323,6 +313,7 @@ class Server(JobsMixin, NetBoxModel):
             on_config_change = None
 
         connection = self.kea_connection(version)
+        config = request_client_config.get() or KeaClientConfig.get()
         return KeaClient(
             url=connection.url,
             username=connection.username,
@@ -330,10 +321,10 @@ class Server(JobsMixin, NetBoxModel):
             verify=connection.verify,
             client_cert=connection.client_cert,
             client_key=connection.client_key,
-            timeout=_get_kea_timeout(),
+            timeout=config.kea_timeout,
             persist_config=self.persist_config,
             send_service=connection.send_service,
-            max_unpaged_leases=_get_max_unpaged_leases(),
+            max_unpaged_leases=config.lease_query_max_unpaged_leases or None,
             on_config_change=on_config_change,
             write_guard=branching.bind(),
         )
@@ -383,14 +374,36 @@ class Server(JobsMixin, NetBoxModel):
         return objectchange
 
 
-class SyncConfig(ChangeLoggingMixin):
-    """Singleton configuration for the Kea→NetBox IPAM sync job.
+_Singleton = TypeVar("_Singleton", bound="SettingsSingleton")
 
-    Stores the sync interval and global kill-switch in the database so
-    operators can change them on the Settings page without restarting Django.
-    Exactly one row exists (pk=1 always): a migration creates it, ``save()``
-    keeps pk=1 and ``delete()`` is disabled. A save in a request writes an ObjectChange.
+
+class SettingsSingleton(ChangeLoggingMixin):
+    """A settings row that operators edit on the Settings page without a restart (ADR 0010).
+
+    Exactly one row exists (pk=1 always): a migration creates it, ``save()`` keeps pk=1 and ``delete()`` is
+    disabled. A save in a request writes an ObjectChange.
     """
+
+    class Meta:
+        abstract = True
+
+    def save(self, *args, **kwargs) -> None:
+        """Force pk=1 so only one row can ever exist."""
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        """Prevent deletion of the singleton row."""
+        raise TypeError(f"{type(self).__name__} singleton cannot be deleted.")
+
+    @classmethod
+    def get(cls: type[_Singleton]) -> _Singleton:
+        """Return the singleton row. A migration creates it, so a missing row raises ``DoesNotExist``."""
+        return cls.objects.get(pk=1)
+
+
+class SyncConfig(SettingsSingleton):
+    """Singleton configuration for the Kea→NetBox IPAM sync job."""
 
     interval_minutes = models.PositiveIntegerField(
         verbose_name="Sync Interval (minutes)",
@@ -404,6 +417,21 @@ class SyncConfig(ChangeLoggingMixin):
         verbose_name="Sync Enabled (global)",
         default=True,
         help_text="Global switch. Clear it to stop the sync for all Servers, whatever the Server setting.",
+    )
+    sync_max_leases_per_server: models.PositiveIntegerField = models.PositiveIntegerField(
+        verbose_name="Max Leases per Server",
+        default=50000,
+        help_text="The most leases that one sync run reads from one Server. 0 means no limit.",
+    )
+    stale_ip_cleanup: models.CharField = models.CharField(
+        verbose_name="Stale IP Cleanup",
+        max_length=16,
+        choices=[(mode, mode.capitalize()) for mode in STALE_CLEANUP_MODES],
+        default="remove",
+        help_text=(
+            "What the sync does with an IP address when the last link of every Server to it goes:"
+            " Remove deletes it, Deprecate sets its status to Deprecated, None keeps it."
+        ),
     )
     sync_leases_enabled = models.BooleanField(
         verbose_name="Sync Leases",
@@ -439,25 +467,48 @@ class SyncConfig(ChangeLoggingMixin):
             models.CheckConstraint(
                 condition=models.Q(interval_minutes__gte=1) & models.Q(interval_minutes__lte=1440),
                 name="syncconfig_interval_minutes_range",
-            )
+            ),
+            models.CheckConstraint(
+                condition=models.Q(stale_ip_cleanup__in=STALE_CLEANUP_MODES),
+                name="syncconfig_stale_ip_cleanup_mode",
+            ),
         ]
 
     def __str__(self) -> str:
         return "Sync Configuration"
 
-    def save(self, *args, **kwargs) -> None:
-        """Force pk=1 so only one row can ever exist."""
-        self.pk = 1
-        super().save(*args, **kwargs)
 
-    def delete(self, *args, **kwargs):
-        """Prevent deletion of the singleton row."""
-        raise TypeError("SyncConfig singleton cannot be deleted.")
+class KeaClientConfig(SettingsSingleton):
+    """Singleton configuration of the Kea client that each ``Server.get_client()`` call builds."""
 
-    @classmethod
-    def get(cls) -> "SyncConfig":
-        """Return the singleton row. Migration 0018 creates it, so a missing row raises ``DoesNotExist``."""
-        return cls.objects.get(pk=1)
+    kea_timeout: models.PositiveIntegerField = models.PositiveIntegerField(
+        verbose_name="Kea Timeout (seconds)",
+        default=30,
+        validators=[MinValueValidator(1)],
+        help_text="How long each Kea request can take (seconds). At least 1. A change applies to the next request.",
+    )
+    lease_query_max_unpaged_leases: models.PositiveIntegerField = models.PositiveIntegerField(
+        verbose_name="Max Unpaged Leases",
+        default=1000,
+        help_text=(
+            "Refuse an unpaged Subnet lease query when the Kea lease statistics count more leases than this."
+            " 0 disables the check."
+        ),
+    )
+
+    class Meta:
+        app_label = "netbox_kea"
+        verbose_name = "Kea Client Configuration"
+        constraints = [
+            models.CheckConstraint(condition=models.Q(kea_timeout__gte=1), name="keaclientconfig_kea_timeout_min"),
+        ]
+
+    def __str__(self) -> str:
+        return "Kea Client Configuration"
+
+
+# The row a fan-out read on its request thread, so its worker threads open no database connection.
+request_client_config: ContextVar[KeaClientConfig | None] = ContextVar("request_client_config", default=None)
 
 
 class KeaDhcpLink(ChangeLoggingMixin):

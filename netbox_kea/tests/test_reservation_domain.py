@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import get_args
 
 import yaml
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from netbox_kea import kea, server_configuration
 from netbox_kea.dhcp_options import DHCPOption, parse_dhcp_options
@@ -1461,7 +1461,7 @@ def _capabilities(family: Family, configuration: dict) -> ReservationCapabilitie
     return server_configuration.reservation_capabilities(observed_configuration(family, configuration))
 
 
-class TestReservationCapabilities(SimpleTestCase):
+class TestReservationCapabilities(TestCase):
     def test_uses_the_family_configuration_and_the_flex_id_hook(self):
         capabilities = _capabilities(
             4,

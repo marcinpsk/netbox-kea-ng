@@ -16,7 +16,7 @@ from django.shortcuts import redirect, render
 from django.views import View
 
 from .. import forms
-from ..models import SyncConfig
+from ..models import KeaClientConfig, SettingsSingleton, SyncConfig
 
 
 @dataclass(frozen=True)
@@ -24,9 +24,11 @@ class SettingsSection:
     """One singleton on the Settings page. Its model's permissions decide who sees and who changes it."""
 
     slug: str
-    model: type[SyncConfig]
+    model: type[SettingsSingleton]
     form_class: type[django_forms.ModelForm]
     template_name: str
+    #: The text of the section's item in the Settings menu group.
+    menu_text: str
 
     def _permission(self, action: str) -> str:
         options = self.model._meta
@@ -48,7 +50,16 @@ class SettingsSection:
         return str(self.model._meta.verbose_name)
 
 
-SECTIONS = (SettingsSection("sync", SyncConfig, forms.SyncConfigForm, "netbox_kea/inc/settings_sync.html"),)
+SECTIONS = (
+    SettingsSection("sync", SyncConfig, forms.SyncConfigForm, "netbox_kea/inc/settings_sync.html", "Sync"),
+    SettingsSection(
+        "kea-client",
+        KeaClientConfig,
+        forms.KeaClientConfigForm,
+        "netbox_kea/inc/settings_kea_client.html",
+        "Kea Client",
+    ),
+)
 _BY_SLUG = {section.slug: section for section in SECTIONS}
 
 

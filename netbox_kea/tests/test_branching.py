@@ -82,7 +82,14 @@ from utilities.exceptions import AbortRequest  # noqa: E402
 from netbox_kea import server_configuration  # noqa: E402
 from netbox_kea.jobs import KeaIpamSyncJob  # noqa: E402
 from netbox_kea.kea import KeaCommand, KeaException  # noqa: E402
-from netbox_kea.models import IPAMOwnershipLink, KeaDhcpLink, Server, SyncConfig, next_confirmation_number  # noqa: E402
+from netbox_kea.models import (  # noqa: E402
+    IPAMOwnershipLink,
+    KeaClientConfig,
+    KeaDhcpLink,
+    Server,
+    SyncConfig,
+    next_confirmation_number,
+)
 from netbox_kea.tests.kea_stub import (  # noqa: E402
     _leases_per_subnet,
     _res_get,
@@ -211,7 +218,13 @@ class BranchabilityPinTest(SimpleTestCase):
     def test_the_rule_reads_every_plugin_model(self):
         self.assertEqual(
             {model._meta.label for model in _rule_models()},
-            {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.KeaDhcpLink", "netbox_kea.IPAMOwnershipLink"},
+            {
+                "netbox_kea.Server",
+                "netbox_kea.SyncConfig",
+                "netbox_kea.KeaClientConfig",
+                "netbox_kea.KeaDhcpLink",
+                "netbox_kea.IPAMOwnershipLink",
+            },
         )
 
 
@@ -1037,6 +1050,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
             object_id=1,
         )
         self.config = SyncConfig.get()
+        self.kea_client_config = KeaClientConfig.get()
         self.branch = _provisioned_branch(self, "rows")
 
     def _main(self) -> tuple:
@@ -1044,6 +1058,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
             list(Server.objects.values_list("pk", "ca_url")),
             list(KeaDhcpLink.objects.values_list("pk", "kea_subnet_id")),
             list(SyncConfig.objects.values_list("pk", "interval_minutes")),
+            list(KeaClientConfig.objects.values_list("pk", "kea_timeout")),
         )
 
     def test_the_receivers_cover_every_main_only_plugin_model(self):
@@ -1051,9 +1066,20 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
 
         self.assertEqual(
             labels,
-            {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.KeaDhcpLink", "netbox_kea.IPAMOwnershipLink"},
+            {
+                "netbox_kea.Server",
+                "netbox_kea.SyncConfig",
+                "netbox_kea.KeaClientConfig",
+                "netbox_kea.KeaDhcpLink",
+                "netbox_kea.IPAMOwnershipLink",
+            },
         )
-        main_only = {"netbox_kea.Server", "netbox_kea.SyncConfig", "netbox_kea.IPAMOwnershipLink"}
+        main_only = {
+            "netbox_kea.Server",
+            "netbox_kea.SyncConfig",
+            "netbox_kea.KeaClientConfig",
+            "netbox_kea.IPAMOwnershipLink",
+        }
         self.assertEqual((_refusal_receivers(pre_save), _refusal_receivers(pre_delete)), (main_only, main_only))
 
     def test_a_save_in_a_branch_is_refused(self):
@@ -1061,6 +1087,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
         changes = {
             "server": lambda: _save_with(self.server, ca_url=_AFTER),
             "sync config": lambda: _save_with(self.config, interval_minutes=9),
+            "kea client config": lambda: _save_with(self.kea_client_config, kea_timeout=9),
             "new server": lambda: _make_db_server(name="new in branch"),
         }
         for label, change in changes.items():
@@ -1077,6 +1104,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
             "server": lambda: Server.objects.get(pk=self.server.pk).delete(),
             "server queryset": lambda: Server.objects.all().delete(),
             "sync config queryset": lambda: SyncConfig.objects.all().delete(),
+            "kea client config queryset": lambda: KeaClientConfig.objects.all().delete(),
         }
         for label, delete in deletes.items():
             with self.subTest(label), activate_branch(self.branch), self.assertRaises(branching.BranchActive):
@@ -1138,21 +1166,40 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
         client = Client()
         client.force_login(get_user_model().objects.create_superuser("settings-in-branch"))
         url = reverse("plugins:netbox_kea:settings")
-        data = {"section": "sync", "sync-interval_minutes": 31, "sync-sync_enabled": "on"}
-        before = (self._main(), ObjectChange.objects.count())
-        client.cookies[COOKIE_NAME] = self.branch.schema_id
+        sections = {
+            "sync": (
+                {
+                    "section": "sync",
+                    "sync-interval_minutes": 31,
+                    "sync-sync_enabled": "on",
+                    "sync-sync_max_leases_per_server": 50000,
+                    "sync-stale_ip_cleanup": "remove",
+                },
+                lambda: SyncConfig.get().interval_minutes,
+                31,
+            ),
+            "kea-client": (
+                {"section": "kea-client", "kea-client-kea_timeout": 31, "kea-client-lease_query_max_unpaged_leases": 0},
+                lambda: KeaClientConfig.get().kea_timeout,
+                31,
+            ),
+        }
+        for slug, (data, saved, expected) in sections.items():
+            with self.subTest(section=slug):
+                before = (self._main(), ObjectChange.objects.count())
+                client.cookies[COOKIE_NAME] = self.branch.schema_id
 
-        with _writes(self.branch) as writes:
-            response = client.post(url, data)
+                with _writes(self.branch) as writes:
+                    response = client.post(url, data)
 
-        self.assertContains(response, f"Branch {self.branch.name} is active.", status_code=409)
-        self.assertEqual(writes, [])
-        self.assertEqual((self._main(), ObjectChange.objects.count()), before)
-        # The same data saves on main, so the refusal above is the branch and not the form.
-        del client.cookies[COOKIE_NAME]
-        self.assertEqual(client.post(url, data).status_code, 302)
-        self.assertEqual(SyncConfig.get().interval_minutes, 31)
-        self.assertEqual(ObjectChange.objects.count(), before[1] + 1)
+                self.assertContains(response, f"Branch {self.branch.name} is active.", status_code=409)
+                self.assertEqual(writes, [])
+                self.assertEqual((self._main(), ObjectChange.objects.count()), before)
+                # The same data saves on main, so the refusal above is the branch and not the form.
+                del client.cookies[COOKIE_NAME]
+                self.assertEqual(client.post(url, data).status_code, 302)
+                self.assertEqual(saved(), expected)
+                self.assertEqual(ObjectChange.objects.count(), before[1] + 1)
 
     def test_on_main_a_save_and_a_delete_are_not_refused(self):
         self.server.ca_url = _AFTER
@@ -1510,7 +1557,14 @@ class SyncJobInBranchTest(TransactionTestCase):
         self.assertFalse(IPAddress.objects.exists())
         self.assertFalse(Prefix.objects.exists())
         self.assertFalse(IPRange.objects.exists())
-        sync_tables = ("netbox_kea_server", "netbox_kea_syncconfig", "ipam_ipaddress", "ipam_prefix", "ipam_iprange")
+        sync_tables = (
+            "netbox_kea_server",
+            "netbox_kea_syncconfig",
+            "netbox_kea_keaclientconfig",
+            "ipam_ipaddress",
+            "ipam_prefix",
+            "ipam_iprange",
+        )
         self.assertFalse(any(table in query["sql"] for table in sync_tables for query in queries.captured_queries))
 
 

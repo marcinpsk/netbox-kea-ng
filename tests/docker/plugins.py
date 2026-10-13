@@ -8,4 +8,5 @@ PLUGINS = ["netbox_kea"]
 # create and delete. The on-demand Sync button is unaffected.
 # Read only when the migration creates the SyncConfig row, so a reused postgres volume keeps
 # the stored value; test_the_harness_pauses_the_periodic_ipam_sync reports that.
+# After the migration the plugin ignores the key, and the plugin logs a startup warning for it.
 PLUGINS_CONFIG = {"netbox_kea": {"sync_enabled": False}}

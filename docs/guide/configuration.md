@@ -6,33 +6,25 @@ SPDX-License-Identifier: Apache-2.0
 
 # Configuration
 
-All settings are under `PLUGINS_CONFIG["netbox_kea"]`:
+All runtime settings are on the **Settings** page (menu **DHCP Kea > Settings**). A change applies without a
+restart. The page has one section for each group of settings:
 
-| Setting | Default | Description |
-|---|---|---|
-| `kea_timeout` | `30` | HTTP request timeout in seconds for Kea API calls |
-| `lease_query_max_unpaged_leases` | `1000` | Reject an unpaged Subnet lease query when its Kea statistics count exceeds this limit. Set to `0` to disable this safety check |
-| `stale_ip_cleanup` | `"remove"` | What to do with stale IPs after sync: `"remove"` (delete), `"deprecate"` (set status=deprecated), `"none"` (skip) |
-| `sync_interval_minutes` | `5` | Initial interval of the background sync job (minutes). Edit it later on the **Settings** page |
-| `sync_enabled` | `True` | Initial state of the global sync switch. Edit it later on the **Settings** page |
-| `sync_leases_enabled` | `True` | Sync current DHCP address leases to NetBox IPAM. With `sync_prefixes_enabled`, also DHCPv6 delegated-prefix leases as Prefixes |
-| `sync_reservations_enabled` | `True` | Sync Kea reservations to NetBox IPAM |
-| `sync_prefixes_enabled` | `True` | Sync Kea subnets to NetBox IPAM as IP Prefixes. With `sync_leases_enabled`, also DHCPv6 delegated-prefix leases |
-| `sync_ip_ranges_enabled` | `True` | Sync Kea pools to NetBox IPAM as IP Ranges |
-| `sync_max_leases_per_server` | `50000` | Hard cap on leases fetched per server per sync run. Set to `0` for no limit |
+| Section | Setting | Default | Description |
+|---|---|---|---|
+| Sync | Sync Interval (minutes) | `5` | How often the background sync job runs, from 1 to 1440. A change applies after the next run |
+| Sync | Sync Enabled (global) | On | Global switch. Clear it to stop the sync for all Servers |
+| Sync | Max Leases per Server | `50000` | The most leases that one sync run reads from one Server. `0` means no limit |
+| Sync | Stale IP Cleanup | Remove | What the sync does with an IP address when the last link of every Server to it goes: Remove deletes it, Deprecate sets its status to Deprecated, None keeps it |
+| Sync | Sync Leases | On | Sync current DHCP address leases to NetBox IPAM. With Sync Prefixes, also DHCPv6 delegated-prefix leases as Prefixes |
+| Sync | Sync Reservations | On | Sync Kea reservations to NetBox IPAM |
+| Sync | Sync Prefixes | On | Sync Kea subnets to NetBox IPAM as IP Prefixes. With Sync Leases, also DHCPv6 delegated-prefix leases |
+| Sync | Sync IP Ranges | On | Sync Kea pools to NetBox IPAM as IP Ranges |
+| Kea Client | Kea Timeout (seconds) | `30` | How long each Kea request can take, at least 1. A change applies to the next request |
+| Kea Client | Max Unpaged Leases | `1000` | Refuse an unpaged Subnet lease query when its Kea statistics count exceeds this limit. `0` disables this safety check |
 
-NetBox refuses to start when one of these settings has a value of the wrong type or outside its range.
-The error names the setting, the allowed values, and the given value. A number must be an integer, not a string
-or a boolean. `kea_timeout` must be at least 1, `sync_interval_minutes` must be from 1 to 1440, and the other
-numbers must be at least 0.
-
-`./manage.py migrate` reads `sync_interval_minutes`, `sync_enabled` and the four `sync_*_enabled`
-toggles once, when it creates the Sync Configuration. After that, the **Settings** page holds these values,
-and a later change to these settings in `PLUGINS_CONFIG` has no effect.
-
-The **Settings** page shows the Sync Configuration to a user with the `netbox_kea.view_syncconfig` permission.
-A save needs both `netbox_kea.view_syncconfig` and `netbox_kea.change_syncconfig`. Without the change permission,
-the page shows the values read-only. Each save writes a change log record. While a branch is active, the page refuses a save.
+A section shows to a user with the view permission of its model (`netbox_kea.view_syncconfig`,
+`netbox_kea.view_keaclientconfig`). A save needs the change permission of the model too. Without it, the section
+shows the values read-only. Each save writes a change log record. While a branch is active, the page refuses a save.
 
 Subnet lease searches use `stat-lease4-get` or `stat-lease6-get` before an
 unpaged lease command. Kea statistics can reject a query that is already too
@@ -49,3 +41,11 @@ for all of its Kea requests, up to and including the save to disk. A PostgreSQL
 `idle_in_transaction_session_timeout` or a connection pooler timeout shorter than
 the longest Configuration Change ends that transaction and releases the lock
 while the change runs, so set these timeouts longer.
+
+## Settings from `PLUGINS_CONFIG`
+
+Earlier releases read these settings from `PLUGINS_CONFIG["netbox_kea"]`. `./manage.py migrate` copies each value
+that is still there into the Settings page once, so an upgrade keeps it. A value of the wrong type or outside its
+range stops the migration, and the error names the key, the allowed values, and the given value. After that, the
+plugin ignores these keys, and the plugin logs a warning at startup for each key that is still set. Remove them from
+the configuration and use the Settings page.

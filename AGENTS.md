@@ -233,16 +233,19 @@ URL request
   `server_connection.py` checks enabled services on UI, REST, CSV and bulk submissions
   that create a Server or change connection values. Metadata and unchanged connection values send no HTTP.
   `get_client(version=4|6|None)` returns a protocol-aware `KeaClient`.
-- **`SyncConfig` model** (`models.py`): singleton (pk=1) for global sync settings —
-  `interval_minutes`, `sync_enabled` (global kill-switch), type toggles. Migration 0018
-  creates the row from PLUGINS_CONFIG and applies the one-time backfill, so
-  `SyncConfig.get()` only reads it. A TransactionTestCase flush deletes the row, and a
-  `post_migrate` receiver in `netbox_kea/tests/conftest.py` creates it again with the migration's
-  values. It inherits `ChangeLoggingMixin` (not a `NetBoxModel`), so a save in a request writes an
-  ObjectChange; `api/serializers.py` has a brief `SyncConfigSerializer` because NetBox's change log API
-  serializes each changed object. The Settings page (`views/settings_page.py`) edits it: the section shows
-  with `view_syncconfig`, a save needs `change_syncconfig`, and the view calls `snapshot()` before the form
-  changes the row.
+- **Settings singletons** (`models.py`, ADR 0010): every runtime setting is a field of a `SettingsSingleton`
+  row (pk=1). `SyncConfig` holds the sync settings (`interval_minutes`, `sync_enabled`, the type toggles,
+  `sync_max_leases_per_server`, `stale_ip_cleanup`); `KeaClientConfig` holds `kea_timeout` and
+  `lease_query_max_unpaged_leases`, and `Server.get_client()` reads it on each call. Defaults live on the model
+  fields. Migrations 0018 and 0025 create the rows and copy the values of `PLUGINS_CONFIG` once, so `get()` only
+  reads. After that the plugin reads no `PLUGINS_CONFIG` key: `NetBoxKeaConfig.ready()` logs a warning for each
+  key of `REMOVED_SETTINGS` that is still set. A TransactionTestCase flush deletes the rows, and a
+  `post_migrate` receiver in `netbox_kea/tests/conftest.py` creates them again with the migrations' values. They
+  inherit `ChangeLoggingMixin` (not a `NetBoxModel`), so a save in a request writes an ObjectChange;
+  `api/serializers.py` has a brief serializer for each because NetBox's change log API serializes each changed
+  object. The Settings page (`views/settings_page.py`) has one section for each row (`SECTIONS`): a section shows
+  with the view permission of its model, a save needs the change permission too, and the view calls `snapshot()`
+  before the form changes the row. `navigation.py` builds one menu item for each section.
 - **`KeaClient`** (`kea.py`): wraps a `requests.Session`. All API calls go through
   `.command(command, target, arguments, check)`, the only HTTP send of the plugin, which POSTs
   JSON to the **configured endpoint URL** (`self.url`: the daemon's `/` control socket, or a
@@ -283,8 +286,7 @@ URL request
   runs subnet/lease/reservation/prefix/range sync phases, writes a per-server
   summary to the job log.
 - **Sync interval**: `SyncConfig.interval_minutes` is the only runtime source.
-  `KeaIpamSyncJob.enqueue_once()` (rqworker startup) and each periodic `run()` read it;
-  PLUGINS_CONFIG `sync_interval_minutes` only seeds the row in migration 0018.
+  `KeaIpamSyncJob.enqueue_once()` (rqworker startup) and each periodic `run()` read it.
   Ghost-job healing also runs inside `enqueue_once()`, not `ready()`.
 - **REST API** (`api/`): `NetBoxModelViewSet` + `NetBoxModelSerializer` — only the
   `Server` model is exposed. All password fields are write-only.
@@ -519,9 +521,10 @@ resort, reserved for true external boundaries you cannot run locally.
 - **API auth in tests**: `api_client.force_authenticate(user=self.user)` (NetBox v4
   tokens use the `nbt_` format).
 - **BulkImportView POST**: requires `data=`, `format='csv'`, `csv_delimiter=','`.
-- **DB-less helper tests**: `SimpleTestCase` is fine for pure logic; for anything that
-  touches `get_client()` add `@override_settings(PLUGINS_CONFIG=...)` so `kea_timeout`
-  resolves.
+- **Settings in tests**: `get_client()` reads the `KeaClientConfig` row, so a test that calls it needs the
+  database (`TestCase`, not `SimpleTestCase`). Set a row value with `with_kea_client_config(...)` or
+  `with_sync_config(...)` from `tests/utils.py`: a class, method or `with` decorator that restores the value.
+  `_ViewTestBase` turns the lease-query guard off (`lease_query_max_unpaged_leases=0`).
 
 ## Key Patterns
 

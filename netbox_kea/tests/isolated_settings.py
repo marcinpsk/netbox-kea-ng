@@ -36,11 +36,12 @@ _plugins = [
 ]
 _netbox_configuration.PLUGINS = _plugins
 _configured_plugins_config = dict(getattr(_netbox_configuration, "PLUGINS_CONFIG", {}))
-_plugins_config = {
-    plugin: _configured_plugins_config[plugin] for plugin in _plugins if plugin in _configured_plugins_config
+# netbox_kea takes no keys: the migrations then seed the settings rows with the model defaults.
+_netbox_configuration.PLUGINS_CONFIG = {
+    plugin: _configured_plugins_config[plugin]
+    for plugin in _plugins
+    if plugin != "netbox_kea" and plugin in _configured_plugins_config
 }
-_plugins_config.setdefault("netbox_kea", {"kea_timeout": 30})
-_netbox_configuration.PLUGINS_CONFIG = _plugins_config
 _netbox_configuration.API_TOKEN_PEPPERS = {0: "a" * 64}
 
 from netbox.settings import *  # noqa: E402, F403

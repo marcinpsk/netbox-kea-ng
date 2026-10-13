@@ -6,7 +6,7 @@ from threading import Event
 from unittest.mock import patch
 
 import requests
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from netbox_kea import server_configuration
 from netbox_kea.constants import MAX_SUBNET_ID
@@ -27,7 +27,7 @@ from netbox_kea.subnet_catalogue import (
     mutation,
 )
 from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, _subnet_list, queued, stub_kea
-from netbox_kea.tests.utils import _PLUGINS_CONFIG, _make_db_server
+from netbox_kea.tests.utils import _make_db_server, with_kea_client_config
 
 
 def _identity(version, subnets, *, result=0):
@@ -51,7 +51,7 @@ def _config(version, subnets, *, shared_networks=None, config_hash="hash-a", res
     }
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestSubnetCatalogue(TestCase):
     def setUp(self):
         self.server = _make_db_server()
@@ -1129,7 +1129,7 @@ class TestSubnetCatalogue(TestCase):
         self.assertEqual(kea.commands().count("config-get"), 4)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestCatalogueConfigurationRegressions(TestCase):
     def setUp(self):
         self.server = _make_db_server()

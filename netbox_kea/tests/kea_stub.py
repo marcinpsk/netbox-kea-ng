@@ -38,8 +38,7 @@ from netbox_kea import branching, server_configuration
 from netbox_kea.constants import Family
 from netbox_kea.kea import KeaClient
 from netbox_kea.leases import Lease, read_lease_collection, shown_lease
-from netbox_kea.models import Server
-from netbox_kea.plugin_settings import DEFAULT_SETTINGS
+from netbox_kea.models import KeaClientConfig, Server
 from netbox_kea.reservations import (
     GlobalReservationScope,
     IdentifierType,
@@ -56,9 +55,10 @@ from netbox_kea.tests.kea_wire_discipline import WIRE_COMMANDS
 
 
 def kea_client(url: str, **options: Any) -> KeaClient:
-    """Build a KeaClient with the write guard and the default plugin settings that ``Server.get_client()`` passes."""
-    options.setdefault("timeout", DEFAULT_SETTINGS["kea_timeout"])
-    options.setdefault("max_unpaged_leases", DEFAULT_SETTINGS["lease_query_max_unpaged_leases"] or None)
+    """Build a KeaClient with the write guard and the default Kea client settings that ``Server.get_client()`` passes."""
+    defaults = KeaClientConfig()
+    options.setdefault("timeout", defaults.kea_timeout)
+    options.setdefault("max_unpaged_leases", defaults.lease_query_max_unpaged_leases or None)
     return KeaClient(url, write_guard=branching.bind(), **options)
 
 

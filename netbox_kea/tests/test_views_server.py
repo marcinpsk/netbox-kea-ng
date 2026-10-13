@@ -22,13 +22,12 @@ to the real test database. Server submissions use the real forms and Kea client.
 
 import requests
 from core.models import ObjectType
-from django.test import override_settings
 from django.urls import reverse
 
 from netbox_kea.models import Server
 
 from .kea_stub import _catalogue_responses_for_subnets, stub_kea
-from .utils import _PLUGINS_CONFIG, User, _make_db_server, _ViewTestBase
+from .utils import User, _make_db_server, _ViewTestBase
 
 # ---------------------------------------------------------------------------
 # Kea response builders (real KeaClient + HTTP-boundary stub)
@@ -65,7 +64,6 @@ def _status_stub(**overrides):
     return stub_kea(base)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerListView(_ViewTestBase):
     """GET /plugins/kea/servers/"""
 
@@ -87,7 +85,6 @@ class TestServerListView(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerDetailView(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/"""
 
@@ -113,7 +110,6 @@ class TestServerDetailView(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerAddView(_ViewTestBase):
     """GET/POST /plugins/kea/servers/add/"""
 
@@ -196,7 +192,6 @@ class TestServerAddView(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerEditView(_ViewTestBase):
     """GET/POST /plugins/kea/servers/<pk>/edit/"""
 
@@ -285,7 +280,6 @@ class TestServerEditView(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerDeleteView(_ViewTestBase):
     """GET/POST /plugins/kea/servers/<pk>/delete/"""
 
@@ -309,7 +303,6 @@ class TestServerDeleteView(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerStatusView(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/status/"""
 
@@ -338,7 +331,6 @@ class TestServerStatusView(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerBulkImportView(_ViewTestBase):
     """GET/POST /plugins/kea/servers/import/
 
@@ -504,7 +496,6 @@ def _global_options_stub(**overrides):
     return stub_kea(base)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerStatusGlobalOptions(_ViewTestBase):
     """Status view must render global DHCP options extracted from ``config-get``."""
 
@@ -602,7 +593,6 @@ class TestServerStatusGlobalOptions(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerFilterSet(_ViewTestBase):
     """Tests for ServerFilterSet — queryset filtering by name, URL, has_control_agent."""
 
@@ -673,7 +663,6 @@ class TestServerFilterSet(_ViewTestBase):
         self.assertEqual(names, ["beta-kea"])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerFilterForm(_ViewTestBase):
     """Tests for ServerFilterForm — renders new filter fields."""
 
@@ -715,7 +704,6 @@ class TestServerFilterForm(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestKeaChangeMixinPermission(_ViewTestBase):
     """_KeaChangeMixin returns 403 for view-only users."""
 
@@ -747,7 +735,6 @@ class TestKeaChangeMixinPermission(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestStatusViewNullArgs(_ViewTestBase):
     """ServerStatusView: status-get returns empty or null arguments."""
 
@@ -909,7 +896,6 @@ class TestStatusViewNullArgs(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestGetGlobalOptionsGenericException(_ViewTestBase):
     """A failed Server Configuration read leaves the status page without global options."""
 
@@ -1000,7 +986,6 @@ class TestGetGlobalOptionsGenericException(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestBulkDeletePermission(_ViewTestBase):
     """POST without bulk_delete_lease_from_server permission returns 403."""
 
@@ -1028,7 +1013,6 @@ class TestBulkDeletePermission(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestKeaChangeMixinNoPk(_ViewTestBase):
     """dispatch with no pk kwarg + user lacking change_server perm → 403."""
 
@@ -1059,7 +1043,6 @@ class TestKeaChangeMixinNoPk(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestStatusViewNullVersionArgs(_ViewTestBase):
     """version-get returns None arguments → RuntimeError caught internally."""
 

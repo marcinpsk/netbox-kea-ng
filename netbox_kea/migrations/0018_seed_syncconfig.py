@@ -17,10 +17,18 @@ fake_on_branch = True
 TYPE_TOGGLES = ("sync_leases_enabled", "sync_reservations_enabled", "sync_prefixes_enabled", "sync_ip_ranges_enabled")
 
 
+def configured_switch(config: dict, key: str) -> bool:
+    """Return the switch *key* that PLUGINS_CONFIG sets, True when unset; no startup check guards it (ADR 0010)."""
+    value = config.get(key, True)
+    if type(value) is not bool:
+        raise ImproperlyConfigured(f"PLUGINS_CONFIG['netbox_kea']['{key}'] must be True or False, got {value!r}.")
+    return value
+
+
 def configured_toggles() -> dict:
     """Return the type toggles that PLUGINS_CONFIG sets."""
     config = settings.PLUGINS_CONFIG.get("netbox_kea", {})
-    return {toggle: config.get(toggle, True) for toggle in TYPE_TOGGLES}
+    return {toggle: configured_switch(config, toggle) for toggle in TYPE_TOGGLES}
 
 
 def configured_values() -> dict:
@@ -32,7 +40,7 @@ def configured_values() -> dict:
         raise ImproperlyConfigured(
             f"PLUGINS_CONFIG['netbox_kea']['sync_interval_minutes'] must be an integer from 1 to 1440, got {interval!r}."
         )
-    return {"interval_minutes": interval, "sync_enabled": config.get("sync_enabled", True), **configured_toggles()}
+    return {"interval_minutes": interval, "sync_enabled": configured_switch(config, "sync_enabled"), **configured_toggles()}
 
 
 def seed_sync_config(apps, schema_editor):

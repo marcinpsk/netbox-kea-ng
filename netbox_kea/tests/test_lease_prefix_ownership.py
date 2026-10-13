@@ -12,7 +12,7 @@ from contextlib import suppress
 
 from core.exceptions import JobFailed
 from django.db import connection
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from ipam.models import VRF, Prefix
@@ -35,7 +35,7 @@ from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, lease_re
 from netbox_kea.tests.test_ipam_reconciliation import ConcurrencyHarness
 from netbox_kea.tests.test_jobs import _make_job, _patch_kea
 from netbox_kea.tests.test_models import _MigrationTestCase
-from netbox_kea.tests.utils import _make_db_server, plugins_config
+from netbox_kea.tests.utils import _make_db_server, with_sync_config
 
 PD = "2001:db8:1:100::"
 PD_NETWORK = f"{PD}/56"
@@ -84,7 +84,6 @@ def _sources(obj) -> set[tuple[str, str]]:
     return set(IPAMOwnershipLink.objects.filter(**{field: obj}).values_list("server__name", "source"))
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="remove"))
 class LivePrefixLeaseJobTest(TestCase):
     def test_a_current_delegated_prefix_becomes_a_prefix_in_the_server_vrf_and_never_an_ip_address(self):
         vrf = VRF.objects.create(name="pd-vrf")
@@ -196,7 +195,6 @@ class LivePrefixLeaseJobTest(TestCase):
         self.assertEqual((kept.status, _sources(kept)), ("active", {("owner", "lease-prefix")}))
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="remove"))
 class LegacyPrefixLeaseRepairTest(TestCase):
     """IP addresses that the lease source made of delegated prefixes before #294."""
 
@@ -215,7 +213,7 @@ class LegacyPrefixLeaseRepairTest(TestCase):
 
     def test_the_repair_follows_the_configured_stale_ip_cleanup(self):
         for mode, exists, status in (("none", True, "dhcp"), ("deprecate", True, "deprecated")):
-            with self.subTest(mode), override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup=mode)):
+            with self.subTest(mode), with_sync_config(stale_ip_cleanup=mode):
                 NbIP.objects.all().delete()
                 Prefix.objects.all().delete()
                 server = _server(f"mode-{mode}")
@@ -350,7 +348,6 @@ class LegacyPrefixLeaseRepairTest(TestCase):
         self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="remove"))
 class LivePrefixReceiptTest(TestCase):
     def test_an_old_narrower_job_receipt_does_not_attest_to_live_prefix_coverage(self):
         server = _server(sync_deprecate_prefixes_and_ranges=True)
@@ -422,7 +419,6 @@ class LivePrefixPhaseContractTest(TestCase):
         self.assertFalse(Prefix.objects.exists())
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="remove"))
 class LivePrefixConcurrencyTest(ConcurrencyHarness):
     """Live delegated-prefix ownership against concurrent writers, each on its own connection."""
 

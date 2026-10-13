@@ -10,7 +10,7 @@ from core.exceptions import JobFailed
 from core.models import Job
 from django.core.exceptions import ValidationError
 from django.db.models.signals import post_save, pre_save
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from ipam.models import IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 
@@ -19,7 +19,7 @@ from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, stub_kea, typed_lease
 from netbox_kea.tests.test_ipam_reconciliation import _kea, _lease, _server
 from netbox_kea.tests.test_prefix_pool_reconciliation import SUBNET, run_job
-from netbox_kea.tests.utils import _make_db_server, plugins_config
+from netbox_kea.tests.utils import _make_db_server
 
 _FIELDS = {IPAddress: ("address",), Prefix: ("prefix",), IPRange: ("start_address", "end_address")}
 
@@ -55,7 +55,6 @@ def _refuse_every_prefix_update(sender, instance, **kwargs):
         raise ValidationError("Prefix is assigned to DNS views _default_. Prefix and VRF must not be changed")
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
 class IPAMFieldTypesTest(TestCase):
     def assert_netaddr(self, seen, expected_models):
         self.assertEqual({model for model, _name, _type in seen}, expected_models)

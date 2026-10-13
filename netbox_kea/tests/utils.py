@@ -13,14 +13,12 @@ from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.db import connection
-from django.test import Client, TestCase, override_settings
-from django.test.utils import CaptureQueriesContext
+from django.test import Client, TestCase
+from django.test.utils import CaptureQueriesContext, TestContextDecorator
 from django.urls import reverse
 from users.models import ObjectPermission
-from utilities.release import load_release_data
 
-from netbox_kea import NetBoxKeaConfig
-from netbox_kea.models import Server
+from netbox_kea.models import KeaClientConfig, Server, SettingsSingleton, SyncConfig
 
 from .kea_stub import stub_kea
 
@@ -28,14 +26,39 @@ if TYPE_CHECKING:
     from django.test.client import _MonkeyPatchedWSGIResponse
 
 
-def plugins_config(**settings) -> dict:
-    """Return PLUGINS_CONFIG as NetBox builds it at startup from *settings*: validated, with the defaults filled in."""
-    NetBoxKeaConfig.validate(settings, load_release_data().version)
-    return {"netbox_kea": settings}
+class SettingsRowOverride(TestContextDecorator):
+    """Set fields of a settings row for a block, a test method or each test of a class, and restore them after.
+
+    On a class it applies before each ``setUp``, as ``override_settings`` does.
+    """
+
+    def __init__(self, model: type[SettingsSingleton], **values) -> None:
+        super().__init__()
+        self.model, self.values = model, values
+        self._saved: list[dict] = []
+
+    def enable(self) -> None:
+        row = self.model.get()
+        self._saved.append({name: getattr(row, name) for name in self.values})
+        self._write(self.values)
+
+    def disable(self) -> None:
+        self._write(self._saved.pop())
+
+    def _write(self, values: dict) -> None:
+        if self.model.objects.filter(pk=1).update(**values) != 1:
+            raise RuntimeError(f"{self.model.__name__} has no row")
 
 
-# PLUGINS_CONFIG for tests that do not exercise the Subnet lease-query guard.
-_PLUGINS_CONFIG = plugins_config(lease_query_max_unpaged_leases=0)
+def with_kea_client_config(**values) -> SettingsRowOverride:
+    """Override fields of the KeaClientConfig row, such as ``lease_query_max_unpaged_leases=0`` (no guard)."""
+    return SettingsRowOverride(KeaClientConfig, **values)
+
+
+def with_sync_config(**values) -> SettingsRowOverride:
+    """Override fields of the SyncConfig row, such as ``stale_ip_cleanup``."""
+    return SettingsRowOverride(SyncConfig, **values)
+
 
 User = get_user_model()
 
@@ -114,10 +137,7 @@ def save_key_without_certificate(server: Server) -> str:
 
 
 def _make_db_server(**kwargs) -> Server:
-    """Create a persisted Server fixture with sensible defaults.
-
-    The calling test class applies the PLUGINS_CONFIG override.
-    """
+    """Create a persisted Server fixture with sensible defaults."""
     defaults = {
         "name": "test-kea",
         "ca_url": "https://kea.example.com",
@@ -196,9 +216,13 @@ def _page_data(response) -> dict[str, str]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class _ViewTestBase(TestCase):
-    """Creates a superuser and a single Server for use in all view tests."""
+    """Creates a superuser and a single Server for use in all view tests. The lease-query guard is off."""
+
+    @classmethod
+    def setUpTestData(cls):
+        # Class level, so a class or method override of a subclass applies after it.
+        KeaClientConfig.objects.filter(pk=1).update(lease_query_max_unpaged_leases=0)
 
     def setUp(self):
         self.user = User.objects.create_superuser(

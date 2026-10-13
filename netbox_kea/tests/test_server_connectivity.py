@@ -20,12 +20,12 @@ from users.models import ObjectPermission
 from netbox_kea.models import Server
 
 from .kea_stub import _http_response, _raw_http_response, queued, stub_kea
-from .utils import _PLUGINS_CONFIG, DISPATCHED_EVENTS, User, _make_db_server, _ViewTestBase
+from .utils import DISPATCHED_EVENTS, User, _make_db_server, _ViewTestBase, with_kea_client_config
 
 _VERSION_OK = {"result": 0, "arguments": {"extended": "3.2.0"}}
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class ServerLocalValidationTest(TestCase):
     def test_full_clean_never_contacts_kea_for_new_or_existing_servers(self):
         servers = (
@@ -54,7 +54,6 @@ class ServerLocalValidationTest(TestCase):
             self.assertEqual(kea.requests, [])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class ServerSubmissionConnectivityTest(_ViewTestBase):
     @staticmethod
     def _payload(**values):
@@ -190,7 +189,6 @@ class ServerSubmissionConnectivityTest(_ViewTestBase):
         self.assertEqual(self.server.ca_url, "https://kea.example.com")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class ServerAPIConnectivityTest(_ViewTestBase):
     def setUp(self):
         super().setUp()
@@ -335,10 +333,7 @@ class ServerAPIConnectivityTest(_ViewTestBase):
         self.assertEqual(kea.requests, [])
 
 
-@override_settings(
-    PLUGINS_CONFIG=_PLUGINS_CONFIG,
-    EVENTS_PIPELINE=["netbox_kea.tests.utils.record_dispatched_events"],
-)
+@override_settings(EVENTS_PIPELINE=["netbox_kea.tests.utils.record_dispatched_events"])
 class ServerBulkConnectivityTest(_ViewTestBase):
     def test_only_selected_permitted_servers_are_updated_or_probed(self):
         self.server.ca_url = "https://selected.example.invalid"
@@ -458,7 +453,6 @@ class ServerBulkConnectivityTest(_ViewTestBase):
             self.assertEqual(list(server.tags.all()), [tag])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class ServerImportConnectivityTest(_ViewTestBase):
     def test_csv_metadata_and_unchanged_connection_values_send_no_http(self):
         url = reverse("plugins:netbox_kea:server_bulk_import")
