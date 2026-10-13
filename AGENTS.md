@@ -214,6 +214,7 @@ URL request
       settings_page.py  (Settings page: one section per settings singleton; ADR 0010)
   → config_write.py     (Configuration Changes: typed outcome, advisory lock, persist step)
   → kea.py              (HTTP POST to each daemon's / control socket)
+  → display_cache.py    (the display cache: keys, generations, TTLs, admission; ADR 0009)
   → sync.py             (read-only IPAM badges and DCIM MAC synchronization)
   → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
   → ipam_marker.py     (the `[kea-sync: <kind>]` description marker: parse, rewrite, legacy text; ADR 0006)
@@ -237,10 +238,11 @@ URL request
   row (pk=1). `SyncConfig` holds the sync settings (`interval_minutes`, `sync_enabled`, the type toggles,
   `sync_max_leases_per_server`, `stale_ip_cleanup`); `KeaClientConfig` holds `kea_timeout` and
   `lease_query_max_unpaged_leases`, and `Server.get_client()` reads it on each call. `DhcpIntegrationConfig` holds
-  `enabled`, the global switch of the DHCP plugin integration. `dhcp_plugin.integration_refusal(server)` is the one
+  `enabled`, the global switch of the DHCP plugin integration. `DisplayCacheConfig` holds the TTL of each read kind of
+  the display cache. `dhcp_plugin.integration_refusal(server)` is the one
   rule that combines `is_available()`, `Server.sync_dhcp_plugin_enabled` and that switch; no other code combines
   them. Guards that keep DHCP plugin references safe from cleanup check `is_available()` only. Defaults live on the
-  model fields. Migrations 0018, 0025 and 0026 create the rows, and 0018 and 0025 copy the values of
+  model fields. Migrations 0018, 0025, 0026 and 0027 create the rows, and 0018 and 0025 copy the values of
   `PLUGINS_CONFIG` once, so `get()` only reads. After that the plugin reads no `PLUGINS_CONFIG` key:
   `NetBoxKeaConfig.ready()` logs a warning for each key of `REMOVED_SETTINGS` that is still set. A TransactionTestCase flush deletes the rows, and a
   `post_migrate` receiver in `netbox_kea/tests/conftest.py` creates each of them again: SyncConfig and
@@ -262,9 +264,10 @@ URL request
   `TypeError`); each member has a `read` or `write` kind. `target` is the `Family` (4 or 6), or
   `None` for the Control Agent itself. A family-specific command comes from a per-family mapping
   in `kea.py`, such as `SUBNET_LIST[family]`; never format a command name. A new member needs an
-  entry in the pinned read or write set of `test_kea_command.py`. `write_guard` is a required
-  keyword argument: `Server.get_client()` passes the branch binding, and unit tests build clients
-  through `kea_stub.kea_client()`, which passes it too. Responses are
+  entry in the pinned read or write set of `test_kea_command.py`. `write_guard` and `on_write` are
+  required keyword arguments: `Server.get_client()` passes the branch binding and the records rotation of the display
+  cache, and unit tests build clients through `kea_stub.kea_client()`, which passes both (its `on_write` does
+  nothing). Responses are
   `list[KeaResponse]`; `check_response()` raises `KeaException` if any result code is not in
   `check`. `command()` passes the TLS settings (`verify`, `cert`) on each request, so the
   `REQUESTS_CA_BUNDLE` environment variable cannot replace a CA file or `ssl_verify=False`. A TLS file
@@ -274,6 +277,19 @@ URL request
   argument only when the server is fronted by a Control Agent
   (`send_service = has_control_agent`); a direct daemon drops it, because Kea 3.2.0+
   rejects a `service` that does not match the daemon the request lands on.
+- **Display cache** (`display_cache.py`, ADR 0009): the only module that touches the Django cache. The OpenGrep rule
+  `kea-cache-outside-display-cache` refuses `django.core.cache` and the private names of the module in other modules.
+  `cached(server, family, kind, read, admit)` serves the `display()` reads of `server_configuration` (kind
+  `configuration`) and `subnet_catalogue` (kind `catalogue`). The TTL of a kind comes from `DisplayCacheConfig`; 0
+  sends every read to Kea. A key holds the Server, the family, the kind, the configuration generation, a keyed
+  digest of `Server.kea_connection()`, and `last_updated` of the settings row, so a settings save makes every entry
+  unreachable. Both kinds read the Kea configuration only, so their keys do not hold the records generation; a kind
+  that Reservation or Lease writes change must add it. `KeaClient.command()` calls `on_write` before and after each write command, also when the send
+  fails, and `Server.get_client()` binds it to `rotate_records`; a target of `None` rotates both families.
+  `_config_mutation_command` and `MutationScope` call `rotate_configuration`. A rotation failure is logged, and
+  the write continues. Authority reads (`for_verification`, `for_synchronization`, `for_import`, `read_identity`,
+  mutation scopes) never read or fill the cache. `fan_out` reads the settings row on the request thread and gives
+  it to its workers. The test fixture `_plugin_cache_hygiene` clears `display_cache.KEY_PREFIX` around each test.
 - **`sync.py`**: reads IPAM rows for synchronization badges and synchronizes DCIM MAC addresses.
   IPAM creation, status changes and cleanup belong to `ipam_reconciliation.py`.
 - **`ipam_reconciliation.py`**: `reconcile(server, family, phases) -> SyncReport` (ADR 0006). The job's
@@ -532,7 +548,8 @@ resort, reserved for true external boundaries you cannot run locally.
 - **BulkImportView POST**: requires `data=`, `format='csv'`, `csv_delimiter=','`.
 - **Settings in tests**: `get_client()` reads the `KeaClientConfig` row, so a test that calls it needs the
   database (`TestCase`, not `SimpleTestCase`). Set a row value with `with_kea_client_config(...)`,
-  `with_sync_config(...)` or `with_dhcp_integration_config(...)` from `tests/utils.py`: a class, method or `with`
+  `with_sync_config(...)`, `with_dhcp_integration_config(...)` or `with_display_cache_config(...)` from
+  `tests/utils.py`: a class, method or `with`
   decorator that restores the value.
   `_ViewTestBase` turns the lease-query guard off (`lease_query_max_unpaged_leases=0`).
 
