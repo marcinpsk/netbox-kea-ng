@@ -1008,6 +1008,25 @@ class TestSettingsSectionsCoverEverySingleton(SimpleTestCase):
                 self.assertTrue(issubclass(section.model, SettingsSingleton))
 
 
+class TestSettingsSectionsRenderEveryField(TestCase):
+    """A save posts the whole derived form, so a field that the include leaves out would be reset."""
+
+    def test_each_visible_section_renders_an_input_for_every_form_field(self):
+        from netbox_kea.views.settings_page import visible_sections
+
+        user = User.objects.create_superuser("settings-fields", "f@f.com", "pass")
+        self.client.force_login(user)
+        page = BeautifulSoup(self.client.get(reverse("plugins:netbox_kea:settings")).content, "html.parser")
+
+        sections = visible_sections(user)
+        self.assertTrue(sections)
+        for section in sections:
+            card = page.find(id=section.slug)
+            for name in section.form_class.base_fields:
+                with self.subTest(section=section.slug, field=name):
+                    self.assertIsNotNone(card.find(attrs={"name": f"{section.slug}-{name}"}))
+
+
 class TestKeaClientSettingsPermissions(TestCase):
     """The Kea Client section shows with view_keaclientconfig and saves with change_keaclientconfig as well."""
 
