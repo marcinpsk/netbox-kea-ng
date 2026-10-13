@@ -6,7 +6,7 @@ from ipam.api.serializers import VRFSerializer
 from netbox.api.serializers import BaseModelSerializer, NetBoxModelSerializer
 from rest_framework import serializers
 
-from ..models import Server, SyncConfig
+from ..models import KeaDhcpLink, Server, SyncConfig
 from ..server_connection import CONNECTION_FIELDS, connection_values, validate_connection_change
 
 #: Columns migration 0016 moved from NULL-or-blank to blank only. Every released
@@ -107,5 +107,14 @@ class SyncConfigSerializer(BaseModelSerializer):
 
     class Meta:
         model = SyncConfig
+        fields = ("id", "display")
+        brief_fields = ("id", "display")
+
+
+class KeaDhcpLinkSerializer(BaseModelSerializer):
+    """The brief DHCP Import Mapping that NetBox's change log API shows. The plugin has no mapping endpoint."""
+
+    class Meta:
+        model = KeaDhcpLink
         fields = ("id", "display")
         brief_fields = ("id", "display")

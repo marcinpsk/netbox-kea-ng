@@ -8,6 +8,7 @@ All Kea HTTP calls are mocked; these tests require no running services.
 import importlib
 import os
 import tempfile
+import uuid
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -25,7 +26,7 @@ from django.db.migrations.autodetector import MigrationAutodetector
 from django.db.migrations.loader import MigrationLoader
 from django.db.migrations.state import ProjectState
 from django.db.models import ProtectedError
-from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from netbox.models import NetBoxModel
 
@@ -644,6 +645,47 @@ class TestKeaDhcpLinkIdentity(TestCase):
         self._link(kea_identity=identity).save()
 
         self.assertEqual(KeaDhcpLink.objects.get().kea_identity, identity)
+
+
+class TestChangeLoggedModelsInTheChangeLogApi(TestCase):
+    """The change log API serializes each changed object, so a change-logged model needs a REST serializer."""
+
+    def test_the_change_log_api_lists_a_dhcp_import_mapping_change(self):
+        from netbox.context_managers import event_tracking
+        from rest_framework.test import APIClient
+
+        user = get_user_model().objects.create_superuser("changelog-admin", "a@a.com", "pass")
+        server = _make_db_server(name="kea-changelog")
+        request = RequestFactory().post("/plugins/kea/")
+        request.user, request.id = user, uuid.uuid4()
+        with event_tracking(request):
+            link = KeaDhcpLink.objects.create(
+                server=server,
+                family=4,
+                kea_subnet_id=1,
+                object_type=ContentType.objects.get_for_model(Server),
+                object_id=server.pk,
+            )
+        api = APIClient(raise_request_exception=False)
+        api.force_authenticate(user=user)
+
+        response = api.get(reverse("core-api:objectchange-list"))
+
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        (change,) = response.json()["results"]
+        self.assertEqual(change["changed_object"], {"id": link.pk, "display": str(link)})
+
+    def test_every_change_logged_model_has_a_serializer(self):
+        from netbox.models.features import ChangeLoggingMixin
+        from utilities.api import get_serializer_for_model
+
+        logged = [
+            model for model in apps.get_app_config("netbox_kea").get_models() if issubclass(model, ChangeLoggingMixin)
+        ]
+        self.assertIn(KeaDhcpLink, logged)
+        for model in logged:
+            with self.subTest(model=model.__name__):
+                get_serializer_for_model(model)
 
 
 class TestMigrationState(TestCase):
