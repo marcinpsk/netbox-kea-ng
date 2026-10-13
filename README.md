@@ -69,6 +69,10 @@ Then run the migrations, and start `rqworker` for the periodic sync:
 ./manage.py rqworker
 ```
 
+All runtime settings are on the **Settings** page (**DHCP Kea > Settings**), and a change needs no restart. The
+plugin takes no `PLUGINS_CONFIG` settings: `migrate` copies the values of an earlier release once, then NetBox logs
+a warning for each key that is still set. See [Configuration](https://marcinpsk.github.io/netbox-kea-ng/configuration/).
+
 ## Documentation
 
 - [Installation](https://marcinpsk.github.io/netbox-kea-ng/installation/) and [Configuration](https://marcinpsk.github.io/netbox-kea-ng/configuration/)
