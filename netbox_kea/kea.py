@@ -838,6 +838,7 @@ class KeaClient:
         timeout: int,
         max_unpaged_leases: int | None,
         write_guard: WriteGuard,
+        on_write: Callable[[Family | None], None],
     ):
         """Initialise a Kea HTTP client session.
 
@@ -867,6 +868,9 @@ class KeaClient:
                 persistence of an already-applied change.
             write_guard: Required. Refuses each write command before it is sent. ``Server.get_client()``
                 passes the branch binding; a caller that passes another guard owns that choice.
+            on_write: Required. Called with the target family before and after each write command is sent,
+                also when the send fails. ``Server.get_client()`` rotates the records generation of the display
+                cache. A failure is logged and does not interrupt the write.
 
         Raises:
             ValueError: If only one of client_cert/client_key is provided.
@@ -886,6 +890,7 @@ class KeaClient:
         self.max_unpaged_leases = max_unpaged_leases
         self._on_config_change = on_config_change
         self.write_guard = write_guard
+        self.on_write = on_write
 
         # command() passes these on each request, because requests lets the environment replace session values.
         self.verify: bool | str = True if verify is None else verify
@@ -940,12 +945,18 @@ class KeaClient:
         if arguments is not None:
             body["arguments"] = arguments
 
+        if command.is_write:
+            self._notify_write(command, target)
         try:
             resp = self._session.post(self.url, json=body, timeout=self.timeout, verify=self.verify, cert=self.cert)
         except requests.RequestException:
             raise
         except OSError as exc:
             raise KeaTLSFileError("A TLS CA, certificate or key file of the client could not be found.") from exc
+        finally:
+            # Kea can apply a write whose reply is lost, so a display read during the send must not stay cached.
+            if command.is_write:
+                self._notify_write(command, target)
         resp.raise_for_status()
         try:
             resp_json = resp.json()
@@ -977,12 +988,20 @@ class KeaClient:
         new._on_config_change = self._on_config_change
         # Thread-pool workers do not inherit context variables, so the clone keeps the branch binding.
         new.write_guard = self.write_guard
+        new.on_write = self.on_write
         return new
 
     def _refuse(self, command: KeaCommand) -> None:
         """Ask the write guard before a write member, before any side effect of sending it."""
         if command.is_write:
             self.write_guard.refuse(f"Kea command {command.value}")
+
+    def _notify_write(self, command: KeaCommand, target: Family | None) -> None:
+        """Tell the owner about a write command without interrupting it."""
+        try:
+            self.on_write(target)
+        except Exception:
+            logger.exception("Kea command %s was sent, but the display cache rotation failed", command.value)
 
     def _notify_config_change(self, family: Family) -> None:
         """Notify the owner without interrupting persistence of a live change."""

@@ -1,16 +1,113 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""The display cache module: TTLs from the settings row, and the settings generation."""
+"""The display cache module: records rotation around Kea writes, TTLs from the settings row, settings generation."""
 
+from collections.abc import Callable
+
+import requests
 from django.core.cache import cache
 from django.test import TestCase
 from django.urls import reverse
 
 from netbox_kea import display_cache, server_configuration, subnet_catalogue
-from netbox_kea.models import DisplayCacheConfig
+from netbox_kea.constants import Family
+from netbox_kea.kea import KeaCommand
+from netbox_kea.models import DisplayCacheConfig, Server
 
 from .kea_stub import _catalogue_responses_for_subnets, stub_kea
 from .utils import _make_db_server, _ViewTestBase, with_display_cache_config, with_kea_client_config
+
+_RESERVATION = {"subnet-id": 1, "identifier-type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"}
+_DELETED = {"result": 0, "text": "Host deleted."}
+
+
+class RecordsGenerationTest(TestCase):
+    """``KeaClient.command()`` rotates the records generation of its target family around each write command."""
+
+    def setUp(self):
+        self.server = _make_db_server()
+
+    def _records(self, family: Family) -> str:
+        return display_cache._generation(self.server, family, "records")
+
+    def _answer_and_observe(self, reply: object) -> tuple[Callable[[dict], object], list[str]]:
+        """Return a stub answer that records the DHCPv4 records generation when the transport receives the command."""
+        observed: list[str] = []
+
+        def answer(body: dict) -> object:
+            observed.append(self._records(4))
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+        return answer, observed
+
+    def test_a_write_command_rotates_the_records_generation_before_and_after_the_send(self):
+        before = self._records(4)
+        answer, at_send = self._answer_and_observe(_DELETED)
+
+        with stub_kea({"reservation-del": answer}) as kea:
+            self.server.get_client(version=4).command(KeaCommand.RESERVATION_DEL, 4, arguments=_RESERVATION)
+
+        self.assertEqual(kea.commands(), ["reservation-del"])
+        self.assertNotEqual(at_send, [before], "the generation rotates before the send")
+        self.assertNotEqual(self._records(4), at_send[0], "the generation rotates after the reply")
+
+    def test_a_write_whose_reply_is_lost_rotates_the_records_generation_after_the_send(self):
+        answer, at_send = self._answer_and_observe(requests.ConnectionError("reply lost"))
+
+        with stub_kea({"reservation-del": answer}), self.assertRaises(requests.ConnectionError):
+            self.server.get_client(version=4).command(KeaCommand.RESERVATION_DEL, 4, arguments=_RESERVATION)
+
+        self.assertEqual(len(at_send), 1)
+        self.assertNotEqual(self._records(4), at_send[0], "Kea can apply a write whose reply is lost")
+
+    def test_a_write_from_a_clone_rotates_the_records_generation(self):
+        before = self._records(4)
+
+        with stub_kea({"reservation-del": _DELETED}):
+            self.server.get_client(version=4).clone().command(KeaCommand.RESERVATION_DEL, 4, arguments=_RESERVATION)
+
+        self.assertNotEqual(self._records(4), before)
+
+    def test_a_write_rotates_only_the_records_generation_of_its_target_family(self):
+        before = (self._records(4), self._records(6))
+
+        with stub_kea({"reservation-del": _DELETED}):
+            self.server.get_client(version=6).command(KeaCommand.RESERVATION_DEL, 6, arguments=_RESERVATION)
+
+        self.assertEqual(self._records(4), before[0])
+        self.assertNotEqual(self._records(6), before[1])
+
+    def test_a_write_with_no_family_target_rotates_both_families(self):
+        before = (self._records(4), self._records(6))
+
+        with stub_kea({"dhcp-disable": {"result": 0}}):
+            self.server.get_client().command(KeaCommand.DHCP_DISABLE, None)
+
+        self.assertNotEqual(self._records(4), before[0])
+        self.assertNotEqual(self._records(6), before[1])
+
+    def test_a_read_command_keeps_the_records_generation(self):
+        before = self._records(4)
+
+        with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": {}}}}):
+            self.server.get_client(version=4).command(KeaCommand.CONFIG_GET, 4)
+
+        self.assertEqual(self._records(4), before)
+
+    def test_a_rotation_failure_is_logged_and_the_write_is_sent(self):
+        unsaved = Server(name="unsaved", ca_url="https://kea.example.com", has_control_agent=True)
+
+        with (
+            stub_kea({"reservation-del": _DELETED}) as kea,
+            self.assertLogs("netbox_kea.kea", "ERROR") as logs,
+        ):
+            reply = unsaved.get_client(version=4).command(KeaCommand.RESERVATION_DEL, 4, arguments=_RESERVATION)
+
+        self.assertEqual(reply, [_DELETED])
+        self.assertEqual(kea.commands(), ["reservation-del"])
+        self.assertEqual(len(logs.records), 2, "one failure before and one after the send")
 
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)

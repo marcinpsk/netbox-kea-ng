@@ -19,7 +19,7 @@ import pynetbox
 import pytest
 from playwright.sync_api import Browser, BrowserContext, Locator, Page, expect
 
-from ..conftest import REQUEST_TIMEOUT, NoBranchGuard
+from ..conftest import REQUEST_TIMEOUT, NoBranchGuard, no_display_cache
 from ..kea import KeaClient
 
 # pytest registers each fixture that a conftest imports, for the tests in this directory.
@@ -148,8 +148,20 @@ def browser_context_args(browser_context_args: dict) -> dict:
 @pytest.fixture(scope="session")
 def demo_kea(kea_harness_daemons: dict[int, str]) -> Iterator[_DualEndpointKeaClient]:
     with (
-        KeaClient(kea_harness_daemons[4], timeout=30, max_unpaged_leases=1000, write_guard=NoBranchGuard()) as dhcp4,
-        KeaClient(kea_harness_daemons[6], timeout=30, max_unpaged_leases=1000, write_guard=NoBranchGuard()) as dhcp6,
+        KeaClient(
+            kea_harness_daemons[4],
+            timeout=30,
+            max_unpaged_leases=1000,
+            write_guard=NoBranchGuard(),
+            on_write=no_display_cache,
+        ) as dhcp4,
+        KeaClient(
+            kea_harness_daemons[6],
+            timeout=30,
+            max_unpaged_leases=1000,
+            write_guard=NoBranchGuard(),
+            on_write=no_display_cache,
+        ) as dhcp6,
     ):
         yield _DualEndpointKeaClient(dhcp4, dhcp6)
 

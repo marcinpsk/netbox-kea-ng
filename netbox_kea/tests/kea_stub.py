@@ -54,11 +54,16 @@ from netbox_kea.subnet_catalogue import SubnetIdentity
 from netbox_kea.tests.kea_wire_discipline import WIRE_COMMANDS
 
 
+def no_display_cache(family: int | None) -> None:
+    """The ``on_write`` of a KeaClient that no Server owns: it has no display cache entries to rotate."""
+
+
 def kea_client(url: str, **options: Any) -> KeaClient:
     """Build a KeaClient with the write guard and the default Kea client settings that ``Server.get_client()`` passes."""
     defaults = KeaClientConfig()
     options.setdefault("timeout", defaults.kea_timeout)
     options.setdefault("max_unpaged_leases", defaults.lease_query_max_unpaged_leases or None)
+    options.setdefault("on_write", no_display_cache)
     return KeaClient(url, write_guard=branching.bind(), **options)
 
 

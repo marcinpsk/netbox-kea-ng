@@ -10,7 +10,7 @@ import pytest
 
 from netbox_kea.branching import BranchActive, BranchBinding
 from netbox_kea.kea import KeaClient, KeaCommand
-from netbox_kea.tests.kea_stub import kea_client, stub_kea
+from netbox_kea.tests.kea_stub import kea_client, no_display_cache, stub_kea
 from netbox_kea.tests.kea_wire_discipline import WIRE_COMMANDS
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -153,19 +153,25 @@ _BRANCH = "a branch"
 _WRITES = [member for member in KeaCommand if member.is_write]
 
 
-def _bound_client() -> KeaClient:
+def _bound_client(on_write=no_display_cache) -> KeaClient:
     return KeaClient(
-        url="https://kea.example.invalid/", timeout=30, max_unpaged_leases=1000, write_guard=BranchBinding(_BRANCH)
+        url="https://kea.example.invalid/",
+        timeout=30,
+        max_unpaged_leases=1000,
+        write_guard=BranchBinding(_BRANCH),
+        on_write=on_write,
     )
 
 
 @pytest.mark.parametrize("command", _WRITES, ids=lambda member: member.value)
 def test_a_branch_bound_client_refuses_every_write_before_any_send(command):
+    writes = []
     with stub_kea({}) as kea, pytest.raises(BranchActive) as refused:
-        _bound_client().command(command, 4)
+        _bound_client(on_write=writes.append).command(command, 4)
 
     assert refused.value.branch == _BRANCH
     assert kea.requests == []
+    assert writes == [], "a refused write rotates no display cache generation"
 
 
 @pytest.mark.parametrize("command", _WRITES, ids=lambda member: member.value)
@@ -186,6 +192,7 @@ def test_a_config_mutation_in_a_branch_is_refused_before_the_cache_invalidation(
         max_unpaged_leases=1000,
         write_guard=BranchBinding(_BRANCH),
         on_config_change=lambda: invalidations.append("invalidated"),
+        on_write=lambda family: invalidations.append(f"write {family}"),
     )
     with stub_kea({}) as kea, pytest.raises(BranchActive):
         client.subnet_del(4, 1)
@@ -311,10 +318,15 @@ def test_the_build_site_scan_sees_a_guard_other_than_the_branch_binding(guard):
     }
 
 
-@pytest.mark.parametrize("missing", ["write_guard", "timeout", "max_unpaged_leases"])
+@pytest.mark.parametrize("missing", ["write_guard", "on_write", "timeout", "max_unpaged_leases"])
 def test_a_kea_client_without_a_required_option_is_a_type_error(missing):
     """The caller states these, so no default in kea.py can drift from the plugin settings."""
-    options = {"write_guard": BranchBinding(_BRANCH), "timeout": 30, "max_unpaged_leases": 1000}
+    options = {
+        "write_guard": BranchBinding(_BRANCH),
+        "on_write": no_display_cache,
+        "timeout": 30,
+        "max_unpaged_leases": 1000,
+    }
     del options[missing]
 
     with pytest.raises(TypeError, match=missing):

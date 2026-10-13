@@ -294,7 +294,8 @@ class Server(JobsMixin, NetBoxModel):
         (Kea 3.0+), so the routing decision follows the flag, not the URL.
 
         The client is bound to the branch that is active now, so it refuses each Kea write
-        command in a branch, also from a clone in a worker thread (ADR 0007).
+        command in a branch, also from a clone in a worker thread (ADR 0007). Each write command
+        that it sends rotates the records generation of the display cache (ADR 0009).
 
         Args:
             version: DHCP protocol version (4 or 6). When provided and a protocol-specific
@@ -323,6 +324,7 @@ class Server(JobsMixin, NetBoxModel):
             max_unpaged_leases=config.lease_query_max_unpaged_leases or None,
             on_config_change=on_config_change,
             write_guard=branching.bind(),
+            on_write=partial(display_cache.rotate_records, self),
         )
 
     def clean(self) -> None:
