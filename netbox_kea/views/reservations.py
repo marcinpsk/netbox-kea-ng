@@ -21,7 +21,7 @@ from django.urls import NoReverseMatch, reverse
 from netbox.views import generic
 from utilities.views import register_model_view
 
-from .. import constants, forms, tables
+from .. import constants, forms, server_configuration, tables
 from ..constants import Family, LeaseState
 from ..ipam_reconciliation import RESERVATION, ReservationPhase, claim_permissions, reconcile_permissions
 from ..kea import KeaClient, KeaException, LeaseQueryGuardError
@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 
 _RESERVATION_PAGE_SIZE = 100
 _RESERVATION_SEARCH_PAGE_LIMIT = 5
-_MUTATION_UNCONFIRMED = "Live Reservation mutation capabilities could not be confirmed."
+_MUTATION_UNCONFIRMED = "Reservation mutation capabilities could not be confirmed."
 
 
 def _build_reservation_options_formset(post_data: Any) -> tuple[Any, bool]:
@@ -310,8 +310,8 @@ class ReservationQuery:
     """What one Reservation read asks of a Server.
 
     It reads the page after *cursor* that matches *q*, *subnet_id* and *scope*, or with *full* the complete
-    Snapshot for a transfer. With *mutations* it also reads the live mutation capabilities, for a user who can
-    change the Server.
+    Snapshot for a transfer. With *mutations* it also reads the mutation capabilities that the cached Server
+    Configuration shows, for a user who can change the Server.
     """
 
     cursor: str | None = None
@@ -414,23 +414,14 @@ def _read_reservations(server: Server, version: Family, query: ReservationQuery)
     return replace(page, records=matches, diagnostics=tuple(diagnostics), complete=complete)
 
 
-def _configured_capabilities(server: Server, version: Family) -> ReservationCapabilities | None:
-    """Return confirmed live mutation capabilities without affecting read-only display."""
-    try:
-        client = server.get_client(version=version)
-    except ValueError:
-        logger.exception("Could not build the DHCPv%s Kea client of %s", version, server.name)
-        return None
-    return _client_capabilities(server, client, version)
+def _display_capabilities(server: Server, version: Family) -> ReservationCapabilities | None:
+    """Return the Reservation capabilities that the cached Server Configuration shows, for a page render."""
+    return server_configuration.reservation_capabilities(server_configuration.display(server, version))
 
 
-def _client_capabilities(server: Server, client: KeaClient, version: Family) -> ReservationCapabilities | None:
-    """Return the live mutation capabilities that *client* confirms, or ``None`` when the read fails."""
-    try:
-        return client.reservation_capabilities(version)
-    except (KeaException, requests.RequestException, RuntimeError, ValueError):
-        logger.exception("Could not read DHCPv%s Reservation capabilities from %s", version, server.name)
-        return None
+def _live_capabilities(server: Server, version: Family) -> ReservationCapabilities | None:
+    """Return the Reservation capabilities of a live Server Configuration read, to authorize a write."""
+    return server_configuration.reservation_capabilities(server_configuration.for_verification(server, version))
 
 
 def fetch(server: Server, family: Family, query: ReservationQuery) -> ReservationRead:
@@ -448,7 +439,7 @@ def fetch(server: Server, family: Family, query: ReservationQuery) -> Reservatio
     # A second read of a Server that did not answer would only add its timeout.
     unreachable = isinstance(loaded, Notice) and loaded.unreachable
     if query.mutations and not unreachable:
-        capabilities = _configured_capabilities(server, family)
+        capabilities = _display_capabilities(server, family)
     # The Reservation read cached the Catalogue, so this is a cache read unless the Catalogue was unsettled.
     catalogue = None if unreachable else subnet_catalogue(server, family)
     return ReservationRead(query, loaded, capabilities, catalogue)

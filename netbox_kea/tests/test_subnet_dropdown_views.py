@@ -15,7 +15,6 @@ from .kea_stub import (
     _catalogue_responses_for_subnets,
     _res_get,
     _res_page,
-    _reservation_mutation_commands,
     stub_kea,
 )
 from .test_reservation_mutation_views import _identity_query, _mutation_responses
@@ -31,7 +30,6 @@ def _list_responses(family: int, subnets: list[dict]) -> dict:
     return {
         **_catalogue_responses_for_subnets(family, subnets),
         "reservation-get-page": _res_page([]),
-        "list-commands": _reservation_mutation_commands(),
     }
 
 
@@ -98,7 +96,6 @@ class TestCombinedReservationSubnetIdFilter(_ViewTestBase):
         url = reverse("plugins:netbox_kea:combined_reservations4")
         responses = {
             "reservation-get-page": _res_page([]),
-            "list-commands": _reservation_mutation_commands(),
             # The mutation capability read takes the configuration; the Catalogue needs no new read.
             "config-get": _catalogue_responses_for_subnets(4, [])["config-get"],
         }
@@ -129,7 +126,6 @@ class TestCombinedReservationSubnetIdFilter(_ViewTestBase):
                 subnet_catalogue.display(server, 4)
         responses = {
             "reservation-get-page": _res_page([]),
-            "list-commands": _reservation_mutation_commands(),
             "config-get": _catalogue_responses_for_subnets(4, [])["config-get"],
         }
         query = {
@@ -164,7 +160,6 @@ class TestCombinedReservationSubnetIdFilter(_ViewTestBase):
             subnet_catalogue.display(second, 4)
         responses = {
             "reservation-get-page": _res_page([]),
-            "list-commands": _reservation_mutation_commands(),
             # kea-b answers the configuration of its capability read, and kea-a its Subnet list.
             **_catalogue_responses_for_subnets(4, kea_a_subnets),
         }
@@ -253,7 +248,6 @@ class TestReservationFormSubnetDropdown(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
         responses = {
             **_catalogue_responses_for_subnets(4, []),
-            "list-commands": _reservation_mutation_commands(),
         }
         with stub_kea(responses):
             response = self.client.get(url)

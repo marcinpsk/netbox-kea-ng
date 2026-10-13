@@ -94,19 +94,6 @@ def test_a_command_kea_does_not_have_cannot_be_sent():
         _call(stub, "subnet6-pool-del")
 
 
-def test_a_list_commands_reply_cannot_advertise_a_command_kea_does_not_have():
-    stub = KeaHttpStub({"list-commands": {"result": 0, "arguments": ["subnet4-delta-add", "subnet4-pool-add"]}})
-    with pytest.raises(AssertionError, match=r"advertises \['subnet4-pool-add'\]"):
-        _call(stub, "list-commands")
-
-
-def test_a_list_commands_response_object_cannot_advertise_a_command_kea_does_not_have():
-    advertised = _http_response([{"result": 0, "arguments": ["subnet4-delta-add", "subnet4-pool-add"]}])
-    stub = KeaHttpStub({"list-commands": advertised})
-    with pytest.raises(AssertionError, match=r"advertises \['subnet4-pool-add'\]"):
-        _call(stub, "list-commands")
-
-
 def test_callable_resolves_against_request_body():
     stub = KeaHttpStub({"version-get": lambda body: {"echo": body["command"]}})
     assert _call(stub) == [{"echo": "version-get"}]
@@ -146,18 +133,17 @@ def test_catalogue_responses_shape():
     responses = _catalogue_responses(4, 20, "198.18.0.0/24")
 
     subnet = {"id": 20, "subnet": "198.18.0.0/24"}
-    assert set(responses) == {"subnet4-list", "config-get", "list-commands"}
+    assert set(responses) == {"subnet4-list", "config-get"}
     assert responses["subnet4-list"] == _subnet_list(4, [subnet])
-    # Pinned literally, unlike the builder comparison above: this payload gates
-    # mutation-capability probing everywhere, so a drifting command list must fail here.
-    assert responses["list-commands"] == {
-        "result": 0,
-        "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
-    }
+    # Pinned literally: the host_cmds hook gates the Reservation mutation capabilities everywhere.
     assert responses["config-get"] == {
         "result": 0,
         "arguments": {
-            "Dhcp4": {"subnet4": [subnet], "shared-networks": []},
+            "Dhcp4": {
+                "subnet4": [subnet],
+                "shared-networks": [],
+                "hooks-libraries": [{"library": "/usr/lib/kea/hooks/libdhcp_host_cmds.so"}],
+            },
             "hash": "shared-catalogue",
         },
     }

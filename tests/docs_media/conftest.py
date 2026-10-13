@@ -217,8 +217,8 @@ def _require_writable_configuration(kea: _DualEndpointKeaClient) -> None:
 
 def _require_paused_periodic_sync(page: Page, netbox_url: str) -> None:
     """The periodic sync would claim the seeded leases, so the images would not show the Sync buttons."""
-    page.goto(f"{netbox_url}/plugins/kea/sync-jobs/")
-    toggle = page.locator("#id_sync_enabled")
+    page.goto(f"{netbox_url}/plugins/kea/settings/")
+    toggle = page.locator("#id_sync-sync_enabled")
     toggle.wait_for()
     if toggle.is_checked():
         raise RuntimeError(

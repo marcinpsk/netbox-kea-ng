@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-FileCopyrightText: 2023 Devon Mar <devon-mar@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
+from dataclasses import astuple, dataclass
+from dataclasses import field as dataclass_field
 from functools import reduce
 from operator import or_
 from pathlib import Path
@@ -11,6 +13,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import connection, models
 from django.urls import reverse
+from django.utils.crypto import salted_hmac
 from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
 from netbox.models import NetBoxModel
 from netbox.models.features import ChangeLoggingMixin, JobsMixin
@@ -31,6 +34,23 @@ def _get_kea_timeout() -> int:
 def _get_max_unpaged_leases() -> int | None:
     """Return the Subnet lease-query guard limit, or ``None`` when it is disabled."""
     return plugin_setting("lease_query_max_unpaged_leases") or None
+
+
+@dataclass(frozen=True)
+class KeaConnection:
+    """The Server settings that select the Kea endpoint and authenticate to it, for one address family."""
+
+    url: str
+    username: str | None
+    password: str | None = dataclass_field(repr=False)
+    verify: bool | str
+    client_cert: str | None
+    client_key: str | None
+    send_service: bool
+
+    def fingerprint(self) -> str:
+        """Return a keyed digest of these settings; it holds passwords, so it is never a plain hash."""
+        return salted_hmac("netbox_kea.KeaConnection", repr(astuple(self)), algorithm="sha256").hexdigest()
 
 
 class Server(JobsMixin, NetBoxModel):
@@ -247,6 +267,30 @@ class Server(JobsMixin, NetBoxModel):
         """
         return None
 
+    def kea_connection(self, version: Family | None = None) -> KeaConnection:
+        """Return the endpoint and credentials for *version*: its own URL when set, else the CA URL."""
+        if version == 4 and self.dhcp4_url:
+            url = self.dhcp4_url
+            username = self.dhcp4_username or self.ca_username or None
+            password = self.dhcp4_password or self.ca_password or None
+        elif version == 6 and self.dhcp6_url:
+            url = self.dhcp6_url
+            username = self.dhcp6_username or self.ca_username or None
+            password = self.dhcp6_password or self.ca_password or None
+        else:
+            url = self.ca_url
+            username = self.ca_username or None
+            password = self.ca_password or None
+        return KeaConnection(
+            url=url,
+            username=username,
+            password=password,
+            verify=self.ca_file_path or self.ssl_verify,
+            client_cert=self.client_cert_path or None,
+            client_key=self.client_key_path or None,
+            send_service=self.has_control_agent,
+        )
+
     def get_client(self, version: Family | None = None) -> KeaClient:
         """Return a configured KeaClient, targeting the protocol-specific URL and credentials when available.
 
@@ -269,19 +313,6 @@ class Server(JobsMixin, NetBoxModel):
                 configured, ``ca_url`` and CA-level credentials are always used.
 
         """
-        if version == 4 and self.dhcp4_url:
-            url = self.dhcp4_url
-            username = self.dhcp4_username or self.ca_username or None
-            password = self.dhcp4_password or self.ca_password or None
-        elif version == 6 and self.dhcp6_url:
-            url = self.dhcp6_url
-            username = self.dhcp6_username or self.ca_username or None
-            password = self.dhcp6_password or self.ca_password or None
-        else:
-            url = self.ca_url
-            username = self.ca_username or None
-            password = self.ca_password or None
-
         if version in (4, 6):
             from .server_configuration import invalidate
 
@@ -291,16 +322,17 @@ class Server(JobsMixin, NetBoxModel):
         else:
             on_config_change = None
 
+        connection = self.kea_connection(version)
         return KeaClient(
-            url=url,
-            username=username,
-            password=password,
-            verify=self.ca_file_path or self.ssl_verify,
-            client_cert=self.client_cert_path or None,
-            client_key=self.client_key_path or None,
+            url=connection.url,
+            username=connection.username,
+            password=connection.password,
+            verify=connection.verify,
+            client_cert=connection.client_cert,
+            client_key=connection.client_key,
             timeout=_get_kea_timeout(),
             persist_config=self.persist_config,
-            send_service=self.has_control_agent,
+            send_service=connection.send_service,
             max_unpaged_leases=_get_max_unpaged_leases(),
             on_config_change=on_config_change,
             write_guard=branching.bind(),
@@ -351,25 +383,30 @@ class Server(JobsMixin, NetBoxModel):
         return objectchange
 
 
-class SyncConfig(models.Model):
+class SyncConfig(ChangeLoggingMixin):
     """Singleton configuration for the Kea→NetBox IPAM sync job.
 
     Stores the sync interval and global kill-switch in the database so
-    operators can change them from the UI without restarting Django.
+    operators can change them on the Settings page without restarting Django.
     Exactly one row exists (pk=1 always): a migration creates it, ``save()``
-    keeps pk=1 and ``delete()`` is disabled.
+    keeps pk=1 and ``delete()`` is disabled. A save in a request writes an ObjectChange.
     """
 
     interval_minutes = models.PositiveIntegerField(
+        verbose_name="Sync Interval (minutes)",
         default=5,
         validators=[MinValueValidator(1), MaxValueValidator(1440)],
-        help_text="How often the background sync job runs (minutes). Range 1–1440.",
+        help_text=(
+            "How often the background sync job runs (minutes). Range 1–1440. A change applies after the next run."
+        ),
     )
     sync_enabled = models.BooleanField(
+        verbose_name="Sync Enabled (global)",
         default=True,
-        help_text="Global kill-switch. When False, no servers are synced regardless of per-server settings.",
+        help_text="Global switch. Clear it to stop the sync for all Servers, whatever the Server setting.",
     )
     sync_leases_enabled = models.BooleanField(
+        verbose_name="Sync Leases",
         default=True,
         help_text=(
             "Sync current Kea address leases to NetBox IPAM as IP addresses. With Prefix sync also on,"
@@ -377,10 +414,12 @@ class SyncConfig(models.Model):
         ),
     )
     sync_reservations_enabled = models.BooleanField(
+        verbose_name="Sync Reservations",
         default=True,
         help_text="Sync Kea reservations to NetBox IPAM as reserved IP addresses.",
     )
     sync_prefixes_enabled = models.BooleanField(
+        verbose_name="Sync Prefixes",
         default=True,
         help_text=(
             "Sync Kea subnets to NetBox IPAM as IP Prefixes. With lease sync also on,"
@@ -388,6 +427,7 @@ class SyncConfig(models.Model):
         ),
     )
     sync_ip_ranges_enabled = models.BooleanField(
+        verbose_name="Sync IP Ranges",
         default=True,
         help_text="Sync Kea pools to NetBox IPAM as IP Ranges.",
     )

@@ -286,7 +286,8 @@ class TestParseDhcpConfigSettings(SimpleTestCase):
         self.assertEqual(gs["allocator"], "iterative")
         self.assertEqual(gs["t1-percent"], 0.5)
         self.assertEqual(gs["server-id"], {"type": "LLT", "enterprise-id": 0})
-        self.assertEqual(gs["host-reservation-identifiers"], ["hw-address", "duid"])
+        # The import takes the identifiers from the Server Configuration Snapshot.
+        self.assertNotIn("host-reservation-identifiers", gs)
         self.assertNotIn("not-a-tuning-key", gs)
 
     def test_subnet_settings_captured(self):

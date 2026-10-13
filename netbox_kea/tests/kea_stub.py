@@ -34,10 +34,11 @@ from unittest.mock import patch
 import requests
 from requests.adapters import HTTPAdapter
 
-from netbox_kea import branching
+from netbox_kea import branching, server_configuration
 from netbox_kea.constants import Family
 from netbox_kea.kea import KeaClient
 from netbox_kea.leases import Lease, read_lease_collection, shown_lease
+from netbox_kea.models import Server
 from netbox_kea.plugin_settings import DEFAULT_SETTINGS
 from netbox_kea.reservations import (
     GlobalReservationScope,
@@ -49,6 +50,7 @@ from netbox_kea.reservations import (
     ReservationIdentity,
     ReservationScope,
 )
+from netbox_kea.server_configuration import ServerConfigurationSnapshot
 from netbox_kea.subnet_catalogue import SubnetIdentity
 from netbox_kea.tests.kea_wire_discipline import WIRE_COMMANDS
 
@@ -107,16 +109,6 @@ def record_transport(client: KeaClient, reply: list[dict[str, Any]]) -> Recordin
 def _is_exc(obj: Any) -> bool:
     """True if *obj* is an exception instance or an exception class."""
     return isinstance(obj, BaseException) or (isinstance(obj, type) and issubclass(obj, BaseException))
-
-
-def _decoded(response: requests.Response) -> Any:
-    """Return the JSON body of a successful *response*, or None for an error or a body that is not JSON."""
-    if not response.ok:
-        return None
-    try:
-        return response.json()
-    except ValueError:
-        return None
 
 
 class ResponseQueue:
@@ -359,11 +351,6 @@ class KeaHttpStub:
             spec = spec(body)
         if _is_exc(spec):
             raise spec() if isinstance(spec, type) else spec
-        if cmd == "list-commands":
-            payload = _decoded(spec) if isinstance(spec, requests.Response) else spec
-            for entry in payload if isinstance(payload, list) else [payload]:
-                if isinstance(entry, dict) and isinstance(entry.get("arguments"), list):
-                    _assert_kea_has(entry["arguments"], "advertises")
         if isinstance(spec, requests.Response):
             return spec
         return _http_response(spec if isinstance(spec, list) else [spec], url=url)
@@ -443,12 +430,9 @@ def _typed_reservation(raw: dict[str, Any], *, prefix_length: int | None = None)
     )
 
 
-def _reservation_mutation_commands() -> dict[str, Any]:
-    """A ``list-commands`` payload that confirms every Reservation mutation command."""
-    return {
-        "result": 0,
-        "arguments": ["reservation-get", "reservation-add", "reservation-update", "reservation-del"],
-    }
+def _host_cmds_hooks() -> list[dict[str, str]]:
+    """A ``hooks-libraries`` value that loads the host_cmds hook, so the Reservation commands exist."""
+    return [{"library": "/usr/lib/kea/hooks/libdhcp_host_cmds.so"}]
 
 
 def _res_page(hosts: Any, *, next_from: int = 0, next_source: int = 0) -> dict[str, Any]:
@@ -559,10 +543,8 @@ def _catalogue_responses(
 ) -> dict[str, Any]:
     """Every response one Subnet Catalogue read of a single subnet needs.
 
-    Registers ``list-commands`` too, because the Reservation pages probe mutation
-    capabilities from the same server. A registered response is only ever returned
-    when the code under test actually issues that command, so the extra entry cannot
-    change what :meth:`KeaHttpStub.commands` records.
+    Its ``config-get`` loads the host_cmds hook, because the Reservation pages read the mutation capabilities from
+    the same configuration.
     """
     return _catalogue_responses_for_subnets(
         version,
@@ -604,14 +586,17 @@ def _catalogue_responses_for_subnets(
             {**network, key: [s for s in subnets if members.get(s["id"]) == network["name"]]} for network in networks
         ]
         subnets = [subnet for subnet in subnets if subnet["id"] not in members]
-    configuration: dict[str, Any] = {f"subnet{version}": subnets, "shared-networks": networks}
+    configuration: dict[str, Any] = {
+        f"subnet{version}": subnets,
+        "shared-networks": networks,
+        "hooks-libraries": _host_cmds_hooks(),
+    }
     if global_options:
         configuration["option-data"] = list(global_options)
     if option_definitions:
         configuration["option-def"] = list(option_definitions)
     return {
         f"subnet{version}-list": _subnet_list(version, listed),
-        "list-commands": _reservation_mutation_commands(),
         "config-get": {
             "result": 0,
             "arguments": {
@@ -959,3 +944,12 @@ def stub_kea(responses: dict[str, Any]):
 
     with patch("netbox_kea.kea.requests.Session.post", new=_post):
         yield stub
+
+
+def observed_configuration(
+    family: Family, configuration: dict[str, Any], server: Server | None = None
+) -> ServerConfigurationSnapshot:
+    """Return the Server Configuration Snapshot of a live read whose reply holds *configuration* as ``Dhcp{v}``."""
+    observed = server or Server(pk=1, name="observed", ca_url="http://kea.example.invalid")
+    with stub_kea({"config-get": {"result": 0, "arguments": {f"Dhcp{family}": configuration}}}):
+        return server_configuration.for_verification(observed, family)

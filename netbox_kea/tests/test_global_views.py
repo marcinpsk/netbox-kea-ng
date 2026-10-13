@@ -17,7 +17,7 @@ from ipam.models import IPAddress
 
 from netbox_kea.models import Server
 
-from .kea_stub import _res_page, _reservation_mutation_commands, complete_lease, queued, stub_kea
+from .kea_stub import _res_page, complete_lease, queued, stub_kea
 from .utils import _PLUGINS_CONFIG, User, _make_db_server
 
 # ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ def _subnet_responses(version, *, config=None, subnets=None, stat=_STAT_EMPTY):
 
 def _reservation_stub(version, responses):
     """Stub a Reservation request with the required Subnet catalogue sources."""
-    return stub_kea({**_subnet_responses(version), "list-commands": _reservation_mutation_commands(), **responses})
+    return stub_kea({**_subnet_responses(version), **responses})
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

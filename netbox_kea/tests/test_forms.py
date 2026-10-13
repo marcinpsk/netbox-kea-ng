@@ -520,7 +520,7 @@ class TestReservationForm4(SimpleTestCase):
     def test_netmask_form_is_canonicalized_to_prefix_length(self):
         """A dotted-decimal netmask CIDR is canonicalized so it matches Kea's own reporting.
 
-        configured_subnet_id_from_cidr() matches running configuration entries, and
+        The Subnet Catalogue find_by_cidr() matches the Subnets that Kea reports, and
         Kea always reports subnets with a prefix-length suffix, never a netmask.
         """
         form = self._form(self._valid_data(subnet_cidr="10.0.0.0/255.255.255.0"))
@@ -678,7 +678,7 @@ class TestReservationForm6(SimpleTestCase):
     def test_expanded_notation_is_canonicalized_to_compressed_form(self):
         """A fully-expanded IPv6 CIDR is canonicalized so it matches Kea's own reporting.
 
-        configured_subnet_id_from_cidr() matches running configuration entries, and
+        The Subnet Catalogue find_by_cidr() matches the Subnets that Kea reports, and
         Kea always reports subnets in compressed form.
         """
         form = self._form(self._valid_data(subnet_cidr="2001:0db8:0000:0000:0000:0000:0000:0000/32"))

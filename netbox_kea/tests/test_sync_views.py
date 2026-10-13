@@ -45,7 +45,6 @@ from .kea_stub import (
     _catalogue_responses,
     _catalogue_responses_for_subnets,
     _res_page,
-    _reservation_mutation_commands,
     complete_lease,
     lease_record,
     queued,
@@ -1101,7 +1100,6 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
         # and enriches with lease4-get-by-state per subnet.
         stub = {
             **_catalogue_responses(4, 1, "10.0.0.0/8"),
-            "list-commands": _reservation_mutation_commands(),
             "reservation-get-page": _res_page(hosts),
             "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
         }
@@ -1134,7 +1132,6 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
         ]
         stub = {
             **_catalogue_responses(4, 1, "10.0.0.0/8"),
-            "list-commands": _reservation_mutation_commands(),
             "reservation-get-page": _res_page(hosts),
             "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
         }
