@@ -26,6 +26,7 @@ def _always() -> bool:
 
 
 def _dhcp_plugin_installed() -> bool:
+    # Look up is_available on each call, so that a test can patch it.
     return dhcp_plugin.is_available()
 
 

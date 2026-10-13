@@ -241,8 +241,8 @@ URL request
   rule that combines `is_available()`, `Server.sync_dhcp_plugin_enabled` and that switch; no other code combines
   them. Guards that keep DHCP plugin references safe from cleanup check `is_available()` only. Defaults live on the
   model fields. Migrations 0018, 0025 and 0026 create the rows, and 0018 and 0025 copy the values of
-  `PLUGINS_CONFIG` once, so `get()` only reads. After that the plugin reads no `PLUGINS_CONFIG` key: `NetBoxKeaConfig.ready()` logs a warning for each
-  key of `REMOVED_SETTINGS` that is still set. A TransactionTestCase flush deletes the rows, and a
+  `PLUGINS_CONFIG` once, so `get()` only reads. After that the plugin reads no `PLUGINS_CONFIG` key:
+  `NetBoxKeaConfig.ready()` logs a warning for each key of `REMOVED_SETTINGS` that is still set. A TransactionTestCase flush deletes the rows, and a
   `post_migrate` receiver in `netbox_kea/tests/conftest.py` creates them again with the migrations' values. They
   inherit `ChangeLoggingMixin` (not a `NetBoxModel`), so a save in a request writes an ObjectChange;
   `api/serializers.py` has a brief serializer for each because NetBox's change log API serializes each changed
@@ -528,7 +528,8 @@ resort, reserved for true external boundaries you cannot run locally.
 - **BulkImportView POST**: requires `data=`, `format='csv'`, `csv_delimiter=','`.
 - **Settings in tests**: `get_client()` reads the `KeaClientConfig` row, so a test that calls it needs the
   database (`TestCase`, not `SimpleTestCase`). Set a row value with `with_kea_client_config(...)`,
-  `with_sync_config(...)` or `with_dhcp_integration_config(...)` from `tests/utils.py`: a class, method or `with` decorator that restores the value.
+  `with_sync_config(...)` or `with_dhcp_integration_config(...)` from `tests/utils.py`: a class, method or `with`
+  decorator that restores the value.
   `_ViewTestBase` turns the lease-query guard off (`lease_query_max_unpaged_leases=0`).
 
 ## Key Patterns
