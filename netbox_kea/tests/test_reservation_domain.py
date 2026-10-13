@@ -1489,6 +1489,20 @@ class TestReservationCapabilities(SimpleTestCase):
         self.assertEqual(capabilities.explanation, "The host_cmds hook is not loaded.")
         self.assertIn(("flex-id", "The Flex ID hook is not configured."), capabilities.unavailable_identifiers)
 
+    def test_a_hook_is_matched_by_its_library_name_not_by_its_path(self):
+        for library in ("/opt/libdhcp_host_cmds/libdhcp_lease_cmds.so", "/usr/lib/kea/hooks/libdhcp_host_cmds_old.so"):
+            with self.subTest(library=library):
+                capabilities = _capabilities(4, {"hooks-libraries": [{"library": library}]})
+                self.assertFalse(capabilities.mutation_available)
+                self.assertEqual(capabilities.explanation, "The host_cmds hook is not loaded.")
+        flex_directory = {"library": "/opt/libdhcp_flex_id/libdhcp_lease_cmds.so"}
+        capabilities = _capabilities(
+            4, {"host-reservation-identifiers": ["flex-id"], "hooks-libraries": [flex_directory, *_host_cmds_hooks()]}
+        )
+        self.assertEqual(capabilities.identifiers, ())
+        loaded = _capabilities(4, {"hooks-libraries": [{"library": "libdhcp_host_cmds.so"}]})
+        self.assertTrue(loaded.mutation_available)
+
     def test_an_invalid_reservation_fact_leaves_the_capabilities_unconfirmed(self):
         for configuration in (
             {"host-reservation-identifiers": None, "hooks-libraries": _host_cmds_hooks()},

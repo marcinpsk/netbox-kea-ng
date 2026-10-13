@@ -9,6 +9,7 @@ import secrets
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Any, cast
 
 from django.core.cache import cache
@@ -508,6 +509,11 @@ def _hook_libraries(entries: Any, family: Family, diagnostics: list[Diagnostic])
     return tuple(libraries)
 
 
+def _hook_names(snapshot: ServerConfigurationSnapshot) -> frozenset[str]:
+    """Return the library name of each hook, the file name up to its first dot, so a directory name does not count."""
+    return frozenset(PurePosixPath(library).name.split(".", 1)[0] for library in snapshot.hook_libraries)
+
+
 def reservation_capabilities(snapshot: ServerConfigurationSnapshot) -> ReservationCapabilities | None:
     """Return the Reservation identifier and mutation capabilities that *snapshot* shows.
 
@@ -519,7 +525,7 @@ def reservation_capabilities(snapshot: ServerConfigurationSnapshot) -> Reservati
     configured = snapshot.host_reservation_identifiers
     if configured is None:
         configured = _DEFAULT_HOST_RESERVATION_IDENTIFIERS[family]
-    flex_hook = any(_FLEX_ID_HOOK in library for library in snapshot.hook_libraries)
+    flex_hook = _FLEX_ID_HOOK in _hook_names(snapshot)
     supported = reservation_identifier_types(family)
     available: tuple[IdentifierType, ...] = tuple(
         cast(IdentifierType, identifier)
@@ -536,7 +542,7 @@ def reservation_capabilities(snapshot: ServerConfigurationSnapshot) -> Reservati
         for identifier in supported
         if identifier not in available
     )
-    host_commands = any(_HOST_CMDS_HOOK in library for library in snapshot.hook_libraries)
+    host_commands = _HOST_CMDS_HOOK in _hook_names(snapshot)
     if not host_commands:
         explanation = "The host_cmds hook is not loaded."
     elif not available:
