@@ -54,6 +54,12 @@
   </div>
 </div>
 
+{% if read_age is not None %}
+<div class="d-flex align-items-center mb-2">
+  {% include "netbox_kea/inc/read_age.html" with target="#kea-combined-body" %}
+</div>
+{% endif %}
+
 <div class="table-responsive">
 
   {% render_table table %}

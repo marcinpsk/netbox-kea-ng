@@ -339,6 +339,8 @@ RESERVATION_INVALID_IDENTIFIER = "invalid-identifier"
 TRAVERSAL_DIAGNOSTIC_CODES: frozenset[str] = frozenset(
     {RESERVATION_PAGE_FETCH_FAILED, RESERVATION_PAGINATION_STALLED, RESERVATION_PAGE_LIMIT_REACHED}
 )
+#: The traversal diagnostics of a walk that an error stopped. A walk stopped at its configured limit is not one.
+_TRAVERSAL_ERROR_CODES: frozenset[str] = frozenset({RESERVATION_PAGE_FETCH_FAILED, RESERVATION_PAGINATION_STALLED})
 
 
 @dataclass(frozen=True)
@@ -361,6 +363,11 @@ class ReservationSnapshot:
     def traversal_truncated(self) -> bool:
         """Report whether Reservation page traversal stopped early."""
         return any(diagnostic.code in TRAVERSAL_DIAGNOSTIC_CODES for diagnostic in self.diagnostics)
+
+    @property
+    def settled(self) -> bool:
+        """Return false for a page walk that an error stopped; the display cache never stores it."""
+        return not any(diagnostic.code in _TRAVERSAL_ERROR_CODES for diagnostic in self.diagnostics)
 
 
 #: Display label to stable machine key. Templates and Python branch on the key, so

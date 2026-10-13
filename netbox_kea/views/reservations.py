@@ -23,7 +23,7 @@ from django.utils import timezone
 from netbox.views import generic
 from utilities.views import register_model_view
 
-from .. import constants, forms, server_configuration, tables
+from .. import constants, display_cache, forms, server_configuration, tables
 from ..constants import Family, LeaseState
 from ..ipam_reconciliation import RESERVATION, ReservationPhase, claim_permissions, reconcile_permissions
 from ..kea import KeaClient, KeaException, LeaseQueryGuardError
@@ -49,6 +49,7 @@ from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import OptionalViewTab
 from ._base import _safe_return_url
 from .notices import HEADLINES, Notice, load_snapshot, notice
+from .read_age import read_age_context, refresh_requested
 from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
@@ -311,9 +312,10 @@ def _reservation_table_record(reservation: Reservation, server: Server) -> dict[
 class ReservationQuery:
     """What one Reservation read asks of a Server.
 
-    It reads the page after *cursor* that matches *q*, *subnet_id* and *scope*, or with *full* the complete
-    Snapshot for a transfer. With *mutations* it also reads the mutation capabilities that the cached Server
-    Configuration shows, for a user who can change the Server.
+    It reads the page after *cursor* that matches *q*, *subnet_id* and *scope* through the display cache, or with
+    *full* the complete Snapshot for a transfer, always live. With *refresh* it reads the page live and replaces its
+    cached entry. With *mutations* it also reads the mutation capabilities that the cached Server Configuration
+    shows, for a user who can change the Server.
     """
 
     cursor: str | None = None
@@ -322,11 +324,17 @@ class ReservationQuery:
     scope: str = ""
     full: bool = False
     mutations: bool = False
+    refresh: bool = False
 
     @property
     def filtered(self) -> bool:
         """Return whether the query searches for matches instead of browsing every Reservation."""
         return bool(self.q or self.subnet_id is not None or self.scope)
+
+    @property
+    def page_parts(self) -> display_cache.QueryParts:
+        """Return the parts that select the page, which key its display cache entry."""
+        return (self.cursor, self.q, self.subnet_id, self.scope)
 
 
 @dataclass(frozen=True)
@@ -448,7 +456,22 @@ def fetch(server: Server, family: Family, query: ReservationQuery) -> Reservatio
         ValueError: If the Server configuration or the query is not valid.
 
     """
-    loaded = load_snapshot(server, "reservation", lambda: _read_reservations(server, family, query))
+    loaded: ReservationSnapshot | Notice
+    if query.full:
+        loaded = load_snapshot(server, "reservation", lambda: _read_reservations(server, family, query))
+    else:
+        loaded = load_snapshot(
+            server,
+            "reservation",
+            lambda: display_cache.cached(
+                server,
+                family,
+                "reservations",
+                lambda: _read_reservations(server, family, query),
+                query=query.page_parts,
+                refresh=query.refresh,
+            ),
+        )
     capabilities = None
     # A second read of a Server that did not answer would only add its timeout.
     unreachable = isinstance(loaded, Notice) and loaded.unreachable
@@ -634,13 +657,18 @@ def _reservation_list_context(
     search_form = forms.ReservationSearchForm(request.GET or None)
     filters = search_form.cleaned_data if search_form.is_valid() else {}
     can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
-    query = ReservationQuery(cursor=request.GET.get("cursor"), mutations=can_change, **filters)
+    query = ReservationQuery(
+        cursor=request.GET.get("cursor"), mutations=can_change, refresh=refresh_requested(request), **filters
+    )
+    read_started = None
     try:
         read = fetch(server, version, query)
     except ValueError:
         logger.exception("Unexpected error fetching DHCPv%s Reservations", version)
         messages.error(request, HEADLINES["reservation"])
         read = ReservationRead(query, _empty_reservation_snapshot(version, timezone.now()), capabilities=None)
+    else:
+        read_started = None if isinstance(read.loaded, Notice) else read.loaded.read_started
     search_form.offer_subnets(forms.subnet_id_options(read.catalogue.subnet_choices if read.catalogue else ()))
     presented = present(request.user, server, read, return_url=_safe_return_url(request, request.get_full_path()))
     # A missing host_cmds hook has its own panel, so one cause shows one banner.
@@ -651,6 +679,7 @@ def _reservation_list_context(
     table = table_class(presented.rows, user=request.user, empty_text=empty_text(query.filtered, presented.partial))
     table.configure(request)
     return {
+        **read_age_context(read_started),
         "table": table,
         "dhcp_version": version,
         "hook_available": hook_available,

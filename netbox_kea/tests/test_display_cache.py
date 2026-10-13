@@ -3,6 +3,7 @@
 """The display cache module: records rotation around Kea writes, TTLs from the settings row, settings generation."""
 
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import requests
 from django.core.cache import cache
@@ -19,6 +20,14 @@ from .utils import _make_db_server, _ViewTestBase, with_display_cache_config, wi
 
 _RESERVATION = {"subnet-id": 1, "identifier-type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"}
 _DELETED = {"result": 0, "text": "Host deleted."}
+
+
+@dataclass(frozen=True)
+class _Read:
+    """A display read result that the cache stores when it is settled."""
+
+    number: int
+    settled: bool = True
 
 
 class RecordsGenerationTest(TestCase):
@@ -293,3 +302,52 @@ class DisplayCacheSettingsPageTest(_ViewTestBase):
         with stub_kea(responses) as kea:
             subnet_catalogue.display(self.server, 4)
         self.assertIn("subnet4-list", kea.commands())
+
+
+@with_display_cache_config(configuration_ttl=300, reservations_ttl=77)
+class RecordsKindTest(TestCase):
+    """A records kind takes its own TTL, and its key holds the records and the configuration generation."""
+
+    def setUp(self):
+        self.server = _make_db_server()
+        self.reads = 0
+
+    def _read(self, settled: bool = True) -> _Read:
+        self.reads += 1
+        return _Read(self.reads, settled)
+
+    def _reservations(self, query: tuple = ("page",), *, refresh: bool = False, settled: bool = True) -> _Read:
+        return display_cache.cached(
+            self.server, 4, "reservations", lambda: self._read(settled), query=query, refresh=refresh
+        )
+
+    def test_the_reservations_ttl_of_the_settings_row_reaches_the_cache(self):
+        self._reservations()
+
+        [key] = cache.keys(f"{display_cache.KEY_PREFIX}entry:*")
+        self.assertTrue(60 < cache.ttl(key) <= 77, cache.ttl(key))
+
+    def test_a_rotation_of_either_generation_makes_a_warm_entry_miss(self):
+        for rotate in (
+            lambda: display_cache.rotate_after_write(self.server, 4, configuration=False),
+            lambda: display_cache.rotate_configuration(self.server, 4),
+        ):
+            first = self._reservations()
+            self.assertEqual(self._reservations(), first, "the second read is cached")
+            rotate()
+            self.assertNotEqual(self._reservations(), first)
+
+    def test_each_query_has_its_own_entry(self):
+        first = self._reservations(("page", None))
+
+        self.assertNotEqual(self._reservations(("page", "")), first)
+        self.assertEqual(self._reservations(("page", None)), first)
+
+    def test_a_refresh_replaces_the_entry_and_an_unsettled_refresh_removes_it(self):
+        self._reservations()
+
+        refreshed = self._reservations(refresh=True)
+        self.assertEqual(self._reservations(), refreshed)
+
+        self._reservations(refresh=True, settled=False)
+        self.assertEqual(self._reservations(), _Read(self.reads), "the next read is live")

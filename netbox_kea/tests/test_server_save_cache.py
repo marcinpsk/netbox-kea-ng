@@ -227,9 +227,9 @@ class ServerSaveCacheTest(_ViewTestBase):
                 server = Server.objects.get(pk=self.server.pk)
                 for name, setting in base.items():
                     setattr(server, name, setting)
-                before = display_cache._entry_key(server, family, "catalogue", config)
+                before = display_cache._entry_key(server, family, "catalogue", config, ())
                 setattr(server, field, value)
-                self.assertNotEqual(display_cache._entry_key(server, family, "catalogue", config), before)
+                self.assertNotEqual(display_cache._entry_key(server, family, "catalogue", config, ()), before)
 
     def test_a_sync_enabled_toggle_keeps_the_cached_entry(self):
         self._fill_display_cache()

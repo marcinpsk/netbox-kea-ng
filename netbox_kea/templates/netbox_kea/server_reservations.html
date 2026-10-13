@@ -69,6 +69,7 @@
 </div>
 {% endif %}
 
+<div id="kea-reservations">
 {% if hook_available %}
 {% if reservation_notice.unavailable %}
 <div class="alert alert-danger" role="alert">{{ reservation_notice.headline }}</div>
@@ -95,7 +96,10 @@
 {% endif %}
 {% endif %}
 
-<div class="row mb-3">
+<div class="row mb-3 g-2 align-items-center">
+  <div class="col-auto">
+    {% include "netbox_kea/inc/read_age.html" with target="#kea-reservations" %}
+  </div>
   <div class="col text-end">
     {% if hook_available and bulk_sync_url %}
     <form method="post" action="{{ bulk_sync_url }}" class="d-inline">
@@ -151,4 +155,5 @@
   </a>
 </div>
 {% endif %}
+</div>
 {% endblock %}
