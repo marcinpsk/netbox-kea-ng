@@ -33,7 +33,7 @@ from .leases import (
     lease_edit,
     request_errors,
 )
-from .models import KeaClientConfig, Server, SyncConfig
+from .models import DhcpIntegrationConfig, KeaClientConfig, Server, SyncConfig
 from .pools import Pool, parse_pool
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
 from .reservations import (
@@ -2081,3 +2081,11 @@ class KeaClientConfigForm(forms.ModelForm):
     class Meta:
         model = KeaClientConfig
         fields = ("kea_timeout", "lease_query_max_unpaged_leases")
+
+
+class DhcpIntegrationConfigForm(forms.ModelForm):
+    """Edit the DhcpIntegrationConfig singleton. The model field gives the help text."""
+
+    class Meta:
+        model = DhcpIntegrationConfig
+        fields = ("enabled",)

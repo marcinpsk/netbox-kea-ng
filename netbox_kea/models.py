@@ -194,8 +194,8 @@ class Server(JobsMixin, NetBoxModel):
             "When the NetBox DHCP plugin (netbox_dhcp) is installed, allow importing this "
             "server's Kea data tier (subnets, pools, host reservations) into the DHCP plugin's "
             "models. Note: Kea shared-networks are a different concept and are NOT imported as "
-            "DHCP-plugin Shared Networks (their member subnets are imported individually); DHCP "
-            "options are not imported. Has no effect if the plugin is absent."
+            "DHCP-plugin Shared Networks (their member subnets are imported individually). "
+            "Has no effect if the plugin is absent or the global DHCP Plugin Integration switch is off."
         ),
     )
     persist_config = models.BooleanField(
@@ -505,6 +505,25 @@ class KeaClientConfig(SettingsSingleton):
 
     def __str__(self) -> str:
         return "Kea Client Configuration"
+
+
+class DhcpIntegrationConfig(SettingsSingleton):
+    """Singleton configuration of the integration with the NetBox DHCP plugin (``netbox_dhcp``)."""
+
+    enabled: models.BooleanField = models.BooleanField(
+        verbose_name="Integration Enabled (global)",
+        default=True,
+        help_text=(
+            "Global switch. Clear it to stop the DHCP plugin integration for all Servers, whatever the Server setting."
+        ),
+    )
+
+    class Meta:
+        app_label = "netbox_kea"
+        verbose_name = "DHCP Plugin Integration"
+
+    def __str__(self) -> str:
+        return "DHCP Plugin Integration"
 
 
 # The row a fan-out read on its request thread, so its worker threads open no database connection.

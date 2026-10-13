@@ -32,7 +32,7 @@ from netbox.models import NetBoxModel
 
 import netbox_kea
 from netbox_kea.kea import KeaClient, KeaCommand
-from netbox_kea.models import KeaClientConfig, KeaDhcpLink, Server, SyncConfig
+from netbox_kea.models import DhcpIntegrationConfig, KeaClientConfig, KeaDhcpLink, Server, SyncConfig
 from netbox_kea.reservations import MAX_IDENTITY_LENGTH
 from netbox_kea.tests.kea_stub import record_transport, stub_kea
 from netbox_kea.tests.utils import _make_db_server, with_kea_client_config
@@ -1184,3 +1184,17 @@ class TestSettingsCopyMigration(_UpgradeTestCase):
                         self._upgrade({key: value})
                     applied = MigrationRecorder(connection).applied_migrations()
                     self.assertNotIn(("netbox_kea", self._MIGRATION), applied)
+
+
+class TestDhcpIntegrationMigration(_UpgradeTestCase):
+    """Migration 0026 creates the DHCP Plugin Integration row with the switch on, so an upgrade keeps the integration."""
+
+    _BEFORE = ("netbox_kea", "0025_keaclientconfig_and_sync_settings")
+
+    def test_an_upgrade_creates_the_row_with_the_integration_on(self):
+        historical = self._roll_back_apps()
+        self.assertNotIn("dhcpintegrationconfig", historical.all_models["netbox_kea"])
+
+        self._migrate_to_current()
+
+        self.assertIs(DhcpIntegrationConfig.get().enabled, True)

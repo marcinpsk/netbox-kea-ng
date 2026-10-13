@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from django import forms as django_forms
@@ -16,7 +17,16 @@ from django.shortcuts import redirect, render
 from django.views import View
 
 from .. import forms
-from ..models import KeaClientConfig, SettingsSingleton, SyncConfig
+from ..integrations import dhcp_plugin
+from ..models import DhcpIntegrationConfig, KeaClientConfig, SettingsSingleton, SyncConfig
+
+
+def _always() -> bool:
+    return True
+
+
+def _dhcp_plugin_installed() -> bool:
+    return dhcp_plugin.is_available()
 
 
 @dataclass(frozen=True)
@@ -29,6 +39,8 @@ class SettingsSection:
     template_name: str
     #: The text of the section's item in the Settings menu group.
     menu_text: str
+    #: False hides the section, its menu item and its save, for a setting whose integration is not installed.
+    available: Callable[[], bool] = _always
 
     def _permission(self, action: str) -> str:
         options = self.model._meta
@@ -59,13 +71,21 @@ SECTIONS = (
         "netbox_kea/inc/settings_kea_client.html",
         "Kea Client",
     ),
+    SettingsSection(
+        "dhcp-integration",
+        DhcpIntegrationConfig,
+        forms.DhcpIntegrationConfigForm,
+        "netbox_kea/inc/settings_dhcp_integration.html",
+        "DHCP Plugin",
+        available=_dhcp_plugin_installed,
+    ),
 )
 _BY_SLUG = {section.slug: section for section in SECTIONS}
 
 
 def visible_sections(user) -> list[SettingsSection]:
-    """Return the sections that *user* may view."""
-    return [section for section in SECTIONS if user.has_perm(section.view_permission)]
+    """Return the available sections that *user* may view."""
+    return [section for section in SECTIONS if section.available() and user.has_perm(section.view_permission)]
 
 
 @dataclass(frozen=True)
@@ -87,7 +107,7 @@ class SettingsView(LoginRequiredMixin, View):
     def post(self, request) -> HttpResponse:
         """Save the posted section. It needs the view and the change permission of the section's model."""
         section = _BY_SLUG.get(request.POST.get("section", ""))
-        if section is None:
+        if section is None or not section.available():
             return HttpResponseBadRequest("Unknown settings section.")
         if not request.user.has_perms((section.view_permission, section.change_permission)):
             raise PermissionDenied

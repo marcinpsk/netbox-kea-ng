@@ -11,8 +11,9 @@ from django.test import TestCase, skipUnlessDBFeature
 from django.urls import reverse
 from django.utils import timezone
 
+from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.ipam_reconciliation import _get_stale_cleanup_mode
-from netbox_kea.models import KeaClientConfig, Server, SyncConfig
+from netbox_kea.models import DhcpIntegrationConfig, KeaClientConfig, Server, SyncConfig
 from netbox_kea.tests.utils import (
     User,
     _get_with_writes,
@@ -928,6 +929,65 @@ class TestKeaClientSettingsView(TestCase):
         with self.assertRaisesMessage(TypeError, "KeaClientConfig singleton cannot be deleted."):
             KeaClientConfig.get().delete()
         self.assertTrue(KeaClientConfig.objects.filter(pk=1).exists())
+
+
+class TestDhcpIntegrationSettingsView(TestCase):
+    """The DHCP Plugin section of the Settings page holds the global switch. It shows only with netbox_dhcp."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("dhcp-integration-admin", "d@d.com", "pass")
+        self.client.force_login(self.user)
+        self.url = reverse("plugins:netbox_kea:settings")
+
+    def _slugs(self) -> list[str]:
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        return [shown.section.slug for shown in response.context["sections"]]
+
+    def test_a_save_turns_the_integration_off_and_the_change_log_api_lists_it(self):
+        from core.models import ObjectChange
+        from django.contrib.contenttypes.models import ContentType
+        from rest_framework.test import APIClient
+
+        with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True):
+            page = BeautifulSoup(self.client.get(self.url).content, "html.parser")
+            response = self.client.post(self.url, _section_data("dhcp-integration", {"enabled": False}), follow=True)
+
+        self.assertTrue(page.find(id="dhcp-integration").find(id="id_dhcp-integration-enabled").has_attr("checked"))
+        self.assertRedirects(response, self.url)
+        self.assertContains(response, "DHCP Plugin Integration saved.")
+        self.assertIs(DhcpIntegrationConfig.get().enabled, False)
+        change = ObjectChange.objects.get(
+            changed_object_type=ContentType.objects.get_for_model(DhcpIntegrationConfig), changed_object_id=1
+        )
+        self.assertEqual((change.prechange_data["enabled"], change.postchange_data["enabled"]), (True, False))
+        api = APIClient(raise_request_exception=False)
+        api.force_authenticate(user=self.user)
+        listed = api.get(reverse("core-api:objectchange-list"))
+        self.assertEqual(listed.status_code, 200, listed.content[:300])
+        (entry,) = listed.json()["results"]
+        self.assertEqual(entry["changed_object"], {"id": 1, "display": "DHCP Plugin Integration"})
+
+    def test_without_the_dhcp_plugin_the_section_is_hidden_and_a_post_is_refused(self):
+        with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True):
+            self.assertIn("dhcp-integration", self._slugs())
+        with patch.object(dhcp_plugin, "is_available", return_value=False, autospec=True):
+            self.assertEqual(self._slugs(), ["sync", "kea-client"])
+            response = self.client.post(self.url, _section_data("dhcp-integration", {"enabled": False}))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIs(DhcpIntegrationConfig.get().enabled, True)
+
+    def test_without_the_dhcp_plugin_the_settings_menu_has_no_dhcp_plugin_item(self):
+        from netbox_kea import navigation
+
+        def menu_texts():
+            return [item.link_text for item in navigation._settings_items()]
+
+        with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True):
+            self.assertEqual(menu_texts(), ["Sync", "Kea Client", "DHCP Plugin"])
+        with patch.object(dhcp_plugin, "is_available", return_value=False, autospec=True):
+            self.assertEqual(menu_texts(), ["Sync", "Kea Client"])
 
 
 class TestKeaClientSettingsPermissions(TestCase):

@@ -83,6 +83,7 @@ from netbox_kea import server_configuration  # noqa: E402
 from netbox_kea.jobs import KeaIpamSyncJob  # noqa: E402
 from netbox_kea.kea import KeaCommand, KeaException  # noqa: E402
 from netbox_kea.models import (  # noqa: E402
+    DhcpIntegrationConfig,
     IPAMOwnershipLink,
     KeaClientConfig,
     KeaDhcpLink,
@@ -222,6 +223,7 @@ class BranchabilityPinTest(SimpleTestCase):
                 "netbox_kea.Server",
                 "netbox_kea.SyncConfig",
                 "netbox_kea.KeaClientConfig",
+                "netbox_kea.DhcpIntegrationConfig",
                 "netbox_kea.KeaDhcpLink",
                 "netbox_kea.IPAMOwnershipLink",
             },
@@ -1051,6 +1053,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
         )
         self.config = SyncConfig.get()
         self.kea_client_config = KeaClientConfig.get()
+        self.dhcp_integration_config = DhcpIntegrationConfig.get()
         self.branch = _provisioned_branch(self, "rows")
 
     def _main(self) -> tuple:
@@ -1059,6 +1062,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
             list(KeaDhcpLink.objects.values_list("pk", "kea_subnet_id")),
             list(SyncConfig.objects.values_list("pk", "interval_minutes")),
             list(KeaClientConfig.objects.values_list("pk", "kea_timeout")),
+            list(DhcpIntegrationConfig.objects.values_list("pk", "enabled")),
         )
 
     def test_the_receivers_cover_every_main_only_plugin_model(self):
@@ -1070,6 +1074,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
                 "netbox_kea.Server",
                 "netbox_kea.SyncConfig",
                 "netbox_kea.KeaClientConfig",
+                "netbox_kea.DhcpIntegrationConfig",
                 "netbox_kea.KeaDhcpLink",
                 "netbox_kea.IPAMOwnershipLink",
             },
@@ -1078,6 +1083,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
             "netbox_kea.Server",
             "netbox_kea.SyncConfig",
             "netbox_kea.KeaClientConfig",
+            "netbox_kea.DhcpIntegrationConfig",
             "netbox_kea.IPAMOwnershipLink",
         }
         self.assertEqual((_refusal_receivers(pre_save), _refusal_receivers(pre_delete)), (main_only, main_only))
@@ -1088,6 +1094,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
             "server": lambda: _save_with(self.server, ca_url=_AFTER),
             "sync config": lambda: _save_with(self.config, interval_minutes=9),
             "kea client config": lambda: _save_with(self.kea_client_config, kea_timeout=9),
+            "dhcp integration config": lambda: _save_with(self.dhcp_integration_config, enabled=False),
             "new server": lambda: _make_db_server(name="new in branch"),
         }
         for label, change in changes.items():
@@ -1105,6 +1112,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
             "server queryset": lambda: Server.objects.all().delete(),
             "sync config queryset": lambda: SyncConfig.objects.all().delete(),
             "kea client config queryset": lambda: KeaClientConfig.objects.all().delete(),
+            "dhcp integration config queryset": lambda: DhcpIntegrationConfig.objects.all().delete(),
         }
         for label, delete in deletes.items():
             with self.subTest(label), activate_branch(self.branch), self.assertRaises(branching.BranchActive):
@@ -1183,6 +1191,8 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
                 lambda: KeaClientConfig.get().kea_timeout,
                 31,
             ),
+            # The unchecked switch is left out, as a browser sends it.
+            "dhcp-integration": ({"section": "dhcp-integration"}, lambda: DhcpIntegrationConfig.get().enabled, False),
         }
         for slug, (data, saved, expected) in sections.items():
             with self.subTest(section=slug):
@@ -1561,6 +1571,7 @@ class SyncJobInBranchTest(TransactionTestCase):
             "netbox_kea_server",
             "netbox_kea_syncconfig",
             "netbox_kea_keaclientconfig",
+            "netbox_kea_dhcpintegrationconfig",
             "ipam_ipaddress",
             "ipam_prefix",
             "ipam_iprange",
