@@ -1,17 +1,18 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for SyncJobsView, ServerSyncStatusView, ServerSyncNowView, ServerSyncToggleView."""
+"""Tests for SettingsView, SyncJobsView, ServerSyncStatusView, ServerSyncNowView, ServerSyncToggleView."""
 
 import uuid
 from datetime import timedelta
 from unittest.mock import patch
 
+from bs4 import BeautifulSoup
 from django.test import TestCase, override_settings, skipUnlessDBFeature
 from django.urls import reverse
 from django.utils import timezone
 
-from netbox_kea.models import SyncConfig
-from netbox_kea.tests.utils import _PLUGINS_CONFIG, User, _get_with_writes, _make_db_server, _sync_page_urls
+from netbox_kea.models import Server, SyncConfig
+from netbox_kea.tests.utils import _PLUGINS_CONFIG, User, _get_with_writes, _grant, _make_db_server, _sync_page_urls
 
 _MAKE_JOB_NO_DATA = object()  # sentinel: caller did not pass data at all
 
@@ -44,9 +45,18 @@ def _make_job(*, name="Kea IPAM Sync", object_id=None, object_type=None, data=_M
     return job
 
 
+def _sync_settings(**values) -> dict[str, object]:
+    """Return the POST data of the Sync section, as a browser sends it: a checkbox that is off is left out."""
+    data: dict[str, object] = {"section": "sync"}
+    for name, value in values.items():
+        if value is not False:
+            data[f"sync-{name}"] = "on" if value is True else value
+    return data
+
+
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSyncJobsView(TestCase):
-    """GET /plugins/kea/sync-jobs/"""
+    """GET /plugins/kea/sync-jobs/: the jobs only, with a link to the Settings page."""
 
     def setUp(self):
         self.user = User.objects.create_superuser("synctest", "s@s.com", "pass")
@@ -63,17 +73,113 @@ class TestSyncJobsView(TestCase):
         self.assertContains(response, "kea-a")
         self.assertContains(response, "kea-b")
 
-    def test_get_contains_syncconfig_defaults(self):
+    def test_get_links_to_the_settings_page_and_shows_no_settings_form(self):
         response = self.client.get(reverse("plugins:netbox_kea:sync_jobs"))
-        # Default interval of 5 should appear in the form
-        self.assertContains(response, "5")
+        self.assertContains(response, f'href="{reverse("plugins:netbox_kea:settings")}"')
+        self.assertNotContains(response, "interval_minutes")
 
-    def test_post_saves_new_interval(self):
-        url = reverse("plugins:netbox_kea:sync_jobs")
-        response = self.client.post(url, {"interval_minutes": 10, "sync_enabled": True}, follow=True)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(SyncConfig.get().interval_minutes, 10)
-        self.assertContains(response, "A new interval applies after the next scheduled run.")
+    def test_the_page_accepts_no_post(self):
+        response = self.client.post(reverse("plugins:netbox_kea:sync_jobs"), {"interval_minutes": 10})
+        self.assertEqual(response.status_code, 405)
+        self.assertEqual(SyncConfig.get().interval_minutes, 5)
+
+    def test_get_without_login_redirects(self):
+        self.client.logout()
+        response = self.client.get(reverse("plugins:netbox_kea:sync_jobs"))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login/", response["Location"])
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSettingsView(TestCase):
+    """GET and POST /plugins/kea/settings/ as a superuser."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("settings-admin", "a@a.com", "pass")
+        self.client.force_login(self.user)
+        self.url = reverse("plugins:netbox_kea:settings")
+
+    def test_get_shows_the_stored_values(self):
+        SyncConfig.objects.filter(pk=1).update(interval_minutes=13, sync_leases_enabled=False)
+        page = BeautifulSoup(self.client.get(self.url).content, "html.parser")
+        self.assertEqual(page.find(id="id_sync-interval_minutes")["value"], "13")
+        self.assertFalse(page.find(id="id_sync-sync_leases_enabled").has_attr("checked"))
+        self.assertTrue(page.find(id="id_sync-sync_reservations_enabled").has_attr("checked"))
+        self.assertIsNotNone(page.select_one('form[method="post"] button[type="submit"]'))
+
+    def test_post_saves_every_field_and_redirects(self):
+        response = self.client.post(
+            self.url, _sync_settings(interval_minutes=10, sync_enabled=True, sync_prefixes_enabled=True), follow=True
+        )
+        self.assertRedirects(response, self.url)
+        self.assertContains(response, "Sync Configuration saved.")
+        config = SyncConfig.get()
+        self.assertEqual(config.interval_minutes, 10)
+        self.assertTrue(config.sync_enabled)
+        self.assertTrue(config.sync_prefixes_enabled)
+        self.assertFalse(config.sync_leases_enabled)
+        self.assertFalse(config.sync_reservations_enabled)
+        self.assertFalse(config.sync_ip_ranges_enabled)
+
+    def test_the_next_periodic_run_schedules_the_posted_interval(self):
+        """The interval reaches the job only through the page: the job row was scheduled with another one."""
+        from core.models import Job
+
+        from netbox_kea.jobs import KeaIpamSyncJob
+
+        job = Job.objects.create(
+            name=KeaIpamSyncJob.name, status="scheduled", scheduled=timezone.now(), interval=5, job_id=uuid.uuid4()
+        )
+        response = self.client.post(self.url, _sync_settings(interval_minutes=37))
+        self.assertEqual(response.status_code, 302)
+
+        KeaIpamSyncJob.handle(job)
+
+        successors = Job.objects.filter(name=KeaIpamSyncJob.name).exclude(pk=job.pk)
+        self.assertEqual(list(successors.values_list("interval", flat=True)), [37])
+
+    def test_a_save_records_one_change_with_the_old_and_new_values(self):
+        from core.models import ObjectChange
+        from django.contrib.contenttypes.models import ContentType
+
+        SyncConfig.objects.filter(pk=1).update(interval_minutes=7)
+        self.client.post(self.url, _sync_settings(interval_minutes=21, sync_enabled=True))
+
+        changes = ObjectChange.objects.filter(
+            changed_object_type=ContentType.objects.get_for_model(SyncConfig), changed_object_id=1
+        )
+        self.assertEqual([change.action for change in changes], ["update"])
+        change = changes.get()
+        self.assertIsNotNone(change.prechange_data, "the view must snapshot the row before it changes it")
+        self.assertEqual(change.prechange_data["interval_minutes"], 7)
+        self.assertEqual(change.postchange_data["interval_minutes"], 21)
+
+    def test_the_change_detail_page_links_to_no_missing_change_log_route(self):
+        """NetBox links the object's change log under get_absolute_url; the Settings page has none."""
+        from core.models import ObjectChange
+
+        self.client.post(self.url, _sync_settings(interval_minutes=21, sync_enabled=True))
+        change = ObjectChange.objects.get()
+
+        response = self.client.get(reverse("core:objectchange", args=[change.pk]))
+
+        self.assertContains(response, "Sync Configuration")
+        hrefs = [link["href"] for link in BeautifulSoup(response.content, "html.parser").find_all("a", href=True)]
+        self.assertEqual([href for href in hrefs if href.startswith(self.url) and href.endswith("changelog/")], [])
+
+    def test_the_change_log_api_lists_a_settings_change(self):
+        """NetBox serializes each changed object for the change log API, so SyncConfig needs a serializer."""
+        from rest_framework.test import APIClient
+
+        self.client.post(self.url, _sync_settings(interval_minutes=21, sync_enabled=True))
+        api = APIClient(raise_request_exception=False)
+        api.force_authenticate(user=self.user)
+
+        response = api.get(reverse("core-api:objectchange-list"))
+
+        self.assertEqual(response.status_code, 200, response.content[:300])
+        (change,) = response.json()["results"]
+        self.assertEqual(change["changed_object"], {"id": 1, "display": "Sync Configuration"})
 
     def test_post_does_not_touch_the_job_registry(self):
         """Only the rqworker reads the registry, so the web process must not write it."""
@@ -82,31 +188,122 @@ class TestSyncJobsView(TestCase):
         from netbox_kea.jobs import KeaIpamSyncJob
 
         before = dict(registry["system_jobs"][KeaIpamSyncJob])
-        self.client.post(reverse("plugins:netbox_kea:sync_jobs"), {"interval_minutes": 15, "sync_enabled": True})
+        self.client.post(self.url, _sync_settings(interval_minutes=15, sync_enabled=True))
         self.assertEqual(registry["system_jobs"][KeaIpamSyncJob], before)
 
-    def test_post_invalid_interval_shows_error(self):
-        url = reverse("plugins:netbox_kea:sync_jobs")
-        response = self.client.post(url, {"interval_minutes": 0, "sync_enabled": True})
-        self.assertEqual(response.status_code, 200)
-        # form re-rendered with errors
-        self.assertFalse(response.context["form"].is_valid())
+    def test_post_invalid_interval_shows_the_error_and_changes_nothing(self):
+        for interval in (0, 1441):
+            with self.subTest(interval=interval):
+                response = self.client.post(self.url, _sync_settings(interval_minutes=interval, sync_enabled=False))
+                self.assertEqual(response.status_code, 200)
+                (entry,) = response.context["sections"]
+                self.assertIn("interval_minutes", entry.form.errors)
+                self.assertEqual(entry.form["interval_minutes"].value(), str(interval))
+                self.assertEqual(SyncConfig.get().interval_minutes, 5)
+                self.assertTrue(SyncConfig.get().sync_enabled)
+
+    def test_post_to_an_unknown_section_is_a_bad_request(self):
+        response = self.client.post(self.url, {"section": "unknown", "sync-interval_minutes": 9})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(SyncConfig.get().interval_minutes, 5)
 
     def test_post_without_syncconfig_row_raises(self):
         """A missing row is a server error, not a message that hides it."""
         SyncConfig.objects.all().delete()
-        url = reverse("plugins:netbox_kea:sync_jobs")
         with self.assertRaises(SyncConfig.DoesNotExist):
-            self.client.post(url, {"interval_minutes": 10, "sync_enabled": True})
+            self.client.post(self.url, _sync_settings(interval_minutes=10, sync_enabled=True))
         self.assertFalse(SyncConfig.objects.exists())
         response = self.client.get(reverse("plugins:netbox_kea:server_list"))
         self.assertEqual(list(response.context["messages"]), [])
 
     def test_get_without_login_redirects(self):
         self.client.logout()
-        response = self.client.get(reverse("plugins:netbox_kea:sync_jobs"))
+        response = self.client.get(self.url)
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login/", response["Location"])
+
+
+@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+class TestSettingsPermissions(TestCase):
+    """Each section needs its model's view permission to show, and its change permission to save."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("settings-user")
+        self.client.force_login(self.user)
+        self.url = reverse("plugins:netbox_kea:settings")
+        self.link = f'href="{self.url}"'
+
+    def test_a_viewer_sees_the_values_read_only_without_a_submit_control(self):
+        _grant([SyncConfig], ["view"], user=self.user)
+        SyncConfig.objects.filter(pk=1).update(interval_minutes=13)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        page = BeautifulSoup(response.content, "html.parser")
+        interval = page.find(id="id_sync-interval_minutes")
+        self.assertEqual(interval["value"], "13")
+        self.assertTrue(interval.has_attr("disabled"))
+        self.assertTrue(page.find(id="id_sync-sync_enabled").has_attr("disabled"))
+        self.assertIsNone(page.select_one('form[method="post"]'))
+        self.assertEqual(page.select('.page-body [type="submit"]'), [])
+
+    def test_a_viewer_post_is_refused_and_changes_nothing(self):
+        _grant([SyncConfig], ["view"], user=self.user)
+
+        response = self.client.post(self.url, _sync_settings(interval_minutes=30, sync_enabled=False))
+
+        self.assertEqual(response.status_code, 403)
+        config = SyncConfig.get()
+        self.assertEqual((config.interval_minutes, config.sync_enabled), (5, True))
+
+    def test_a_post_without_the_view_permission_is_refused_and_changes_nothing(self):
+        from core.models import ObjectChange
+
+        _grant([SyncConfig], ["change"], user=self.user)
+        for interval in (30, 0):
+            with self.subTest(interval=interval):
+                response = self.client.post(self.url, _sync_settings(interval_minutes=interval, sync_enabled=False))
+
+                self.assertEqual(response.status_code, 403)
+                config = SyncConfig.get()
+                self.assertEqual((config.interval_minutes, config.sync_enabled), (5, True))
+                self.assertFalse(ObjectChange.objects.exists())
+
+    def test_a_user_with_view_and_change_saves(self):
+        _grant([SyncConfig], ["view", "change"], user=self.user)
+
+        response = self.client.post(self.url, _sync_settings(interval_minutes=30, sync_enabled=True))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(SyncConfig.get().interval_minutes, 30)
+
+    def test_a_user_who_can_view_no_section_gets_403_and_no_menu_item(self):
+        _grant([Server], ["view"], user=self.user)
+
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+        self.assertEqual(self.client.post(self.url, _sync_settings(interval_minutes=30)).status_code, 403)
+        self.assertEqual(SyncConfig.get().interval_minutes, 5)
+        home = self.client.get(reverse("home"))
+        self.assertContains(home, f'href="{reverse("plugins:netbox_kea:server_list")}"')
+        self.assertNotContains(home, self.link)
+        self.assertNotContains(self.client.get(reverse("plugins:netbox_kea:sync_jobs")), self.link)
+
+    def test_a_viewer_gets_the_menu_item_and_the_sync_jobs_link(self):
+        _grant([SyncConfig, Server], ["view"], user=self.user)
+
+        self.assertContains(self.client.get(reverse("home")), self.link)
+        self.assertContains(self.client.get(reverse("plugins:netbox_kea:sync_jobs")), self.link)
+
+    def test_the_server_sync_tab_links_to_settings_only_for_a_user_who_can_view_them(self):
+        server = _make_db_server()
+        tab = reverse("plugins:netbox_kea:server_sync_status", args=[server.pk])
+        _grant([Server], ["view"], user=self.user)
+        _grant([SyncConfig], ["change"], user=self.user)
+
+        self.assertNotContains(self.client.get(tab), self.link)
+        _grant([SyncConfig], ["view"], user=self.user)
+        self.assertContains(self.client.get(tab), self.link)
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
@@ -274,17 +471,6 @@ class TestSyncJobsViewAllowedServerPks(TestCase):
         response = self.client.get(reverse("plugins:netbox_kea:sync_jobs"))
         self.assertEqual(response.status_code, 200)
         self.assertNotIn(self.server.pk, response.context["allowed_server_pks"])
-
-    def test_post_context_also_includes_allowed_server_pks(self):
-        su = User.objects.create_superuser("su_post", "sup@a.com", "pass")
-        self.client.force_login(su)
-        with patch("netbox_kea.views.sync_jobs.KeaIpamSyncJob", autospec=True):
-            response = self.client.post(
-                reverse("plugins:netbox_kea:sync_jobs"),
-                {"interval_minutes": 5, "sync_enabled": True},
-            )
-        # Successful POST redirects; we just verify it doesn't 500
-        self.assertIn(response.status_code, [200, 302])
 
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)

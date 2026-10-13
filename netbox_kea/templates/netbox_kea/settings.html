@@ -1,0 +1,37 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% extends "base/layout.html" %}
+
+{% block title %}Kea Settings{% endblock %}
+
+{% block content %}
+<div class="row">
+  <div class="col-lg-8">
+    {% for shown in sections %}
+    <div class="card mb-4">
+      <h5 class="card-header">{{ shown.section.title }}</h5>
+      <div class="card-body">
+        {% if shown.can_change %}
+        <form method="post">
+          {% csrf_token %}
+          <input type="hidden" name="section" value="{{ shown.section.slug }}">
+          {% for error in shown.form.non_field_errors %}
+          <div class="alert alert-danger" role="alert">{{ error }}</div>
+          {% endfor %}
+          {% include shown.section.template_name with form=shown.form %}
+          <div class="text-end">
+            <button type="submit" class="btn btn-primary">
+              <i class="mdi mdi-content-save-outline" aria-hidden="true"></i> Save
+            </button>
+          </div>
+        </form>
+        {% else %}
+        {% include shown.section.template_name with form=shown.form %}
+        <p class="text-muted small mb-0">You can view these settings, but you cannot change them.</p>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

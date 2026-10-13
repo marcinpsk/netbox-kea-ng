@@ -28,6 +28,11 @@ _items = (
         link_text="Sync Jobs",
         permissions=["netbox_kea.view_server"],
     ),
+    PluginMenuItem(
+        link="plugins:netbox_kea:settings",
+        link_text="Settings",
+        permissions=["netbox_kea.view_syncconfig"],
+    ),
 )
 
 # Top-level menu: surfaces a dedicated "DHCP Kea" section in the NetBox sidebar

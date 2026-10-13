@@ -383,25 +383,30 @@ class Server(JobsMixin, NetBoxModel):
         return objectchange
 
 
-class SyncConfig(models.Model):
+class SyncConfig(ChangeLoggingMixin):
     """Singleton configuration for the Kea→NetBox IPAM sync job.
 
     Stores the sync interval and global kill-switch in the database so
-    operators can change them from the UI without restarting Django.
+    operators can change them on the Settings page without restarting Django.
     Exactly one row exists (pk=1 always): a migration creates it, ``save()``
-    keeps pk=1 and ``delete()`` is disabled.
+    keeps pk=1 and ``delete()`` is disabled. A save in a request writes an ObjectChange.
     """
 
     interval_minutes = models.PositiveIntegerField(
+        verbose_name="Sync Interval (minutes)",
         default=5,
         validators=[MinValueValidator(1), MaxValueValidator(1440)],
-        help_text="How often the background sync job runs (minutes). Range 1–1440.",
+        help_text=(
+            "How often the background sync job runs (minutes). Range 1–1440. A change applies after the next run."
+        ),
     )
     sync_enabled = models.BooleanField(
+        verbose_name="Sync Enabled (global)",
         default=True,
-        help_text="Global kill-switch. When False, no servers are synced regardless of per-server settings.",
+        help_text="Global switch. Clear it to stop the sync for all Servers, whatever the Server setting.",
     )
     sync_leases_enabled = models.BooleanField(
+        verbose_name="Sync Leases",
         default=True,
         help_text=(
             "Sync current Kea address leases to NetBox IPAM as IP addresses. With Prefix sync also on,"
@@ -409,10 +414,12 @@ class SyncConfig(models.Model):
         ),
     )
     sync_reservations_enabled = models.BooleanField(
+        verbose_name="Sync Reservations",
         default=True,
         help_text="Sync Kea reservations to NetBox IPAM as reserved IP addresses.",
     )
     sync_prefixes_enabled = models.BooleanField(
+        verbose_name="Sync Prefixes",
         default=True,
         help_text=(
             "Sync Kea subnets to NetBox IPAM as IP Prefixes. With lease sync also on,"
@@ -420,6 +427,7 @@ class SyncConfig(models.Model):
         ),
     )
     sync_ip_ranges_enabled = models.BooleanField(
+        verbose_name="Sync IP Ranges",
         default=True,
         help_text="Sync Kea pools to NetBox IPAM as IP Ranges.",
     )
