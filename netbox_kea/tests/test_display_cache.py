@@ -173,6 +173,24 @@ class DisplayCacheSettingsTest(TestCase):
 
         self.assertEqual(self._read_display(), live)
 
+    def test_a_failed_configuration_read_is_read_again_on_the_next_call(self):
+        failed = {"config-get": {"result": 1, "text": "failed"}}
+        for _ in range(2):
+            with self.subTest(read=_), stub_kea(failed) as kea:
+                snapshot = server_configuration.display(self.server, 4)
+            self.assertFalse(snapshot.settled)
+            self.assertEqual(kea.commands(), ["config-get"])
+        self.assertEqual(self._entries(), [])
+
+    def test_an_unsettled_catalogue_is_read_again_on_the_next_call(self):
+        failed = {**self.responses, "subnet4-list": {"result": 1, "text": "failed"}}
+        for _ in range(2):
+            with self.subTest(read=_), stub_kea(failed) as kea:
+                snapshot = subnet_catalogue.display(self.server, 4)
+            self.assertFalse(snapshot.settled)
+            self.assertEqual(kea.commands(), ["subnet4-list", "config-get"])
+        self.assertEqual(self._entries(), [])
+
     def test_a_rotation_of_the_records_generation_keeps_the_configuration_entries(self):
         self._assert_warm()
 

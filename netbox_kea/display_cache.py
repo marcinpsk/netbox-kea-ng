@@ -3,18 +3,18 @@
 """The display cache: keys, generations, TTLs, admission and invalidation of each display read (ADR 0009).
 
 Only this module touches the Django cache. Authority reads (verification, synchronization, import, mutation
-scopes and checks after a write) never call it.
+scopes and checks after a write) never call it. Callers pass a validated ``Family``.
 """
 
 from __future__ import annotations
 
 import secrets
 from collections.abc import Callable
-from typing import Literal, TypeVar
+from typing import Literal, Protocol, TypeVar
 
 from django.core.cache import cache
 
-from .constants import Family, validate_family
+from .constants import Family
 from .models import DisplayCacheConfig, Server, request_display_cache_config, require_persisted_server
 
 #: The prefix of every key of the display cache. The test cache hygiene fixture clears it.
@@ -27,39 +27,49 @@ _Generation = Literal["configuration", "records"]
 #: their keys hold the configuration generation and not the records generation.
 _TTL_FIELDS: dict[Kind, str] = {"configuration": "configuration_ttl", "catalogue": "configuration_ttl"}
 
-T = TypeVar("T")
+
+class Cacheable(Protocol):
+    """A display read that the cache can store."""
+
+    @property
+    def settled(self) -> bool:
+        """Return false for a failed read or a page walk stopped by an error; the cache never stores it."""
+        ...
 
 
-def cached(server: Server, family: int, kind: Kind, read: Callable[[], T], admit: Callable[[T], bool]) -> T:
-    """Return the entry of *kind* for *server* and *family*, or call *read* and store its result when *admit* it.
+T = TypeVar("T", bound=Cacheable)
+
+
+def cached(server: Server, family: Family, kind: Kind, read: Callable[[], T]) -> T:
+    """Return the entry of *kind* for *server* and *family*, or call *read* and store its result when it is settled.
 
     The key is built before *read* runs, so a rotation during the read leaves the result in an older generation.
     A TTL of 0 sends every call to *read* and stores nothing.
     """
-    validated_family = validate_family(family)
     config = request_display_cache_config.get() or DisplayCacheConfig.get()
     ttl = getattr(config, _TTL_FIELDS[kind])
     if not ttl:
         return read()
-    key = _entry_key(server, validated_family, kind, config)
+    key = _entry_key(server, family, kind, config)
     entry = cache.get(key)
     if entry is not None:
         return entry
     value = read()
-    if admit(value):
+    if value.settled:
         cache.set(key, value, ttl)
     return value
 
 
-def rotate_configuration(server: Server, family: int) -> None:
+def rotate_configuration(server: Server, family: Family) -> None:
     """Make every entry of *server* and *family* unreachable, after a change of the Kea configuration."""
-    _rotate(server, validate_family(family), "configuration")
+    _rotate(server, family, "configuration")
 
 
 def rotate_records(server: Server, family: Family | None) -> None:
     """Make every entry that depends on Reservations or Leases unreachable. ``None`` rotates both families."""
-    for validated_family in (4, 6) if family is None else (validate_family(family),):
-        _rotate(server, validated_family, "records")
+    families: tuple[Family, ...] = (4, 6) if family is None else (family,)
+    for each in families:
+        _rotate(server, each, "records")
 
 
 def _entry_key(server: Server, family: Family, kind: Kind, config: DisplayCacheConfig) -> str:

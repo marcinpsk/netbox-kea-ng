@@ -165,6 +165,12 @@ class CatalogueSnapshot:
         )
 
     @property
+    def settled(self) -> bool:
+        """Return whether the display cache can store the Snapshot: a failed source read is not, no subnet_cmds hook is."""
+        identity_settled = self.identity_available or not self.subnet_cmds_available
+        return identity_settled and self.configuration_available
+
+    @property
     def unavailable(self) -> bool:
         """Return true when no safe fact from either source remains usable."""
         return (
@@ -803,15 +809,7 @@ def _read_live(server: Server, family: Family) -> tuple[CatalogueSnapshot, Serve
 def display(server: Server, family: int) -> CatalogueSnapshot:
     """Return a cached Complete or Incomplete snapshot for presentation."""
     validated_family = validate_family(family)
-    return display_cache.cached(
-        server, validated_family, "catalogue", lambda: _read_live(server, validated_family)[0], admit=_settled
-    )
-
-
-def _settled(snapshot: CatalogueSnapshot) -> bool:
-    """Return whether both sources settled: an absent subnet_cmds hook is settled, a failed read is not."""
-    identity_settled = snapshot.identity_available or not snapshot.subnet_cmds_available
-    return identity_settled and snapshot.configuration_available
+    return display_cache.cached(server, validated_family, "catalogue", lambda: _read_live(server, validated_family)[0])
 
 
 def for_verification(server: Server, family: int) -> CatalogueSnapshot:

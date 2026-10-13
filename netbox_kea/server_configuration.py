@@ -158,6 +158,11 @@ class ServerConfigurationSnapshot:
         """Return true when the read failed, so the Snapshot holds no facts; the Catalogue Snapshot answers the same."""
         return not self.available
 
+    @property
+    def settled(self) -> bool:
+        """Return whether the display cache can store the Snapshot: the read did not fail."""
+        return self.available
+
     def subnet_with_membership(self, subnet_id: int) -> DeclaredSubnet | None:
         """Return a unique declaration with known Shared Network membership."""
         matches = [
@@ -972,13 +977,7 @@ def _parse_definitions(entries: Any, family: Family, diagnostics: list[Diagnosti
 def display(server: Server, family: int) -> ServerConfigurationSnapshot:
     """Return cached configuration facts for interactive presentation. A failed read is not cached."""
     validated_family = validate_family(family)
-    return display_cache.cached(
-        server,
-        validated_family,
-        "configuration",
-        lambda: _read_live(server, validated_family),
-        admit=lambda snapshot: snapshot.available,
-    )
+    return display_cache.cached(server, validated_family, "configuration", lambda: _read_live(server, validated_family))
 
 
 @dataclass(frozen=True)
