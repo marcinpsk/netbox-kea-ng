@@ -182,6 +182,11 @@ class CatalogueSnapshot:
         """Return whether a Subnet that the identity facts do not verify is absent from Kea."""
         return self.identity_complete and self.consistent
 
+    @property
+    def configuration_confirms_absence(self) -> bool:
+        """Return whether a CIDR or address that no shown Subnet holds is absent from the Kea configuration."""
+        return self.configuration_complete and self.consistent
+
     def find_by_id(self, subnet_id: int) -> VerifiedSubnet | ConfiguredSubnet | None:
         """Return the verified or configured Subnet with an exact Kea ID, if present."""
         if isinstance(subnet_id, bool) or not isinstance(subnet_id, int):
@@ -248,7 +253,7 @@ class CatalogueSnapshot:
             )
             if subnet is not None:
                 return self.subnet_qualifying_suffix(subnet.identity, address)
-            if not self.configuration_complete:
+            if not self.configuration_confirms_absence:
                 raise CatalogueUnavailable(f"No complete configuration shows the Subnet of {address}.")
         if self.global_qualifying_suffix is None:
             raise CatalogueUnavailable("The global DDNS qualifying suffix is unknown.")
@@ -836,6 +841,12 @@ def display(server: Server, family: int) -> CatalogueSnapshot:
     identity_settled = snapshot.identity_available or not snapshot.subnet_cmds_available
     if identity_settled and snapshot.configuration_available:
         cache.set(key, snapshot, constants.DISPLAY_SNAPSHOT_TTL)
+    return snapshot
+
+
+def for_verification(server: Server, family: int) -> CatalogueSnapshot:
+    """Read the live Catalogue without consulting or filling the cache."""
+    snapshot, _source = _read_live(server, _validate_family(family))
     return snapshot
 
 

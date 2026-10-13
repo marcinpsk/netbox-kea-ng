@@ -210,7 +210,8 @@ URL request
       server_scope.py   (Server selection, view permissions, and family availability)
       fan_out.py        (the per-Server read pool of combined Subnets, Shared Networks, Reservations)
       sync_views.py     (per-server IPAM sync UI)
-      sync_jobs.py      (jobs tab, periodic sync management, SyncConfig admin)
+      sync_jobs.py      (jobs tab, periodic sync management)
+      settings_page.py  (Settings page: one section per settings singleton; ADR 0010)
   → config_write.py     (Configuration Changes: typed outcome, advisory lock, persist step)
   → kea.py              (HTTP POST to each daemon's / control socket)
   → sync.py             (read-only IPAM badges and DCIM MAC synchronization)
@@ -237,7 +238,11 @@ URL request
   creates the row from PLUGINS_CONFIG and applies the one-time backfill, so
   `SyncConfig.get()` only reads it. A TransactionTestCase flush deletes the row, and a
   `post_migrate` receiver in `netbox_kea/tests/conftest.py` creates it again with the migration's
-  values. Plain `models.Model` (not a `NetBoxModel`).
+  values. It inherits `ChangeLoggingMixin` (not a `NetBoxModel`), so a save in a request writes an
+  ObjectChange; `api/serializers.py` has a brief `SyncConfigSerializer` because NetBox's change log API
+  serializes each changed object. The Settings page (`views/settings_page.py`) edits it: the section shows
+  with `view_syncconfig`, a save needs `change_syncconfig`, and the view calls `snapshot()` before the form
+  changes the row.
 - **`KeaClient`** (`kea.py`): wraps a `requests.Session`. All API calls go through
   `.command(command, target, arguments, check)`, the only HTTP send of the plugin, which POSTs
   JSON to the **configured endpoint URL** (`self.url`: the daemon's `/` control socket, or a
@@ -436,9 +441,8 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Kea command names come from a real Kea.** The script also records the
   `list-commands` reply of each daemon. The coverage configurations load the same hook
   libraries as `tests/docker/kea_configs/`. `WIRE_COMMANDS` in `kea_wire_discipline.py`
-  is that recorded set, and `stub_kea()` fails a command outside it: registered, sent, or
-  listed in a stubbed `list-commands` reply. Never add a command name by hand. The
-  black-box test `tests/test_kea_commands.py` compares the live harness daemons with the
+  is that recorded set, and `stub_kea()` fails a command outside it, registered or sent.
+  Never add a command name by hand. The black-box test `tests/test_kea_commands.py` compares the live harness daemons with the
   recording in CI. When you change `KEA_VERSION` or the harness hook libraries, run the
   script again.
 - **Type-check gate.** `scripts/mypy-gate.sh` (+ `test_mypy_gate.py`, a pre-push hook,
@@ -573,9 +577,10 @@ resort, reserved for true external boundaries you cannot run locally.
 ## Kea API Reference
 
 - **Primary**: `kea.readthedocs.io/en/latest/api.html` — full JSON command schemas.
-- **Live discovery**: run `list-commands` against the target daemon/service to confirm
-  which hook libraries are loaded; cache per request; show a warning banner in the UI
-  when a required command is absent. Only set `hook_available=False` on result code 2.
+- **Hook discovery**: the Server Configuration Snapshot holds the `hooks-libraries` paths.
+  `server_configuration.reservation_capabilities()` reads `host_cmds` and `flex_id` from them; the plugin sends no
+  `list-commands`. A page render uses `display()`, and a write uses `for_verification()`. A read of another hook's
+  command treats result code 2 as "hook not loaded" (`KeaException.unsupported_command`).
 - **Key hooks** and the commands they gate:
   - `host_cmds` — all `reservation-*` commands (open source since Kea 2.7.7 / MPL 2.0)
   - `lease_cmds` — `lease4/6-get-by-hostname/hw-address/state`, `lease4/6-update/add`

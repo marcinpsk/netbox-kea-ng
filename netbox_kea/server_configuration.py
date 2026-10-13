@@ -9,7 +9,8 @@ import secrets
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from pathlib import PurePosixPath
+from typing import Any, cast
 
 from django.core.cache import cache
 from django.utils import timezone
@@ -39,12 +40,21 @@ from .kea import (
 )
 from .models import Server
 from .pools import Pool, parse_pool
+from .reservations import IdentifierType, ReservationCapabilities, reservation_identifier_types
 from .subnet_settings import SETTING_KEYS, SubnetSettings, setting_key
 from .utilities import kea_error_hint
 
 logger = logging.getLogger(__name__)
 
 _DDNS_QUALIFYING_SUFFIX = setting_key("ddns_qualifying_suffix")
+_HOST_RESERVATION_IDENTIFIERS = "host-reservation-identifiers"
+# Kea's identifier list when the configuration does not set one.
+_DEFAULT_HOST_RESERVATION_IDENTIFIERS: dict[Family, tuple[str, ...]] = {
+    4: ("hw-address", "duid", "circuit-id", "client-id"),
+    6: ("duid", "hw-address"),
+}
+_HOST_CMDS_HOOK = "libdhcp_host_cmds"
+_FLEX_ID_HOOK = "libdhcp_flex_id"
 
 
 @dataclass(frozen=True)
@@ -133,6 +143,17 @@ class ServerConfigurationSnapshot:
     global_options_complete: bool = False
     # Collection and member shapes, string names, and valid member IDs unique across Shared Networks.
     shared_networks_complete: bool = False
+    # The configured host-reservation-identifiers. None: the key is absent or invalid.
+    host_reservation_identifiers: tuple[str, ...] | None = None
+    # The library path of each hooks-libraries entry.
+    hook_libraries: tuple[str, ...] = ()
+    # Diagnostics of the two Reservation facts above; only the Reservation capabilities read them.
+    reservation_diagnostics: tuple[Diagnostic, ...] = ()
+
+    @property
+    def reservation_facts_complete(self) -> bool:
+        """Return whether the read succeeded and both Reservation facts parsed."""
+        return self.available and not self.reservation_diagnostics
 
     @property
     def unavailable(self) -> bool:
@@ -185,7 +206,7 @@ def display_generation(server: Server, family: int) -> str:
 
 def _cache_key(server: Server, family: Family, generation: str | None = None) -> str:
     generation = generation or display_generation(server, family)
-    return f"{constants.SERVER_CONFIGURATION_CACHE_PREFIX}v2:{_require_persisted_server(server)}:{family}:snapshot:{generation}"
+    return f"{constants.SERVER_CONFIGURATION_CACHE_PREFIX}v3:{_require_persisted_server(server)}:{family}:snapshot:{generation}"
 
 
 def _require_persisted_server(server: Server) -> int:
@@ -224,6 +245,17 @@ def _unavailable(server: Server, family: Family, code: str, message: str) -> Ser
 
 
 def _read_live(server: Server, family: Family) -> ServerConfigurationSnapshot:
+    read = _read_configuration(server, family)
+    if isinstance(read, ServerConfigurationSnapshot):
+        return read
+    configuration, configuration_hash = read
+    return _parse_configuration(server, configuration, family, configuration_hash)
+
+
+def _read_configuration(
+    server: Server, family: Family
+) -> tuple[dict[str, Any], str | None] | ServerConfigurationSnapshot:
+    """Read the live ``Dhcp{v}`` block and its hash, or return the unavailable Snapshot of a failed read."""
     try:
         client = server.get_client(version=family)
         response = client.command(KeaCommand.CONFIG_GET, family)
@@ -254,6 +286,7 @@ def _read_live(server: Server, family: Family) -> ServerConfigurationSnapshot:
 
     arguments = response[0].get("arguments")
     if not isinstance(arguments, dict):
+        logger.warning("Server configuration read for DHCPv%s returned malformed configuration arguments", family)
         return _unavailable(
             server,
             family,
@@ -262,6 +295,7 @@ def _read_live(server: Server, family: Family) -> ServerConfigurationSnapshot:
         )
     configuration = arguments.get(f"Dhcp{family}")
     if not isinstance(configuration, dict):
+        logger.warning("Server configuration read for DHCPv%s returned no Dhcp%s configuration object", family, family)
         return _unavailable(
             server,
             family,
@@ -271,7 +305,7 @@ def _read_live(server: Server, family: Family) -> ServerConfigurationSnapshot:
     configuration_hash = arguments.get("hash")
     if not isinstance(configuration_hash, str) or not configuration_hash:
         configuration_hash = None
-    return _parse_configuration(server, configuration, family, configuration_hash)
+    return configuration, configuration_hash
 
 
 def _parse_configuration(
@@ -407,6 +441,9 @@ def _parse_configuration(
     options = _parse_options(configuration.get("option-data", []), f"Dhcp{family}", diagnostics)
     global_options_complete = len(diagnostics) == len(subnet_diagnostics)
     definitions = _parse_definitions(configuration.get("option-def", []), family, diagnostics)
+    reservation_diagnostics: list[Diagnostic] = []
+    identifiers = _host_reservation_identifiers(configuration, family, reservation_diagnostics)
+    hook_libraries = _hook_libraries(configuration.get("hooks-libraries", []), family, reservation_diagnostics)
     return ServerConfigurationSnapshot(
         server_id=server.pk,
         family=family,
@@ -424,6 +461,100 @@ def _parse_configuration(
         _membership_complete=tuple(membership_complete),
         global_options_complete=global_options_complete,
         shared_networks_complete=shared_networks_complete,
+        host_reservation_identifiers=identifiers,
+        hook_libraries=hook_libraries,
+        reservation_diagnostics=tuple(reservation_diagnostics),
+    )
+
+
+def _host_reservation_identifiers(
+    configuration: dict[str, Any], family: Family, diagnostics: list[Diagnostic]
+) -> tuple[str, ...] | None:
+    """Return the configured identifier types in order, or None when the key is absent or invalid."""
+    if _HOST_RESERVATION_IDENTIFIERS not in configuration:
+        return None
+    value = configuration[_HOST_RESERVATION_IDENTIFIERS]
+    if not isinstance(value, list) or any(not isinstance(identifier, str) for identifier in value):
+        diagnostics.append(
+            _diagnostic(
+                "invalid-setting",
+                f"Kea returned an invalid {_HOST_RESERVATION_IDENTIFIERS} setting.",
+                "configuration",
+                f"Dhcp{family}.{_HOST_RESERVATION_IDENTIFIERS}",
+            )
+        )
+        return None
+    return tuple(value)
+
+
+def _hook_libraries(entries: Any, family: Family, diagnostics: list[Diagnostic]) -> tuple[str, ...]:
+    """Return the library path of each valid hooks-libraries entry."""
+    path = f"Dhcp{family}.hooks-libraries"
+    if not isinstance(entries, list):
+        diagnostics.append(
+            _diagnostic("invalid-setting", "Kea returned a non-list hooks-libraries collection.", "configuration", path)
+        )
+        return ()
+    libraries: list[str] = []
+    for index, entry in enumerate(entries):
+        library = entry.get("library") if isinstance(entry, dict) else None
+        if not isinstance(library, str) or not library:
+            diagnostics.append(
+                _diagnostic(
+                    "invalid-setting", "Kea returned an invalid hook library.", "configuration", f"{path}[{index}]"
+                )
+            )
+            continue
+        libraries.append(library)
+    return tuple(libraries)
+
+
+def _hook_names(snapshot: ServerConfigurationSnapshot) -> frozenset[str]:
+    """Return the library name of each hook, the file name up to its first dot, so a directory name does not count."""
+    return frozenset(PurePosixPath(library).name.split(".", 1)[0] for library in snapshot.hook_libraries)
+
+
+def reservation_capabilities(snapshot: ServerConfigurationSnapshot) -> ReservationCapabilities | None:
+    """Return the Reservation identifier and mutation capabilities that *snapshot* shows.
+
+    Return None when the read failed or a Reservation fact is invalid, so the capabilities are not confirmed.
+    """
+    if not snapshot.reservation_facts_complete:
+        return None
+    family = snapshot.family
+    configured = snapshot.host_reservation_identifiers
+    if configured is None:
+        configured = _DEFAULT_HOST_RESERVATION_IDENTIFIERS[family]
+    flex_hook = _FLEX_ID_HOOK in _hook_names(snapshot)
+    supported = reservation_identifier_types(family)
+    available: tuple[IdentifierType, ...] = tuple(
+        cast(IdentifierType, identifier)
+        for identifier in configured
+        if identifier in supported and (identifier != "flex-id" or flex_hook)
+    )
+    unavailable = tuple(
+        (
+            identifier,
+            "The Flex ID hook is not configured."
+            if identifier == "flex-id" and identifier in configured
+            else "This identifier is not enabled in host-reservation-identifiers.",
+        )
+        for identifier in supported
+        if identifier not in available
+    )
+    host_commands = _HOST_CMDS_HOOK in _hook_names(snapshot)
+    if not host_commands:
+        explanation = "The host_cmds hook is not loaded."
+    elif not available:
+        explanation = "No supported Reservation identifier is enabled."
+    else:
+        explanation = ""
+    return ReservationCapabilities(
+        family=family,
+        identifiers=available,
+        mutation_available=bool(available) and host_commands,
+        explanation=explanation,
+        unavailable_identifiers=unavailable,
     )
 
 
@@ -614,11 +745,6 @@ def effective_qualifying_suffix(snapshot: ServerConfigurationSnapshot, subnet: D
         if network.ddns_qualifying_suffix is not None:
             return network.ddns_qualifying_suffix
     return snapshot.ddns_qualifying_suffix
-
-
-def observed_snapshot(server: Server, family: Family, configuration: dict[str, Any]) -> ServerConfigurationSnapshot:
-    """Validate the exact configuration read by a workflow that also consumes its import intent."""
-    return _parse_configuration(server, configuration, family, None)
 
 
 def candidate_snapshot(server: Server, candidate: CandidateConfiguration) -> ServerConfigurationSnapshot:
@@ -912,6 +1038,26 @@ def display(server: Server, family: int) -> ServerConfigurationSnapshot:
     if snapshot.available:
         cache.set(key, snapshot, constants.DISPLAY_SNAPSHOT_TTL)
     return snapshot
+
+
+@dataclass(frozen=True)
+class ImportRead:
+    """One live configuration read for the DHCP plugin import."""
+
+    snapshot: ServerConfigurationSnapshot
+    # The raw Dhcp{v} block of the same reply; the import mapper keeps its own parse (ADR 0003).
+    configuration: dict[str, Any]
+
+
+def for_import(server: Server, family: int) -> ImportRead | None:
+    """Read live configuration for the DHCP plugin import without the cache; return None when Kea could not be read."""
+    validated_family = _validate_family(family)
+    _require_persisted_server(server)
+    read = _read_configuration(server, validated_family)
+    if isinstance(read, ServerConfigurationSnapshot):
+        return None
+    configuration, configuration_hash = read
+    return ImportRead(_parse_configuration(server, configuration, validated_family, configuration_hash), configuration)
 
 
 def for_verification(server: Server, family: int) -> ServerConfigurationSnapshot:

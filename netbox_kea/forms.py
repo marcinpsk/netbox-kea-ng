@@ -33,7 +33,7 @@ from .leases import (
     lease_edit,
     request_errors,
 )
-from .models import Server
+from .models import Server, SyncConfig
 from .pools import Pool, parse_pool
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
 from .reservations import (
@@ -930,7 +930,7 @@ class Reservation4Form(_ReservationForm):
             network = ipaddress.IPv4Network(value, strict=True)
         except ValueError as exc:
             raise forms.ValidationError("Enter a valid IPv4 subnet CIDR (e.g. 10.0.0.0/24).") from exc
-        # Use the canonical CIDR form accepted by configured_subnet_id_from_cidr().
+        # Use the canonical CIDR form that the Subnet Catalogue find_by_cidr() compares.
         return str(network)
 
     def clean_ip_address(self) -> str:
@@ -1019,7 +1019,7 @@ class Reservation6Form(_ReservationForm):
             network = ipaddress.IPv6Network(value, strict=True)
         except ValueError as exc:
             raise forms.ValidationError("Enter a valid IPv6 subnet CIDR (e.g. 2001:db8::/48).") from exc
-        # Use the canonical CIDR form accepted by configured_subnet_id_from_cidr().
+        # Use the canonical CIDR form that the Subnet Catalogue find_by_cidr() compares.
         return str(network)
 
     def clean_ip_addresses(self) -> str:
@@ -2058,38 +2058,16 @@ class OptionDefForm(forms.Form):
         return name
 
 
-class SyncConfigForm(forms.Form):
-    """Form for editing the global SyncConfig (interval + kill-switch + per-type toggles)."""
+class SyncConfigForm(forms.ModelForm):
+    """Edit the SyncConfig singleton. The model fields give the validators and the help text."""
 
-    interval_minutes = forms.IntegerField(
-        label="Sync Interval (minutes)",
-        min_value=1,
-        max_value=1440,
-        initial=5,
-        help_text="How often the background sync job runs. Minimum 1 minute.",
-    )
-    sync_enabled = forms.BooleanField(
-        label="Sync Enabled (global)",
-        required=False,
-        help_text="Global kill-switch. Uncheck to pause sync for all servers.",
-    )
-    sync_leases_enabled = forms.BooleanField(
-        label="Sync Leases",
-        required=False,
-        help_text="Sync active Kea leases to NetBox IPAM as IP addresses.",
-    )
-    sync_reservations_enabled = forms.BooleanField(
-        label="Sync Reservations",
-        required=False,
-        help_text="Sync Kea reservations to NetBox IPAM as reserved IP addresses.",
-    )
-    sync_prefixes_enabled = forms.BooleanField(
-        label="Sync Prefixes",
-        required=False,
-        help_text="Sync Kea subnets to NetBox IPAM as IP Prefixes.",
-    )
-    sync_ip_ranges_enabled = forms.BooleanField(
-        label="Sync IP Ranges",
-        required=False,
-        help_text="Sync Kea pools to NetBox IPAM as IP Ranges.",
-    )
+    class Meta:
+        model = SyncConfig
+        fields = (
+            "interval_minutes",
+            "sync_enabled",
+            "sync_leases_enabled",
+            "sync_reservations_enabled",
+            "sync_prefixes_enabled",
+            "sync_ip_ranges_enabled",
+        )

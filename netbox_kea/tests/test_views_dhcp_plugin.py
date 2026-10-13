@@ -127,22 +127,6 @@ class ReadReservationObservationTest(TestCase):
         self.assertIsNone(snapshot)
 
 
-class ExtractDhcpConfTest(SimpleTestCase):
-    """`_extract_dhcp_conf` pulls the right block and *raises* on malformed arguments."""
-
-    def test_extracts_dhcp4_block(self):
-        resp = [{"result": 0, "arguments": {"Dhcp4": {"subnet4": []}}}]
-        self.assertEqual(dps._extract_dhcp_conf(resp, 4), {"subnet4": []})
-
-    def test_missing_block_returns_none(self):
-        # The version's block simply being absent is legitimate "no config".
-        self.assertIsNone(dps._extract_dhcp_conf([{"result": 0, "arguments": {}}], 6))
-
-    def test_non_dict_arguments_raises(self):
-        with self.assertRaises(RuntimeError):
-            dps._extract_dhcp_conf([{"result": 0, "arguments": ["not", "a", "dict"]}], 4)
-
-
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TabVisibilityTest(TestCase):
     """The DHCP-plugin tab hides itself unless the plugin is installed AND opted in."""
@@ -332,7 +316,7 @@ class FetchConfigIntentTest(TestCase):
         self.server = _make_db_server(dhcp4=True, dhcp6=False)
 
     def test_malformed_config_get_is_logged_and_skipped(self):
-        for reply in ([], {"result": 0, "arguments": ["not", "a", "dict"]}):
+        for reply in ([], {"result": 0, "arguments": ["not", "a", "dict"]}, {"result": 0, "arguments": {}}):
             with (
                 self.subTest(reply=reply),
                 stub_kea({"config-get": reply}),
@@ -343,13 +327,24 @@ class FetchConfigIntentTest(TestCase):
             self.assertIsNone(result)
             self.assertTrue(any("config-get failed" in line for line in cm.output))
 
+    def test_the_read_logs_why_a_reply_has_no_configuration(self):
+        for reply, reason in (
+            ({"result": 0, "arguments": ["not", "a", "dict"]}, "malformed configuration arguments"),
+            ({"result": 0, "arguments": {}}, "no Dhcp4 configuration object"),
+        ):
+            with (
+                self.subTest(reply=reply),
+                stub_kea({"config-get": reply}),
+                self.assertLogs("netbox_kea.server_configuration", level="WARNING") as cm,
+            ):
+                self.assertIsNone(dps._fetch_config_intent(self.server, 4))
+            self.assertTrue(any(reason in line for line in cm.output), cm.output)
+
 
 @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class FetchConfigCollectionsTest(SimpleTestCase):
+class FetchConfigCollectionsTest(TestCase):
     def test_malformed_collections_are_logged_as_read_failures(self):
-        from netbox_kea.models import Server
-
-        server = Server(name="config-shape-test", ca_url="http://kea.example.invalid")
+        server = _make_db_server(name="config-shape-test")
         for version in (4, 6):
             for conf in (
                 {f"subnet{version}": 1},
@@ -359,13 +354,12 @@ class FetchConfigCollectionsTest(SimpleTestCase):
             ):
                 with self.subTest(version=version, conf=conf):
                     response = {"result": 0, "arguments": {f"Dhcp{version}": conf}}
-                    with stub_kea({"config-get": response}), self.assertLogs(dps.logger, level="WARNING"):
+                    with stub_kea({"config-get": response}), self.assertLogs(dps.logger, level="WARNING") as cm:
                         self.assertIsNone(dps._fetch_config_intent(server, version))
+                    self.assertTrue(any("could not parse the configuration" in line for line in cm.output))
 
     def test_valid_entries_survive_malformed_neighbors(self):
-        from netbox_kea.models import Server
-
-        server = Server(name="config-shape-test", ca_url="http://kea.example.invalid")
+        server = _make_db_server(name="config-shape-test")
         conf = {
             "subnet4": [None, {}, {"id": 1, "subnet": "198.18.0.0/24"}],
             "client-classes": [None, {}, {"name": "test-class"}],
@@ -375,8 +369,10 @@ class FetchConfigCollectionsTest(SimpleTestCase):
                 {"name": "test-network", "subnet4": [None, {"id": 2, "subnet": "198.18.1.0/24"}]},
             ],
         }
-        with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": conf}}}):
+        with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": conf}}}) as kea:
             intent = dps._fetch_config_intent(server, 4)
+        self.assertEqual(kea.commands(), ["config-get"])
+        self.assertFalse(intent.configuration_complete)
         self.assertEqual([subnet.kea_subnet_id for subnet in intent.subnets], [1, 2])
         self.assertEqual([entry.name for entry in intent.client_classes], ["test-class"])
 

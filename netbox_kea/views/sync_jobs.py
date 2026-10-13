@@ -19,10 +19,10 @@ from django.views import View
 from netbox.views import generic
 from utilities.views import ViewTab, register_model_view
 
-from .. import forms
 from ..jobs import KeaIpamSyncJob
 from ..models import Server, SyncConfig
 from .dhcp_plugin_sync import sync_nav_context
+from .settings_page import visible_sections
 from .workspace import ServerFamilyMixin, server_family_url
 
 logger = logging.getLogger(__name__)
@@ -144,27 +144,12 @@ def _get_latest_jobs(servers: list[Server]) -> defaultdict:
 
 
 class SyncJobsView(LoginRequiredMixin, View):
-    """Plugin-level Sync Jobs page: global config + cross-server summary table.
-
-    GET: readable by any authenticated user (via the view_server menu guard).
-    POST: requires netbox_kea.change_syncconfig.
-    """
+    """Plugin-level Sync Jobs page: the cross-server job table, with a link to the Settings page."""
 
     template_name = "netbox_kea/sync_jobs.html"
 
     def get(self, request):
-        """Render the sync jobs overview page with config form and server table."""
-        sync_cfg = SyncConfig.get()
-        form = forms.SyncConfigForm(
-            initial={
-                "interval_minutes": sync_cfg.interval_minutes,
-                "sync_enabled": sync_cfg.sync_enabled,
-                "sync_leases_enabled": sync_cfg.sync_leases_enabled,
-                "sync_reservations_enabled": sync_cfg.sync_reservations_enabled,
-                "sync_prefixes_enabled": sync_cfg.sync_prefixes_enabled,
-                "sync_ip_ranges_enabled": sync_cfg.sync_ip_ranges_enabled,
-            }
-        )
+        """Render the sync jobs overview page with the server table."""
         servers = list(Server.objects.restrict(request.user, "view").order_by("name"))
         allowed_server_pks = set(Server.objects.restrict(request.user, "change").values_list("pk", flat=True))
         latest_jobs = _get_latest_jobs(servers)
@@ -172,42 +157,10 @@ class SyncJobsView(LoginRequiredMixin, View):
             request,
             self.template_name,
             {
-                "form": form,
                 "servers": servers,
                 "latest_jobs": latest_jobs,
                 "allowed_server_pks": allowed_server_pks,
-            },
-        )
-
-    def post(self, request):
-        """Save the SyncConfig form; the job reads the new values on its next run."""
-        if not request.user.has_perm("netbox_kea.change_syncconfig"):
-            return HttpResponseForbidden()
-
-        form = forms.SyncConfigForm(request.POST)
-        if form.is_valid():
-            sync_cfg = SyncConfig.get()
-            sync_cfg.interval_minutes = form.cleaned_data["interval_minutes"]
-            sync_cfg.sync_enabled = form.cleaned_data["sync_enabled"]
-            sync_cfg.sync_leases_enabled = form.cleaned_data["sync_leases_enabled"]
-            sync_cfg.sync_reservations_enabled = form.cleaned_data["sync_reservations_enabled"]
-            sync_cfg.sync_prefixes_enabled = form.cleaned_data["sync_prefixes_enabled"]
-            sync_cfg.sync_ip_ranges_enabled = form.cleaned_data["sync_ip_ranges_enabled"]
-            sync_cfg.save()
-            messages.success(request, "Sync configuration saved. A new interval applies after the next scheduled run.")
-            return HttpResponseRedirect(reverse("plugins:netbox_kea:sync_jobs"))
-
-        servers = list(Server.objects.restrict(request.user, "view").order_by("name"))
-        allowed_server_pks = set(Server.objects.restrict(request.user, "change").values_list("pk", flat=True))
-        latest_jobs = _get_latest_jobs(servers)
-        return render(
-            request,
-            self.template_name,
-            {
-                "form": form,
-                "servers": servers,
-                "latest_jobs": latest_jobs,
-                "allowed_server_pks": allowed_server_pks,
+                "can_view_settings": bool(visible_sections(request.user)),
             },
         )
 
@@ -239,6 +192,7 @@ class ServerSyncStatusView(ServerFamilyMixin, generic.ObjectView):
             "sync_toggle_url": server_family_url(request, instance, self, "server_sync_toggle"),
             "sync_now_url": server_family_url(request, instance, self, "server_sync_now"),
             "sync_cfg": sync_cfg,
+            "can_view_settings": bool(visible_sections(request.user)),
             **sync_nav_context(request, instance, self, "ipam"),
         }
 

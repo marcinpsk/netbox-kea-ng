@@ -1132,6 +1132,28 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
 
         self.assertEqual(_ipam_state(), before)
 
+    def test_a_settings_page_post_in_a_branch_is_refused_and_changes_nothing(self):
+        from core.models import ObjectChange
+
+        client = Client()
+        client.force_login(get_user_model().objects.create_superuser("settings-in-branch"))
+        url = reverse("plugins:netbox_kea:settings")
+        data = {"section": "sync", "sync-interval_minutes": 31, "sync-sync_enabled": "on"}
+        before = (self._main(), ObjectChange.objects.count())
+        client.cookies[COOKIE_NAME] = self.branch.schema_id
+
+        with _writes(self.branch) as writes:
+            response = client.post(url, data)
+
+        self.assertContains(response, f"Branch {self.branch.name} is active.", status_code=409)
+        self.assertEqual(writes, [])
+        self.assertEqual((self._main(), ObjectChange.objects.count()), before)
+        # The same data saves on main, so the refusal above is the branch and not the form.
+        del client.cookies[COOKIE_NAME]
+        self.assertEqual(client.post(url, data).status_code, 302)
+        self.assertEqual(SyncConfig.get().interval_minutes, 31)
+        self.assertEqual(ObjectChange.objects.count(), before[1] + 1)
+
     def test_on_main_a_save_and_a_delete_are_not_refused(self):
         self.server.ca_url = _AFTER
         self.server.save()
@@ -1631,9 +1653,6 @@ def _recorded_kea() -> dict:
     def config_get(body):
         return recorded[_family(body)]["config-get"]
 
-    def list_commands(body):
-        return recorded[_family(body)]["list-commands"]
-
     def reservation_page(body):
         return _res_page([_KEA_OBJECTS[_family(body)].reservation])
 
@@ -1642,7 +1661,6 @@ def _recorded_kea() -> dict:
 
     responses: dict = {
         "config-get": config_get,
-        "list-commands": list_commands,
         "status-get": {"result": 0, "arguments": {"pid": 1, "uptime": 3600, "reload": 0}},
         "version-get": {"result": 0, "text": "3.2.0", "arguments": {"extended": "3.2.0"}},
         "reservation-get-page": reservation_page,
@@ -2122,6 +2140,7 @@ class RenderedBranchControlsTest(TransactionTestCase):
             "server_reservations4",
             "server_leases4",
             "sync_jobs",
+            "settings",
         ):
             self.assertIn(f"plugins:netbox_kea:{name}", covered)
 

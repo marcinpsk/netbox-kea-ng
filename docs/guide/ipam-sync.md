@@ -105,7 +105,7 @@ Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `
 
 View job history, next scheduled time and logs under **System → Background Jobs → Kea IPAM Sync**.
 
-To change the sync interval, edit it on the **Sync Jobs** page. You do not need to restart the worker: the new interval applies after the next scheduled run.
+To change the sync interval, edit it on the **Settings** page. You do not need to restart the worker: the new interval applies after the next scheduled run.
 
 ## Manual Sync permissions
 

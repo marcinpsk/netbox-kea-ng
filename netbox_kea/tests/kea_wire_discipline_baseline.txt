@@ -7,7 +7,7 @@
 # Update: python3 netbox_kea/tests/kea_wire_discipline.py --update-baseline
 
 constants.py::<module>	2
-integrations/dhcp_plugin.py::<module>	44
+integrations/dhcp_plugin.py::<module>	43
 integrations/dhcp_plugin.py::_apply_reservation_identifier	4
 integrations/dhcp_plugin.py::_create_custom_option_def	1
 integrations/dhcp_plugin.py::_find_reservation	4
@@ -15,7 +15,7 @@ integrations/dhcp_plugin.py::_hr_identifiers	3
 integrations/dhcp_plugin.py::_relay_to_str	1
 integrations/dhcp_plugin.py::_send_option	2
 integrations/dhcp_plugin.py::_upsert_reservation	1
-mappers/kea_to_dhcp.py::<module>	44
+mappers/kea_to_dhcp.py::<module>	43
 mappers/kea_to_dhcp.py::_client_class_intent	4
 mappers/kea_to_dhcp.py::_option_def_intent	1
 mappers/kea_to_dhcp.py::_pools	1
@@ -24,7 +24,6 @@ mappers/kea_to_dhcp.py::parse_dhcp_config	6
 reservation_transfer.py::_parse_options	3
 tables.py::<module>	1
 utilities.py::parse_lease_csv	7
-views/dhcp_plugin_sync.py::_extract_dhcp_conf	2
 views/leases.py::_set_lease_reservation_fields	2
 views/options.py::BaseServerOptionDefAddView.get	1
 views/server.py::ServerStatusView._get_ca_status	2

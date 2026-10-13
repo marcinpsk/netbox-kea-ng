@@ -24,7 +24,7 @@ from django.utils import timezone
 from netbox_kea import server_configuration
 from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
-from netbox_kea.models import Server, next_confirmation_number
+from netbox_kea.models import next_confirmation_number
 from netbox_kea.reservations import (
     RESERVATION_INVALID_IDENTIFIER,
     RESERVATION_PAGE_FETCH_FAILED,
@@ -34,7 +34,7 @@ from netbox_kea.reservations import (
 )
 from netbox_kea.subnet_catalogue import IncompleteCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
-from .kea_stub import _res_page, kea_client, stub_kea
+from .kea_stub import _res_page, kea_client, observed_configuration, stub_kea
 from .utils import _make_db_server, lease_phase, linked_dhcp_targets, plugins_config
 
 DHCP_PLUGIN = "netbox_dhcp"
@@ -81,7 +81,7 @@ def _catalogue(conf: dict, version: Family) -> IncompleteCatalogueSnapshot:
     """Return the Subnet identities of *conf* with the effective DDNS qualifying suffixes."""
     entries = _subnet_entries(conf, version)
     # The real parser reads the effective DDNS qualifying suffixes from *conf*.
-    configuration = server_configuration.observed_snapshot(Server(pk=1), version, conf)
+    configuration = observed_configuration(version, conf)
     declared = {subnet.declared_subnet_id: subnet for subnet in configuration.subnets}
     suffixes = {
         subnet_id: server_configuration.effective_qualifying_suffix(configuration, subnet)
@@ -717,6 +717,14 @@ class DhcpPluginTuningImportTest(TestCase):
 
         self.adapter = dhcp_plugin
 
+    def _import(self, conf: dict) -> None:
+        """Import *conf* through the live read of the DHCP plugin sync."""
+        from netbox_kea.views.dhcp_plugin_sync import _fetch_config_intent
+
+        with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": conf}}}):
+            intent = _fetch_config_intent(self.server, 4)
+        self.adapter.import_server_config(self.server, intent)
+
     def test_global_settings_applied_to_dhcp_server(self):
         from decimal import Decimal
 
@@ -729,10 +737,10 @@ class DhcpPluginTuningImportTest(TestCase):
             "decline-probation-period": 86400,
             "ddns-replace-client-name": "when-not-present",
             "server-id": {"type": "LLT", "enterprise-id": 0},
-            "host-reservation-identifiers": ["hw-address", "duid", "circuit-id", "client-id"],
+            "host-reservation-identifiers": ["hw-address", "duid", "circuit-id", "client-id", "flex-id"],
             "subnet4": [],
         }
-        self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        self._import(conf)
 
         srv = DHCPServer.objects.get(name=self.server.name)
         self.assertEqual(srv.valid_lifetime, 3600)
@@ -744,7 +752,14 @@ class DhcpPluginTuningImportTest(TestCase):
         self.assertEqual(srv.ddns_replace_client_name, "when_not_present")
         # server-id dict reduced to its type
         self.assertEqual(srv.server_id, "LLT")
+        # The plugin's choice set has no flex-id.
         self.assertEqual(srv.host_reservation_identifiers, ["hw-address", "duid", "circuit-id", "client-id"])
+
+    def test_absent_host_reservation_identifiers_keep_the_stored_value(self):
+        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        self._import({"host-reservation-identifiers": ["duid"], "subnet4": []})
+        self._import({"valid-lifetime": 3600, "subnet4": []})
+        self.assertEqual(DHCPServer.objects.get(name=self.server.name).host_reservation_identifiers, ["duid"])
 
     def test_subnet_value_equal_to_global_is_suppressed(self):
         Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")

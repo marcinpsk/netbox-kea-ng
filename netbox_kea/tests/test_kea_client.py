@@ -54,6 +54,7 @@ from netbox_kea.leases import (
     _creation_arguments,
     shown_lease,
 )
+from netbox_kea.subnet_catalogue import SubnetIdentity
 from netbox_kea.tests.kea_stub import (
     LeaseDaemon,
     _http_response,
@@ -430,47 +431,6 @@ class TestCheckResponse(TestCase):
 # Phase 2: Reservation Management — helper method tests
 # These tests will FAIL until the methods are added to KeaClient.
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-class TestGetAvailableCommands(TestCase):
-    """Tests for KeaClient.get_available_commands(family) -> set[str]."""
-
-    def setUp(self):
-        self.client = kea_client(url="http://kea:8000")
-
-    def _patched_post(self, json_data):
-        return patch.object(self.client._session, "post", return_value=_mock_http_response(json_data))
-
-    def test_returns_set_of_command_names(self):
-        resp = [{"result": 0, "arguments": ["reservation-add", "reservation-get-page", "reservation-del"]}]
-        with self._patched_post(resp):
-            result = self.client.get_available_commands(4)
-        self.assertIsInstance(result, set)
-        self.assertIn("reservation-add", result)
-        self.assertIn("reservation-get-page", result)
-        self.assertIn("reservation-del", result)
-
-    def test_handles_empty_arguments(self):
-        resp = [{"result": 0, "arguments": []}]
-        with self._patched_post(resp):
-            result = self.client.get_available_commands(4)
-        self.assertEqual(result, set())
-
-    def test_sends_list_commands_to_correct_service(self):
-        resp = [{"result": 0, "arguments": ["reservation-add"]}]
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            self.client.get_available_commands(4)
-        sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
-        self.assertEqual(sent_json["command"], "list-commands")
-        self.assertEqual(sent_json["service"], ["dhcp4"])
-
-    def test_works_for_dhcp6_service(self):
-        resp = [{"result": 0, "arguments": ["reservation-add", "reservation-get-page"]}]
-        with patch.object(self.client._session, "post", return_value=_mock_http_response(resp)) as mock_post:
-            result = self.client.get_available_commands(6)
-        self.assertIsInstance(result, set)
-        sent_json = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
-        self.assertEqual(sent_json["service"], ["dhcp6"])
 
 
 # ---------------------------------------------------------------------------
@@ -1167,7 +1127,8 @@ class TestLeaseSearch(TestCase):
     def test_rejects_invalid_query_parameters_before_any_request(self):
         cases = (
             (5, "ip", "198.18.0.10", None, "version must be 4 or 6"),
-            (4, "subnet", "", None, "non-empty CIDR"),
+            (4, "subnet", "198.18.0.0/24", None, "Subnet Identity"),
+            (4, "subnet", SubnetIdentity(subnet_id=1, network=ipaddress.ip_network("2001:db8::/64")), None, "DHCPv4"),
             (4, "hostname", "", None, "non-empty string"),
             (4, "subnet_id", True, None, "positive integer"),
             (4, "subnet_id", 1.5, None, "positive integer"),
@@ -1427,133 +1388,20 @@ class TestLeaseSearch(TestCase):
 
         self.assertEqual(kea.commands(), ["stat-lease6-get"])
 
-    def test_subnet_cidr_resolves_to_id_before_guarded_query(self):
+    def test_a_subnet_identity_is_queried_by_its_id(self):
         lease = complete_lease({"ip-address": "198.18.0.10", "state": 0})
+        identity = SubnetIdentity(subnet_id=12, network=ipaddress.ip_network("198.18.0.0/24"))
         with stub_kea(
             {
-                "config-get": {
-                    "result": 0,
-                    "arguments": {"Dhcp4": {"subnet4": [{"id": 12, "subnet": "198.18.0.0/24"}]}},
-                },
                 "stat-lease4-get": _subnet_stats(4, 12, assigned=1),
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": [lease]}},
             }
         ) as kea:
-            result = self.client.lease_search(4, "subnet", "198.18.0.0/24", state="assigned", server_id=1)
+            result = self.client.lease_search(4, "subnet", identity, state="assigned", server_id=1)
 
         self.assertEqual(result.records, _typed(lease))
-        self.assertEqual(
-            kea.commands(),
-            ["config-get", "stat-lease4-get", "lease4-get-by-state"],
-        )
-
-    def test_subnet_cidr_resolves_a_shared_network_member(self):
-        with stub_kea(
-            {
-                "config-get": {
-                    "result": 0,
-                    "arguments": {
-                        "Dhcp4": {
-                            "subnet4": [],
-                            "shared-networks": [{"name": "access", "subnet4": [{"id": 12, "subnet": "198.18.0.0/24"}]}],
-                        }
-                    },
-                },
-                "stat-lease4-get": _subnet_stats(4, 12, assigned=0),
-                "lease4-get-all": {"result": 3},
-            }
-        ) as kea:
-            result = self.client.lease_search(4, "subnet", "198.18.0.0/24", server_id=1)
-
-        self.assertEqual(result.records, ())
-        self.assertEqual(kea.commands(), ["config-get", "stat-lease4-get", "lease4-get-all"])
-
-    def test_subnet_cidr_matches_equivalent_configured_network_text(self):
-        lease = complete_lease({"ip-address": "2001:db8::10", "state": 0})
-        with stub_kea(
-            {
-                "config-get": {
-                    "result": 0,
-                    "arguments": {
-                        "Dhcp6": {"subnet6": [{"id": 21, "subnet": "2001:0db8:0:0::/64"}]},
-                    },
-                },
-                "stat-lease6-get": _subnet_stats(6, 21, assigned=1),
-                "lease6-get-all": {"result": 0, "arguments": {"leases": [lease]}},
-            }
-        ) as kea:
-            result = self.client.lease_search(6, "subnet", "2001:db8::/64", server_id=1)
-
-        self.assertEqual(result.records, _typed(lease))
-        self.assertEqual(kea.commands(), ["config-get", "stat-lease6-get", "lease6-get-all"])
-
-    def test_malformed_configured_subnet_network_is_rejected_without_a_match(self):
-        cases = (
-            ("not-a-subnet-entry", "malformed Subnet entry"),
-            ({"id": 21, "subnet": None}, "valid IPv6 CIDR"),
-            ({"id": 21, "subnet": "not-a-network"}, "valid IPv6 CIDR"),
-            ({"id": 21, "subnet": "198.18.0.0/24"}, "valid IPv6 CIDR"),
-        )
-
-        for configured_subnet, message in cases:
-            with (
-                self.subTest(configured_subnet=configured_subnet),
-                stub_kea(
-                    {
-                        "config-get": {
-                            "result": 0,
-                            "arguments": {"Dhcp6": {"subnet6": [configured_subnet]}},
-                        }
-                    }
-                ),
-                self.assertRaisesRegex(RuntimeError, message),
-            ):
-                self.client.configured_subnet_id_from_cidr(6, "2001:db8::/64")
-
-    def test_matching_configured_subnet_requires_a_valid_id(self):
-        for subnet_id in (None, True, 0, "21"):
-            with (
-                self.subTest(subnet_id=subnet_id),
-                stub_kea(
-                    {
-                        "config-get": {
-                            "result": 0,
-                            "arguments": {"Dhcp6": {"subnet6": [{"id": subnet_id, "subnet": "2001:db8::/64"}]}},
-                        }
-                    }
-                ),
-                self.assertRaisesRegex(RuntimeError, "without a valid ID"),
-            ):
-                self.client.configured_subnet_id_from_cidr(6, "2001:db8::/64")
-
-    def test_two_subnets_for_one_network_are_ambiguous(self):
-        # Kea 3.2.0 loads both spellings as separate Subnets.
-        subnets = [{"id": 21, "subnet": "2001:db8::5/64"}, {"id": 22, "subnet": "2001:db8::/64"}]
-        with (
-            stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp6": {"subnet6": subnets}}}}),
-            self.assertRaisesRegex(RuntimeError, r"more than one Subnet for 2001:db8::/64: IDs \[21, 22\]"),
-        ):
-            self.client.configured_subnet_id_from_cidr(6, "2001:db8::/64")
-
-    def test_malformed_unrelated_subnet_does_not_hide_matching_network(self):
-        with stub_kea(
-            {
-                "config-get": {
-                    "result": 0,
-                    "arguments": {
-                        "Dhcp6": {
-                            "subnet6": [
-                                {"id": 20, "subnet": "not-a-network"},
-                                {"id": 21, "subnet": "2001:0db8:0:0::/64"},
-                            ]
-                        }
-                    },
-                }
-            }
-        ):
-            subnet_id = self.client.configured_subnet_id_from_cidr(6, "2001:db8::/64")
-
-        self.assertEqual(subnet_id, 21)
+        self.assertEqual((result.query.selector, result.query.value), ("subnet", "198.18.0.0/24"))
+        self.assertEqual(kea.commands(), ["stat-lease4-get", "lease4-get-by-state"])
 
     def test_explicitly_disabled_guard_skips_statistics(self):
         client = kea_client(url="http://kea:8000", max_unpaged_leases=None)
@@ -2206,21 +2054,3 @@ class TestPersistConfigFlag(TestCase):
         with stub_kea({}) as kea:
             self.assertEqual(client.persist(4).persistence, "not-requested")
         self.assertEqual(kea.commands(), [])
-
-
-# ---------------------------------------------------------------------------
-# Coverage-gap tests — lines not yet exercised by the suite above
-# ---------------------------------------------------------------------------
-
-
-class TestGetAvailableCommandsMalformed(TestCase):
-    """get_available_commands raises RuntimeError on empty / non-dict response."""
-
-    def setUp(self):
-        self.client = kea_client(url="http://kea:8000")
-
-    def test_empty_list_raises_runtime_error(self):
-        """Empty response list hits the 'not resp' branch and raises RuntimeError."""
-        with patch.object(self.client._session, "post", return_value=_mock_http_response([])):
-            with self.assertRaises(RuntimeError):
-                self.client.get_available_commands(4)
