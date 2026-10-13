@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlsplit
 import requests
 from bs4 import BeautifulSoup
 from django.apps import apps
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -25,10 +25,9 @@ from netbox_kea.kea import KeaException
 from netbox_kea.views import dhcp_plugin_sync as dps
 
 from .kea_stub import _res_page, _subnet_list, stub_kea
-from .utils import _make_db_server, plugins_config
+from .utils import _make_db_server
 
 DHCP_PLUGIN = "netbox_dhcp"
-_PLUGINS_CONFIG = plugins_config()
 
 
 def _request_version(body: dict) -> int:
@@ -98,7 +97,6 @@ class SyncResponseRoutingTest(SimpleTestCase):
         self.assertEqual(responses["subnet4-list"]["arguments"]["subnets"], [top_level, member])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class ReadReservationObservationTest(TestCase):
     """`_read_reservation_observation` distinguishes partial data from read failure."""
 
@@ -127,7 +125,6 @@ class ReadReservationObservationTest(TestCase):
         self.assertIsNone(snapshot)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TabVisibilityTest(TestCase):
     """The DHCP-plugin tab hides itself unless the plugin is installed AND opted in."""
 
@@ -147,7 +144,6 @@ class TabVisibilityTest(TestCase):
             self.assertTrue(dps._tab_enabled(server))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class SyncNowGuardTest(TestCase):
     """The sync-now action refuses when the plugin is absent or not opted in."""
 
@@ -173,7 +169,6 @@ class SyncNowGuardTest(TestCase):
         self.assertContains(resp, "Enable &#x27;Sync to DHCP plugin&#x27;")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class SyncNowEndToEndTest(TestCase):
     """Full path: POST sync-now → real KeaClient over a stubbed transport → real rows."""
 
@@ -308,7 +303,6 @@ class SyncNowEndToEndTest(TestCase):
         self.assertIn("Shared Network grouping", notes.get_text())
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class FetchConfigIntentTest(TestCase):
     """`_fetch_config_intent` surfaces a malformed config-get as a logged skip, not a crash."""
 
@@ -341,7 +335,6 @@ class FetchConfigIntentTest(TestCase):
             self.assertTrue(any(reason in line for line in cm.output), cm.output)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class FetchConfigCollectionsTest(TestCase):
     def test_malformed_collections_are_logged_as_read_failures(self):
         server = _make_db_server(name="config-shape-test")
@@ -377,7 +370,6 @@ class FetchConfigCollectionsTest(TestCase):
         self.assertEqual([entry.name for entry in intent.client_classes], ["test-class"])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class SyncNowErrorHandlingTest(TestCase):
     """The sync action follows the exception contract and never leaks a traceback."""
 

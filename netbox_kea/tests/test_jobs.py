@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 from core.exceptions import JobFailed
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from ipam.models import IPAddress as NbIP
 from ipam.models import IPRange, Prefix
 
@@ -32,12 +32,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import plugins_config
-
-_PLUGINS_CONFIG = plugins_config(stale_ip_cleanup="none")
-
-# Variant used by tests that exercise the stale-IP cleanup path.
-_PLUGINS_CONFIG_CLEANUP = plugins_config()
+from .utils import with_sync_config
 
 _LEASE4 = {
     "ip-address": "10.0.0.1",
@@ -191,7 +186,7 @@ def _patch_kea(
         yield stub
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_sync_config(stale_ip_cleanup="none")
 class TestKeaIpamSyncJobRun(TestCase):
     """Run the job with real sync helpers and ORM writes; stub only Kea HTTP."""
 
@@ -319,7 +314,7 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     # ── basic lease sync ──────────────────────────────────────────────────────
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
+    @with_sync_config(stale_ip_cleanup="remove")
     def test_malformed_foreign_lease_hostname_is_excluded_from_keep_set(self):
         self._make_db_server(dhcp6=False)
         foreign = NbIP.objects.create(address="198.18.0.20/32", status="active", description="Manual address")
@@ -552,7 +547,7 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     # ── truncation ─────────────────────────────────────────────────────────
 
-    @override_settings(PLUGINS_CONFIG=plugins_config(sync_max_leases_per_server=1))
+    @with_sync_config(sync_max_leases_per_server=1)
     def test_truncation_warning_skips_cleanup(self):
         """Truncated lease fetch → warning logged and stale IP not removed.
 
@@ -702,7 +697,7 @@ class TestKeaIpamSyncJobRun(TestCase):
 
         self.assertEqual([entry["errors"] for entry in job.data["summary"]], [1])
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
+    @with_sync_config(stale_ip_cleanup="remove")
     def test_cleanup_skipped_when_host_cmds_absent(self):
         """Reservation phase skipped (host_cmds absent) → an incomplete phase → stale IP preserved."""
         from ipam.models import IPAddress
@@ -726,7 +721,7 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     # ── stale-IP cleanup ──────────────────────────────────────────────────
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
+    @with_sync_config(stale_ip_cleanup="remove")
     def test_stale_ip_removed_after_successful_sync(self):
         """An adopted lease that expires after the first complete run is removed."""
         from ipam.models import IPAddress
@@ -744,7 +739,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run()
         self.assertFalse(IPAddress.objects.filter(pk=stale.pk).exists())
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
+    @with_sync_config(stale_ip_cleanup="remove")
     def test_stale_ip_preserved_when_sync_errors_occurred(self):
         """Partial lease-sync failure → cleanup skipped → stale IP not touched."""
         from ipam.models import IPAddress
@@ -762,7 +757,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             self._run_raises()
         self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
+    @with_sync_config(stale_ip_cleanup="remove")
     def test_an_incomplete_snapshot_syncs_valid_records_but_preserves_stale_ips(self):
         """Kea did not show every Reservation, so the run is additive only.
 
@@ -841,7 +836,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.100").exists())
         self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.101").exists())
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP)
+    @with_sync_config(stale_ip_cleanup="remove")
     def test_reservation_pagination_preserves_valid_rows_before_a_later_failure(self):
         """A later page failure keeps earlier rows and suppresses stale cleanup."""
         from ipam.models import IPAddress
@@ -1051,7 +1046,7 @@ class TestKeaIpamSyncJobRun(TestCase):
     def test_unhandled_exception_in_sync_one_server_is_caught(self):
         """A completion-state database error is caught by the server loop."""
         self._make_db_server()
-        with override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG_CLEANUP):
+        with with_sync_config(stale_ip_cleanup="remove"):
             with _patch_kea(leases4=[_LEASE4], reservations=[]):
                 with patch(
                     "netbox_kea.jobs.complete_job_observation", side_effect=RuntimeError("db gone"), autospec=True
@@ -1071,7 +1066,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         self.assertNotIn("%s", failures[0])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_sync_config(stale_ip_cleanup="none")
 class TestJobLogRendersValues(TestCase):
     """The job log must show real values, never unsubstituted format placeholders.
 
@@ -1107,7 +1102,7 @@ class TestJobLogRendersValues(TestCase):
         self.assertTrue(any("kea-logfmt" in m for m in messages), messages)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_sync_config(stale_ip_cleanup="none")
 class TestKeaIpamSyncJobKillSwitches(TestCase):
     """Tests for SyncConfig global kill-switch, per-server sync_enabled, and job metadata.
 
@@ -1204,9 +1199,9 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
         mock_job.save.assert_called_once_with(update_fields=["data"])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_sync_config(stale_ip_cleanup="none")
 class TestSyncIntervalFromSyncConfig(TestCase):
-    """The stored SyncConfig.interval_minutes sets every periodic schedule; PLUGINS_CONFIG does not."""
+    """The stored SyncConfig.interval_minutes sets every periodic schedule."""
 
     def _db_job(self, *, interval: int | None):
         import uuid
@@ -1260,7 +1255,7 @@ class TestSyncIntervalFromSyncConfig(TestCase):
         self.assertFalse(self._successors(job).exists())
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_sync_config(stale_ip_cleanup="none")
 class TestJobSaveFailure(TestCase):
     """A JobRunner persistence failure is logged after the real job flow finishes."""
 
@@ -1277,7 +1272,7 @@ class TestJobSaveFailure(TestCase):
         self.assertTrue(any("Failed to persist sync job summary data" in message for message in logs.output))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_sync_config(stale_ip_cleanup="none")
 class TestSubnetCatalogueJob(TestCase):
     def setUp(self):
         from netbox_kea.tests.utils import _make_db_server

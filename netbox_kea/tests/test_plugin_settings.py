@@ -1,101 +1,109 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""NetBox validates the plugin settings at startup, before any reader uses them."""
+"""The settings rows are the only runtime source; a removed PLUGINS_CONFIG key only logs a warning (ADR 0010)."""
 
-from django.core.exceptions import ImproperlyConfigured
-from django.test import SimpleTestCase, override_settings
-from utilities.release import load_release_data
+import importlib
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 
-from netbox_kea import NetBoxKeaConfig
-from netbox_kea.constants import STALE_CLEANUP_MODES
+from django.test import SimpleTestCase, TestCase, override_settings
+
+from netbox_kea import REMOVED_SETTINGS, warn_removed_settings
 from netbox_kea.ipam_reconciliation import _get_stale_cleanup_mode
-from netbox_kea.models import _get_kea_timeout, _get_max_unpaged_leases
-from netbox_kea.tests.utils import plugins_config
+from netbox_kea.models import KeaClientConfig, Server
+from netbox_kea.tests.utils import with_kea_client_config, with_sync_config
 
-NETBOX_VERSION = load_release_data().version
+_SEED = importlib.import_module("netbox_kea.migrations.0018_seed_syncconfig")
+_COPY = importlib.import_module("netbox_kea.migrations.0025_keaclientconfig_and_sync_settings")
 
-# key -> (the allowed values as the error names them, bad values of a wrong type or out of range)
-BAD_VALUES = {
-    "kea_timeout": ("an integer of at least 1", ["30", True, 2.5, None, 0, -1]),
-    "lease_query_max_unpaged_leases": ("an integer of at least 0", ["1000", False, 2.5, None, -1]),
-    "stale_ip_cleanup": ("one of remove, deprecate, none", [1, None, ["remove"], "delete", "Remove"]),
-    "sync_interval_minutes": ("an integer from 1 to 1440", ["5", True, 5.0, 0, 1441]),
-    "sync_enabled": ("True or False", [1, 0, "false", None]),
-    "sync_leases_enabled": ("True or False", [1, 0, "True", None]),
-    "sync_reservations_enabled": ("True or False", [1, 0, "False", None]),
-    "sync_prefixes_enabled": ("True or False", [1, 0, "yes", None]),
-    "sync_ip_ranges_enabled": ("True or False", [1, 0, "no", None]),
-    "sync_max_leases_per_server": ("an integer of at least 0", ["50000", True, 1e5, None, -1]),
+_STARTUP_SETTINGS = """\
+from netbox_kea.tests.isolated_settings import *  # noqa: F403
+
+PLUGINS_CONFIG["netbox_kea"] = {"kea_timeout": 10, "not_a_setting": 1}  # noqa: F405
+LOGGING = {
+    "version": 1,
+    "handlers": {"stderr": {"class": "logging.StreamHandler"}},
+    "loggers": {"netbox_kea": {"handlers": ["stderr"], "level": "WARNING"}},
 }
-
-VALID_CUSTOM = {
-    "kea_timeout": 5,
-    "lease_query_max_unpaged_leases": 0,
-    "stale_ip_cleanup": "deprecate",
-    "sync_interval_minutes": 1440,
-    "sync_enabled": False,
-    "sync_leases_enabled": False,
-    "sync_reservations_enabled": False,
-    "sync_prefixes_enabled": False,
-    "sync_ip_ranges_enabled": False,
-    "sync_max_leases_per_server": 0,
-}
+"""
 
 
-def validated(user_config: dict) -> dict:
-    """Return a copy of *user_config* as NetBox leaves it after startup validation."""
-    config = dict(user_config)
-    NetBoxKeaConfig.validate(config, NETBOX_VERSION)
-    return config
+class RemovedSettingWarningTest(SimpleTestCase):
+    def test_each_removed_key_logs_one_warning_that_names_it_and_the_settings_page(self):
+        config = {"netbox_kea": {"kea_timeout": 10, "stale_ip_cleanup": "deprecate"}}
+        with override_settings(PLUGINS_CONFIG=config), self.assertLogs("netbox_kea", "WARNING") as logs:
+            warn_removed_settings()
+
+        self.assertEqual(len(logs.records), 2, logs.output)
+        for record, key in zip(logs.records, ("kea_timeout", "stale_ip_cleanup"), strict=True):
+            message = record.getMessage()
+            self.assertIn(f"['{key}'] is ignored", message)
+            self.assertIn("Settings page (DHCP Kea > Settings)", message)
+
+    def test_a_key_that_was_never_a_setting_logs_nothing(self):
+        for config in ({}, {"netbox_kea": {}}, {"netbox_kea": {"not_a_setting": 1}}):
+            with self.subTest(config=config), override_settings(PLUGINS_CONFIG=config):
+                with self.assertNoLogs("netbox_kea", "WARNING"):
+                    warn_removed_settings()
+
+    def test_every_key_that_a_migration_copies_is_a_removed_setting(self):
+        copied = {
+            "sync_interval_minutes",
+            "sync_enabled",
+            *_SEED.TYPE_TOGGLES,
+            *_COPY.SYNC_KEYS,
+            *_COPY.KEA_CLIENT_KEYS,
+        }
+
+        self.assertEqual(set(REMOVED_SETTINGS), copied)
 
 
-class PluginSettingsValidationTest(SimpleTestCase):
-    def test_every_default_setting_is_covered_here(self):
-        self.assertEqual(set(BAD_VALUES), set(NetBoxKeaConfig.default_settings))
-        self.assertEqual(set(VALID_CUSTOM), set(NetBoxKeaConfig.default_settings))
+class StartupWithRemovedSettingTest(SimpleTestCase):
+    def test_startup_logs_the_warning_and_succeeds(self):
+        environment = os.environ.copy()
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "removed_setting_settings.py").write_text(_STARTUP_SETTINGS)
+            environment["PYTHONPATH"] = os.pathsep.join(
+                [directory, *(str(Path(entry or Path.cwd()).resolve()) for entry in sys.path)]
+            )
+            environment["DJANGO_SETTINGS_MODULE"] = "removed_setting_settings"
+            result = subprocess.run(
+                [sys.executable, "-c", "import django; django.setup(); print('started')"],
+                capture_output=True,
+                check=False,
+                env=environment,
+                text=True,
+                timeout=300,
+            )
 
-    def test_a_bad_value_fails_at_startup_and_names_the_key_the_rule_and_the_value(self):
-        for key, (allowed, values) in BAD_VALUES.items():
-            for value in values:
-                with self.subTest(key=key, value=value):
-                    message = f"netbox_kea: {key} must be {allowed}, not {value!r}"
-                    with self.assertRaisesMessage(ImproperlyConfigured, message):
-                        validated({key: value})
-
-    def test_the_defaults_pass_and_netbox_fills_them_in(self):
-        self.assertEqual(validated({}), NetBoxKeaConfig.default_settings)
-
-    def test_a_valid_custom_config_passes_unchanged(self):
-        self.assertEqual(validated(VALID_CUSTOM), VALID_CUSTOM)
-
-    def test_every_stale_cleanup_mode_passes(self):
-        for mode in STALE_CLEANUP_MODES:
-            with self.subTest(mode=mode):
-                validated({"stale_ip_cleanup": mode})
-
-    def test_the_range_limits_pass(self):
-        for key, value in (
-            ("kea_timeout", 1),
-            ("lease_query_max_unpaged_leases", 0),
-            ("sync_interval_minutes", 1),
-            ("sync_interval_minutes", 1440),
-            ("sync_max_leases_per_server", 0),
-        ):
-            with self.subTest(key=key, value=value):
-                validated({key: value})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("started", result.stdout)
+        warnings = [line for line in result.stderr.splitlines() if "is ignored" in line]
+        self.assertEqual(len(warnings), 1, result.stderr)
+        self.assertIn("PLUGINS_CONFIG['netbox_kea']['kea_timeout'] is ignored", warnings[0])
+        self.assertIn("DHCP Kea > Settings", warnings[0])
 
 
-class PluginSettingsReaderTest(SimpleTestCase):
-    def test_each_reader_returns_the_configured_value(self):
-        with override_settings(PLUGINS_CONFIG=plugins_config(**{**VALID_CUSTOM, "kea_timeout": 7})):
-            self.assertEqual(_get_kea_timeout(), 7)
-            self.assertIsNone(_get_max_unpaged_leases())
-            self.assertEqual(_get_stale_cleanup_mode(), "deprecate")
-        with override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=250)):
-            self.assertEqual(_get_max_unpaged_leases(), 250)
+class SettingsRowReaderTest(TestCase):
+    @with_kea_client_config(kea_timeout=7, lease_query_max_unpaged_leases=250)
+    @with_sync_config(stale_ip_cleanup="deprecate")
+    def test_each_reader_returns_the_row_value(self):
+        client = Server(name="reader", ca_url="https://kea.example.invalid/").get_client(version=4)
 
-    def test_a_reader_has_no_fallback_for_a_missing_key(self):
-        for reader in (_get_kea_timeout, _get_max_unpaged_leases, _get_stale_cleanup_mode):
-            with self.subTest(reader=reader.__name__), override_settings(PLUGINS_CONFIG={"netbox_kea": {}}):
-                with self.assertRaises(KeyError):
-                    reader()
+        self.assertEqual((client.timeout, client.max_unpaged_leases), (7, 250))
+        self.assertEqual(_get_stale_cleanup_mode(), "deprecate")
+
+    @with_kea_client_config(lease_query_max_unpaged_leases=0)
+    def test_zero_disables_the_lease_query_guard(self):
+        client = Server(name="reader", ca_url="https://kea.example.invalid/").get_client(version=4)
+
+        self.assertIsNone(client.max_unpaged_leases)
+
+    def test_get_client_has_no_fallback_for_a_missing_row(self):
+        KeaClientConfig.objects.all().delete()
+
+        with self.assertRaises(KeaClientConfig.DoesNotExist):
+            Server(name="reader", ca_url="https://kea.example.invalid/").get_client(version=4)

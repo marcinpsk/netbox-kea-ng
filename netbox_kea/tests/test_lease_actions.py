@@ -12,7 +12,6 @@ from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from django.contrib.messages import get_messages
-from django.test import override_settings
 from django.urls import reverse
 from django.utils.html import escape
 
@@ -20,7 +19,7 @@ from netbox_kea import signals
 from netbox_kea.leases import DHCPv4LeaseRequest, DHCPv6PrefixLease
 
 from .kea_stub import LeaseDaemon, _catalogue_responses_for_subnets, lease_record, stub_kea
-from .utils import _PLUGINS_CONFIG, _ViewTestBase
+from .utils import _ViewTestBase
 
 _SUBNETS = {4: [{"id": 10, "subnet": "192.0.2.0/24"}], 6: [{"id": 10, "subnet": "2001:db8:1::/64"}]}
 _PREFIX = "2001:db8:100:600::"
@@ -76,7 +75,6 @@ class _Received:
         self.calls.append(kwargs)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class LeaseEditTest(_ViewTestBase):
     """Edit derives the written fields from the shown values and checks a fresh read before it writes."""
 
@@ -263,7 +261,6 @@ class LeaseEditTest(_ViewTestBase):
         self.assertEqual(_messages(response), [f"Lease {_PREFIX} not found."])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class LeaseDeleteTest(_ViewTestBase):
     """Delete carries the facts of the list row and checks a fresh read before it deletes."""
 
@@ -377,7 +374,6 @@ class LeaseDeleteTest(_ViewTestBase):
         self.assertEqual(received.calls, [])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class LeaseAddTest(_ViewTestBase):
     """Creation sends a typed request and reports what Kea confirmed and what a fresh read observed."""
 
@@ -510,7 +506,6 @@ class LeaseAddTest(_ViewTestBase):
         )
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class LeaseReserveTest(_ViewTestBase):
     """Reserve and the reservation badges compare a delegated prefix with the Reservation prefixes."""
 

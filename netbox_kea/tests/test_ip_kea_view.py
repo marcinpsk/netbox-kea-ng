@@ -13,15 +13,12 @@ URL name: ``plugins:netbox_kea:ipaddress_kea_reservations``
 """
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.urls import reverse
 
 from netbox_kea.models import Server
-from netbox_kea.tests.utils import plugins_config
 
 User = get_user_model()
-
-_PLUGINS_CONFIG = plugins_config()
 
 
 def _make_server(name, dhcp4=True, dhcp6=False):
@@ -48,7 +45,6 @@ def _url(pk):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestIPAddressKeaViewAuth(TestCase):
     """Login and 404 behaviour."""
 
@@ -77,7 +73,6 @@ class TestIPAddressKeaViewAuth(TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestIPv4AddressPanel(TestCase):
     """For an IPv4 address only dhcp4-enabled servers appear."""
 
@@ -123,7 +118,6 @@ class TestIPv4AddressPanel(TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestIPv6AddressPanel(TestCase):
     """For an IPv6 address only dhcp6-enabled servers appear."""
 
@@ -161,7 +155,6 @@ class TestIPv6AddressPanel(TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestDualStackServer(TestCase):
     """A server with both dhcp4+dhcp6 appears for both address families."""
 
@@ -186,7 +179,6 @@ class TestDualStackServer(TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestIPWithoutHostname(TestCase):
     """When dns_name is empty the hostname param is omitted or empty."""
 

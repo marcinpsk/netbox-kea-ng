@@ -8,13 +8,12 @@ the real view, and checks that no Kea command was sent.
 """
 
 from django.contrib.messages import get_messages
-from django.test import override_settings
 from django.urls import reverse
 from django.utils.html import escape
 
 from .kea_stub import LeaseDaemon, stub_kea
 from .test_lease_actions import _address4, _inputs
-from .utils import _PLUGINS_CONFIG, _ViewTestBase, save_key_without_certificate
+from .utils import _ViewTestBase, save_key_without_certificate
 
 _IDENTITY = {"identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"}
 
@@ -23,7 +22,6 @@ def _messages(response) -> list[str]:
     return [str(message) for message in get_messages(response.wsgi_request)]
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class ClientSettingsErrorTest(_ViewTestBase):
     def _url(self, name: str, *args) -> str:
         return reverse(f"plugins:netbox_kea:{name}", args=[self.server.pk, *args])

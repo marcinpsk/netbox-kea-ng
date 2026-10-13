@@ -12,18 +12,17 @@ them.
 import json
 
 from django.contrib.auth import get_user_model
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from ipam.models import VRF
 
 from netbox_kea.graphql import ServerType
 from netbox_kea.models import Server
 
-from .utils import _make_db_server, plugins_config
+from .utils import _make_db_server
 
 User = get_user_model()
 
-_PLUGINS_CONFIG = plugins_config()
 
 #: Never publish a credential over GraphQL. custom_field_data is NetBox's own JSON
 #: store, which CustomFieldsMixin exposes as ``custom_fields``.
@@ -65,7 +64,6 @@ class TestServerTypeCoversEveryEditableField(SimpleTestCase):
         self.assertEqual(exposed & {"ca_password", "dhcp4_password", "dhcp6_password"}, set())
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerGraphQLQuery(TestCase):
     """Query the real schema over HTTP, the way a GraphQL client does."""
 

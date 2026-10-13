@@ -23,7 +23,7 @@ from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import SyncConfig
 from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, complete_lease, queued
 from netbox_kea.tests.test_jobs import _lease_page, _patch_kea
-from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server, plugins_config
+from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server, with_sync_config
 
 _SUBNETS = [{"id": 1, "subnet": "198.18.0.0/24"}]
 _LEASE = complete_lease(
@@ -38,7 +38,6 @@ _LEASE = complete_lease(
 _EVENTS_RECORDER = "netbox_kea.tests.utils.record_dispatched_events"
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
 class SyncJobChangeRecordTest(TestCase):
     def setUp(self):
         self.server = _make_db_server(dhcp6=False, sync_reservations_enabled=False)
@@ -230,7 +229,7 @@ class SyncJobChangeRecordTest(TestCase):
         self.assertEqual(update.postchange_data["status"], "dhcp")
         self.assertEqual(move.request_id, update.request_id)
 
-    @override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="deprecate"))
+    @with_sync_config(stale_ip_cleanup="deprecate")
     def test_stale_ip_deprecation_records_the_previous_status(self):
         self.assertEqual(self._run(leases=[_LEASE]).status, "completed")
         ip = IPAddress.objects.get(address__net_host="198.18.0.42")
@@ -400,7 +399,6 @@ class SyncJobChangeRecordTest(TestCase):
                 actor.delete()
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
 class ManualSyncJobChangeRecordTest(TransactionTestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_superuser("sync-operator")

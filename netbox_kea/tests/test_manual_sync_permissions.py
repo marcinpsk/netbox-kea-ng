@@ -32,7 +32,7 @@ from .test_reservation_mutation_views import _mutation_responses
 from .test_sync_views import _lease_get
 from .test_views_dhcp_plugin import _sync_responses
 from .test_views_leases import _lease_stub, _reservation_stub
-from .utils import _PLUGINS_CONFIG, _grant, _make_db_server, plugins_config
+from .utils import _grant, _make_db_server, with_kea_client_config, with_sync_config
 
 User = get_user_model()
 
@@ -59,7 +59,7 @@ def _reason(names: str) -> str:
     )
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class _PermissionTestBase(TestCase):
     """A user who may view and change the Server; each test grants the IPAM and DCIM permissions."""
 
@@ -388,7 +388,6 @@ class TestBulkReservationSync(_PermissionTestBase):
         self._grant_address_writes(user=self.user, constraints=_CONSTRAINT)
         self._assert_refused(self._post(), _ADDRESS_WRITES)
 
-    @override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="remove"))
     def test_no_delete_permission_is_needed_because_the_cleanup_cannot_delete(self):
         self._grant_address_writes(user=self.user)
         response = self._post()
@@ -396,7 +395,6 @@ class TestBulkReservationSync(_PermissionTestBase):
         self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.11.1", status="reserved").exists())
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="remove"))
 class TestReconcilePermissions(TestCase):
     """A reconcile call needs delete only when its stale cleanup can remove the last link of an IP address."""
 
@@ -422,7 +420,7 @@ class TestReconcilePermissions(TestCase):
             ("ipam.add_ipaddress", "ipam.change_ipaddress", "dcim.add_macaddress", "dcim.change_macaddress"),
         )
 
-    @override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="deprecate"))
+    @with_sync_config(stale_ip_cleanup="deprecate")
     def test_the_deprecate_mode_never_deletes(self):
         self.assertNotIn(
             "ipam.delete_ipaddress", ipam_reconciliation.reconcile_permissions(self.server, LEASE, RESERVATION)
@@ -478,7 +476,6 @@ class TestDhcpPluginSync(_PermissionTestBase):
         self._assert_import_refused(self._post(), "Sync to DHCP plugin needs change permission on this Server.")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestDhcpPluginSyncWithThePlugin(_PermissionTestBase):
     """The import needs an unconstrained grant of each DHCP plugin model that it writes."""
 
@@ -519,7 +516,6 @@ def _plugin_models():
     return [apps.get_model("netbox_dhcp", name) for name in _PLUGIN_MODELS]
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestDhcpPluginSyncControl(_PermissionTestBase):
     """The DHCP plugin tab shows the import button disabled, with the reason, to a refused user."""
 

@@ -12,7 +12,7 @@ import json
 from dataclasses import fields
 from pathlib import Path
 
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase
 from django.urls import reverse
 
 from netbox_kea import server_configuration
@@ -21,7 +21,7 @@ from netbox_kea.subnet_settings import SETTING_KEYS, SubnetSettings
 
 from .kea_stub import SubnetDaemon, _catalogue_responses_for_subnets, stub_kea
 from .test_views_shared_networks import _RunningConfiguration
-from .utils import _PLUGINS_CONFIG, _page_data, _ViewTestBase
+from .utils import _page_data, _ViewTestBase
 
 _PACKAGE = Path(__file__).resolve().parents[1]
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
@@ -81,7 +81,6 @@ class TestSettingsTable(SimpleTestCase):
         self.assertEqual(_settings_key_literals(), [])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestRecordedSettingsReadThroughTheTable(_ViewTestBase):
     """Each table key that a real Kea returned reads as the value that Kea returned."""
 
@@ -106,7 +105,6 @@ class TestRecordedSettingsReadThroughTheTable(_ViewTestBase):
         self.assertEqual(seen, set(SETTING_KEYS))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestWrittenValuesReadBack(_ViewTestBase):
     """A value that a writer sends reads back through ``server_configuration`` as the same typed value."""
 

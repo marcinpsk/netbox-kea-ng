@@ -6,12 +6,12 @@ from __future__ import annotations
 
 import logging
 
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from netbox_kea.subnet_catalogue import for_synchronization
 
 from .kea_stub import _catalogue_responses_for_subnets, _typed_reservation, complete_lease, stub_kea, typed_lease
-from .utils import _make_db_server, plugins_config
+from .utils import _make_db_server
 
 
 class TestBulkFetchNetboxIPs(TestCase):
@@ -330,7 +330,6 @@ class TestIsKeaManagedIP(TestCase):
             self.assertFalse(is_kea_managed_ip(ip), description)
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
 class TestOwnershipClaimBehavior(TestCase):
     """Keep the former writer regressions at the public ownership boundary."""
 

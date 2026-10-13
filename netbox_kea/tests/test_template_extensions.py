@@ -10,16 +10,13 @@ from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from ipam.models import IPAddress as NbIP
 
 from netbox_kea.models import Server
 from netbox_kea.template_extensions import IPAddressKeaPanel
-from netbox_kea.tests.utils import plugins_config
 
 User = get_user_model()
-
-_PLUGINS_CONFIG = plugins_config()
 
 
 def _make_server(name, dhcp4=True, dhcp6=False):
@@ -56,7 +53,6 @@ def _make_panel(nb_ip, user=None):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestIPAddressKeaPanelEdgeCases(TestCase):
     """Early-return and degenerate inputs."""
 
@@ -88,7 +84,6 @@ class TestIPAddressKeaPanelEdgeCases(TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestIPAddressKeaPanelServerFiltering(TestCase):
     """Server queryset is filtered to the correct DHCP version."""
 
@@ -151,7 +146,6 @@ class TestIPAddressKeaPanelServerFiltering(TestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestIPAddressKeaPanelUrls(TestCase):
     """Pre-filled URL query parameters are correct for v4 and v6."""
 

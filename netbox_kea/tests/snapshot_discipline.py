@@ -65,7 +65,7 @@ SITES = (
     SaveSite("ipam_reconciliation.py", "_classify_links", "link", "plain"),
     SaveSite("jobs.py", "KeaIpamSyncJob._run_sync", "self.job", "framework"),
     SaveSite("models.py", "Server.save", "super()", "framework"),
-    SaveSite("models.py", "SyncConfig.save", "super()", "framework"),
+    SaveSite("models.py", "SettingsSingleton.save", "super()", "framework"),
 )
 
 

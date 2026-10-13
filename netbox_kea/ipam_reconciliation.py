@@ -40,7 +40,6 @@ from .ipam_marker import (
 from .kea import KeaException
 from .leases import LEASE_VARIANTS, AllocationKind, DHCPv6PrefixLease, Lease, LeaseSnapshot
 from .models import IPAMOwnershipLink, IPAMOwnershipSource, Server, SyncConfig, next_confirmation_number
-from .plugin_settings import plugin_setting
 from .pools import Pool
 from .published_name import lease_published_name, reservation_published_name
 from .reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, ReservationSnapshot
@@ -54,8 +53,8 @@ logger = logging.getLogger(__name__)
 
 
 def _get_stale_cleanup_mode() -> StaleCleanupMode:
-    """Return the configured stale IP cleanup mode."""
-    return plugin_setting("stale_ip_cleanup")
+    """Return the stale IP cleanup mode of the Settings page."""
+    return cast("StaleCleanupMode", SyncConfig.get().stale_ip_cleanup)
 
 
 def _ip_description(description: str, status: str) -> str | None:

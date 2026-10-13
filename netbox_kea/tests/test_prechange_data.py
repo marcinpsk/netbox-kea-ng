@@ -11,7 +11,7 @@ from core.models import Job, ObjectChange
 from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
-from django.test import RequestFactory, TestCase, override_settings
+from django.test import RequestFactory, TestCase
 from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netbox.context_managers import event_tracking
 
@@ -23,10 +23,9 @@ from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, complete
 from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
 from netbox_kea.tests.test_ipam_reconciliation import _kea, _lease, _reconcile, _reservation
 from netbox_kea.tests.test_jobs import _patch_kea
-from netbox_kea.tests.utils import _make_db_server, lease_phase, plugins_config
+from netbox_kea.tests.utils import _make_db_server, lease_phase, with_sync_config
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
 class IPAMChangeRecordTest(TestCase):
     def setUp(self):
         self.server = _make_db_server(ca_url="https://kea.example.invalid", dhcp6=False)
@@ -291,7 +290,7 @@ class IPAMChangeRecordTest(TestCase):
         self.assertIn("job", change.postchange_data["ipam_initial_observations"])
         self.assertIsNotNone(change.postchange_data["ipam_first_complete_at"])
 
-    @override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup="deprecate"))
+    @with_sync_config(stale_ip_cleanup="deprecate")
     def test_stale_lease_and_reservation_cleanup_keep_previous_ip_status(self):
         address = "198.18.0.42"
         reservation = _reservation(address, "phone.example.invalid")
@@ -315,7 +314,6 @@ class IPAMChangeRecordTest(TestCase):
             self.assertEqual(change.postchange_data["status"], new)
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
 class DHCPImportChangeRecordTest(TestCase):
     @classmethod
     def setUpClass(cls):

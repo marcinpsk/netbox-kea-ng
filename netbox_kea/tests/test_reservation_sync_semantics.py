@@ -4,7 +4,7 @@
 from ipaddress import ip_address, ip_network
 
 from django.db import connection
-from django.test import TestCase, override_settings
+from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 from ipam.models import IPAddress
 
@@ -21,10 +21,9 @@ from netbox_kea.subnet_catalogue import SubnetIdentity, for_synchronization
 from netbox_kea.sync import reservation_synchronization_state
 
 from .kea_stub import _catalogue_responses_for_subnets, stub_kea
-from .utils import _make_db_server, plugins_config
+from .utils import _make_db_server
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
 class TestTypedReservationSynchronization(TestCase):
     def setUp(self):
         self.server = _make_db_server()

@@ -21,7 +21,6 @@ from urllib.parse import urlencode
 import requests
 from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
-from django.test import override_settings
 from django.urls import reverse
 from extras.models import JournalEntry
 from ipam.models import IPAddress
@@ -47,7 +46,7 @@ from .kea_stub import (
     stub_kea,
 )
 from .test_ipam_reconciliation import _kea, _lease, _links, _reconcile, _row, _server
-from .utils import _PLUGINS_CONFIG, _make_db_server, _ViewTestBase, lease_phase, plugins_config
+from .utils import _make_db_server, _ViewTestBase, lease_phase, with_kea_client_config
 
 _SUBNETS4 = [{"id": 10, "subnet": "192.0.2.0/24"}]
 _SUBNETS6 = [{"id": 10, "subnet": "2001:db8:1::/64"}]
@@ -100,7 +99,6 @@ def _csv_rows(response) -> list[dict[str, str]]:
     return list(csv.DictReader(io.StringIO(response.content.decode())))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class LeaseBrowsingTest(_ViewTestBase):
     """Browsing shows valid siblings beside the safe reason for each excluded record."""
 
@@ -296,7 +294,6 @@ class LeaseBrowsingTest(_ViewTestBase):
         self.assertEqual(messages, ["Kea returned a lease that could not be read; it cannot be edited."])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class LeaseDeleteTest(_ViewTestBase):
     """Bulk delete removes the selected allocation: real page, form, view and KeaClient; only HTTP is stubbed."""
 
@@ -385,7 +382,6 @@ class LeaseDeleteTest(_ViewTestBase):
         self.assertEqual(kea.commands(), [])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class LeaseExportTest(_ViewTestBase):
     """A complete export refuses an incomplete observation; a limited one says so."""
 
@@ -480,7 +476,6 @@ class LeaseExportTest(_ViewTestBase):
         self.assertEqual([row["IP Address"] for row in _csv_rows(limited)], ["192.0.2.10"])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class LeaseRestTest(_ViewTestBase):
     """REST publishes normalized typed facts with explicit scope and coverage."""
 
@@ -553,7 +548,7 @@ class LeaseRestTest(_ViewTestBase):
         for name, (params, responses) in cases.items():
             with (
                 self.subTest(name),
-                override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=100)),
+                with_kea_client_config(lease_query_max_unpaged_leases=100),
             ):
                 response = self._get(4, params, responses)
                 self.assertEqual(response.status_code, 502)
@@ -614,7 +609,6 @@ class LeaseRestTest(_ViewTestBase):
         self.assertTrue(response.json()["complete"])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class ReservationLeaseRelationshipTest(_ViewTestBase):
     """Only a Current Lease is a live relationship; "No Lease" needs a complete observation."""
 
@@ -659,7 +653,7 @@ class ReservationLeaseRelationshipTest(_ViewTestBase):
 
         self.assertIs(rows[0]["has_active_lease"], True)
 
-    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=2))
+    @with_kea_client_config(lease_query_max_unpaged_leases=2)
     def test_a_subnet_read_over_the_cap_is_unknown_not_no_lease(self):
         inactive = [
             lease_record("2001:db8:1::31", state=1, duid="00:00:00", drop=("hw-address",)),
@@ -700,7 +694,7 @@ class ReservationLeaseRelationshipTest(_ViewTestBase):
         self.assertContains(response, "a missing Lease cannot be confirmed")
 
 
-@override_settings(PLUGINS_CONFIG=plugins_config())
+@with_kea_client_config(lease_query_max_unpaged_leases=1000)
 class LeaseReconciliationTest(_ViewTestBase):
     """The lease phase reads one typed Snapshot; an incomplete one removes no stale link."""
 

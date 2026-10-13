@@ -3,7 +3,6 @@
 """A connection change makes the cached Server Configuration and Catalogue Snapshots unreachable."""
 
 from django.db import transaction
-from django.test import override_settings
 from django.urls import reverse
 from rest_framework.test import APIClient
 
@@ -11,7 +10,7 @@ from netbox_kea import server_configuration, subnet_catalogue
 from netbox_kea.models import Server
 
 from .kea_stub import _catalogue_responses_for_subnets, stub_kea
-from .utils import _PLUGINS_CONFIG, _ViewTestBase
+from .utils import _ViewTestBase
 
 _OLD_URL = "https://old-kea.example.invalid"
 _NEW_URL = "https://new-kea.example.invalid"
@@ -21,7 +20,6 @@ _VERSION_GET = {"version-get": {"result": 0, "arguments": {"extended": "3.2.0"}}
 _NO_STAT_HOOK = {"stat-lease4-get": {"result": 2, "text": "unknown command"}}
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class ServerSaveCacheTest(_ViewTestBase):
     def setUp(self):
         super().setUp()

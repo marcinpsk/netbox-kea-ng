@@ -17,7 +17,7 @@ from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.db import connection, transaction
-from django.test import TestCase, TransactionTestCase, override_settings, tag
+from django.test import TestCase, TransactionTestCase, tag
 from django.urls import reverse
 from django.utils import timezone
 
@@ -35,10 +35,9 @@ from netbox_kea.reservations import (
 from netbox_kea.subnet_catalogue import IncompleteCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
 from .kea_stub import _res_page, kea_client, observed_configuration, stub_kea
-from .utils import _make_db_server, lease_phase, linked_dhcp_targets, plugins_config
+from .utils import _make_db_server, lease_phase, linked_dhcp_targets, with_sync_config
 
 DHCP_PLUGIN = "netbox_dhcp"
-_PLUGINS_CONFIG = plugins_config()
 
 
 def _conf_v4():
@@ -180,7 +179,6 @@ class TestOptionalMetadataCoordination(TransactionTestCase):
 
 
 @tag("dhcp_plugin")
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class DhcpPluginAdapterTest(TestCase):
     """Importing a Kea config into netbox_dhcp via the guarded adapter."""
 
@@ -581,7 +579,6 @@ class DhcpPluginAdapterTest(TestCase):
 
 
 @tag("dhcp_plugin")
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class DhcpPluginOptionImportTest(TestCase):
     """Importing Kea ``option-data`` into netbox_dhcp ``Option`` rows (real ORM + defs)."""
 
@@ -701,7 +698,6 @@ class DhcpPluginOptionImportTest(TestCase):
 
 
 @tag("dhcp_plugin")
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class DhcpPluginTuningImportTest(TestCase):
     """Tuning fields land on DHCPServer/Subnet with parent-diff suppression (real ORM)."""
 
@@ -870,7 +866,6 @@ class DhcpPluginTuningImportTest(TestCase):
 
 
 @tag("dhcp_plugin")
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class DhcpPluginClientClassImportTest(TestCase):
     """Importing Kea ``client-classes`` into netbox_dhcp ``ClientClass`` rows."""
 
@@ -952,7 +947,6 @@ class DhcpPluginClientClassImportTest(TestCase):
 
 
 @tag("dhcp_plugin")
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class DhcpPluginReservationSnapshotImportTest(TestCase):
     """Typed Reservation Snapshots import into the matching plugin scope."""
 
@@ -1454,7 +1448,6 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
 
 
 @tag("dhcp_plugin")
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class DhcpPluginStaleCleanupGuardTest(TestCase):
     """Stale-IP cleanup must never remove an IP a netbox_dhcp reservation references."""
 
@@ -1498,7 +1491,7 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
             "reservation-get-page": _res_page([]),
         }
         for mode in ("remove", "deprecate"):
-            with self.subTest(mode), override_settings(PLUGINS_CONFIG=plugins_config(stale_ip_cleanup=mode)):
+            with self.subTest(mode), with_sync_config(stale_ip_cleanup=mode):
                 with stub_kea({"lease4-get-page": _lease_page([lease])}):
                     reconcile(self.server, 4, [lease_phase(self.server, 4, {1: 24})])
                 self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address=referenced).exists())
@@ -1513,7 +1506,6 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
                 self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=referenced).exists())
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class ImportSummaryCompletenessTest(TestCase):
     """Reservation import counts must distinguish traversal and record failures.
 
@@ -1579,7 +1571,6 @@ class ImportSummaryCompletenessTest(TestCase):
         self.assertEqual(summary.reservations_quarantined, 0)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class SkippedReservationCompletenessTest(TestCase):
     """A record the importer drops must be counted as skipped.
 

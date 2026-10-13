@@ -32,17 +32,14 @@ from netbox.models import NetBoxModel
 
 import netbox_kea
 from netbox_kea.kea import KeaClient, KeaCommand
-from netbox_kea.models import KeaDhcpLink, Server, SyncConfig
+from netbox_kea.models import KeaClientConfig, KeaDhcpLink, Server, SyncConfig
 from netbox_kea.reservations import MAX_IDENTITY_LENGTH
 from netbox_kea.tests.kea_stub import record_transport, stub_kea
-from netbox_kea.tests.utils import _make_db_server, plugins_config
+from netbox_kea.tests.utils import _make_db_server, with_kea_client_config
 
 _SEED = importlib.import_module("netbox_kea.migrations.0018_seed_syncconfig")
 
 _VERSION_OK = {"result": 0, "arguments": {"version": "2.5.0"}}
-
-# Default PLUGINS_CONFIG used across model tests so we don't need full NetBox config.
-_PLUGINS_CONFIG = plugins_config()
 
 
 def _make_server(**kwargs) -> Server:
@@ -76,47 +73,40 @@ class TestServerStr(SimpleTestCase):
         self.assertEqual(str(server), "my-kea")
 
 
-class TestServerGetClient(SimpleTestCase):
+class TestServerGetClient(TestCase):
     """Tests for Server.get_client() — URL selection logic."""
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_no_version_uses_ca_url(self):
         server = _make_server()
         client = server.get_client()
         self.assertIsInstance(client, KeaClient)
         self.assertEqual(client.url, "http://kea:8000")
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_version4_falls_back_to_ca_url(self):
         server = _make_server(dhcp4_url=None)
         client = server.get_client(version=4)
         self.assertEqual(client.url, "http://kea:8000")
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_version4_uses_dhcp4_url_override(self):
         server = _make_server(dhcp4_url="http://kea-v4:8001")
         client = server.get_client(version=4)
         self.assertEqual(client.url, "http://kea-v4:8001")
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_version6_falls_back_to_ca_url(self):
         server = _make_server(dhcp6_url=None)
         client = server.get_client(version=6)
         self.assertEqual(client.url, "http://kea:8000")
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_version6_uses_dhcp6_url_override(self):
         server = _make_server(dhcp6_url="http://kea-v6:8002")
         client = server.get_client(version=6)
         self.assertEqual(client.url, "http://kea-v6:8002")
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_dual_url_v4_and_v6_independent(self):
         server = _make_server(dhcp4_url="http://v4:1", dhcp6_url="http://v6:2")
         self.assertEqual(server.get_client(version=4).url, "http://v4:1")
         self.assertEqual(server.get_client(version=6).url, "http://v6:2")
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_get_client_passes_credentials(self):
         server = _make_server(ca_username="admin", ca_password="secret")
         client = server.get_client()
@@ -130,51 +120,45 @@ class TestServerGetClient(SimpleTestCase):
             client.command(KeaCommand.VERSION_GET, 4)
         return transport.sent[-1]
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_get_client_ssl_verify_false(self):
         sent = self._sent_tls(_make_server(ca_url="https://kea:8000", ssl_verify=False))
         self.assertIs(sent["verify"], False)
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_get_client_ca_file_path(self):
         sent = self._sent_tls(_make_server(ca_url="https://kea:8000", ca_file_path="/certs/ca.pem", ssl_verify=True))
         self.assertEqual(sent["verify"], "/certs/ca.pem")
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_get_client_ssl_verify_uses_the_environment_bundle(self):
         sent = self._sent_tls(_make_server(ca_url="https://kea:8000", ssl_verify=True))
         self.assertEqual(sent["verify"], "/env/bundle.pem")
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_get_client_cert_key_pair(self):
         server = _make_server(ca_url="https://kea:8000", client_cert_path="/cert.pem", client_key_path="/key.pem")
         sent = self._sent_tls(server)
         self.assertEqual(sent["cert"], ("/cert.pem", "/key.pem"))
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_get_client_uses_configured_timeout(self):
-        """Timeout is read from PLUGINS_CONFIG."""
+        """The default timeout of the KeaClientConfig row."""
         server = _make_server()
         client = server.get_client()
         self.assertEqual(client.timeout, 30)
 
-    @override_settings(PLUGINS_CONFIG=plugins_config(kea_timeout=5))
+    @with_kea_client_config(kea_timeout=5)
     def test_get_client_custom_timeout(self):
         server = _make_server()
         client = server.get_client()
         self.assertEqual(client.timeout, 5)
 
-    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=250))
+    @with_kea_client_config(lease_query_max_unpaged_leases=250)
     def test_get_client_uses_configured_unpaged_lease_limit(self):
         client = _make_server().get_client()
         self.assertEqual(client.max_unpaged_leases, 250)
 
-    @override_settings(PLUGINS_CONFIG=plugins_config(lease_query_max_unpaged_leases=0))
+    @with_kea_client_config(lease_query_max_unpaged_leases=0)
     def test_get_client_can_explicitly_disable_unpaged_lease_guard(self):
         client = _make_server().get_client()
         self.assertIsNone(client.max_unpaged_leases)
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_v4_uses_dhcp4_credentials_when_set(self):
         """When dhcp4_url and dhcp4_username/dhcp4_password are set, v4 client uses them."""
         server = _make_server(
@@ -189,7 +173,6 @@ class TestServerGetClient(SimpleTestCase):
         self.assertEqual(client._session.auth.username, "v4-user")
         self.assertEqual(client._session.auth.password, "v4-pass")
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_v4_no_dhcp4_url_always_uses_ca_credentials(self):
         """When dhcp4_url is not set, v4 client always uses CA credentials even if per-protocol creds exist."""
         server = _make_server(
@@ -203,7 +186,6 @@ class TestServerGetClient(SimpleTestCase):
         self.assertEqual(client._session.auth.username, "ca-user")
         self.assertEqual(client._session.auth.password, "ca-pass")
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_v4_falls_back_to_ca_credentials_when_v4_creds_empty(self):
         """When dhcp4_url is set but dhcp4 creds are blank, v4 client falls back to CA creds."""
         server = _make_server(
@@ -218,7 +200,6 @@ class TestServerGetClient(SimpleTestCase):
         self.assertEqual(client._session.auth.username, "ca-user")
         self.assertEqual(client._session.auth.password, "ca-pass")
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_v6_uses_dhcp6_credentials_when_set(self):
         """When dhcp6_url and dhcp6_username/dhcp6_password are set, v6 client uses them."""
         server = _make_server(
@@ -233,7 +214,6 @@ class TestServerGetClient(SimpleTestCase):
         self.assertEqual(client._session.auth.username, "v6-user")
         self.assertEqual(client._session.auth.password, "v6-pass")
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_v6_falls_back_to_ca_credentials_when_v6_creds_empty(self):
         """When dhcp6_url is set but dhcp6 creds are blank, v6 client falls back to CA creds."""
         server = _make_server(
@@ -248,7 +228,6 @@ class TestServerGetClient(SimpleTestCase):
         self.assertEqual(client._session.auth.username, "ca-user")
         self.assertEqual(client._session.auth.password, "ca-pass")
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_no_version_uses_ca_credentials(self):
         """When version=None, always use CA credentials."""
         server = _make_server(
@@ -261,7 +240,6 @@ class TestServerGetClient(SimpleTestCase):
         client = server.get_client()
         self.assertEqual(client._session.auth.username, "ca-user")
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_v4_partial_override_falls_back_per_field(self):
         """When dhcp4_url set and only dhcp4_username provided, password falls back to ca_password."""
         server = _make_server(
@@ -276,7 +254,6 @@ class TestServerGetClient(SimpleTestCase):
         self.assertEqual(client._session.auth.username, "v4-user")
         self.assertEqual(client._session.auth.password, "ca-pass")
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_v6_partial_override_falls_back_per_field(self):
         """When dhcp6_url set and only dhcp6_password provided, username falls back to ca_username."""
         server = _make_server(
@@ -292,8 +269,7 @@ class TestServerGetClient(SimpleTestCase):
         self.assertEqual(client._session.auth.password, "v6-pass")
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestGetClientSendService(SimpleTestCase):
+class TestGetClientSendService(TestCase):
     """get_client() decides whether ``service`` is sent, and command() honours it end-to-end.
 
     ``has_control_agent`` is the single source of truth: a Control Agent routes by
@@ -340,7 +316,7 @@ class TestGetClientSendService(SimpleTestCase):
         self.assertFalse(client.clone().send_service)
 
 
-class TestServerCleanFieldValidation(SimpleTestCase):
+class TestServerCleanFieldValidation(TestCase):
     """Tests for local Server.clean() field validation."""
 
     # Patch super().clean() to avoid NetBox DB introspection in these field-only tests.
@@ -349,35 +325,30 @@ class TestServerCleanFieldValidation(SimpleTestCase):
         self.addCleanup(patcher.stop)
         patcher.start()
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_dhcp4_false_and_dhcp6_false_raises(self):
         server = _make_server(dhcp4=False, dhcp6=False)
         with self.assertRaises(ValidationError) as ctx:
             server.clean()
         self.assertIn("dhcp6", ctx.exception.message_dict)
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_cert_without_key_raises(self):
         server = _make_server(client_cert_path="/cert.pem", client_key_path=None)
         with self.assertRaises(ValidationError) as ctx:
             server.clean()
         self.assertIn("client_cert_path", ctx.exception.message_dict)
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_key_without_cert_raises(self):
         server = _make_server(client_cert_path=None, client_key_path="/key.pem")
         with self.assertRaises(ValidationError) as ctx:
             server.clean()
         self.assertIn("client_cert_path", ctx.exception.message_dict)
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_ca_file_with_ssl_verify_false_raises(self):
         server = _make_server(ca_file_path="/ca.pem", ssl_verify=False)
         with self.assertRaises(ValidationError) as ctx:
             server.clean()
         self.assertIn("ca_file_path", ctx.exception.message_dict)
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_nonexistent_cert_path_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
             missing = str(Path(tmp) / "missing.pem")
@@ -386,7 +357,6 @@ class TestServerCleanFieldValidation(SimpleTestCase):
                 server.clean()
         self.assertIn("client_cert_path", ctx.exception.message_dict)
 
-    @override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
     def test_nonexistent_key_path_raises(self):
         """A cert that exists plus a key that does not must name the key field."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -573,7 +543,6 @@ class TestSyncConfig(TestCase):
             cfg.delete()
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerSyncEnabled(TestCase):
     def test_sync_enabled_defaults_to_true(self):
         server = _make_db_server()
@@ -990,24 +959,13 @@ class TestSyncVrfProtectsTheVrf(TestCase):
         self._assert_unchanged()
 
 
-class TestSyncConfigSeedMigration(_MigrationTestCase):
-    """The migration creates the SyncConfig row and applies the backfill, so a GET only reads it."""
+class _UpgradeTestCase(_MigrationTestCase):
+    """Roll netbox_kea back to ``_BEFORE``, and migrate it forward again in the test and at cleanup."""
 
-    _BEFORE = ("netbox_kea", "0017_alter_server_sync_vrf")
-    _TOGGLES = _SEED.TYPE_TOGGLES
-    #: The type toggles that _CONFIG gives a new row or a row whose backfill has not run.
-    _CONFIGURED_TOGGLES = {
-        "sync_leases_enabled": False,
-        "sync_reservations_enabled": True,
-        "sync_prefixes_enabled": True,
-        "sync_ip_ranges_enabled": False,
-    }
-    _CONFIG = plugins_config(
-        sync_interval_minutes=17, sync_enabled=False, sync_leases_enabled=False, sync_ip_ranges_enabled=False
-    )
+    _BEFORE: tuple[str, str]
 
-    def _roll_back(self):
-        """Migrate netbox_kea back to the release before the seed, and return that SyncConfig model."""
+    def _roll_back_apps(self):
+        """Migrate netbox_kea back to ``_BEFORE``, and return the models of that state."""
         from django.db import connection
         from django.db.migrations.executor import MigrationExecutor
 
@@ -1023,7 +981,33 @@ class TestSyncConfigSeedMigration(_MigrationTestCase):
         self._migrate_to_current = migrate_to_current
         self.addCleanup(migrate_to_current)
         executor.migrate([self._BEFORE])
-        return executor.loader.project_state([self._BEFORE]).apps.get_model("netbox_kea", "SyncConfig")
+        return executor.loader.project_state([self._BEFORE]).apps
+
+
+class TestSyncConfigSeedMigration(_UpgradeTestCase):
+    """The migration creates the SyncConfig row and applies the backfill, so a GET only reads it."""
+
+    _BEFORE = ("netbox_kea", "0017_alter_server_sync_vrf")
+    _TOGGLES = _SEED.TYPE_TOGGLES
+    #: The type toggles that _CONFIG gives a new row or a row whose backfill has not run.
+    _CONFIGURED_TOGGLES = {
+        "sync_leases_enabled": False,
+        "sync_reservations_enabled": True,
+        "sync_prefixes_enabled": True,
+        "sync_ip_ranges_enabled": False,
+    }
+    _CONFIG = {
+        "netbox_kea": {
+            "sync_interval_minutes": 17,
+            "sync_enabled": False,
+            "sync_leases_enabled": False,
+            "sync_ip_ranges_enabled": False,
+        }
+    }
+
+    def _roll_back(self):
+        """Migrate netbox_kea back to the release before the seed, and return that SyncConfig model."""
+        return self._roll_back_apps().get_model("netbox_kea", "SyncConfig")
 
     def _upgrade(self):
         with override_settings(PLUGINS_CONFIG=self._CONFIG):
@@ -1031,17 +1015,15 @@ class TestSyncConfigSeedMigration(_MigrationTestCase):
         return SyncConfig.objects.get(pk=1)
 
     def _assert_sync_pages_write_nothing(self):
-        from netbox_kea.tests.utils import _PLUGINS_CONFIG as VIEW_PLUGINS_CONFIG
         from netbox_kea.tests.utils import _get_with_writes, _sync_page_urls
 
         server = _make_db_server(name="seed-upgrade")
         self.client.force_login(get_user_model().objects.create_superuser("seed", "seed@example.com", "pass"))
-        with override_settings(PLUGINS_CONFIG=VIEW_PLUGINS_CONFIG):
-            for url in _sync_page_urls(server):
-                with self.subTest(url=url):
-                    response, writes = _get_with_writes(self.client, url)
-                    self.assertEqual(response.status_code, 200)
-                    self.assertEqual(writes, [])
+        for url in _sync_page_urls(server):
+            with self.subTest(url=url):
+                response, writes = _get_with_writes(self.client, url)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(writes, [])
 
     def test_upgrade_without_a_row_creates_it_from_plugins_config(self):
         historical = self._roll_back()
@@ -1114,3 +1096,73 @@ class TestSyncConfigSeedMigration(_MigrationTestCase):
         historical = self._roll_back()
 
         self.assertIs(historical.objects.get(pk=1).backfill_applied, True)
+
+
+class TestSettingsCopyMigration(_UpgradeTestCase):
+    """Migration 0025 copies each moved PLUGINS_CONFIG value into its settings row once (ADR 0010)."""
+
+    _BEFORE = ("netbox_kea", "0024_syncconfig_created_syncconfig_last_updated")
+    _MIGRATION = "0025_keaclientconfig_and_sync_settings"
+
+    def _upgrade(self, values: dict) -> None:
+        with override_settings(PLUGINS_CONFIG={"netbox_kea": values}):
+            self._migrate_to_current()
+
+    def test_an_install_keeps_its_configured_values(self):
+        historical = self._roll_back_apps().get_model("netbox_kea", "SyncConfig")
+        historical.objects.filter(pk=1).update(interval_minutes=9)
+
+        self._upgrade(
+            {
+                "kea_timeout": 10,
+                "lease_query_max_unpaged_leases": 0,
+                "stale_ip_cleanup": "deprecate",
+                "sync_max_leases_per_server": 7,
+                "sync_interval_minutes": 17,
+            }
+        )
+
+        client, sync = KeaClientConfig.get(), SyncConfig.get()
+        self.assertEqual((client.kea_timeout, client.lease_query_max_unpaged_leases), (10, 0))
+        self.assertEqual((sync.stale_ip_cleanup, sync.sync_max_leases_per_server), ("deprecate", 7))
+        self.assertEqual(sync.interval_minutes, 9, "0018 seeded the interval; 0025 must not copy it again")
+        # After the upgrade the rows hold the values, and a changed configuration has no effect.
+        with override_settings(PLUGINS_CONFIG={"netbox_kea": {"kea_timeout": 20}}):
+            self.assertEqual(_make_server().get_client(version=4).timeout, 10)
+
+    def test_a_missing_key_keeps_the_model_default(self):
+        self._roll_back_apps()
+
+        self._upgrade({"not_a_setting": 1})
+
+        defaults_client, defaults_sync = KeaClientConfig(), SyncConfig()
+        client, sync = KeaClientConfig.get(), SyncConfig.get()
+        self.assertEqual(
+            (client.kea_timeout, client.lease_query_max_unpaged_leases),
+            (defaults_client.kea_timeout, defaults_client.lease_query_max_unpaged_leases),
+        )
+        self.assertEqual(
+            (sync.stale_ip_cleanup, sync.sync_max_leases_per_server),
+            (defaults_sync.stale_ip_cleanup, defaults_sync.sync_max_leases_per_server),
+        )
+
+    def test_an_invalid_value_fails_the_upgrade_and_names_the_key_the_rule_and_the_value(self):
+        """bool is not an integer, and Django would truncate a float or coerce a string, so each is refused."""
+        from django.db import connection
+        from django.db.migrations.recorder import MigrationRecorder
+
+        self._roll_back_apps()
+        bad = {
+            "kea_timeout": ("an integer of at least 1", [0, -1, True, 2.5, "30", None]),
+            "lease_query_max_unpaged_leases": ("an integer of at least 0", [-1, False, "1000", None]),
+            "stale_ip_cleanup": ("one of remove, deprecate, none", ["delete", "Remove", 1, None, ["remove"]]),
+            "sync_max_leases_per_server": ("an integer of at least 0", [-1, True, 1e5, "50000"]),
+        }
+        for key, (allowed, values) in bad.items():
+            for value in values:
+                with self.subTest(key=key, value=value):
+                    message = f"PLUGINS_CONFIG['netbox_kea']['{key}'] must be {allowed}, got {value!r}."
+                    with self.assertRaisesMessage(ImproperlyConfigured, message):
+                        self._upgrade({key: value})
+                    applied = MigrationRecorder(connection).applied_migrations()
+                    self.assertNotIn(("netbox_kea", self._MIGRATION), applied)

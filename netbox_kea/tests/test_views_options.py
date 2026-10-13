@@ -30,14 +30,13 @@ import re
 
 import requests
 from django.contrib import messages as django_messages
-from django.test import override_settings
 from django.urls import reverse
 
 from netbox_kea import server_configuration
 from netbox_kea.views.notices import HEADLINES
 
 from .kea_stub import _catalogue_responses_for_subnets, _subnet_list, stub_kea
-from .utils import _PLUGINS_CONFIG, _make_db_server, _ReadModifyWriteMessages, _ViewTestBase
+from .utils import _make_db_server, _ReadModifyWriteMessages, _ViewTestBase, with_kea_client_config
 
 # ---------------------------------------------------------------------------
 # config-get fixtures (read by the read-modify-write mutations and GET prefill)
@@ -152,7 +151,6 @@ def _written_config(kea):
     return bodies[0]["arguments"]
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetOptionsView(_ViewTestBase):
     """Tests for ServerSubnet4/6OptionsEditView (GET prefill + POST update)."""
 
@@ -408,7 +406,6 @@ class TestSubnetOptionsView(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerOptionsView(_ViewTestBase):
     """Tests for ServerDHCP4/6OptionsEditView (GET prefill + POST update)."""
 
@@ -591,7 +588,6 @@ class TestServerOptionsView(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerOptionDef4ListView(_ViewTestBase):
     """Tests for ServerOptionDef4ListView: GET list of custom option definitions."""
 
@@ -723,7 +719,6 @@ class TestServerOptionDef4ListView(_ViewTestBase):
         self.assertIs(response.context["tab"], ServerOptionDef4View.tab)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerOptionDef6ListView(_ViewTestBase):
     """Tests for ServerOptionDef6ListView (v6 variant)."""
 
@@ -757,7 +752,6 @@ class TestServerOptionDef6ListView(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerOptionDef4AddView(_ViewTestBase):
     """Tests for ServerOptionDef4AddView: GET form + POST create."""
 
@@ -825,7 +819,6 @@ class TestServerOptionDef4AddView(_ViewTestBase):
         self.assertIn(response.status_code, (302, 403))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerOptionDef6AddView(_ViewTestBase):
     """Tests for ServerOptionDef6AddView — verifies v6 uses version=6."""
 
@@ -858,7 +851,6 @@ class TestServerOptionDef6AddView(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerOptionDef4DeleteView(_ViewTestBase):
     """Tests for ServerOptionDef4DeleteView: GET confirm + POST delete."""
 
@@ -912,7 +904,6 @@ class TestServerOptionDef4DeleteView(_ViewTestBase):
         self.assertIn(response.status_code, (302, 403))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerOptionDef6DeleteView(_ViewTestBase):
     """Tests for ServerOptionDef6DeleteView — v6 uses version=6."""
 
@@ -940,7 +931,6 @@ class TestServerOptionDef6DeleteView(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetOptionsPostInvalid(_ViewTestBase):
     """_BaseSubnetOptionsEditView POST: formset invalid must re-render (200)."""
 
@@ -991,7 +981,6 @@ class TestSubnetOptionsPostInvalid(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerOptionsPostInvalid(_ViewTestBase):
     """_BaseServerOptionsEditView POST: formset invalid and always_send coverage."""
 
@@ -1057,7 +1046,6 @@ class TestServerOptionsPostInvalid(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestOptionDefAddExceptions(_ViewTestBase):
     """BaseServerOptionDefAddView POST exception paths."""
 
@@ -1107,7 +1095,6 @@ class TestOptionDefAddExceptions(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestOptionDefDeleteExceptions(_ViewTestBase):
     """BaseServerOptionDefDeleteView POST exception paths."""
 
@@ -1127,7 +1114,6 @@ class TestOptionDefDeleteExceptions(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetOptionsSharedNetwork(_ViewTestBase):
     """Subnet found inside a shared-network + invalid-POST re-render."""
 
@@ -1174,7 +1160,6 @@ class TestSubnetOptionsSharedNetwork(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestSubnetOptionsGetClientError(_ViewTestBase):
     """GET to subnet options edit when get_client raises ValueError → redirect with error."""
 
@@ -1189,7 +1174,6 @@ class TestSubnetOptionsGetClientError(_ViewTestBase):
         self.assertTrue(any("did not confirm the identity of subnet 1." in m.lower() for m in msgs))
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestServerOptionsGetClientError(_ViewTestBase):
     """GET to server options edit when get_client raises ValueError → redirect with error."""
 
@@ -1210,7 +1194,6 @@ class TestServerOptionsGetClientError(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestOptionDefListFetchError(_ViewTestBase):
     """GET to option-def list when config-get fails → 200 with an error notice."""
 
@@ -1230,7 +1213,6 @@ class TestOptionDefListFetchError(_ViewTestBase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestCombinedStatusBadgeError(_ViewTestBase):
     """GET to status badge when version-get fails → offline status."""
 
@@ -1434,7 +1416,7 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
             self.assertNotIn("config-set", kea.commands())
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestOptionChangeMessages(_ReadModifyWriteMessages):
     """One POST per Configuration Change outcome and per rejection, for each options view."""
 

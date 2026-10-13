@@ -18,17 +18,14 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import requests as rq
-from django.test import SimpleTestCase, override_settings
+from django.test import TestCase
 from rest_framework import status
 
 from netbox_kea.api.views import ServerViewSet
 from netbox_kea.models import Server
 
 from .kea_stub import _subnet_stats, complete_lease, stub_kea
-from .utils import plugins_config
-
-_PLUGINS_CONFIG = plugins_config(lease_query_max_unpaged_leases=0)
-_GUARDED_PLUGINS_CONFIG = plugins_config(lease_query_max_unpaged_leases=100)
+from .utils import with_kea_client_config
 
 # A Kea error response (result 1) → the real KeaClient turns this into a KeaException.
 _KEA_ERR_RESP = {"result": 1, "text": "command failed"}
@@ -74,8 +71,8 @@ def _make_request(query_params: dict):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestLeaseActionDispatch(SimpleTestCase):
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
+class TestLeaseActionDispatch(TestCase):
     """leases4() and leases6() dispatch to _lease_search with the right version."""
 
     def test_leases4_dispatches_with_version_4(self):
@@ -98,8 +95,8 @@ class TestLeaseActionDispatch(SimpleTestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestLeaseSearchValidation(SimpleTestCase):
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
+class TestLeaseSearchValidation(TestCase):
     """Parameter validation paths in _lease_search (no Kea traffic)."""
 
     def test_no_params_returns_400(self):
@@ -125,8 +122,8 @@ class TestLeaseSearchValidation(SimpleTestCase):
         self.assertIn("subnet_id", response.data["detail"])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestLeaseSearchErrors(SimpleTestCase):
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
+class TestLeaseSearchErrors(TestCase):
     """Error handling paths in _lease_search (real client, boundary-injected errors)."""
 
     def test_connection_error_returns_502(self):
@@ -162,8 +159,8 @@ class TestLeaseSearchErrors(SimpleTestCase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestLeaseSearchIpAddress(SimpleTestCase):
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
+class TestLeaseSearchIpAddress(TestCase):
     """ip_address branch in _lease_search."""
 
     def test_result3_returns_empty(self):
@@ -189,8 +186,8 @@ class TestLeaseSearchIpAddress(SimpleTestCase):
         self.assertEqual(response.data["count"], 1)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestLeaseSearchHwAddress(SimpleTestCase):
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
+class TestLeaseSearchHwAddress(TestCase):
     """hw_address branch in _lease_search."""
 
     def test_result3_returns_empty(self):
@@ -209,8 +206,8 @@ class TestLeaseSearchHwAddress(SimpleTestCase):
         self.assertEqual(response.data["count"], 1)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestLeaseSearchDuid(SimpleTestCase):
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
+class TestLeaseSearchDuid(TestCase):
     """duid branch in _lease_search."""
 
     def test_result3_returns_empty(self):
@@ -238,8 +235,8 @@ class TestLeaseSearchDuid(SimpleTestCase):
         self.assertEqual(kea.commands(), [])
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestLeaseSearchHostname(SimpleTestCase):
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
+class TestLeaseSearchHostname(TestCase):
     """hostname branch in _lease_search."""
 
     def test_result3_returns_empty(self):
@@ -258,8 +255,8 @@ class TestLeaseSearchHostname(SimpleTestCase):
         self.assertEqual(response.data["count"], 1)
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
-class TestLeaseSearchSubnetId(SimpleTestCase):
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
+class TestLeaseSearchSubnetId(TestCase):
     """subnet_id branch in _lease_search."""
 
     def test_result3_returns_empty(self):
@@ -277,7 +274,7 @@ class TestLeaseSearchSubnetId(SimpleTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
 
-    @override_settings(PLUGINS_CONFIG=_GUARDED_PLUGINS_CONFIG)
+    @with_kea_client_config(lease_query_max_unpaged_leases=100)
     def test_declined_state_uses_guarded_subnet_state_query(self):
         lease = complete_lease({"ip-address": "198.18.0.1", "subnet-id": 1, "state": 1})
         stats = _subnet_stats(4, 1, assigned=501, declined=1)
@@ -300,7 +297,7 @@ class TestLeaseSearchSubnetId(SimpleTestCase):
             {"subnet-id": 1, "state": 1},
         )
 
-    @override_settings(PLUGINS_CONFIG=_GUARDED_PLUGINS_CONFIG)
+    @with_kea_client_config(lease_query_max_unpaged_leases=100)
     def test_large_unqualified_subnet_query_is_rejected(self):
         stats = _subnet_stats(4, 1, assigned=101)
         view, _ = _make_view()
@@ -311,7 +308,7 @@ class TestLeaseSearchSubnetId(SimpleTestCase):
         self.assertIn("Active or Declined", response.data["detail"])
         self.assertEqual(kea.commands(), ["stat-lease4-get"])
 
-    @override_settings(PLUGINS_CONFIG=_GUARDED_PLUGINS_CONFIG)
+    @with_kea_client_config(lease_query_max_unpaged_leases=100)
     def test_unmeasurable_subnet_query_fails_closed(self):
         """Reject the query when Kea cannot measure the Subnet, before any lease request."""
         view, _ = _make_view()
@@ -325,7 +322,7 @@ class TestLeaseSearchSubnetId(SimpleTestCase):
     def test_disabled_guard_queries_leases_without_measuring(self):
         """Send no statistics request when the guard is off, so the query stays unbounded.
 
-        `_PLUGINS_CONFIG` sets `lease_query_max_unpaged_leases` to 0, which disables the
+        The class sets `lease_query_max_unpaged_leases` to 0, which disables the
         guard. Nothing else covers that documented setting end to end.
         """
         lease = complete_lease({"ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff", "state": 0})

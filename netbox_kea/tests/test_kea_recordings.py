@@ -13,13 +13,13 @@ import json
 import re
 from pathlib import Path
 
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from netbox_kea import server_configuration
 from netbox_kea.kea import KeaException
 from netbox_kea.subnet_catalogue import CatalogueUnavailable, CompleteCatalogueSnapshot, display, for_synchronization
 from netbox_kea.tests.kea_stub import _network_absent, _network_present, kea_client, queued, stub_kea
-from netbox_kea.tests.utils import _PLUGINS_CONFIG, _make_db_server
+from netbox_kea.tests.utils import _make_db_server, with_kea_client_config
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
 _COMPOSE_OVERRIDE = Path(__file__).resolve().parents[2] / "tests" / "docker" / "docker-compose.override.yml"
@@ -93,7 +93,7 @@ def test_the_accepted_keys_cover_every_key_kea_returned():
         assert "description" not in accepted["shared-networks"]
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestRecordedKeaConfiguration(TestCase):
     def setUp(self):
         self.server = _make_db_server()

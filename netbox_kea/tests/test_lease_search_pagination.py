@@ -1,13 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-from django.test import override_settings
 from django.urls import reverse
 
 from .kea_stub import _catalogue_responses_for_subnets, complete_lease, stub_kea
-from .utils import _PLUGINS_CONFIG, _ViewTestBase
+from .utils import _ViewTestBase
 
 
-@override_settings(PLUGINS_CONFIG=_PLUGINS_CONFIG)
 class TestLeaseSearchPagination(_ViewTestBase):
     def test_hostname_second_page_renders_and_enriches_only_remaining_leases(self):
         leases = [

@@ -33,7 +33,7 @@ from .leases import (
     lease_edit,
     request_errors,
 )
-from .models import Server, SyncConfig
+from .models import KeaClientConfig, Server, SyncConfig
 from .pools import Pool, parse_pool
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
 from .reservations import (
@@ -2066,8 +2066,18 @@ class SyncConfigForm(forms.ModelForm):
         fields = (
             "interval_minutes",
             "sync_enabled",
+            "sync_max_leases_per_server",
+            "stale_ip_cleanup",
             "sync_leases_enabled",
             "sync_reservations_enabled",
             "sync_prefixes_enabled",
             "sync_ip_ranges_enabled",
         )
+
+
+class KeaClientConfigForm(forms.ModelForm):
+    """Edit the KeaClientConfig singleton. The model fields give the validators and the help text."""
+
+    class Meta:
+        model = KeaClientConfig
+        fields = ("kea_timeout", "lease_query_max_unpaged_leases")
