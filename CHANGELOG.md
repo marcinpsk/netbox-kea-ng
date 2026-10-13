@@ -13,6 +13,27 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.4.0 (2026-10-13)
+
+### Bug Fixes
+
+- **fan-out**: Read the Kea client settings once on the request thread
+  ([`f572ee1`](https://github.com/marcinpsk/netbox-kea-ng/commit/f572ee1d1d837fd77a0ce76d5c047479d203e0a9))
+
+- **settings**: Check the 0018 switches and keep each test's settings
+  ([`4f5f7cf`](https://github.com/marcinpsk/netbox-kea-ng/commit/4f5f7cf37898ebb9bbef6538d15914be62deda06))
+
+### Documentation
+
+- **settings**: Name the Settings page as the home of every runtime setting
+  ([`3f75f58`](https://github.com/marcinpsk/netbox-kea-ng/commit/3f75f58c689a170aced262257b72783ff75e5558))
+
+### Features
+
+- **settings**: Move the PLUGINS_CONFIG runtime keys into Settings singletons
+  ([`d5777d6`](https://github.com/marcinpsk/netbox-kea-ng/commit/d5777d6167599e243276988625e69499332b2310))
+
+
 ## v3.3.0 (2026-10-13)
 
 ### Bug Fixes
