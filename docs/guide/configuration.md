@@ -21,11 +21,19 @@ restart. The page has one section for each group of settings:
 | Sync | Sync IP Ranges | On | Sync Kea pools to NetBox IPAM as IP Ranges |
 | Kea Client | Kea Timeout (seconds) | `30` | How long each Kea request can take, at least 1. A change applies to the next request |
 | Kea Client | Max Unpaged Leases | `1000` | Refuse an unpaged Subnet lease query when its Kea statistics count exceeds this limit. `0` disables this safety check |
+| Display Cache | Configuration TTL (seconds) | `300` | How long a page shows a cached Server configuration and Subnet list. `0` turns off caching for them |
+| Display Cache | Reservations TTL (seconds) | `300` | How long a page shows cached Reservations. `0` turns off caching for them. The Reservation pages do not use the cache yet |
+| Display Cache | Leases TTL (seconds) | `30` | How long a page shows cached Leases. `0` turns off caching for them. The Lease pages do not use the cache yet |
+| Display Cache | Utilization and Status TTL (seconds) | `15` | How long a page shows cached utilization and daemon status. `0` turns off caching for them. These pages do not use the cache yet |
 | DHCP Plugin | Integration Enabled (global) | On | Global switch. Clear it to stop the DHCP plugin integration for all Servers. The section shows only when the NetBox DHCP plugin (`netbox_dhcp`) is installed |
 
 A section shows to a user with the view permission of its model (`netbox_kea.view_syncconfig`,
-`netbox_kea.view_keaclientconfig`, `netbox_kea.view_dhcpintegrationconfig`). A save needs the change permission of the model too. Without it, the section
+`netbox_kea.view_keaclientconfig`, `netbox_kea.view_displaycacheconfig`, `netbox_kea.view_dhcpintegrationconfig`). A save needs the change permission of the model too. Without it, the section
 shows the values read-only. Each save writes a change log record. While a branch is active, the page refuses a save.
+
+A save of the Display Cache section makes every cached entry unused, also when no value changes. A change that the
+plugin sends to Kea makes the cached entries that the change affects unused at once. A change from outside this NetBox, such as
+kea-shell or an HA partner, shows when the TTL of the entry ends.
 
 The DHCP plugin integration runs for a Server only when the NetBox DHCP plugin is installed, the Server has
 **Sync to DHCP plugin** on, and **Integration Enabled (global)** is on. When one of them is off, the Server has no

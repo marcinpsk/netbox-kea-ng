@@ -60,6 +60,10 @@ class NoBranchGuard:
         """Refuse nothing."""
 
 
+def no_display_cache(family: int | None, *, configuration: bool) -> None:
+    """The KeaClient ``on_write`` of the host harness: it has no NetBox, so it has no display cache to rotate."""
+
+
 def _delete_created_servers(api: pynetbox.api, created_server_ids: set[int]) -> None:
     """Delete every session-owned Server, and report failures without stopping."""
     for server_id in sorted(created_server_ids):
@@ -186,7 +190,11 @@ def kea_harness_daemons(kea_control_urls: dict[int, str]) -> dict[int, str]:
     for family, url in kea_control_urls.items():
         try:
             with KeaClient(
-                url, timeout=REQUEST_TIMEOUT, max_unpaged_leases=None, write_guard=NoBranchGuard()
+                url,
+                timeout=REQUEST_TIMEOUT,
+                max_unpaged_leases=None,
+                write_guard=NoBranchGuard(),
+                on_write=no_display_cache,
             ) as client:
                 (reply,) = client.command(KeaCommand.CONFIG_GET, family)
             marker = reply["arguments"][f"Dhcp{family}"].get("user-context", {}).get(HARNESS_MARKER)

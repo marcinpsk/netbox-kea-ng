@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase, override_settings
 
-from netbox_kea import constants
+from netbox_kea import display_cache
 from netbox_kea.tests.conftest import _prepopulate_url_resolver, _test_database_name
 from netbox_kea.tests.kea_stub import queued, stub_kea
 from netbox_kea.tests.utils import _make_db_server, with_kea_client_config
@@ -77,9 +77,9 @@ class TestPluginCacheHygiene(SimpleTestCase):
     def test_drops_every_plugin_key_and_leaves_others_alone(self):
         from django.core.cache import cache
 
-        from netbox_kea.tests.conftest import _PLUGIN_CACHE_PATTERNS, _drop_plugin_cache_entries
+        from netbox_kea.tests.conftest import _drop_plugin_cache_entries
 
-        plugin_keys = [pattern.replace("*", "4242:4") for pattern in _PLUGIN_CACHE_PATTERNS]
+        plugin_keys = [f"{display_cache.KEY_PREFIX}{rest}" for rest in ("entry:4242:4", "generation:4242:4:records")]
         unrelated = "netbox_kea_unrelated:keep-me"
         for key in (*plugin_keys, unrelated):
             cache.set(key, "sentinel", 300)
@@ -115,7 +115,7 @@ class TestPluginCacheHygieneReachesDjangoTestCases(TestCase):
     the cleanup ran for this class rather than for some earlier test.
     """
 
-    _PLANTED = f"{constants.SUBNET_CATALOGUE_CACHE_PREFIX}v1:4242:4:snapshot:planted"
+    _PLANTED = f"{display_cache.KEY_PREFIX}entry:4242:4:catalogue:planted"
 
     @classmethod
     def setUpClass(cls):

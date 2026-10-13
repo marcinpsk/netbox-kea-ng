@@ -1183,3 +1183,48 @@ rules:
         - "**/views/**"
         - "**/subnet_catalogue.py"
     pattern: not $CATALOGUE.configuration_complete
+
+  - id: kea-cache-outside-display-cache
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Reach the Django cache through netbox_kea/display_cache.py only. It owns every key, the configuration and
+      records generations, the TTLs of the Display Cache settings and the admission rule (ADR 0009). A key built in
+      another module has none of the generations, so a Kea write or a settings save cannot make it unreachable.
+      Limits: the rule sees django.core.cache and the private names of display_cache (an import, absolute or
+      relative, or an attribute of the module name or of an alias from "from . import display_cache as x");
+      another cache library, getattr() and a re-export are not seen.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/**"
+        - "kea-cache-outside-display-cache.py"
+      exclude:
+        - "netbox_kea/display_cache.py"
+        - "**/tests/**"
+    pattern-either:
+      - pattern: django.core.cache.cache
+      - pattern: django.core.cache.caches
+      - pattern: import django.core.cache
+      - pattern: from django.core import cache
+      - pattern: from django.core.cache import $NAME
+      # A private name imported from the module, absolute or relative, also inside parentheses.
+      - pattern-regex: from\s+(?:\.+|netbox_kea\.)display_cache\s+import\s+(?:\([^)]*?|[^\n]*?)\b_\w
+      - patterns:
+          - pattern-either:
+              - pattern: netbox_kea.display_cache.$NAME
+              - pattern: display_cache.$NAME
+              - patterns:
+                  - pattern-either:
+                      - pattern-inside: |
+                          from . import display_cache as $ALIAS
+                          ...
+                      - pattern-inside: |
+                          from .. import display_cache as $ALIAS
+                          ...
+                  - pattern: $ALIAS.$NAME
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^_

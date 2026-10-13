@@ -7,27 +7,23 @@ from collections import defaultdict
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
+from typing import Any, Literal, Protocol, TypeVar
 
 import requests
-from django.core.cache import cache
 from django.utils import timezone
 
-from . import constants, server_configuration
-from .constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, IPAddressValue, IPNetworkValue
+from . import display_cache, server_configuration
+from .constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, IPAddressValue, IPNetworkValue, validate_family
 from .kea import SUBNET_LIST, KeaClient, KeaException, MalformedReply, subnet_network
-
-if TYPE_CHECKING:
-    from .models import Server
+from .models import Server, require_persisted_server
 from .server_configuration import (
     Diagnostic,
     Pool,
     ServerConfigurationSnapshot,
     SubnetConfiguration,
-    invalidate,
 )
 
-__all__ = ["Diagnostic", "Pool", "SubnetConfiguration", "invalidate"]
+__all__ = ["Diagnostic", "Pool", "SubnetConfiguration"]
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +163,12 @@ class CatalogueSnapshot:
             (subnet.identity.cidr, subnet.identity.subnet_id)
             for subnet in sorted(self._display_subnets(), key=lambda subnet: _network_sort_key(subnet.identity.network))
         )
+
+    @property
+    def settled(self) -> bool:
+        """Return whether the display cache can store the Snapshot: a failed source read is not, no subnet_cmds hook is."""
+        identity_settled = self.identity_available or not self.subnet_cmds_available
+        return identity_settled and self.configuration_available
 
     @property
     def unavailable(self) -> bool:
@@ -320,34 +322,10 @@ class _ConfigurationObservation:
     quarantined_networks: frozenset[IPNetworkValue] = frozenset()
 
 
-def _validate_family(family: int) -> Family:
-    # Return the literals themselves; mypy cannot narrow int through `in (4, 6)`.
-    if family == 4:
-        return 4
-    if family == 6:
-        return 6
-    raise ValueError(f"family must be 4 or 6, got {family!r}")
-
-
-def _cache_key(server: Server, family: Family, generation: str | None = None) -> str:
-    generation = generation or server_configuration.display_generation(server, family)
-    return f"{constants.SUBNET_CATALOGUE_CACHE_PREFIX}v2:{_require_persisted_server(server)}:{family}:snapshot:{generation}"
-
-
-def _require_persisted_server(server: Server) -> int:
-    if server.pk is None:
-        raise ValueError("The Subnet Catalogue requires a persisted Server.")
-    return server.pk
-
-
-def _diagnostic(code: str, message: str, source: str, path: str = "") -> Diagnostic:
-    return Diagnostic(code=code, message=message, source=source, path=path)
-
-
 def _unavailable_identity(code: str, message: str, *, subnet_cmds_available: bool = True) -> _IdentityObservation:
     return _IdentityObservation(
         facts=(),
-        diagnostics=(_diagnostic(code, message, "identity"),),
+        diagnostics=(Diagnostic(code, message, "identity"),),
         subnet_cmds_available=subnet_cmds_available,
         available=False,
         complete=False,
@@ -357,7 +335,7 @@ def _unavailable_identity(code: str, message: str, *, subnet_cmds_available: boo
 def _unavailable_configuration(code: str, message: str) -> _ConfigurationObservation:
     return _ConfigurationObservation(
         facts=(),
-        diagnostics=(_diagnostic(code, message, "configuration"),),
+        diagnostics=(Diagnostic(code, message, "configuration"),),
         available=False,
         complete=False,
         global_qualifying_suffix=None,
@@ -436,7 +414,7 @@ def _parse_identity_membership(entry: Any, path: str, diagnostics: list[Diagnost
     if isinstance(value, str) and value:
         return value, True
     diagnostics.append(
-        _diagnostic(
+        Diagnostic(
             "invalid-shared-network-membership",
             "Kea returned an invalid Shared Network name.",
             "identity",
@@ -454,17 +432,17 @@ def _parse_identity(
     diagnostics: list[Diagnostic],
 ) -> SubnetIdentity | None:
     if not isinstance(entry, dict):
-        diagnostics.append(_diagnostic("invalid-subnet", "Kea returned a non-object Subnet.", source, path))
+        diagnostics.append(Diagnostic("invalid-subnet", "Kea returned a non-object Subnet.", source, path))
         return None
     subnet_id = entry.get("id")
     if isinstance(subnet_id, bool) or not isinstance(subnet_id, int) or not MIN_SUBNET_ID <= subnet_id <= MAX_SUBNET_ID:
-        diagnostics.append(_diagnostic("invalid-subnet-id", "Kea returned an invalid subnet ID.", source, f"{path}.id"))
+        diagnostics.append(Diagnostic("invalid-subnet-id", "Kea returned an invalid subnet ID.", source, f"{path}.id"))
         return None
     try:
         network = subnet_network(entry.get("subnet"), family)
     except (TypeError, ValueError):
         diagnostics.append(
-            _diagnostic("invalid-subnet-cidr", "Kea returned an invalid Subnet CIDR.", source, f"{path}.subnet")
+            Diagnostic("invalid-subnet-cidr", "Kea returned an invalid Subnet CIDR.", source, f"{path}.subnet")
         )
         return None
     return SubnetIdentity(subnet_id=subnet_id, network=network)
@@ -487,7 +465,7 @@ def _quarantine_collisions(
         if fact.identity.subnet_id not in quarantined_ids and fact.identity.network not in quarantined_networks
     ]
     diagnostics = [
-        _diagnostic(
+        Diagnostic(
             f"{source}-collision",
             f"Multiple Subnets use subnet ID {subnet_id}; all participants were omitted.",
             source,
@@ -496,7 +474,7 @@ def _quarantine_collisions(
     ]
     diagnostics.extend(
         [
-            _diagnostic(
+            Diagnostic(
                 f"{source}-collision",
                 f"Multiple Subnets use CIDR {network}; all participants were omitted.",
                 source,
@@ -512,7 +490,7 @@ def _configuration_observation(snapshot: server_configuration.ServerConfiguratio
     facts: list[_ConfiguredFact] = []
     for declared, membership_complete in zip(snapshot.subnets, snapshot._membership_complete, strict=True):
         if declared.declared_subnet_id is None:
-            diagnostics.append(_diagnostic("invalid-subnet-id", "Kea did not declare a subnet ID.", "configuration"))
+            diagnostics.append(Diagnostic("invalid-subnet-id", "Kea did not declare a subnet ID.", "configuration"))
             continue
         facts.append(
             _ConfiguredFact(
@@ -706,7 +684,7 @@ def _reconcile(
             ),
         }
         diagnostics.append(
-            _diagnostic(
+            Diagnostic(
                 disagreement_code,
                 messages[disagreement_code],
                 "reconciliation",
@@ -823,36 +801,26 @@ def _snapshot_class(
 
 def _read_live(server: Server, family: Family) -> tuple[CatalogueSnapshot, ServerConfigurationSnapshot | None]:
     """Read a live snapshot, and the configuration snapshot that it came from (None: no client)."""
-    _require_persisted_server(server)
+    require_persisted_server(server)
     identity, configuration, disagreement_code, source = _observe(server, family)
     return _reconcile(server, family, identity, configuration, disagreement_code), source
 
 
 def display(server: Server, family: int) -> CatalogueSnapshot:
     """Return a cached Complete or Incomplete snapshot for presentation."""
-    validated_family = _validate_family(family)
-    generation = server_configuration.display_generation(server, validated_family)
-    key = _cache_key(server, validated_family, generation)
-    cached = cache.get(key)
-    if isinstance(cached, CatalogueSnapshot):
-        return cached
-    snapshot, _source = _read_live(server, validated_family)
-    # Cache only settled sources: an absent subnet_cmds hook is settled, a failed read is not.
-    identity_settled = snapshot.identity_available or not snapshot.subnet_cmds_available
-    if identity_settled and snapshot.configuration_available:
-        cache.set(key, snapshot, constants.DISPLAY_SNAPSHOT_TTL)
-    return snapshot
+    validated_family = validate_family(family)
+    return display_cache.cached(server, validated_family, "catalogue", lambda: _read_live(server, validated_family)[0])
 
 
 def for_verification(server: Server, family: int) -> CatalogueSnapshot:
     """Read the live Catalogue without consulting or filling the cache."""
-    snapshot, _source = _read_live(server, _validate_family(family))
+    snapshot, _source = _read_live(server, validate_family(family))
     return snapshot
 
 
 def for_synchronization(server: Server, family: int) -> CompleteCatalogueSnapshot:
     """Return one live Complete snapshot pinned for a synchronization run."""
-    validated_family = _validate_family(family)
+    validated_family = validate_family(family)
     snapshot, _source = _read_live(server, validated_family)
     if not isinstance(snapshot, CompleteCatalogueSnapshot):
         raise CatalogueUnavailable("A complete Subnet Catalogue is required for synchronization.")
@@ -922,7 +890,7 @@ class MutationScope(_SubnetLookup, AbstractContextManager["MutationScope"]):
         self._configuration: ServerConfigurationSnapshot | None = None
 
     def __enter__(self) -> MutationScope:
-        invalidate(self.server, self.family)
+        display_cache.rotate_configuration(self.server, self.family)
         self.snapshot, self._configuration = _read_live(self.server, self.family)
         return self
 
@@ -931,7 +899,7 @@ class MutationScope(_SubnetLookup, AbstractContextManager["MutationScope"]):
         # keeps the scope must not decide a mutation on pre-mutation observations.
         self.snapshot = None
         self._configuration = None
-        invalidate(self.server, self.family)
+        display_cache.rotate_configuration(self.server, self.family)
 
     def find_by_cidr(self, cidr: str) -> VerifiedSubnet | None:
         """Return one exact Verified Subnet, or confirm its absence safely."""
@@ -989,8 +957,8 @@ class IdentityRead(_SubnetLookup):
 
 def read_identity(server: Server, family: int) -> IdentityRead:
     """Send one ``subnet{v}-list`` read, for a check after a change. It uses no cache and sends no config-get."""
-    validated_family = _validate_family(family)
-    _require_persisted_server(server)
+    validated_family = validate_family(family)
+    require_persisted_server(server)
     client = _catalogue_client(server, validated_family)
     identity = (
         _unavailable_identity("identity-unavailable", "Kea subnet identity facts are unavailable.")
@@ -1002,4 +970,4 @@ def read_identity(server: Server, family: int) -> IdentityRead:
 
 def mutation(server: Server, family: int) -> MutationScope:
     """Open a live mutation scope and invalidate the interactive cache around it."""
-    return MutationScope(server, _validate_family(family))
+    return MutationScope(server, validate_family(family))

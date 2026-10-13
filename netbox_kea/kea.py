@@ -7,7 +7,7 @@ import ipaddress
 import itertools
 import json
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -176,6 +176,13 @@ class KeaCommand(Enum):
     NETWORK6_SUBNET_ADD = "network6-subnet-add", "write"
     NETWORK4_SUBNET_DEL = "network4-subnet-del", "write"
     NETWORK6_SUBNET_DEL = "network6-subnet-del", "write"
+
+
+class WriteObserver(Protocol):
+    """Told before and after each write command, so its owner can rotate the display cache generations."""
+
+    def __call__(self, family: Family | None, *, configuration: bool) -> None:
+        """Note a write to *family* (``None``: no family target); *configuration* is true for a configuration change."""
 
 
 class WriteGuard(Protocol):
@@ -833,11 +840,11 @@ class KeaClient:
         client_key: str | None = None,
         persist_config: bool = True,
         send_service: bool = True,
-        on_config_change: Callable[[], None] | None = None,
         *,
         timeout: int,
         max_unpaged_leases: int | None,
         write_guard: WriteGuard,
+        on_write: WriteObserver,
     ):
         """Initialise a Kea HTTP client session.
 
@@ -862,11 +869,12 @@ class KeaClient:
             max_unpaged_leases: Reject an unpaged Subnet query when Kea reports
                 more than this many covered leases. ``None`` disables the guard. Required, so no default
                 here can drift from the ``lease_query_max_unpaged_leases`` plugin setting.
-            on_config_change: Optional callback invoked after Kea's live configuration
-                changes. Cache invalidation failures are logged and do not interrupt
-                persistence of an already-applied change.
             write_guard: Required. Refuses each write command before it is sent. ``Server.get_client()``
                 passes the branch binding; a caller that passes another guard owns that choice.
+            on_write: Required. Called with the target family before and after each write command is sent,
+                also when the send fails, with ``configuration=False``; and before and after each live
+                configuration mutation with ``configuration=True``. ``Server.get_client()`` rotates the display
+                cache generations. A failure is logged and does not interrupt the write.
 
         Raises:
             ValueError: If only one of client_cert/client_key is provided.
@@ -884,8 +892,8 @@ class KeaClient:
         self.persist_config = persist_config
         self.send_service = send_service
         self.max_unpaged_leases = max_unpaged_leases
-        self._on_config_change = on_config_change
         self.write_guard = write_guard
+        self.on_write = on_write
 
         # command() passes these on each request, because requests lets the environment replace session values.
         self.verify: bool | str = True if verify is None else verify
@@ -940,12 +948,18 @@ class KeaClient:
         if arguments is not None:
             body["arguments"] = arguments
 
+        if command.is_write:
+            self._notify_write(command, target, "before", configuration=False)
         try:
             resp = self._session.post(self.url, json=body, timeout=self.timeout, verify=self.verify, cert=self.cert)
         except requests.RequestException:
             raise
         except OSError as exc:
             raise KeaTLSFileError("A TLS CA, certificate or key file of the client could not be found.") from exc
+        finally:
+            # Kea can apply a write whose reply is lost, so a display read during the send must not stay cached.
+            if command.is_write:
+                self._notify_write(command, target, "after", configuration=False)
         resp.raise_for_status()
         try:
             resp_json = resp.json()
@@ -974,9 +988,9 @@ class KeaClient:
         new.persist_config = self.persist_config
         new.send_service = self.send_service
         new.max_unpaged_leases = self.max_unpaged_leases
-        new._on_config_change = self._on_config_change
         # Thread-pool workers do not inherit context variables, so the clone keeps the branch binding.
         new.write_guard = self.write_guard
+        new.on_write = self.on_write
         return new
 
     def _refuse(self, command: KeaCommand) -> None:
@@ -984,25 +998,24 @@ class KeaClient:
         if command.is_write:
             self.write_guard.refuse(f"Kea command {command.value}")
 
-    def _notify_config_change(self, family: Family) -> None:
-        """Notify the owner without interrupting persistence of a live change."""
-        if self._on_config_change is None:
-            return
+    def _notify_write(
+        self, command: KeaCommand, target: Family | None, when: Literal["before", "after"], *, configuration: bool
+    ) -> None:
+        """Tell the owner about a write command without interrupting it."""
         try:
-            self._on_config_change()
+            self.on_write(target, configuration=configuration)
         except Exception:
-            logger.exception("Configuration changed for DHCPv%s, but cache invalidation failed", family)
+            logger.exception("The display cache rotation %s Kea command %s failed", when, command.value)
 
     def _config_mutation_command(self, command: KeaCommand, family: Family, arguments: dict[str, Any]) -> None:
-        """Send one live configuration mutation between invalidation notifications, and require one success reply."""
+        """Send one live configuration mutation between configuration notifications, and require one success reply."""
         self._refuse(command)
-        self._notify_config_change(family)
+        self._notify_write(command, family, "before", configuration=True)
         try:
             response = self.command(command, family, arguments=arguments, check=None)
         finally:
-            # The response can be lost after Kea applies the command. Invalidate again
-            # so a read during the request cannot repopulate the active cache generation.
-            self._notify_config_change(family)
+            # Kea can apply a change whose reply is lost, so a read during the request must not stay cached.
+            self._notify_write(command, family, "after", configuration=True)
         _one_reply(command, family, response)
 
     def close(self) -> None:

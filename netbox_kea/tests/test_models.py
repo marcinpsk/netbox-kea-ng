@@ -32,7 +32,14 @@ from netbox.models import NetBoxModel
 
 import netbox_kea
 from netbox_kea.kea import KeaClient, KeaCommand
-from netbox_kea.models import DhcpIntegrationConfig, KeaClientConfig, KeaDhcpLink, Server, SyncConfig
+from netbox_kea.models import (
+    DhcpIntegrationConfig,
+    DisplayCacheConfig,
+    KeaClientConfig,
+    KeaDhcpLink,
+    Server,
+    SyncConfig,
+)
 from netbox_kea.reservations import MAX_IDENTITY_LENGTH
 from netbox_kea.tests.kea_stub import record_transport, stub_kea
 from netbox_kea.tests.utils import _make_db_server, with_kea_client_config
@@ -1198,3 +1205,20 @@ class TestDhcpIntegrationMigration(_UpgradeTestCase):
         self._migrate_to_current()
 
         self.assertIs(DhcpIntegrationConfig.get().enabled, True)
+
+
+class TestDisplayCacheMigration(_UpgradeTestCase):
+    """Migration 0027 creates the Display Cache row with the default TTL of each read kind."""
+
+    _BEFORE = ("netbox_kea", "0026_dhcpintegrationconfig")
+
+    def test_an_upgrade_creates_the_row_with_the_default_ttls(self):
+        historical = self._roll_back_apps()
+        self.assertNotIn("displaycacheconfig", historical.all_models["netbox_kea"])
+
+        self._migrate_to_current()
+
+        row = DisplayCacheConfig.get()
+        self.assertEqual(
+            (row.configuration_ttl, row.reservations_ttl, row.leases_ttl, row.status_ttl), (300, 300, 30, 15)
+        )

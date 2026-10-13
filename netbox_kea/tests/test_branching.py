@@ -79,11 +79,12 @@ from netbox_branching.utilities import activate_branch, supports_branching  # no
 from rest_framework.permissions import SAFE_METHODS  # noqa: E402
 from utilities.exceptions import AbortRequest  # noqa: E402
 
-from netbox_kea import server_configuration  # noqa: E402
+from netbox_kea import display_cache  # noqa: E402
 from netbox_kea.jobs import KeaIpamSyncJob  # noqa: E402
 from netbox_kea.kea import KeaCommand, KeaException  # noqa: E402
 from netbox_kea.models import (  # noqa: E402
     DhcpIntegrationConfig,
+    DisplayCacheConfig,
     IPAMOwnershipLink,
     KeaClientConfig,
     KeaDhcpLink,
@@ -229,6 +230,7 @@ class BranchabilityPinTest(SimpleTestCase):
                 "netbox_kea.SyncConfig",
                 "netbox_kea.KeaClientConfig",
                 "netbox_kea.DhcpIntegrationConfig",
+                "netbox_kea.DisplayCacheConfig",
                 "netbox_kea.KeaDhcpLink",
                 "netbox_kea.IPAMOwnershipLink",
             },
@@ -1088,6 +1090,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
                 "netbox_kea.SyncConfig",
                 "netbox_kea.KeaClientConfig",
                 "netbox_kea.DhcpIntegrationConfig",
+                "netbox_kea.DisplayCacheConfig",
                 "netbox_kea.KeaDhcpLink",
                 "netbox_kea.IPAMOwnershipLink",
             },
@@ -1097,6 +1100,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
             "netbox_kea.SyncConfig",
             "netbox_kea.KeaClientConfig",
             "netbox_kea.DhcpIntegrationConfig",
+            "netbox_kea.DisplayCacheConfig",
             "netbox_kea.IPAMOwnershipLink",
         }
         self.assertEqual((_refusal_receivers(pre_save), _refusal_receivers(pre_delete)), (main_only, main_only))
@@ -1209,6 +1213,17 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
             ),
             # The unchecked switch is left out, as a browser sends it.
             "dhcp-integration": ({"section": "dhcp-integration"}, lambda: DhcpIntegrationConfig.get().enabled, False),
+            "display-cache": (
+                {
+                    "section": "display-cache",
+                    "display-cache-configuration_ttl": 31,
+                    "display-cache-reservations_ttl": 300,
+                    "display-cache-leases_ttl": 30,
+                    "display-cache-status_ttl": 15,
+                },
+                lambda: DisplayCacheConfig.get().configuration_ttl,
+                31,
+            ),
         }
         for slug, (data, saved, expected) in sections.items():
             # The DHCP Plugin section shows only with netbox_dhcp; its row and the branch refusal do not need it.
@@ -1636,14 +1651,14 @@ class KeaTransportInBranchTest(TransactionTestCase):
 
         self.assertEqual(kea.commands(), ["lease4-del"], "on main the write is sent")
 
-    def test_a_config_mutation_in_a_branch_leaves_the_cache_generation_alone(self):
-        generation_key = server_configuration._generation_key(self.server, 4)
-        generation = server_configuration._cache_generation(self.server, 4)
+    def test_a_config_mutation_in_a_branch_leaves_the_cache_generations_alone(self):
+        generations = {name: display_cache._generation(self.server, 4, name) for name in ("configuration", "records")}
 
         with activate_branch(self.branch), stub_kea({}) as kea, self.assertRaises(branching.BranchActive):
             self.server.get_client(version=4).subnet_del(4, 1)
 
-        self.assertEqual(cache.get(generation_key), generation)
+        for name, generation in generations.items():
+            self.assertEqual(cache.get(display_cache._generation_key(self.server, 4, name)), generation, name)
         self.assertEqual(kea.commands(), [])
 
     def test_a_client_built_in_a_branch_sends_a_read(self):

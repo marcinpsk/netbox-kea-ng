@@ -19,6 +19,17 @@ Family = Literal[4, 6]
 IPAddressValue = ipaddress.IPv4Address | ipaddress.IPv6Address
 IPNetworkValue = ipaddress.IPv4Network | ipaddress.IPv6Network
 
+
+def validate_family(family: int) -> Family:
+    """Return *family* as a ``Family``, or raise ``ValueError`` when it is not 4 or 6."""
+    # Return the literals themselves; mypy cannot narrow int through `in (4, 6)`.
+    if family == 4:
+        return 4
+    if family == 6:
+        return 6
+    raise ValueError(f"family must be 4 or 6, got {family!r}")
+
+
 # Whether Kea wrote the running configuration to disk after a Configuration Change.
 Persistence = Literal["persisted", "failed", "not-requested"]
 
@@ -44,13 +55,6 @@ HEX_STRING_REGEX = r"^([0-9A-Fa-f]{2}[:-]?)*([0-9A-Fa-f]{2})$"
 FLEX_ID_DOCUMENTATION_URL = (
     "https://kea.readthedocs.io/en/latest/arm/hooks.html#flex-id-flexible-identifiers-for-host-reservations"
 )
-
-# Cache namespaces shared by the producers and test cleanup.
-SERVER_CONFIGURATION_CACHE_PREFIX = "netbox_kea:server_configuration:"
-SUBNET_CATALOGUE_CACHE_PREFIX = "netbox_kea:subnet_catalogue:"
-
-# Maximum age of an interactive configuration or catalogue snapshot, in seconds.
-DISPLAY_SNAPSHOT_TTL = 300
 
 # kea/src/lib/dhcp
 # RFC8415 section 11.1

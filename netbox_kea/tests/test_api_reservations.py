@@ -17,8 +17,8 @@ from django.test import TestCase
 from django.urls import reverse
 from rest_framework.test import APIClient
 
+from netbox_kea import display_cache
 from netbox_kea.models import Server
-from netbox_kea.subnet_catalogue import invalidate
 
 from .kea_stub import _catalogue_responses, _http_response, _raw_http_response, _res_get, _res_page, stub_kea
 
@@ -55,8 +55,8 @@ class _APITestBase(TestCase):
         self.server = _make_server()
         # Reused test server IDs otherwise serve another test's cached Catalogue
         # snapshot: the DB rolls back per test, the cache backend does not.
-        invalidate(self.server, 4)
-        invalidate(self.server, 6)
+        display_cache.rotate_configuration(self.server, 4)
+        display_cache.rotate_configuration(self.server, 6)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -683,7 +683,7 @@ class TestReservation4API(_APITestBase):
             with self.subTest(params=params):
                 responses = _catalogue_responses(4, 20, "198.18.0.0/24")
                 responses["subnet4-list"] = {"result": 2, "text": "subnet commands unavailable"}
-                invalidate(self.server, 4)
+                display_cache.rotate_configuration(self.server, 4)
                 with stub_kea(responses) as kea:
                     response = self.api_client.get(self._url(), params)
                 self.assertEqual(response.status_code, 400)

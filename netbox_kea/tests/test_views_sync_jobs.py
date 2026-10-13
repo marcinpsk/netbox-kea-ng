@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.ipam_reconciliation import _get_stale_cleanup_mode
-from netbox_kea.models import DhcpIntegrationConfig, KeaClientConfig, Server, SyncConfig
+from netbox_kea.models import DhcpIntegrationConfig, DisplayCacheConfig, KeaClientConfig, Server, SyncConfig
 from netbox_kea.tests.utils import (
     User,
     _get_with_writes,
@@ -972,7 +972,7 @@ class TestDhcpIntegrationSettingsView(TestCase):
         with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True):
             self.assertIn("dhcp-integration", self._slugs())
         with patch.object(dhcp_plugin, "is_available", return_value=False, autospec=True):
-            self.assertEqual(self._slugs(), ["sync", "kea-client"])
+            self.assertEqual(self._slugs(), ["sync", "kea-client", "display-cache"])
             response = self.client.post(self.url, _section_data("dhcp-integration", {"enabled": False}))
 
         self.assertEqual(response.status_code, 400)
@@ -985,9 +985,9 @@ class TestDhcpIntegrationSettingsView(TestCase):
             return [item.link_text for item in navigation._settings_items()]
 
         with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True):
-            self.assertEqual(menu_texts(), ["Sync", "Kea Client", "DHCP Plugin"])
+            self.assertEqual(menu_texts(), ["Sync", "Kea Client", "Display Cache", "DHCP Plugin"])
         with patch.object(dhcp_plugin, "is_available", return_value=False, autospec=True):
-            self.assertEqual(menu_texts(), ["Sync", "Kea Client"])
+            self.assertEqual(menu_texts(), ["Sync", "Kea Client", "Display Cache"])
 
 
 class TestSettingsSectionsCoverEverySingleton(SimpleTestCase):
@@ -1025,6 +1025,28 @@ class TestSettingsSectionsRenderEveryField(TestCase):
             for name in section.form_class.base_fields:
                 with self.subTest(section=section.slug, field=name):
                     self.assertIsNotNone(card.find(attrs={"name": f"{section.slug}-{name}"}))
+
+
+class TestDisplayCacheSettingsSection(TestCase):
+    """The Display Cache section states once, under its heading, what a save does to the cache."""
+
+    _DESCRIPTION = "A save of this section makes every cached entry unused, also when no value changes."
+
+    def test_the_section_shows_its_description_under_the_heading_and_no_field_repeats_it(self):
+        user = User.objects.create_superuser("display-cache-admin", "d@d.com", "pass")
+        self.client.force_login(user)
+        page = BeautifulSoup(self.client.get(reverse("plugins:netbox_kea:settings")).content, "html.parser")
+
+        card = page.find(id="display-cache")
+        self.assertEqual(card.find(class_="settings-description").get_text(strip=True), self._DESCRIPTION)
+        self.assertNotIn("save", " ".join(field.help_text for field in DisplayCacheConfig._meta.fields))
+
+    def test_a_section_without_a_description_shows_none(self):
+        user = User.objects.create_superuser("kea-client-description", "e@e.com", "pass")
+        self.client.force_login(user)
+        page = BeautifulSoup(self.client.get(reverse("plugins:netbox_kea:settings")).content, "html.parser")
+
+        self.assertIsNone(page.find(id="kea-client").find(class_="settings-description"))
 
 
 class TestKeaClientSettingsPermissions(TestCase):

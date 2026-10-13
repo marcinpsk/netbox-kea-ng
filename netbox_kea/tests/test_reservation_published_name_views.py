@@ -13,7 +13,7 @@ from urllib.parse import urlencode
 
 from django.urls import reverse
 
-from netbox_kea import server_configuration
+from netbox_kea import display_cache
 
 from .kea_stub import _res_get, queued, stub_kea
 from .test_kea_recordings import _recording
@@ -73,7 +73,7 @@ class _PublishedNameViewTest(_ViewTestBase):
     def setUp(self):
         super().setUp()
         for family in (4, 6):
-            server_configuration.invalidate(self.server, family)
+            display_cache.rotate_configuration(self.server, family)
 
     def _url(self, family: int, subnet_id: int) -> str:
         url = reverse(f"plugins:netbox_kea:server_reservation{family}_edit", args=[self.server.pk, subnet_id])
