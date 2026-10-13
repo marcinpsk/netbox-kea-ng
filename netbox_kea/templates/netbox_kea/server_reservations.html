@@ -6,6 +6,7 @@
 
 {% block content %}
 {% include "netbox_kea/includes/persist_config_warning.html" %}
+<div id="kea-reservations">
 <div class="row mb-3">
   <div class="col">
     {% if not hook_available %}
@@ -69,7 +70,6 @@
 </div>
 {% endif %}
 
-<div id="kea-reservations">
 {% if hook_available %}
 {% if reservation_notice.unavailable %}
 <div class="alert alert-danger" role="alert">{{ reservation_notice.headline }}</div>

@@ -43,6 +43,14 @@ def _refresh_control(response):
     return control
 
 
+def _section(response, control) -> Any:
+    """Return the part of *response* that the Refresh *control* swaps."""
+    section = BeautifulSoup(response.content, "html.parser").select_one(control["hx-target"])
+    if section is None:
+        raise AssertionError(f"the page has no {control['hx-target']}")
+    return section
+
+
 def _age_entries(seconds: int) -> None:
     """Move the read time of every cached Reservation page *seconds* into the past."""
     redis_cache: Any = cache  # django-redis adds keys(); the stubs know BaseCache only.
@@ -287,6 +295,23 @@ class ServerReservationPageCacheTest(_ViewTestBase):
 
         self.assertEqual(kea.commands().count("reservation-get-page"), 1)
         self.assertContains(refreshed, "198.18.1.21")
+
+    def test_a_refresh_that_finds_no_host_commands_swaps_the_hook_warning(self):
+        page, _ = self._render(_res_page([_OLD]))
+
+        refreshed, _ = self._refresh(page, {"result": 2, "text": "command not supported"})
+
+        self.assertIn("hook library is not loaded", _section(refreshed, _refresh_control(page)).get_text())
+
+    def test_the_mutation_banner_is_inside_the_refreshed_section(self):
+        responses = _responses(_res_page([_OLD]))
+        responses["config-get"] = queued(responses["config-get"], RuntimeError("capability discovery failed"))
+        with stub_kea(responses):
+            page = self.client.get(self._url())
+
+        section = _section(page, _refresh_control(page))
+        self.assertIn("Reservation mutation controls are unavailable", section.get_text())
+        self.assertIsNotNone(section.select_one("#id_subnet_id"), "the search card is swapped too")
 
     @with_display_cache_config(reservations_ttl=0)
     def test_a_ttl_of_0_reads_every_render(self):
