@@ -46,7 +46,7 @@ from netbox_kea.kea import KeaClient, KeaException
 from netbox_kea.models import Server
 from netbox_kea.signals import lease_added
 from netbox_kea.utilities import lease_rows, parse_lease_csv
-from netbox_kea.views.leases import LeaseSearch, fetch
+from netbox_kea.views.lease_reads import LeaseSearch, fetch
 from netbox_kea.views.notices import HEADLINES, Notice
 
 from .kea_stub import (
@@ -73,6 +73,7 @@ from .utils import (
     _ViewTestBase,
     active_tabs,
     save_key_without_certificate,
+    with_display_cache_config,
     with_kea_client_config,
 )
 
@@ -686,7 +687,14 @@ class TestLeaseSearchPaths(_ViewTestBase):
             # Subnet 99 is not in the Catalogue, so no worker needs a client of its own.
             lease = typed_lease(complete_lease({"ip-address": "10.0.0.5", "subnet-id": 99}))
             rows = lease_rows([lease], evaluated_at=datetime.now(tz=timezone.utc))
-            _enrich_leases_with_badges(rows, self.server, 4, sync=SyncGate(()), return_url="")
+            _enrich_leases_with_badges(
+                rows,
+                self.server,
+                4,
+                sync=SyncGate(()),
+                return_url="",
+                read_since=datetime.now(tz=timezone.utc),
+            )
 
         self.assertEqual(len(closed_clients), 1)
 
@@ -1819,6 +1827,8 @@ class TestLeaseStateFilter(_ViewTestBase):
         self.assertNotContains(response, "expired-host")
         self.assertContains(response, "declined-host")
 
+    # Each case reads the same page live.
+    @with_display_cache_config(leases_ttl=0)
     def test_a_state_filtered_page_without_a_match_says_that_the_batch_has_none(self):
         active_lease = _STATE_LEASES_RESP[0]["arguments"]["leases"][0]
         for count, continues in ((1, True), (0, False)):

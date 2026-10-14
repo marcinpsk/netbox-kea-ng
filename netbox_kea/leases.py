@@ -447,6 +447,14 @@ class LeaseSnapshot(_Value):
         return self.coverage == "exhaustive" and not self.diagnostics
 
     @property
+    def settled(self) -> bool:
+        """Return true: a failed read raises, and each diagnostic excludes one record, so the display cache can store it.
+
+        A walk stopped at its configured limit has ``page`` coverage and is settled too.
+        """
+        return True
+
+    @property
     def evaluated_at(self) -> datetime:
         """Return the one evaluation time of the observation: the end of its read."""
         return self.read_finished

@@ -315,8 +315,13 @@ def _filter_subnets(subnets: list[dict[str, Any]], q: str, subnet_id: int | None
 def _fetch_subnets_from_server(
     server: "Server",
     version: Family,
+    *,
+    live: bool,
 ) -> tuple[list[dict[str, Any]], Notice | None]:
-    """Fetch safe Subnet Catalogue facts for one server, tagged for the combined table, and its Notice."""
+    """Fetch safe Subnet Catalogue facts for one server, tagged for the combined table, and its Notice.
+
+    With *live*, for an export, the utilization is read live.
+    """
     snapshot = subnet_catalogue.display(server, version)
     if snapshot.unavailable:
         return [], notice(snapshot)
@@ -325,7 +330,7 @@ def _fetch_subnets_from_server(
         for subnet in (*snapshot.subnets, *snapshot.configured_subnets)
     ]
 
-    _enrich_subnet_statistics(result, server, version)
+    _enrich_subnet_statistics(result, server, version, live=live)
     return result, notice(snapshot)
 
 
@@ -341,7 +346,10 @@ class _CombinedSubnetsView(_CombinedViewMixin):
         servers = self.server_scope.query_servers
 
         all_subnets: list[dict[str, Any]] = []
-        read = fan_out(servers, "catalogue", lambda server: _fetch_subnets_from_server(server, self.dhcp_version))
+        live = "export" in request.GET
+        read = fan_out(
+            servers, "catalogue", lambda server: _fetch_subnets_from_server(server, self.dhcp_version, live=live)
+        )
         notices = read.notices
         for server, (subnets, found) in read.results:
             all_subnets.extend(subnets)

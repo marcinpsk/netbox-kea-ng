@@ -23,7 +23,7 @@ from .models import DisplayCacheConfig, Server, require_persisted_server
 #: The prefix of every key of the display cache. The test cache hygiene fixture clears it.
 KEY_PREFIX = "netbox_kea:display:"
 
-Kind = Literal["configuration", "catalogue", "reservations"]
+Kind = Literal["configuration", "catalogue", "reservations", "leases", "reservation_lookups", "utilization", "status"]
 _Generation = Literal["configuration", "records"]
 #: The parts of the query of one entry, such as a cursor and the search filters.
 QueryParts = tuple[str | int | None, ...]
@@ -41,6 +41,14 @@ _KINDS: dict[Kind, _KindRule] = {
     "catalogue": _KindRule("configuration_ttl", ("configuration",)),
     # Records are parsed against the Subnet Catalogue, so their keys also hold the configuration generation.
     "reservations": _KindRule("reservations_ttl", ("configuration", "records")),
+    # A Subnet search resolves its CIDR through the Subnet Catalogue, so Lease keys also hold the configuration one.
+    "leases": _KindRule("leases_ttl", ("configuration", "records")),
+    # The Reservation of a Lease row is parsed against the Subnet Catalogue, as a Reservation page is.
+    "reservation_lookups": _KindRule("leases_ttl", ("configuration", "records")),
+    # The Pools of a Subnet give its total, and its Leases give the assigned count.
+    "utilization": _KindRule("status_ttl", ("configuration", "records")),
+    # A daemon changes its status and version without a plugin write, so only the TTL ends the entry.
+    "status": _KindRule("status_ttl", ()),
 }
 
 
@@ -58,18 +66,21 @@ T = TypeVar("T", bound=Cacheable)
 
 def cached(
     server: Server,
-    family: Family,
+    family: Family | None,
     kind: Kind,
     read: Callable[[], T],
     *,
     query: QueryParts = (),
     refresh: bool = False,
+    fresh: Callable[[T], bool] | None = None,
 ) -> T:
     """Return the entry of *kind* for *server*, *family* and *query*, or call *read* and store a settled result.
 
+    A *family* of ``None`` is the Control Agent; only a kind without generations reads it.
     The key is built before *read* runs, so a rotation during the read leaves the result in an older generation.
     A TTL of 0 sends every call to *read* and stores nothing. With *refresh* the call removes the entry and reads
-    again, so a refresh read that fails or is not settled leaves no entry.
+    again, so a refresh read that fails or is not settled leaves no entry. An entry that *fresh* rejects, such as a
+    badge read before the table that shows it, is read again and replaced.
     """
     config = DisplayCacheConfig.get()
     ttl = getattr(config, _KINDS[kind].ttl_field)
@@ -80,7 +91,7 @@ def cached(
         cache.delete(key)
     else:
         entry = cache.get(key)
-        if entry is not None:
+        if entry is not None and (fresh is None or fresh(entry)):
             return entry
     value = read()
     if value.settled:
@@ -105,14 +116,17 @@ def rotate_after_write(server: Server, family: Family | None, *, configuration: 
             _rotate(server, each, "configuration")
 
 
-def _entry_key(server: Server, family: Family, kind: Kind, config: DisplayCacheConfig, query: QueryParts) -> str:
+def _entry_key(server: Server, family: Family | None, kind: Kind, config: DisplayCacheConfig, query: QueryParts) -> str:
+    rule = _KINDS[kind]
+    if family is None and rule.generations:
+        raise ValueError(f"The {kind} entries hold generations of a family, so the Control Agent has none.")
     # A Server instance with old connection settings fills only the entry of those settings.
     connection = server.kea_connection(family).fingerprint()
     if config.last_updated is None:
         raise RuntimeError("The Display Cache settings row has no last_updated, so no key can show its last save.")
     # Every save of the settings row writes last_updated, so a save makes every older entry unreachable.
     settings = config.last_updated.isoformat()
-    generations = ":".join(_generation(server, family, generation) for generation in _KINDS[kind].generations)
+    generations = "" if family is None else ":".join(_generation(server, family, each) for each in rule.generations)
     digest = hashlib.sha256(json.dumps(query).encode()).hexdigest()
     # An entry pickled by another plugin version can hold another shape of its classes.
     return (
