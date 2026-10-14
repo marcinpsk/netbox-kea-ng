@@ -175,10 +175,10 @@ def test_a_branch_bound_client_refuses_every_write_before_any_send(command):
 
 
 @pytest.mark.parametrize("command", _WRITES, ids=lambda member: member.value)
-def test_a_clone_of_a_branch_bound_client_refuses_every_write_in_a_worker_thread(command):
-    clone = _bound_client().clone()
+def test_a_branch_bound_client_refuses_every_write_in_a_worker_thread(command):
+    client = _bound_client()
     with stub_kea({}) as kea, ThreadPoolExecutor(max_workers=1) as pool:
-        refused = pool.submit(clone.command, command, 4).exception()
+        refused = pool.submit(client.command, command, 4).exception()
 
     assert isinstance(refused, BranchActive)
     assert kea.requests == []
@@ -216,7 +216,6 @@ def test_get_client_on_main_binds_no_branch_and_sends_a_write():
         client.command(KeaCommand.LEASE4_DEL, 4, arguments={"ip-address": "192.0.2.1"})
 
     assert client.write_guard == BranchBinding(None)
-    assert client.clone().write_guard is client.write_guard
     assert kea.commands() == ["lease4-del"]
 
 
@@ -268,10 +267,7 @@ def test_the_runtime_package_has_one_http_send_in_kea_client_command():
                 requests_calls.append(f"{rel}::{scope}: requests.{func.attr}")
 
     assert sends == ["kea.py::KeaClient.command"]
-    assert requests_calls == [
-        "kea.py::KeaClient.__init__: requests.Session",
-        "kea.py::KeaClient.clone: requests.Session",
-    ]
+    assert requests_calls == ["kea.py::KeaClient.__init__: requests.Session"]
 
 
 def test_the_runtime_package_imports_no_other_http_client():

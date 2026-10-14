@@ -192,7 +192,7 @@ provisioned branch.
 | D7 | `SyncConfig.get()` on GET | A data migration creates the singleton and applies the backfill; `get()` becomes a read | A separate read-only lookup for branches; creation stays in guarded main operations | The rejected shape keeps two paths to one row |
 | D8 | Sync, merge and revert validators | None: no plugin row exists in a branch | Refuse merge, sync and revert for Server create, delete, connection changes, link changes, and deletes of link-target types | Follows D1 and D3 |
 | D9 | `Server.clean()` sends `version-get` | Out of scope, a follow-up | Move the connectivity check out of `clean()` into the form and serializer validation | A Server change record created by a Tag delete in a branch is written to main's changelog: the ObjectChange takes the loaded Server's database through its ContentType foreign key (`NB/netbox/models/features.py:117-127`, `NBB/database.py:49-50`), and NBB records no ChangeDiff for it (`NBB/signal_receivers.py:125-127`). Under D1 no Server change reaches a branch changelog, so no merge replays `Server.clean()` |
-| D10 | Kea client used from a thread pool | The client records the branch state at construction; `clone()` keeps it | Context variable only | Thread-pool workers do not inherit context variables; clones run in pools (`kea.py:772-789`, `views/leases.py:944`) |
+| D10 | Kea client used from a thread pool | The client records the branch state at construction; a pool worker builds its client in a copy of the request context (`PinnedSettings.context()`) | Context variable only | Thread-pool workers do not inherit context variables; the Lease and Reservation lookups run in pools (`lease_reservation_reads.py`) |
 | D11 | Stale branch selection | Refuse with 409 `branch_selection_unusable` | Run the request on main, as for every NetBox view | A stale cookie or unready query runs on main (`NBB/utilities.py:548-597`, `NBB/middleware.py:53-89`), which the "no silent fallback" constraint forbids |
 | D12 | Write controls in the UI | Disable mutation controls in the final rendered HTML, with an accessible reason; keep the banner and the IPAddress panel policy | Separate template annotations or browser-only disabling | Completed. `BranchRefusalMiddleware` transforms full pages and HTMX fragments through `branch_controls.py`. Targets come from the shared unsafe callback predicate, `_KeaChangeMixin` and generic CRUD classes. Mixed-method read pages remain navigable. Safe reads and main responses retain their behavior. The refusal seams remain the backstop for stale pages and direct requests |
 | D13 | Early Server delete guard | `pre_delete` receiver | At `delete()`, because `JobsMixin.delete()` removes jobs before the collector runs | `JobsMixin.delete()` wraps the job deletion and `super().delete()` in one `atomic(using=...)` (`NB/netbox/models/features.py:513-520`), so a `pre_delete` refusal rolls the job deletion back. Reopen if NetBox removes that transaction |
@@ -335,8 +335,8 @@ The middleware follows the contract, with these facts from netbox-branching 1.2.
   `K/netbox_kea/views/server.py:152-158`), not a string. A test pins the wire payload of each form. Each member carries a `read` or `write` kind. The call sites that build names today
   (`kea.py:1430-1431,1727,1985,2010-2011`, `views/leases.py:506`) are refactored to members.
   `command()` refuses a `write` member when the client is branch-bound or a branch is active. `Server.get_client()` binds the client when a
-  branch is active; `clone()` keeps the binding (thread-pool workers do not inherit context
-  variables, and `clone()` copies fields explicitly, `K/netbox_kea/kea.py:772-789`). A string
+  branch is active; a pool worker builds its client in a copy of the request context, so the
+  binding holds there too (thread-pool workers do not inherit context variables). A string
   command is a type error (mypy) and a `TypeError` at runtime.
 - **Main-only plugin models.** `pre_save` and `pre_delete` receivers on `Server`, `SyncConfig`,
   `KeaClientConfig`, `DhcpIntegrationConfig`, `DisplayCacheConfig` and `IPAMOwnershipLink` call the branch refusal. A `pre_delete` receiver disables Django's fast delete,
@@ -351,7 +351,7 @@ The sinks follow the design, with these facts from the code:
 - `kea.py` imports nothing from Django: the black-box suite imports it on the host through a
   symlink. So the transport does not import `branching.py`. Instead, every `KeaClient` must carry a
   write guard: `write_guard` is a required keyword argument, and `command()` asks it before each
-  write member. `clone()` keeps it.
+  write member.
 - The plugin's own clients come only from `Server.get_client()`, which passes `branching.bind()`, a
   `BranchBinding` that holds the branch that was active when the client was built. It raises
   `BranchActive` when that branch is set, or else when a branch is active at call time. Guard 3
@@ -438,7 +438,7 @@ branches copy the mapping table. Schema and routing checks refuse affected older
    `KeaClient.command()`. A test pins the `read` and `write` members of `KeaCommand` as two
    explicit sets written in the test, independent of the enum, and fails when a member is added,
    removed or reclassified. The refusal test is parameterized over every `write` member, on a
-   branch-bound client and on a clone in a thread.
+   branch-bound client and on a client used in a thread.
 4. Migration check: a migration with `RunPython`, `RunSQL` or `SeparateDatabaseAndState` sets
    `fake_on_branch` explicitly, and a migration that writes only main-only plugin tables sets it
    to `True`.
@@ -456,7 +456,7 @@ fails instead of skipping the modules. With real provisioning, it covers guards 
 - a VRF delete in a branch, with a Server syncing into it, raises `ProtectedError`; main unchanged;
 - instance writes of Server, sync settings and IPAM ownership in a branch raise `BranchActive`;
   mapping save/delete affects branch rows only; main unchanged;
-- a mutating Kea command in a branch, also from a cloned client in a thread, raises
+- a mutating Kea command in a branch, also from a client in a worker thread, raises
   `BranchActive`, and the Kea stub records nothing;
 - the selector table above, parameterized (UI and API, header, query empty, unknown, unready and
   ready, cookie ready, stale and unknown), with CSRF enforced: each row's outcome, with both

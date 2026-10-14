@@ -162,7 +162,7 @@ uv run python scripts/check_docs_media.py site docs/guide/assets
   `BranchRefusalMiddleware` in `branching.py` refuses every unsafe request to a netbox_kea URL
   callback in a branch, or with an unusable branch selection. Below the middleware, `KeaClient.command()`
   refuses a `write` member of `KeaCommand` with `BranchActive` (`Server.get_client()` binds the client
-  to the active branch, and `clone()` keeps the binding), `pre_save` and `pre_delete` receivers in
+  to the active branch, also in a worker thread), `pre_save` and `pre_delete` receivers in
   `branching.py` refuse a save or a delete of every netbox_kea row except `KeaDhcpLink`, and `KeaIpamSyncJob` fails before
   any read. Guard 1 in `test_branching.py`
   sends GET, HEAD, OPTIONS, POST, PUT, PATCH and DELETE to every netbox_kea URL in a provisioned
@@ -217,7 +217,8 @@ URL request
   → kea.py              (HTTP POST to each daemon's / control socket)
   → display_cache.py    (the display cache: keys, generations, TTLs, admission; ADR 0009)
   → lease_reads.py      (the cached Lease Snapshot reads of the Leases tab and of the Lease badges; ADR 0009)
-  → lease_reservation_reads.py (Current Lease Presence of Reservation rows: cached Lease lookups in a worker pool)
+  → lease_reservation_reads.py (Current Lease Presence of Reservation rows and Reservation Match of Lease rows:
+                        cached lookups in one worker pool)
   → sync.py             (read-only IPAM badges and DCIM MAC synchronization)
   → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
   → ipam_marker.py     (the `[kea-sync: <kind>]` description marker: parse, rewrite, legacy text; ADR 0006)
@@ -278,8 +279,8 @@ URL request
   if any result code is not in `check`. `command()` passes the TLS settings (`verify`, `cert`) on each request, so the
   `REQUESTS_CA_BUNDLE` environment variable cannot replace a CA file or `ssl_verify=False`. A TLS file
   that requests cannot find raises `KeaTLSFileError`, a `requests.RequestException`, so each
-  handler of request errors also handles it. `.clone()` creates a thread-safe copy (fresh `requests.Session`) for
-  concurrent lookups. **`send_service`**: `command()` sends the target as the `service`
+  handler of request errors also handles it. A client is not thread-safe, so each worker thread builds its own.
+  **`send_service`**: `command()` sends the target as the `service`
   argument only when the server is fronted by a Control Agent
   (`send_service = has_control_agent`); a direct daemon drops it, because Kea 3.2.0+
   rejects a `service` that does not match the daemon the request lands on.
@@ -289,7 +290,7 @@ URL request
   `server_configuration` (kind `configuration`) and `subnet_catalogue` (kind `catalogue`), each Reservation page
   of the Server tab and the combined page (kind `reservations`, in `views/reservations.fetch()`), each Lease Snapshot
   of the Leases tab and of the Lease badges of Reservation rows (kind `leases`, in `lease_reads.cached_read()`), each
-  Reservation lookup of a Lease row (kind `reservation_lookups`, in `views/leases._LeaseRowLookups`), Subnet
+  Reservation lookup of a Lease row (kind `reservation_lookups`, in `lease_reservation_reads._ReservationLookups`), Subnet
   utilization (kind `utilization`, in `views/_base._enrich_subnet_statistics()`) and the `status-get` and
   `version-get` reads of the Overview and the combined status badge (kind `status`, in `views/_base.daemon_status()`
   and `daemon_version()`). It stores only a value whose `settled` property is true (the `Cacheable` protocol). A
@@ -319,10 +320,10 @@ URL request
   combined page). A badge entry holds its read time, and the badge passes the read time of its table to the `fresh`
   predicate of `cached()`: an entry read before the table is read again. So a badge is never older than its table, and
   a Refresh, which reads the table live, also reads the badges of the shown rows live. No refresh flag reaches a badge. Utilization and status have no read age and no Refresh. The
-  badge lookups run in worker threads that pin `DisplayCacheConfig` (and `KeaClientConfig` for the Lease reads), and a
-  failed Lease badge lookup of a Reservation row is a typed Unknown that logs no traceback (`lease_reservation_reads`).
+  badge lookups run in worker threads that pin `DisplayCacheConfig` and `KeaClientConfig`, and a failed badge lookup
+  is a typed Unknown that logs no traceback (`lease_reservation_reads`).
   Each cached Lease, utilization and status read builds its client on a miss only and closes it
-  (`views/_base.LazyClient`; the Lease badge pool of Reservation rows builds one per worker thread, in
+  (`views/_base.LazyClient`; the badge pool of Reservation and Lease rows builds one per worker thread, in
   `lease_reservation_reads.WorkerClients`); a close that fails is logged. Exports
   (`ReservationQuery(full=True)`, the Lease `get_export` through `read_leases()` and `get_export_all`, the utilization
   of a Subnet export), the API, `ipam_reconciliation`, the edit and delete target loads, `_checked_lease`, the read
@@ -469,8 +470,8 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
 - **Use `kea_error_hint(exc)` for user-facing Kea error messages** — it maps result
   codes to actionable hints (result=2 → hook library not loaded, etc.).
 - **Guard action URLs/buttons by permission AND lookup state.** Don't offer
-  Sync/Reserve for leases whose reservation lookup failed (check `failed_ips` /
-  `failed_mac_keys`); don't offer add/edit to users without `change` permission.
+  Sync/Reserve for a Lease whose Reservation Match is Unknown; don't offer add/edit to
+  users without `change` permission.
 - **Django form querysets must be evaluated at instantiation, not at class-definition
   time.** Set `self.fields["field"].queryset` in `__init__` — class-level querysets
   go stale in long-running processes.
@@ -497,7 +498,7 @@ resort, reserved for true external boundaries you cannot run locally.
   real `command()` payload building, response parsing, and error handling, so a broken
   parser can't hide behind a `MagicMock`. Register responses by command name (dict /
   list / `queued(...)` / a `(body) -> payload` callable / an exception instance raised
-  at the boundary). Patching is at the class level so it also covers `clone()`.
+  at the boundary). Patching is at the class level so it also covers the client of each worker thread.
 - **Recorded Kea replies check the parser.** A hand-written stub shows what we expect
   Kea to return. `netbox_kea/tests/kea_recordings/` holds `config-get` and
   `subnet{4,6}-list` replies recorded from a real Kea (the harness `KEA_VERSION`), with
@@ -620,11 +621,11 @@ resort, reserved for true external boundaries you cannot run locally.
 - **FakeLeaseModel**: leases aren't a real model, so `FakeLeaseModel` /
   `FakeLeaseModelMeta` provide `app_label`/`model_name` so `GetReturnURLMixin`
   resolves in delete views.
-- **Lease badge enrichment**: `_enrich_leases_with_badges()` runs a two-phase
-  reservation lookup (IP-based, then MAC-based for the misses) using
-  `ThreadPoolExecutor` with `client.clone()` workers; composite `(mac, subnet_id)`
-  keys dedupe and track failures; the `_FETCH_ERROR` sentinel distinguishes lookup
-  errors from genuine not-found.
+- **Lease badge enrichment**: `_enrich_leases_with_badges()` gets one typed Reservation
+  Match per row from `lease_reservation_reads.reservation_matches()`. Each Lease is looked
+  up by its address or delegated prefix, then by each carried identity in its Subnet, then
+  globally; one call reads each lookup once. `reservations.reservation_match()` is the rule,
+  and the view maps each outcome to its badge, links and Sync with `match` and `assert_never`.
 - **Sync lifecycle**: IP status is `dhcp` (dynamic lease only), `reserved`
   (reservation only), or `active` (both). `reconcile()` claims all phase reports
   before it removes stale ownership links for complete phases. An incomplete phase

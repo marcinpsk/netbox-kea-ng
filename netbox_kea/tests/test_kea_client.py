@@ -136,30 +136,6 @@ class TestKeaClientInit(TestCase):
         client = kea_client(url="http://kea:8000", username="admin")
         self.assertIsNone(client._session.auth)
 
-    def test_clone_copies_url_and_timeout(self):
-        """clone() produces a new KeaClient with the same url and timeout."""
-        client = kea_client(url="http://kea:8000", timeout=15)
-        cloned = client.clone()
-        self.assertEqual(cloned.url, "http://kea:8000")
-        self.assertEqual(cloned.timeout, 15)
-
-    def test_clone_has_independent_session(self):
-        """clone() creates a new requests.Session, not a reference to the original."""
-        client = kea_client(url="http://kea:8000")
-        cloned = client.clone()
-        self.assertIsNot(cloned._session, client._session)
-
-    def test_clone_copies_session_auth(self):
-        """clone() copies auth credentials from the original session."""
-        client = kea_client(url="http://kea:8000", username="admin", password="secret")
-        cloned = client.clone()
-        self.assertEqual(cloned._session.auth, client._session.auth)
-
-    def test_clone_preserves_send_service(self):
-        """clone() carries send_service so a cloned worker-thread client stays direct."""
-        self.assertFalse(kea_client(url="http://kea:8000", send_service=False).clone().send_service)
-        self.assertTrue(kea_client(url="http://kea:8000").clone().send_service)
-
 
 _ENV_CA_BUNDLE = "/env/bundle.pem"
 _VERSION_REPLY = [{"result": 0, "text": "3.0.0", "arguments": {"extended": "3.0.0"}}]
@@ -194,13 +170,6 @@ class TestKeaClientTLSSettings(TestCase):
                 sent = self._sent(kea_client(url="https://kea:8000", verify=verify))
                 self.assertEqual(sent["verify"], _ENV_CA_BUNDLE)
                 self.assertIsNone(sent["cert"])
-
-    def test_a_clone_sends_the_same_tls_settings(self):
-        client = kea_client(
-            url="https://kea:8000", verify="/etc/ssl/ca.pem", client_cert="/cert.pem", client_key="/key.pem"
-        )
-        sent = self._sent(client.clone())
-        self.assertEqual(sent, {"verify": "/etc/ssl/ca.pem", "cert": ("/cert.pem", "/key.pem")})
 
 
 class TestKeaClientTLSFileError(TestCase):
@@ -1788,12 +1757,6 @@ class TestKeaClientContextManager(TestCase):
                 pass
             mock_close.assert_called_once()
 
-    def test_clone_supports_context_manager(self):
-        client = kea_client(url="http://kea:8000")
-        with client.clone() as worker:
-            self.assertIsInstance(worker, KeaClient)
-            self.assertEqual(worker.url, client.url)
-
 
 class TestConfigGetShapeGuard(TestCase):
     """Methods that call config-get raise KeaException on malformed arguments."""
@@ -2046,18 +2009,6 @@ class TestPersistConfigFlag(TestCase):
         """KeaClient stores persist_config=False when passed."""
         client = kea_client(url="http://kea:8000", persist_config=False)
         self.assertFalse(client.persist_config)
-
-    def test_clone_propagates_persist_config_false(self):
-        """clone() copies persist_config=False to the new instance."""
-        client = kea_client(url="http://kea:8000", persist_config=False)
-        cloned = client.clone()
-        self.assertFalse(cloned.persist_config)
-
-    def test_clone_propagates_persist_config_true(self):
-        """clone() copies persist_config=True (default) to the new instance."""
-        client = kea_client(url="http://kea:8000", persist_config=True)
-        cloned = client.clone()
-        self.assertTrue(cloned.persist_config)
 
     def test_persist_config_false_sends_no_persist_step(self):
         """persist() sends nothing when persist_config=False."""

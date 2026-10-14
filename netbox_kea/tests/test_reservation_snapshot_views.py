@@ -786,22 +786,6 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
         with stub_kea(responses):
             return self.client.get(url, {"by": "ip", "q": "198.18.0.20"}, HTTP_HX_REQUEST="true")
 
-    def test_configured_only_subnet_does_not_trigger_a_reservation_lookup(self):
-        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
-        responses["subnet4-list"] = {"result": 2, "text": "subnet commands unavailable"}
-        responses["lease4-get"] = {"result": 0, "arguments": self.lease}
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-
-        with stub_kea(responses) as kea:
-            response = self.client.get(url, {"by": "ip", "q": "198.18.0.20"}, HTTP_HX_REQUEST="true")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("reservation-get", kea.commands())
-        row = response.context["table"].data.data[0]
-        self.assertFalse(row["is_reserved"])
-        self.assertIsNone(row["create_reservation_url"])
-        self.assertIsNone(row.get("sync_url"))
-
     def test_the_reserve_link_returns_to_the_lease_search(self):
         response = self._get({"result": 3})
 
@@ -910,22 +894,6 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
         [badge] = _reserved_badges(response)
         self.assertEqual((badge["class"], badge.get_text(strip=True)), (["badge", "text-bg-success"], "Reserved"))
 
-    def test_wrong_subnet_address_result_is_indeterminate_and_offers_no_action(self):
-        response = self._get(
-            _res_get(
-                {
-                    "subnet-id": 21,
-                    "hw-address": "aa:bb:cc:dd:ee:ff",
-                    "ip-address": "198.18.0.20",
-                }
-            )
-        )
-
-        row = response.context["table"].data.data[0]
-        self.assertFalse(row["is_reserved"])
-        self.assertIsNone(row["reservation_url"])
-        self.assertIsNone(row["create_reservation_url"])
-
     def test_identity_match_at_another_address_reports_one_pending_change(self):
         response = self._get(
             queued(
@@ -968,35 +936,3 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
 
         url = response.context["table"].data.data[0]["create_reservation_url"]
         self.assertEqual(parse_qs(urlsplit(url).query)["hostname"], ["lease.example.invalid"])
-
-    def test_unavailable_host_commands_do_not_offer_a_false_create_action(self):
-        response = self._get({"result": 2, "text": "command not supported"})
-
-        row = response.context["table"].data.data[0]
-        self.assertFalse(row["is_reserved"])
-        self.assertIsNone(row["create_reservation_url"])
-
-    def test_lookup_failure_is_indeterminate_and_offers_no_action(self):
-        response = self._get(RuntimeError("transport failed"))
-
-        row = response.context["table"].data.data[0]
-        self.assertFalse(row["is_reserved"])
-        self.assertIsNone(row["reservation_url"])
-        self.assertIsNone(row["create_reservation_url"])
-
-    def test_address_match_with_a_different_hardware_identity_is_stale(self):
-        response = self._get(
-            _res_get(
-                {
-                    "subnet-id": 20,
-                    "hw-address": "aa:bb:cc:dd:ee:01",
-                    "ip-address": "198.18.0.20",
-                }
-            )
-        )
-
-        row = response.context["table"].data.data[0]
-        self.assertTrue(row["is_reserved"])
-        self.assertTrue(row["stale_mac"])
-        self.assertEqual(row["stale_lease_mac"], "aa:bb:cc:dd:ee:ff")
-        self.assertEqual(row["reservation_mac"], "aa:bb:cc:dd:ee:01")

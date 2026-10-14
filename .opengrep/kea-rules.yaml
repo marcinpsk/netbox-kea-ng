@@ -1144,10 +1144,6 @@ rules:
       - pattern-not-inside: |
           def _warn_reservations_in_pool(...):
               ...
-      # The Catalogue scopes the Reservation lookups of lease badges.
-      - pattern-not-inside: |
-          def _enrich_leases_with_badges(...):
-              ...
       # The DDNS suffix of a hostname preview.
       - pattern-not-inside: |
           def _published_name_preview(...):
