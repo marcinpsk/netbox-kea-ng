@@ -373,7 +373,7 @@ class Server(JobsMixin, NetBoxModel):
 def require_persisted_server(server: Server) -> int:
     """Return the pk of *server*. A Snapshot and a display cache key belong to a saved Server."""
     if server.pk is None:
-        raise ValueError("A Kea Snapshot requires a persisted Server.")
+        raise ValueError("A Kea Snapshot or display cache key requires a persisted Server.")
     return server.pk
 
 

@@ -327,6 +327,12 @@ class RecordsKindTest(TestCase):
 
         self.assertIn(netbox_kea.__version__, key.split(":"))
 
+    def test_a_display_read_for_an_unsaved_server_names_the_display_cache_key(self):
+        self.server.pk = None
+
+        with self.assertRaisesMessage(ValueError, "display cache key requires a persisted Server"):
+            self._reservations()
+
     def test_the_reservations_ttl_of_the_settings_row_reaches_the_cache(self):
         self._reservations()
 
