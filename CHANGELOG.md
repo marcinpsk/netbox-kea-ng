@@ -13,6 +13,24 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.5.0 (2026-10-14)
+
+### Bug Fixes
+
+- **reservations**: Leave the Lease badges unknown when the settings read for them fails
+  ([`b931d4e`](https://github.com/marcinpsk/netbox-kea-ng/commit/b931d4ebd858eef007362d78f06f4cbf300c35b5))
+
+### Performance Improvements
+
+- **dhcp-plugin**: Read the integration switch once on the DHCP plugin page
+  ([`b044e57`](https://github.com/marcinpsk/netbox-kea-ng/commit/b044e5735d787c576fcaf8c9a242e6bb2b1d1e1e))
+
+### Testing
+
+- Wait for TomSelect's filter refresh before the filtered Attribute pick
+  ([`3db87d2`](https://github.com/marcinpsk/netbox-kea-ng/commit/3db87d2e72f89a8c9dfbb86efb6bfc4d86083162))
+
+
 ## v3.4.0 (2026-10-13)
 
 ### Bug Fixes
