@@ -35,9 +35,11 @@ from .workspace import server_family_url
 logger = logging.getLogger(__name__)
 
 
-def sync_nav_context(request: HttpRequest, server: Server, view: object, subsection: str) -> dict[str, Any]:
+def sync_nav_context(
+    request: HttpRequest, server: Server, view: object, subsection: str, *, integration_runs: bool
+) -> dict[str, Any]:
     """Return the Sync subsections, IPAM and DHCP Plugin, or none when the integration does not run for *server*."""
-    if not dhcp_plugin.runs_for(server):
+    if not integration_runs:
         return {"sync_subsections": []}
     return {
         "sync_subsections": [
@@ -247,7 +249,7 @@ class ServerDhcpPluginView(generic.ObjectView):
             "mapping_unavailable": unavailable,
             "drift": drift,
             "sync_refusal": _sync_refusal(request.user, instance),
-            **sync_nav_context(request, instance, self, "dhcp_plugin"),
+            **sync_nav_context(request, instance, self, "dhcp_plugin", integration_runs=not refusal),
         }
 
 

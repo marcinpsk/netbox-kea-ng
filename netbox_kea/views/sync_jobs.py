@@ -19,6 +19,7 @@ from django.views import View
 from netbox.views import generic
 from utilities.views import ViewTab, register_model_view
 
+from ..integrations import dhcp_plugin
 from ..jobs import KeaIpamSyncJob
 from ..models import Server, SyncConfig
 from .dhcp_plugin_sync import sync_nav_context
@@ -193,7 +194,7 @@ class ServerSyncStatusView(ServerFamilyMixin, generic.ObjectView):
             "sync_now_url": server_family_url(request, instance, self, "server_sync_now"),
             "sync_cfg": sync_cfg,
             "can_view_settings": bool(visible_sections(request.user)),
-            **sync_nav_context(request, instance, self, "ipam"),
+            **sync_nav_context(request, instance, self, "ipam", integration_runs=dhcp_plugin.runs_for(instance)),
         }
 
 

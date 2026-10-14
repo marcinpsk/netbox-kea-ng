@@ -18,13 +18,15 @@ import requests
 from bs4 import BeautifulSoup
 from django.apps import apps
 from django.contrib.messages import get_messages
+from django.db import connection
 from django.test import SimpleTestCase, TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
 from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.kea import KeaException
-from netbox_kea.models import Server
+from netbox_kea.models import DhcpIntegrationConfig, Server
 from netbox_kea.views import dhcp_plugin_sync as dps
 
 from .kea_stub import _res_page, _subnet_list, stub_kea
@@ -334,6 +336,14 @@ class SyncNowEndToEndTest(TestCase):
         )
         self.assertEqual(parse_qs(urlsplit(subsections[0]["href"]).query)["family"], ["4"])
         self.assertNotIn("DHCP Plugin", page.select_one('[aria-label="Server object tabs"]').get_text())
+
+    def test_the_page_reads_the_integration_switch_once(self):
+        conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]}}
+        table = DhcpIntegrationConfig._meta.db_table
+        with stub_kea(_sync_responses(conf)), CaptureQueriesContext(connection) as queries:
+            resp = self.client.get(reverse("plugins:netbox_kea:server_dhcp_plugin", args=[self.server.pk]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(sum(f'"{table}"' in query["sql"] for query in queries.captured_queries), 1)
 
     def test_import_mapping_notes_start_collapsed_behind_a_toggle(self):
         conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]}}
