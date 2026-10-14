@@ -747,7 +747,7 @@ class TestStatusViewNullArgs(_ViewTestBase):
         def _status(body):
             svc = body.get("service")
             if not svc or "dhcp" not in svc[0]:
-                return {"result": 0, "arguments": {}}  # CA → empty → RuntimeError
+                return {"result": 0, "arguments": {}}  # CA → empty → MalformedReply
             return {"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}}
 
         stub = {"status-get": _status, "version-get": {"result": 0, "arguments": {"extended": "2.0"}}}
@@ -764,7 +764,7 @@ class TestStatusViewNullArgs(_ViewTestBase):
         def _status(body):
             svc = body.get("service")
             if svc and "dhcp" in svc[0]:
-                return {"result": 0, "arguments": None}  # dhcp → None → RuntimeError
+                return {"result": 0, "arguments": None}  # dhcp → None → MalformedReply
             return {"result": 0, "arguments": {"pid": 1, "uptime": 0, "reload": 0}}
 
         stub = {"status-get": _status, "version-get": {"result": 0, "arguments": {"extended": "2.0"}}}
