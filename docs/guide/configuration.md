@@ -33,7 +33,8 @@ shows the values read-only. Each save writes a change log record. While a branch
 
 A save of the Display Cache section makes every cached entry unused, also when no value changes. A change that the
 plugin sends to Kea makes the cached entries that the change affects unused at once. A change from outside this NetBox, such as
-kea-shell or an HA partner, shows when the TTL of the entry ends, or after a Refresh. A Reservations table shows the
+kea-shell or an HA partner, shows when the TTL of the entry ends, or after a Refresh. This also applies to a change
+through another Server record that points at the same daemon: a change resets only the entries of the Server that sent it. A Reservations table shows the
 age of its read ("Read 42 s ago") and a **Refresh** button, which reads Kea again for that table. On a page of all
 Servers, the age is the age of the oldest read, and Refresh reads each Server again.
 
