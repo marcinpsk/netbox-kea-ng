@@ -216,6 +216,7 @@ URL request
   → config_write.py     (Configuration Changes: typed outcome, advisory lock, persist step)
   → kea.py              (HTTP POST to each daemon's / control socket)
   → display_cache.py    (the display cache: keys, generations, TTLs, admission; ADR 0009)
+  → lease_reads.py      (the cached Lease Snapshot reads of the Leases tab and of the Lease badges; ADR 0009)
   → lease_reservation_reads.py (Current Lease Presence of Reservation rows: cached Lease lookups in a worker pool)
   → sync.py             (read-only IPAM badges and DCIM MAC synchronization)
   → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
@@ -287,7 +288,7 @@ URL request
   modules. `cached(server, family, kind, read, query=, refresh=)` serves the `display()` reads of
   `server_configuration` (kind `configuration`) and `subnet_catalogue` (kind `catalogue`), each Reservation page
   of the Server tab and the combined page (kind `reservations`, in `views/reservations.fetch()`), each Lease Snapshot
-  of the Leases tab and of the Lease badges of Reservation rows (kind `leases`, in `views/lease_reads.cached_read()`), each
+  of the Leases tab and of the Lease badges of Reservation rows (kind `leases`, in `lease_reads.cached_read()`), each
   Reservation lookup of a Lease row (kind `reservation_lookups`, in `views/leases._LeaseRowLookups`), Subnet
   utilization (kind `utilization`, in `views/_base._enrich_subnet_statistics()`) and the `status-get` and
   `version-get` reads of the Overview and the combined status badge (kind `status`, in `views/_base.daemon_status()`
@@ -295,8 +296,8 @@ URL request
   failed read raises, so it is never stored. A Reservation entry (`_ReservationPage`) holds the page Snapshot and the
   Subnet Catalogue it was parsed against, so a hit sends no Catalogue read; it is settled only when both are. A
   Reservation walk that an error stopped (`page-fetch-failed`, `pagination-stalled`) is not settled; a walk stopped at
-  its limit is. A Lease entry (`LeaseRead`) holds the Snapshot, or the Notice of a Catalogue that could not resolve a
-  Subnet search. A Subnet search resolves its CIDR inside the cached read through a live Catalogue read, keyed by the
+  its limit is. A Lease entry (`LeaseRead`) holds the Snapshot, or the Catalogue that could not resolve a
+  Subnet search; the view shows its Notice. A Subnet search resolves its CIDR inside the cached read through a live Catalogue read, keyed by the
   unresolved search, so a hit sends no Kea command; a result of a Catalogue that did not settle is not stored. A Lease
   search key holds the Attribute, the value and the state; a read of every Lease also holds the cursor and the page
   size. `LeaseSnapshot.settled` is always true: a failed Lease read raises, and each diagnostic excludes one record.

@@ -37,8 +37,10 @@ from ..kea import (
     KeaException,
     LeaseQueryGuardError,
     LeaseQueryUnknownSubnet,
+    close_quietly,
     lease_query_guard_message,
 )
+from ..lease_reads import LeaseSearch, cached_read, read_leases
 from ..leases import (
     AllocationKind,
     DHCPv4AddressLease,
@@ -86,14 +88,13 @@ from ..utilities import (
 )
 from ._base import (
     ConditionalLoginRequiredMixin,
+    LazyClient,
     _client_settings_error,
     _KeaChangeMixin,
     _safe_return_url,
     _strip_empty_params,
-    close_quietly,
 )
-from .lease_reads import LeaseSearch, fetch, read_leases
-from .notices import Notice, notice, show_notices
+from .notices import Notice, load_snapshot, notice, show_notices
 from .read_age import read_age_context, refresh_requested
 from .reservations import empty_text
 from .workspace import ServerFamilyMixin
@@ -102,6 +103,34 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseTable)
 _LEASE_EXPORT_MAX_LEASES = 50_000
+
+
+def _catalogue_notice(catalogue: CatalogueSnapshot) -> Notice:
+    """Return the Notice of a Catalogue that could not resolve a Subnet search."""
+    found = notice(catalogue)
+    # The read returns a Catalogue only when it is unavailable or has diagnostics, so it always has a Notice.
+    if found is None:
+        raise TypeError("A Catalogue that could not resolve a Subnet search has no Notice.")
+    return found
+
+
+def fetch(server: Server, family: Family, search: LeaseSearch, *, refresh: bool = False) -> LeaseSnapshot | Notice:
+    """Read the Lease Snapshot of *search* through the display cache, or the Notice of a failed read.
+
+    A hit sends no Kea command. With *refresh* it reads Kea live and replaces the entry.
+
+    Raises:
+        LeaseQueryGuardError: If Kea cannot answer a Subnet query safely.
+        ValueError: If the Server configuration or the search is not valid.
+
+    """
+    with LazyClient(server, family) as client:
+        entry = load_snapshot(server, "lease", lambda: cached_read(server, family, search, client, refresh=refresh))
+    if isinstance(entry, Notice):
+        return entry
+    if isinstance(entry.loaded, CatalogueSnapshot):
+        return _catalogue_notice(entry.loaded)
+    return entry.loaded
 
 
 def _search_history(request: HttpRequest, response: HttpResponse, url: str) -> HttpResponse:
@@ -383,8 +412,8 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             read = read_leases(
                 client, instance, self.dhcp_version, LeaseSearch(by, form.cleaned_data["q"], state_filter)
             )
-            if isinstance(read.loaded, Notice):
-                show_notices(request, read.loaded)
+            if isinstance(read.loaded, CatalogueSnapshot):
+                show_notices(request, _catalogue_notice(read.loaded))
                 return redirect(request.path)
             snapshot = read.loaded
         except LeaseQueryGuardError as exc:

@@ -43,10 +43,11 @@ from ipam.models import IPAddress as NbIP
 
 from netbox_kea import constants
 from netbox_kea.kea import KeaClient, KeaException
+from netbox_kea.lease_reads import LeaseSearch
 from netbox_kea.models import Server
 from netbox_kea.signals import lease_added
 from netbox_kea.utilities import lease_rows, parse_lease_csv
-from netbox_kea.views.lease_reads import LeaseSearch, fetch
+from netbox_kea.views.leases import fetch
 from netbox_kea.views.notices import HEADLINES, Notice
 
 from .kea_stub import (

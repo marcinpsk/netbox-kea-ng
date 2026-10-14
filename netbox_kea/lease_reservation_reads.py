@@ -14,7 +14,8 @@ import requests
 
 from . import constants
 from .constants import Family, LeaseState
-from .kea import KeaClient, KeaException, LeaseQueryGuardError
+from .kea import KeaClient, KeaException, LeaseQueryGuardError, close_quietly
+from .lease_reads import LeaseSearch, cached_read
 from .leases import LeaseSnapshot
 from .models import DisplayCacheConfig, KeaClientConfig, PinnedSettings, Server
 from .reservations import (
@@ -27,8 +28,6 @@ from .reservations import (
     current_lease_facts,
     current_lease_presence,
 )
-from .views._base import close_quietly
-from .views.lease_reads import LeaseSearch, cached_read
 
 logger = logging.getLogger(__name__)
 
@@ -99,9 +98,9 @@ def _observe(
     except ValueError as exc:
         logger.debug("The Lease lookup of server %s was not valid: %s", server.pk, type(exc).__name__)
         return UnknownLeasePresence.INVALID_READ
-    # Only a Subnet search by CIDR can resolve to a Notice, and no Reservation lookup sends one.
+    # Only a Subnet search by CIDR can resolve to a Catalogue, and no Reservation lookup sends one.
     if not isinstance(loaded, LeaseSnapshot):
-        raise TypeError(f"The Lease lookup {search.parts!r} resolved to a Notice.")
+        raise TypeError(f"The Lease lookup {search.parts!r} resolved to a Catalogue.")
     return current_lease_facts(loaded)
 
 
@@ -116,7 +115,7 @@ def lease_presence(
 
     Raises:
         ValueError: If a Reservation is not of *family*.
-        TypeError: If a lookup resolves to a Notice, which only a Subnet search by CIDR can do.
+        TypeError: If a lookup resolves to a Catalogue, which only a Subnet search by CIDR can do.
 
     """
     if any(reservation.family != family for reservation in reservations):

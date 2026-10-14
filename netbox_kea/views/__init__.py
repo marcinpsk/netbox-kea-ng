@@ -13,7 +13,6 @@ from . import (
     dhcp_control,
     dhcp_plugin_sync,
     fan_out,
-    lease_reads,
     leases,
     notices,
     options,

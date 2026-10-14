@@ -61,16 +61,6 @@ class GoodSubnetsView:
         return loaded
 
 
-def read_leases(client, family, search, server_id):
-    # ok: kea-snapshot-read-without-notice
-    return client.lease_search(family, search.by, search.q, server_id=server_id)
-
-
-def cached_read(server, family, search, client):
-    # ok: kea-snapshot-read-without-notice
-    return display_cache.cached(server, family, "leases", lambda: read_leases(client(), family, search, server.pk))
-
-
 def bad_reservation_tab_reads_without_the_loader(server, query):
     # ruleid: kea-snapshot-read-without-notice
     snapshot = _read_reservations(server, 4, query)

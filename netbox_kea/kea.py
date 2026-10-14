@@ -2305,6 +2305,14 @@ class KeaClient:
         return dict(subnets[0])
 
 
+def close_quietly(client: KeaClient) -> None:
+    """Close one Kea client, and log a failure instead of raising it, so the page still renders."""
+    try:
+        client.close()
+    except Exception:
+        logger.warning("Could not close a Kea client", exc_info=True)
+
+
 class KeaException(Exception):
     """Raised when a Kea API response contains an unexpected result code."""
 

@@ -21,7 +21,7 @@ from .. import display_cache
 from ..config_write import ConfigChangeOutcome, ConfigChangeRejected, RejectionReason
 from ..constants import Family
 from ..dhcp_options import shown_options
-from ..kea import DaemonStatus, DaemonVersion, KeaClient, KeaCommand, KeaException, SubnetUtilization
+from ..kea import DaemonStatus, DaemonVersion, KeaClient, KeaCommand, KeaException, SubnetUtilization, close_quietly
 from ..models import Server
 from ..server_configuration import SharedNetwork
 from ..subnet_catalogue import ConfiguredSubnet, VerifiedSubnet
@@ -224,14 +224,6 @@ class _Utilization:
     def settled(self) -> bool:
         """Return true: a failed read raises, so the display cache can store each read that returns."""
         return True
-
-
-def close_quietly(client: KeaClient) -> None:
-    """Close one Kea client, and log a failure instead of raising it, so the page still renders."""
-    try:
-        client.close()
-    except Exception:
-        logger.warning("Could not close a Kea client", exc_info=True)
 
 
 class LazyClient:
