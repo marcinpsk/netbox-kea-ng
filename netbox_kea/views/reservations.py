@@ -89,6 +89,7 @@ def _unknown_badge_title(reason: UnknownLeasePresence) -> str:
             UnknownLeasePresence.QUERY_GUARD
             | UnknownLeasePresence.KEA_ERROR
             | UnknownLeasePresence.MALFORMED_REPLY
+            | UnknownLeasePresence.INVALID_READ
             | UnknownLeasePresence.UNSEARCHABLE_IDENTIFIER
             | UnknownLeasePresence.LEASE_HOOK_UNAVAILABLE
         ):

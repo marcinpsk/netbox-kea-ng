@@ -95,6 +95,10 @@ def _observe(
     except RuntimeError as exc:
         logger.debug("The Lease lookup of server %s failed: %s", server.pk, type(exc).__name__)
         return UnknownLeasePresence.MALFORMED_REPLY
+    # A ValidationError is a ValueError too: a Snapshot read across a backward clock step finishes before it starts.
+    except ValueError as exc:
+        logger.debug("The Lease lookup of server %s was not valid: %s", server.pk, type(exc).__name__)
+        return UnknownLeasePresence.INVALID_READ
     # Only a Subnet search by CIDR can resolve to a Notice, and no Reservation lookup sends one.
     if not isinstance(loaded, LeaseSnapshot):
         raise TypeError(f"The Lease lookup {search.parts!r} resolved to a Notice.")
@@ -111,7 +115,8 @@ def lease_presence(
     command, every Reservation is Unknown.
 
     Raises:
-        ValueError: If a Reservation is not of *family*, or the Server configuration or a search is not valid.
+        ValueError: If a Reservation is not of *family*.
+        TypeError: If a lookup resolves to a Notice, which only a Subnet search by CIDR can do.
 
     """
     if any(reservation.family != family for reservation in reservations):

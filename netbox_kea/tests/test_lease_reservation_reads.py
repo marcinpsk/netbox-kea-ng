@@ -14,6 +14,7 @@ from unittest.mock import patch
 import requests
 from django.utils import timezone
 
+from netbox_kea import kea as kea_module
 from netbox_kea.constants import Family
 from netbox_kea.kea import KeaClient
 from netbox_kea.lease_reservation_reads import lease_presence
@@ -181,6 +182,19 @@ class LeasePresenceTest(_ViewTestBase):
                 )
                 self.assertEqual(presences, (_unknown(UnknownLeasePresence.INCOMPLETE_SNAPSHOT),))
 
+    def test_a_global_identity_lookup_that_cannot_confirm_a_missing_lease_is_unknown(self):
+        reservation = {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:ff"}
+        for broken, reason in (
+            (_lease4("198.18.1.30", subnet_id=21, state=99), UnknownLeasePresence.INCOMPLETE_SNAPSHOT),
+            (
+                _lease4("198.18.1.30", subnet_id=21, hw_address="", client_id=_LONG_CLIENT_ID),
+                UnknownLeasePresence.FOREIGN_IDENTIFIER,
+            ),
+        ):
+            with self.subTest(reason=reason), with_display_cache_config(leases_ttl=0):
+                presences, _kea = self._presence([reservation], {"lease4-get-by-hw-address": lease_reply(broken)})
+                self.assertEqual(presences, (_unknown(reason),))
+
     def test_a_current_lease_with_an_identifier_no_reservation_can_hold_is_unknown(self):
         lease = _lease4("198.18.0.60", hw_address="", client_id=_LONG_CLIENT_ID)
 
@@ -221,6 +235,29 @@ class LeasePresenceTest(_ViewTestBase):
         )
 
         self.assertEqual(presences, (_unknown(UnknownLeasePresence.MALFORMED_REPLY),))
+
+    def test_a_snapshot_that_fails_validation_leaves_only_its_own_reservations_unknown(self):
+        """A Snapshot read across a backward clock step finishes before it starts, so the reader refuses it."""
+        stepped_back = threading.local()
+        real_now = kea_module._now
+
+        def now():
+            if getattr(stepped_back, "pending", False):
+                stepped_back.pending = False
+                return real_now() - timedelta(hours=1)
+            return real_now()
+
+        def leases(body):
+            stepped_back.pending = True
+            return {"result": 3}
+
+        with patch("netbox_kea.kea._now", autospec=True, side_effect=now):
+            presences, _kea = self._presence(
+                [{"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:01"}, _RESERVED],
+                {"lease4-get-by-hw-address": lease_reply(), "lease4-get-by-state": leases},
+            )
+
+        self.assertEqual(presences, (LeaseAbsent(), _unknown(UnknownLeasePresence.INVALID_READ)))
 
     def test_a_failed_lookup_leaves_only_its_own_reservations_unknown(self):
         def leases(body):
@@ -338,6 +375,15 @@ class LeasePresenceLookupTest(_ViewTestBase):
         ]
         built: list[tuple[int, KeaClient]] = []
         closed: list[KeaClient] = []
+        senders: set[int] = set()
+        respond = _leases_per_subnet({})
+
+        def leases(body):
+            senders.add(threading.get_ident())
+            # Each lookup waits a little, so the pool runs several worker threads at once.
+            time.sleep(0.01)
+            return respond(body)
+
         real_get_client, real_close = Server.get_client, KeaClient.close
 
         def get_client(server, **kwargs):
@@ -350,7 +396,7 @@ class LeasePresenceLookupTest(_ViewTestBase):
             closed.append(client)
 
         with (
-            stub_kea({"lease4-get-by-state": _leases_per_subnet({})}),
+            stub_kea({"lease4-get-by-state": leases}),
             patch.object(Server, "get_client", autospec=True, side_effect=get_client),
             patch.object(KeaClient, "close", autospec=True, side_effect=close),
         ):
@@ -362,4 +408,6 @@ class LeasePresenceLookupTest(_ViewTestBase):
         threads = [thread for thread, _client in built]
         self.assertLessEqual(len(threads), 10)
         self.assertEqual(len(threads), len(set(threads)), "a worker thread built a second client")
+        self.assertGreater(len(senders), 1)
+        self.assertEqual(set(threads), senders, "each sending thread uses the client that it built")
         self.assertCountEqual([id(client) for client in closed], [id(client) for _thread, client in built])

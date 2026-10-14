@@ -139,7 +139,10 @@ class UnknownLeasePresence(Enum):
     QUERY_GUARD = auto()
     #: Kea returned a failure result, or the transport failed.
     KEA_ERROR = auto()
+    #: Kea returned a reply that the reader cannot use.
     MALFORMED_REPLY = auto()
+    #: The Server settings, the search or the Lease Snapshot of the read were not valid.
+    INVALID_READ = auto()
     #: Kea has no Lease query for the identifier, and no reserved address can match.
     UNSEARCHABLE_IDENTIFIER = auto()
     #: Kea does not know a Lease command, so no Reservation of the Server has an observable Lease.

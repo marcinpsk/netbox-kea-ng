@@ -908,7 +908,12 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
             (_leases([malformed]), True),
             ({"result": 1, "text": "lease database error"}, False),
         ):
-            with self.subTest(badge=badge), with_display_cache_config(leases_ttl=0):
+            with (
+                self.subTest(badge=badge),
+                with_display_cache_config(leases_ttl=0),
+                # The enrichment did not fail as a whole, so each row shows its own result.
+                self.assertNoLogs("netbox_kea.views.reservations", "ERROR"),
+            ):
                 with _reservation_stub(
                     4,
                     {
