@@ -105,6 +105,14 @@ _Avoid_: Reservation response, host list
 The relationship between all addresses in one Reservation and their corresponding NetBox IP addresses in the sync VRF of the Server. It is Not Applicable, Not Synchronized, Partially Synchronized, Synchronized, or Unknown.
 _Avoid_: Lease status, sync badge
 
+**Reservation Match**:
+The relationship between one Lease and the Reservation of its client. Only reserved allocations in the Lease's Subnet count, for Global and In-Subnet Reservations alike. It is Reserved, Stale MAC, Pending Address Change, Host-Only Reservation, Other-Kind Reservation, Unreserved, or Unknown.
+_Avoid_: Reserved badge, lease-reservation correlation
+
+**Current Lease Presence**:
+Whether the client of one Reservation holds a Current Lease: Present, Absent, or Unknown. Absent requires complete coverage of the query, so an Incomplete Lease Snapshot gives Unknown.
+_Avoid_: Lease status, active lease badge
+
 **Reservation Transfer Document**:
 A YAML or JSON document that represents one or more Reservations with explicit Reservation Scope. The same structure supports export and proposed creation. The complete document must be valid before any creation starts.
 _Avoid_: CSV import, CSV export, Kea payload
