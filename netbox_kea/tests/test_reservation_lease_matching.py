@@ -16,7 +16,7 @@ from .kea_stub import (
     stub_kea,
     typed_lease,
 )
-from .utils import _ViewTestBase
+from .utils import _ViewTestBase, with_display_cache_config
 
 _SUBNETS4 = [{"id": 20, "subnet": "198.18.0.0/24"}, {"id": 21, "subnet": "198.18.1.0/24"}]
 _SUBNETS6 = [{"id": 30, "subnet": "2001:db8::/64"}]
@@ -188,6 +188,8 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                 self.assertNotContains(response, "Active Lease")
                 self.assertContains(response, "Lease Unknown")
 
+    # Each case reads the Lease badges live.
+    @with_display_cache_config(leases_ttl=0)
     def test_a_template_style_key_in_a_kea_record_is_not_an_identity(self):
         for native, expected in (("aa:bb:cc:dd:ee:ff", False), ("11-22-33-44-55-66", True)):
             with self.subTest(native=native):

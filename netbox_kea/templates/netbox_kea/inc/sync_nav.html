@@ -2,7 +2,7 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% if sync_subsections %}
 <nav aria-label="Sync subsections">
-  <ul class="nav nav-tabs mb-3">
+  <ul class="nav nav-tabs kea-tabs mb-3">
     {% for key, label, url, active in sync_subsections %}
     <li class="nav-item">
       <a class="nav-link{% if active %} active{% endif %}" href="{{ url }}"{% if active %} aria-current="page"{% endif %}>{{ label }}</a>

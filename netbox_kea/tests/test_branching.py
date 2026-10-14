@@ -79,14 +79,17 @@ from netbox_branching.utilities import activate_branch, supports_branching  # no
 from rest_framework.permissions import SAFE_METHODS  # noqa: E402
 from utilities.exceptions import AbortRequest  # noqa: E402
 
-from netbox_kea import server_configuration  # noqa: E402
+from netbox_kea import display_cache  # noqa: E402
 from netbox_kea.jobs import KeaIpamSyncJob  # noqa: E402
 from netbox_kea.kea import KeaCommand, KeaException  # noqa: E402
 from netbox_kea.models import (  # noqa: E402
+    DhcpIntegrationConfig,
+    DisplayCacheConfig,
     IPAMOwnershipLink,
     KeaClientConfig,
     KeaDhcpLink,
     Server,
+    SettingsSingleton,
     SyncConfig,
     next_confirmation_number,
 )
@@ -121,6 +124,10 @@ _NON_WRITING_ON_DELETE = (models.PROTECT, models.RESTRICT, models.DO_NOTHING)
 
 def _plugin_models() -> list[type[models.Model]]:
     return list(apps.get_app_config(APP_LABEL).get_models())
+
+
+def _settings_models() -> list[type[SettingsSingleton]]:
+    return [model for model in _plugin_models() if issubclass(model, SettingsSingleton)]
 
 
 def _rule_models() -> list[type[models.Model]]:
@@ -222,6 +229,8 @@ class BranchabilityPinTest(SimpleTestCase):
                 "netbox_kea.Server",
                 "netbox_kea.SyncConfig",
                 "netbox_kea.KeaClientConfig",
+                "netbox_kea.DhcpIntegrationConfig",
+                "netbox_kea.DisplayCacheConfig",
                 "netbox_kea.KeaDhcpLink",
                 "netbox_kea.IPAMOwnershipLink",
             },
@@ -989,6 +998,19 @@ def _save_with(instance: models.Model, **fields: object) -> None:
     instance.save()
 
 
+def _changed_setting(row: SettingsSingleton) -> dict[str, object]:
+    """Return the first switch of *row* flipped, or its first integer plus one, whichever field comes first."""
+    for field in row._meta.concrete_fields:
+        if field.primary_key or not field.editable:
+            continue
+        value = getattr(row, field.attname)
+        if isinstance(field, models.BooleanField):
+            return {field.attname: not value}
+        if isinstance(field, models.IntegerField):
+            return {field.attname: value + 1}
+    raise AssertionError(f"{type(row).__name__} has no switch or integer setting to change.")
+
+
 class DhcpTargetBranchLifecycleTest(TransactionTestCase):
     """DHCP target deletes remove branch mappings and preserve main until merge."""
 
@@ -1049,16 +1071,13 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
             object_type=ContentType.objects.get_for_model(VRF),
             object_id=1,
         )
-        self.config = SyncConfig.get()
-        self.kea_client_config = KeaClientConfig.get()
         self.branch = _provisioned_branch(self, "rows")
 
     def _main(self) -> tuple:
         return (
             list(Server.objects.values_list("pk", "ca_url")),
             list(KeaDhcpLink.objects.values_list("pk", "kea_subnet_id")),
-            list(SyncConfig.objects.values_list("pk", "interval_minutes")),
-            list(KeaClientConfig.objects.values_list("pk", "kea_timeout")),
+            *(list(model.objects.values()) for model in _settings_models()),
         )
 
     def test_the_receivers_cover_every_main_only_plugin_model(self):
@@ -1070,6 +1089,8 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
                 "netbox_kea.Server",
                 "netbox_kea.SyncConfig",
                 "netbox_kea.KeaClientConfig",
+                "netbox_kea.DhcpIntegrationConfig",
+                "netbox_kea.DisplayCacheConfig",
                 "netbox_kea.KeaDhcpLink",
                 "netbox_kea.IPAMOwnershipLink",
             },
@@ -1078,6 +1099,8 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
             "netbox_kea.Server",
             "netbox_kea.SyncConfig",
             "netbox_kea.KeaClientConfig",
+            "netbox_kea.DhcpIntegrationConfig",
+            "netbox_kea.DisplayCacheConfig",
             "netbox_kea.IPAMOwnershipLink",
         }
         self.assertEqual((_refusal_receivers(pre_save), _refusal_receivers(pre_delete)), (main_only, main_only))
@@ -1086,10 +1109,11 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
         before = self._main()
         changes = {
             "server": lambda: _save_with(self.server, ca_url=_AFTER),
-            "sync config": lambda: _save_with(self.config, interval_minutes=9),
-            "kea client config": lambda: _save_with(self.kea_client_config, kea_timeout=9),
             "new server": lambda: _make_db_server(name="new in branch"),
         }
+        for model in _settings_models():
+            row = model.get()
+            changes[model.__name__] = lambda row=row: _save_with(row, **_changed_setting(row))
         for label, change in changes.items():
             with self.subTest(label):
                 with activate_branch(self.branch), self.assertRaises(branching.BranchActive) as refused:
@@ -1103,9 +1127,9 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
         deletes = {
             "server": lambda: Server.objects.get(pk=self.server.pk).delete(),
             "server queryset": lambda: Server.objects.all().delete(),
-            "sync config queryset": lambda: SyncConfig.objects.all().delete(),
-            "kea client config queryset": lambda: KeaClientConfig.objects.all().delete(),
         }
+        for model in _settings_models():
+            deletes[f"{model.__name__} queryset"] = lambda model=model: model.objects.all().delete()
         for label, delete in deletes.items():
             with self.subTest(label), activate_branch(self.branch), self.assertRaises(branching.BranchActive):
                 delete()
@@ -1161,7 +1185,11 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
         self.assertEqual(_ipam_state(), before)
 
     def test_a_settings_page_post_in_a_branch_is_refused_and_changes_nothing(self):
+        from unittest.mock import patch
+
         from core.models import ObjectChange
+
+        from netbox_kea.integrations import dhcp_plugin
 
         client = Client()
         client.force_login(get_user_model().objects.create_superuser("settings-in-branch"))
@@ -1183,9 +1211,26 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
                 lambda: KeaClientConfig.get().kea_timeout,
                 31,
             ),
+            # The unchecked switch is left out, as a browser sends it.
+            "dhcp-integration": ({"section": "dhcp-integration"}, lambda: DhcpIntegrationConfig.get().enabled, False),
+            "display-cache": (
+                {
+                    "section": "display-cache",
+                    "display-cache-configuration_ttl": 31,
+                    "display-cache-reservations_ttl": 300,
+                    "display-cache-leases_ttl": 30,
+                    "display-cache-status_ttl": 15,
+                },
+                lambda: DisplayCacheConfig.get().configuration_ttl,
+                31,
+            ),
         }
         for slug, (data, saved, expected) in sections.items():
-            with self.subTest(section=slug):
+            # The DHCP Plugin section shows only with netbox_dhcp; its row and the branch refusal do not need it.
+            with (
+                self.subTest(section=slug),
+                patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True),
+            ):
                 before = (self._main(), ObjectChange.objects.count())
                 client.cookies[COOKIE_NAME] = self.branch.schema_id
 
@@ -1559,8 +1604,7 @@ class SyncJobInBranchTest(TransactionTestCase):
         self.assertFalse(IPRange.objects.exists())
         sync_tables = (
             "netbox_kea_server",
-            "netbox_kea_syncconfig",
-            "netbox_kea_keaclientconfig",
+            *(model._meta.db_table for model in _settings_models()),
             "ipam_ipaddress",
             "ipam_prefix",
             "ipam_iprange",
@@ -1607,14 +1651,14 @@ class KeaTransportInBranchTest(TransactionTestCase):
 
         self.assertEqual(kea.commands(), ["lease4-del"], "on main the write is sent")
 
-    def test_a_config_mutation_in_a_branch_leaves_the_cache_generation_alone(self):
-        generation_key = server_configuration._generation_key(self.server, 4)
-        generation = server_configuration._cache_generation(self.server, 4)
+    def test_a_config_mutation_in_a_branch_leaves_the_cache_generations_alone(self):
+        generations = {name: display_cache._generation(self.server, 4, name) for name in ("configuration", "records")}
 
         with activate_branch(self.branch), stub_kea({}) as kea, self.assertRaises(branching.BranchActive):
             self.server.get_client(version=4).subnet_del(4, 1)
 
-        self.assertEqual(cache.get(generation_key), generation)
+        for name, generation in generations.items():
+            self.assertEqual(cache.get(display_cache._generation_key(self.server, 4, name)), generation, name)
         self.assertEqual(kea.commands(), [])
 
     def test_a_client_built_in_a_branch_sends_a_read(self):

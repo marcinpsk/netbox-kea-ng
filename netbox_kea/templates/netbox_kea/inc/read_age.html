@@ -1,0 +1,11 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{# The read age of a cached table and its Refresh control. The control reads this page live and swaps target. #}
+{% if read_age is not None %}
+<span class="text-muted small me-2">Read {{ read_age }} s ago</span>
+<button type="button" class="btn btn-outline-secondary btn-sm"
+        hx-get="{{ request.get_full_path }}" hx-headers='{{ refresh_headers }}'
+        hx-select="{{ target }}" hx-target="{{ target }}" hx-swap="outerHTML" hx-disabled-elt="this">
+  <i class="mdi mdi-refresh" aria-hidden="true"></i> Refresh
+</button>
+{% endif %}

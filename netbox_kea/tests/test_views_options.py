@@ -32,7 +32,7 @@ import requests
 from django.contrib import messages as django_messages
 from django.urls import reverse
 
-from netbox_kea import server_configuration
+from netbox_kea import display_cache
 from netbox_kea.views.notices import HEADLINES
 
 from .kea_stub import _catalogue_responses_for_subnets, _subnet_list, stub_kea
@@ -676,7 +676,7 @@ class TestServerOptionDef4ListView(_ViewTestBase):
         )
         for definitions, warning in cases:
             with self.subTest(definitions=definitions):
-                server_configuration.invalidate(self.server, 4)
+                display_cache.rotate_configuration(self.server, 4)
                 config = {"result": 0, "arguments": {"Dhcp4": {"option-def": definitions}}}
                 with stub_kea({"config-get": config}):
                     response = self.client.get(self._url())

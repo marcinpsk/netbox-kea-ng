@@ -17,7 +17,7 @@ import pytest
 import requests
 from playwright.sync_api import Page
 
-from ..conftest import REQUEST_TIMEOUT, NoBranchGuard, TimeoutSession
+from ..conftest import REQUEST_TIMEOUT, NoBranchGuard, TimeoutSession, no_display_cache
 
 # This is linked from netbox_kea to avoid import errors
 from ..constants import Family
@@ -152,8 +152,20 @@ class _DualEndpointKeaClient:
 def kea_client(kea_harness_daemons: dict[int, str]) -> Iterator[_DualEndpointKeaClient]:
     # Kea 3.0: two daemons, each on its own host-exposed HTTP control socket.
     with (
-        KeaClient(kea_harness_daemons[4], timeout=30, max_unpaged_leases=1000, write_guard=NoBranchGuard()) as dhcp4,
-        KeaClient(kea_harness_daemons[6], timeout=30, max_unpaged_leases=1000, write_guard=NoBranchGuard()) as dhcp6,
+        KeaClient(
+            kea_harness_daemons[4],
+            timeout=30,
+            max_unpaged_leases=1000,
+            write_guard=NoBranchGuard(),
+            on_write=no_display_cache,
+        ) as dhcp4,
+        KeaClient(
+            kea_harness_daemons[6],
+            timeout=30,
+            max_unpaged_leases=1000,
+            write_guard=NoBranchGuard(),
+            on_write=no_display_cache,
+        ) as dhcp6,
     ):
         yield _DualEndpointKeaClient(dhcp4, dhcp6)
 

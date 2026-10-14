@@ -1,7 +1,8 @@
 {# SPDX-FileCopyrightText: 2023 Devon Mar <devon-mar@users.noreply.github.com> #}
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
-<div class="container-fluid">
+{# section_id names the section that a Refresh swaps, so the error stays on the page. #}
+<div {% if section_id %}id="{{ section_id }}" {% endif %}class="container-fluid">
   <div class="row">
     <div class="col col-md-6 offset-md-3">
       <div class="card border-danger mt-5">

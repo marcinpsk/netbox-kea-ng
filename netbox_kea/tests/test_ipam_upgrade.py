@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Upgrade adoption through the public ownership and workflow interfaces."""
 
+import unittest
+
+from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test import TestCase
@@ -12,11 +15,11 @@ from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 from rest_framework.test import APIClient
 
-from netbox_kea.ipam_reconciliation import claim, upgrade_counts
+from netbox_kea.ipam_reconciliation import claim, effective_sources, upgrade_counts
 from netbox_kea.models import IPAMOwnershipLink, Server
 from netbox_kea.tests.kea_stub import typed_lease
 from netbox_kea.tests.test_ipam_reconciliation import _kea, _lease, _reconcile, _run_job, _server
-from netbox_kea.tests.utils import with_sync_config
+from netbox_kea.tests.utils import with_dhcp_integration_config, with_sync_config
 
 
 class UpgradeAdoptionTest(TestCase):
@@ -556,3 +559,47 @@ class UpgradeAdoptionTest(TestCase):
         self.assertEqual(upgrade_counts().waiting, 0)
         self.assertTrue(IPAddress.objects.filter(pk=address.pk).exists())
         self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address=address, adopted=True).exists())
+
+
+class DhcpIntegrationSwitchAdoptionTest(TestCase):
+    """The global DHCP Plugin Integration switch decides whether the job's cleanup waits for a DHCP import receipt."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed("netbox_dhcp"):
+            raise unittest.SkipTest("netbox_dhcp not installed")
+        super().setUpClass()
+
+    def _clean_up_an_adopted_address(self) -> tuple[Server, IPAddress, dict]:
+        """Adopt a legacy address for a Server that opts in to the DHCP plugin, then run a job that no longer sees it."""
+        owner = _server("dhcp-owner", sync_dhcp_plugin_enabled=True)
+        _run_job(owner, [])
+        legacy = IPAddress.objects.create(address="10.0.0.5/32", description="[kea-sync: lease]")
+        _reconcile(owner, [_lease()])
+        self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address=legacy, adopted=True).exists())
+        return owner, legacy, _run_job(owner, [])
+
+    def test_with_the_switch_on_the_adopted_address_waits_for_a_dhcp_import(self):
+        owner, legacy, summary = self._clean_up_an_adopted_address()
+
+        self.assertEqual(effective_sources(owner)["import"], {(4, "reservation"), (4, "subnet"), (4, "pool")})
+        self.assertEqual(summary["waiting"], 1)
+        self.assertTrue(IPAddress.objects.filter(pk=legacy.pk).exists())
+
+    @with_dhcp_integration_config(enabled=False)
+    def test_with_the_switch_off_the_job_waits_for_no_dhcp_import_and_removes_the_address(self):
+        owner, legacy, summary = self._clean_up_an_adopted_address()
+
+        self.assertEqual(effective_sources(owner)["import"], frozenset())
+        self.assertEqual(summary["waiting"], 0)
+        self.assertFalse(IPAddress.objects.filter(pk=legacy.pk).exists())
+
+    def test_one_policy_snapshot_reads_the_switch_once_for_every_opted_in_server(self):
+        for name in ("dhcp-a", "dhcp-b", "dhcp-c"):
+            _server(name, sync_dhcp_plugin_enabled=True)
+
+        with CaptureQueriesContext(connection) as queries:
+            upgrade_counts()
+
+        reads = [query for query in queries.captured_queries if "netbox_kea_dhcpintegrationconfig" in query["sql"]]
+        self.assertEqual(len(reads), 1)

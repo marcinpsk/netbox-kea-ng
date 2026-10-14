@@ -5,11 +5,11 @@
 Subnet subsection navigation: Subnets and Shared Networks.
 Context: section, nav_subnets_url, nav_shared_url.
 {% endcomment %}
-<ul class="nav nav-tabs mb-3">
+<ul class="nav nav-tabs kea-tabs mb-3">
   <li class="nav-item">
-    <a class="nav-link{% if section == 'subnets' %} active{% endif %}" href="{% workspace_url nav_subnets_url %}">Subnets</a>
+    <a class="nav-link{% if section == 'subnets' %} active{% endif %}" href="{% workspace_url nav_subnets_url %}"{% if section == 'subnets' %} aria-current="page"{% endif %}>Subnets</a>
   </li>
   <li class="nav-item">
-    <a class="nav-link{% if section == 'shared_networks' %} active{% endif %}" href="{% workspace_url nav_shared_url %}">Shared Networks</a>
+    <a class="nav-link{% if section == 'shared_networks' %} active{% endif %}" href="{% workspace_url nav_shared_url %}"{% if section == 'shared_networks' %} aria-current="page"{% endif %}>Shared Networks</a>
   </li>
 </ul>

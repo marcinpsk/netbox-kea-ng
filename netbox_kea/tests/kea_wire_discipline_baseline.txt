@@ -26,6 +26,3 @@ tables.py::<module>	1
 utilities.py::parse_lease_csv	7
 views/leases.py::_set_lease_reservation_fields	2
 views/options.py::BaseServerOptionDefAddView.get	1
-views/server.py::ServerStatusView._get_ca_status	2
-views/server.py::ServerStatusView._get_dhcp_status	9
-views/server.py::_response_arguments	1

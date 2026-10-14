@@ -18,7 +18,7 @@ from ipam.models import IPAddress
 from netbox_kea.models import Server
 
 from .kea_stub import _res_page, complete_lease, queued, stub_kea
-from .utils import User, _make_db_server, with_kea_client_config
+from .utils import User, _make_db_server, with_display_cache_config, with_kea_client_config
 
 # ---------------------------------------------------------------------------
 # Kea response fixtures
@@ -215,6 +215,8 @@ class TestCombinedServerStatusBadge(_CombinedViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Online")
 
+    # Two answers of one daemon, each read live.
+    @with_display_cache_config(status_ttl=0)
     def test_badges_set_a_text_color_that_contrasts_with_their_background(self):
         """A bare bg-* badge keeps the body text color: grey on green in the light theme."""
         with stub_kea({"version-get": {"result": 0, "arguments": {"extended": "Kea DHCPv4/2.x"}}}):

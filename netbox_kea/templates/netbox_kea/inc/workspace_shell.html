@@ -28,7 +28,7 @@
   </div>
   <div class="d-flex overflow-auto">
     <nav aria-label="Workspace sections" class="flex-grow-1">
-      <ul class="nav nav-tabs flex-nowrap">
+      <ul class="nav nav-tabs kea-tabs flex-nowrap">
         {% for key, label, url in workspace_sections %}
         <li class="nav-item">
           <a href="{{ url }}" class="nav-link{% if key == workspace_section %} active{% endif %}"
@@ -39,7 +39,7 @@
     </nav>
     {% if workspace_object_tabs %}
     <nav aria-label="Server object tabs">
-      <ul class="nav nav-tabs flex-nowrap">
+      <ul class="nav nav-tabs kea-tabs flex-nowrap">
         {% for tab in workspace_object_tabs %}
         <li class="nav-item">
           <a href="{{ tab.url }}" class="nav-link text-nowrap{% if tab.is_active %} active{% endif %}"

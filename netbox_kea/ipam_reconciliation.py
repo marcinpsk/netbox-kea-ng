@@ -39,7 +39,14 @@ from .ipam_marker import (
 )
 from .kea import KeaException
 from .leases import LEASE_VARIANTS, AllocationKind, DHCPv6PrefixLease, Lease, LeaseSnapshot
-from .models import IPAMOwnershipLink, IPAMOwnershipSource, Server, SyncConfig, next_confirmation_number
+from .models import (
+    DhcpIntegrationConfig,
+    IPAMOwnershipLink,
+    IPAMOwnershipSource,
+    Server,
+    SyncConfig,
+    next_confirmation_number,
+)
 from .pools import Pool
 from .published_name import lease_published_name, reservation_published_name
 from .reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, ReservationSnapshot
@@ -404,7 +411,9 @@ def effective_sources(server: Server) -> dict[Workflow, SourceScope]:
     return _effective_sources(server, SyncConfig.get())
 
 
-def _effective_sources(server: Server, config: SyncConfig) -> dict[Workflow, SourceScope]:
+def _effective_sources(
+    server: Server, config: SyncConfig, switch: DhcpIntegrationConfig | None = None
+) -> dict[Workflow, SourceScope]:
     families: tuple[Family, ...] = tuple(
         cast("Family", family) for family, enabled in ((4, server.dhcp4), (6, server.dhcp6)) if enabled
     )
@@ -425,14 +434,14 @@ def _effective_sources(server: Server, config: SyncConfig) -> dict[Workflow, Sou
         for family in families
         if lease_prefixes_enabled(family, (family, "lease") in job, (family, "subnet") in job)
     }
-    imported = frozenset(
-        (family, source)
-        for family in families
-        for source in ("reservation", "subnet", "pool", "delegated-prefix")
-        if server.sync_dhcp_plugin_enabled
-        and dhcp_plugin.is_available()
-        and (source != "delegated-prefix" or family == 6)
-    )
+    imported: SourceScope = frozenset()
+    if dhcp_plugin.runs_for(server, switch):
+        imported = frozenset(
+            (family, source)
+            for family in families
+            for source in ("reservation", "subnet", "pool", "delegated-prefix")
+            if source != "delegated-prefix" or family == 6
+        )
     return {"job": job, "import": imported}
 
 
@@ -519,10 +528,10 @@ def _pending_adoptions() -> set[tuple[Family, str]]:
         LEASE_PREFIX: "prefix",
         "pool": "ip_range",
     }
-    config = SyncConfig.get()
+    config, switch = SyncConfig.get(), DhcpIntegrationConfig.get()
     for server in Server.objects.all():
         receipts = _receipts(server)
-        for workflow, scope in _effective_sources(server, config).items():
+        for workflow, scope in _effective_sources(server, config, switch).items():
             observed = receipts[workflow].sources if workflow in receipts else frozenset()
             pending.update((family, fields[source]) for family, source in scope - observed)
     return pending
@@ -538,7 +547,9 @@ def _cleanup_adoption_waits(link: IPAMOwnershipLink, object_field: str) -> bool:
         return False
     with connection.cursor() as cursor:
         # Table locks also cover new Servers and bulk configuration updates.
-        cursor.execute("LOCK TABLE netbox_kea_server, netbox_kea_syncconfig IN SHARE MODE NOWAIT")
+        cursor.execute(
+            "LOCK TABLE netbox_kea_server, netbox_kea_syncconfig, netbox_kea_dhcpintegrationconfig IN SHARE MODE NOWAIT"
+        )
     return _adoption_waits(link, object_field, _pending_adoptions())
 
 

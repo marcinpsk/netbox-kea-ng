@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 from urllib.parse import parse_qsl, unquote, urlparse, urlsplit
 from urllib.parse import urlencode as _urlencode
@@ -16,10 +17,11 @@ from django.urls import Resolver404, get_script_prefix, resolve, reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from netbox.tables import BaseTable
 
+from .. import display_cache
 from ..config_write import ConfigChangeOutcome, ConfigChangeRejected, RejectionReason
 from ..constants import Family
 from ..dhcp_options import shown_options
-from ..kea import KeaException
+from ..kea import DaemonStatus, DaemonVersion, KeaClient, KeaCommand, KeaException, SubnetUtilization
 from ..models import Server
 from ..server_configuration import SharedNetwork
 from ..subnet_catalogue import ConfiguredSubnet, VerifiedSubnet
@@ -212,10 +214,101 @@ def _shared_network_row(
     return row
 
 
-def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, version: Family) -> None:
-    """Add available utilization measurements to Subnet presentation rows."""
+@dataclass(frozen=True)
+class _Utilization:
+    """One display cache entry: the ``stat_cmds`` address counts of each Subnet of one family."""
+
+    counts: Mapping[int, SubnetUtilization]
+
+    @property
+    def settled(self) -> bool:
+        """Return true: a failed read raises, so the display cache can store each read that returns."""
+        return True
+
+
+def close_quietly(client: KeaClient) -> None:
+    """Close one Kea client, and log a failure instead of raising it, so the page still renders."""
     try:
-        utilization = server.get_client(version=version).subnet_utilization(version)
+        client.close()
+    except Exception:
+        logger.warning("Could not close a Kea client", exc_info=True)
+
+
+class LazyClient:
+    """The Kea client of one Server and target, built on first use and closed quietly at the end of the block.
+
+    A display cache hit builds no client. A target of ``None`` is the Control Agent.
+    """
+
+    def __init__(self, server: Server, target: Family | None) -> None:
+        self.server = server
+        self.target = target
+        self._client: KeaClient | None = None
+
+    def __call__(self) -> KeaClient:
+        """Return the client, built on the first call."""
+        if self._client is None:
+            self._client = self.server.get_client(version=self.target)
+        return self._client
+
+    def __enter__(self) -> "LazyClient":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        if self._client is not None:
+            close_quietly(self._client)
+
+
+def _read_utilization(server: Server, version: Family) -> _Utilization:
+    with LazyClient(server, version) as client:
+        return _Utilization(client().subnet_utilization(version))
+
+
+def daemon_status(client: LazyClient) -> DaemonStatus:
+    """Return the ``status-get`` facts of the target of *client* through the display cache.
+
+    Raises:
+        KeaException: If Kea returns a failure result.
+        requests.RequestException: If the transport fails.
+        RuntimeError: If the reply is malformed.
+
+    """
+    return display_cache.cached(
+        client.server,
+        client.target,
+        "status",
+        lambda: client().daemon_status(client.target),
+        query=(KeaCommand.STATUS_GET.value,),
+    )
+
+
+def daemon_version(client: LazyClient) -> DaemonVersion:
+    """Return the ``version-get`` facts of the target of *client* through the display cache.
+
+    Raises:
+        KeaException: If Kea returns a failure result.
+        requests.RequestException: If the transport fails.
+        RuntimeError: If the reply is malformed.
+
+    """
+    return display_cache.cached(
+        client.server,
+        client.target,
+        "status",
+        lambda: client().daemon_version(client.target),
+        query=(KeaCommand.VERSION_GET.value,),
+    )
+
+
+def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, version: Family, *, live: bool) -> None:
+    """Add available utilization measurements to Subnet presentation rows, through the display cache.
+
+    With *live*, for an export, it reads Kea live and replaces the entry.
+    """
+    try:
+        utilization = display_cache.cached(
+            server, version, "utilization", lambda: _read_utilization(server, version), refresh=live
+        ).counts
     except KeaException as exc:
         if exc.unsupported_command:
             logger.debug("stat_cmds hook unavailable", exc_info=True)

@@ -6,6 +6,7 @@
 
 {% block content %}
 {% include "netbox_kea/includes/persist_config_warning.html" %}
+<div id="kea-reservations">
 <div class="row mb-3">
   <div class="col">
     {% if not hook_available %}
@@ -69,6 +70,9 @@
 </div>
 {% endif %}
 
+{% if read_error %}
+<div class="alert alert-danger" role="alert">{{ read_error }}</div>
+{% endif %}
 {% if hook_available %}
 {% if reservation_notice.unavailable %}
 <div class="alert alert-danger" role="alert">{{ reservation_notice.headline }}</div>
@@ -95,7 +99,10 @@
 {% endif %}
 {% endif %}
 
-<div class="row mb-3">
+<div class="row mb-3 g-2 align-items-center">
+  <div class="col-12 col-md-auto">
+    {% include "netbox_kea/inc/read_age.html" with target="#kea-reservations" %}
+  </div>
   <div class="col text-end">
     {% if hook_available and bulk_sync_url %}
     <form method="post" action="{{ bulk_sync_url }}" class="d-inline">
@@ -151,4 +158,5 @@
   </a>
 </div>
 {% endif %}
+</div>
 {% endblock %}

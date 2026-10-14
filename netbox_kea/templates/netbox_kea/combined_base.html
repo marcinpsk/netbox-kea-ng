@@ -20,8 +20,10 @@
 
 {% block content %}
   {% include 'netbox_kea/inc/workspace_shell.html' %}
+  <div id="kea-combined-body">
   {% include 'netbox_kea/inc/combined_notices.html' %}
   {% if not server_scope.is_invalid %}
     {% block tab_content %}{% endblock %}
   {% endif %}
+  </div>
 {% endblock %}

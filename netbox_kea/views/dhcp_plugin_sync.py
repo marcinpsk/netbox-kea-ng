@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Views for the optional "Sync to DHCP plugin" integration (import + drift, v1).
 
-These are inert unless the NetBox DHCP plugin (``netbox_dhcp``) is installed and
-the server has ``sync_dhcp_plugin_enabled`` set: the per-server tab hides itself
-and the sync action refuses.  All reads against Kea are read-only (``config-get``).
+These are inert unless ``dhcp_plugin.runs_for`` allows the integration for the server:
+the per-server tab hides itself, the page reads no Kea and shows why, and the sync action
+refuses.  All reads against Kea are read-only (``config-get``).
 """
 
 from __future__ import annotations
@@ -35,14 +35,9 @@ from .workspace import server_family_url
 logger = logging.getLogger(__name__)
 
 
-def _tab_enabled(server: Server) -> bool:
-    """Show the DHCP Plugin subsection only when the plugin is installed and the server opts in."""
-    return dhcp_plugin.is_available() and server.sync_dhcp_plugin_enabled
-
-
 def sync_nav_context(request: HttpRequest, server: Server, view: object, subsection: str) -> dict[str, Any]:
-    """Return the Sync subsections, IPAM and DHCP Plugin, or none when DHCP Plugin is hidden."""
-    if not _tab_enabled(server):
+    """Return the Sync subsections, IPAM and DHCP Plugin, or none when the integration does not run for *server*."""
+    if not dhcp_plugin.runs_for(server):
         return {"sync_subsections": []}
     return {
         "sync_subsections": [
@@ -236,19 +231,19 @@ class ServerDhcpPluginView(generic.ObjectView):
     template_name = "netbox_kea/server_dhcp_plugin.html"
 
     def get_extra_context(self, request, instance):
-        """Return drift context for the template (live, read-only Kea read)."""
+        """Return drift context for the template (live, read-only Kea read). A refused integration reads no Kea."""
         from ..dhcp_mapping_lifecycle import MappingUnavailable
 
-        available = dhcp_plugin.is_available()
+        refusal = dhcp_plugin.integration_refusal(instance)
         unavailable = None
         drift = None
-        if available:
+        if not refusal:
             try:
                 drift = compute_drift(instance)
             except MappingUnavailable as error:
                 unavailable = str(error)
         return {
-            "plugin_available": available,
+            "integration_refusal": refusal,
             "mapping_unavailable": unavailable,
             "drift": drift,
             "sync_refusal": _sync_refusal(request.user, instance),
@@ -274,11 +269,8 @@ class ServerDhcpPluginSyncNowView(View):
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
         redirect = HttpResponseRedirect(reverse("plugins:netbox_kea:server_dhcp_plugin", args=[pk]))
 
-        if not dhcp_plugin.is_available():
-            messages.error(request, "The NetBox DHCP plugin (netbox_dhcp) is not installed.")
-            return redirect
-        if not server.sync_dhcp_plugin_enabled:
-            messages.error(request, "Enable 'Sync to DHCP plugin' on this server first.")
+        if refusal := dhcp_plugin.integration_refusal(server):
+            messages.error(request, refusal)
             return redirect
         if refusal := _sync_refusal(request.user, server):
             return HttpResponseForbidden(refusal)

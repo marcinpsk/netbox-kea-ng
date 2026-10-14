@@ -68,7 +68,11 @@
     </div>
     {% endwith %}
     {% endif %}
-    {% include "inc/table_controls_htmx.html" with table_modal="LeasesTable_config" %}
+    {# The read age shares the row of the table controls. #}
+    <div class="d-flex align-items-start gap-2">
+      <div class="pt-1 text-nowrap">{% include "netbox_kea/inc/read_age.html" with target="#lease-search" %}</div>
+      <div class="flex-grow-1">{% include "inc/table_controls_htmx.html" with table_modal="LeasesTable_config" %}</div>
+    </div>
     {% with preferences|get_key:"pagination.placement" as paginator_placement %}
       <form method="post" action="{{ delete_action }}" id="lease-delete-form">
         {% csrf_token %}

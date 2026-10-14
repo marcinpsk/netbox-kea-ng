@@ -2,6 +2,7 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% load form_helpers %}
 <div class="field-group">
-  {% render_field form.kea_timeout %}
-  {% render_field form.lease_query_max_unpaged_leases %}
+  {% for field in form %}
+    {% render_field field %}
+  {% endfor %}
 </div>

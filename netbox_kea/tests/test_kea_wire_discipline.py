@@ -86,6 +86,7 @@ _NON_WIRE_HYPHENATED = {
     "invalid-version": "Transfer validation diagnostic",
     "lease-prefix": "IPAM Ownership source (ADR 0006)",
     "kea-modal-workspace-shell": "Server delete modal HTML element ID",
+    "lease-search": "Leases section HTML element ID",
     "malformed-configuration-response": "Configuration snapshot diagnostic",
     "malformed-identity-response": "Catalogue snapshot diagnostic",
     "missing-field": "Lease validation diagnostic",

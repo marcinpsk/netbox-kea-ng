@@ -6,7 +6,7 @@ from ipam.api.serializers import VRFSerializer
 from netbox.api.serializers import BaseModelSerializer, NetBoxModelSerializer
 from rest_framework import serializers
 
-from ..models import KeaClientConfig, KeaDhcpLink, Server, SyncConfig
+from ..models import DhcpIntegrationConfig, DisplayCacheConfig, KeaClientConfig, KeaDhcpLink, Server, SyncConfig
 from ..server_connection import CONNECTION_FIELDS, connection_values, validate_connection_change
 
 #: Columns migration 0016 moved from NULL-or-blank to blank only. Every released
@@ -116,6 +116,24 @@ class KeaClientConfigSerializer(BaseModelSerializer):
 
     class Meta:
         model = KeaClientConfig
+        fields = ("id", "display")
+        brief_fields = ("id", "display")
+
+
+class DhcpIntegrationConfigSerializer(BaseModelSerializer):
+    """The brief DhcpIntegrationConfig that NetBox's change log API shows. The plugin has no endpoint for it."""
+
+    class Meta:
+        model = DhcpIntegrationConfig
+        fields = ("id", "display")
+        brief_fields = ("id", "display")
+
+
+class DisplayCacheConfigSerializer(BaseModelSerializer):
+    """The brief DisplayCacheConfig that NetBox's change log API shows. The plugin has no endpoint for it."""
+
+    class Meta:
+        model = DisplayCacheConfig
         fields = ("id", "display")
         brief_fields = ("id", "display")
 

@@ -27,7 +27,6 @@ netbox_kea/models.py:0: error: Need type annotation for "sync_ip_ranges_enabled"
 netbox_kea/models.py:0: error: Need type annotation for "sync_dhcp_plugin_enabled"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "persist_config"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "sync_vrf"  [var-annotated]
-netbox_kea/models.py:0: error: Incompatible types in assignment (expression has type "None", variable has type "Callable[[], None]")  [assignment]
 netbox_kea/models.py:0: error: Need type annotation for "interval_minutes"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "sync_enabled"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "sync_leases_enabled"  [var-annotated]
