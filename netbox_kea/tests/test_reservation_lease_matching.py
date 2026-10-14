@@ -1,10 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 
+from unittest import mock
+
 import requests
+from django.db import OperationalError
 from django.test import SimpleTestCase
 from django.urls import reverse
 
+from netbox_kea.models import PinnedSettings
 from netbox_kea.reservations import LeaseIdentities, ReservationIdentity, lease_identifier_types, lease_identities
 
 from .kea_stub import (
@@ -290,6 +294,26 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                         [{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}]
                     ),
                     "lease4-get-by-state": TypeError("unexpected worker failure"),
+                }
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(rows[0]["has_active_lease"])
+        self.assertIn("Reservation lease enrichment failed", logs.output[0])
+
+    def test_a_database_error_while_pinning_the_badge_settings_leaves_the_badges_unknown(self):
+        """The Reservation page still renders when the settings read of its badge workers fails."""
+        failure = OperationalError("server closed the connection unexpectedly")
+        with (
+            mock.patch.object(PinnedSettings, "read", autospec=True, side_effect=failure),
+            self.assertLogs("netbox_kea.views.reservations", level="ERROR") as logs,
+        ):
+            response, rows, _kea = self._rows(
+                {
+                    "reservation-get-page": _res_page(
+                        [{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}]
+                    ),
+                    "lease4-get-by-state": _leases_per_subnet({20: []}),
                 }
             )
 

@@ -177,8 +177,8 @@ def _enrich_reservations_with_lease_status(
     subnet_facts: dict[int, Any] = {}
     identity_facts: dict[ReservationIdentity, Any] = {}
     lookups = len(subnet_ids) + len(identities)
-    pinned = PinnedSettings.read(KeaClientConfig, DisplayCacheConfig)
     try:
+        pinned = PinnedSettings.read(KeaClientConfig, DisplayCacheConfig)
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(lookups, 10)) as executor:
             subnet_futures = {
                 executor.submit(
