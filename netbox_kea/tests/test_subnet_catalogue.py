@@ -8,7 +8,7 @@ from unittest.mock import patch
 import requests
 from django.test import TestCase
 
-from netbox_kea import server_configuration
+from netbox_kea import display_cache, server_configuration
 from netbox_kea.constants import MAX_SUBNET_ID
 from netbox_kea.models import Server
 from netbox_kea.subnet_catalogue import (
@@ -23,7 +23,6 @@ from netbox_kea.subnet_catalogue import (
     VerifiedSubnet,
     display,
     for_synchronization,
-    invalidate,
     mutation,
 )
 from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, _subnet_list, queued, stub_kea
@@ -392,7 +391,7 @@ class TestSubnetCatalogue(TestCase):
             with ThreadPoolExecutor(max_workers=1) as executor:
                 stale_read = executor.submit(display, self.server, 4)
                 self.assertTrue(read_started.wait(timeout=5))
-                invalidate(self.server, 4)
+                display_cache.rotate_configuration(self.server, 4)
                 invalidated.set()
                 self.assertEqual(stale_read.result().find_by_id(1).cidr, "198.18.1.0/24")
             refreshed = display(self.server, 4)
@@ -455,7 +454,7 @@ class TestSubnetCatalogue(TestCase):
         )
 
         for responses, expected_codes in cases:
-            invalidate(self.server, 4)
+            display_cache.rotate_configuration(self.server, 4)
             with self.subTest(expected_codes=expected_codes), stub_kea(responses):
                 snapshot = display(self.server, 4)
                 self.assertIsInstance(snapshot, IncompleteCatalogueSnapshot)
@@ -944,7 +943,7 @@ class TestSubnetCatalogue(TestCase):
         }
         for label, (code, invalid) in cases.items():
             with self.subTest(label):
-                server_configuration.invalidate(self.server, 4)
+                display_cache.rotate_configuration(self.server, 4)
                 with stub_kea(_catalogue_responses_for_subnets(4, subnets, **invalid)):
                     snapshot = for_synchronization(self.server, 4)
                     configuration = server_configuration.display(self.server, 4)
@@ -1210,7 +1209,7 @@ class TestCatalogueConfigurationRegressions(TestCase):
                     {"subnet4-list": queued(failure, _identity(4, [subnet])), "config-get": _config(4, [subnet])}
                 ) as kea,
             ):
-                invalidate(self.server, 4)
+                display_cache.rotate_configuration(self.server, 4)
                 first = display(self.server, 4)
                 second = display(self.server, 4)
                 self.assertIsInstance(first, ConfigurationOnlyCatalogueSnapshot)

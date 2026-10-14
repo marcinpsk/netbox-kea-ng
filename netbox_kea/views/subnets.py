@@ -88,7 +88,7 @@ class BaseServerDHCPSubnetsView(ServerFamilyMixin, generic.ObjectChildrenView):
     def _catalogue_rows(
         self, request: HttpRequest, parent: Server, snapshot: CatalogueSnapshot
     ) -> list[dict[str, Any]]:
-        """Return safe Subnet Catalogue rows for this Server."""
+        """Return safe Subnet Catalogue rows for this Server. An export reads their utilization live."""
         if snapshot.unavailable:
             return []
         can_change = Server.objects.restrict(request.user, "change").filter(pk=parent.pk).exists()
@@ -96,7 +96,7 @@ class BaseServerDHCPSubnetsView(ServerFamilyMixin, generic.ObjectChildrenView):
         rows = [_catalogue_subnet_row(subnet, parent, self.dhcp_version, can_change) for subnet in subnets]
         for row in rows:
             row["return_url"] = _safe_return_url(request, request.get_full_path())
-        _enrich_subnet_statistics(rows, parent, self.dhcp_version)
+        _enrich_subnet_statistics(rows, parent, self.dhcp_version, live="export" in request.GET)
         return rows
 
     def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:

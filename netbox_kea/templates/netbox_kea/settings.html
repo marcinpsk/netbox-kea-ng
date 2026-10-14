@@ -11,6 +11,9 @@
     <div class="card mb-4" id="{{ shown.section.slug }}">
       <h5 class="card-header">{{ shown.section.title }}</h5>
       <div class="card-body">
+        {% if shown.section.description %}
+        <p class="settings-description text-muted small">{{ shown.section.description }}</p>
+        {% endif %}
         {% if shown.can_change %}
         <form method="post">
           {% csrf_token %}

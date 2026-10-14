@@ -167,3 +167,39 @@ def test_server_switch_menu_fits_narrow_viewport(
         _no_page_scroll(page)
     finally:
         target.delete()
+
+
+@pytest.mark.parametrize("mode", ["light", "dark"])
+def test_each_tab_row_marks_its_active_tab(page: Page, plugin_base: str, kea_server, mode: str) -> None:
+    """The active tab of the section row and of the Subnets row carries a primary underline, a tint and a bold label."""
+    page.add_init_script(f"localStorage.setItem('netbox-color-mode', '{mode}');")
+    page.goto(f"{plugin_base}/servers/{kea_server.id}/subnets4/")
+    expect(page.locator("html")).to_have_attribute("data-bs-theme", mode)
+    tabs = page.evaluate("""() => {
+        const primary = getComputedStyle(document.body).getPropertyValue('--tblr-primary').trim();
+        const probe = document.createElement('i');
+        probe.style.color = primary;
+        document.body.append(probe);
+        const underline = getComputedStyle(probe).color;
+        probe.remove();
+        return {underline, rows: [...document.querySelectorAll('.kea-tabs')].map(row => [...row.querySelectorAll('.nav-link')]
+            .map(link => {
+                const style = getComputedStyle(link);
+                return {label: link.textContent.trim(), active: link.classList.contains('active'),
+                    background: style.backgroundColor, weight: Number(style.fontWeight), shadow: style.boxShadow};
+            }))};
+    }""")
+    actives = [tab for row in tabs["rows"] for tab in row if tab["active"]]
+    assert [tab["label"] for tab in actives] == ["Subnets", "Subnets"], actives
+    inactive = next(tab for row in tabs["rows"] for tab in row if not tab["active"])
+    for tab in actives:
+        assert tab["shadow"].startswith(tabs["underline"]) and tab["shadow"].endswith("inset"), (tab, tabs["underline"])
+        assert "-3px" in tab["shadow"], tab
+        assert tab["weight"] >= 600, tab
+        assert tab["background"] != inactive["background"], (tab, inactive)
+    assert inactive["shadow"] == "none" and inactive["weight"] < 600, inactive
+    # NetBox draws the focus ring with box-shadow too, so the underline must not replace it.
+    active = page.locator('[aria-label="Workspace sections"] .nav-link.active')
+    _tab_to(page, active)
+    focused = active.evaluate("el => getComputedStyle(el).boxShadow")
+    assert focused != actives[0]["shadow"] and "inset" in focused, focused

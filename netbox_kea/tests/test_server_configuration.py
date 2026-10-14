@@ -5,7 +5,7 @@ import ipaddress
 import requests
 from django.test import TestCase
 
-from netbox_kea import server_configuration
+from netbox_kea import display_cache, server_configuration
 from netbox_kea.tests.kea_stub import _raw_http_response, stub_kea
 from netbox_kea.tests.utils import _make_db_server, with_kea_client_config
 
@@ -110,7 +110,7 @@ class TestServerConfiguration(TestCase):
         with stub_kea({"config-get": self.response({})}) as kea:
             server_configuration.display(self.server, 4)
             server_configuration.for_verification(self.server, 4)
-            server_configuration.invalidate(self.server, 4)
+            display_cache.rotate_configuration(self.server, 4)
             server_configuration.display(self.server, 4)
         self.assertEqual(kea.commands(), ["config-get"] * 3)
 
@@ -172,7 +172,7 @@ class TestServerConfiguration(TestCase):
             server_configuration.display(self.server, 4)
             subnet_catalogue.display(self.server, 4)
             self.assertEqual(kea.commands().count("config-get"), 2)
-            server_configuration.invalidate(self.server, 4)
+            display_cache.rotate_configuration(self.server, 4)
             server_configuration.display(self.server, 4)
             subnet_catalogue.display(self.server, 4)
         self.assertEqual(kea.commands().count("config-get"), 4)

@@ -6,8 +6,8 @@ from django.db import transaction
 from django.urls import reverse
 from rest_framework.test import APIClient
 
-from netbox_kea import server_configuration, subnet_catalogue
-from netbox_kea.models import Server
+from netbox_kea import display_cache, server_configuration, subnet_catalogue
+from netbox_kea.models import DisplayCacheConfig, Server
 
 from .kea_stub import _catalogue_responses_for_subnets, stub_kea
 from .utils import _ViewTestBase
@@ -203,7 +203,7 @@ class ServerSaveCacheTest(_ViewTestBase):
                 kea = self._read_display(self.server, self.responses)
                 self.assertEqual(set(kea.urls()), {url})
 
-    def test_each_connection_setting_changes_the_display_generation(self):
+    def test_each_connection_setting_changes_the_display_cache_key(self):
         own_v6_url = {"dhcp6_url": _THIRD_URL}
         cases = (
             ("ca_url", _NEW_URL, 6, {}),
@@ -221,14 +221,15 @@ class ServerSaveCacheTest(_ViewTestBase):
             ("client_key_path", "/etc/ssl/client.key", 4, {}),
             ("has_control_agent", False, 4, {}),
         )
+        config = DisplayCacheConfig.get()
         for field, value, family, base in cases:
             with self.subTest(field=field):
                 server = Server.objects.get(pk=self.server.pk)
                 for name, setting in base.items():
                     setattr(server, name, setting)
-                before = server_configuration.display_generation(server, family)
+                before = display_cache._entry_key(server, family, "catalogue", config, ())
                 setattr(server, field, value)
-                self.assertNotEqual(server_configuration.display_generation(server, family), before)
+                self.assertNotEqual(display_cache._entry_key(server, family, "catalogue", config, ()), before)
 
     def test_a_sync_enabled_toggle_keeps_the_cached_entry(self):
         self._fill_display_cache()

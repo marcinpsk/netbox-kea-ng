@@ -7,12 +7,13 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from bs4 import BeautifulSoup
-from django.test import TestCase, skipUnlessDBFeature
+from django.test import SimpleTestCase, TestCase, skipUnlessDBFeature
 from django.urls import reverse
 from django.utils import timezone
 
+from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.ipam_reconciliation import _get_stale_cleanup_mode
-from netbox_kea.models import KeaClientConfig, Server, SyncConfig
+from netbox_kea.models import DhcpIntegrationConfig, DisplayCacheConfig, KeaClientConfig, Server, SyncConfig
 from netbox_kea.tests.utils import (
     User,
     _get_with_writes,
@@ -360,10 +361,10 @@ class TestSettingsPermissions(TestCase):
         self.assertContains(self.client.get(reverse("plugins:netbox_kea:sync_jobs")), self.link)
 
     def test_each_section_has_a_menu_item_for_a_user_who_can_view_that_section(self):
-        """The Settings menu group holds one item per section, so a new section gets its item and its permission."""
+        """The Settings menu group holds one item per available section, so a new section gets its item and its permission."""
         from netbox_kea.views.settings_page import SECTIONS
 
-        for section in SECTIONS:
+        for section in (section for section in SECTIONS if section.available()):
             with self.subTest(section=section.slug):
                 user = User.objects.create_user(f"settings-only-{section.slug}")
                 _grant([section.model], ["view"], user=user)
@@ -928,6 +929,124 @@ class TestKeaClientSettingsView(TestCase):
         with self.assertRaisesMessage(TypeError, "KeaClientConfig singleton cannot be deleted."):
             KeaClientConfig.get().delete()
         self.assertTrue(KeaClientConfig.objects.filter(pk=1).exists())
+
+
+class TestDhcpIntegrationSettingsView(TestCase):
+    """The DHCP Plugin section of the Settings page holds the global switch. It shows only with netbox_dhcp."""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser("dhcp-integration-admin", "d@d.com", "pass")
+        self.client.force_login(self.user)
+        self.url = reverse("plugins:netbox_kea:settings")
+
+    def _slugs(self) -> list[str]:
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        return [shown.section.slug for shown in response.context["sections"]]
+
+    def test_a_save_turns_the_integration_off_and_the_change_log_api_lists_it(self):
+        from core.models import ObjectChange
+        from django.contrib.contenttypes.models import ContentType
+        from rest_framework.test import APIClient
+
+        with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True):
+            page = BeautifulSoup(self.client.get(self.url).content, "html.parser")
+            response = self.client.post(self.url, _section_data("dhcp-integration", {"enabled": False}), follow=True)
+
+        self.assertTrue(page.find(id="dhcp-integration").find(id="id_dhcp-integration-enabled").has_attr("checked"))
+        self.assertRedirects(response, self.url)
+        self.assertContains(response, "DHCP Plugin Integration saved.")
+        self.assertIs(DhcpIntegrationConfig.get().enabled, False)
+        change = ObjectChange.objects.get(
+            changed_object_type=ContentType.objects.get_for_model(DhcpIntegrationConfig), changed_object_id=1
+        )
+        self.assertEqual((change.prechange_data["enabled"], change.postchange_data["enabled"]), (True, False))
+        api = APIClient(raise_request_exception=False)
+        api.force_authenticate(user=self.user)
+        listed = api.get(reverse("core-api:objectchange-list"))
+        self.assertEqual(listed.status_code, 200, listed.content[:300])
+        (entry,) = listed.json()["results"]
+        self.assertEqual(entry["changed_object"], {"id": 1, "display": "DHCP Plugin Integration"})
+
+    def test_without_the_dhcp_plugin_the_section_is_hidden_and_a_post_is_refused(self):
+        with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True):
+            self.assertIn("dhcp-integration", self._slugs())
+        with patch.object(dhcp_plugin, "is_available", return_value=False, autospec=True):
+            self.assertEqual(self._slugs(), ["sync", "kea-client", "display-cache"])
+            response = self.client.post(self.url, _section_data("dhcp-integration", {"enabled": False}))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIs(DhcpIntegrationConfig.get().enabled, True)
+
+    def test_without_the_dhcp_plugin_the_settings_menu_has_no_dhcp_plugin_item(self):
+        from netbox_kea import navigation
+
+        def menu_texts():
+            return [item.link_text for item in navigation._settings_items()]
+
+        with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True):
+            self.assertEqual(menu_texts(), ["Sync", "Kea Client", "Display Cache", "DHCP Plugin"])
+        with patch.object(dhcp_plugin, "is_available", return_value=False, autospec=True):
+            self.assertEqual(menu_texts(), ["Sync", "Kea Client", "Display Cache"])
+
+
+class TestSettingsSectionsCoverEverySingleton(SimpleTestCase):
+    """The Settings page derives each form from its model, so a new singleton needs only its SECTIONS entry."""
+
+    def test_each_settings_singleton_has_exactly_one_section(self):
+        from django.apps import apps
+
+        from netbox_kea.models import SettingsSingleton
+        from netbox_kea.views.settings_page import SECTIONS
+
+        singletons = [
+            model for model in apps.get_app_config("netbox_kea").get_models() if issubclass(model, SettingsSingleton)
+        ]
+        self.assertCountEqual([section.model for section in SECTIONS], singletons)
+        for section in SECTIONS:
+            with self.subTest(section=section.slug):
+                self.assertTrue(issubclass(section.model, SettingsSingleton))
+
+
+class TestSettingsSectionsRenderEveryField(TestCase):
+    """A save posts the whole derived form, so a field that the include leaves out would be reset."""
+
+    def test_each_visible_section_renders_an_input_for_every_form_field(self):
+        from netbox_kea.views.settings_page import visible_sections
+
+        user = User.objects.create_superuser("settings-fields", "f@f.com", "pass")
+        self.client.force_login(user)
+        page = BeautifulSoup(self.client.get(reverse("plugins:netbox_kea:settings")).content, "html.parser")
+
+        sections = visible_sections(user)
+        self.assertTrue(sections)
+        for section in sections:
+            card = page.find(id=section.slug)
+            for name in section.form_class.base_fields:
+                with self.subTest(section=section.slug, field=name):
+                    self.assertIsNotNone(card.find(attrs={"name": f"{section.slug}-{name}"}))
+
+
+class TestDisplayCacheSettingsSection(TestCase):
+    """The Display Cache section states once, under its heading, what a save does to the cache."""
+
+    _DESCRIPTION = "A save of this section makes every cached entry unused, also when no value changes."
+
+    def test_the_section_shows_its_description_under_the_heading_and_no_field_repeats_it(self):
+        user = User.objects.create_superuser("display-cache-admin", "d@d.com", "pass")
+        self.client.force_login(user)
+        page = BeautifulSoup(self.client.get(reverse("plugins:netbox_kea:settings")).content, "html.parser")
+
+        card = page.find(id="display-cache")
+        self.assertEqual(card.find(class_="settings-description").get_text(strip=True), self._DESCRIPTION)
+        self.assertNotIn("save", " ".join(field.help_text for field in DisplayCacheConfig._meta.fields))
+
+    def test_a_section_without_a_description_shows_none(self):
+        user = User.objects.create_superuser("kea-client-description", "e@e.com", "pass")
+        self.client.force_login(user)
+        page = BeautifulSoup(self.client.get(reverse("plugins:netbox_kea:settings")).content, "html.parser")
+
+        self.assertIsNone(page.find(id="kea-client").find(class_="settings-description"))
 
 
 class TestKeaClientSettingsPermissions(TestCase):

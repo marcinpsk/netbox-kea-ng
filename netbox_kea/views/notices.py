@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 SnapshotKind = Literal["catalogue", "configuration", "reservation", "lease"]
 RecordKind = Literal["reservation", "lease"]
 Snapshot = CatalogueSnapshot | ServerConfigurationSnapshot | ReservationSnapshot | LeaseSnapshot
-RecordSnapshot = TypeVar("RecordSnapshot", ReservationSnapshot, LeaseSnapshot)
+#: What a Reservation or Lease read returns: a Snapshot, or a display cache entry that holds one.
+RecordRead = TypeVar("RecordRead")
 
 #: The first line of an unavailable Notice, one per Snapshot kind.
 HEADLINES: dict[SnapshotKind, str] = {
@@ -106,26 +107,31 @@ def notice(snapshot: Snapshot) -> Notice | None:
     return None
 
 
-def load_snapshot(server: Server, kind: RecordKind, read: Callable[[], RecordSnapshot]) -> RecordSnapshot | Notice:
+def load_snapshot(
+    server: Server, kind: RecordKind, read: Callable[[], RecordRead], *, quiet: bool = False
+) -> RecordRead | Notice:
     """Run a Reservation or Lease read, and return an unavailable Notice when Kea, the transport or the reply fails.
 
-    A refused Lease query (``LeaseQueryGuardError``) and a ``ValueError`` are outside the rule and still raise.
+    A refused Lease query (``LeaseQueryGuardError``) and a ``ValueError`` are outside the rule and still raise. With
+    *quiet* a failure logs one debug line only: a badge lookup that fails shows as an unknown badge.
     """
     try:
         return read()
     except KeaException as exc:
-        if exc.unsupported_command:
+        if quiet:
+            logger.debug("Kea refused the %s read of server %s: result %s", kind, server.pk, exc.response.get("result"))
+        elif exc.unsupported_command:
             logger.info("Server %s does not provide the %s read: its hook library is not loaded", server.pk, kind)
         else:
             logger.exception("Kea refused the %s read of server %s", kind, server.pk)
         return Notice(kind, messages.ERROR, unsupported_command=exc.unsupported_command)
-    except requests.RequestException:
-        logger.exception("Failed to read %s from server %s", kind, server.pk)
-        return Notice(kind, messages.ERROR, unreachable=True)
     # MalformedReply and MalformedLeaseResponse are RuntimeErrors.
-    except RuntimeError:
-        logger.exception("Failed to read %s from server %s", kind, server.pk)
-        return Notice(kind, messages.ERROR)
+    except (requests.RequestException, RuntimeError) as exc:
+        if quiet:
+            logger.debug("Failed to read %s from server %s: %s", kind, server.pk, type(exc).__name__)
+        else:
+            logger.exception("Failed to read %s from server %s", kind, server.pk)
+        return Notice(kind, messages.ERROR, unreachable=isinstance(exc, requests.RequestException))
 
 
 def _worst_levels(notices: tuple[Notice | None, ...]) -> dict[str, int]:

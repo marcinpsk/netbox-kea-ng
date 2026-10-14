@@ -1010,11 +1010,12 @@ class TestConfigChangeNotification(TestCase):
     def test_a_failing_invalidation_is_logged_and_the_change_is_still_sent_and_persisted(self) -> None:
         invalidations: list[str] = []
 
-        def fail() -> None:
-            invalidations.append("invalidated")
+        def fail(family: int | None, *, configuration: bool) -> None:
+            if configuration:
+                invalidations.append("invalidated")
             raise ConnectionError("cache unreachable")
 
-        client = kea_client(url="http://kea:8000", on_config_change=fail)
+        client = kea_client(url="http://kea:8000", on_write=fail)
         responses = {
             "network4-add": _OK,
             "config-get": {"result": 0, "arguments": {"Dhcp4": {}}},
@@ -1030,7 +1031,17 @@ class TestConfigChangeNotification(TestCase):
         self.assertEqual(invalidations, ["invalidated", "invalidated"])
         self.assertEqual(
             [record.getMessage() for record in logs.records],
-            ["Configuration changed for DHCPv4, but cache invalidation failed"] * 2,
+            [
+                f"The display cache rotation {when} Kea command {command} failed"
+                for command, when in (
+                    ("network4-add", "before"),
+                    ("network4-add", "before"),
+                    ("network4-add", "after"),
+                    ("network4-add", "after"),
+                    ("config-write", "before"),
+                    ("config-write", "after"),
+                )
+            ],
         )
         self.assertTrue(all(record.exc_info for record in logs.records))
 

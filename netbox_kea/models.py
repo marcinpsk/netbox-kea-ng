@@ -1,13 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-FileCopyrightText: 2023 Devon Mar <devon-mar@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
-from contextvars import ContextVar
+from collections.abc import Mapping
+from contextvars import Context, ContextVar, copy_context
 from dataclasses import astuple, dataclass
 from dataclasses import field as dataclass_field
-from functools import reduce
+from functools import partial, reduce
 from operator import or_
 from pathlib import Path
-from typing import TypeVar, get_args
+from typing import TypeVar, cast, get_args
 
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.core.exceptions import ValidationError
@@ -194,8 +195,8 @@ class Server(JobsMixin, NetBoxModel):
             "When the NetBox DHCP plugin (netbox_dhcp) is installed, allow importing this "
             "server's Kea data tier (subnets, pools, host reservations) into the DHCP plugin's "
             "models. Note: Kea shared-networks are a different concept and are NOT imported as "
-            "DHCP-plugin Shared Networks (their member subnets are imported individually); DHCP "
-            "options are not imported. Has no effect if the plugin is absent."
+            "DHCP-plugin Shared Networks (their member subnets are imported individually). "
+            "Has no effect if the plugin is absent or the global DHCP Plugin Integration switch is off."
         ),
     )
     persist_config = models.BooleanField(
@@ -294,7 +295,8 @@ class Server(JobsMixin, NetBoxModel):
         (Kea 3.0+), so the routing decision follows the flag, not the URL.
 
         The client is bound to the branch that is active now, so it refuses each Kea write
-        command in a branch, also from a clone in a worker thread (ADR 0007).
+        command in a branch, also from a clone in a worker thread (ADR 0007). Each write command
+        that it sends rotates the records generation of the display cache (ADR 0009).
 
         Args:
             version: DHCP protocol version (4 or 6). When provided and a protocol-specific
@@ -303,17 +305,11 @@ class Server(JobsMixin, NetBoxModel):
                 configured, ``ca_url`` and CA-level credentials are always used.
 
         """
-        if version in (4, 6):
-            from .server_configuration import invalidate
-
-            def on_config_change() -> None:
-                invalidate(self, version)
-
-        else:
-            on_config_change = None
+        # Imported here: display_cache imports this module.
+        from . import display_cache
 
         connection = self.kea_connection(version)
-        config = request_client_config.get() or KeaClientConfig.get()
+        config = KeaClientConfig.get()
         return KeaClient(
             url=connection.url,
             username=connection.username,
@@ -325,8 +321,8 @@ class Server(JobsMixin, NetBoxModel):
             persist_config=self.persist_config,
             send_service=connection.send_service,
             max_unpaged_leases=config.lease_query_max_unpaged_leases or None,
-            on_config_change=on_config_change,
             write_guard=branching.bind(),
+            on_write=partial(display_cache.rotate_after_write, self),
         )
 
     def clean(self) -> None:
@@ -374,6 +370,13 @@ class Server(JobsMixin, NetBoxModel):
         return objectchange
 
 
+def require_persisted_server(server: Server) -> int:
+    """Return the pk of *server*. A Snapshot and a display cache key belong to a saved Server."""
+    if server.pk is None:
+        raise ValueError("A Kea Snapshot or display cache key requires a persisted Server.")
+    return server.pk
+
+
 _Singleton = TypeVar("_Singleton", bound="SettingsSingleton")
 
 
@@ -398,8 +401,17 @@ class SettingsSingleton(ChangeLoggingMixin):
 
     @classmethod
     def get(cls: type[_Singleton]) -> _Singleton:
-        """Return the singleton row. A migration creates it, so a missing row raises ``DoesNotExist``."""
-        return cls.objects.get(pk=1)
+        """Return the singleton row. A migration creates it, so a missing row raises ``DoesNotExist``.
+
+        In a context from ``PinnedSettings.context()`` it returns the pinned row, and it raises ``RuntimeError`` for a
+        model that is not pinned there, because a worker thread opens no database connection.
+        """
+        pinned = _pinned_settings.get()
+        if pinned is None:
+            return cls.objects.get(pk=1)
+        if cls not in pinned:
+            raise RuntimeError(f"{cls.__name__} is not pinned for this worker thread, which reads no database.")
+        return cast(_Singleton, pinned[cls])
 
 
 class SyncConfig(SettingsSingleton):
@@ -507,8 +519,98 @@ class KeaClientConfig(SettingsSingleton):
         return "Kea Client Configuration"
 
 
-# The row a fan-out read on its request thread, so its worker threads open no database connection.
-request_client_config: ContextVar[KeaClientConfig | None] = ContextVar("request_client_config", default=None)
+class DhcpIntegrationConfig(SettingsSingleton):
+    """Singleton configuration of the integration with the NetBox DHCP plugin (``netbox_dhcp``)."""
+
+    enabled: models.BooleanField = models.BooleanField(
+        verbose_name="Integration Enabled (global)",
+        default=True,
+        help_text=(
+            "Global switch. Clear it to stop the DHCP plugin integration for all Servers, whatever the Server setting."
+        ),
+    )
+
+    class Meta:
+        app_label = "netbox_kea"
+        verbose_name = "DHCP Plugin Integration"
+
+    def __str__(self) -> str:
+        return "DHCP Plugin Integration"
+
+
+class DisplayCacheConfig(SettingsSingleton):
+    """Singleton TTLs of the display cache, one for each read kind (ADR 0009). 0 turns off caching for that kind.
+
+    ``display_cache`` keys each entry on ``last_updated``, so a save makes every existing entry unreachable.
+    """
+
+    configuration_ttl: models.PositiveIntegerField = models.PositiveIntegerField(
+        verbose_name="Configuration TTL (seconds)",
+        default=300,
+        help_text=(
+            "How long a page shows a cached Server configuration and Subnet list (seconds)."
+            " 0 turns off caching for them."
+        ),
+    )
+    reservations_ttl: models.PositiveIntegerField = models.PositiveIntegerField(
+        verbose_name="Reservations TTL (seconds)",
+        default=300,
+        help_text="How long a page shows cached Reservations (seconds). 0 turns off caching for them.",
+    )
+    leases_ttl: models.PositiveIntegerField = models.PositiveIntegerField(
+        verbose_name="Leases TTL (seconds)",
+        default=30,
+        help_text=(
+            "How long a page shows cached Leases and the badges that link Leases and Reservations (seconds)."
+            " 0 turns off caching for them."
+        ),
+    )
+    status_ttl: models.PositiveIntegerField = models.PositiveIntegerField(
+        verbose_name="Utilization and Status TTL (seconds)",
+        default=15,
+        help_text="How long a page shows cached utilization and daemon status (seconds). 0 turns off caching for them.",
+    )
+
+    class Meta:
+        app_label = "netbox_kea"
+        verbose_name = "Display Cache"
+
+    def __str__(self) -> str:
+        return "Display Cache"
+
+    def save(self, *args, **kwargs) -> None:
+        """Write ``last_updated`` on every save, also a save with ``update_fields``, because the cache keys hold it."""
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            kwargs["update_fields"] = {*update_fields, "last_updated"}
+        super().save(*args, **kwargs)
+
+
+# Settings rows read on a request thread for its worker threads; None outside such a worker context.
+_pinned_settings: ContextVar[Mapping[type[SettingsSingleton], SettingsSingleton] | None] = ContextVar(
+    "pinned_settings", default=None
+)
+
+
+@dataclass(frozen=True)
+class PinnedSettings:
+    """Settings rows read on the request thread, so that worker threads open no database connection."""
+
+    rows: Mapping[type[SettingsSingleton], SettingsSingleton]
+
+    @classmethod
+    def read(cls, *models: type[SettingsSingleton]) -> "PinnedSettings":
+        """Read the row of each model now, on the calling thread."""
+        return cls({model: model.get() for model in models})
+
+    def context(self) -> Context:
+        """Return a copy of the current context in which ``SettingsSingleton.get()`` returns these rows only.
+
+        Make one for each worker task: a context can run in one thread at a time.
+        """
+        context = copy_context()
+        context.run(_pinned_settings.set, self.rows)
+        return context
 
 
 class KeaDhcpLink(ChangeLoggingMixin):

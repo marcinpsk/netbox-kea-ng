@@ -8,10 +8,10 @@
 <div class="row">
   <div class="col-md-12">
 
-    {% if not plugin_available %}
+    {% if integration_refusal %}
       <div class="alert alert-warning" role="alert">
         <i class="mdi mdi-alert-outline" aria-hidden="true"></i>
-        The NetBox DHCP plugin (<code>netbox_dhcp</code>) is not installed. This tab has no effect.
+        {{ integration_refusal }}
       </div>
     {% elif mapping_unavailable %}
       <div class="alert alert-warning" role="alert">

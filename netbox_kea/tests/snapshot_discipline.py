@@ -66,6 +66,7 @@ SITES = (
     SaveSite("jobs.py", "KeaIpamSyncJob._run_sync", "self.job", "framework"),
     SaveSite("models.py", "Server.save", "super()", "framework"),
     SaveSite("models.py", "SettingsSingleton.save", "super()", "framework"),
+    SaveSite("models.py", "DisplayCacheConfig.save", "super()", "framework"),
 )
 
 

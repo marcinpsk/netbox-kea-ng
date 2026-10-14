@@ -1,10 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 
+from unittest import mock
+
 import requests
+from django.db import OperationalError
 from django.test import SimpleTestCase
 from django.urls import reverse
 
+from netbox_kea.models import PinnedSettings
 from netbox_kea.reservations import LeaseIdentities, ReservationIdentity, lease_identifier_types, lease_identities
 
 from .kea_stub import (
@@ -16,7 +20,7 @@ from .kea_stub import (
     stub_kea,
     typed_lease,
 )
-from .utils import _ViewTestBase
+from .utils import _ViewTestBase, with_display_cache_config
 
 _SUBNETS4 = [{"id": 20, "subnet": "198.18.0.0/24"}, {"id": 21, "subnet": "198.18.1.0/24"}]
 _SUBNETS6 = [{"id": 30, "subnet": "2001:db8::/64"}]
@@ -188,6 +192,8 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                 self.assertNotContains(response, "Active Lease")
                 self.assertContains(response, "Lease Unknown")
 
+    # Each case reads the Lease badges live.
+    @with_display_cache_config(leases_ttl=0)
     def test_a_template_style_key_in_a_kea_record_is_not_an_identity(self):
         for native, expected in (("aa:bb:cc:dd:ee:ff", False), ("11-22-33-44-55-66", True)):
             with self.subTest(native=native):
@@ -288,6 +294,26 @@ class TestReservationLeaseRelationship(_ViewTestBase):
                         [{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}]
                     ),
                     "lease4-get-by-state": TypeError("unexpected worker failure"),
+                }
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(rows[0]["has_active_lease"])
+        self.assertIn("Reservation lease enrichment failed", logs.output[0])
+
+    def test_a_database_error_while_pinning_the_badge_settings_leaves_the_badges_unknown(self):
+        """The Reservation page still renders when the settings read of its badge workers fails."""
+        failure = OperationalError("server closed the connection unexpectedly")
+        with (
+            mock.patch.object(PinnedSettings, "read", autospec=True, side_effect=failure),
+            self.assertLogs("netbox_kea.views.reservations", level="ERROR") as logs,
+        ):
+            response, rows, _kea = self._rows(
+                {
+                    "reservation-get-page": _res_page(
+                        [{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}]
+                    ),
+                    "lease4-get-by-state": _leases_per_subnet({20: []}),
                 }
             )
 

@@ -18,7 +18,14 @@ from django.test.utils import CaptureQueriesContext, TestContextDecorator
 from django.urls import reverse
 from users.models import ObjectPermission
 
-from netbox_kea.models import KeaClientConfig, Server, SettingsSingleton, SyncConfig
+from netbox_kea.models import (
+    DhcpIntegrationConfig,
+    DisplayCacheConfig,
+    KeaClientConfig,
+    Server,
+    SettingsSingleton,
+    SyncConfig,
+)
 
 from .kea_stub import stub_kea
 
@@ -58,6 +65,16 @@ def with_kea_client_config(**values) -> SettingsRowOverride:
 def with_sync_config(**values) -> SettingsRowOverride:
     """Override fields of the SyncConfig row, such as ``stale_ip_cleanup``."""
     return SettingsRowOverride(SyncConfig, **values)
+
+
+def with_dhcp_integration_config(**values) -> SettingsRowOverride:
+    """Override fields of the DhcpIntegrationConfig row, such as ``enabled=False`` (the global switch off)."""
+    return SettingsRowOverride(DhcpIntegrationConfig, **values)
+
+
+def with_display_cache_config(**values) -> SettingsRowOverride:
+    """Override fields of the DisplayCacheConfig row, such as ``configuration_ttl=0`` (no configuration cache)."""
+    return SettingsRowOverride(DisplayCacheConfig, **values)
 
 
 User = get_user_model()

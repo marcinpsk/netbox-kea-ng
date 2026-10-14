@@ -5,7 +5,8 @@
 This module imports and compares DHCP data. The mapping lifecycle module coordinates
 its targets with native branching. Both modules resolve optional DHCP models lazily,
 so netbox-kea imports cleanly when the DHCP plugin is absent. Call
-:func:`is_available` before any other entry point.
+:func:`is_available` before any other entry point. :func:`integration_refusal` is the
+only rule that decides whether the integration runs for a Server.
 
 v1 scope (import + diff, read-only against Kea):
 
@@ -52,6 +53,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..ipam_reconciliation import ClaimResult, ReservationObservation, SyncReport
+    from ..models import DhcpIntegrationConfig, Server
     from ..subnet_catalogue import CatalogueSnapshot
 
 from django.apps import apps
@@ -85,6 +87,28 @@ PLUGIN_APP_LABEL = "netbox_dhcp"
 def is_available() -> bool:
     """Return ``True`` when the optional NetBox DHCP plugin is installed."""
     return apps.is_installed(PLUGIN_APP_LABEL)
+
+
+def integration_refusal(server: Server, switch: DhcpIntegrationConfig | None = None) -> str:
+    """Return why the DHCP plugin integration does not run for *server*, or "" when it runs (ADR 0010).
+
+    A caller that checks many Servers passes the *switch* row that it read once.
+    """
+    from ..models import DhcpIntegrationConfig
+
+    if not is_available():
+        return "The NetBox DHCP plugin (netbox_dhcp) is not installed."
+    if not server.sync_dhcp_plugin_enabled:
+        return "Enable 'Sync to DHCP plugin' on this server first."
+    # Read last, so that a Server that opts out costs no query.
+    if not (switch or DhcpIntegrationConfig.get()).enabled:
+        return "The DHCP plugin integration is off for all Servers. Turn it on in DHCP Kea > Settings."
+    return ""
+
+
+def runs_for(server: Server, switch: DhcpIntegrationConfig | None = None) -> bool:
+    """Return whether the DHCP plugin integration runs for *server*."""
+    return not integration_refusal(server, switch)
 
 
 def register_link_cleanup() -> None:

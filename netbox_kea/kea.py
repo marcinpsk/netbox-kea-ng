@@ -7,7 +7,7 @@ import ipaddress
 import itertools
 import json
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -176,6 +176,13 @@ class KeaCommand(Enum):
     NETWORK6_SUBNET_ADD = "network6-subnet-add", "write"
     NETWORK4_SUBNET_DEL = "network4-subnet-del", "write"
     NETWORK6_SUBNET_DEL = "network6-subnet-del", "write"
+
+
+class WriteObserver(Protocol):
+    """Told before and after each write command, so its owner can rotate the display cache generations."""
+
+    def __call__(self, family: Family | None, *, configuration: bool) -> None:
+        """Note a write to *family* (``None``: no family target); *configuration* is true for a configuration change."""
 
 
 class WriteGuard(Protocol):
@@ -395,6 +402,102 @@ class SubnetUtilization(NamedTuple):
 
     total: int
     assigned: int
+
+
+@dataclass(frozen=True)
+class HighAvailabilityStatus:
+    """The first ``high-availability`` entry of a ``status-get`` reply. Each value is as Kea reports it."""
+
+    mode: object
+    local_role: object
+    local_state: object
+    remote_connection_interrupted: object
+    remote_age: object
+    remote_role: object
+    remote_last_state: object
+    remote_in_touch: object
+    remote_unacked_clients: object
+    remote_unacked_clients_left: object
+    remote_connecting_clients: object
+
+
+@dataclass(frozen=True)
+class DaemonStatus:
+    """The ``status-get`` facts of one DHCP daemon or of the Control Agent."""
+
+    pid: object
+    #: Seconds since the start, or ``None`` when Kea omits it.
+    uptime: int | None
+    #: Seconds since the last configuration reload, or ``None`` when Kea omits it.
+    reload: int | None
+    high_availability: HighAvailabilityStatus | None
+
+    @property
+    def settled(self) -> bool:
+        """Return true: a failed read raises, so the display cache can store each read that returns."""
+        return True
+
+
+@dataclass(frozen=True)
+class DaemonVersion:
+    """The ``version-get`` facts of one DHCP daemon or of the Control Agent."""
+
+    #: The extended version text, or ``None`` when Kea omits it.
+    extended: str | None
+
+    @property
+    def settled(self) -> bool:
+        """Return true: a failed read raises, so the display cache can store each read that returns."""
+        return True
+
+
+def _status_arguments(command: KeaCommand, reply: KeaResponse, *, filled: bool) -> dict[str, Any]:
+    """Return the arguments of one ``status-get`` or ``version-get`` reply; with *filled* they must hold a fact.
+
+    Raises:
+        MalformedReply: If the arguments are not a mapping, or with *filled* an empty one.
+
+    """
+    arguments = reply.get("arguments")
+    if not isinstance(arguments, dict) or (filled and not arguments):
+        raise MalformedReply(f"Kea {command.value} returned invalid arguments.")
+    return arguments
+
+
+def _status_seconds(arguments: dict[str, Any], field: str) -> int | None:
+    """Return one non-negative duration of a ``status-get`` reply, or ``None`` when Kea omits it."""
+    if field not in arguments:
+        return None
+    value = arguments[field]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise MalformedReply(f"Kea status-get returned an invalid {field}.")
+    return value
+
+
+def _high_availability(arguments: dict[str, Any]) -> HighAvailabilityStatus | None:
+    """Return the first ``high-availability`` entry of a ``status-get`` reply; Kea supports one entry only."""
+    entries = arguments.get("high-availability")
+    if not entries or not isinstance(entries, list) or not isinstance(entries[0], dict):
+        return None
+    servers = entries[0].get("ha-servers")
+    servers = servers if isinstance(servers, dict) else {}
+    local = servers.get("local")
+    local = local if isinstance(local, dict) else {}
+    remote = servers.get("remote")
+    remote = remote if isinstance(remote, dict) else {}
+    return HighAvailabilityStatus(
+        mode=entries[0].get("ha-mode"),
+        local_role=local.get("role"),
+        local_state=local.get("state"),
+        remote_connection_interrupted=remote.get("connection-interrupted"),
+        remote_age=remote.get("age"),
+        remote_role=remote.get("role"),
+        remote_last_state=remote.get("last-state"),
+        remote_in_touch=remote.get("in-touch"),
+        remote_unacked_clients=remote.get("unacked-clients"),
+        remote_unacked_clients_left=remote.get("unacked-clients-left"),
+        remote_connecting_clients=remote.get("connecting-clients"),
+    )
 
 
 def _stat_lease_counts(command: KeaCommand, reply: KeaResponse, names: Sequence[str]) -> dict[int, tuple[int, ...]]:
@@ -833,11 +936,11 @@ class KeaClient:
         client_key: str | None = None,
         persist_config: bool = True,
         send_service: bool = True,
-        on_config_change: Callable[[], None] | None = None,
         *,
         timeout: int,
         max_unpaged_leases: int | None,
         write_guard: WriteGuard,
+        on_write: WriteObserver,
     ):
         """Initialise a Kea HTTP client session.
 
@@ -862,11 +965,12 @@ class KeaClient:
             max_unpaged_leases: Reject an unpaged Subnet query when Kea reports
                 more than this many covered leases. ``None`` disables the guard. Required, so no default
                 here can drift from the ``lease_query_max_unpaged_leases`` plugin setting.
-            on_config_change: Optional callback invoked after Kea's live configuration
-                changes. Cache invalidation failures are logged and do not interrupt
-                persistence of an already-applied change.
             write_guard: Required. Refuses each write command before it is sent. ``Server.get_client()``
                 passes the branch binding; a caller that passes another guard owns that choice.
+            on_write: Required. Called with the target family before and after each write command is sent,
+                also when the send fails, with ``configuration=False``; and before and after each live
+                configuration mutation with ``configuration=True``. ``Server.get_client()`` rotates the display
+                cache generations. A failure is logged and does not interrupt the write.
 
         Raises:
             ValueError: If only one of client_cert/client_key is provided.
@@ -884,8 +988,8 @@ class KeaClient:
         self.persist_config = persist_config
         self.send_service = send_service
         self.max_unpaged_leases = max_unpaged_leases
-        self._on_config_change = on_config_change
         self.write_guard = write_guard
+        self.on_write = on_write
 
         # command() passes these on each request, because requests lets the environment replace session values.
         self.verify: bool | str = True if verify is None else verify
@@ -940,12 +1044,18 @@ class KeaClient:
         if arguments is not None:
             body["arguments"] = arguments
 
+        if command.is_write:
+            self._notify_write(command, target, "before", configuration=False)
         try:
             resp = self._session.post(self.url, json=body, timeout=self.timeout, verify=self.verify, cert=self.cert)
         except requests.RequestException:
             raise
         except OSError as exc:
             raise KeaTLSFileError("A TLS CA, certificate or key file of the client could not be found.") from exc
+        finally:
+            # Kea can apply a write whose reply is lost, so a display read during the send must not stay cached.
+            if command.is_write:
+                self._notify_write(command, target, "after", configuration=False)
         resp.raise_for_status()
         try:
             resp_json = resp.json()
@@ -974,9 +1084,9 @@ class KeaClient:
         new.persist_config = self.persist_config
         new.send_service = self.send_service
         new.max_unpaged_leases = self.max_unpaged_leases
-        new._on_config_change = self._on_config_change
         # Thread-pool workers do not inherit context variables, so the clone keeps the branch binding.
         new.write_guard = self.write_guard
+        new.on_write = self.on_write
         return new
 
     def _refuse(self, command: KeaCommand) -> None:
@@ -984,25 +1094,24 @@ class KeaClient:
         if command.is_write:
             self.write_guard.refuse(f"Kea command {command.value}")
 
-    def _notify_config_change(self, family: Family) -> None:
-        """Notify the owner without interrupting persistence of a live change."""
-        if self._on_config_change is None:
-            return
+    def _notify_write(
+        self, command: KeaCommand, target: Family | None, when: Literal["before", "after"], *, configuration: bool
+    ) -> None:
+        """Tell the owner about a write command without interrupting it."""
         try:
-            self._on_config_change()
+            self.on_write(target, configuration=configuration)
         except Exception:
-            logger.exception("Configuration changed for DHCPv%s, but cache invalidation failed", family)
+            logger.exception("The display cache rotation %s Kea command %s failed", when, command.value)
 
     def _config_mutation_command(self, command: KeaCommand, family: Family, arguments: dict[str, Any]) -> None:
-        """Send one live configuration mutation between invalidation notifications, and require one success reply."""
+        """Send one live configuration mutation between configuration notifications, and require one success reply."""
         self._refuse(command)
-        self._notify_config_change(family)
+        self._notify_write(command, family, "before", configuration=True)
         try:
             response = self.command(command, family, arguments=arguments, check=None)
         finally:
-            # The response can be lost after Kea applies the command. Invalidate again
-            # so a read during the request cannot repopulate the active cache generation.
-            self._notify_config_change(family)
+            # Kea can apply a change whose reply is lost, so a read during the request must not stay cached.
+            self._notify_write(command, family, "after", configuration=True)
         _one_reply(command, family, response)
 
     def close(self) -> None:
@@ -1083,6 +1192,7 @@ class KeaClient:
         ):
             raise ValueError("max_raw_pages must be a positive integer.")
         source_index, from_index = _decode_reservation_cursor(cursor)
+        started = _now()
         hosts: list[dict[str, Any]] = []
         next_source, next_from = source_index, from_index
         seen_cursors = {(next_source, next_from)}
@@ -1121,7 +1231,7 @@ class KeaClient:
                 next_cursor = _encode_reservation_cursor(next_source, next_from)
                 break
             seen_cursors.add(candidate)
-        return _parse_reservation_page(hosts, version, catalogue, next_cursor)
+        return _parse_reservation_page(hosts, version, catalogue, next_cursor, read_started=started)
 
     def reservation_by_identity(
         self,
@@ -1239,9 +1349,10 @@ class KeaClient:
             raise ValueError(f"version must be 4 or 6, got {version!r}")
         if not isinstance(hostname, str) or not hostname:
             raise ValueError("hostname must be a non-empty string.")
+        started = _now()
         reply = self._one_command(KeaCommand.RESERVATION_GET_BY_HOSTNAME, version, {"hostname": hostname}, (0, 3))
         if reply["result"] == 3:
-            return _parse_reservation_page([], version, catalogue, None)
+            return _parse_reservation_page([], version, catalogue, None, read_started=started)
         arguments = reply.get("arguments")
         if not isinstance(arguments, dict):
             raise RuntimeError("reservation-get-by-hostname returned malformed arguments.")
@@ -1250,6 +1361,7 @@ class KeaClient:
             version,
             catalogue,
             None,
+            read_started=started,
             expected_hostname=hostname,
         )
 
@@ -1268,6 +1380,7 @@ class KeaClient:
         """
         if version not in (4, 6):
             raise ValueError(f"version must be 4 or 6, got {version!r}")
+        started = _now()
         records: list[Reservation] = []
         diagnostics: list[ReservationDiagnostic] = []
         cursor = None
@@ -1324,6 +1437,7 @@ class KeaClient:
             diagnostics=tuple(diagnostics),
             complete=not diagnostics,
             next_cursor=None,
+            read_started=started,
         )
 
     def _reservation_mutation_command(self, command: KeaCommand, version: Family, arguments: dict[str, Any]) -> None:
@@ -1887,6 +2001,46 @@ class KeaClient:
             for subnet_id, counts in _stat_lease_counts(command, reply, names).items()
         }
 
+    def daemon_status(self, target: Family | None) -> DaemonStatus:
+        """Read the ``status-get`` facts of the daemon of *target*, or of the Control Agent for ``None``.
+
+        The Control Agent must report a fact; a DHCP daemon can report none.
+
+        Raises:
+            KeaException: If Kea returns a failure result.
+            MalformedReply: If the reply or a fact is malformed.
+
+        """
+        command = KeaCommand.STATUS_GET
+        arguments = _status_arguments(command, self._one_command(command, target), filled=target is None)
+        return DaemonStatus(
+            pid=arguments.get("pid"),
+            uptime=_status_seconds(arguments, "uptime"),
+            reload=_status_seconds(arguments, "reload"),
+            high_availability=_high_availability(arguments),
+        )
+
+    def daemon_version(self, target: Family | None) -> DaemonVersion:
+        """Read the ``version-get`` facts of the daemon of *target*, or of the Control Agent for ``None``.
+
+        For a DHCP daemon any successful reply counts, because the combined status badge reads it to show that the
+        daemon is reachable. The Control Agent must report a fact. An extended version that is not text is unknown.
+
+        Raises:
+            KeaException: If Kea returns a failure result.
+            MalformedReply: If the reply is malformed, or the Control Agent reports no fact.
+
+        """
+        command = KeaCommand.VERSION_GET
+        reply = self._one_command(command, target)
+        if target is None:
+            arguments = _status_arguments(command, reply, filled=True)
+        else:
+            found = reply.get("arguments")
+            arguments = found if isinstance(found, dict) else {}
+        extended = arguments.get("extended")
+        return DaemonVersion(extended=extended if isinstance(extended, str) else None)
+
     def lease_get_page(
         self,
         version: Family,
@@ -2039,7 +2193,7 @@ class KeaClient:
     def _one_command(
         self,
         command: KeaCommand,
-        family: Family,
+        family: Family | None,
         arguments: dict[str, Any] | None = None,
         ok_codes: Sequence[int] = (0,),
     ) -> KeaResponse:
@@ -2185,7 +2339,7 @@ class KeaTLSFileError(requests.exceptions.RequestException):
 
 
 def _one_reply(
-    command: KeaCommand, family: Family, response: list[KeaResponse], ok_codes: Sequence[int] = (0,)
+    command: KeaCommand, family: Family | None, response: list[KeaResponse], ok_codes: Sequence[int] = (0,)
 ) -> KeaResponse:
     """Return the one reply of a single-service command, or raise when it is malformed or its result is not ok."""
     if (
@@ -2194,7 +2348,8 @@ def _one_reply(
         or not isinstance(response[0].get("result"), int)
         or isinstance(response[0].get("result"), bool)
     ):
-        raise MalformedReply(f"{command.value} did not return one valid result for dhcp{family}.")
+        service = "the Control Agent" if family is None else f"dhcp{family}"
+        raise MalformedReply(f"{command.value} did not return one valid result for {service}.")
     check_response(response, ok_codes)
     return response[0]
 

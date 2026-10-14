@@ -1531,6 +1531,7 @@ class ImportSummaryCompletenessTest(TestCase):
             diagnostics=diagnostics,
             complete=not diagnostics,
             next_cursor=None,
+            read_started=timezone.now(),
         )
 
     def _import(self, snapshot):

@@ -17,15 +17,20 @@ from urllib.parse import parse_qs, urlsplit
 import requests
 from bs4 import BeautifulSoup
 from django.apps import apps
+from django.contrib.messages import get_messages
+from django.db import connection
 from django.test import SimpleTestCase, TestCase
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
+from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.kea import KeaException
+from netbox_kea.models import DhcpIntegrationConfig, Server
 from netbox_kea.views import dhcp_plugin_sync as dps
 
 from .kea_stub import _res_page, _subnet_list, stub_kea
-from .utils import _make_db_server
+from .utils import _make_db_server, with_dhcp_integration_config
 
 DHCP_PLUGIN = "netbox_dhcp"
 
@@ -125,23 +130,29 @@ class ReadReservationObservationTest(TestCase):
         self.assertIsNone(snapshot)
 
 
-class TabVisibilityTest(TestCase):
-    """The DHCP-plugin tab hides itself unless the plugin is installed AND opted in."""
+class IntegrationRefusalTest(TestCase):
+    """One function decides whether the DHCP plugin integration runs for a Server, and says why not (ADR 0010)."""
 
-    def test_tab_hidden_when_plugin_unavailable(self):
-        server = _make_db_server(sync_dhcp_plugin_enabled=True)
-        with patch.object(dps.dhcp_plugin, "is_available", return_value=False, autospec=True):
-            self.assertFalse(dps._tab_enabled(server))
+    def _refusal(self, *, available=True, opted_in=True, switch=True) -> str:
+        server = _make_db_server(name=f"refusal-{available}-{opted_in}-{switch}", sync_dhcp_plugin_enabled=opted_in)
+        with (
+            with_dhcp_integration_config(enabled=switch),
+            patch.object(dhcp_plugin, "is_available", return_value=available, autospec=True),
+        ):
+            refusal = dhcp_plugin.integration_refusal(server)
+            self.assertIs(dhcp_plugin.runs_for(server), not refusal)
+        return refusal
 
-    def test_tab_hidden_when_not_opted_in(self):
+    def test_the_integration_runs_only_when_the_plugin_the_server_and_the_switch_allow_it(self):
+        self.assertEqual(self._refusal(), "")
+        self.assertIn("not installed", self._refusal(available=False))
+        self.assertIn("Enable 'Sync to DHCP plugin'", self._refusal(opted_in=False))
+        self.assertIn("DHCP Kea > Settings", self._refusal(switch=False))
+
+    def test_a_server_that_opts_out_costs_no_query(self):
         server = _make_db_server(sync_dhcp_plugin_enabled=False)
-        with patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True):
-            self.assertFalse(dps._tab_enabled(server))
-
-    def test_tab_shown_when_available_and_opted_in(self):
-        server = _make_db_server(sync_dhcp_plugin_enabled=True)
-        with patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True):
-            self.assertTrue(dps._tab_enabled(server))
+        with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True), self.assertNumQueries(0):
+            self.assertFalse(dhcp_plugin.runs_for(server))
 
 
 class SyncNowGuardTest(TestCase):
@@ -167,6 +178,42 @@ class SyncNowGuardTest(TestCase):
         with patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True):
             resp = self.client.post(self.url, follow=True)
         self.assertContains(resp, "Enable &#x27;Sync to DHCP plugin&#x27;")
+
+    @with_dhcp_integration_config(enabled=False)
+    def test_refuses_when_the_global_switch_is_off_and_reads_no_kea(self):
+        with patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True), stub_kea({}) as kea:
+            resp = self.client.post(self.url)
+
+        page_url = reverse("plugins:netbox_kea:server_dhcp_plugin", args=[self.server.pk])
+        self.assertRedirects(resp, page_url, fetch_redirect_response=False)
+        (message,) = get_messages(resp.wsgi_request)
+        self.assertIn("DHCP Kea > Settings", str(message))
+        self.assertEqual(kea.commands(), [])
+
+    def _refused_page(self) -> tuple[BeautifulSoup, list[str]]:
+        """GET the DHCP Plugin page with the plugin installed; return the page and the Kea commands it sent."""
+        page_url = reverse("plugins:netbox_kea:server_dhcp_plugin", args=[self.server.pk])
+        with patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True), stub_kea({}) as kea:
+            resp = self.client.get(page_url)
+        self.assertEqual(resp.status_code, 200)
+        return BeautifulSoup(resp.content, "html.parser"), kea.commands()
+
+    def _assert_refused(self, page: BeautifulSoup, commands: list[str], reason: str) -> None:
+        self.assertEqual(commands, [])
+        self.assertIsNone(page.select_one(f'form[action="{self.url}"]'))
+        self.assertNotIn("Sync to DHCP plugin now", page.get_text())
+        self.assertNotIn("Drift", page.get_text())
+        (alert,) = page.select(".page-body .alert-warning")
+        self.assertIn(reason, alert.get_text())
+
+    @with_dhcp_integration_config(enabled=False)
+    def test_the_page_reads_no_kea_and_shows_the_refusal_when_the_global_switch_is_off(self):
+        self._assert_refused(*self._refused_page(), "DHCP Kea > Settings")
+
+    def test_the_page_reads_no_kea_and_shows_the_refusal_when_the_server_opts_out(self):
+        Server.objects.filter(pk=self.server.pk).update(sync_dhcp_plugin_enabled=False)
+
+        self._assert_refused(*self._refused_page(), "Enable 'Sync to DHCP plugin' on this server first.")
 
 
 class SyncNowEndToEndTest(TestCase):
@@ -289,6 +336,14 @@ class SyncNowEndToEndTest(TestCase):
         )
         self.assertEqual(parse_qs(urlsplit(subsections[0]["href"]).query)["family"], ["4"])
         self.assertNotIn("DHCP Plugin", page.select_one('[aria-label="Server object tabs"]').get_text())
+
+    def test_the_page_reads_the_integration_switch_once(self):
+        conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]}}
+        table = DhcpIntegrationConfig._meta.db_table
+        with stub_kea(_sync_responses(conf)), CaptureQueriesContext(connection) as queries:
+            resp = self.client.get(reverse("plugins:netbox_kea:server_dhcp_plugin", args=[self.server.pk]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(sum(f'"{table}"' in query["sql"] for query in queries.captured_queries), 1)
 
     def test_import_mapping_notes_start_collapsed_behind_a_toggle(self):
         conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]}}

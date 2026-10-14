@@ -46,7 +46,7 @@ from utilities.exceptions import AbortRequest
 
 from netbox_kea.integrations.dhcp_plugin import import_server_config
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
-from netbox_kea.models import KeaDhcpLink
+from netbox_kea.models import KeaDhcpLink, Server
 from netbox_kea.tests.kea_stub import _res_page, stub_kea
 from netbox_kea.tests.test_branching import (
     _KEA_OBJECTS,
@@ -858,6 +858,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
 
     def test_old_branch_tab_explains_the_fresh_mapping_schema(self):
         server, _, _, target, link = self._imported("subnet", 4, "old-tab")
+        Server.objects.filter(pk=server.pk).update(sync_dhcp_plugin_enabled=True)
         branch = _provisioned_branch(self, "mapping-old-tab")
         with connection.cursor() as cursor:
             cursor.execute('DROP TABLE IF EXISTS "' + branch.schema_name + '"."' + KeaDhcpLink._meta.db_table + '"')
@@ -879,6 +880,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         from netbox_kea.dhcp_mapping_lifecycle import target_models
 
         server, _, _, _, _ = self._imported("subnet", 4, "fresh-tab")
+        Server.objects.filter(pk=server.pk).update(sync_dhcp_plugin_enabled=True)
         branch = _provisioned_branch(self, "mapping-fresh-tab")
         self.client.force_login(self.user)
         self.client.cookies[COOKIE_NAME] = branch.schema_id

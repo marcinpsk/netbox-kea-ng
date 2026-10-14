@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from .conftest import NoBranchGuard
+from .conftest import NoBranchGuard, no_display_cache
 from .kea import KeaClient, KeaCommand
 
 _RECORDINGS = Path(__file__).resolve().parents[1] / "netbox_kea" / "tests" / "kea_recordings"
@@ -17,7 +17,11 @@ _RECORDINGS = Path(__file__).resolve().parents[1] / "netbox_kea" / "tests" / "ke
 def test_the_harness_kea_lists_the_recorded_commands(family: int, kea_control_urls: dict[int, str]) -> None:
     recorded = json.loads((_RECORDINGS / f"dhcp{family}.json").read_text())["list-commands"]["arguments"]
     with KeaClient(
-        kea_control_urls[family], timeout=30, max_unpaged_leases=1000, write_guard=NoBranchGuard()
+        kea_control_urls[family],
+        timeout=30,
+        max_unpaged_leases=1000,
+        write_guard=NoBranchGuard(),
+        on_write=no_display_cache,
     ) as client:
         (reply,) = client.command(KeaCommand.LIST_COMMANDS, family)
     live = set(reply["arguments"])

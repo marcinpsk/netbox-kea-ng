@@ -43,11 +43,16 @@ def _settings_item(section: SettingsSection) -> PluginMenuItem:
     return item
 
 
+def _settings_items() -> tuple[PluginMenuItem, ...]:
+    """Return one item for each available section. NetBox builds the menu once, after the app registry is ready."""
+    return tuple(_settings_item(section) for section in SECTIONS if section.available())
+
+
 # Top-level menu: surfaces a dedicated "DHCP Kea" section in the NetBox sidebar
 # instead of nesting under the generic "Plugins" group. NetBox renders a
 # ``menu`` (PluginMenu) in preference to ``menu_items`` when both are present.
 menu = PluginMenu(
     label="DHCP Kea",
     icon_class="mdi mdi-server-network",
-    groups=(("Management", _items), ("Settings", tuple(_settings_item(section) for section in SECTIONS))),
+    groups=(("Management", _items), ("Settings", _settings_items())),
 )

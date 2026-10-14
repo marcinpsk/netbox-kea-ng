@@ -33,7 +33,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _make_db_server, _ViewTestBase, with_kea_client_config
+from .utils import _make_db_server, _ViewTestBase, with_display_cache_config, with_kea_client_config
 
 # ---------------------------------------------------------------------------
 # Lease Server chooser
@@ -960,6 +960,45 @@ class TestCombinedReservationFanOut(_ViewTestBase):
 
         # A worker that read the row itself would open a connection and miss the uncommitted test value.
         self.assertEqual(read.results, [(self.server, (7, 250, True))])
+
+    @with_display_cache_config(configuration_ttl=0)
+    def test_a_worker_reads_the_display_cache_ttl_from_the_request_read_of_the_settings_row(self):
+        from django.db import connection
+
+        from netbox_kea import server_configuration
+        from netbox_kea.views.fan_out import fan_out
+
+        def fetch(server):
+            for _ in range(2):
+                server_configuration.display(server, 4)
+            return connection.connection is None
+
+        with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": {}}}}) as kea:
+            read = fan_out([self.server], "configuration", fetch)
+
+        # A worker that read the row itself would open a connection and cache with the committed TTL.
+        self.assertEqual(read.results, [(self.server, True)])
+        self.assertEqual(kea.commands(), ["config-get", "config-get"])
+
+    def test_a_worker_that_reads_an_unpinned_settings_row_fails_loudly(self):
+        from netbox_kea.models import SyncConfig
+        from netbox_kea.views.fan_out import fan_out
+
+        # A worker that read the row would open its own database connection.
+        with self.assertRaisesMessage(RuntimeError, "SyncConfig"):
+            fan_out([self.server], "configuration", lambda server: SyncConfig.get())
+
+    @with_kea_client_config(kea_timeout=7)
+    def test_the_request_thread_reads_the_live_row_after_a_fan_out(self):
+        from netbox_kea.models import KeaClientConfig
+        from netbox_kea.views.fan_out import fan_out
+
+        read = fan_out([self.server], "configuration", lambda server: server.get_client(4).timeout)
+        KeaClientConfig.objects.filter(pk=1).update(kea_timeout=9)
+
+        self.assertEqual(read.results, [(self.server, 7)])
+        self.assertEqual(KeaClientConfig.get().kea_timeout, 9)
+        self.assertEqual(self.server.get_client(4).timeout, 9)
 
     def test_a_server_that_cannot_be_reached_gets_no_capability_read(self):
         # A second read of an unreachable Server only adds its timeout to the page.

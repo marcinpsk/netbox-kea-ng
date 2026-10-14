@@ -17,38 +17,44 @@ from .. import forms, server_configuration, tables
 from ..constants import Family
 from ..dhcp_options import DHCPOption, option_name
 from ..filtersets import ServerFilterSet
-from ..kea import KeaClient, KeaCommand, KeaException, KeaResponse
+from ..kea import DaemonStatus, DaemonVersion, KeaException
 from ..models import Server
 from ..server_connection import connection_values, validate_connection_change
 from ..utilities import (
     format_duration,
 )
-from ._base import _safe_return_url
+from ._base import LazyClient, _safe_return_url, daemon_status, daemon_version
 from .notices import Notice, inline_notices, notice
 from .workspace import ServerFamilyMixin, server_context, with_return_url
 
 logger = logging.getLogger(__name__)
 
 
-def _response_arguments(response: list[KeaResponse], command: str, *, require_nonempty: bool = False) -> dict:
-    """Return one validated Kea arguments mapping."""
-    arguments = response[0].get("arguments")
-    if not isinstance(arguments, dict) or (require_nonempty and not arguments):
-        raise RuntimeError(f"Kea {command} returned invalid arguments")
-    return arguments
-
-
-def _status_duration(arguments: dict[str, Any], field: str) -> str:
-    """Format one non-negative integer duration from a Kea status response."""
-    if field not in arguments:
-        return ""
-    value = arguments[field]
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise RuntimeError(f"Kea status-get returned an invalid {field}")
-    formatted = format_duration(value)
-    if formatted is None:
-        raise RuntimeError(f"Kea status-get could not format {field}")
-    return formatted
+def _status_rows(status: DaemonStatus, version: DaemonVersion) -> dict[str, Any]:
+    """Return the rows that the Overview shows for the status and version facts of one daemon."""
+    rows: dict[str, Any] = {
+        "PID": status.pid,
+        "Uptime": format_duration(status.uptime) or "",
+        "Time since reload": format_duration(status.reload) or "",
+        "Version": version.extended or "unknown",
+    }
+    if (ha := status.high_availability) is not None:
+        rows.update(
+            {
+                "HA mode": ha.mode,
+                "HA local role": ha.local_role,
+                "HA local state": ha.local_state,
+                "HA remote connection interrupted": str(ha.remote_connection_interrupted),
+                "HA remote age (seconds)": ha.remote_age,
+                "HA remote role": ha.remote_role,
+                "HA remote last state": ha.remote_last_state,
+                "HA remote in touch": ha.remote_in_touch,
+                "HA remote unacked clients": ha.remote_unacked_clients,
+                "HA remote unacked clients left": ha.remote_unacked_clients_left,
+                "HA remote connecting clients": ha.remote_connecting_clients,
+            }
+        )
+    return rows
 
 
 @dataclass(frozen=True)
@@ -197,109 +203,30 @@ class ServerStatusView(generic.ObjectView):
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_status.html"
 
-    def _get_ca_status(self, client: KeaClient) -> dict[str, Any]:
-        """Get the control agent status."""
-        status = client.command(KeaCommand.STATUS_GET, None)
-        args = _response_arguments(status, "status-get", require_nonempty=True)
-
-        version = client.command(KeaCommand.VERSION_GET, None)
-        version_args = _response_arguments(version, "version-get", require_nonempty=True)
-
-        return {
-            "PID": args.get("pid"),
-            "Uptime": _status_duration(args, "uptime"),
-            "Time since reload": _status_duration(args, "reload"),
-            "Version": version_args.get("extended", "unknown"),
-        }
-
-    def _get_dhcp_status(self, server: Server) -> dict[str, dict[str, Any]]:
-        """Return status dicts for each enabled DHCP service, keyed by human-readable name.
-
-        Each service is queried via its own protocol-aware client, so separate DHCPv4/v6
-        daemon URLs are handled correctly without requiring a Control Agent.
-        """
-        resp: dict[str, dict[str, Any]] = {}
-        service_names = {"dhcp6": "DHCPv6", "dhcp4": "DHCPv4"}
-        services: list[tuple[str, Family]] = []
-        if server.dhcp6:
-            services.append(("dhcp6", 6))
-        if server.dhcp4:
-            services.append(("dhcp4", 4))
-
-        for svc, version in services:
-            try:
-                svc_client = server.get_client(version=version)
-                status = svc_client.command(KeaCommand.STATUS_GET, version)
-                version_resp = svc_client.command(KeaCommand.VERSION_GET, version)
-
-                args = _response_arguments(status, f"status-get for service {svc}")
-                version_args = _response_arguments(version_resp, f"version-get for service {svc}")
-
-                entry: dict[str, Any] = {
-                    "PID": args.get("pid"),
-                    "Uptime": _status_duration(args, "uptime"),
-                    "Time since reload": _status_duration(args, "reload"),
-                    "Version": version_args.get("extended"),
-                }
-
-                if (
-                    (ha := args.get("high-availability"))
-                    and isinstance(ha, list)
-                    and len(ha) > 0
-                    and isinstance(ha[0], dict)
-                ):
-                    # https://kea.readthedocs.io/en/latest/arm/hooks.html#load-balancing-configuration
-                    # Note that while the top-level parameter high-availability is a list,
-                    # only a single entry is currently supported.
-                    ha_servers = ha[0].get("ha-servers") or {}
-                    if not isinstance(ha_servers, dict):
-                        ha_servers = {}
-                    ha_local = ha_servers.get("local")
-                    ha_remote = ha_servers.get("remote")
-                    if not isinstance(ha_local, dict):
-                        ha_local = {}
-                    if not isinstance(ha_remote, dict):
-                        ha_remote = {}
-                    entry.update(
-                        {
-                            "HA mode": ha[0].get("ha-mode"),
-                            "HA local role": ha_local.get("role"),
-                            "HA local state": ha_local.get("state"),
-                            "HA remote connection interrupted": str(ha_remote.get("connection-interrupted")),
-                            "HA remote age (seconds)": ha_remote.get("age"),
-                            "HA remote role": ha_remote.get("role"),
-                            "HA remote last state": ha_remote.get("last-state"),
-                            "HA remote in touch": ha_remote.get("in-touch"),
-                            "HA remote unacked clients": ha_remote.get("unacked-clients"),
-                            "HA remote unacked clients left": ha_remote.get("unacked-clients-left"),
-                            "HA remote connecting clients": ha_remote.get("connecting-clients"),
-                        }
-                    )
-                resp[service_names[svc]] = entry
-            except (KeaException, requests.RequestException, ValueError, RuntimeError):  # noqa: PERF203
-                logger.exception("Failed to fetch status for DHCP service %s on server %s", svc, server.pk)
-        return resp
-
     def _get_statuses(self, server: Server) -> dict[str, dict[str, Any]]:
-        """Return combined status dicts for CA (when present) and all enabled DHCP services."""
-        result: dict[str, dict[str, Any]] = {}
+        """Return the status rows of the Control Agent (when present) and of each enabled DHCP service.
+
+        A daemon that cannot be read is logged and left out, so the page still renders.
+        """
+        targets: list[tuple[str, Family | None]] = []
         if server.has_control_agent:
+            targets.append(("Control Agent", None))
+        if server.dhcp6:
+            targets.append(("DHCPv6", 6))
+        if server.dhcp4:
+            targets.append(("DHCPv4", 4))
+        result: dict[str, dict[str, Any]] = {}
+        for name, target in targets:
             try:
-                # Control Agent is version-agnostic (top-level CA endpoint, not dhcp4/dhcp6).
-                ca_client = server.get_client()  # nosemgrep: kea-get-client-missing-version
-                result["Control Agent"] = self._get_ca_status(ca_client)
-            except (KeaException, requests.RequestException, ValueError, RuntimeError):
-                logger.exception("Failed to fetch Control Agent status for server %s", server.pk)
-        result.update(self._get_dhcp_status(server))
+                with LazyClient(server, target) as client:
+                    result[name] = _status_rows(daemon_status(client), daemon_version(client))
+            except (KeaException, requests.RequestException, ValueError, RuntimeError):  # noqa: PERF203
+                logger.exception("Failed to fetch the %s status of server %s", name, server.pk)
         return result
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
-        """Fetch live status and global options from Kea and expose them to the template."""
-        try:
-            statuses = self._get_statuses(instance)
-        except (KeaException, requests.RequestException, ValueError, RuntimeError):
-            logger.exception("Failed to fetch statuses for server %s", instance.pk)
-            statuses = {}
+        """Fetch the status, through the display cache, and the global options, and expose them to the template."""
+        statuses = self._get_statuses(instance)
 
         service_urls: dict[str, dict[str, str]] = {}
         if instance.dhcp4:
