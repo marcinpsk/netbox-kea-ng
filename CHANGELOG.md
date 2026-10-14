@@ -13,6 +13,220 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.4.0 (2026-10-13)
+
+### Bug Fixes
+
+- **fan-out**: Read the Kea client settings once on the request thread
+  ([`f572ee1`](https://github.com/marcinpsk/netbox-kea-ng/commit/f572ee1d1d837fd77a0ce76d5c047479d203e0a9))
+
+- **settings**: Check the 0018 switches and keep each test's settings
+  ([`4f5f7cf`](https://github.com/marcinpsk/netbox-kea-ng/commit/4f5f7cf37898ebb9bbef6538d15914be62deda06))
+
+### Documentation
+
+- **settings**: Name the Settings page as the home of every runtime setting
+  ([`3f75f58`](https://github.com/marcinpsk/netbox-kea-ng/commit/3f75f58c689a170aced262257b72783ff75e5558))
+
+### Features
+
+- **settings**: Move the PLUGINS_CONFIG runtime keys into Settings singletons
+  ([`d5777d6`](https://github.com/marcinpsk/netbox-kea-ng/commit/d5777d6167599e243276988625e69499332b2310))
+
+
+## v3.3.0 (2026-10-13)
+
+### Bug Fixes
+
+- **api**: Give KeaDhcpLink a brief serializer for the change log API
+  ([`6945ff8`](https://github.com/marcinpsk/netbox-kea-ng/commit/6945ff84e39e201ca806c4d5ba063296f306e6f8))
+
+- **cache**: Key display Snapshots by the Server connection settings
+  ([`df270bf`](https://github.com/marcinpsk/netbox-kea-ng/commit/df270bfbb1d9010fa52ca4146c90263918ec3ecc))
+
+- **catalogue**: Treat a CIDR or address as absent only when both sources agree
+  ([`a1640c2`](https://github.com/marcinpsk/netbox-kea-ng/commit/a1640c2e66599d28367adb7e9120491b553cd83a))
+
+- **reservations**: Match a hook by its library name, not by its path
+  ([`0d96d0b`](https://github.com/marcinpsk/netbox-kea-ng/commit/0d96d0b5867ce31aa65fe79ca0cebd2681cbc10d))
+
+### Documentation
+
+- **settings**: Clarify that saving Sync Configuration requires view and change permissions
+  ([`e84146b`](https://github.com/marcinpsk/netbox-kea-ng/commit/e84146bdfa439d55a6a4ce2c049cb778f78ba450))
+
+### Features
+
+- **settings**: Add a Settings page with the change-logged SyncConfig form
+  ([`f90bbc0`](https://github.com/marcinpsk/netbox-kea-ng/commit/f90bbc032a2a3634e92d4bb6cc82cd82e2158d6b))
+
+### Refactoring
+
+- **config**: Read Reservation capabilities and the Lease search Subnet through one config-get
+  authority
+  ([`649252e`](https://github.com/marcinpsk/netbox-kea-ng/commit/649252eb4a7d163870fc1b70fb3045ebb1bf8ad7))
+
+### Testing
+
+- **cache**: Cover the display cache after a Server change through each path
+  ([`713d263`](https://github.com/marcinpsk/netbox-kea-ng/commit/713d2631342c4caabf2c8b1c6f715a6c8a83e1f7))
+
+- **settings**: Require the Settings menu item for a viewer of any section
+  ([`866d3d1`](https://github.com/marcinpsk/netbox-kea-ng/commit/866d3d183d2eabc9e625ec272d4d06b0fbac8d08))
+
+
+## v3.2.0 (2026-10-12)
+
+### Bug Fixes
+
+- Keep a one-Server export on the combined view
+  ([`12f30c9`](https://github.com/marcinpsk/netbox-kea-ng/commit/12f30c913f77befccb82cace00899a64bfe10b95))
+
+- Keep an empty Server selection explicit and keep the section filters on Apply
+  ([`dfeda9a`](https://github.com/marcinpsk/netbox-kea-ng/commit/dfeda9a1535d4ababfb77058be071af1d2e9b4ba))
+
+- Let the Server selector apply several Servers and keep exports on redirect
+  ([`ed1d9d2`](https://github.com/marcinpsk/netbox-kea-ng/commit/ed1d9d2a007bbf5f16e400bba24991a6950b38d3))
+
+- Read the last value of a repeated lease search field on the chooser
+  ([`5601edc`](https://github.com/marcinpsk/netbox-kea-ng/commit/5601edc83e62b84eb8b8b94eeacc25b1f3dd3e10))
+
+- Refuse a combined export when a selected Server lacks the family
+  ([`3f0d72b`](https://github.com/marcinpsk/netbox-kea-ng/commit/3f0d72b3b3fbb75cc3befbecfdf3d0b012e647d0))
+
+- Stack the invalid Server selection text in its alert
+  ([`210a938`](https://github.com/marcinpsk/netbox-kea-ng/commit/210a938917bb398d15d0199a0336afb5bcea2e22))
+
+- **ci**: Collect plugin static files in the integration harness
+  ([`2af6927`](https://github.com/marcinpsk/netbox-kea-ng/commit/2af69270527f93e3c313f556808e2317eb85295b))
+
+- **types**: Annotate the shared Reservation form helpers
+  ([`f6859fa`](https://github.com/marcinpsk/netbox-kea-ng/commit/f6859fa08e63229424ced7bc2a384070eb50449f))
+
+- **ui**: Build export refusal redirects from named routes
+  ([`39baf6b`](https://github.com/marcinpsk/netbox-kea-ng/commit/39baf6bf03e08e07703534003840cc3293b7614f))
+
+- **ui**: Disable the lease Search value during an Attribute change
+  ([`f86d1a9`](https://github.com/marcinpsk/netbox-kea-ng/commit/f86d1a93e1d574a17db190b06ff0a9177f93274b))
+
+- **ui**: Drop the CIDR example from the Subnet dropdown help
+  ([`9339124`](https://github.com/marcinpsk/netbox-kea-ng/commit/93391245705adfdbb79085ac7b41cfcc526d40f0))
+
+- **ui**: Keep exhausted Servers in the All Servers Subnet ID choices
+  ([`0baab1c`](https://github.com/marcinpsk/netbox-kea-ng/commit/0baab1ccebcdb79bb4f5fa321b0be88b7b4b7634))
+
+- **ui**: Keep Lease search controls stable during submit
+  ([`99c500c`](https://github.com/marcinpsk/netbox-kea-ng/commit/99c500c76b803fd460f150140e7bae3edfd80235))
+
+- **ui**: Keep the URL when a lease search does not change it
+  ([`0de0f5f`](https://github.com/marcinpsk/netbox-kea-ng/commit/0de0f5f35a22784c93013826788280377c58c28d))
+
+- **ui**: Label unlisted Subnets "not listed" and show Catalogue warnings
+  ([`c1d7f4c`](https://github.com/marcinpsk/netbox-kea-ng/commit/c1d7f4ca5eecd0e53c8afad32cb3f958a5babfe8))
+
+- **ui**: Move the Add Lease IPAM sync notice into the checkbox help
+  ([`0994ab2`](https://github.com/marcinpsk/netbox-kea-ng/commit/0994ab28870429129408d9e283e6b1fd2604c91a))
+
+- **ui**: Report a failed Catalogue in the All Servers Subnet ID choices
+  ([`298afd1`](https://github.com/marcinpsk/netbox-kea-ng/commit/298afd1714458c8eaa6ef2a43dadde85f5d1a12d))
+
+- **ui**: Show the code markup in the Subnet edit help
+  ([`9985c54`](https://github.com/marcinpsk/netbox-kea-ng/commit/9985c540a29daf73538f1ec3a6722d2d72182c13))
+
+- **ui**: Space the Recent Runs header link with flex
+  ([`05a7bfb`](https://github.com/marcinpsk/netbox-kea-ng/commit/05a7bfbad686be0670849695037a58099fecaee6))
+
+- **ui**: Wrap card header badges below the title on narrow screens
+  ([`ac003c5`](https://github.com/marcinpsk/netbox-kea-ng/commit/ac003c573459a2244048e17651e9a65233ebaea4))
+
+- **ui**: Wrap long Server names in the workspace
+  ([`8d59694`](https://github.com/marcinpsk/netbox-kea-ng/commit/8d596943c8dc318513c33f2b4d1886cb9d6b1e2c))
+
+- **workspace**: Keep the origin on Overview status controls
+  ([`218e3fa`](https://github.com/marcinpsk/netbox-kea-ng/commit/218e3fadabb63898f5cd84c72dd3d1579d8783d9))
+
+- **workspace**: Preserve chooser origin and align CI guards
+  ([`3ce1a4e`](https://github.com/marcinpsk/netbox-kea-ng/commit/3ce1a4e1ab2ff922c9aff6814603ff9e0a5709b2))
+
+- **workspace**: Retain list queries in row action returns
+  ([`80bae63`](https://github.com/marcinpsk/netbox-kea-ng/commit/80bae639f5e1f5428be1fa67f41fed7afd093868))
+
+### Documentation
+
+- Drop remote-id from the Reservation identifier types
+  ([`1c14f61`](https://github.com/marcinpsk/netbox-kea-ng/commit/1c14f61e1dd1dbd6dbdd29972a205d7d929f84bb))
+
+- **adr**: Cache display reads and move runtime settings to the database
+  ([`568d6e0`](https://github.com/marcinpsk/netbox-kea-ng/commit/568d6e0950693e6ca243fe04817f43480462c647))
+
+- **adr**: Say that a stale entry shows until the first read after its TTL
+  ([`7c46dad`](https://github.com/marcinpsk/netbox-kea-ng/commit/7c46dad98cb11f8d0ae9c6d4c9a657f9c4e2ed19))
+
+### Features
+
+- Add the shared combined workspace shell
+  ([`6a6b2f4`](https://github.com/marcinpsk/netbox-kea-ng/commit/6a6b2f48c2c77dc60392fce92f811d5fc429adb9))
+
+- Replace the combined lease search with a Server chooser
+  ([`5c56aef`](https://github.com/marcinpsk/netbox-kea-ng/commit/5c56aefbf24e48fed3aa9526809e080044ca9876))
+
+- Resolve the Server Scope of combined pages in one place
+  ([`5f15d56`](https://github.com/marcinpsk/netbox-kea-ng/commit/5f15d561ee7f0ffe3d0d2cfab6a4ec89cea36011))
+
+- **ui**: Collapse the DHCP plugin import mapping notes
+  ([`ecee678`](https://github.com/marcinpsk/netbox-kea-ng/commit/ecee67850f4661ff9c6f15fc4447f259aba5e4a1))
+
+- **ui**: Keep workspace state when switching Servers
+  ([`ebdd444`](https://github.com/marcinpsk/netbox-kea-ng/commit/ebdd44409ec70722da0ffbaef413e67b2fe6c40b))
+
+- **ui**: Move DHCP Plugin under Sync and native tabs into the main row
+  ([`ea0de93`](https://github.com/marcinpsk/netbox-kea-ng/commit/ea0de93d8d00f5e4832c2990aa048459162727b6))
+
+- **ui**: Offer Subnet dropdowns and move Reservation form notes into help
+  ([`2b29811`](https://github.com/marcinpsk/netbox-kea-ng/commit/2b29811a5bc8f3e3d2ab7a3670d3bf2981e0927f))
+
+- **ui**: Retain workspace return paths
+  ([`e43e56b`](https://github.com/marcinpsk/netbox-kea-ng/commit/e43e56bbbda265b5e6b044c5d510f47a34c74139))
+
+- **ui**: Unify Server workspace navigation
+  ([`0700979`](https://github.com/marcinpsk/netbox-kea-ng/commit/0700979608c167564eadf7e9b3640e804481655c))
+
+### Testing
+
+- Export one Server from the combined views again
+  ([`048415b`](https://github.com/marcinpsk/netbox-kea-ng/commit/048415b499f0d0e7953c612bdc2251b13e39777b))
+
+- Verify chooser filters and local export redirects
+  ([`980f648`](https://github.com/marcinpsk/netbox-kea-ng/commit/980f6486bc19417be69eca432c452c6b72fa971b))
+
+- **ui**: Assert that page 2 sends no Reservation read to an exhausted Server
+  ([`4be1934`](https://github.com/marcinpsk/netbox-kea-ng/commit/4be1934bc35a1fe9b62402e81f6abb3bb37b2eb9))
+
+- **ui**: Make two browser tests pass on NetBox 4.3 and after a filtered pick
+  ([`9ffc7c2`](https://github.com/marcinpsk/netbox-kea-ng/commit/9ffc7c261384e03b5dad60107e6b2e42f0bfbbed))
+
+- **ui**: Match the subnet delete link by its path
+  ([`de4586f`](https://github.com/marcinpsk/netbox-kea-ng/commit/de4586f86d008bc727d601054a08d000cccd3808))
+
+
+## v3.1.2 (2026-10-11)
+
+### Bug Fixes
+
+- Name client settings errors on Reservation forms
+  ([`d33560c`](https://github.com/marcinpsk/netbox-kea-ng/commit/d33560c607680c0a212a4f76c6f288d7394cdf23))
+
+### Continuous Integration
+
+- Skip the Release run that the release commit starts
+  ([`9e08841`](https://github.com/marcinpsk/netbox-kea-ng/commit/9e088416281740174871f2d54b184de921928d66))
+
+### Documentation
+
+- Play each recording when the reader scrolls to it
+  ([`91757fc`](https://github.com/marcinpsk/netbox-kea-ng/commit/91757fc9dedac71afb8e940ce5fb1239cc6bdfb7))
+
+
 ## v3.1.1 (2026-10-11)
 
 ### Bug Fixes
