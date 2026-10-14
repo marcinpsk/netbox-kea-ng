@@ -524,6 +524,36 @@ class TestWorkspaceTabRow(_ViewTestBase):
         self.assertEqual([a.get_text() for a in current], ["Sync"])
         self.assertIn("is not installed", page.get_text())
 
+    def test_every_tab_row_carries_the_active_tab_style_and_marks_one_tab_current(self):
+        routes = (
+            ("server", "Overview"),
+            ("server_subnets4", "Subnets"),
+            ("server_shared_networks4", "Shared Networks"),
+            ("server_dhcp4_options_edit", "Server Options"),
+            ("server_option_def4", "Option Definitions"),
+            ("server_journal", "Journal"),
+            ("server_edit", "Edit"),
+        )
+        replies = {
+            **_catalogue_responses_for_subnets(4, []),
+            "stat-lease4-get": {"result": 2, "text": "unknown command"},
+        }
+        for route, label in routes:
+            with self.subTest(route=route), stub_kea(replies):
+                response = self.client.get(reverse(f"plugins:netbox_kea:{route}", args=[self.server.pk]))
+                self.assertEqual(response.status_code, 200)
+                rows = BeautifulSoup(response.content, "html.parser").select(".nav-tabs")
+                self.assertTrue(rows)
+                active = []
+                for row in rows:
+                    self.assertIn("kea-tabs", row["class"])
+                    for link in row.select(".nav-link.active"):
+                        # The edit form tab is a Bootstrap tab button, which marks itself with aria-selected.
+                        marked = link.get("aria-current") == "page" or link.get("aria-selected") == "true"
+                        self.assertTrue(marked, link)
+                        active.append(link.get_text(" ", strip=True))
+                self.assertTrue(any(text.startswith(label) for text in active), active)
+
     def test_the_recent_runs_header_spaces_its_link_with_flex(self):
         header = next(
             h
