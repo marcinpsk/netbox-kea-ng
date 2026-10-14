@@ -447,8 +447,6 @@ class LeaseBadgeCacheTest(_LeaseCacheBase):
             command for sent in sessions.commands.values() for command in sent if command.startswith("lease4-")
         ]
         self.assertEqual(len(lease_commands), 5, "four Subnets and one Global identity")
-        # A worker thread reads each of its lookups through one session, so the count depends on the schedule.
-        self.assertTrue(1 <= len(sessions.sending("lease4-")) <= 5)
         self.assertEqual(sessions.open_sessions("lease4-"), [])
 
     def test_a_reservations_refresh_rereads_the_lease_badges_of_its_rows(self):

@@ -364,7 +364,8 @@ class LeasePresenceLookupTest(_ViewTestBase):
         self.assertEqual(presences, (LeaseAbsent(),))
 
     def test_each_worker_thread_builds_one_client_and_the_pool_closes_each(self) -> None:
-        subnet_ids = range(20, 44)
+        # Twice as many lookups as workers, so each worker reads two of them.
+        subnet_ids = range(20, 40)
         reservations = [
             {
                 "subnet-id": subnet_id,
@@ -373,23 +374,29 @@ class LeasePresenceLookupTest(_ViewTestBase):
             }
             for subnet_id in subnet_ids
         ]
-        built: list[tuple[int, KeaClient]] = []
+        owners: dict[int, int] = {}
+        built: list[KeaClient] = []
         closed: list[KeaClient] = []
-        senders: set[int] = set()
+        sent: list[tuple[int, int]] = []
+        # Each lookup waits until ten lookups run at once, so the pool runs all ten workers.
+        all_workers = threading.Barrier(10, timeout=10)
         respond = _leases_per_subnet({})
 
         def leases(body):
-            senders.add(threading.get_ident())
-            # Each lookup waits a little, so the pool runs several worker threads at once.
-            time.sleep(0.01)
+            all_workers.wait()
             return respond(body)
 
-        real_get_client, real_close = Server.get_client, KeaClient.close
+        real_get_client, real_command, real_close = Server.get_client, KeaClient.command, KeaClient.close
 
         def get_client(server, **kwargs):
             client = real_get_client(server, **kwargs)
-            built.append((threading.get_ident(), client))
+            owners[id(client)] = threading.get_ident()
+            built.append(client)
             return client
+
+        def command(client, *args, **kwargs):
+            sent.append((id(client), threading.get_ident()))
+            return real_command(client, *args, **kwargs)
 
         def close(client):
             real_close(client)
@@ -398,6 +405,7 @@ class LeasePresenceLookupTest(_ViewTestBase):
         with (
             stub_kea({"lease4-get-by-state": leases}),
             patch.object(Server, "get_client", autospec=True, side_effect=get_client),
+            patch.object(KeaClient, "command", autospec=True, side_effect=command),
             patch.object(KeaClient, "close", autospec=True, side_effect=close),
         ):
             presences = lease_presence(
@@ -405,9 +413,8 @@ class LeasePresenceLookupTest(_ViewTestBase):
             )
 
         self.assertEqual(presences, (LeaseAbsent(),) * len(subnet_ids))
-        threads = [thread for thread, _client in built]
-        self.assertLessEqual(len(threads), 10)
-        self.assertEqual(len(threads), len(set(threads)), "a worker thread built a second client")
-        self.assertGreater(len(senders), 1)
-        self.assertEqual(set(threads), senders, "each sending thread uses the client that it built")
-        self.assertCountEqual([id(client) for client in closed], [id(client) for _thread, client in built])
+        self.assertEqual(len(built), 10, "one client for each of the ten worker threads")
+        self.assertEqual(len(set(owners.values())), 10)
+        self.assertEqual(len(sent), len(subnet_ids))
+        self.assertTrue(all(owners[client] == thread for client, thread in sent), "a thread used another's client")
+        self.assertCountEqual([id(client) for client in closed], [id(client) for client in built])
