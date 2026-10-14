@@ -216,6 +216,7 @@ URL request
   → config_write.py     (Configuration Changes: typed outcome, advisory lock, persist step)
   → kea.py              (HTTP POST to each daemon's / control socket)
   → display_cache.py    (the display cache: keys, generations, TTLs, admission; ADR 0009)
+  → lease_reservation_reads.py (Current Lease Presence of Reservation rows: cached Lease lookups in a worker pool)
   → sync.py             (read-only IPAM badges and DCIM MAC synchronization)
   → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
   → ipam_marker.py     (the `[kea-sync: <kind>]` description marker: parse, rewrite, legacy text; ADR 0006)
@@ -286,7 +287,7 @@ URL request
   modules. `cached(server, family, kind, read, query=, refresh=)` serves the `display()` reads of
   `server_configuration` (kind `configuration`) and `subnet_catalogue` (kind `catalogue`), each Reservation page
   of the Server tab and the combined page (kind `reservations`, in `views/reservations.fetch()`), each Lease Snapshot
-  of the Leases tab and of the Lease badges of Reservation rows (kind `leases`, in `views/lease_reads.fetch()`), each
+  of the Leases tab and of the Lease badges of Reservation rows (kind `leases`, in `views/lease_reads.cached_read()`), each
   Reservation lookup of a Lease row (kind `reservation_lookups`, in `views/leases._LeaseRowLookups`), Subnet
   utilization (kind `utilization`, in `views/_base._enrich_subnet_statistics()`) and the `status-get` and
   `version-get` reads of the Overview and the combined status badge (kind `status`, in `views/_base.daemon_status()`
@@ -318,8 +319,10 @@ URL request
   predicate of `cached()`: an entry read before the table is read again. So a badge is never older than its table, and
   a Refresh, which reads the table live, also reads the badges of the shown rows live. No refresh flag reaches a badge. Utilization and status have no read age and no Refresh. The
   badge lookups run in worker threads that pin `DisplayCacheConfig` (and `KeaClientConfig` for the Lease reads), and a
-  failed badge lookup logs no traceback (`load_snapshot(quiet=True)`). Each cached Lease, utilization and status read
-  builds its client on a miss only and closes it (`views/_base.LazyClient`); a close that fails is logged. Exports
+  failed Lease badge lookup of a Reservation row is a typed Unknown that logs no traceback (`lease_reservation_reads`).
+  Each cached Lease, utilization and status read builds its client on a miss only and closes it
+  (`views/_base.LazyClient`; the Lease badge pool of Reservation rows builds one per worker thread, in
+  `lease_reservation_reads.WorkerClients`); a close that fails is logged. Exports
   (`ReservationQuery(full=True)`, the Lease `get_export` through `read_leases()` and `get_export_all`, the utilization
   of a Subnet export), the API, `ipam_reconciliation`, the edit and delete target loads, `_checked_lease`, the read
   back of a created Lease and the `version-get` connectivity check of `server_connection` read live. `KeaClient.command()` calls

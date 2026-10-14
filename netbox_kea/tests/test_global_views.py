@@ -901,6 +901,27 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "No Lease")
 
+    def test_unknown_lease_badges_when_kea_cannot_confirm_a_missing_lease(self):
+        """An incomplete Lease Snapshot shows Lease Unknown; a failed lookup shows no badge."""
+        malformed = complete_lease({"ip-address": "10.0.0.9", "state": 0, "hostname": ["private"]})
+        for reply, badge in (
+            (_leases([malformed]), True),
+            ({"result": 1, "text": "lease database error"}, False),
+        ):
+            with self.subTest(badge=badge), with_display_cache_config(leases_ttl=0):
+                with _reservation_stub(
+                    4,
+                    {
+                        "reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]),
+                        "lease4-get-by-state": reply,
+                    },
+                ):
+                    response = self.client.get(self._url())
+                self.assertEqual(response.status_code, 200)
+                (self.assertContains if badge else self.assertNotContains)(response, ">Lease Unknown</span>")
+                self.assertNotContains(response, "No Lease")
+                self.assertNotContains(response, "Active Lease")
+
     def test_lease_column_header_present(self):
         """GlobalReservationTable4 must render a 'Lease' column header."""
         with _reservation_stub(4, {"reservation-get-page": _RES_EMPTY_PAGE}):

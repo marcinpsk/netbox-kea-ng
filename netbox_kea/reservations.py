@@ -8,12 +8,13 @@ import json
 from collections.abc import Collection
 from dataclasses import dataclass, replace
 from datetime import datetime
+from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
 from .constants import Family, IPAddressValue, Persistence
 from .dhcp_options import DHCPOption, parse_dhcp_options
 from .identifiers import normalize_hex
-from .leases import DHCPv4AddressLease, Lease
+from .leases import DHCPv4AddressLease, Lease, LeaseSnapshot
 
 if TYPE_CHECKING:
     from .subnet_catalogue import CatalogueSnapshot, SubnetIdentity
@@ -125,6 +126,99 @@ def lease_identities(lease: Lease) -> LeaseIdentities:
         except ValueError:
             foreign = True
     return LeaseIdentities(tuple(identities), foreign)
+
+
+class UnknownLeasePresence(Enum):
+    """Why the Current Lease Presence of a Reservation is Unknown."""
+
+    #: The Lease Snapshot excluded a record, so a missing Lease cannot be confirmed.
+    INCOMPLETE_SNAPSHOT = auto()
+    #: A Current Lease carries an identifier that no Reservation can hold.
+    FOREIGN_IDENTIFIER = auto()
+    #: The Lease query guard refused the query.
+    QUERY_GUARD = auto()
+    #: Kea returned a failure result, or the transport failed.
+    KEA_ERROR = auto()
+    MALFORMED_REPLY = auto()
+    #: Kea has no Lease query for the identifier, and no reserved address can match.
+    UNSEARCHABLE_IDENTIFIER = auto()
+    #: Kea does not know a Lease command, so no Reservation of the Server has an observable Lease.
+    LEASE_HOOK_UNAVAILABLE = auto()
+
+
+@dataclass(frozen=True)
+class LeasePresent:
+    """The client of the Reservation holds a Current Lease."""
+
+    #: The reserved address that holds the Lease; ``None`` when the identity matched.
+    address: IPAddressValue | None
+
+
+@dataclass(frozen=True)
+class LeaseAbsent:
+    """A complete Lease Snapshot shows no Current Lease for the client of the Reservation."""
+
+
+@dataclass(frozen=True)
+class LeasePresenceUnknown:
+    """No Lease Snapshot can show whether the client of the Reservation holds a Current Lease."""
+
+    reason: UnknownLeasePresence
+
+
+CurrentLeasePresence = LeasePresent | LeaseAbsent | LeasePresenceUnknown
+
+
+@dataclass(frozen=True)
+class CurrentLeaseFacts:
+    """The Current Leases of one Lease Snapshot, as a Reservation can match them."""
+
+    addresses: frozenset[IPAddressValue]
+    identities: frozenset[ReservationIdentity]
+    #: Why the Snapshot cannot show that a Reservation holds no Lease; ``None`` when it can.
+    gap: UnknownLeasePresence | None
+
+
+def current_lease_facts(snapshot: LeaseSnapshot) -> CurrentLeaseFacts:
+    """Return the Current Leases of *snapshot*; only they are live evidence of a relationship."""
+    current = snapshot.current_records
+    identities: set[ReservationIdentity] = set()
+    foreign = False
+    for lease in current:
+        carried = lease_identities(lease)
+        identities.update(carried.identities)
+        foreign = foreign or carried.foreign
+    gap = None
+    if not snapshot.complete:
+        gap = UnknownLeasePresence.INCOMPLETE_SNAPSHOT
+    elif foreign:
+        gap = UnknownLeasePresence.FOREIGN_IDENTIFIER
+    return CurrentLeaseFacts(
+        addresses=frozenset(lease.identity.address for lease in current if lease.kind == "address"),
+        identities=frozenset(identities),
+        gap=gap,
+    )
+
+
+def current_lease_presence(reservation: Reservation, facts: CurrentLeaseFacts) -> CurrentLeasePresence:
+    """Return whether the client of *reservation* holds one of the Current Leases of *facts*.
+
+    The facts of an In-Subnet Reservation are the Leases of its Subnet, so a reserved address matches too. The facts
+    of a Global Reservation are the Leases of its identity in any Subnet, so only the identity matches.
+    """
+    if isinstance(reservation.scope, InSubnetReservationScope):
+        matched = next((address for address in reservation.addresses if address in facts.addresses), None)
+        if matched is not None:
+            return LeasePresent(matched)
+    if reservation.identity in facts.identities:
+        return LeasePresent(None)
+    if not reservation.addresses and reservation.identity.identifier_type not in lease_identifier_types(
+        reservation.family
+    ):
+        return LeasePresenceUnknown(UnknownLeasePresence.UNSEARCHABLE_IDENTIFIER)
+    if facts.gap is not None:
+        return LeasePresenceUnknown(facts.gap)
+    return LeaseAbsent()
 
 
 def reservation_identifier_choices(family: int) -> tuple[tuple[IdentifierType, str], ...]:

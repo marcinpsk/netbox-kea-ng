@@ -107,30 +107,22 @@ def notice(snapshot: Snapshot) -> Notice | None:
     return None
 
 
-def load_snapshot(
-    server: Server, kind: RecordKind, read: Callable[[], RecordRead], *, quiet: bool = False
-) -> RecordRead | Notice:
+def load_snapshot(server: Server, kind: RecordKind, read: Callable[[], RecordRead]) -> RecordRead | Notice:
     """Run a Reservation or Lease read, and return an unavailable Notice when Kea, the transport or the reply fails.
 
-    A refused Lease query (``LeaseQueryGuardError``) and a ``ValueError`` are outside the rule and still raise. With
-    *quiet* a failure logs one debug line only: a badge lookup that fails shows as an unknown badge.
+    A refused Lease query (``LeaseQueryGuardError``) and a ``ValueError`` are outside the rule and still raise.
     """
     try:
         return read()
     except KeaException as exc:
-        if quiet:
-            logger.debug("Kea refused the %s read of server %s: result %s", kind, server.pk, exc.response.get("result"))
-        elif exc.unsupported_command:
+        if exc.unsupported_command:
             logger.info("Server %s does not provide the %s read: its hook library is not loaded", server.pk, kind)
         else:
             logger.exception("Kea refused the %s read of server %s", kind, server.pk)
         return Notice(kind, messages.ERROR, unsupported_command=exc.unsupported_command)
     # MalformedReply and MalformedLeaseResponse are RuntimeErrors.
     except (requests.RequestException, RuntimeError) as exc:
-        if quiet:
-            logger.debug("Failed to read %s from server %s: %s", kind, server.pk, type(exc).__name__)
-        else:
-            logger.exception("Failed to read %s from server %s", kind, server.pk)
+        logger.exception("Failed to read %s from server %s", kind, server.pk)
         return Notice(kind, messages.ERROR, unreachable=isinstance(exc, requests.RequestException))
 
 

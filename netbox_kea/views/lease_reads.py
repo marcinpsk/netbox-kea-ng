@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
@@ -107,25 +108,20 @@ def read_leases(client: KeaClient, server: Server, family: Family, search: Lease
     return LeaseRead(snapshot, catalogue_settled)
 
 
-def fetch(
+def cached_read(
     server: Server,
     family: Family,
     search: LeaseSearch,
+    client: Callable[[], KeaClient],
     *,
     refresh: bool = False,
     read_since: datetime | None = None,
-    quiet: bool = False,
-) -> LeaseSnapshot | Notice:
-    """Read the Lease Snapshot of *search* through the display cache, or the Notice of a failed read.
+) -> LeaseRead:
+    """Read the display cache entry of *search*, or read it from Kea through *client* and store a settled result.
 
-    A hit sends no Kea command, also for a Subnet search. With *refresh* it reads Kea live and replaces the entry. A
-    badge passes the read time of its table as *read_since*: an entry read before it is read again. With *quiet* a
-    failed read logs no traceback. It is safe in a worker thread that pins the Kea client and display cache settings.
-
-    Raises:
-        LeaseQueryGuardError: If Kea cannot answer a Subnet query safely.
-        ValueError: If the Server configuration or the search is not valid.
-
+    A hit calls *client* never, also for a Subnet search. With *refresh* it reads Kea live and replaces the entry. A
+    badge passes the read time of its table as *read_since*: an entry read before it is read again. A Kea, transport or
+    reply failure raises, as ``read_leases()`` does.
     """
 
     def fresh(entry: LeaseRead) -> bool:
@@ -133,19 +129,27 @@ def fetch(
             isinstance(entry.loaded, LeaseSnapshot) and entry.loaded.read_started >= read_since
         )
 
+    return display_cache.cached(
+        server,
+        family,
+        "leases",
+        lambda: read_leases(client(), server, family, search),
+        query=search.parts,
+        refresh=refresh,
+        fresh=fresh,
+    )
+
+
+def fetch(server: Server, family: Family, search: LeaseSearch, *, refresh: bool = False) -> LeaseSnapshot | Notice:
+    """Read the Lease Snapshot of *search* through the display cache, or the Notice of a failed read.
+
+    A hit sends no Kea command. With *refresh* it reads Kea live and replaces the entry.
+
+    Raises:
+        LeaseQueryGuardError: If Kea cannot answer a Subnet query safely.
+        ValueError: If the Server configuration or the search is not valid.
+
+    """
     with LazyClient(server, family) as client:
-        entry = load_snapshot(
-            server,
-            "lease",
-            lambda: display_cache.cached(
-                server,
-                family,
-                "leases",
-                lambda: read_leases(client(), server, family, search),
-                query=search.parts,
-                refresh=refresh,
-                fresh=fresh,
-            ),
-            quiet=quiet,
-        )
+        entry = load_snapshot(server, "lease", lambda: cached_read(server, family, search, client, refresh=refresh))
     return entry if isinstance(entry, Notice) else entry.loaded

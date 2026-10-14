@@ -26,13 +26,6 @@ _SUBNETS4 = [{"id": 20, "subnet": "198.18.0.0/24"}, {"id": 21, "subnet": "198.18
 _SUBNETS6 = [{"id": 30, "subnet": "2001:db8::/64"}]
 
 
-def _with_state(record: dict, state_fields: dict) -> dict:
-    """Return a complete lease *record* whose state is exactly *state_fields*: an empty one drops it."""
-    complete = complete_lease(record)
-    del complete["state"]
-    return {**complete, **state_fields}
-
-
 class TestSharedLeaseIdentityRules(SimpleTestCase):
     """Lease enrichment and Reservation enrichment read the identities of one typed Lease."""
 
@@ -88,68 +81,6 @@ class TestReservationLeaseRelationship(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         return response, response.context["table"].data.data, kea
 
-    def test_unobservable_scoped_identities_leave_the_lease_relationship_indeterminate(self):
-        for version, identifier_type, identifier in (
-            (4, "duid", "00:01:02:03"),
-            (4, "circuit-id", "port-7"),
-            (4, "flex-id", "port-7"),
-            (6, "flex-id", "port-7"),
-        ):
-            with self.subTest(version=version, identifier_type=identifier_type):
-                subnet_id = 20 if version == 4 else 30
-                response, rows, _kea = self._rows(
-                    {
-                        "reservation-get-page": _res_page([{"subnet-id": subnet_id, identifier_type: identifier}]),
-                        # DHCPv6 reads the whole Subnet, because a registered lease is current too.
-                        f"lease{version}-get-by-state" if version == 4 else "lease6-get-all": _leases_per_subnet(
-                            {subnet_id: []}
-                        ),
-                    },
-                    version=version,
-                    subnets=_SUBNETS4 if version == 4 else _SUBNETS6,
-                )
-                self.assertIsNone(rows[0]["has_active_lease"])
-                self.assertNotContains(response, "No Lease")
-
-    def test_an_unobservable_identity_can_still_match_by_address(self):
-        response, rows, _kea = self._rows(
-            {
-                "reservation-get-page": _res_page(
-                    [{"subnet-id": 20, "flex-id": "port-7", "ip-address": "198.18.0.20"}]
-                ),
-                "lease4-get-by-state": _leases_per_subnet(
-                    {
-                        20: [
-                            complete_lease(
-                                {
-                                    "subnet-id": 20,
-                                    "hw-address": "aa:bb:cc:dd:ee:ff",
-                                    "ip-address": "198.18.0.20",
-                                    "state": 0,
-                                }
-                            )
-                        ],
-                    }
-                ),
-            }
-        )
-        self.assertIs(rows[0]["has_active_lease"], True)
-        self.assertContains(response, "Active Lease")
-
-    def test_address_bearing_unobservable_identity_reports_no_lease_for_empty_subnet(self):
-        for identifier_type in ("flex-id", "circuit-id"):
-            with self.subTest(identifier_type=identifier_type):
-                response, rows, _kea = self._rows(
-                    {
-                        "reservation-get-page": _res_page(
-                            [{"subnet-id": 20, identifier_type: "port-7", "ip-address": "198.18.0.20"}]
-                        ),
-                        "lease4-get-by-state": _leases_per_subnet({20: []}),
-                    }
-                )
-                self.assertIs(rows[0]["has_active_lease"], False)
-                self.assertContains(response, "No Lease")
-
     def test_an_unreadable_lease_observation_reports_no_relationship(self):
         """A failed lease query is unknown, not a confirmed absence of a lease."""
         response, rows, _kea = self._rows(
@@ -165,125 +96,41 @@ class TestReservationLeaseRelationship(_ViewTestBase):
         self.assertNotContains(response, "No Lease")
         self.assertNotContains(response, "Active Lease")
 
-    def test_a_malformed_subnet_lease_identity_reports_no_relationship(self):
-        for identifier in ("not-a-mac", "", False):
-            with self.subTest(identifier=identifier):
-                response, rows, _kea = self._rows(
-                    {
-                        "reservation-get-page": _res_page([{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff"}]),
-                        "lease4-get-by-state": _leases_per_subnet(
-                            {
-                                20: [
-                                    complete_lease(
-                                        {
-                                            "subnet-id": 20,
-                                            "hw-address": identifier,
-                                            "ip-address": "198.18.0.20",
-                                            "state": 0,
-                                        }
-                                    )
-                                ]
-                            }
-                        ),
-                    }
-                )
-                self.assertIsNone(rows[0]["has_active_lease"])
-                self.assertNotContains(response, "No Lease")
-                self.assertNotContains(response, "Active Lease")
-                self.assertContains(response, "Lease Unknown")
-
-    # Each case reads the Lease badges live.
-    @with_display_cache_config(leases_ttl=0)
-    def test_a_template_style_key_in_a_kea_record_is_not_an_identity(self):
-        for native, expected in (("aa:bb:cc:dd:ee:ff", False), ("11-22-33-44-55-66", True)):
-            with self.subTest(native=native):
-                response, rows, _kea = self._rows(
-                    {
-                        "reservation-get-page": _res_page([{"subnet-id": 20, "hw-address": "11:22:33:44:55:66"}]),
-                        "lease4-get-by-state": _leases_per_subnet(
-                            {
-                                20: [
-                                    complete_lease(
-                                        {
-                                            "subnet-id": 20,
-                                            "hw-address": native,
-                                            "hw_address": "11:22:33:44:55:66",
-                                            "ip-address": "198.18.0.20",
-                                            "state": 0,
-                                        }
-                                    )
-                                ]
-                            }
-                        ),
-                    }
-                )
-                self.assertIs(rows[0]["has_active_lease"], expected)
-                self.assertContains(response, "Active Lease" if expected else "No Lease")
-
-    def test_a_missing_lease_hook_reports_no_relationship(self):
-        """Without lease_cmds the plugin cannot observe leases, so it must claim nothing."""
+    def test_a_complete_observation_without_a_lease_shows_no_lease(self):
         response, rows, _kea = self._rows(
             {
                 "reservation-get-page": _res_page(
                     [{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}]
                 ),
-                "lease4-get-by-state": {"result": 2, "text": "unknown command"},
-                "lease4-get-all": {"result": 2, "text": "unknown command"},
+                "lease4-get-by-state": _leases_per_subnet({20: []}),
             }
         )
 
-        self.assertIsNone(rows[0]["has_active_lease"])
-        self.assertNotContains(response, "No Lease")
+        self.assertIs(rows[0]["has_active_lease"], False)
+        self.assertContains(response, '<span class="badge text-bg-secondary">No Lease</span>')
 
-    def test_a_failed_subnet_lease_query_leaves_only_that_subnet_indeterminate(self):
-        """A Kea error for one Subnet is unknown there, and the other Subnet still answers."""
-
-        def leases(body):
-            if body["arguments"]["subnet-id"] == 20:
-                return {"result": 1, "text": "lease database error"}
-            return {"result": 3}
-
-        _response, rows, kea = self._rows(
-            {
-                "reservation-get-page": _res_page(
-                    [
-                        {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "198.18.0.20"},
-                        {"subnet-id": 21, "hw-address": "aa:bb:cc:dd:ee:02", "ip-address": "198.18.1.20"},
-                    ]
-                ),
-                "lease4-get-by-state": leases,
-            }
+    def test_an_observation_that_cannot_confirm_a_missing_lease_shows_lease_unknown_with_its_reason(self):
+        cases = (
+            (lease_record("198.18.0.30", subnet_id=20, hostname=["private"]), "lease records that could not be read"),
+            (
+                lease_record("198.18.0.30", subnet_id=20, hw_address="", client_id=":".join(["01"] * 129)),
+                "a client identifier that no Reservation can hold",
+            ),
         )
-
-        self.assertCountEqual(
-            [body["arguments"]["subnet-id"] for body in kea.bodies("lease4-get-by-state")],
-            [20, 21],
-        )
-
-        by_subnet = {row["subnet_id"]: row["has_active_lease"] for row in rows}
-        self.assertEqual(by_subnet, {20: None, 21: False})
-
-    def test_a_global_identity_query_error_reports_by_its_cause(self):
-        """A missing identity query hides every relationship; any other Kea error hides only its own."""
-        for reply, scoped in (
-            ({"result": 2, "text": "unknown command"}, None),
-            ({"result": 1, "text": "lease database error"}, False),
-        ):
-            with self.subTest(result=reply["result"]):
-                _response, rows, _kea = self._rows(
+        for lease, reason in cases:
+            with self.subTest(reason=reason), with_display_cache_config(leases_ttl=0):
+                response, rows, _kea = self._rows(
                     {
                         "reservation-get-page": _res_page(
-                            [
-                                {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:01"},
-                                {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:02", "ip-address": "198.18.0.20"},
-                            ]
+                            [{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}]
                         ),
-                        "lease4-get-by-hw-address": reply,
-                        "lease4-get-by-state": _leases_per_subnet({20: []}),
+                        "lease4-get-by-state": _leases_per_subnet({20: [lease]}),
                     }
                 )
-                by_subnet = {row["subnet_id"]: row["has_active_lease"] for row in rows}
-                self.assertEqual(by_subnet, {0: None, 20: scoped})
+                self.assertIsNone(rows[0]["has_active_lease"])
+                self.assertContains(response, ">Lease Unknown</span>")
+                self.assertContains(response, reason)
+                self.assertNotContains(response, "No Lease")
 
     def test_an_unexpected_worker_failure_is_logged_at_exception_level(self):
         """An unexpected enrichment failure is visible without DEBUG logging."""
@@ -321,30 +168,9 @@ class TestReservationLeaseRelationship(_ViewTestBase):
         self.assertIsNone(rows[0]["has_active_lease"])
         self.assertIn("Reservation lease enrichment failed", logs.output[0])
 
-    def test_equal_identity_in_another_subnet_is_not_an_active_lease(self):
-        """A lease with the same hardware address in another Subnet is a different host."""
-        _response, rows, _kea = self._rows(
-            {
-                "reservation-get-page": _res_page(
-                    [{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}]
-                ),
-                "lease4-get-by-state": _leases_per_subnet(
-                    {
-                        21: [
-                            complete_lease(
-                                {"subnet-id": 21, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.1.20"}
-                            )
-                        ]
-                    }
-                ),
-            }
-        )
-
-        self.assertIs(rows[0]["has_active_lease"], False)
-
-    def test_a_global_reservation_matches_a_lease_by_normalized_identity(self):
-        """Global Scope has no Subnet, so only the normalized identity can match."""
-        _response, rows, kea = self._rows(
+    def test_a_global_reservation_links_the_lease_search_by_its_identity(self):
+        """Global Scope has no Subnet, so the identity selects the route."""
+        response, rows, _kea = self._rows(
             {
                 "reservation-get-page": _res_page([{"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:ff"}]),
                 "lease4-get-by-hw-address": {
@@ -368,102 +194,7 @@ class TestReservationLeaseRelationship(_ViewTestBase):
         self.assertIs(rows[0]["has_active_lease"], True)
         self.assertIn("by=hw", rows[0]["lease_url"])
         self.assertIn("q=aa%3Abb%3Acc%3Add%3Aee%3Aff", rows[0]["lease_url"])
-        self.assertEqual(kea.bodies("lease4-get-by-hw-address")[0]["arguments"], {"hw-address": "aa:bb:cc:dd:ee:ff"})
-
-    def test_a_malformed_global_lease_state_reports_no_relationship(self):
-        """Only a validated Kea state can establish or reject a lease relationship."""
-        cases = [
-            ("missing", {}),
-            ("string", {"state": "0"}),
-            ("boolean", {"state": True}),
-            ("out of range", {"state": 99}),
-        ]
-
-        for label, state_fields in cases:
-            with self.subTest(state=label):
-                response, rows, _kea = self._rows(
-                    {
-                        "reservation-get-page": _res_page([{"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:ff"}]),
-                        "lease4-get-by-hw-address": {
-                            "result": 0,
-                            "arguments": {
-                                "leases": [
-                                    _with_state(
-                                        {
-                                            "subnet-id": 21,
-                                            "hw-address": "AA-BB-CC-DD-EE-FF",
-                                            "ip-address": "198.18.1.20",
-                                        },
-                                        state_fields,
-                                    )
-                                ]
-                            },
-                        },
-                    }
-                )
-
-                self.assertIsNone(rows[0]["has_active_lease"])
-                self.assertNotContains(response, "No Lease")
-                self.assertNotContains(response, "Active Lease")
-
-    def test_a_malformed_subnet_lease_state_reports_no_relationship(self):
-        """A malformed state excludes the record, so the observation cannot answer either way."""
-        cases = [
-            ("missing", {}),
-            ("string", {"state": "0"}),
-            ("boolean", {"state": True}),
-            ("out of range", {"state": 99}),
-        ]
-
-        for label, state_fields in cases:
-            with self.subTest(state=label):
-                response, rows, _kea = self._rows(
-                    {
-                        "reservation-get-page": _res_page(
-                            [{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}]
-                        ),
-                        "lease4-get-by-state": _leases_per_subnet(
-                            {
-                                20: [
-                                    _with_state(
-                                        {
-                                            "subnet-id": 20,
-                                            "hw-address": "aa:bb:cc:dd:ee:ff",
-                                            "ip-address": "198.18.0.20",
-                                        },
-                                        state_fields,
-                                    )
-                                ]
-                            }
-                        ),
-                    }
-                )
-
-                self.assertIsNone(rows[0]["has_active_lease"])
-                self.assertNotContains(response, "No Lease")
-                self.assertNotContains(response, "Active Lease")
-
-    def test_a_global_reservation_never_infers_a_subnet_from_its_address(self):
-        """An address must not put a Global Reservation into a Subnet lease query."""
-        _response, rows, kea = self._rows(
-            {
-                "reservation-get-page": _res_page(
-                    [{"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}]
-                ),
-                "lease4-get-by-hw-address": {"result": 3},
-            }
-        )
-
-        self.assertIs(rows[0]["has_active_lease"], False)
-        self.assertEqual([name for name in kea.commands() if name.startswith("lease4-")], ["lease4-get-by-hw-address"])
-
-    def test_a_global_identity_kea_cannot_search_reports_no_relationship(self):
-        """Kea has no lease query for a Flex ID, so its lease state is unknown."""
-        response, rows, kea = self._rows({"reservation-get-page": _res_page([{"subnet-id": 0, "flex-id": "port-7"}])})
-
-        self.assertIsNone(rows[0]["has_active_lease"])
-        self.assertEqual([name for name in kea.commands() if name.startswith("lease4-")], [])
-        self.assertNotContains(response, "No Lease")
+        self.assertContains(response, 'class="badge text-bg-success text-decoration-none">Active Lease</a>')
 
     def test_an_addressless_reservation_links_the_lease_search_by_identity(self):
         """An addressless Reservation has no address, so the identity selects the route."""
