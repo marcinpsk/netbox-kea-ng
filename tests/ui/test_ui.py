@@ -433,7 +433,10 @@ def choose_lease_attribute(page: Page, by: str, *, filter_attribute: bool = Fals
     """Pick the lease search Attribute and wait for the Search value control that it brings."""
     page.locator("#id_by + div.form-select").click()
     if filter_attribute:
+        # TomSelect applies typed text after its refreshThrottle; a pick before that reopens it and takes focus.
+        page.locator("#id_by").evaluate("s => s.tomselect.on('type', () => { s.dataset.filtered = '1'; })")
         page.locator("#id_by-ts-control").fill(by)
+        expect(page.locator("#id_by")).to_have_attribute("data-filtered", "1")
     with page.expect_response(re.compile(r"value_control=1")):
         page.locator("#id_by-ts-dropdown").get_by_role("option", name=by, exact=True).click()
 
@@ -452,11 +455,7 @@ def search_lease(page: Page, version: Literal[4, 6], by: str, q: str, *, filter_
     choose_lease_attribute(page, by, filter_attribute=filter_attribute)
     set_lease_search_value(page, q)
     with page.expect_response(re.compile(f"/leases{version}/")) as r:
-        if filter_attribute:
-            # After a filtered pick, NetBox's TomSelect opens again over the form and takes focus back.
-            page.locator("#id_q").press("Enter")
-        else:
-            page.get_by_role("button", name="Search").click()
+        page.get_by_role("button", name="Search").click()
         assert r.value.ok
 
 
