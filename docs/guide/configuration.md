@@ -21,10 +21,34 @@ restart. The page has one section for each group of settings:
 | Sync | Sync IP Ranges | On | Sync Kea pools to NetBox IPAM as IP Ranges |
 | Kea Client | Kea Timeout (seconds) | `30` | How long each Kea request can take, at least 1. A change applies to the next request |
 | Kea Client | Max Unpaged Leases | `1000` | Refuse an unpaged Subnet lease query when its Kea statistics count exceeds this limit. `0` disables this safety check |
+| Display Cache | Configuration TTL (seconds) | `300` | How long a page shows a cached Server configuration and Subnet list. `0` turns off caching for them |
+| Display Cache | Reservations TTL (seconds) | `300` | How long a page shows cached Reservations. `0` turns off caching for them |
+| Display Cache | Leases TTL (seconds) | `30` | How long a page shows cached Leases, the Lease badges of Reservations and the Reservation badges of Leases. `0` turns off caching for them |
+| Display Cache | Utilization and Status TTL (seconds) | `15` | How long a page shows cached Subnet utilization and daemon status. `0` turns off caching for them |
+| DHCP Plugin | Integration Enabled (global) | On | Global switch. Clear it to stop the DHCP plugin integration for all Servers. The section shows only when the NetBox DHCP plugin (`netbox_dhcp`) is installed |
 
 A section shows to a user with the view permission of its model (`netbox_kea.view_syncconfig`,
-`netbox_kea.view_keaclientconfig`). A save needs the change permission of the model too. Without it, the section
+`netbox_kea.view_keaclientconfig`, `netbox_kea.view_displaycacheconfig`, `netbox_kea.view_dhcpintegrationconfig`). A save needs the change permission of the model too. Without it, the section
 shows the values read-only. Each save writes a change log record. While a branch is active, the page refuses a save.
+
+A save of the Display Cache section makes every cached entry unused, also when no value changes. A change that the
+plugin sends to Kea makes the cached entries that the change affects unused at once. A change from outside this NetBox, such as
+kea-shell or an HA partner, shows when the TTL of the entry ends, or after a Refresh. This also applies to a change
+through another Server record that points at the same daemon: a change resets only the entries of the Server that sent it. A Reservations table and a
+Leases table show the age of their read ("Read 42 s ago") and a **Refresh** button, which reads Kea again for that
+table and for the badges of its rows. On a page of all Servers, the age is the age of the oldest read, and Refresh reads
+each Server again. A badge is never older than the table that shows it. Subnet utilization and daemon status show no
+read age and no Refresh: their TTL is short.
+
+The DHCP plugin integration runs for a Server only when the NetBox DHCP plugin is installed, the Server has
+**Sync to DHCP plugin** on, and **Integration Enabled (global)** is on. When one of them is off, the Server has no
+**DHCP Plugin** subsection under Sync, **Sync to DHCP plugin now** refuses, and the IPAM sync does not wait for a
+DHCP plugin import before it removes an adopted object. Objects that DHCP plugin records refer to stay protected from
+stale cleanup while the switch is off.
+
+Turning the switch off does not stop an import that already runs. While the switch is off, the sync can remove an
+adopted object that would otherwise wait for an import, and turning the switch on again does not bring it back. An
+import receipt that a Server already has stays valid when the switch goes on again, so the Server needs no new import.
 
 Subnet lease searches use `stat-lease4-get` or `stat-lease6-get` before an
 unpaged lease command. Kea statistics can reject a query that is already too

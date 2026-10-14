@@ -141,7 +141,8 @@ different VRFs keep the global row and create their own scoped rows. A global-VR
 
 Adopted objects keep their last link until every potential owner completes all relevant enabled observations.
 Periodic jobs and DHCP imports record completion separately. An incomplete phase or missing family does not
-count as complete. Disabled sources and families do not hold the barrier. The read-only
+count as complete. Disabled sources and families do not hold the barrier. A Server whose DHCP plugin integration
+does not run (see [Configuration](configuration.md)) has no DHCP import to wait for. The read-only
 `ipam_first_complete_at` field shows when a server first completed its enabled observations. Newly enabled
 sources still require complete observations, even when that timestamp is already set.
 
