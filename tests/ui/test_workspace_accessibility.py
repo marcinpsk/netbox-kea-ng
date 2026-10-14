@@ -198,3 +198,8 @@ def test_each_tab_row_marks_its_active_tab(page: Page, plugin_base: str, kea_ser
         assert tab["weight"] >= 600, tab
         assert tab["background"] != inactive["background"], (tab, inactive)
     assert inactive["shadow"] == "none" and inactive["weight"] < 600, inactive
+    # NetBox draws the focus ring with box-shadow too, so the underline must not replace it.
+    active = page.locator('[aria-label="Workspace sections"] .nav-link.active')
+    _tab_to(page, active)
+    focused = active.evaluate("el => getComputedStyle(el).boxShadow")
+    assert focused != actives[0]["shadow"] and "inset" in focused, focused

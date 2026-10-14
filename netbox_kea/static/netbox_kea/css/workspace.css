@@ -44,6 +44,11 @@
   box-shadow: inset 0 -3px 0 0 var(--tblr-primary);
 }
 
+/* NetBox draws the focus ring with box-shadow, so keep it beside the underline. */
+.kea-tabs .nav-link.active:focus-visible {
+  box-shadow: inset 0 -3px 0 0 var(--tblr-primary), 0 0 0 0.25rem rgba(var(--tblr-primary-rgb), 0.25);
+}
+
 /* The desktop NetBox navbar stays above the workspace shell. */
 @media (min-width: 992px) {
   .kea-workspace-shell {

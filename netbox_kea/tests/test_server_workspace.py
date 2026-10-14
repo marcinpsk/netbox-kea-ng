@@ -544,16 +544,15 @@ class TestWorkspaceTabRow(_ViewTestBase):
                 self.assertEqual(response.status_code, 200)
                 rows = BeautifulSoup(response.content, "html.parser").select(".nav-tabs")
                 self.assertTrue(rows)
+                active = []
                 for row in rows:
                     self.assertIn("kea-tabs", row["class"])
-                # The edit form tab is a Bootstrap tab button, which marks itself with aria-selected.
-                current = [
-                    link.get_text(" ", strip=True)
-                    for row in rows
-                    for link in row.select(".nav-link.active")
-                    if link.get("aria-current") == "page" or link.get("aria-selected") == "true"
-                ]
-                self.assertTrue(any(text.startswith(label) for text in current), current)
+                    for link in row.select(".nav-link.active"):
+                        # The edit form tab is a Bootstrap tab button, which marks itself with aria-selected.
+                        marked = link.get("aria-current") == "page" or link.get("aria-selected") == "true"
+                        self.assertTrue(marked, link)
+                        active.append(link.get_text(" ", strip=True))
+                self.assertTrue(any(text.startswith(label) for text in active), active)
 
     def test_the_recent_runs_header_spaces_its_link_with_flex(self):
         header = next(
