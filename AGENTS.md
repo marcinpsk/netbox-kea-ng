@@ -199,6 +199,7 @@ URL request
   → views/              (view modules; each calls server.get_client() → KeaClient)
       _base.py          (ConditionalLoginRequiredMixin, _KeaChangeMixin, shared helpers)
       notices.py        (the one Snapshot notice rule: notice(), load_snapshot() and the channels; ADR 0003)
+      read_age.py       (the read age line and Refresh control of a cached table; ADR 0009)
       server.py         (Server CRUD, status tab)
       leases.py         (DHCPv4/v6 lease search, add, edit, delete, badge enrichment)
       reservations.py   (DHCPv4/v6 reservation CRUD)
@@ -214,6 +215,7 @@ URL request
       settings_page.py  (Settings page: one section per settings singleton; ADR 0010)
   → config_write.py     (Configuration Changes: typed outcome, advisory lock, persist step)
   → kea.py              (HTTP POST to each daemon's / control socket)
+  → display_cache.py    (the display cache: keys, generations, TTLs, admission; ADR 0009)
   → sync.py             (read-only IPAM badges and DCIM MAC synchronization)
   → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
   → ipam_marker.py     (the `[kea-sync: <kind>]` description marker: parse, rewrite, legacy text; ADR 0006)
@@ -236,16 +238,30 @@ URL request
 - **Settings singletons** (`models.py`, ADR 0010): every runtime setting is a field of a `SettingsSingleton`
   row (pk=1). `SyncConfig` holds the sync settings (`interval_minutes`, `sync_enabled`, the type toggles,
   `sync_max_leases_per_server`, `stale_ip_cleanup`); `KeaClientConfig` holds `kea_timeout` and
-  `lease_query_max_unpaged_leases`, and `Server.get_client()` reads it on each call. Defaults live on the model
-  fields. Migrations 0018 and 0025 create the rows and copy the values of `PLUGINS_CONFIG` once, so `get()` only
-  reads. After that the plugin reads no `PLUGINS_CONFIG` key: `NetBoxKeaConfig.ready()` logs a warning for each
-  key of `REMOVED_SETTINGS` that is still set. A TransactionTestCase flush deletes the rows, and a
-  `post_migrate` receiver in `netbox_kea/tests/conftest.py` creates them again with the migrations' values. They
+  `lease_query_max_unpaged_leases`, and `Server.get_client()` reads it on each call. `DhcpIntegrationConfig` holds
+  `enabled`, the global switch of the DHCP plugin integration. `DisplayCacheConfig` holds the TTL of each read kind of
+  the display cache. `dhcp_plugin.integration_refusal(server)` is the one
+  rule that combines `is_available()`, `Server.sync_dhcp_plugin_enabled` and that switch; no other code combines
+  them. Guards that keep DHCP plugin references safe from cleanup check `is_available()` only. Defaults live on the
+  model fields. Migrations 0018, 0025, 0026 and 0027 create the rows, and 0018 and 0025 copy the values of
+  `PLUGINS_CONFIG` once, so `get()` only reads. After that the plugin reads no `PLUGINS_CONFIG` key:
+  `NetBoxKeaConfig.ready()` logs a warning for each key of `REMOVED_SETTINGS` that is still set. A TransactionTestCase flush deletes the rows, and a
+  `post_migrate` receiver in `netbox_kea/tests/conftest.py` creates each of them again: SyncConfig and
+  KeaClientConfig with the migrations' values, every other row with its model defaults. They
   inherit `ChangeLoggingMixin` (not a `NetBoxModel`), so a save in a request writes an ObjectChange;
   `api/serializers.py` has a brief serializer for each because NetBox's change log API serializes each changed
   object. The Settings page (`views/settings_page.py`) has one section for each row (`SECTIONS`): a section shows
   with the view permission of its model, a save needs the change permission too, and the view calls `snapshot()`
-  before the form changes the row. `navigation.py` builds one menu item for each section.
+  before the form changes the row. A section whose `available()` is false (the DHCP Plugin section without
+  `netbox_dhcp`) does not show, and a save of it is refused. `navigation.py` builds one menu item for each available
+  section. The adoption cleanup locks the `Server`, `SyncConfig` and `DhcpIntegrationConfig` tables to freeze policy.
+  A new settings row needs a model, a migration that creates the row, a brief serializer and a `SECTIONS` line. The
+  page builds the form from the model fields (`modelform_factory`) and renders them with `inc/settings_fields.html`
+  unless the section names its own include; a test fails while a singleton has no section. A section can give a
+  one-sentence `description` that the page shows under its heading, for a fact about the whole section. A worker
+  thread opens no database connection: `PinnedSettings.read(*models)` reads rows on the request thread, and in each
+  `PinnedSettings.context()` (one for each worker task) `SettingsSingleton.get()` returns the pinned row and raises
+  `RuntimeError` for a model that is not pinned. `fan_out` pins `KeaClientConfig` and `DisplayCacheConfig`.
 - **`KeaClient`** (`kea.py`): wraps a `requests.Session`. All API calls go through
   `.command(command, target, arguments, check)`, the only HTTP send of the plugin, which POSTs
   JSON to the **configured endpoint URL** (`self.url`: the daemon's `/` control socket, or a
@@ -253,11 +269,11 @@ URL request
   `TypeError`); each member has a `read` or `write` kind. `target` is the `Family` (4 or 6), or
   `None` for the Control Agent itself. A family-specific command comes from a per-family mapping
   in `kea.py`, such as `SUBNET_LIST[family]`; never format a command name. A new member needs an
-  entry in the pinned read or write set of `test_kea_command.py`. `write_guard` is a required
-  keyword argument: `Server.get_client()` passes the branch binding, and unit tests build clients
-  through `kea_stub.kea_client()`, which passes it too. Responses are
-  `list[KeaResponse]`; `check_response()` raises `KeaException` if any result code is not in
-  `check`. `command()` passes the TLS settings (`verify`, `cert`) on each request, so the
+  entry in the pinned read or write set of `test_kea_command.py`. `write_guard` and `on_write` are
+  required keyword arguments: `Server.get_client()` passes the branch binding and the generation rotation
+  of the display cache, and unit tests build clients through `kea_stub.kea_client()`, which passes both (its
+  `on_write` does nothing). Responses are `list[KeaResponse]`; `check_response()` raises `KeaException`
+  if any result code is not in `check`. `command()` passes the TLS settings (`verify`, `cert`) on each request, so the
   `REQUESTS_CA_BUNDLE` environment variable cannot replace a CA file or `ssl_verify=False`. A TLS file
   that requests cannot find raises `KeaTLSFileError`, a `requests.RequestException`, so each
   handler of request errors also handles it. `.clone()` creates a thread-safe copy (fresh `requests.Session`) for
@@ -265,6 +281,57 @@ URL request
   argument only when the server is fronted by a Control Agent
   (`send_service = has_control_agent`); a direct daemon drops it, because Kea 3.2.0+
   rejects a `service` that does not match the daemon the request lands on.
+- **Display cache** (`display_cache.py`, ADR 0009): the only module that touches the Django cache. The OpenGrep
+  rule `kea-cache-outside-display-cache` refuses `django.core.cache` and the private names of the module in other
+  modules. `cached(server, family, kind, read, query=, refresh=)` serves the `display()` reads of
+  `server_configuration` (kind `configuration`) and `subnet_catalogue` (kind `catalogue`), each Reservation page
+  of the Server tab and the combined page (kind `reservations`, in `views/reservations.fetch()`), each Lease Snapshot
+  of the Leases tab and of the Lease badges of Reservation rows (kind `leases`, in `views/lease_reads.fetch()`), each
+  Reservation lookup of a Lease row (kind `reservation_lookups`, in `views/leases._LeaseRowLookups`), Subnet
+  utilization (kind `utilization`, in `views/_base._enrich_subnet_statistics()`) and the `status-get` and
+  `version-get` reads of the Overview and the combined status badge (kind `status`, in `views/_base.daemon_status()`
+  and `daemon_version()`). It stores only a value whose `settled` property is true (the `Cacheable` protocol). A
+  failed read raises, so it is never stored. A Reservation entry (`_ReservationPage`) holds the page Snapshot and the
+  Subnet Catalogue it was parsed against, so a hit sends no Catalogue read; it is settled only when both are. A
+  Reservation walk that an error stopped (`page-fetch-failed`, `pagination-stalled`) is not settled; a walk stopped at
+  its limit is. A Lease entry (`LeaseRead`) holds the Snapshot, or the Notice of a Catalogue that could not resolve a
+  Subnet search. A Subnet search resolves its CIDR inside the cached read through a live Catalogue read, keyed by the
+  unresolved search, so a hit sends no Kea command; a result of a Catalogue that did not settle is not stored. A Lease
+  search key holds the Attribute, the value and the state; a read of every Lease also holds the cursor and the page
+  size. `LeaseSnapshot.settled` is always true: a failed Lease read raises, and each diagnostic excludes one record.
+  A Lease badge of a Reservation row is an ordinary Lease search, so it shares the entry of the same Leases tab
+  search. A lookup that finds no Reservation is stored. `_KINDS` names the TTL field of `DisplayCacheConfig` and the
+  generations of each kind; a TTL of 0 sends every read to Kea. A key holds the Server, the family, the kind,
+  `netbox_kea.__version__` (an upgrade makes entries of the old class shapes unreachable), its generations, a keyed
+  digest of `Server.kea_connection()`, `last_updated` of the settings row (a settings save makes every entry
+  unreachable), and a digest of the query parts. The configuration kinds hold the configuration generation;
+  `reservations`, `leases`, `reservation_lookups` and `utilization` also hold the records generation, because a write
+  changes them. `status` holds no generation, because a daemon changes its status without a plugin write; it alone
+  takes the family `None` of the Control Agent. `refresh=True` removes the entry and reads live, so a refresh that
+  fails or is not settled leaves no entry; a Reservation Refresh also reads the Catalogue live
+  (`subnet_catalogue.display(refresh=True)`), and so does a Leases Refresh, before its search form. The Refresh control
+  (`views/read_age.py`, `inc/read_age.html`) sends an htmx GET of the same URL with the `X-Kea-Refresh` header and
+  swaps the Reservation section (`#kea-reservations`), which holds the warnings, the search card and the table, or the
+  Lease section (`#lease-search`). An error of a Refresh shows inside the section: the Leases view passes the section
+  id to `exception_htmx.html`. The page shows "Read N s ago" from `read_started` of the Snapshot (the oldest one on a
+  combined page). A badge entry holds its read time, and the badge passes the read time of its table to the `fresh`
+  predicate of `cached()`: an entry read before the table is read again. So a badge is never older than its table, and
+  a Refresh, which reads the table live, also reads the badges of the shown rows live. No refresh flag reaches a badge. Utilization and status have no read age and no Refresh. The
+  badge lookups run in worker threads that pin `DisplayCacheConfig` (and `KeaClientConfig` for the Lease reads), and a
+  failed badge lookup logs no traceback (`load_snapshot(quiet=True)`). Each cached Lease, utilization and status read
+  builds its client on a miss only and closes it (`views/_base.LazyClient`); a close that fails is logged. Exports
+  (`ReservationQuery(full=True)`, the Lease `get_export` through `read_leases()` and `get_export_all`, the utilization
+  of a Subnet export), the API, `ipam_reconciliation`, the edit and delete target loads, `_checked_lease`, the read
+  back of a created Lease and the `version-get` connectivity check of `server_connection` read live. `KeaClient.command()` calls
+  `on_write(family, configuration=False)` before and after each write command, also when the send fails, and
+  `_config_mutation_command` calls `on_write(family, configuration=True)` around a live configuration mutation.
+  `Server.get_client()` binds it to `rotate_after_write`, which rotates the records generation (both families for
+  `None`) and, for a configuration change, the configuration generation. `MutationScope` calls
+  `rotate_configuration`. A rotation failure is logged, and the write continues. The callers validate the family;
+  the module takes a `Family`, or `None` for the Control Agent in `cached()`. Authority reads (`for_verification`, `for_synchronization`, `for_import`,
+  `read_identity`, mutation scopes) never read or fill the cache. `fan_out` pins the settings row for its workers
+  (see "Settings singletons"). The test fixture `_plugin_cache_hygiene` clears `display_cache.KEY_PREFIX`
+  around each test.
 - **`sync.py`**: reads IPAM rows for synchronization badges and synchronizes DCIM MAC addresses.
   IPAM creation, status changes and cleanup belong to `ipam_reconciliation.py`.
 - **`ipam_reconciliation.py`**: `reconcile(server, family, phases) -> SyncReport` (ADR 0006). The job's
@@ -522,8 +589,10 @@ resort, reserved for true external boundaries you cannot run locally.
   tokens use the `nbt_` format).
 - **BulkImportView POST**: requires `data=`, `format='csv'`, `csv_delimiter=','`.
 - **Settings in tests**: `get_client()` reads the `KeaClientConfig` row, so a test that calls it needs the
-  database (`TestCase`, not `SimpleTestCase`). Set a row value with `with_kea_client_config(...)` or
-  `with_sync_config(...)` from `tests/utils.py`: a class, method or `with` decorator that restores the value.
+  database (`TestCase`, not `SimpleTestCase`). Set a row value with `with_kea_client_config(...)`,
+  `with_sync_config(...)`, `with_dhcp_integration_config(...)` or `with_display_cache_config(...)` from
+  `tests/utils.py`: a class, method or `with`
+  decorator that restores the value.
   `_ViewTestBase` turns the lease-query guard off (`lease_query_max_unpaged_leases=0`).
 
 ## Key Patterns

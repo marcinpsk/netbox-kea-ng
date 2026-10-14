@@ -73,7 +73,7 @@ The historical first-complete timestamp is never reset. A newly enabled unobserv
 until its required workflow completes that scope. Barrier decisions use receipts, rather than the historical timestamp alone.
 A Run Now invocation cannot silently treat an incomplete or narrower source run as the Server completion.
 Normal last-link rules apply once relevant Servers complete their required initial observations.
-Final adopted-link cleanup locks all current ownership links before the Server and Sync Configuration tables, then reads current scope.
+Final adopted-link cleanup locks all current ownership links before the Server, Sync Configuration and DHCP Plugin Integration tables, then reads current scope.
 These locks are nonblocking. A busy owner or policy write fails only its cleanup row and keeps the object.
 The next sync retries that row. This also prevents Server cascade deadlocks within a DHCP import transaction.
 Locks stay until the owning transaction commits. DHCP imports can hold them across several rows.
