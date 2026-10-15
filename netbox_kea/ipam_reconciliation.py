@@ -737,9 +737,9 @@ def _ownership(
     """Return the ownership of the object of each key among *rows* by *source* of *server* and *family*, in two queries.
 
     An object is ``synchronized`` when it has a marker and a link of this Server, family and source; any link counts,
-    adopted and stale-marked included. A marker without such a link is ``not-synchronized``, and no marker is ``unmarked``. A key
-    with an object that *user* may not view is ``hidden``, also when it has duplicate rows that the user may view.
-    Else the first duplicate row by pk decides, as in a claim.
+    adopted and stale-marked included. A marker without such a link is ``not-synchronized``, and no marker is
+    ``unmarked``. A key with an object that *user* may not view is ``hidden``, also when it has duplicate rows that the
+    user may view. Else the first duplicate row by pk decides, as in a claim.
     """
     if not keys:
         return {}
