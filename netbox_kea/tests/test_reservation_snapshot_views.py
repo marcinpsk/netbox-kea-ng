@@ -1000,6 +1000,7 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
     """An Unknown Reservation Match shows its reason, so "could not check" never looks like "not reserved"."""
 
     _MAC = "aa:bb:cc:dd:ee:ff"
+    _DUID = "00:01:02:03:04:05"
     # A Current Lease, so a row that offers no Sync shows that the match withholds it.
     lease = lease_record("198.18.0.20", subnet_id=20, hw_address=_MAC, drop=("client-id",))
 
@@ -1013,6 +1014,22 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         with stub_kea(responses):
             return self.client.get(url, {"by": "ip", "q": "198.18.0.20"}, HTTP_HX_REQUEST="true")
+
+    def _get_prefix(self, reservation_get, *, catalogue: dict):
+        """Search the DHCPv6 Lease page for the delegated prefix of the client *_DUID*."""
+        prefix = lease_record(
+            "2001:db8:100::", type="IA_PD", prefix_len=56, subnet_id=30, duid=self._DUID, drop=("hw-address",)
+        )
+
+        def lease6_get(body):
+            if body["arguments"].get("type") == "IA_PD":
+                return {"result": 0, "arguments": prefix}
+            return {"result": 3, "text": "Lease not found."}
+
+        responses = {**catalogue, "lease6-get": lease6_get, "reservation-get": reservation_get}
+        url = reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+        with stub_kea(responses):
+            return self.client.get(url, {"by": "ip", "q": "2001:db8:100::"}, HTTP_HX_REQUEST="true")
 
     def test_each_unknown_reason_shows_the_badge_with_its_reason(self):
         global_on = {"reservations-global": True}
@@ -1072,8 +1089,21 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
                 _hosts({"subnet-id": 20, "hw-address": self._MAC, "ip-address": "198.18.0.20"}),
                 {"catalogue": _catalogue_responses(4, 20, "198.18.0.0/24", global_settings={"reservations-global": 1})},
                 (
-                    "The configuration does not show the reservation flags or the Pools of this Subnet,"
+                    "The configuration does not show the reservation flags of this Subnet,"
                     " so it is not known whether Kea applies this Reservation."
+                ),
+            ),
+            (
+                "Pools",
+                _hosts({"subnet-id": 30, "duid": self._DUID, "prefixes": ["2001:db8:200::/56"]}),
+                {
+                    "catalogue": _catalogue_responses(
+                        6, 30, "2001:db8::/64", global_settings={"reservations-out-of-pool": True}
+                    )
+                },
+                (
+                    "The configuration does not show the Pools of this Subnet,"
+                    " and reservations-out-of-pool decides whether Kea gives the reserved address or prefix."
                 ),
             ),
         )
@@ -1081,7 +1111,10 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
         self.assertIsNotNone(unreserved.get("sync_url"), "the control: an Unreserved Current Lease offers Sync")
         for label, reservation_get, changes, reason in cases:
             with self.subTest(label):
-                response = self._get(reservation_get, **changes)
+                if label == "Pools":
+                    response = self._get_prefix(reservation_get, **changes)
+                else:
+                    response = self._get(reservation_get, **changes)
 
                 self.assertEqual(response.status_code, 200)
                 [badge] = _reserved_badges(response)
@@ -1154,7 +1187,7 @@ class TestReservationIgnoredBadgeOnLeases(_ViewTestBase):
             ),
             (
                 "out of pool",
-                in_subnet,
+                {**in_subnet, "ip-address": "198.18.0.30"},
                 {"reservations-out-of-pool": True},
                 (pool,),
                 "a",

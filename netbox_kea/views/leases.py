@@ -1160,8 +1160,13 @@ def _unknown_badge_title(reason: UnknownReservationMatch) -> str:
             )
         case UnknownReservationMatch.RESERVATION_FLAGS_UNKNOWN:
             return (
-                "The configuration does not show the reservation flags or the Pools of this Subnet,"
+                "The configuration does not show the reservation flags of this Subnet,"
                 " so it is not known whether Kea applies this Reservation."
+            )
+        case UnknownReservationMatch.POOLS_UNKNOWN:
+            return (
+                "The configuration does not show the Pools of this Subnet,"
+                " and reservations-out-of-pool decides whether Kea gives the reserved address or prefix."
             )
         # The page shows one notice for the whole table.
         case UnknownReservationMatch.RESERVATION_HOOK_UNAVAILABLE:

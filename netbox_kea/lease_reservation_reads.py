@@ -41,6 +41,7 @@ from .reservations import (
     current_lease_presence,
     lease_identities,
     reservation_match,
+    tries_global_reservation,
 )
 from .subnet_catalogue import CatalogueSnapshot, VerifiedSubnet
 
@@ -304,6 +305,8 @@ class _ReservationLookups:
         lease, subnet = row
         try:
             found = self.reservation_of(clients, lease, subnet)
+            tries_global = found is not None and tries_global_reservation(lease, subnet, found)
+            global_found = self._global(clients, lease, subnet) if tries_global else None
         except KeaException as exc:
             logger.debug(
                 "Kea refused a Reservation lookup of server %s: result %s", self._server.pk, exc.response.get("result")
@@ -322,7 +325,8 @@ class _ReservationLookups:
         except ValueError as exc:
             logger.debug("A Reservation lookup of server %s was not valid: %s", self._server.pk, type(exc).__name__)
             return ReservationMatchUnknown(UnknownReservationMatch.INVALID_READ)
-        return reservation_match(lease, subnet, found, self._catalogue.shared_network_subnets(subnet))
+        shared_network = self._catalogue.shared_network_subnets(subnet)
+        return reservation_match(lease, subnet, found, shared_network, global_reservation=global_found)
 
 
 def reservation_matches(

@@ -11,6 +11,8 @@ from datetime import datetime
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
+from typing_extensions import assert_never
+
 from .constants import Family, IPAddressValue, Persistence
 from .dhcp_options import DHCPOption, parse_dhcp_options
 from .identifiers import normalize_hex
@@ -241,8 +243,10 @@ class UnknownReservationMatch(Enum):
     RESERVATION_HOOK_UNAVAILABLE = auto()
     #: A reserved address outside the Lease's Subnet changes the match, and Kea can give it or not.
     UNKNOWN_SHARED_NETWORK = auto()
-    #: The configuration does not show the reservation flags or the Pools that decide whether Kea applies the match.
+    #: The configuration does not show the reservation flags that decide whether Kea applies the Reservation.
     RESERVATION_FLAGS_UNKNOWN = auto()
+    #: reservations-out-of-pool applies, and the configuration does not show the Pools that decide the match.
+    POOLS_UNKNOWN = auto()
 
 
 class IgnoredReservationReason(Enum):
@@ -252,7 +256,8 @@ class IgnoredReservationReason(Enum):
     GLOBAL_RESERVATIONS_DISABLED = auto()
     #: The Reservation is In-Subnet, and the Subnet sets reservations-in-subnet to false.
     IN_SUBNET_RESERVATIONS_DISABLED = auto()
-    #: The Subnet sets reservations-out-of-pool, and each reserved address that counts is in a Pool of the Subnet.
+    #: The Subnet sets reservations-out-of-pool, each reserved allocation of the Lease kind is in a Pool of the Subnet,
+    #: and the Lease does not hold one of them.
     OUT_OF_POOL = auto()
 
 
@@ -335,6 +340,8 @@ def reservation_match(
     subnet: VerifiedSubnet,
     reservation: Reservation | None,
     shared_network: tuple[VerifiedSubnet, ...] | None,
+    *,
+    global_reservation: Reservation | None,
 ) -> ReservationMatch:
     """Return how *reservation*, which the lookups of *lease* found in *subnet* or globally, relates to *lease*.
 
@@ -342,17 +349,27 @@ def reservation_match(
     ``None`` is a Shared Network that the Catalogue cannot show. A Reservation of a scope that the reservation flags
     of *subnet* disable is ignored: the lookups try the enabled scopes first. Global and In-Subnet Reservations
     follow one rule: a reserved address counts in *subnet*, and a reserved delegated prefix always counts. With
-    reservations-out-of-pool, an In-Subnet reserved address in a Pool of *subnet* does not count. The match is
-    Unknown when a fact that the configuration does not show changes it.
+    reservations-out-of-pool, an In-Subnet reserved allocation in a Pool of *subnet* does not count, but a Lease of
+    a reserved allocation stays Reserved. When the In-Subnet Reservation gives no allocation of the Lease kind, Kea
+    tries *global_reservation*, the Global Reservation of the client: the lookups read it only where
+    ``tries_global_reservation()`` is true. The match is Unknown when a fact that the configuration does not show
+    changes it.
 
     Raises:
-        ValueError: If *subnet* is not the Subnet of *lease*, or *shared_network* does not hold *subnet*.
+        ValueError: If *subnet* is not the Subnet of *lease*, *shared_network* does not hold *subnet*, or
+            *global_reservation* is not a Global Reservation that Kea tries after *reservation*.
 
     """
     if lease.subnet_id != subnet.subnet_id:
         raise ValueError("The Reservation Match of a Lease needs the Subnet of the Lease.")
     if shared_network is not None and subnet not in shared_network:
         raise ValueError("The Shared Network of a Reservation Match must hold the Subnet of the Lease.")
+    if global_reservation is not None and (
+        reservation is None
+        or not isinstance(global_reservation.scope, GlobalReservationScope)
+        or not tries_global_reservation(lease, subnet, reservation)
+    ):
+        raise ValueError("A Reservation Match tries a Global Reservation only where Kea tries it.")
     if reservation is None:
         if lease_identities(lease).foreign:
             return ReservationMatchUnknown(UnknownReservationMatch.FOREIGN_IDENTIFIER)
@@ -365,27 +382,112 @@ def reservation_match(
         return IgnoredReservation(reservation, IgnoredReservationReason.IN_SUBNET_RESERVATIONS_DISABLED)
     if not in_subnet and not flags.global_:
         return IgnoredReservation(reservation, IgnoredReservationReason.GLOBAL_RESERVATIONS_DISABLED)
-    out_of_pool = in_subnet and flags.out_of_pool
+    fallback = None
+    if global_reservation is not None:
+        fallback = reservation_match(lease, subnet, global_reservation, shared_network, global_reservation=None)
+    return _applied_match(
+        lease, subnet, reservation, shared_network, out_of_pool=in_subnet and flags.out_of_pool, fallback=fallback
+    )
+
+
+def _applied_match(
+    lease: Lease,
+    subnet: VerifiedSubnet,
+    reservation: Reservation,
+    shared_network: tuple[VerifiedSubnet, ...] | None,
+    *,
+    out_of_pool: bool,
+    fallback: ReservationMatch | None,
+) -> ReservationMatch:
+    """Return the match of *reservation*, of a scope that *subnet* applies; *fallback* is the Global match Kea tries."""
+    prefix_lease = isinstance(lease, DHCPv6PrefixLease)
     addresses = _reserved_addresses(reservation, subnet, shared_network, out_of_pool=out_of_pool)
     # Kea also checks a reserved prefix against the PD Pools, and the configuration facts do not hold them.
-    prefixes = () if out_of_pool else reservation.delegated_prefixes
-    prefix_unknown = reservation.delegated_prefixes if out_of_pool else ()
+    prefixes_unknown = out_of_pool and prefix_lease
+    prefixes = () if prefixes_unknown else reservation.delegated_prefixes
+    prefix_unknown = reservation.delegated_prefixes if prefixes_unknown else ()
+    holds = _holds_allocation(lease, reservation)
 
-    def outcome(counted: tuple[IPAddressValue, ...], delegated: tuple[ipaddress.IPv6Network, ...]) -> ReservationMatch:
-        if addresses.in_pool and not counted and not delegated:
+    def outcome(
+        counted: tuple[IPAddressValue, ...], delegated: tuple[ipaddress.IPv6Network, ...], excluded: bool
+    ) -> ReservationMatch:
+        """Return the match when *counted* and *delegated* count, and *excluded* says a Pool excludes the Lease kind."""
+        own = delegated if prefix_lease else counted
+        # DHCPv4 goes on to the Global address only past an excluded one; DHCPv6 past any IA without an allocation.
+        if fallback is not None and _gives_allocation(fallback) and not own and (excluded or lease.family == 6):
+            return fallback
+        if holds:
+            return _allocation_match(lease, reservation, reservation.addresses, reservation.delegated_prefixes)
+        if excluded and not own:
             return IgnoredReservation(reservation, IgnoredReservationReason.OUT_OF_POOL)
         return _allocation_match(lease, reservation, counted, delegated)
 
-    match = outcome(addresses.counted, prefixes)
-    for reason, extra_addresses, extra_prefixes in (
-        (UnknownReservationMatch.RESERVATION_FLAGS_UNKNOWN, addresses.pool_unknown, prefix_unknown),
-        (UnknownReservationMatch.UNKNOWN_SHARED_NETWORK, addresses.possible, ()),
+    known_excluded = False if prefix_lease else addresses.in_pool
+    excluded = bool(prefix_unknown) if prefix_lease else addresses.in_pool or bool(addresses.pool_unknown)
+    match = outcome(addresses.counted, prefixes, excluded)
+    if isinstance(match, ReservationMatchUnknown):
+        return match
+    for reason, alternative in (
+        (
+            UnknownReservationMatch.POOLS_UNKNOWN,
+            ((*addresses.counted, *addresses.pool_unknown), (*prefixes, *prefix_unknown), known_excluded)
+            if addresses.pool_unknown or prefix_unknown
+            else None,
+        ),
+        (
+            UnknownReservationMatch.UNKNOWN_SHARED_NETWORK,
+            ((*addresses.counted, *addresses.possible), prefixes, excluded) if addresses.possible else None,
+        ),
     ):
-        if (extra_addresses or extra_prefixes) and match != outcome(
-            (*addresses.counted, *extra_addresses), (*prefixes, *extra_prefixes)
-        ):
+        if alternative is not None and match != outcome(*alternative):
             return ReservationMatchUnknown(reason)
     return match
+
+
+def tries_global_reservation(lease: Lease, subnet: VerifiedSubnet, reservation: Reservation) -> bool:
+    """Return whether Kea can try the Global Reservation of the client of *lease* after *reservation*.
+
+    Only an In-Subnet Reservation that can give no allocation of the Lease kind qualifies, in a Subnet that applies
+    both scopes. DHCPv4 goes on when reservations-out-of-pool can exclude the reserved address. DHCPv6 goes on when
+    the Reservation holds an allocation, the Lease holds none of them, and none of the Lease kind can count.
+    """
+    flags = subnet.reservation_flags
+    if flags is None or not (flags.in_subnet and flags.global_):
+        return False
+    if not isinstance(reservation.scope, InSubnetReservationScope):
+        return False
+    if lease.family == 4:
+        return flags.out_of_pool and any(
+            address in subnet.network and _pool_holds(address, subnet) is not False for address in reservation.addresses
+        )
+    own = reservation.delegated_prefixes if isinstance(lease, DHCPv6PrefixLease) else reservation.addresses
+    holds_any = bool(reservation.addresses or reservation.delegated_prefixes)
+    return holds_any and not _holds_allocation(lease, reservation) and (flags.out_of_pool or not own)
+
+
+def _holds_allocation(lease: Lease, reservation: Reservation) -> bool:
+    """Return whether *reservation* reserves the allocation of *lease*."""
+    if isinstance(lease, DHCPv6PrefixLease):
+        return lease.prefix in reservation.delegated_prefixes
+    return lease.address in reservation.addresses
+
+
+def _gives_allocation(match: ReservationMatch) -> bool:
+    """Return whether *match*, of a Global Reservation, gives an allocation of the Lease kind, or can give one."""
+    match match:
+        case Reserved() | StaleMac() | PendingAddressChange() | ReservationMatchUnknown():
+            return True
+        case HostOnlyReservation() | OtherKindReservation() | IgnoredReservation() | Unreserved():
+            return False
+        case _:
+            assert_never(match)
+
+
+def _pool_holds(address: IPAddressValue, subnet: VerifiedSubnet) -> bool | None:
+    """Return whether a Pool of *subnet* holds *address*; None when the configuration does not show the Pools."""
+    if subnet.configuration is None:
+        return None
+    return any(pool.contains(address) for pool in subnet.configuration.pools)
 
 
 @dataclass(frozen=True)
@@ -410,16 +512,16 @@ def _reserved_addresses(
     out_of_pool: bool,
 ) -> _ReservedAddresses:
     """Sort the reserved addresses of *reservation* for *subnet*, the Subnet of the Lease."""
-    pools = None if subnet.configuration is None else subnet.configuration.pools
     counted: list[IPAddressValue] = []
     in_pool = False
     pool_unknown: list[IPAddressValue] = []
     possible: list[IPAddressValue] = []
     for address in reservation.addresses:
         if address in subnet.network:
-            if out_of_pool and pools is None:
+            pool_holds = _pool_holds(address, subnet) if out_of_pool else False
+            if pool_holds is None:
                 pool_unknown.append(address)
-            elif out_of_pool and pools is not None and any(pool.contains(address) for pool in pools):
+            elif pool_holds:
                 in_pool = True
             else:
                 counted.append(address)
