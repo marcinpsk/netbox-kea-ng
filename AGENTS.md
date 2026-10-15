@@ -219,7 +219,7 @@ URL request
   → lease_reads.py      (the cached Lease Snapshot reads of the Leases tab and of the Lease badges; ADR 0009)
   → lease_reservation_reads.py (Current Lease Presence of Reservation rows and Reservation Match of Lease rows:
                         cached lookups in one worker pool)
-  → sync.py             (read-only IPAM badges and DCIM MAC synchronization)
+  → sync.py             (the aggregate Reservation Synchronization State and DCIM MAC synchronization)
   → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
   → ipam_marker.py     (the `[kea-sync: <kind>]` description marker: parse, rewrite, legacy text; ADR 0006)
   → jobs.py             (KeaIpamSyncJob — periodic background sync)
@@ -337,8 +337,8 @@ URL request
   `read_identity`, mutation scopes) never read or fill the cache. `fan_out` pins the settings row for its workers
   (see "Settings singletons"). The test fixture `_plugin_cache_hygiene` clears `display_cache.KEY_PREFIX`
   around each test.
-- **`sync.py`**: reads IPAM rows for synchronization badges and synchronizes DCIM MAC addresses.
-  IPAM creation, status changes and cleanup belong to `ipam_reconciliation.py`.
+- **`sync.py`**: builds the aggregate Reservation Synchronization State and synchronizes DCIM MAC addresses.
+  IPAM ownership reads, creation, status changes and cleanup belong to `ipam_reconciliation.py`.
 - **`ipam_reconciliation.py`**: `reconcile(server, family, phases) -> SyncReport` (ADR 0006). The job's
   lease, Reservation, Subnet and Pool phases run through it: it links each reported IPAM object in `Server.sync_vrf` under
   an advisory lock on the identity and a row lock, the status comes from the live links, and a complete
@@ -630,7 +630,9 @@ resort, reserved for true external boundaries you cannot run locally.
   no allocation of the Lease kind, for example under `reservations-out-of-pool`), the Global
   Reservation is read too. One call reads each lookup once. `reservations.reservation_match()`
   is the rule, and the view maps each outcome to its badge, links and Sync with `match` and
-  `assert_never`.
+  `assert_never`. The NetBox IP column shows the Lease Synchronization State of each Current Lease from one
+  ownership read per page: `ipam_reconciliation.address_ownership()` (source `lease`) and `prefix_ownership()`
+  (source `lease-prefix`), limited to the objects that the user may view.
 - **Sync lifecycle**: IP status is `dhcp` (dynamic lease only), `reserved`
   (reservation only), or `active` (both). `reconcile()` claims all phase reports
   before it removes stale ownership links for complete phases. An incomplete phase

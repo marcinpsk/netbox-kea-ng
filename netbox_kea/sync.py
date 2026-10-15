@@ -1,11 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""Read-only IPAM synchronization badges and DCIM MAC synchronization."""
+"""The aggregate Reservation Synchronization State and DCIM MAC synchronization."""
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
 from dcim.models import MACAddress
 from django.db.utils import IntegrityError, OperationalError, ProgrammingError
@@ -14,36 +13,7 @@ from netaddr import EUI, AddrFormatError, mac_unix_expanded
 from . import event_scope
 from .reservations import GlobalReservationScope, Reservation, ReservationSynchronizationState
 
-if TYPE_CHECKING:
-    from ipam.models import IPAddress as NbIPAddress
-
 logger = logging.getLogger(__name__)
-
-
-def bulk_fetch_netbox_ips(ip_list: list[str], *, vrf_id: int | None) -> dict[str, NbIPAddress]:
-    """Fetch the NetBox IPAddress objects in VRF *vrf_id* (``None`` is the global table) for host IP strings.
-
-    Returns a ``{ip_str: NbIPAddress}`` mapping containing only the IPs that
-    are present in the NetBox database.  Chunked into batches of 500 to avoid
-    hitting PostgreSQL expression depth limits on large result sets.
-    """
-    from django.db.models import Q
-    from ipam.models import IPAddress as NbIP
-
-    if not ip_list:
-        return {}
-
-    _CHUNK = 500
-    result: dict[str, NbIPAddress] = {}
-    for i in range(0, len(ip_list), _CHUNK):
-        chunk = ip_list[i : i + _CHUNK]
-        query = Q()
-        for ip in chunk:
-            query |= Q(address__net_host=ip)
-        for nb_ip in NbIP.objects.filter(query, vrf_id=vrf_id):
-            host = str(nb_ip.address).split("/")[0]
-            result[host] = nb_ip
-    return result
 
 
 def _update_mac_description(mac_obj: object, hostname: str) -> bool:
