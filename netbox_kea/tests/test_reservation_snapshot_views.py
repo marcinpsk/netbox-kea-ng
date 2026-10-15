@@ -1080,7 +1080,7 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
                 _hosts({"subnet-id": 0, "hw-address": self._MAC, "ip-address": "198.18.1.21"}),
                 {"catalogue": shared},
                 (
-                    "The Reservation holds an address outside this Subnet. Kea can give it through the Shared Network,"
+                    "Kea can give this client an allocation of another Subnet in the Shared Network,"
                     " and the configuration does not show whether it does."
                 ),
             ),

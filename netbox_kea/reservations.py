@@ -241,7 +241,7 @@ class UnknownReservationMatch(Enum):
     FOREIGN_IDENTIFIER = auto()
     #: Kea does not know a Reservation command, so no Lease of the Server has a known match.
     RESERVATION_HOOK_UNAVAILABLE = auto()
-    #: A reserved address outside the Lease's Subnet changes the match, and Kea can give it or not.
+    #: Kea can give an allocation of another Subnet of the Shared Network, which changes the match, or not.
     UNKNOWN_SHARED_NETWORK = auto()
     #: The configuration does not show the reservation flags that decide whether Kea applies the Reservation.
     RESERVATION_FLAGS_UNKNOWN = auto()
@@ -350,9 +350,12 @@ def reservation_match(
     of *subnet* disable is ignored: the lookups try the enabled scopes first. Global and In-Subnet Reservations
     follow one rule: a reserved address counts in *subnet*, and a reserved delegated prefix always counts. With
     reservations-out-of-pool, an In-Subnet reserved allocation in a Pool of *subnet* does not count, but a Lease of
-    a reserved allocation stays Reserved. When the In-Subnet Reservation gives no allocation of the Lease kind, Kea
-    tries *global_reservation*, the Global Reservation of the client: the lookups read it only where
-    ``tries_global_reservation()`` is true. The match is Unknown when a fact that the configuration does not show
+    a reserved allocation stays Reserved. When the In-Subnet Reservation holds allocations but gives none of the
+    Lease kind, Kea tries *global_reservation*, the Global Reservation of the client: the lookups read it only where
+    ``tries_global_reservation()`` is true. An In-Subnet Reservation of no allocation stays Host-Only. When the
+    Global Reservation gives an allocation, the match is Unknown with other Subnets in *shared_network* or with no
+    *shared_network*, because Kea tries their In-Subnet Reservations first. Else DHCPv6 takes the Global match, and
+    DHCPv4 gives the In-Subnet address. The match is Unknown when a fact that the configuration does not show
     changes it.
 
     Raises:
@@ -415,7 +418,7 @@ def _applied_match(
         own = delegated if prefix_lease else counted
         # DHCPv4 goes on to the Global address only past an excluded one; DHCPv6 past any IA without an allocation.
         if fallback is not None and _gives_allocation(fallback) and not own and (excluded or lease.family == 6):
-            return fallback
+            return _fallback_match(lease, subnet, reservation, shared_network, fallback)
         if holds:
             return _allocation_match(lease, reservation, reservation.addresses, reservation.delegated_prefixes)
         if excluded and not own:
@@ -444,12 +447,34 @@ def _applied_match(
     return match
 
 
+def _fallback_match(
+    lease: Lease,
+    subnet: VerifiedSubnet,
+    reservation: Reservation,
+    shared_network: tuple[VerifiedSubnet, ...] | None,
+    fallback: ReservationMatch,
+) -> ReservationMatch:
+    """Return the match when Kea goes on past *reservation*, and *fallback*, the Global match, gives an allocation.
+
+    Kea walks the In-Subnet Reservations of the other Subnets of the Shared Network first, and the lookups do not
+    read them. In DHCPv4, the applied Global address only selects *subnet*: ``currentHost()`` is then *reservation*,
+    so Kea gives its address, also in a Pool.
+    """
+    if shared_network is None or len(shared_network) > 1:
+        return ReservationMatchUnknown(UnknownReservationMatch.UNKNOWN_SHARED_NETWORK)
+    if isinstance(fallback, ReservationMatchUnknown) or lease.family == 6:
+        return fallback
+    local = tuple(address for address in reservation.addresses if address in subnet.network)
+    return _allocation_match(lease, reservation, local, ())
+
+
 def tries_global_reservation(lease: Lease, subnet: VerifiedSubnet, reservation: Reservation) -> bool:
     """Return whether Kea can try the Global Reservation of the client of *lease* after *reservation*.
 
     Only an In-Subnet Reservation that can give no allocation of the Lease kind qualifies, in a Subnet that applies
     both scopes. DHCPv4 goes on when reservations-out-of-pool can exclude the reserved address. DHCPv6 goes on when
-    the Reservation holds an allocation, the Lease holds none of them, and none of the Lease kind can count.
+    the Reservation holds an allocation, the Lease holds none of them, and no local allocation of the Lease kind
+    counts or can count. A Reservation of no allocation stops Kea in both families.
     """
     flags = subnet.reservation_flags
     if flags is None or not (flags.in_subnet and flags.global_):
@@ -460,9 +485,15 @@ def tries_global_reservation(lease: Lease, subnet: VerifiedSubnet, reservation: 
         return flags.out_of_pool and any(
             address in subnet.network and _pool_holds(address, subnet) is not False for address in reservation.addresses
         )
-    own = reservation.delegated_prefixes if isinstance(lease, DHCPv6PrefixLease) else reservation.addresses
-    holds_any = bool(reservation.addresses or reservation.delegated_prefixes)
-    return holds_any and not _holds_allocation(lease, reservation) and (flags.out_of_pool or not own)
+    if not (reservation.addresses or reservation.delegated_prefixes) or _holds_allocation(lease, reservation):
+        return False
+    # A reserved prefix counts, or the PD Pools that the configuration does not show can let it count.
+    if isinstance(lease, DHCPv6PrefixLease):
+        return not reservation.delegated_prefixes
+    return all(
+        flags.out_of_pool and address in subnet.network and _pool_holds(address, subnet) is True
+        for address in reservation.addresses
+    )
 
 
 def _holds_allocation(lease: Lease, reservation: Reservation) -> bool:

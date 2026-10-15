@@ -1155,7 +1155,7 @@ def _unknown_badge_title(reason: UnknownReservationMatch) -> str:
             return "No Reservation matched, and this lease carries a client identifier that no Reservation can hold."
         case UnknownReservationMatch.UNKNOWN_SHARED_NETWORK:
             return (
-                "The Reservation holds an address outside this Subnet. Kea can give it through the Shared Network,"
+                "Kea can give this client an allocation of another Subnet in the Shared Network,"
                 " and the configuration does not show whether it does."
             )
         case UnknownReservationMatch.RESERVATION_FLAGS_UNKNOWN:

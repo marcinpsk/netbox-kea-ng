@@ -36,9 +36,11 @@ SPDX-License-Identifier: Apache-2.0
   exclude the Reservation of the client, the row shows *Reservation Ignored* with the flag, and offers
   *Sync*, because the lease is a dynamic one. With `reservations-out-of-pool`, Kea does not give a
   reserved address that is inside a Pool, but it renews a lease that already holds it, so that row
-  shows *Reserved*. When the Subnet also applies Global Reservations, Kea gives the Global reserved
-  address of the client in place of the excluded one. DHCPv4 does this also for a lease that holds the
-  excluded address.
+  shows *Reserved*. When the Subnet also applies Global Reservations and the client has a Global
+  reserved address that Kea can give, DHCPv6 gives the Global address, and DHCPv4 gives the excluded
+  local address after all. In a Shared Network, Kea first tries the Reservations of the other Subnets,
+  which the plugin does not read, so that row shows *Reservation Unknown*. A Reservation of no address
+  stops Kea before the Global Reservation.
 - When the plugin cannot find out how a lease relates to a Reservation, the row shows *Reservation
   Unknown* with the reason, and offers no *Sync* and no *+ Reserve*. When Kea does not load the
   `host_cmds` hook, the page shows one notice instead.

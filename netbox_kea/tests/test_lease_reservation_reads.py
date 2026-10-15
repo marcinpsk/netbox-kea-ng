@@ -851,6 +851,19 @@ class ReservationMatchTest(_ViewTestBase):
                 match = reservation_match(typed_lease(lease), hidden, reservation, (hidden,), global_reservation=None)
                 self.assertEqual(match, outcome)
 
+    def test_dhcpv6_reads_no_global_reservation_when_a_local_allocation_of_the_lease_kind_counts(self):
+        """allocateReservedLeases6 gives the local address outside the Pool and returns before the Global host."""
+        settings = {"reservations-out-of-pool": True, **_GLOBAL_RESERVATIONS}
+        pool6 = {"pools": [{"pool": "2001:db8::100 - 2001:db8::200"}]}
+        catalogue = _catalogue_responses_for_subnets(6, [{**_SUBNETS[6][0], **pool6}], global_settings=settings)
+        lease = lease_record("2001:db8::160", subnet_id=30, duid=_DUID, drop=("hw-address",))
+        local = {"subnet-id": 30, "duid": _DUID, "ip-addresses": ["2001:db8::50"]}
+        global_ = {"subnet-id": 0, "duid": _DUID, "ip-addresses": ["2001:db8::60"]}
+        with with_display_cache_config(leases_ttl=0):
+            (match,), kea = self._matches([lease], _kea_hosts(local, global_), family=6, responses=catalogue)
+        self.assertEqual(match, _pending("2001:db8::50")(_typed_reservation(local)))
+        self.assertNotIn(0, [subnet_id for subnet_id, _key in _lookups(kea)], "no Global lookup")
+
     def test_kea_tries_the_global_reservation_when_the_in_subnet_one_gives_no_allocation_of_the_lease_kind(self):
         """DHCPv4 hasAddressReservation and DHCPv6 allocateReservedLeases6 go on to the Global Reservation."""
         pool4 = {"pools": [{"pool": "198.18.0.100 - 198.18.0.200"}]}
@@ -865,7 +878,27 @@ class ReservationMatchTest(_ViewTestBase):
         pool6 = {"pools": [{"pool": "2001:db8::100 - 2001:db8::200"}]}
         subnet6 = _catalogue_responses_for_subnets(6, [{**_SUBNETS[6][0], **pool6}], global_settings=out_of_pool6)
         plain6 = _catalogue_responses_for_subnets(6, _SUBNETS[6], global_settings=_GLOBAL_RESERVATIONS)
+        alone4 = _catalogue_responses_for_subnets(
+            4, [{**_SUBNETS[4][0], **pool4, "reservations-out-of-pool": True}], global_settings=_GLOBAL_RESERVATIONS
+        )
+        hidden4 = _catalogue_responses_for_subnets(
+            4,
+            [{**_SUBNETS[4][0], **pool4, "reservations-out-of-pool": True}],
+            shared_networks=[{"name": "shared"}],
+            members={20: "shared"},
+            global_settings=_GLOBAL_RESERVATIONS,
+        )
+        hidden4["subnet4-list"]["arguments"]["subnets"].append({"id": "x", "subnet": "unparsed"})
+        shared6 = _catalogue_responses_for_subnets(
+            6,
+            [{**_SUBNETS[6][0], **pool6}, {"id": 31, "subnet": "2001:db8:1::/64"}],
+            shared_networks=[{"name": "shared"}],
+            members={30: "shared", 31: "shared"},
+            global_settings=out_of_pool6,
+        )
         lease4, held4 = _address_lease("198.18.0.160"), _address_lease("198.18.0.150")
+        local4 = {"subnet-id": 0, "hw-address": _MAC, "ip-address": "198.18.0.50"}
+        outside4 = {"subnet-id": 0, "hw-address": _MAC, "ip-address": "198.19.0.50"}
         lease6, held6 = (
             lease_record(address, subnet_id=30, duid=_DUID, drop=("hw-address",))
             for address in ("2001:db8::160", "2001:db8::150")
@@ -876,10 +909,17 @@ class ReservationMatchTest(_ViewTestBase):
         in_subnet6 = {"subnet-id": 30, "duid": _DUID, "ip-addresses": ["2001:db8::150"]}
         out_of_pool = _ignored(IgnoredReservationReason.OUT_OF_POOL)
         cases = (
-            # The Shared Network case: Kea skips the In-Subnet address in the Pool and gives the Global one in B.
-            ("v4 out-of-pool", 4, shared4, lease4, in_subnet4, global4, global4, _pending("198.18.1.50")),
-            # DHCPv4 looks at the Global address before it renews the Lease of the excluded address.
-            ("v4 held", 4, shared4, held4, in_subnet4, global4, global4, _pending("198.18.1.50")),
+            # An In-Subnet Reservation of a sibling Subnet comes before the Global one, and the plugin does not read it.
+            ("v4 sibling", 4, shared4, lease4, in_subnet4, global4, global4, _unknown_shared_network),
+            ("v4 held, sibling", 4, shared4, held4, in_subnet4, global4, global4, _unknown_shared_network),
+            ("v4 membership not shown", 4, hidden4, lease4, in_subnet4, local4, global4, _unknown_shared_network),
+            ("v6 sibling", 6, shared6, lease6, in_subnet6, global6, global6, _unknown_shared_network),
+            # The Global address applies, and currentHost() is the In-Subnet host, so Kea gives the local address.
+            ("v4 Global address here", 4, alone4, lease4, in_subnet4, local4, in_subnet4, _pending("198.18.0.150")),
+            ("v4 held, Global address here", 4, alone4, held4, in_subnet4, local4, in_subnet4, Reserved),
+            # A Global address outside the only eligible Subnet does not apply.
+            ("v4 Global address outside", 4, alone4, lease4, in_subnet4, outside4, in_subnet4, out_of_pool),
+            ("v4 held, Global address outside", 4, alone4, held4, in_subnet4, outside4, in_subnet4, Reserved),
             (
                 "v4 no Global address",
                 4,
