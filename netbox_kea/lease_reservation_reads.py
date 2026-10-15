@@ -93,7 +93,12 @@ def _pooled(server: Server, family: Family, work: Callable[[WorkerClients, T], R
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(items), _MAX_WORKERS)) as executor:
             futures = [executor.submit(pinned.context().run, work, clients, item) for item in items]
-            return [future.result() for future in futures]
+            try:
+                return [future.result() for future in futures]
+            except BaseException:
+                # The result is lost, so the items that wait for a worker do not run.
+                executor.shutdown(wait=True, cancel_futures=True)
+                raise
     finally:
         clients.close()
 

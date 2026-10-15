@@ -437,6 +437,39 @@ class LeasePresenceLookupTest(_ViewTestBase):
         self.assertTrue(all(owners[client] == thread for client, thread in sent), "a thread used another's client")
         self.assertCountEqual([id(client) for client in closed], [id(client) for client in built])
 
+    def test_a_failed_lookup_cancels_the_lookups_that_wait_for_a_worker(self) -> None:
+        subnet_ids = range(20, 40)
+        reservations = [
+            {
+                "subnet-id": subnet_id,
+                "hw-address": f"aa:bb:cc:dd:ee:{subnet_id:02x}",
+                "ip-address": f"198.18.{subnet_id}.5",
+            }
+            for subnet_id in subnet_ids
+        ]
+        asked: list[int] = []
+        all_workers = threading.Barrier(10, timeout=10)
+        release = threading.Event()
+
+        def leases(body):
+            subnet_id = body["arguments"]["subnet-id"]
+            asked.append(subnet_id)
+            if subnet_id < 30:
+                all_workers.wait()
+            if subnet_id == 20:
+                # The other workers finish after the pool has seen the failure.
+                threading.Timer(0.5, release.set).start()
+                raise TypeError("unexpected worker failure")
+            release.wait(timeout=10)
+            return {"result": 3}
+
+        with stub_kea({"lease4-get-by-state": leases}), self.assertRaises(TypeError):
+            lease_presence(self.server, 4, [_typed_reservation(raw) for raw in reservations], read_since=timezone.now())
+
+        # The worker of the failed lookup can take one more lookup before the pool cancels the rest.
+        self.assertLessEqual(set(asked), set(range(20, 31)), "a lookup that waited for a worker ran after the failure")
+        self.assertGreaterEqual(set(asked), set(range(20, 30)))
+
 
 # The Reservation Match of Lease rows.
 
