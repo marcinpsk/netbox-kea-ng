@@ -290,7 +290,8 @@ class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
 
     Used by the Reservation form to warn, without blocking. Server-scoped via ``pk`` so the existing ``Server``
     view permission applies. Returns an empty body when the ``ip`` query param is missing or invalid, or when the
-    sync VRF holds no IP address that the user may view; otherwise renders an advisory HTML fragment.
+    sync VRF holds no IP address that the user may view, or when the IPAM read fails; otherwise renders an advisory
+    HTML fragment.
     """
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
@@ -310,7 +311,11 @@ class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
             return HttpResponse("")
         family = cast("Family", address.version)
         # The read is limited to the IP addresses the user may view, so the advisory leaks no field of another one.
-        (found,) = address_ownership(server, family, RESERVATION, [str(address)], request.user).values()
+        try:
+            (found,) = address_ownership(server, family, RESERVATION, [str(address)], request.user).values()
+        except DatabaseError:
+            logger.exception("Could not read NetBox IPAM state for the Reservation advisory")
+            return HttpResponse("")
         if found.ip is None:
             return HttpResponse("")
         return render(request, "netbox_kea/inc/reservation_ip_check.html", {"nb_ip": found.ip, "state": found.state})

@@ -1293,6 +1293,24 @@ class TestReservationCheckNetboxIPView(_SyncViewBase):
         self.assertIn("alert-warning", body)
         self.assertIn("Router loopback", body)
 
+    def test_empty_when_the_ipam_read_fails(self):
+        from django.db import DatabaseError, connection
+
+        NbIP.objects.create(address="10.0.40.9/24", status="active", description="Router loopback")
+
+        def fail_ipam_reads(execute, sql, params, many, context):
+            if "ipam_ipaddress" in sql:
+                raise DatabaseError("read failed")
+            return execute(sql, params, many, context)
+
+        with (
+            connection.execute_wrapper(fail_ipam_reads),
+            self.assertLogs("netbox_kea.views.sync_views", level="ERROR"),
+        ):
+            response = self.client.get(self._url(), {"ip": "10.0.40.9"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content.decode().strip(), "")
+
 
 class TestLeaseSyncByKindWithAutomaticSync(TestLeaseSyncByKind):
     """The same permission, current-use and fact checks hold when every automatic sync flag is on."""
