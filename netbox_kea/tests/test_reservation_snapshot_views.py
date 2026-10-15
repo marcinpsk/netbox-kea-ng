@@ -1001,8 +1001,11 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
 
     _MAC = "aa:bb:cc:dd:ee:ff"
     _DUID = "00:01:02:03:04:05"
-    # A Current Lease, so a row that offers no Sync shows that the match withholds it.
-    lease = lease_record("198.18.0.20", subnet_id=20, hw_address=_MAC, drop=("client-id",))
+
+    def setUp(self):
+        super().setUp()
+        # A Current Lease, so a row that offers no Sync shows that the match withholds it; cltt is the test's start.
+        self.lease = lease_record("198.18.0.20", subnet_id=20, hw_address=self._MAC, drop=("client-id",))
 
     def _get(self, reservation_get, *, lease: dict | None = None, catalogue: dict | None = None):
         responses = catalogue or _catalogue_responses(4, 20, "198.18.0.0/24")
@@ -1144,7 +1147,11 @@ class TestReservationIgnoredBadgeOnLeases(_ViewTestBase):
     """Kea ignores a Reservation that the flags of the Lease's Subnet exclude, so the Lease is dynamic."""
 
     _MAC = "aa:bb:cc:dd:ee:ff"
-    lease = lease_record("198.18.0.20", subnet_id=20, hw_address=_MAC, drop=("client-id",))
+
+    def setUp(self):
+        super().setUp()
+        # A Current Lease: cltt is the test's start, so the Lease stays inside its valid lifetime.
+        self.lease = lease_record("198.18.0.20", subnet_id=20, hw_address=self._MAC, drop=("client-id",))
 
     def _get(self, host: dict, *, pools=(), **global_settings):
         responses = {
