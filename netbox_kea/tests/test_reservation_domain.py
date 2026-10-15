@@ -1893,7 +1893,7 @@ class TestSingleServiceReadsNeedOneReply(SimpleTestCase):
 
 
 class TestReservationMatchContract(SimpleTestCase):
-    """The Reservation Match refuses a Subnet or a Shared Network that does not hold the Lease."""
+    """The Reservation Match refuses facts that do not fit the Lease: its Subnet, Shared Network and Global lookup."""
 
     _lease = typed_lease(lease_record("198.18.0.20", subnet_id=20))
     _subnet = _catalogue(4, 20, "198.18.0.0/24").subnets[0]
@@ -1901,8 +1901,13 @@ class TestReservationMatchContract(SimpleTestCase):
 
     def test_a_subnet_that_is_not_the_subnet_of_the_lease_is_refused(self):
         with self.assertRaisesRegex(ValueError, "needs the Subnet of the Lease"):
-            reservation_match(self._lease, self._other, None, None)
+            reservation_match(self._lease, self._other, None, None, global_reservation=None)
 
     def test_a_shared_network_that_does_not_hold_the_subnet_of_the_lease_is_refused(self):
         with self.assertRaisesRegex(ValueError, "must hold the Subnet of the Lease"):
-            reservation_match(self._lease, self._subnet, None, (self._other,))
+            reservation_match(self._lease, self._subnet, None, (self._other,), global_reservation=None)
+
+    def test_a_global_reservation_where_kea_does_not_try_one_is_refused(self):
+        global_reservation = _typed_reservation({"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:ff"})
+        with self.assertRaisesRegex(ValueError, "only where Kea tries it"):
+            reservation_match(self._lease, self._subnet, None, None, global_reservation=global_reservation)
