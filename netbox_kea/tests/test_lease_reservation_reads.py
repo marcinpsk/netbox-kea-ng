@@ -455,6 +455,10 @@ def _prefix_lease(prefix: str = _PREFIX) -> dict:
     return lease_record(address, type="IA_PD", prefix_len=int(length), subnet_id=30, duid=_DUID, drop=("hw-address",))
 
 
+def _allocation(text: str) -> Any:
+    return ipaddress.ip_network(text) if "/" in text else ipaddress.ip_address(text)
+
+
 def _kea_hosts(*hosts: dict):
     """Answer each reservation-get as Kea does: by Subnet and address (a prefix by its base), or by identifier."""
 
@@ -525,14 +529,44 @@ class ReservationMatchTest(_ViewTestBase):
             with self.subTest(host=host):
                 self.assertEqual(self._match(lease, host, family=family), Reserved(_typed_reservation(host)))
 
-    def test_a_global_reservation_of_another_address_or_of_nothing_is_still_reserved(self):
-        """Only In-Subnet Reservations are Pending or Host-Only for now."""
-        for host in (
-            {"subnet-id": 0, "hw-address": _MAC, "ip-address": "198.18.0.21"},
-            {"subnet-id": 0, "hw-address": _MAC, "hostname": "global"},
-        ):
-            with self.subTest(host=host):
-                self.assertEqual(self._match(_address_lease(), host), Reserved(_typed_reservation(host)))
+    def test_a_global_reservation_follows_the_rules_of_an_in_subnet_reservation(self):
+        address6 = lease_record("2001:db8::20", subnet_id=30, duid=_DUID, drop=("hw-address",))
+        cases = (
+            (4, _address_lease(), {"ip-address": "198.18.0.21"}, "pending", ("198.18.0.21",)),
+            (4, _address_lease(), {"hostname": "global"}, "host-only", ()),
+            (4, _address_lease(), {"ip-address": "198.19.0.21"}, "host-only", ()),
+            (4, _address_lease(), {"ip-address": "198.18.0.20"}, "reserved", ()),
+            (6, address6, {"ip-addresses": ["2001:db8::21"]}, "pending", ("2001:db8::21",)),
+            (6, address6, {"hostname": "global", "ip-addresses": [], "prefixes": []}, "host-only", ()),
+            (6, address6, {"ip-addresses": ["2001:db8:1::21"]}, "host-only", ()),
+            (6, address6, {"ip-addresses": ["2001:db8::20"]}, "reserved", ()),
+            (6, address6, {"ip-addresses": ["2001:db8:1::21", "2001:db8::21"]}, "pending", ("2001:db8::21",)),
+            (6, address6, {"ip-addresses": ["2001:db8:1::21", "2001:db8::20"]}, "reserved", ()),
+            (6, _prefix_lease(), {"prefixes": ["2001:db8:100:700::/56"]}, "pending", ("2001:db8:100:700::/56",)),
+            (6, _prefix_lease(), {"hostname": "global", "ip-addresses": [], "prefixes": []}, "host-only", ()),
+            (6, _prefix_lease(), {"prefixes": [_PREFIX]}, "reserved", ()),
+        )
+        for family, lease, allocations, expected, pending in cases:
+            identifier = {"hw-address": _MAC} if family == 4 else {"duid": _DUID}
+            host = {"subnet-id": 0, **identifier, **allocations}
+            with self.subTest(family=family, host=host):
+                reservation = _typed_reservation(host)
+                outcome = {
+                    "pending": PendingAddressChange(reservation, tuple(map(_allocation, pending))),
+                    "host-only": HostOnlyReservation(reservation),
+                    "reserved": Reserved(reservation),
+                }[expected]
+                self.assertEqual(self._match(lease, host, family=family), outcome)
+
+    def test_a_reserved_prefix_counts_in_every_subnet(self):
+        """Kea delegates a prefix of a Global Reservation in any Subnet: it checks only addresses against the Subnet."""
+        host = {"subnet-id": 0, "duid": _DUID, "prefixes": ["2001:db9:700::/56"]}
+
+        match = self._match(_prefix_lease(), host, family=6)
+
+        self.assertEqual(
+            match, PendingAddressChange(_typed_reservation(host), (ipaddress.ip_network("2001:db9:700::/56"),))
+        )
 
     def test_a_reserved_address_of_another_hardware_address_is_a_stale_mac(self):
         host = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "198.18.0.20"}
