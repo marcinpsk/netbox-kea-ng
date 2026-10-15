@@ -227,7 +227,8 @@ omit = ["*/migrations/*", "*/tests/*"]
 
 [tool.coverage.report]
 show_missing = true
-exclude_also = ["raise NotImplementedError"]
+# A `case _:` arm that calls assert_never cannot run: mypy proves the match exhaustive.
+exclude_also = ["raise NotImplementedError", "case _:\\n\\s*assert_never\\("]
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
