@@ -30,6 +30,9 @@ SPDX-License-Identifier: Apache-2.0
   gave them, match the request.
 - A Reservation of the client that holds only the other kind (addresses for a delegated prefix, or
   prefixes for an address) shows as *Reservation*, not *Reserved*, and the row offers no *+ Reserve*.
+- When the plugin cannot find out how a lease relates to a Reservation, the row shows *Reservation
+  Unknown* with the reason, and offers no *Sync* and no *+ Reserve*. When Kea does not load the
+  `host_cmds` hook, the page shows one notice instead.
 - The `lease_added` and `leases_deleted` signals carry typed values (see `netbox_kea/signals.py`).
   `lease_added` sends `creation`, the request that Kea confirmed, and `lease`, the lease that the read
   back observed, or `None` when that read failed or does not match the request. A CSV import sends

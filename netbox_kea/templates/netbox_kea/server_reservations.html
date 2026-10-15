@@ -10,11 +10,7 @@
 <div class="row mb-3">
   <div class="col">
     {% if not hook_available %}
-    <div class="alert alert-warning" role="alert">
-      <i class="mdi mdi-alert-circle-outline"></i>
-      The <strong>host_cmds</strong> hook library is not loaded on this Kea server.
-      Reservation management requires the <code>host_cmds</code> hook.
-    </div>
+    {% include "netbox_kea/inc/host_cmds_unavailable.html" with consequence="Reservation management requires this hook." %}
     {% endif %}
     {% if mutation_unavailable %}
     <div class="alert alert-warning" role="alert">

@@ -310,6 +310,21 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         rows = list(csv.DictReader(io.StringIO(response.content.decode())))
         self.assertEqual([(row.get("Reserved"), row.get("NetBox IP")) for row in rows], [("Reserved", "Synced")])
 
+    def test_the_table_export_shows_an_unknown_reservation_match_as_the_badge_does(self):
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        cases = (
+            ("Unknown", {"result": 1, "text": "host database error"}, "Reservation Unknown"),
+            # The control: an Unreserved row exports the text of its action badge.
+            ("Unreserved", {"result": 3}, "+ Reserve"),
+        )
+        for label, reservation_get, exported in cases:
+            with self.subTest(label), _lease_stub(self._badge_responses(**{"reservation-get": reservation_get})):
+                response = self.client.get(url, {"by": "ip", "q": "192.168.1.100", "export": "table"})
+
+            self.assertEqual(response.status_code, 200)
+            rows = list(csv.DictReader(io.StringIO(response.content.decode())))
+            self.assertEqual([row.get("Reserved") for row in rows], [exported])
+
     def test_no_reserved_badge_when_no_reservation(self):
         """When no reservation exists for the lease IP, no badge is rendered."""
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
@@ -816,7 +831,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
     def _htmx_get(self, url, data):
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
 
-    def test_an_unexpected_lookup_failure_is_logged_and_every_row_offers_no_reservation_action(self):
+    def test_an_unexpected_lookup_failure_is_logged_and_every_row_shows_an_unknown_match_without_actions(self):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         with (
             _reservation_stub(
@@ -839,6 +854,12 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         self.assertIsNone(row["reservation_url"])
         self.assertIsNone(row["create_reservation_url"])
         self.assertIsNone(row.get("sync_url"))
+        cell = BeautifulSoup(str(next(iter(response.context["table"].rows)).get_cell("reserved")), "html.parser")
+        [badge] = cell.select(".badge")
+        self.assertEqual(
+            (badge["class"], badge.get_text(strip=True), badge["title"]),
+            (["badge", "text-bg-warning"], "Reservation Unknown", "The Reservation lookups failed."),
+        )
 
     def test_a_non_integer_subnet_id_excludes_the_lease_with_a_safe_diagnostic(self):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])

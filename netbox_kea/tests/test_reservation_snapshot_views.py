@@ -14,13 +14,15 @@ from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
 from .kea_stub import (
     _catalogue_responses,
+    _catalogue_responses_for_subnets,
     _res_get,
     _res_page,
     complete_lease,
+    lease_record,
     queued,
     stub_kea,
 )
-from .utils import _make_db_server, _ViewTestBase
+from .utils import _make_db_server, _ViewTestBase, with_display_cache_config
 
 
 def _return_url(url: str) -> list[str]:
@@ -967,3 +969,121 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
 
         url = response.context["table"].data.data[0]["create_reservation_url"]
         self.assertEqual(parse_qs(urlsplit(url).query)["hostname"], ["lease.example.invalid"])
+
+
+_HOOK_NOTICE = "The <strong>host_cmds</strong> hook library is not loaded on this Kea server."
+
+
+def _hosts(*hosts: dict):
+    """Answer each reservation-get from *hosts*: by Subnet and address, or by Subnet and identifier."""
+
+    def answer(body):
+        arguments = body["arguments"]
+        for host in hosts:
+            if host["subnet-id"] != arguments["subnet-id"]:
+                continue
+            if "ip-address" in arguments:
+                if host.get("ip-address") == arguments["ip-address"]:
+                    return _res_get(host)
+            elif host.get(arguments["identifier-type"]) == arguments["identifier"]:
+                return _res_get(host)
+        return {"result": 3}
+
+    return answer
+
+
+@with_display_cache_config(leases_ttl=0, configuration_ttl=0)
+class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
+    """An Unknown Reservation Match shows its reason, so "could not check" never looks like "not reserved"."""
+
+    _MAC = "aa:bb:cc:dd:ee:ff"
+    # A Current Lease, so a row that offers no Sync shows that the match withholds it.
+    lease = lease_record("198.18.0.20", subnet_id=20, hw_address=_MAC, drop=("client-id",))
+
+    def _get(self, reservation_get, *, lease: dict | None = None, catalogue: dict | None = None):
+        responses = catalogue or _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses = {
+            **responses,
+            "lease4-get": {"result": 0, "arguments": lease or self.lease},
+            "reservation-get": reservation_get,
+        }
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        with stub_kea(responses):
+            return self.client.get(url, {"by": "ip", "q": "198.18.0.20"}, HTTP_HX_REQUEST="true")
+
+    def test_each_unknown_reason_shows_the_badge_with_its_reason(self):
+        shared = _catalogue_responses_for_subnets(
+            4,
+            [{"id": 20, "subnet": "198.18.0.0/24"}, {"id": 21, "subnet": "198.18.1.0/24"}],
+            shared_networks=[{"name": "shared"}],
+            members={20: "shared", 21: "shared"},
+        )
+        foreign = complete_lease({**self.lease, "hw-address": "", "client-id": ":".join(["01"] * 129)})
+        cases = (
+            (
+                "unverified Subnet",
+                {"result": 3},
+                {"lease": {**self.lease, "subnet-id": 99}},
+                "The Subnet Catalogue does not verify the Subnet of this lease, so no Reservation lookup can run.",
+            ),
+            (
+                "Kea error",
+                {"result": 1, "text": "host database error"},
+                {},
+                "Kea returned an error for a Reservation lookup, or did not answer it.",
+            ),
+            (
+                "malformed reply",
+                {"result": 0, "arguments": "not-a-host"},
+                {},
+                "Kea returned a Reservation lookup reply that cannot be read.",
+            ),
+            (
+                "invalid read",
+                _res_get({"subnet-id": 21, "hw-address": self._MAC, "ip-address": "198.18.0.20"}),
+                {},
+                "The Server settings are not valid, or Kea returned a Reservation that does not parse or fit the lookup.",
+            ),
+            (
+                "foreign identifier",
+                {"result": 3},
+                {"lease": foreign},
+                "No Reservation matched, and this lease carries a client identifier that no Reservation can hold.",
+            ),
+            (
+                "Shared Network",
+                _hosts({"subnet-id": 0, "hw-address": self._MAC, "ip-address": "198.18.1.21"}),
+                {"catalogue": shared},
+                (
+                    "The Reservation holds an address outside this Subnet. Kea can give it through the Shared Network,"
+                    " and the configuration does not show whether it does."
+                ),
+            ),
+        )
+        unreserved = self._get({"result": 3}).context["table"].data.data[0]
+        self.assertIsNotNone(unreserved.get("sync_url"), "the control: an Unreserved Current Lease offers Sync")
+        for label, reservation_get, changes, reason in cases:
+            with self.subTest(label):
+                response = self._get(reservation_get, **changes)
+
+                self.assertEqual(response.status_code, 200)
+                [badge] = _reserved_badges(response)
+                self.assertEqual(
+                    (badge.name, badge["class"], badge.get_text(strip=True), badge["title"]),
+                    ("span", ["badge", "text-bg-warning"], "Reservation Unknown", reason),
+                )
+                row = response.context["table"].data.data[0]
+                self.assertIsNone(row["create_reservation_url"])
+                self.assertIsNone(row.get("sync_url"))
+                self.assertNotContains(response, _HOOK_NOTICE)
+
+    def test_a_missing_host_cmds_hook_shows_one_page_notice_and_no_row_badge(self):
+        response = self._get({"result": 2, "text": "unknown command 'reservation-get'"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(_reserved_badges(response), [])
+        self.assertContains(response, _HOOK_NOTICE, count=1, html=False)
+        self.assertContains(response, "The Reserved column cannot show Reservations.")
+        row = response.context["table"].data.data[0]
+        self.assertIsNone(row["create_reservation_url"])
+        self.assertIsNone(row.get("sync_url"))

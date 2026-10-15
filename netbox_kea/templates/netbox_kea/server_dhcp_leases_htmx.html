@@ -68,6 +68,9 @@
     </div>
     {% endwith %}
     {% endif %}
+    {% if reservation_hook_unavailable %}
+    {% include "netbox_kea/inc/host_cmds_unavailable.html" with consequence="The Reserved column cannot show Reservations." %}
+    {% endif %}
     {# The read age shares the row of the table controls. #}
     <div class="d-flex align-items-start gap-2">
       <div class="pt-1 text-nowrap">{% include "netbox_kea/inc/read_age.html" with target="#lease-search" %}</div>
