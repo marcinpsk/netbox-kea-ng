@@ -601,8 +601,10 @@ def _sync_title(ownership: Iterable[Ownership]) -> str:
     """Return what a Sync does to the IP addresses that exist but that this Server does not own."""
     states = {item.state for item in ownership}
     # A takeover changes more than an added owner, so its title wins.
-    state = "unmarked" if "unmarked" in states else "not-synchronized"
-    return sync_title(state, "IP address") if state in states else ""
+    for state in ("unmarked", "not-synchronized"):
+        if state in states:
+            return sync_title(state, "IP address")
+    return ""
 
 
 def _reservation_list_context(

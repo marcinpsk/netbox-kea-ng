@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast, overloa
 
 from dcim.models import MACAddress
 from django.db import DatabaseError, connection
-from django.db.models import Exists, OuterRef
+from django.db.models import Exists, OuterRef, QuerySet
 from django.utils import timezone
 from ipam.models import IPAddress, IPRange, Prefix
 from netaddr import AddrFormatError, IPNetwork
@@ -708,7 +708,7 @@ def address_ownership(
         raise ValueError("A NetBox IP address has no IPv6 scope zone.")
     hosts = {str(address) for address in parsed}
     rows = IPAddress.objects.filter(vrf_id=server.sync_vrf_id, address__net_in=sorted(hosts))
-    return _ownership(server, family, source, user, rows, "ip_address", hosts, lambda ip: _host(ip.address))
+    return _ownership(server, family, source, user, rows, hosts, lambda ip: _host(ip.address))
 
 
 def prefix_ownership(
@@ -721,7 +721,11 @@ def prefix_ownership(
     """
     keys = {str(ipaddress.ip_network(network)) for network in networks}
     rows = Prefix.objects.filter(vrf_id=server.sync_vrf_id, prefix__in=sorted(keys))
-    return _ownership(server, family, source, user, rows, "prefix", keys, _network)
+    return _ownership(server, family, source, user, rows, keys, _network)
+
+
+#: The link field of each model that an ownership read takes.
+_LINK_FIELDS: dict[type, str] = {IPAddress: "ip_address", Prefix: "prefix"}
 
 
 def _ownership(
@@ -729,8 +733,7 @@ def _ownership(
     family: Family,
     source: str,
     user: Any,
-    rows: Any,
-    link_field: str,
+    rows: QuerySet[IPAddress] | QuerySet[Prefix],
     keys: Collection[str],
     key_of: Callable[[Any], str],
 ) -> dict[str, Ownership]:
@@ -744,7 +747,7 @@ def _ownership(
     if not keys:
         return {}
     own_link = IPAMOwnershipLink.objects.filter(
-        **{link_field: OuterRef("pk")}, server=server, family=family, source=source
+        **{_LINK_FIELDS[rows.model]: OuterRef("pk")}, server=server, family=family, source=source
     )
     found_rows = list(rows.annotate(linked=Exists(own_link)).order_by("pk"))
     visible = set(
