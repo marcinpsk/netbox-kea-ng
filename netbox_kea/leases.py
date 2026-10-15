@@ -802,6 +802,9 @@ def _wire_address(value: Any, family: int) -> IPAddressValue:
         address = ipaddress.ip_address(value)
     except ValueError:
         raise _FieldProblem("invalid-address") from None
+    # A scoped IPv6 address (fe80::1%eth0) is no allocation, and NetBox IPAM cannot hold one.
+    if getattr(address, "scope_id", None):
+        raise _FieldProblem("invalid-address")
     if address.version != family:
         raise _FieldProblem("wrong-family")
     return address

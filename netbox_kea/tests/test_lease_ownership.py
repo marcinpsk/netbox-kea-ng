@@ -4,16 +4,20 @@
 
 import csv
 import io
+from typing import get_args
 
 from bs4 import BeautifulSoup
 from django.contrib.contenttypes.models import ContentType
 from django.db import DatabaseError, connection
+from django.test import SimpleTestCase
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from ipam.models import VRF, IPAddress, Prefix
 from users.models import ObjectPermission
 
+from netbox_kea.ipam_reconciliation import OwnershipState
 from netbox_kea.models import IPAMOwnershipLink, Server
+from netbox_kea.views.leases import _LEASE_SYNC_LABELS
 
 from .kea_stub import _catalogue_responses, _catalogue_responses_for_subnets, lease_record, lease_reply, stub_kea
 from .utils import User, _make_db_server, _ViewTestBase, ownership_link, prefix_ownership_link
@@ -264,6 +268,13 @@ class TestDelegatedPrefixLeaseSynchronizationState(_LeasePage):
     def _prefix_lease(**changes) -> dict:
         return lease_record("2001:db8:100:100::", type="IA_PD", prefix_len=56, subnet_id=1, **changes)
 
+    def test_a_kea_lease_with_a_scoped_address_is_excluded_and_the_page_renders(self):
+        response = self._get(
+            lease_record("2001:db8:1::5%eth0", subnet_id=1), lease_record("2001:db8:1::6", subnet_id=1)
+        )
+
+        self.assertEqual(set(self._rows(response)), {"2001:db8:1::6"})
+
     def test_a_manual_prefix_is_unmarked_and_offers_sync(self):
         prefix = Prefix.objects.create(prefix=_PREFIX, description="Customer block")
 
@@ -331,3 +342,10 @@ class TestDelegatedPrefixLeaseSynchronizationState(_LeasePage):
 
         self.assertEqual(self._export(self._prefix_lease()), {_PREFIX: "Synchronized"})
         self.assertEqual(self._export(self._prefix_lease(state=_RELEASED)), {_PREFIX: ""})
+
+
+class TestLeaseSynchronizationLabels(SimpleTestCase):
+    def test_each_ownership_state_has_one_lease_state_label(self):
+        # A hidden object is Unknown; every other ownership state is a Lease Synchronization State of its own.
+        expected = set(get_args(OwnershipState)) - {"hidden"} | {"unknown"}
+        self.assertEqual(set(_LEASE_SYNC_LABELS), expected)
