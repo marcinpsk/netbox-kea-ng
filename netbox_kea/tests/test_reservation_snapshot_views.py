@@ -778,8 +778,8 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
         }
     )
 
-    def _get(self, reservation_responses):
-        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+    def _get(self, reservation_responses, *, global_settings=None):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24", global_settings=global_settings)
         responses.update(
             {
                 "lease4-get": {"result": 0, "arguments": self.lease},
@@ -882,7 +882,10 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
         self.assertEqual([badge.get_text(strip=True) for badge in _reserved_badges(response)], ["Reservation"])
 
     def _get_global(self, host):
-        return self._get(queued({"result": 3}, {"result": 3}, _res_get({"subnet-id": 0, **host})))
+        return self._get(
+            queued({"result": 3}, {"result": 3}, _res_get({"subnet-id": 0, **host})),
+            global_settings={"reservations-global": True},
+        )
 
     def test_a_global_reservation_of_no_address_in_the_subnet_shows_host_only_and_no_mutation_link(self):
         for host in (
@@ -1012,11 +1015,16 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
             return self.client.get(url, {"by": "ip", "q": "198.18.0.20"}, HTTP_HX_REQUEST="true")
 
     def test_each_unknown_reason_shows_the_badge_with_its_reason(self):
+        global_on = {"reservations-global": True}
         shared = _catalogue_responses_for_subnets(
             4,
-            [{"id": 20, "subnet": "198.18.0.0/24"}, {"id": 21, "subnet": "198.18.1.0/24"}],
+            [
+                {"id": 20, "subnet": "198.18.0.0/24"},
+                {"id": 21, "subnet": "198.18.1.0/24", "reservations-global": False},
+            ],
             shared_networks=[{"name": "shared"}],
             members={20: "shared", 21: "shared"},
+            global_settings=global_on,
         )
         foreign = complete_lease({**self.lease, "hw-address": "", "client-id": ":".join(["01"] * 129)})
         cases = (
@@ -1059,6 +1067,15 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
                     " and the configuration does not show whether it does."
                 ),
             ),
+            (
+                "reservation flags",
+                _hosts({"subnet-id": 20, "hw-address": self._MAC, "ip-address": "198.18.0.20"}),
+                {"catalogue": _catalogue_responses(4, 20, "198.18.0.0/24", global_settings={"reservations-global": 1})},
+                (
+                    "The configuration does not show the reservation flags or the Pools of this Subnet,"
+                    " so it is not known whether Kea applies this Reservation."
+                ),
+            ),
         )
         unreserved = self._get({"result": 3}).context["table"].data.data[0]
         self.assertIsNotNone(unreserved.get("sync_url"), "the control: an Unreserved Current Lease offers Sync")
@@ -1087,3 +1104,77 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
         row = response.context["table"].data.data[0]
         self.assertIsNone(row["create_reservation_url"])
         self.assertIsNone(row.get("sync_url"))
+
+
+@with_display_cache_config(leases_ttl=0, configuration_ttl=0)
+class TestReservationIgnoredBadgeOnLeases(_ViewTestBase):
+    """Kea ignores a Reservation that the flags of the Lease's Subnet exclude, so the Lease is dynamic."""
+
+    _MAC = "aa:bb:cc:dd:ee:ff"
+    lease = lease_record("198.18.0.20", subnet_id=20, hw_address=_MAC, drop=("client-id",))
+
+    def _get(self, host: dict, *, pools=(), **global_settings):
+        responses = {
+            **_catalogue_responses_for_subnets(
+                4, [{"id": 20, "subnet": "198.18.0.0/24", "pools": list(pools)}], global_settings=global_settings
+            ),
+            "lease4-get": {"result": 0, "arguments": self.lease},
+            "reservation-get": _hosts(host),
+        }
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        with stub_kea(responses):
+            return self.client.get(url, {"by": "ip", "q": "198.18.0.20"}, HTTP_HX_REQUEST="true")
+
+    def test_each_ignored_reason_names_the_flag_links_the_reservation_and_offers_sync(self):
+        in_subnet = {"subnet-id": 20, "hw-address": self._MAC, "ip-address": "198.18.0.20"}
+        global_ = {"subnet-id": 0, "hw-address": self._MAC, "ip-address": "198.18.0.20"}
+        pool = {"pool": "198.18.0.10 - 198.18.0.50"}
+        cases = (
+            (
+                "Global",
+                global_,
+                {},
+                (),
+                "span",
+                (
+                    "This Subnet does not apply Global Reservations (reservations-global is false),"
+                    " so Kea ignores this Reservation."
+                ),
+            ),
+            (
+                "In-Subnet",
+                in_subnet,
+                {"reservations-in-subnet": False},
+                (),
+                "a",
+                (
+                    "This Subnet does not apply its own Reservations (reservations-in-subnet is false),"
+                    " so Kea ignores this Reservation."
+                ),
+            ),
+            (
+                "out of pool",
+                in_subnet,
+                {"reservations-out-of-pool": True},
+                (pool,),
+                "a",
+                (
+                    "This Subnet sets reservations-out-of-pool, and the reserved address is inside a Pool,"
+                    " so Kea does not give it and assigns this lease from the pool."
+                ),
+            ),
+        )
+        for label, host, settings, pools, element, reason in cases:
+            with self.subTest(label):
+                response = self._get(host, pools=pools, **settings)
+
+                self.assertEqual(response.status_code, 200)
+                [badge] = _reserved_badges(response)
+                self.assertEqual(
+                    (badge.name, badge["class"][:2], badge.get_text(strip=True), badge["title"]),
+                    (element, ["badge", "text-bg-secondary"], "Reservation ignored", reason),
+                )
+                row = response.context["table"].data.data[0]
+                self.assertEqual(badge.get("href"), row["reservation_url"])
+                self.assertIsNone(row["create_reservation_url"])
+                self.assertIsNotNone(row.get("sync_url"), "Kea gives the Lease from the pool, so Sync is offered")

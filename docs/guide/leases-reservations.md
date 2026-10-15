@@ -30,6 +30,11 @@ SPDX-License-Identifier: Apache-2.0
   gave them, match the request.
 - A Reservation of the client that holds only the other kind (addresses for a delegated prefix, or
   prefixes for an address) shows as *Reservation*, not *Reserved*, and the row offers no *+ Reserve*.
+- Kea applies a Reservation only when the flags of the lease's Subnet allow it: `reservations-global`
+  (Kea's default is false), `reservations-in-subnet` (default true) and `reservations-out-of-pool`
+  (default false), each from the Subnet, its Shared Network or the global configuration. When the flags
+  exclude the Reservation of the client, the row shows *Reservation ignored* with the flag, and offers
+  *Sync*, because the lease is a dynamic one.
 - When the plugin cannot find out how a lease relates to a Reservation, the row shows *Reservation
   Unknown* with the reason, and offers no *Sync* and no *+ Reserve*. When Kea does not load the
   `host_cmds` hook, the page shows one notice instead.

@@ -70,6 +70,8 @@ from ..published_name import lease_published_name
 from ..reservations import (
     GlobalReservationScope,
     HostOnlyReservation,
+    IgnoredReservation,
+    IgnoredReservationReason,
     OtherKindReservation,
     PendingAddressChange,
     Reservation,
@@ -1131,6 +1133,7 @@ _NO_RESERVATION_FIELDS: dict[str, Any] = {
     "delete_lease_url": "",
     "can_change_reservation": False,
     "reservation_unknown_reason": "",
+    "reservation_ignored_reason": "",
 }
 
 #: The title of the Reservation Unknown badge when the lookups of the whole table failed.
@@ -1155,9 +1158,36 @@ def _unknown_badge_title(reason: UnknownReservationMatch) -> str:
                 "The Reservation holds an address outside this Subnet. Kea can give it through the Shared Network,"
                 " and the configuration does not show whether it does."
             )
+        case UnknownReservationMatch.RESERVATION_FLAGS_UNKNOWN:
+            return (
+                "The configuration does not show the reservation flags or the Pools of this Subnet,"
+                " so it is not known whether Kea applies this Reservation."
+            )
         # The page shows one notice for the whole table.
         case UnknownReservationMatch.RESERVATION_HOOK_UNAVAILABLE:
             return ""
+        case _:
+            assert_never(reason)
+
+
+def _ignored_badge_title(reason: IgnoredReservationReason) -> str:
+    """Return the title of the Reservation ignored badge: the flag of the Subnet that makes Kea ignore it."""
+    match reason:
+        case IgnoredReservationReason.GLOBAL_RESERVATIONS_DISABLED:
+            return (
+                "This Subnet does not apply Global Reservations (reservations-global is false),"
+                " so Kea ignores this Reservation."
+            )
+        case IgnoredReservationReason.IN_SUBNET_RESERVATIONS_DISABLED:
+            return (
+                "This Subnet does not apply its own Reservations (reservations-in-subnet is false),"
+                " so Kea ignores this Reservation."
+            )
+        case IgnoredReservationReason.OUT_OF_POOL:
+            return (
+                "This Subnet sets reservations-out-of-pool, and the reserved address is inside a Pool,"
+                " so Kea does not give it and assigns this lease from the pool."
+            )
         case _:
             assert_never(reason)
 
@@ -1237,6 +1267,11 @@ def _set_reservation_fields(
             _link_reservation(row, reservation, server_pk, can_change, return_url)
             row["other_kind_reservation"] = True
             return True
+        # Kea does not apply the Reservation, so the Lease is dynamic and a Sync cannot contradict it.
+        case IgnoredReservation(reservation=reservation, reason=reason):
+            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            row["reservation_ignored_reason"] = _ignored_badge_title(reason)
+            return True
         case _:
             assert_never(match)
 
@@ -1279,6 +1314,7 @@ def _enrich_leases_with_badges(
     - ``can_delete``: whether the current user may delete this lease
     - ``can_change``: whether the current user may edit this lease (gates edit_url)
     - ``reservation_unknown_reason``: the title of the Reservation Unknown badge when the match is Unknown
+    - ``reservation_ignored_reason``: the title of the Reservation ignored badge when Kea ignores the Reservation
 
     *return_url* is the lease search page; the lease and Reservation edit forms return to it. Each Reservation lookup
     read before *read_since*, the read time of the Lease table, is read again.

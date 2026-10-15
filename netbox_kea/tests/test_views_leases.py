@@ -130,7 +130,7 @@ def _lease_stub(responses: dict):
     return stub_kea({"config-get": configuration, **responses})
 
 
-def _reservation_stub(version: int, responses: dict):
+def _reservation_stub(version: int, responses: dict, *, global_settings: dict | None = None):
     """Add the matching configuration source required by typed Reservation scope.
 
     The Catalogue response shape has one definition in ``kea_stub``; this only points it
@@ -139,7 +139,8 @@ def _reservation_stub(version: int, responses: dict):
     list_response = responses.get(f"subnet{version}-list")
     arguments = list_response.get("arguments", {}) if isinstance(list_response, dict) else {}
     subnets = arguments.get("subnets", []) if isinstance(arguments, dict) else []
-    return stub_kea({**_catalogue_responses_for_subnets(version, subnets), **responses})
+    catalogue = _catalogue_responses_for_subnets(version, subnets, global_settings=global_settings)
+    return stub_kea({**catalogue, **responses})
 
 
 class TestServerLeases4View(_ViewTestBase):
@@ -916,7 +917,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         # Sync button (hx-post) must appear since no NetBox IP
         self.assertContains(response, "hx-post")
 
-    @with_display_cache_config(leases_ttl=0)
+    @with_display_cache_config(leases_ttl=0, configuration_ttl=0)
     def test_sync_is_offered_only_for_a_reservation_match_that_a_sync_cannot_contradict(self):
         def kea_holding(host):
             def reservation_get(body):
@@ -946,15 +947,18 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
             ("Global Pending", kea_holding({"subnet-id": 0, "hw-address": mac, "ip-address": "10.0.0.6"}), False),
             ("Unknown", {"result": 1, "text": "host database error"}, False),
         )
+        # Kea ignores a Global Reservation by default, so the Lease is dynamic and a Sync cannot contradict it.
+        ignored = ("Ignored", kea_holding({"subnet-id": 0, "hw-address": mac, "ip-address": "10.0.0.6"}), True, {})
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        for label, reservation_get, offered in cases:
+        global_on = {"reservations-global": True}
+        for label, reservation_get, offered, settings in (*((*case, global_on) for case in cases), ignored):
             with self.subTest(label):
                 responses = {
                     "subnet4-list": self._SUBNETS4,
                     "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)},
                     "reservation-get": reservation_get,
                 }
-                with _reservation_stub(4, responses):
+                with _reservation_stub(4, responses, global_settings=settings):
                     response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
                 row = next(iter(response.context["table"].rows)).record
                 self.assertTrue(row["current"])

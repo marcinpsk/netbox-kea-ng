@@ -11,6 +11,46 @@ from .constants import IPAddressValue
 
 
 @dataclass(frozen=True)
+class ReservationFlags:
+    """The reservation flags that Kea applies to one Subnet, after inheritance."""
+
+    #: Kea applies Global Reservations.
+    global_: bool
+    #: Kea applies In-Subnet Reservations.
+    in_subnet: bool
+    #: Kea gives an In-Subnet reserved address only when no Pool of the Subnet holds it.
+    out_of_pool: bool
+
+
+@dataclass(frozen=True)
+class DeclaredReservationFlags:
+    """The reservation flags that one configuration level sets. None: the level does not set the flag."""
+
+    global_: bool | None = None
+    in_subnet: bool | None = None
+    out_of_pool: bool | None = None
+
+
+#: The Kea key of each reservation flag, the same at the global, Shared Network and Subnet levels.
+RESERVATION_FLAG_KEYS: dict[str, str] = {
+    "global_": "reservations-global",
+    "in_subnet": "reservations-in-subnet",
+    "out_of_pool": "reservations-out-of-pool",
+}
+#: The value of each flag that Kea applies when no level of the configuration sets it.
+KEA_RESERVATION_FLAGS = ReservationFlags(global_=False, in_subnet=True, out_of_pool=False)
+
+
+def inherited_reservation_flags(*levels: DeclaredReservationFlags) -> ReservationFlags:
+    """Return each flag from the first of *levels* that sets it (the Subnet first), else Kea's default."""
+    values: dict[str, bool] = {}
+    for field in RESERVATION_FLAG_KEYS:
+        declared = (value for level in levels if (value := getattr(level, field)) is not None)
+        values[field] = next(declared, getattr(KEA_RESERVATION_FLAGS, field))
+    return ReservationFlags(**values)
+
+
+@dataclass(frozen=True)
 class SubnetSettings:
     """Effective typed DHCP settings that the repository currently consumes."""
 
@@ -30,6 +70,7 @@ class SubnetSettings:
     relay_addresses: tuple[IPAddressValue, ...] = ()
     client_classes: tuple[str, ...] = ()
     require_client_classes: tuple[str, ...] = ()
+    reservation_flags: DeclaredReservationFlags = DeclaredReservationFlags()
 
 
 # integer: a non-negative integer. string: a non-empty string. string_or_empty: a string that can be empty.
@@ -44,7 +85,8 @@ class SettingKey:
     kind: ValueKind
 
 
-# Each scalar field of SubnetSettings. The relay and class keys have their own shapes, so their code is by hand.
+# Each scalar field of SubnetSettings. The relay, class and reservation flag keys have their own shapes, so their code
+# is by hand.
 SETTING_KEYS: dict[str, SettingKey] = {
     "valid_lifetime": SettingKey("valid-lifetime", "integer"),
     "min_valid_lifetime": SettingKey("min-valid-lifetime", "integer"),

@@ -34,6 +34,7 @@ from .reservations import (
     Reservation,
     ReservationMatch,
     ReservationMatchUnknown,
+    ReservationScope,
     UnknownLeasePresence,
     UnknownReservationMatch,
     current_lease_facts,
@@ -255,8 +256,8 @@ class _ReservationLookups:
             fresh=lambda entry: entry.read_started >= self._read_since,
         ).reservation
 
-    def reservation_of(self, clients: WorkerClients, lease: Lease, subnet: VerifiedSubnet) -> Reservation | None:
-        """Return the first Reservation found by the allocation, by an identity in *subnet*, or by a Global identity."""
+    def _in_subnet(self, clients: WorkerClients, lease: Lease, subnet: VerifiedSubnet) -> Reservation | None:
+        """Return the In-Subnet Reservation found by the allocation of *lease*, then by each of its identities."""
         family, catalogue, subnet_id = self._family, self._catalogue, subnet.subnet_id
         scope = InSubnetReservationScope(subnet.identity)
         if isinstance(lease, DHCPv6PrefixLease):
@@ -266,16 +267,36 @@ class _ReservationLookups:
             address = str(lease.address)
             parts = ("address", subnet_id, address)
             found = self._find(clients, parts, KeaClient.reservation_by_address, family, catalogue, scope, address)
-        if found is not None:
-            return found
-        for identity_scope, scope_id in ((scope, subnet_id), (GlobalReservationScope(), 0)):
-            for identity in lease_identities(lease).identities:
-                parts = ("identity", scope_id, identity.identifier_type, identity.value)
-                found = self._find(
-                    clients, parts, KeaClient.reservation_by_identity, family, catalogue, identity_scope, identity
-                )
-                if found is not None:
-                    return found
+        return found if found is not None else self._by_identity(clients, lease, scope, subnet_id)
+
+    def _global(self, clients: WorkerClients, lease: Lease, _subnet: VerifiedSubnet) -> Reservation | None:
+        """Return the Global Reservation found by an identity of *lease*."""
+        return self._by_identity(clients, lease, GlobalReservationScope(), 0)
+
+    def _by_identity(
+        self, clients: WorkerClients, lease: Lease, scope: ReservationScope, scope_id: int
+    ) -> Reservation | None:
+        """Return the Reservation of *scope* found by the first identity of *lease* that one is found by."""
+        for identity in lease_identities(lease).identities:
+            parts = ("identity", scope_id, identity.identifier_type, identity.value)
+            found = self._find(
+                clients, parts, KeaClient.reservation_by_identity, self._family, self._catalogue, scope, identity
+            )
+            if found is not None:
+                return found
+        return None
+
+    def reservation_of(self, clients: WorkerClients, lease: Lease, subnet: VerifiedSubnet) -> Reservation | None:
+        """Return the first Reservation found in the scopes that the flags of *subnet* enable, then in the others.
+
+        The In-Subnet scope comes before the Global scope. Unknown flags keep that order for every scope.
+        """
+        flags = subnet.reservation_flags
+        scopes = ((self._in_subnet, flags is None or flags.in_subnet), (self._global, flags is None or flags.global_))
+        for lookup, _enabled in sorted(scopes, key=lambda scope: not scope[1]):
+            found = lookup(clients, lease, subnet)
+            if found is not None:
+                return found
         return None
 
     def match(self, clients: WorkerClients, row: tuple[Lease, VerifiedSubnet]) -> ReservationMatch:

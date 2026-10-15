@@ -18,6 +18,7 @@ from django.test import TestCase
 from netbox_kea import server_configuration
 from netbox_kea.kea import KeaException
 from netbox_kea.subnet_catalogue import CatalogueUnavailable, CompleteCatalogueSnapshot, display, for_synchronization
+from netbox_kea.subnet_settings import DeclaredReservationFlags, ReservationFlags
 from netbox_kea.tests.kea_stub import _network_absent, _network_present, kea_client, queued, stub_kea
 from netbox_kea.tests.utils import _make_db_server, with_kea_client_config
 
@@ -318,3 +319,133 @@ class TestRecordedQualifyingSuffix(TestCase):
             catalogue.address_qualifying_suffix(ipaddress.ip_address("203.0.113.5"))
         with self.assertRaises(CatalogueUnavailable):
             catalogue.address_qualifying_suffix(None)
+
+
+class TestRecordedReservationFlags(TestCase):
+    """Kea applies each reservation flag of the Subnet, then of its Shared Network, then the global one."""
+
+    _DEFAULTS = ReservationFlags(global_=False, in_subnet=True, out_of_pool=False)
+    # Subnet 10 sets reservations-in-subnet, the office network reservations-global, and Subnet 21 out-of-pool.
+    _RECORDED = {
+        10: ReservationFlags(global_=False, in_subnet=False, out_of_pool=False),
+        20: ReservationFlags(global_=True, in_subnet=True, out_of_pool=False),
+        21: ReservationFlags(global_=True, in_subnet=True, out_of_pool=True),
+    }
+
+    def setUp(self):
+        self.server = _make_db_server()
+
+    def _snapshot(self, family: int, edit=None) -> server_configuration.ServerConfigurationSnapshot:
+        reply = copy.deepcopy(_recording(family)["config-get"])
+        if edit is not None:
+            edit(reply["arguments"][f"Dhcp{family}"], family)
+        with stub_kea({"config-get": reply}):
+            return server_configuration.for_verification(self.server, family)
+
+    def _effective(self, snapshot) -> dict[int | None, ReservationFlags | None]:
+        return {
+            subnet.declared_subnet_id: server_configuration.effective_reservation_flags(snapshot, subnet)
+            for subnet in snapshot.subnets
+        }
+
+    def test_the_recorded_flags_and_their_inheritance(self):
+        for family in (4, 6):
+            with self.subTest(family=family):
+                snapshot = self._snapshot(family)
+                # Kea sends each global flag, also at its default value.
+                self.assertEqual(
+                    snapshot.reservation_flags,
+                    DeclaredReservationFlags(global_=False, in_subnet=True, out_of_pool=False),
+                )
+                self.assertEqual(
+                    {network.name: network.reservation_flags for network in snapshot.shared_networks},
+                    {"empty-network": DeclaredReservationFlags(), "office": DeclaredReservationFlags(global_=True)},
+                )
+                self.assertEqual(self._effective(snapshot), self._RECORDED)
+
+    def test_a_flag_of_the_subnet_comes_before_its_shared_network_and_the_global_flag(self):
+        def edit(configuration, family):
+            configuration["reservations-global"] = True
+            configuration[f"subnet{family}"][0]["reservations-global"] = False
+            office = _office(configuration)
+            office["reservations-in-subnet"] = False
+            office["reservations-out-of-pool"] = True
+            office[f"subnet{family}"][1]["reservations-in-subnet"] = True
+
+        for family in (4, 6):
+            with self.subTest(family=family):
+                self.assertEqual(
+                    self._effective(self._snapshot(family, edit)),
+                    {
+                        10: ReservationFlags(global_=False, in_subnet=False, out_of_pool=False),
+                        20: ReservationFlags(global_=True, in_subnet=False, out_of_pool=True),
+                        21: ReservationFlags(global_=True, in_subnet=True, out_of_pool=True),
+                    },
+                )
+
+    def test_kea_defaults_apply_when_no_level_sets_a_flag(self):
+        def drop(configuration, family):
+            office = _office(configuration)
+            levels = (configuration, office, configuration[f"subnet{family}"][0], *office[f"subnet{family}"])
+            for level in levels:
+                for key in ("reservations-global", "reservations-in-subnet", "reservations-out-of-pool"):
+                    level.pop(key, None)
+
+        snapshot = self._snapshot(4, drop)
+
+        self.assertEqual(snapshot.reservation_flags, DeclaredReservationFlags())
+        self.assertEqual(self._effective(snapshot), {10: self._DEFAULTS, 20: self._DEFAULTS, 21: self._DEFAULTS})
+
+    def test_a_flag_that_is_not_a_bool_is_a_diagnostic_and_makes_the_flags_on_its_path_unknown(self):
+        def invalid_global(configuration, _family):
+            configuration["reservations-global"] = "true"
+
+        def invalid_network(configuration, _family):
+            _office(configuration)["reservations-in-subnet"] = 1
+
+        def invalid_subnet(configuration, family):
+            configuration[f"subnet{family}"][0]["reservations-out-of-pool"] = None
+
+        def invalid_network_name(configuration, _family):
+            _office(configuration)["name"] = 7
+
+        cases = (
+            (invalid_global, ("invalid-setting", "Dhcp4.reservations-global"), {10: None, 20: None, 21: None}),
+            (
+                invalid_network,
+                ("invalid-setting", "shared-networks[1].reservations-in-subnet"),
+                {**self._RECORDED, 20: None, 21: None},
+            ),
+            (invalid_subnet, ("invalid-setting", "subnet4[0].reservations-out-of-pool"), {**self._RECORDED, 10: None}),
+            # The members lose the network name, and the flags of the network still apply to them.
+            (
+                invalid_network_name,
+                ("invalid-shared-network", "shared-networks[1].name"),
+                {**self._RECORDED, 20: None, 21: None},
+            ),
+        )
+        for edit, diagnostic, effective in cases:
+            with self.subTest(diagnostic):
+                snapshot = self._snapshot(4, edit)
+                self.assertFalse(snapshot.complete)
+                self.assertIn(diagnostic, [(item.code, item.path) for item in snapshot.diagnostics])
+                self.assertEqual(self._effective(snapshot), effective)
+        self.assertIsNone(self._snapshot(4, invalid_global).reservation_flags)
+
+    def test_the_catalogue_carries_the_effective_flags_only_when_the_configuration_shows_them(self):
+        for family in (4, 6):
+            recording = _recording(family)
+            listing = {f"subnet{family}-list": recording[f"subnet{family}-list"]}
+            with self.subTest(family=family):
+                with stub_kea({"config-get": recording["config-get"], **listing}):
+                    catalogue = for_synchronization(self.server, family)
+                self.assertEqual(
+                    {subnet.subnet_id: subnet.reservation_flags for subnet in catalogue.subnets}, self._RECORDED
+                )
+                with stub_kea({"config-get": RuntimeError("config-get failed"), **listing}):
+                    identity_only = display(self.server, family)
+                self.assertEqual([subnet.reservation_flags for subnet in identity_only.subnets], [None] * 3)
+
+
+def _office(configuration: dict) -> dict:
+    return next(network for network in configuration["shared-networks"] if network["name"] == "office")

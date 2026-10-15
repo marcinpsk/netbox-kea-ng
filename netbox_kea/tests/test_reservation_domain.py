@@ -73,6 +73,7 @@ def _catalogue(family: Family, subnet_id: int, cidr: str) -> CatalogueSnapshot:
         shared_network=None,
         membership_known=True,
         qualifying_suffix=None,
+        reservation_flags=None,
     )
     # Identity-only: the fixture carries no configuration, which is all a Reservation
     # Scope needs verified.
