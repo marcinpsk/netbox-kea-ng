@@ -13,6 +13,24 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.6.0 (2026-10-15)
+
+### Bug Fixes
+
+- **leases**: Raise a new failure object for each Lease that needs a failed lookup
+  ([`6c4d48d`](https://github.com/marcinpsk/netbox-kea-ng/commit/6c4d48de6911dcf9239d4d26a52f9549fa16c39b))
+
+### Chores
+
+- Fix semver squash
+  ([`df50303`](https://github.com/marcinpsk/netbox-kea-ng/commit/df50303af5acdfd750106060c65238cbcca6636b))
+
+### Testing
+
+- **leases**: Read the Kea reply of each Global Reservation subtest
+  ([`7a3637d`](https://github.com/marcinpsk/netbox-kea-ng/commit/7a3637d7def1815b52103bcb4211c47320e1cdd5))
+
+
 ## v3.5.0 (2026-10-14)
 
 ### Bug Fixes
