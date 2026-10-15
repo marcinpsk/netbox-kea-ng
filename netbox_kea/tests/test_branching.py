@@ -1618,13 +1618,13 @@ _KEA_WRITES = [member for member in KeaCommand if member.is_write]
 
 
 class KeaTransportInBranchTest(TransactionTestCase):
-    """A mutating Kea command in a branch raises BranchActive before any send, also from a clone in a thread."""
+    """A mutating Kea command in a branch raises BranchActive before any send, also from a worker thread."""
 
     def setUp(self):
         self.server = _make_db_server(name="transport")
         self.branch = _provisioned_branch(self, "transport")
 
-    def test_a_client_built_in_a_branch_refuses_every_write_also_from_a_clone_in_a_thread(self):
+    def test_a_client_built_in_a_branch_refuses_every_write_also_from_a_worker_thread(self):
         with activate_branch(self.branch):
             client = Server.objects.get(pk=self.server.pk).get_client(version=4)
 
@@ -1633,7 +1633,7 @@ class KeaTransportInBranchTest(TransactionTestCase):
             with self.subTest(command=command.value), stub_kea({}) as kea, ThreadPoolExecutor(1) as pool:
                 with self.assertRaises(branching.BranchActive) as refused:
                     client.command(command, 4)
-                in_thread = pool.submit(client.clone().command, command, 4).exception()
+                in_thread = pool.submit(client.command, command, 4).exception()
 
                 self.assertIs(refused.exception.branch, self.branch)
                 self.assertIsInstance(in_thread, branching.BranchActive)

@@ -9,9 +9,8 @@ use a **real** ``KeaClient`` while stubbing only the HTTP boundary —
 be asserted on. This is what lets a payload regression (e.g. a stray/missing
 ``service`` key) actually fail a test.
 
-Patched at the **class** level (``requests.Session.post``) so it also covers
-``KeaClient.clone()``, which builds a fresh ``requests.Session`` for the worker
-threads used by the reservation/lease-enrichment views.
+Patched at the **class** level (``requests.Session.post``) so it also covers the
+``requests.Session`` of each client that a worker thread of the badge lookups builds.
 """
 
 from __future__ import annotations
@@ -325,9 +324,8 @@ class KeaHttpStub:
     ``KeaClient`` expects a JSON list (one entry per targeted service); a payload
     that is not already a list is wrapped in a single-element list.
 
-    Request recording and queue dispatch are guarded by a lock because the
-    reservation/lease-enrichment views ``clone()`` the client and POST from worker
-    threads.
+    Request recording and queue dispatch are guarded by a lock because the badge
+    lookups POST from worker threads.
     """
 
     def __init__(self, responses: dict[str, Any]) -> None:

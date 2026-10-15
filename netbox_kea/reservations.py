@@ -14,10 +14,10 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 from .constants import Family, IPAddressValue, Persistence
 from .dhcp_options import DHCPOption, parse_dhcp_options
 from .identifiers import normalize_hex
-from .leases import DHCPv4AddressLease, Lease, LeaseSnapshot
+from .leases import DHCPv4AddressLease, DHCPv6PrefixLease, Lease, LeaseSnapshot
 
 if TYPE_CHECKING:
-    from .subnet_catalogue import CatalogueSnapshot, SubnetIdentity
+    from .subnet_catalogue import CatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
 IdentifierType = Literal["hw-address", "duid", "circuit-id", "client-id", "flex-id"]
 ReservationQueryMode = Literal["page", "identity", "address", "hostname"]
@@ -222,6 +222,126 @@ def current_lease_presence(reservation: Reservation, facts: CurrentLeaseFacts) -
     if facts.gap is not None:
         return LeasePresenceUnknown(facts.gap)
     return LeaseAbsent()
+
+
+class UnknownReservationMatch(Enum):
+    """Why the Reservation Match of a Lease is Unknown."""
+
+    #: The Subnet Catalogue does not verify the Subnet of the Lease, so no lookup has a scope.
+    UNVERIFIED_SUBNET = auto()
+    #: Kea returned a failure result, or the transport failed.
+    KEA_ERROR = auto()
+    #: Kea returned a reply that the reader cannot use.
+    MALFORMED_REPLY = auto()
+    #: The Server settings were not valid, or Kea returned a Reservation that does not parse or fit the lookup.
+    INVALID_READ = auto()
+    #: No Reservation matched, and the Lease carries an identifier that no Reservation can hold.
+    FOREIGN_IDENTIFIER = auto()
+    #: Kea does not know a Reservation command, so no Lease of the Server has a known match.
+    RESERVATION_HOOK_UNAVAILABLE = auto()
+
+
+@dataclass(frozen=True)
+class Reserved:
+    """The Reservation of the client reserves the allocation of the Lease."""
+
+    reservation: Reservation
+
+
+@dataclass(frozen=True)
+class StaleMac:
+    """The Reservation reserves the allocation of the Lease for another hardware address."""
+
+    reservation: Reservation
+    #: The normalized hardware address of the Lease.
+    lease_mac: str
+
+
+@dataclass(frozen=True)
+class PendingAddressChange:
+    """The In-Subnet Reservation reserves other allocations of the Lease kind; the Lease keeps its own until renewal."""
+
+    reservation: Reservation
+    #: Every reserved allocation of the Lease kind, because the domain names no primary one.
+    reserved: tuple[IPAddressValue, ...] | tuple[ipaddress.IPv6Network, ...]
+
+
+@dataclass(frozen=True)
+class HostOnlyReservation:
+    """The In-Subnet Reservation reserves no address and no delegated prefix, so Kea assigns the Lease from a pool."""
+
+    reservation: Reservation
+
+
+@dataclass(frozen=True)
+class OtherKindReservation:
+    """The Reservation of the client reserves only allocations of the other kind than the Lease."""
+
+    reservation: Reservation
+
+
+@dataclass(frozen=True)
+class Unreserved:
+    """No Reservation of the client is in the Subnet of the Lease or in the Global Scope."""
+
+    #: The Subnet of the Lease, where a new Reservation goes.
+    subnet: VerifiedSubnet
+
+
+@dataclass(frozen=True)
+class ReservationMatchUnknown:
+    """No lookup can show how the Lease relates to a Reservation."""
+
+    reason: UnknownReservationMatch
+
+
+ReservationMatch = (
+    Reserved
+    | StaleMac
+    | PendingAddressChange
+    | HostOnlyReservation
+    | OtherKindReservation
+    | Unreserved
+    | ReservationMatchUnknown
+)
+
+
+def reservation_match(lease: Lease, subnet: VerifiedSubnet, reservation: Reservation | None) -> ReservationMatch:
+    """Return how *reservation*, which the lookups of *lease* found in *subnet* or globally, relates to *lease*.
+
+    ``None`` is no Reservation found. Only an In-Subnet Reservation can be Host-Only or a Pending Address Change.
+
+    Raises:
+        ValueError: If *subnet* is not the Subnet of *lease*.
+
+    """
+    if lease.subnet_id != subnet.subnet_id:
+        raise ValueError("The Reservation Match of a Lease needs the Subnet of the Lease.")
+    if reservation is None:
+        if lease_identities(lease).foreign:
+            return ReservationMatchUnknown(UnknownReservationMatch.FOREIGN_IDENTIFIER)
+        return Unreserved(subnet)
+    in_subnet = isinstance(reservation.scope, InSubnetReservationScope)
+    if in_subnet and not reservation.addresses and not reservation.delegated_prefixes:
+        return HostOnlyReservation(reservation)
+    reserved: tuple[IPAddressValue, ...] | tuple[ipaddress.IPv6Network, ...]
+    target: IPAddressValue | ipaddress.IPv6Network
+    if isinstance(lease, DHCPv6PrefixLease):
+        reserved, holds_other, target = reservation.delegated_prefixes, bool(reservation.addresses), lease.prefix
+    else:
+        reserved, holds_other, target = reservation.addresses, bool(reservation.delegated_prefixes), lease.address
+    if not reserved and holds_other:
+        return OtherKindReservation(reservation)
+    if target not in reserved:
+        # Here an In-Subnet Reservation always reserves the Lease kind.
+        return PendingAddressChange(reservation, reserved) if in_subnet else Reserved(reservation)
+    reserved_mac = reservation.identity.hardware_address
+    lease_mac = next(
+        (mac for identity in lease_identities(lease).identities if (mac := identity.hardware_address)), None
+    )
+    if reserved_mac is not None and lease_mac is not None and lease_mac != reserved_mac:
+        return StaleMac(reservation, lease_mac)
+    return Reserved(reservation)
 
 
 def reservation_identifier_choices(family: int) -> tuple[tuple[IdentifierType, str], ...]:

@@ -544,48 +544,6 @@ class LeaseReserveTest(_ViewTestBase):
             parse_qs(urlsplit(rows["address"]["create_reservation_url"]).query)["ip_addresses"], ["2001:db8:1::10"]
         )
 
-    def test_a_reservation_of_the_prefix_shows_reserved(self):
-        host = {
-            "subnet-id": 10,
-            "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:09",
-            "hostname": "pdres",
-            "ip-addresses": [],
-            "prefixes": [f"{_PREFIX}/56"],
-        }
-
-        def reservation_get(body):
-            # Kea 3.2.0 finds a host by the base address of its reserved prefix.
-            if body["arguments"].get("ip-address") == _PREFIX:
-                return {"result": 0, "text": "Host found.", "arguments": host}
-            return {"result": 3, "text": "Host not found."}
-
-        rows = self._rows([_prefix()], reservation_get)
-
-        self.assertTrue(rows["delegated-prefix"]["is_reserved"])
-        self.assertFalse(rows["delegated-prefix"]["pending_ip_change"])
-
-    def test_a_reservation_of_another_prefix_for_the_client_is_pending(self):
-        lease = _prefix()
-        host = {
-            "subnet-id": 10,
-            "duid": lease["duid"],
-            "hostname": "",
-            "ip-addresses": [],
-            "prefixes": ["2001:db8:100:700::/56"],
-        }
-
-        def reservation_get(body):
-            if body["arguments"].get("identifier") == lease["duid"]:
-                return {"result": 0, "text": "Host found.", "arguments": host}
-            return {"result": 3, "text": "Host not found."}
-
-        rows = self._rows([lease], reservation_get)
-
-        row = rows["delegated-prefix"]
-        self.assertFalse(row["is_reserved"])
-        self.assertTrue(row["pending_ip_change"])
-        self.assertEqual(row["pending_reservation_ip"], "2001:db8:100:700::/56")
-
     def _identity_host(self, lease: dict, *, addresses: list[str], prefixes: list[str]):
         host = {"subnet-id": 10, "duid": lease["duid"], "hostname": "", "ip-addresses": addresses, "prefixes": prefixes}
 

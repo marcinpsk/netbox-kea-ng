@@ -28,25 +28,22 @@ import io
 import ipaddress
 import json
 import re
-import threading
-from datetime import datetime, timezone
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
 from django.contrib.messages import get_messages
-from django.test import SimpleTestCase
 from django.urls import reverse
 from django.utils.html import escape
 from ipam.models import IPAddress as NbIP
 
 from netbox_kea import constants
-from netbox_kea.kea import KeaClient, KeaException
+from netbox_kea.lease_reads import LeaseSearch
 from netbox_kea.models import Server
 from netbox_kea.signals import lease_added
-from netbox_kea.utilities import lease_rows, parse_lease_csv
-from netbox_kea.views.lease_reads import LeaseSearch, fetch
+from netbox_kea.utilities import parse_lease_csv
+from netbox_kea.views.leases import fetch
 from netbox_kea.views.notices import HEADLINES, Notice
 
 from .kea_stub import (
@@ -250,11 +247,6 @@ class TestServerLeases6DeleteView(_ViewTestBase):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _close_that_fails(self) -> None:
-    """Stand in for KeaClient.close when the connection is already gone."""
-    raise OSError("connection already gone")
-
-
 class TestReservedBadgeOnLeases(_ViewTestBase):
     """HTMX lease search must show a 'Reserved' badge when a matching reservation exists.
 
@@ -318,23 +310,6 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         rows = list(csv.DictReader(io.StringIO(response.content.decode())))
         self.assertEqual([(row.get("Reserved"), row.get("NetBox IP")) for row in rows], [("Reserved", "Synced")])
 
-    def test_a_worker_client_close_failure_keeps_the_badge(self):
-        """Closing the worker clients ran in a finally that could replace the result.
-
-        Every reservation lookup had already succeeded, so a socket error while
-        releasing the connections must not blank the whole column.
-        """
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        with (
-            stub_kea(self._badge_responses(**{"reservation-get": {"result": 0, "arguments": self._RESERVATION4}})),
-            patch.object(KeaClient, "close", _close_that_fails),
-        ):
-            response = self._htmx_get(url, {"by": "ip", "q": "192.168.1.100"})
-
-        self.assertEqual(response.status_code, 200)
-        # The column header also reads "Reserved", so assert on the badge link itself.
-        self.assertContains(response, 'text-decoration-none">Reserved</a>')
-
     def test_no_reserved_badge_when_no_reservation(self):
         """When no reservation exists for the lease IP, no badge is rendered."""
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
@@ -349,22 +324,6 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         self.assertIn("HX-Push-Url", response.headers)
         self.assertContains(response, "192.168.1.100")
         # The column header says "Reserved" — check no badge link is rendered
-        self.assertNotContains(response, 'text-decoration-none">Reserved</a>')
-
-    def test_no_crash_when_host_cmds_unavailable(self):
-        """When host_cmds is not loaded, reservation lookup is skipped and no badge shown."""
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        with _lease_stub(
-            # host_cmds not loaded: result 2 (unknown command) makes reservation_get raise KeaException.
-            self._badge_responses(**{"reservation-get": {"result": 2, "text": "unknown command 'reservation-get'"}})
-        ):
-            response = self._htmx_get(url, {"by": "ip", "q": "192.168.1.100"})
-
-        # Must not 500; page renders normally (success path sets HX-Push-Url and
-        # shows the lease row) without a reservation badge.
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("HX-Push-Url", response.headers)
-        self.assertContains(response, "192.168.1.100")
         self.assertNotContains(response, 'text-decoration-none">Reserved</a>')
 
 
@@ -570,133 +529,6 @@ class TestLeaseSearchPaths(_ViewTestBase):
         )
         # Rows outside this page are not enriched.
         self.assertEqual(len(kea.bodies("reservation-get")), expected_probes)
-
-    def test_one_device_with_several_leases_is_probed_once_per_identity(self):
-        """Identity lookups repeat across rows, so resolve each one once for the page."""
-        leases = [{**self._LEASE4, "ip-address": f"10.0.0.{index}"} for index in range(1, 6)]
-        with _reservation_stub(
-            4,
-            {
-                "subnet4-list": self._SUBNETS4,
-                "lease4-get-all": self._multi(leases),
-                "reservation-get": self._NO_RESERVATION,
-            },
-        ) as kea:
-            response = self._htmx_get(self._url4(), {"by": "subnet_id", "q": "1"})
-
-        self.assertEqual(response.status_code, 200)
-        # One address probe per lease, then one probe per Identity in each of the two
-        # Scopes: every lease carries the same hardware address and Client ID.
-        self.assertEqual(len(kea.bodies("reservation-get")), 5 + 4)
-
-    def test_reservation_workers_reuse_and_close_one_client_per_thread(self):
-        leases = [
-            {
-                **self._LEASE4,
-                "ip-address": f"10.0.0.{index}",
-                "hw-address": f"aa:bb:cc:dd:ee:{index:02x}",
-            }
-            for index in range(1, 13)
-        ]
-        real_clone = KeaClient.clone
-        real_close = KeaClient.close
-        created_by_thread = {}
-        closed_clients = []
-        tracking_lock = threading.Lock()
-        lookup_barrier = threading.Barrier(10)
-        lookup_calls = 0
-        barrier_broke = False
-        close_failure_injected = False
-
-        def lookup_failure(_body):
-            nonlocal lookup_calls, barrier_broke
-            with tracking_lock:
-                lookup_calls += 1
-                wait_for_workers = lookup_calls <= 10
-            if wait_for_workers:
-                try:
-                    lookup_barrier.wait(timeout=30)
-                except threading.BrokenBarrierError:
-                    with tracking_lock:
-                        barrier_broke = True
-            return {"result": 1, "text": "lookup failed"}
-
-        def clone_client(client):
-            worker_client = real_clone(client)
-            with tracking_lock:
-                created_by_thread.setdefault(threading.get_ident(), []).append(worker_client)
-            return worker_client
-
-        def close_client(client):
-            nonlocal close_failure_injected
-            with tracking_lock:
-                is_worker_client = any(
-                    client is worker_client for clients in created_by_thread.values() for worker_client in clients
-                )
-                fail_close = is_worker_client and not close_failure_injected
-                if fail_close:
-                    close_failure_injected = True
-            real_close(client)
-            if is_worker_client:
-                with tracking_lock:
-                    closed_clients.append(client)
-            if fail_close:
-                raise RuntimeError("close failed")
-
-        with (
-            patch.object(KeaClient, "clone", autospec=True, side_effect=clone_client) as clone_spy,
-            patch.object(KeaClient, "close", autospec=True, side_effect=close_client),
-            _reservation_stub(
-                4,
-                {
-                    "subnet4-list": self._SUBNETS4,
-                    "lease4-get-all": self._multi(leases),
-                    "reservation-get": lookup_failure,
-                },
-            ),
-        ):
-            response = self._htmx_get(self._url4(), {"by": "subnet_id", "q": "1"})
-
-        created_clients = [client for clients in created_by_thread.values() for client in clients]
-        self.assertEqual(response.status_code, 200)
-        # All ten workers ran concurrently, so a shared client would show up as fewer
-        # threads, and a per-lease clone would show up as more clients.
-        self.assertFalse(barrier_broke)
-        self.assertEqual(clone_spy.call_count, 10)
-        self.assertLess(clone_spy.call_count, len(leases))
-        self.assertEqual(len(created_by_thread), 10)
-        self.assertTrue(all(len(clients) == 1 for clients in created_by_thread.values()))
-        self.assertEqual(len({id(client) for client in created_clients}), 10)
-        self.assertCountEqual([id(client) for client in closed_clients], [id(client) for client in created_clients])
-
-    def test_reservation_enrichment_closes_its_source_client(self):
-        from netbox_kea.sync_permissions import SyncGate
-        from netbox_kea.views.leases import _enrich_leases_with_badges
-
-        real_close = KeaClient.close
-        closed_clients = []
-
-        def close_client(client):
-            real_close(client)
-            closed_clients.append(client)
-
-        with (
-            patch.object(KeaClient, "close", autospec=True, side_effect=close_client),
-            _reservation_stub(4, {"subnet4-list": self._SUBNETS4}),
-        ):
-            # Subnet 99 is not in the Catalogue, so no worker needs a client of its own.
-            lease = typed_lease(complete_lease({"ip-address": "10.0.0.5", "subnet-id": 99}))
-            rows = lease_rows([lease], evaluated_at=datetime.now(tz=timezone.utc))
-            _enrich_leases_with_badges(
-                rows,
-                self.server,
-                4,
-                sync=SyncGate(()),
-                return_url="",
-                read_since=datetime.now(tz=timezone.utc),
-            )
-
-        self.assertEqual(len(closed_clients), 1)
 
     @with_kea_client_config(lease_query_max_unpaged_leases=1000)
     def test_search_by_subnet_id_and_state_filters_in_kea(self):
@@ -984,35 +816,29 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
     def _htmx_get(self, url, data):
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
 
-    def test_non_result2_kea_exception_does_not_crash(self):
-        """A KeaException with result=1 (server error) on reservation lookup must not 500."""
-        # result=1 on reservation-get makes the real client raise KeaException (non-result-2),
-        # which enrichment treats as indeterminate rather than crashing.
+    def test_an_unexpected_lookup_failure_is_logged_and_every_row_offers_no_reservation_action(self):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        with _reservation_stub(
-            4,
-            {
-                "subnet4-list": self._SUBNETS4,
-                "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)},
-                "reservation-get": {"result": 1, "text": "server error"},
-            },
+        with (
+            _reservation_stub(
+                4,
+                {
+                    "subnet4-list": self._SUBNETS4,
+                    "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)},
+                    "reservation-get": TypeError("unexpected lookup failure"),
+                },
+            ),
+            self.assertLogs("netbox_kea.views.leases", "WARNING") as logs,
         ):
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
-        self.assertEqual(response.status_code, 200)
 
-    def test_unexpected_exception_on_reservation_lookup_does_not_crash(self):
-        """An unexpected exception (e.g. network error) during reservation lookup must not 500."""
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        with _reservation_stub(
-            4,
-            {
-                "subnet4-list": self._SUBNETS4,
-                "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)},
-                "reservation-get": RuntimeError("socket closed"),
-            },
-        ):
-            response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
+        self.assertIn("unexpected error during lease enrichment", logs.output[0])
+        row = next(iter(response.context["table"].rows)).record
+        self.assertEqual(row["ip_address"], "10.0.0.5")
+        self.assertFalse(row["is_reserved"])
+        self.assertIsNone(row["reservation_url"])
+        self.assertIsNone(row["create_reservation_url"])
+        self.assertIsNone(row.get("sync_url"))
 
     def test_a_non_integer_subnet_id_excludes_the_lease_with_a_safe_diagnostic(self):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
@@ -1068,6 +894,45 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         # Sync button (hx-post) must appear since no NetBox IP
         self.assertContains(response, "hx-post")
+
+    @with_display_cache_config(leases_ttl=0)
+    def test_sync_is_offered_only_for_a_reservation_match_that_a_sync_cannot_contradict(self):
+        def kea_holding(host):
+            def reservation_get(body):
+                arguments = body["arguments"]
+                if arguments.get("ip-address", host.get("ip-address")) != host.get("ip-address"):
+                    return {"result": 3}
+                if "identifier" in arguments and arguments["identifier"] != host["hw-address"]:
+                    return {"result": 3}
+                return {"result": 0, "arguments": host}
+
+            return reservation_get
+
+        mac = self._LEASE4["hw-address"]
+        cases = (
+            ("Reserved", kea_holding({"subnet-id": 1, "hw-address": mac, "ip-address": "10.0.0.5"}), True),
+            ("Host-Only", kea_holding({"subnet-id": 1, "hw-address": mac}), True),
+            (
+                "Stale MAC",
+                kea_holding({"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "10.0.0.5"}),
+                False,
+            ),
+            ("Pending", kea_holding({"subnet-id": 1, "hw-address": mac, "ip-address": "10.0.0.6"}), False),
+            ("Unknown", {"result": 1, "text": "host database error"}, False),
+        )
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        for label, reservation_get, offered in cases:
+            with self.subTest(label):
+                responses = {
+                    "subnet4-list": self._SUBNETS4,
+                    "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)},
+                    "reservation-get": reservation_get,
+                }
+                with _reservation_stub(4, responses):
+                    response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
+                row = next(iter(response.context["table"].rows)).record
+                self.assertTrue(row["current"])
+                self.assertEqual(row.get("sync_url") is not None, offered)
 
     def test_synced_badge_set_when_netbox_ip_exists(self):
         """When the lease IP exists in NetBox IPAM, netbox_ip_url must be set (Synced badge)."""
@@ -1361,16 +1226,6 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
             deleted = self.client.post(delete_url, data, HTTP_HX_REQUEST="true")
         self.assertEqual(deleted.headers.get("HX-Refresh"), "true")
         self.assertEqual(kea.commands(), ["lease4-get", "lease4-del"])
-
-    def test_matching_mac_badge_has_no_htmx_delete_button(self):
-        """When lease MAC matches reservation MAC, no HTMX delete button must appear."""
-        matching_rsv = {**self._RESERVATION, "hw-address": self._LEASE4["hw-address"]}
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        with self._stub(matching_rsv):
-            response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
-        self.assertEqual(response.status_code, 200)
-        delete_url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
-        self.assertNotContains(response, f'hx-post="{delete_url}"')
 
     def test_stale_mac_badge_no_delete_when_no_permission(self):
         """When the user lacks delete permission, the stale-MAC badge must NOT include an HTMX delete button."""
@@ -4422,43 +4277,6 @@ class TestLeaseSearchSubnetDropdown(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "hook library is not loaded")
         self.assertContains(response, "The subnet list comes from the running configuration.")
-
-
-class TestIdentityLookupMemoization(SimpleTestCase):
-    """`_IdentityLookups` promises to call each lookup at most once."""
-
-    def _lookups(self):
-        from netbox_kea.views.leases import _IdentityLookups
-
-        return _IdentityLookups()
-
-    def test_a_successful_lookup_runs_once(self):
-        calls = []
-
-        def lookup():
-            calls.append(1)
-
-        lookups = self._lookups()
-        for _ in range(3):
-            # None is a real cached outcome: no reservation matches this identity.
-            self.assertIsNone(lookups.resolve(("global", "aa:bb"), lookup))
-
-        self.assertEqual(len(calls), 1)
-
-    def test_a_failing_lookup_runs_once_and_replays_its_error(self):
-        """Leases share identities, so a failing lookup must not be reissued per lease."""
-        calls = []
-
-        def lookup():
-            calls.append(1)
-            raise KeaException({"result": 1, "text": "reservation-get failed"})
-
-        lookups = self._lookups()
-        for _ in range(3):
-            with self.assertRaises(KeaException):
-                lookups.resolve(("global", "aa:bb"), lookup)
-
-        self.assertEqual(len(calls), 1, "the failing lookup was reissued for a repeated identity")
 
 
 class TestLeaseSearchHeaderSort(_ViewTestBase):

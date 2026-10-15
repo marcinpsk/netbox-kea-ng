@@ -1,15 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-import concurrent.futures
 import ipaddress
 import logging
-import threading
 import uuid
 from abc import ABCMeta
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import partial
 from typing import Any, Generic, Literal, TypeVar
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 from urllib.parse import urlencode as _urlencode
@@ -26,10 +23,11 @@ from django.views import View
 from extras.models import JournalEntry
 from netbox.tables import BaseTable
 from netbox.views import generic
+from typing_extensions import assert_never
 from utilities.paginator import EnhancedPaginator, get_paginate_count
 from utilities.views import GetReturnURLMixin, register_model_view
 
-from .. import display_cache, event_scope, forms, subnet_catalogue, tables
+from .. import event_scope, forms, subnet_catalogue, tables
 from ..constants import Family, LeaseState
 from ..ipam_reconciliation import LEASE, LEASE_PREFIX, claim, claim_permissions
 from ..kea import (
@@ -39,6 +37,8 @@ from ..kea import (
     LeaseQueryUnknownSubnet,
     lease_query_guard_message,
 )
+from ..lease_reads import LeaseSearch, cached_read, read_leases
+from ..lease_reservation_reads import reservation_matches
 from ..leases import (
     AllocationKind,
     DHCPv4AddressLease,
@@ -65,12 +65,19 @@ from ..leases import (
     parse_selection,
     shown_lease,
 )
-from ..models import DisplayCacheConfig, PinnedSettings, Server
+from ..models import Server
 from ..published_name import lease_published_name
 from ..reservations import (
     GlobalReservationScope,
-    InSubnetReservationScope,
+    HostOnlyReservation,
+    OtherKindReservation,
+    PendingAddressChange,
     Reservation,
+    ReservationMatch,
+    ReservationMatchUnknown,
+    Reserved,
+    StaleMac,
+    Unreserved,
     lease_identities,
 )
 from ..signals import lease_added, leases_deleted
@@ -86,14 +93,13 @@ from ..utilities import (
 )
 from ._base import (
     ConditionalLoginRequiredMixin,
+    LazyClient,
     _client_settings_error,
     _KeaChangeMixin,
     _safe_return_url,
     _strip_empty_params,
-    close_quietly,
 )
-from .lease_reads import LeaseSearch, fetch, read_leases
-from .notices import Notice, notice, show_notices
+from .notices import Notice, load_snapshot, notice, show_notices
 from .read_age import read_age_context, refresh_requested
 from .reservations import empty_text
 from .workspace import ServerFamilyMixin
@@ -102,6 +108,34 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseTable)
 _LEASE_EXPORT_MAX_LEASES = 50_000
+
+
+def _catalogue_notice(catalogue: CatalogueSnapshot) -> Notice:
+    """Return the Notice of a Catalogue that could not resolve a Subnet search."""
+    found = notice(catalogue)
+    # The read returns a Catalogue only when it is unavailable or has diagnostics, so it always has a Notice.
+    if found is None:
+        raise TypeError("A Catalogue that could not resolve a Subnet search has no Notice.")
+    return found
+
+
+def fetch(server: Server, family: Family, search: LeaseSearch, *, refresh: bool = False) -> LeaseSnapshot | Notice:
+    """Read the Lease Snapshot of *search* through the display cache, or the Notice of a failed read.
+
+    A hit sends no Kea command. With *refresh* it reads Kea live and replaces the entry.
+
+    Raises:
+        LeaseQueryGuardError: If Kea cannot answer a Subnet query safely.
+        ValueError: If the Server configuration or the search is not valid.
+
+    """
+    with LazyClient(server, family) as client:
+        entry = load_snapshot(server, "lease", lambda: cached_read(server, family, search, client, refresh=refresh))
+    if isinstance(entry, Notice):
+        return entry
+    if isinstance(entry.loaded, CatalogueSnapshot):
+        return _catalogue_notice(entry.loaded)
+    return entry.loaded
 
 
 def _search_history(request: HttpRequest, response: HttpResponse, url: str) -> HttpResponse:
@@ -383,8 +417,8 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             read = read_leases(
                 client, instance, self.dhcp_version, LeaseSearch(by, form.cleaned_data["q"], state_filter)
             )
-            if isinstance(read.loaded, Notice):
-                show_notices(request, read.loaded)
+            if isinstance(read.loaded, CatalogueSnapshot):
+                show_notices(request, _catalogue_notice(read.loaded))
                 return redirect(request.path)
             snapshot = read.loaded
         except LeaseQueryGuardError as exc:
@@ -1062,206 +1096,9 @@ class ServerLease6AddView(_BaseLeaseAddView):
     _active_tab = _LEASES_TAB
 
 
-class _IdentityLookups:
-    """Resolve each ``(Scope, Identity)`` Reservation lookup once for a whole lease page.
-
-    Leases that share a device repeat the same identities, and Kea answers each of
-    those queries identically for the life of one page.
-    """
-
-    def __init__(self) -> None:
-        self._registry = threading.Lock()
-        self._locks: dict[Any, threading.Lock] = {}
-        self._results: dict[Any, Reservation | None] = {}
-        self._failures: dict[Any, Exception] = {}
-
-    def resolve(self, key: Any, lookup: Callable[[], Reservation | None]) -> Reservation | None:
-        """Return the memoized result for *key*, calling *lookup* at most once.
-
-        A failure is memoized and replayed: leases repeat identities, so re-raising the
-        stored exception keeps every caller's "indeterminate" answer without reissuing a
-        query that already failed for this page.
-        """
-        with self._registry:
-            entry = self._locks.setdefault(key, threading.Lock())
-        with entry:
-            if key in self._failures:
-                raise self._failures[key]
-            if key not in self._results:
-                try:
-                    self._results[key] = lookup()
-                except Exception as exc:
-                    self._failures[key] = exc
-                    raise
-            return self._results[key]
-
-
-class _LeaseReservationWorkerClients:
-    """Keep one private Kea client for each reservation worker thread."""
-
-    def __init__(self, source: KeaClient) -> None:
-        self._source = source
-        self._local = threading.local()
-        self._registry = threading.Lock()
-        self._clients: list[KeaClient] = []
-
-    def get(self) -> KeaClient:
-        """Return the current worker thread's Kea client."""
-        worker_client = getattr(self._local, "client", None)
-        if worker_client is None:
-            worker_client = self._source.clone()
-            with self._registry:
-                self._clients.append(worker_client)
-            self._local.client = worker_client
-        return worker_client
-
-    def close(self) -> None:
-        """Close all worker clients after the executor stops.
-
-        A close failure must not replace the enrichment result the callers already
-        computed, so each one is logged and the rest still close.
-        """
-        with self._registry:
-            clients = tuple(self._clients)
-        for client in clients:
-            close_quietly(client)
-
-
 def _row_address(row: dict[str, Any]) -> str:
     """Return the canonical address of the typed Lease of one presentation row."""
     return str(row["lease"].identity.address)
-
-
-@dataclass(frozen=True)
-class _ReservationLookup:
-    """One display cache entry: the Reservation that one lookup of a Lease row found, or ``None`` for none."""
-
-    reservation: Reservation | None
-    #: False when the Reservation was parsed against a Subnet Catalogue that did not settle.
-    catalogue_settled: bool
-    read_started: datetime
-
-    @property
-    def settled(self) -> bool:
-        """Return false for a result of an unsettled Catalogue; the cache never stores it. A failed lookup raises."""
-        return self.catalogue_settled
-
-
-@dataclass(frozen=True)
-class _LeaseRowLookups:
-    """The Reservation lookups of the Lease rows of one page, through the display cache."""
-
-    server: Server
-    version: Family
-    catalogue: CatalogueSnapshot
-    #: The read time of the Lease table; an entry read before it is read again.
-    read_since: datetime
-    identities: _IdentityLookups
-
-    def cached(self, parts: display_cache.QueryParts, lookup: Callable[[], Reservation | None]) -> Reservation | None:
-        """Return the Reservation that *lookup* finds, from the entry of *parts* or from Kea."""
-
-        def read() -> _ReservationLookup:
-            started = datetime.now(tz=timezone.utc)
-            return _ReservationLookup(lookup(), self.catalogue.settled, started)
-
-        return display_cache.cached(
-            self.server,
-            self.version,
-            "reservation_lookups",
-            read,
-            query=parts,
-            fresh=lambda entry: entry.read_started >= self.read_since,
-        ).reservation
-
-
-def _reservation_for_lease_worker(worker_clients, lookups: _LeaseRowLookups, row):
-    """Resolve one lease row to a typed Reservation in a thread-local client."""
-    version, catalogue = lookups.version, lookups.catalogue
-    lease = row["lease"]
-    ip = _row_address(row)
-    subnet = catalogue.find_by_id(lease.subnet_id)
-    if not isinstance(subnet, VerifiedSubnet):
-        return ip, None, None
-    scope = InSubnetReservationScope(subnet.identity)
-    carried = lease_identities(lease)
-    worker_client = worker_clients.get()
-    try:
-        if isinstance(lease, DHCPv6PrefixLease):
-            reservation = lookups.cached(
-                ("prefix", subnet.identity.subnet_id, str(lease.prefix)),
-                partial(worker_client.reservation_by_prefix, catalogue, scope, lease.prefix),
-            )
-        else:
-            reservation = lookups.cached(
-                ("address", subnet.identity.subnet_id, ip),
-                partial(worker_client.reservation_by_address, version, catalogue, scope, ip),
-            )
-        if reservation is not None:
-            return ip, reservation, True
-        for identity_scope in (scope, GlobalReservationScope()):
-            scope_id = subnet.identity.subnet_id if isinstance(identity_scope, InSubnetReservationScope) else 0
-            for identity in carried.identities:
-                reservation = lookups.identities.resolve(
-                    (identity_scope, identity),
-                    partial(
-                        lookups.cached,
-                        ("identity", scope_id, identity.identifier_type, identity.value),
-                        partial(worker_client.reservation_by_identity, version, catalogue, identity_scope, identity),
-                    ),
-                )
-                if reservation is not None:
-                    return ip, reservation, True
-    except KeaException as exc:
-        if exc.unsupported_command:
-            return ip, None, False
-        logger.debug("Reservation lookup failed for lease %s", ip, exc_info=True)
-        return ip, None, None
-    except (requests.RequestException, RuntimeError, ValueError):
-        logger.debug("Reservation lookup failed for lease %s", ip, exc_info=True)
-        return ip, None, None
-    # An identifier that no Reservation can hold leaves "no Reservation" unproven.
-    return ip, None, None if carried.foreign else True
-
-
-def _fetch_reservations_for_leases(
-    client: KeaClient,
-    server: Server,
-    version: Family,
-    catalogue: CatalogueSnapshot,
-    leases: list[dict[str, Any]],
-    *,
-    read_since: datetime,
-) -> tuple[dict[str, Reservation], bool, set[str]]:
-    """Resolve each visible lease through scoped address and normalized Identity queries.
-
-    Each lookup is a display cache entry; an entry read before *read_since* is read again.
-    """
-    if not leases:
-        return {}, True, set()
-    matches: dict[str, Reservation] = {}
-    failed_ips: set[str] = set()
-    host_cmds_available = True
-    worker_clients = _LeaseReservationWorkerClients(client)
-    lookups = _LeaseRowLookups(server, version, catalogue, read_since, _IdentityLookups())
-    pinned = PinnedSettings.read(DisplayCacheConfig)
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(leases), 10)) as executor:
-            futures = [
-                executor.submit(pinned.context().run, _reservation_for_lease_worker, worker_clients, lookups, lease)
-                for lease in leases
-            ]
-            for future in concurrent.futures.as_completed(futures):
-                ip, reservation, lookup_state = future.result()
-                if lookup_state is False:
-                    host_cmds_available = False
-                elif lookup_state is None:
-                    failed_ips.add(ip)
-                if reservation is not None:
-                    matches[ip] = reservation
-    finally:
-        worker_clients.close()
-    return matches, host_cmds_available, failed_ips
 
 
 def _canonical_reservation_url(server_pk: int, reservation: Reservation, return_url: str) -> str | None:
@@ -1276,88 +1113,32 @@ def _canonical_reservation_url(server_pk: int, reservation: Reservation, return_
     return f"{base}?{query}"
 
 
-def _set_lease_reservation_fields(
-    lease: dict[str, Any],
-    reservation: Reservation | None,
-    server_pk: int,
-    version: Family,
-    subnet_cidr: str | None,
-    host_cmds_available: bool,
-    failed_ips: set[str],
-    can_change: bool,
-    return_url: str,
-) -> None:
-    """Set one lease row from its typed canonical Reservation match.
+_NO_RESERVATION_FIELDS: dict[str, Any] = {
+    "is_reserved": False,
+    "host_reservation": False,
+    "reservation_url": None,
+    "create_reservation_url": None,
+    "pending_ip_change": False,
+    "pending_reservation_ip": "",
+    "other_kind_reservation": False,
+    "stale_mac": False,
+    "stale_lease_mac": "",
+    "reservation_mac": "",
+    "delete_lease_url": "",
+    "can_change_reservation": False,
+}
 
-    A delegated prefix compares with the Reservation prefixes, an address with the Reservation addresses.
-    """
-    observed = lease["lease"]
-    ip = _row_address(lease)
+
+def _create_reservation_url(
+    row: dict[str, Any], subnet: VerifiedSubnet, server_pk: int, version: Family, return_url: str
+) -> str:
+    """Return the Reservation add form, prefilled from the Lease of *row* in its Subnet."""
+    observed = row["lease"]
     is_prefix = isinstance(observed, DHCPv6PrefixLease)
-    target = lease["label"]
-    lease.update(
-        {
-            "is_reserved": reservation is not None,
-            "host_reservation": False,
-            "reservation_url": None,
-            "create_reservation_url": None,
-            "pending_ip_change": False,
-            "pending_reservation_ip": "",
-            "other_kind_reservation": False,
-            "stale_mac": False,
-            "stale_lease_mac": "",
-            "reservation_mac": "",
-            "delete_lease_url": "",
-            "can_change_reservation": False,
-        }
-    )
-    if reservation is not None:
-        reserved = [str(item) for item in (reservation.delegated_prefixes if is_prefix else reservation.addresses)]
-        lease["reservation_url"] = _canonical_reservation_url(server_pk, reservation, return_url)
-        lease["can_change_reservation"] = can_change and lease["reservation_url"] is not None
-        if (
-            isinstance(reservation.scope, InSubnetReservationScope)
-            and not reservation.addresses
-            and not reservation.delegated_prefixes
-        ):
-            # Kea assigns this lease from the pool; the Reservation holds only a hostname or options.
-            lease["is_reserved"] = False
-            lease["host_reservation"] = True
-        if not reserved and (reservation.addresses if is_prefix else reservation.delegated_prefixes):
-            # The client's Reservation holds only the other kind, so it does not reserve this allocation.
-            lease["is_reserved"] = False
-            lease["other_kind_reservation"] = True
-            return
-        if isinstance(reservation.scope, InSubnetReservationScope) and reserved and target not in reserved:
-            lease["pending_ip_change"] = True
-            # The lease keeps its allocation until renewal, so the reservation is pending, not current.
-            lease["is_reserved"] = False
-            # Every reserved allocation of the kind, because the domain names no primary one.
-            lease["pending_reservation_ip"] = ", ".join(reserved)
-        if target in reserved and reservation.identity.identifier_type == "hw-address":
-            lease_hw_value = next(
-                (
-                    identity.value
-                    for identity in lease_identities(observed).identities
-                    if identity.identifier_type == "hw-address"
-                ),
-                "",
-            )
-            if lease_hw_value and lease_hw_value != reservation.identity.value:
-                lease["stale_mac"] = True
-                lease["stale_lease_mac"] = lease_hw_value
-                lease["reservation_mac"] = reservation.identity.value
-                lease["delete_lease_url"] = reverse(
-                    f"plugins:netbox_kea:server_leases{version}_delete",
-                    args=[server_pk],
-                )
-        return
-    if not (can_change and host_cmds_available and ip not in failed_ips and subnet_cidr):
-        return
     allocation_field = "prefixes" if is_prefix else "ip_addresses" if version == 6 else "ip_address"
     params = {
-        "subnet_cidr": subnet_cidr,
-        allocation_field: target,
+        "subnet_cidr": subnet.cidr,
+        allocation_field: row["label"],
         "hostname": lease_published_name(observed.hostname),
         "return_url": return_url,
     }
@@ -1366,7 +1147,64 @@ def _set_lease_reservation_fields(
         params["identifier_type"] = identities[0].identifier_type
         params["identifier"] = identities[0].value
     base = reverse(f"plugins:netbox_kea:server_reservation{version}_add", args=[server_pk])
-    lease["create_reservation_url"] = f"{base}?{_urlencode({key: value for key, value in params.items() if value})}"
+    return f"{base}?{_urlencode({key: value for key, value in params.items() if value})}"
+
+
+def _link_reservation(
+    row: dict[str, Any], reservation: Reservation, server_pk: int, can_change: bool, return_url: str
+) -> None:
+    """Link the Reservation of one Lease row; a Global Reservation has no edit form, so it has no link."""
+    row["reservation_url"] = _canonical_reservation_url(server_pk, reservation, return_url)
+    row["can_change_reservation"] = can_change and row["reservation_url"] is not None
+
+
+def _set_reservation_fields(
+    row: dict[str, Any],
+    match: ReservationMatch,
+    server_pk: int,
+    version: Family,
+    can_change: bool,
+    return_url: str,
+) -> bool:
+    """Set the Reservation fields of one Lease row from its Reservation Match, and return whether it may offer Sync.
+
+    Unknown shows no badge and no action.
+    """
+    row.update(_NO_RESERVATION_FIELDS)
+    match match:
+        case ReservationMatchUnknown():
+            return False
+        case Unreserved(subnet=subnet):
+            if can_change:
+                row["create_reservation_url"] = _create_reservation_url(row, subnet, server_pk, version, return_url)
+            return True
+        case Reserved(reservation=reservation):
+            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            row["is_reserved"] = True
+            return True
+        case StaleMac(reservation=reservation, lease_mac=lease_mac):
+            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            row["is_reserved"] = True
+            row["stale_mac"] = True
+            row["stale_lease_mac"] = lease_mac
+            row["reservation_mac"] = reservation.identity.value
+            row["delete_lease_url"] = reverse(f"plugins:netbox_kea:server_leases{version}_delete", args=[server_pk])
+            return False
+        case PendingAddressChange(reservation=reservation, reserved=reserved):
+            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            row["pending_ip_change"] = True
+            row["pending_reservation_ip"] = ", ".join(str(item) for item in reserved)
+            return False
+        case HostOnlyReservation(reservation=reservation):
+            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            row["host_reservation"] = True
+            return True
+        case OtherKindReservation(reservation=reservation):
+            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            row["other_kind_reservation"] = True
+            return True
+        case _:
+            assert_never(match)
 
 
 def _sync_vrf_prefixes(server: "Server", leases: list[Lease]) -> dict[ipaddress.IPv6Network, Any]:
@@ -1382,7 +1220,6 @@ def _sync_vrf_prefixes(server: "Server", leases: list[Lease]) -> dict[ipaddress.
     return found
 
 
-#: The NetBox model that a Sync of each allocation kind writes.
 def _enrich_leases_with_badges(
     leases: list[dict[str, Any]],
     server: "Server",
@@ -1413,38 +1250,19 @@ def _enrich_leases_with_badges(
     """
     from ..sync import bulk_fetch_netbox_ips
 
-    reservation_by_ip: dict[str, Reservation] = {}
-    host_cmds_available = True
-    failed_ips: set[str] = set()
-    client: KeaClient | None = None
-    catalogue = None
     try:
-        client = server.get_client(version=version)
-        catalogue = subnet_catalogue.display(server, version)
-        reservation_by_ip, host_cmds_available, failed_ips = _fetch_reservations_for_leases(
-            client, server, version, catalogue, leases, read_since=read_since
-        )
+        matches = reservation_matches(server, version, [row["lease"] for row in leases], read_since=read_since)
     except Exception as exc:
-        failed_ips = {_row_address(lease) for lease in leases}
         logger.warning("unexpected error during lease enrichment: %s", exc, exc_info=True)
-    finally:
-        if client is not None:
-            close_quietly(client)
-
-    for lease in leases:
-        ip = _row_address(lease)
-        subnet = catalogue.find_by_id(lease["lease"].subnet_id) if catalogue is not None else None
-        _set_lease_reservation_fields(
-            lease,
-            reservation_by_ip.get(ip),
-            server.pk,
-            version,
-            subnet.cidr if isinstance(subnet, VerifiedSubnet) else None,
-            host_cmds_available,
-            failed_ips,
-            can_change,
-            return_url,
-        )
+        # An unexpected failure shows each row as Unknown: no badge and no action.
+        for row in leases:
+            row.update(_NO_RESERVATION_FIELDS)
+        offers_sync = [False] * len(leases)
+    else:
+        offers_sync = [
+            _set_reservation_fields(row, match, server.pk, version, can_change, return_url)
+            for row, match in zip(leases, matches, strict=True)
+        ]
 
     sync_url = reverse(f"plugins:netbox_kea:server_lease{version}_sync", args=[server.pk])
     edit_url_name = f"plugins:netbox_kea:server_lease{version}_edit"
@@ -1453,7 +1271,7 @@ def _enrich_leases_with_badges(
     addresses = [_row_address(lease) for lease in leases if lease["lease"].kind == "address"]
     nb_ips = bulk_fetch_netbox_ips(addresses, vrf_id=server.sync_vrf_id)
     nb_prefixes = _sync_vrf_prefixes(server, [lease["lease"] for lease in leases])
-    for lease in leases:
+    for lease, sync_allowed in zip(leases, offers_sync, strict=True):
         ip = _row_address(lease)
         observed = lease["lease"]
         if isinstance(observed, DHCPv6PrefixLease):
@@ -1462,14 +1280,8 @@ def _enrich_leases_with_badges(
             synced, url_key = nb_ips.get(ip), "netbox_ip_url"
         if synced is not None:
             lease[url_key] = synced.get_absolute_url()
-        # Sync needs a Current Lease; don't offer it for leases with indeterminate reservation state.
-        elif (
-            lease["current"]
-            and host_cmds_available
-            and not lease.get("pending_ip_change")
-            and not lease.get("stale_mac")
-            and ip not in failed_ips
-        ):
+        # Sync needs a Current Lease and a Reservation Match that a Sync cannot contradict.
+        elif lease["current"] and sync_allowed:
             gate = sync[observed.kind]
             if gate.allowed:
                 lease["sync_url"] = sync_url

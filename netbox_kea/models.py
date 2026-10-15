@@ -295,7 +295,7 @@ class Server(JobsMixin, NetBoxModel):
         (Kea 3.0+), so the routing decision follows the flag, not the URL.
 
         The client is bound to the branch that is active now, so it refuses each Kea write
-        command in a branch, also from a clone in a worker thread (ADR 0007). Each write command
+        command in a branch, also when a worker thread sends it (ADR 0007). Each write command
         that it sends rotates the records generation of the display cache (ADR 0009).
 
         Args:

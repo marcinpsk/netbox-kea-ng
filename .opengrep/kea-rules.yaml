@@ -1119,19 +1119,12 @@ rules:
               ...
               <... load_snapshot(...) ...>
               ...
-      # Read helpers: each caller runs them through load_snapshot(), maps a raised failure to an Unknown Lease badge,
-      # or an export refuses a failed read.
+      # Read helpers: each caller runs them through load_snapshot(), or an export refuses a failed read.
       - pattern-not-inside: |
           def _read_reservations(...):
               ...
       - pattern-not-inside: |
           def _read_reservation_page(...):
-              ...
-      - pattern-not-inside: |
-          def read_leases(...):
-              ...
-      - pattern-not-inside: |
-          def cached_read(...):
               ...
       # The DHCP plugin import reads the Reservation Snapshot to synchronize it, not to show it.
       - pattern-not-inside: |
@@ -1150,10 +1143,6 @@ rules:
       # The advisory Pool overlap check after a Pool add reports its own result.
       - pattern-not-inside: |
           def _warn_reservations_in_pool(...):
-              ...
-      # The Catalogue scopes the Reservation lookups of lease badges.
-      - pattern-not-inside: |
-          def _enrich_leases_with_badges(...):
               ...
       # The DDNS suffix of a hostname preview.
       - pattern-not-inside: |

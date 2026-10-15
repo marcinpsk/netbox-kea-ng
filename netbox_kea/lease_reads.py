@@ -9,14 +9,12 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
-from .. import constants, display_cache, subnet_catalogue
-from ..constants import Family, LeaseState
-from ..kea import KeaClient, LeaseQueryUnknownSubnet
-from ..leases import LeaseSnapshot
-from ..models import Server
-from ..subnet_catalogue import CatalogueSnapshot
-from ._base import LazyClient
-from .notices import Notice, load_snapshot, notice
+from . import constants, display_cache, subnet_catalogue
+from .constants import Family, LeaseState
+from .kea import KeaClient, LeaseQueryUnknownSubnet
+from .leases import LeaseSnapshot
+from .models import Server
+from .subnet_catalogue import CatalogueSnapshot
 
 
 @dataclass(frozen=True)
@@ -47,36 +45,35 @@ class LeaseSearch:
 
 @dataclass(frozen=True)
 class LeaseRead:
-    """One display cache entry: a Lease Snapshot, or the Notice of a Catalogue that could not resolve a Subnet search."""
+    """One display cache entry: a Lease Snapshot, or the Catalogue that could not resolve a Subnet search."""
 
-    loaded: LeaseSnapshot | Notice
+    loaded: LeaseSnapshot | CatalogueSnapshot
     #: False when a Subnet search resolved through a Subnet Catalogue that did not settle.
     catalogue_settled: bool = True
 
     @property
     def settled(self) -> bool:
-        """Return false for a Notice or for a result of an unsettled Catalogue; the cache never stores it."""
+        """Return false for a Catalogue or for a result of an unsettled Catalogue; the cache never stores it."""
         return isinstance(self.loaded, LeaseSnapshot) and self.catalogue_settled
 
 
-def _resolved_search(catalogue: CatalogueSnapshot, search: LeaseSearch) -> LeaseSearch | Notice:
+def _resolved_search(catalogue: CatalogueSnapshot, search: LeaseSearch) -> LeaseSearch | CatalogueSnapshot:
     """Resolve the CIDR of a Subnet search to its Subnet Identity in *catalogue*.
 
-    Return the Notice of the Catalogue when it is unavailable, or when it shows no Subnet with the CIDR and its
-    configuration facts are incomplete.
+    Return *catalogue* when it is unavailable, or when it shows no Subnet with the CIDR and it has diagnostics and
+    incomplete configuration facts. A view shows its Notice.
 
     Raises:
         LeaseQueryUnknownSubnet: If the complete, consistent configuration facts show no Subnet with the CIDR.
 
     """
-    catalogue_notice = notice(catalogue)
-    if catalogue_notice is not None and catalogue_notice.unavailable:
-        return catalogue_notice
+    if catalogue.unavailable:
+        return catalogue
     subnet = catalogue.find_by_cidr(str(search.q.cidr))
     if subnet is not None:
         return replace(search, q=subnet.identity)
-    if catalogue_notice is not None and not catalogue.configuration_confirms_absence:
-        return catalogue_notice
+    if catalogue.diagnostics and not catalogue.configuration_confirms_absence:
+        return catalogue
     raise LeaseQueryUnknownSubnet
 
 
@@ -84,8 +81,8 @@ def read_leases(client: KeaClient, server: Server, family: Family, search: Lease
     """Read the Lease Snapshot of *search* from Kea. A Subnet search first resolves through a live Catalogue read.
 
     The Catalogue read is live, so a Subnet that Kea moved since the display Catalogue was cached never answers for
-    the CIDR. A Kea, transport or reply failure raises. The callers run it through ``load_snapshot()`` or refuse an
-    export.
+    the CIDR. A Kea, transport or reply failure raises. The view callers run it through ``load_snapshot()`` or refuse
+    an export.
 
     Raises:
         LeaseQueryGuardError: If Kea cannot answer a Subnet query safely.
@@ -96,7 +93,7 @@ def read_leases(client: KeaClient, server: Server, family: Family, search: Lease
     if search.by == constants.BY_SUBNET:
         catalogue = subnet_catalogue.for_verification(server, family)
         found = _resolved_search(catalogue, search)
-        if isinstance(found, Notice):
+        if isinstance(found, CatalogueSnapshot):
             return LeaseRead(found, catalogue.settled)
         resolved, catalogue_settled = found, catalogue.settled
     if resolved.by:
@@ -138,18 +135,3 @@ def cached_read(
         refresh=refresh,
         fresh=fresh,
     )
-
-
-def fetch(server: Server, family: Family, search: LeaseSearch, *, refresh: bool = False) -> LeaseSnapshot | Notice:
-    """Read the Lease Snapshot of *search* through the display cache, or the Notice of a failed read.
-
-    A hit sends no Kea command. With *refresh* it reads Kea live and replaces the entry.
-
-    Raises:
-        LeaseQueryGuardError: If Kea cannot answer a Subnet query safely.
-        ValueError: If the Server configuration or the search is not valid.
-
-    """
-    with LazyClient(server, family) as client:
-        entry = load_snapshot(server, "lease", lambda: cached_read(server, family, search, client, refresh=refresh))
-    return entry if isinstance(entry, Notice) else entry.loaded
