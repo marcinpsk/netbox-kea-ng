@@ -54,6 +54,14 @@ R = TypeVar("R")
 P = ParamSpec("P")
 
 
+class _FailedLookup(Exception):
+    """A Reservation lookup failed, so the Reservation Match is *unknown*."""
+
+    def __init__(self, unknown: ReservationMatchUnknown) -> None:
+        super().__init__(unknown.reason)
+        self.unknown = unknown
+
+
 class WorkerClients:
     """One Kea client per worker thread, built on its first cache miss and closed when the pool ends."""
 
@@ -206,7 +214,7 @@ class _ReservationLookups:
         self._registry = threading.Lock()
         self._locks: dict[display_cache.QueryParts, threading.Lock] = {}
         self._found: dict[display_cache.QueryParts, Reservation | None] = {}
-        self._failures: dict[display_cache.QueryParts, Exception] = {}
+        self._failures: dict[display_cache.QueryParts, ReservationMatchUnknown] = {}
 
     def _find(
         self,
@@ -219,20 +227,46 @@ class _ReservationLookups:
         """Return the Reservation that *lookup* finds, from the display cache entry of *parts* or from Kea.
 
         Leases of one client repeat a lookup, so each one runs once per call, also when workers need it at once. A
-        failure is kept and raised again for each Lease that needs the lookup.
+        failure that leaves the Reservation Match unknown is kept, and each Lease that needs the lookup gets a new
+        ``_FailedLookup``. Any other failure raises.
         """
         with self._registry:
             lock = self._locks.setdefault(parts, threading.Lock())
         with lock:
             if parts in self._failures:
-                raise self._failures[parts]
+                raise _FailedLookup(self._failures[parts])
             if parts not in self._found:
                 try:
                     self._found[parts] = self._cached(clients, parts, lookup, *args, **kwargs)
                 except Exception as exc:
-                    self._failures[parts] = exc
-                    raise
+                    unknown = self._unknown(exc)
+                    if unknown is None:
+                        raise
+                    self._failures[parts] = unknown
+                    raise _FailedLookup(unknown) from exc
             return self._found[parts]
+
+    def _unknown(self, exc: Exception) -> ReservationMatchUnknown | None:
+        """Return why the failure *exc* of a lookup leaves the Reservation Match unknown, or None when it is not known."""
+        if isinstance(exc, KeaException):
+            logger.debug(
+                "Kea refused a Reservation lookup of server %s: result %s", self._server.pk, exc.response.get("result")
+            )
+            if exc.unsupported_command:
+                return ReservationMatchUnknown(UnknownReservationMatch.RESERVATION_HOOK_UNAVAILABLE)
+            return ReservationMatchUnknown(UnknownReservationMatch.KEA_ERROR)
+        if isinstance(exc, requests.RequestException):
+            logger.debug("A Reservation lookup of server %s failed: %s", self._server.pk, type(exc).__name__)
+            return ReservationMatchUnknown(UnknownReservationMatch.KEA_ERROR)
+        # MalformedReply is a RuntimeError, as is a reservation-get reply without arguments.
+        if isinstance(exc, RuntimeError):
+            logger.debug("A Reservation lookup of server %s failed: %s", self._server.pk, type(exc).__name__)
+            return ReservationMatchUnknown(UnknownReservationMatch.MALFORMED_REPLY)
+        # Invalid Server settings and a MalformedReservation are ValueErrors.
+        if isinstance(exc, ValueError):
+            logger.debug("A Reservation lookup of server %s was not valid: %s", self._server.pk, type(exc).__name__)
+            return ReservationMatchUnknown(UnknownReservationMatch.INVALID_READ)
+        return None
 
     def _cached(
         self,
@@ -309,24 +343,8 @@ class _ReservationLookups:
             found = self.reservation_of(clients, lease, subnet)
             tries_global = found is not None and tries_global_reservation(lease, subnet, found)
             global_found = self._global(clients, lease, subnet) if tries_global else None
-        except KeaException as exc:
-            logger.debug(
-                "Kea refused a Reservation lookup of server %s: result %s", self._server.pk, exc.response.get("result")
-            )
-            if exc.unsupported_command:
-                return ReservationMatchUnknown(UnknownReservationMatch.RESERVATION_HOOK_UNAVAILABLE)
-            return ReservationMatchUnknown(UnknownReservationMatch.KEA_ERROR)
-        except requests.RequestException as exc:
-            logger.debug("A Reservation lookup of server %s failed: %s", self._server.pk, type(exc).__name__)
-            return ReservationMatchUnknown(UnknownReservationMatch.KEA_ERROR)
-        # MalformedReply is a RuntimeError, as is a reservation-get reply without arguments.
-        except RuntimeError as exc:
-            logger.debug("A Reservation lookup of server %s failed: %s", self._server.pk, type(exc).__name__)
-            return ReservationMatchUnknown(UnknownReservationMatch.MALFORMED_REPLY)
-        # Invalid Server settings and a MalformedReservation are ValueErrors.
-        except ValueError as exc:
-            logger.debug("A Reservation lookup of server %s was not valid: %s", self._server.pk, type(exc).__name__)
-            return ReservationMatchUnknown(UnknownReservationMatch.INVALID_READ)
+        except _FailedLookup as failed:
+            return failed.unknown
         shared_network = self._catalogue.shared_network_subnets(subnet)
         return reservation_match(lease, subnet, found, shared_network, global_reservation=global_found)
 

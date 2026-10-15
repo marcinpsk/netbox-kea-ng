@@ -11,6 +11,7 @@ import concurrent.futures
 import ipaddress
 import threading
 import time
+import traceback
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -1238,6 +1239,23 @@ class ReservationMatchLookupTest(_ViewTestBase):
 
         self.assertEqual(matches, (_match_unknown(UnknownReservationMatch.KEA_ERROR),) * 3)
         self.assertEqual([body["arguments"].get("identifier-type") for body in lookups].count("hw-address"), 1)
+
+    @with_display_cache_config(leases_ttl=0)
+    def test_a_failed_lookup_raises_its_failure_once_for_the_leases_that_need_it(self):
+        failure = requests.ConnectionError("Kea is not reachable")
+
+        def reservation_get(body):
+            if body["arguments"].get("identifier-type") == "hw-address":
+                raise failure
+            return _NOT_FOUND
+
+        leases = [_address_lease(f"198.18.0.{index}") for index in range(1, 4)]
+        matches, _lookups, _clients = self._matches(leases, reservation_get, read_since=timezone.now())
+
+        self.assertEqual(matches, (_match_unknown(UnknownReservationMatch.KEA_ERROR),) * 3)
+        # Each raise of one exception object adds its frames to the traceback that every worker shares.
+        frames = [frame.f_code.co_name for frame, _line in traceback.walk_tb(failure.__traceback__)]
+        self.assertEqual(frames.count("_find"), 1)
 
     def test_a_cache_hit_builds_no_kea_client(self):
         before = timezone.now()
