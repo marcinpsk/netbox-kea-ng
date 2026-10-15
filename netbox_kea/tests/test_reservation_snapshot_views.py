@@ -892,7 +892,7 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
             {"hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "global"},
             {"hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.19.0.21"},
         ):
-            with self.subTest(host=host):
+            with self.subTest(host=host), with_display_cache_config(leases_ttl=0):
                 response = self._get_global(host)
 
                 row = response.context["table"].data.data[0]
