@@ -310,6 +310,7 @@
               ]
             },
             "renew-timer": 1000,
+            "reservations-global": true,
             "store-extended-info": false,
             "subnet6": [
               {
@@ -374,6 +375,7 @@
                 },
                 "renew-timer": 1000,
                 "reservations": [],
+                "reservations-out-of-pool": true,
                 "store-extended-info": false,
                 "subnet": "2001:db8:3::/64",
                 "t1-percent": 0.5,
@@ -450,6 +452,7 @@
             },
             "renew-timer": 900,
             "reservations": [],
+            "reservations-in-subnet": false,
             "store-extended-info": false,
             "subnet": "2001:db8:1::/64",
             "t1-percent": 0.5,
@@ -465,7 +468,7 @@
         "t2-percent": 0.8,
         "valid-lifetime": 4000
       },
-      "hash": "0FA2AD832102E953346BBF5C1B66E9356EB7AD238D5B046F1AF9A52D1EFB3B73"
+      "hash": "7A8DF0DFBB999F6B5EEACE2BBFB27A49FC8E3B5F4B72DBA42836EAC8A206A01A"
     },
     "result": 0
   },
@@ -474,7 +477,7 @@
     "changes": {
       "after-update": {
         "arguments": {
-          "cltt": 1791435411,
+          "cltt": 1792043630,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -502,7 +505,7 @@
       },
       "before": {
         "arguments": {
-          "cltt": 1791435411,
+          "cltt": 1792043630,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -556,7 +559,7 @@
       },
       "delegated-prefix": {
         "arguments": {
-          "cltt": 1791435411,
+          "cltt": 1792043630,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -579,7 +582,7 @@
       },
       "present": {
         "arguments": {
-          "cltt": 1791435411,
+          "cltt": 1792043630,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": true,
           "fqdn-rev": false,
@@ -611,7 +614,7 @@
       "arguments": {
         "leases": [
           {
-            "cltt": 1791435411,
+            "cltt": 1792043630,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": true,
             "fqdn-rev": false,
@@ -636,7 +639,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791435411,
+            "cltt": 1792043630,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -650,7 +653,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791435411,
+            "cltt": 1792043630,
             "duid": "00:00:00",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -664,7 +667,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791435411,
+            "cltt": 1792043630,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -678,7 +681,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791435411,
+            "cltt": 1792043630,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -692,7 +695,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791435411,
+            "cltt": 1792043630,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -706,7 +709,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1791435411,
+            "cltt": 1792043630,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -721,7 +724,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791435411,
+            "cltt": 1792043630,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -736,7 +739,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1791435411,
+            "cltt": 1792043630,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -751,7 +754,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791435411,
+            "cltt": 1792043630,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -776,7 +779,7 @@
           "count": 4,
           "leases": [
             {
-              "cltt": 1791435411,
+              "cltt": 1792043630,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": true,
               "fqdn-rev": false,
@@ -801,7 +804,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791435411,
+              "cltt": 1792043630,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -815,7 +818,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791435411,
+              "cltt": 1792043630,
               "duid": "00:00:00",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -829,7 +832,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791435411,
+              "cltt": 1792043630,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -852,7 +855,7 @@
           "count": 4,
           "leases": [
             {
-              "cltt": 1791435411,
+              "cltt": 1792043630,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -866,7 +869,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791435411,
+              "cltt": 1792043630,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -880,7 +883,7 @@
               "valid-lft": 4294967295
             },
             {
-              "cltt": 1791435411,
+              "cltt": 1792043630,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -895,7 +898,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791435411,
+              "cltt": 1792043630,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -919,7 +922,7 @@
           "count": 2,
           "leases": [
             {
-              "cltt": 1791435411,
+              "cltt": 1792043630,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -934,7 +937,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791435411,
+              "cltt": 1792043630,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1120,6 +1123,7 @@
               ]
             },
             "renew-timer": 1000,
+            "reservations-global": true,
             "store-extended-info": false,
             "subnet6": [
               {
@@ -1182,6 +1186,7 @@
                   ]
                 },
                 "renew-timer": 1000,
+                "reservations-out-of-pool": true,
                 "store-extended-info": false,
                 "subnet": "2001:db8:3::/64",
                 "t1-percent": 0.5,

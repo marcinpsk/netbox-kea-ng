@@ -14,13 +14,15 @@ from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
 from .kea_stub import (
     _catalogue_responses,
+    _catalogue_responses_for_subnets,
     _res_get,
     _res_page,
     complete_lease,
+    lease_record,
     queued,
     stub_kea,
 )
-from .utils import _make_db_server, _ViewTestBase
+from .utils import _make_db_server, _ViewTestBase, with_display_cache_config
 
 
 def _return_url(url: str) -> list[str]:
@@ -776,8 +778,8 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
         }
     )
 
-    def _get(self, reservation_responses):
-        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+    def _get(self, reservation_responses, *, global_settings=None):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24", global_settings=global_settings)
         responses.update(
             {
                 "lease4-get": {"result": 0, "arguments": self.lease},
@@ -880,7 +882,10 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
         self.assertEqual([badge.get_text(strip=True) for badge in _reserved_badges(response)], ["Reservation"])
 
     def _get_global(self, host):
-        return self._get(queued({"result": 3}, {"result": 3}, _res_get({"subnet-id": 0, **host})))
+        return self._get(
+            queued({"result": 3}, {"result": 3}, _res_get({"subnet-id": 0, **host})),
+            global_settings={"reservations-global": True},
+        )
 
     def test_a_global_reservation_of_no_address_in_the_subnet_shows_host_only_and_no_mutation_link(self):
         for host in (
@@ -967,3 +972,249 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
 
         url = response.context["table"].data.data[0]["create_reservation_url"]
         self.assertEqual(parse_qs(urlsplit(url).query)["hostname"], ["lease.example.invalid"])
+
+
+_HOOK_NOTICE = "The <strong>host_cmds</strong> hook library is not loaded on this Kea server."
+
+
+def _hosts(*hosts: dict):
+    """Answer each reservation-get from *hosts*: by Subnet and address, or by Subnet and identifier."""
+
+    def answer(body):
+        arguments = body["arguments"]
+        for host in hosts:
+            if host["subnet-id"] != arguments["subnet-id"]:
+                continue
+            if "ip-address" in arguments:
+                if host.get("ip-address") == arguments["ip-address"]:
+                    return _res_get(host)
+            elif host.get(arguments["identifier-type"]) == arguments["identifier"]:
+                return _res_get(host)
+        return {"result": 3}
+
+    return answer
+
+
+@with_display_cache_config(leases_ttl=0, configuration_ttl=0)
+class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
+    """An Unknown Reservation Match shows its reason, so "could not check" never looks like "not reserved"."""
+
+    _MAC = "aa:bb:cc:dd:ee:ff"
+    _DUID = "00:01:02:03:04:05"
+
+    def setUp(self):
+        super().setUp()
+        # A Current Lease, so a row that offers no Sync shows that the match withholds it; cltt is the test's start.
+        self.lease = lease_record("198.18.0.20", subnet_id=20, hw_address=self._MAC, drop=("client-id",))
+
+    def _get(self, reservation_get, *, lease: dict | None = None, catalogue: dict | None = None):
+        responses = catalogue or _catalogue_responses(4, 20, "198.18.0.0/24")
+        responses = {
+            **responses,
+            "lease4-get": {"result": 0, "arguments": lease or self.lease},
+            "reservation-get": reservation_get,
+        }
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        with stub_kea(responses):
+            return self.client.get(url, {"by": "ip", "q": "198.18.0.20"}, HTTP_HX_REQUEST="true")
+
+    def _get_prefix(self, reservation_get, *, catalogue: dict):
+        """Search the DHCPv6 Lease page for the delegated prefix of the client *_DUID*."""
+        prefix = lease_record(
+            "2001:db8:100::", type="IA_PD", prefix_len=56, subnet_id=30, duid=self._DUID, drop=("hw-address",)
+        )
+
+        def lease6_get(body):
+            if body["arguments"].get("type") == "IA_PD":
+                return {"result": 0, "arguments": prefix}
+            return {"result": 3, "text": "Lease not found."}
+
+        responses = {**catalogue, "lease6-get": lease6_get, "reservation-get": reservation_get}
+        url = reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+        with stub_kea(responses):
+            return self.client.get(url, {"by": "ip", "q": "2001:db8:100::"}, HTTP_HX_REQUEST="true")
+
+    def test_each_unknown_reason_shows_the_badge_with_its_reason(self):
+        global_on = {"reservations-global": True}
+        shared = _catalogue_responses_for_subnets(
+            4,
+            [
+                {"id": 20, "subnet": "198.18.0.0/24"},
+                {"id": 21, "subnet": "198.18.1.0/24", "reservations-global": False},
+            ],
+            shared_networks=[{"name": "shared"}],
+            members={20: "shared", 21: "shared"},
+            global_settings=global_on,
+        )
+        foreign = complete_lease({**self.lease, "hw-address": "", "client-id": ":".join(["01"] * 129)})
+        cases = (
+            (
+                "unverified Subnet",
+                {"result": 3},
+                {"lease": {**self.lease, "subnet-id": 99}},
+                "The Subnet Catalogue does not verify the Subnet of this lease, so no Reservation lookup can run.",
+            ),
+            (
+                "Kea error",
+                {"result": 1, "text": "host database error"},
+                {},
+                "Kea returned an error for a Reservation lookup, or did not answer it.",
+            ),
+            (
+                "malformed reply",
+                {"result": 0, "arguments": "not-a-host"},
+                {},
+                "Kea returned a Reservation lookup reply that cannot be read.",
+            ),
+            (
+                "invalid read",
+                _res_get({"subnet-id": 21, "hw-address": self._MAC, "ip-address": "198.18.0.20"}),
+                {},
+                "The Server settings are not valid, or Kea returned a Reservation that does not parse or fit the lookup.",
+            ),
+            (
+                "foreign identifier",
+                {"result": 3},
+                {"lease": foreign},
+                "No Reservation matched, and this lease carries a client identifier that no Reservation can hold.",
+            ),
+            (
+                "Shared Network",
+                _hosts({"subnet-id": 0, "hw-address": self._MAC, "ip-address": "198.18.1.21"}),
+                {"catalogue": shared},
+                (
+                    "Kea can give this client an allocation of another Subnet in the Shared Network,"
+                    " and the configuration does not show whether it does."
+                ),
+            ),
+            (
+                "reservation flags",
+                _hosts({"subnet-id": 20, "hw-address": self._MAC, "ip-address": "198.18.0.20"}),
+                {"catalogue": _catalogue_responses(4, 20, "198.18.0.0/24", global_settings={"reservations-global": 1})},
+                (
+                    "The configuration does not show the reservation flags of this Subnet,"
+                    " so it is not known whether Kea applies this Reservation."
+                ),
+            ),
+            (
+                "Pools",
+                _hosts({"subnet-id": 30, "duid": self._DUID, "prefixes": ["2001:db8:200::/56"]}),
+                {
+                    "catalogue": _catalogue_responses(
+                        6, 30, "2001:db8::/64", global_settings={"reservations-out-of-pool": True}
+                    )
+                },
+                (
+                    "The configuration does not show the Pools of this Subnet,"
+                    " and reservations-out-of-pool decides whether Kea gives the reserved address or prefix."
+                ),
+            ),
+        )
+        unreserved = self._get({"result": 3}).context["table"].data.data[0]
+        self.assertIsNotNone(unreserved.get("sync_url"), "the control: an Unreserved Current Lease offers Sync")
+        for label, reservation_get, changes, reason in cases:
+            with self.subTest(label):
+                if label == "Pools":
+                    response = self._get_prefix(reservation_get, **changes)
+                else:
+                    response = self._get(reservation_get, **changes)
+
+                self.assertEqual(response.status_code, 200)
+                [badge] = _reserved_badges(response)
+                self.assertEqual(
+                    (badge.name, badge["class"], badge.get_text(strip=True), badge["title"]),
+                    ("span", ["badge", "text-bg-warning"], "Reservation Unknown", reason),
+                )
+                row = response.context["table"].data.data[0]
+                self.assertIsNone(row["create_reservation_url"])
+                self.assertIsNone(row.get("sync_url"))
+                self.assertNotContains(response, _HOOK_NOTICE)
+
+    def test_a_missing_host_cmds_hook_shows_one_page_notice_and_no_row_badge(self):
+        response = self._get({"result": 2, "text": "unknown command 'reservation-get'"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(_reserved_badges(response), [])
+        self.assertContains(response, _HOOK_NOTICE, count=1, html=False)
+        self.assertContains(response, "The Reserved column cannot show Reservations.")
+        row = response.context["table"].data.data[0]
+        self.assertIsNone(row["create_reservation_url"])
+        self.assertIsNone(row.get("sync_url"))
+
+
+@with_display_cache_config(leases_ttl=0, configuration_ttl=0)
+class TestReservationIgnoredBadgeOnLeases(_ViewTestBase):
+    """Kea ignores a Reservation that the flags of the Lease's Subnet exclude, so the Lease is dynamic."""
+
+    _MAC = "aa:bb:cc:dd:ee:ff"
+
+    def setUp(self):
+        super().setUp()
+        # A Current Lease: cltt is the test's start, so the Lease stays inside its valid lifetime.
+        self.lease = lease_record("198.18.0.20", subnet_id=20, hw_address=self._MAC, drop=("client-id",))
+
+    def _get(self, host: dict, *, pools=(), **global_settings):
+        responses = {
+            **_catalogue_responses_for_subnets(
+                4, [{"id": 20, "subnet": "198.18.0.0/24", "pools": list(pools)}], global_settings=global_settings
+            ),
+            "lease4-get": {"result": 0, "arguments": self.lease},
+            "reservation-get": _hosts(host),
+        }
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        with stub_kea(responses):
+            return self.client.get(url, {"by": "ip", "q": "198.18.0.20"}, HTTP_HX_REQUEST="true")
+
+    def test_each_ignored_reason_names_the_flag_links_the_reservation_and_offers_sync(self):
+        in_subnet = {"subnet-id": 20, "hw-address": self._MAC, "ip-address": "198.18.0.20"}
+        global_ = {"subnet-id": 0, "hw-address": self._MAC, "ip-address": "198.18.0.20"}
+        pool = {"pool": "198.18.0.10 - 198.18.0.50"}
+        cases = (
+            (
+                "Global",
+                global_,
+                {},
+                (),
+                "span",
+                (
+                    "This Subnet does not apply Global Reservations (reservations-global is false),"
+                    " so Kea ignores this Reservation."
+                ),
+            ),
+            (
+                "In-Subnet",
+                in_subnet,
+                {"reservations-in-subnet": False},
+                (),
+                "a",
+                (
+                    "This Subnet does not apply its own Reservations (reservations-in-subnet is false),"
+                    " so Kea ignores this Reservation."
+                ),
+            ),
+            (
+                "out of pool",
+                {**in_subnet, "ip-address": "198.18.0.30"},
+                {"reservations-out-of-pool": True},
+                (pool,),
+                "a",
+                (
+                    "This Subnet sets reservations-out-of-pool, and the reserved address is inside a Pool,"
+                    " so Kea does not give it and assigns this lease from the pool."
+                ),
+            ),
+        )
+        for label, host, settings, pools, element, reason in cases:
+            with self.subTest(label):
+                response = self._get(host, pools=pools, **settings)
+
+                self.assertEqual(response.status_code, 200)
+                [badge] = _reserved_badges(response)
+                self.assertEqual(
+                    (badge.name, badge["class"][:2], badge.get_text(strip=True), badge["title"]),
+                    (element, ["badge", "text-bg-secondary"], "Reservation Ignored", reason),
+                )
+                row = response.context["table"].data.data[0]
+                self.assertEqual(badge.get("href"), row["reservation_url"])
+                self.assertIsNone(row["create_reservation_url"])
+                self.assertIsNotNone(row.get("sync_url"), "Kea gives the Lease from the pool, so Sync is offered")

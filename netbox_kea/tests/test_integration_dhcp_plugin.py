@@ -97,6 +97,7 @@ def _catalogue(conf: dict, version: Family) -> IncompleteCatalogueSnapshot:
             shared_network=None,
             membership_known=False,
             qualifying_suffix=suffixes.get(int(entry["id"])),
+            reservation_flags=None,
         )
         for entry in entries
         if isinstance(entry, dict) and entry.get("id") is not None and entry.get("subnet")

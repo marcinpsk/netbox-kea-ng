@@ -11,6 +11,7 @@ import ipaddress
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
 from unittest.mock import patch
@@ -27,6 +28,8 @@ from netbox_kea.models import Server
 from netbox_kea.reservations import (
     CurrentLeasePresence,
     HostOnlyReservation,
+    IgnoredReservation,
+    IgnoredReservationReason,
     LeaseAbsent,
     LeasePresenceUnknown,
     LeasePresent,
@@ -40,6 +43,7 @@ from netbox_kea.reservations import (
     UnknownLeasePresence,
     UnknownReservationMatch,
     Unreserved,
+    reservation_match,
 )
 
 from .kea_stub import (
@@ -478,6 +482,8 @@ _MAC = "aa:bb:cc:dd:ee:ff"
 _DUID = "00:01:02:03:04:05"
 _PREFIX = "2001:db8:100::/56"
 _NOT_FOUND = {"result": 3, "text": "Host not found."}
+#: The global flag that lets each Subnet apply Global Reservations; Kea's default is false.
+_GLOBAL_RESERVATIONS = {"reservations-global": True}
 
 
 def _address_lease(address: str = "198.18.0.20", *, subnet_id: int = 20, **changes: Any) -> dict:
@@ -501,6 +507,18 @@ def _pending(*allocations: str) -> Callable[[Reservation], ReservationMatch]:
 
 def _unknown_shared_network(_reservation: Reservation) -> ReservationMatch:
     return ReservationMatchUnknown(UnknownReservationMatch.UNKNOWN_SHARED_NETWORK)
+
+
+def _flags_unknown(_reservation: Reservation) -> ReservationMatch:
+    return ReservationMatchUnknown(UnknownReservationMatch.RESERVATION_FLAGS_UNKNOWN)
+
+
+def _pools_unknown(_reservation: Reservation) -> ReservationMatch:
+    return ReservationMatchUnknown(UnknownReservationMatch.POOLS_UNKNOWN)
+
+
+def _ignored(reason: IgnoredReservationReason) -> Callable[[Reservation], ReservationMatch]:
+    return lambda reservation: IgnoredReservation(reservation, reason)
 
 
 def _kea_hosts(*hosts: dict):
@@ -535,6 +553,8 @@ def _match_unknown(reason: UnknownReservationMatch) -> ReservationMatchUnknown:
     return ReservationMatchUnknown(reason)
 
 
+# Each case reads its own Catalogue, with the reservation flags that it sets.
+@with_display_cache_config(configuration_ttl=0)
 class ReservationMatchTest(_ViewTestBase):
     """One Reservation Match per Lease, from the Reservation lookups that Kea answers."""
 
@@ -548,7 +568,7 @@ class ReservationMatchTest(_ViewTestBase):
         responses: dict | None = None,
     ) -> tuple[tuple[ReservationMatch, ...], Any]:
         replies = {
-            **_catalogue_responses_for_subnets(family, _SUBNETS[family]),
+            **_catalogue_responses_for_subnets(family, _SUBNETS[family], global_settings=_GLOBAL_RESERVATIONS),
             "reservation-get": reservation_get,
             **(responses or {}),
         }
@@ -607,39 +627,87 @@ class ReservationMatchTest(_ViewTestBase):
 
         self.assertEqual(match, _pending("2001:db9:700::/56")(_typed_reservation(host)))
 
-    def test_a_global_address_in_a_sibling_subnet_is_unknown_when_it_changes_the_match(self):
-        """Kea gives it only when the reservation flags and class filter of the sibling allow it."""
+    def test_a_global_address_in_a_sibling_subnet_counts_only_when_its_flags_show_that_kea_gives_it(self):
+        """DHCPv4 needs reservations-global and no class filter on the sibling; DHCPv6 needs reservations-global."""
         address6 = lease_record("2001:db8::20", subnet_id=30, duid=_DUID, drop=("hw-address",))
         shared = {
             4: [{"id": 21, "subnet": "198.18.1.0/24"}, {"id": 22, "subnet": "198.19.0.0/24"}],
             6: [{"id": 31, "subnet": "2001:db8:1::/64"}, {"id": 32, "subnet": "2001:db9::/64"}],
         }
+        disabled = {"reservations-global": False}
+        classes = {"client-classes": ["voip"]}
         cases = (
-            (4, _address_lease(), {"hw-address": _MAC, "ip-address": "198.18.1.21"}, _unknown_shared_network),
-            (4, _address_lease(), {"hw-address": _MAC, "ip-address": "198.19.0.21"}, HostOnlyReservation),
-            (6, address6, {"duid": _DUID, "ip-addresses": ["2001:db8:1::21"]}, _unknown_shared_network),
-            (6, address6, {"duid": _DUID, "ip-addresses": ["2001:db8:1::21", "2001:db8::21"]}, _unknown_shared_network),
-            (6, address6, {"duid": _DUID, "ip-addresses": ["2001:db9::21"]}, HostOnlyReservation),
-            (6, address6, {"duid": _DUID, "ip-addresses": ["2001:db8:1::21", "2001:db8::20"]}, Reserved),
+            (4, _address_lease(), {}, {"hw-address": _MAC, "ip-address": "198.18.1.21"}, _pending("198.18.1.21")),
+            (4, _address_lease(), disabled, {"hw-address": _MAC, "ip-address": "198.18.1.21"}, _unknown_shared_network),
+            (4, _address_lease(), classes, {"hw-address": _MAC, "ip-address": "198.18.1.21"}, _unknown_shared_network),
+            (4, _address_lease(), {}, {"hw-address": _MAC, "ip-address": "198.19.0.21"}, HostOnlyReservation),
+            (6, address6, {}, {"duid": _DUID, "ip-addresses": ["2001:db8:1::21"]}, _pending("2001:db8:1::21")),
+            # DHCPv6 walks the siblings by range, so a class filter does not stop it.
+            (6, address6, classes, {"duid": _DUID, "ip-addresses": ["2001:db8:1::21"]}, _pending("2001:db8:1::21")),
+            (6, address6, disabled, {"duid": _DUID, "ip-addresses": ["2001:db8:1::21"]}, _unknown_shared_network),
+            (
+                6,
+                address6,
+                {},
+                {"duid": _DUID, "ip-addresses": ["2001:db8:1::21", "2001:db8::21"]},
+                _pending("2001:db8:1::21", "2001:db8::21"),
+            ),
+            (
+                6,
+                address6,
+                disabled,
+                {"duid": _DUID, "ip-addresses": ["2001:db8:1::21", "2001:db8::21"]},
+                _unknown_shared_network,
+            ),
+            (6, address6, {}, {"duid": _DUID, "ip-addresses": ["2001:db9::21"]}, HostOnlyReservation),
+            (6, address6, disabled, {"duid": _DUID, "ip-addresses": ["2001:db8:1::21", "2001:db8::20"]}, Reserved),
         )
-        for family, lease, allocations, outcome in cases:
+        for family, lease, sibling_settings, allocations, outcome in cases:
             [subnet] = _SUBNETS[family]
             sibling, other = shared[family]
             catalogue = _catalogue_responses_for_subnets(
                 family,
-                [subnet, sibling, other],
+                [subnet, {**sibling, **sibling_settings}, other],
                 shared_networks=[{"name": "shared"}],
                 members={subnet["id"]: "shared", sibling["id"]: "shared"},
+                global_settings=_GLOBAL_RESERVATIONS,
             )
             host = {"subnet-id": 0, **allocations}
-            with self.subTest(host=host), with_display_cache_config(leases_ttl=0):
+            with self.subTest(host=host, sibling=sibling_settings), with_display_cache_config(leases_ttl=0):
                 (match,), _kea = self._matches([lease], _kea_hosts(host), family=family, responses=catalogue)
                 self.assertEqual(match, outcome(_typed_reservation(host)))
+
+    def test_a_sibling_whose_flags_or_classes_are_not_shown_leaves_its_address_possible(self):
+        """An invalid sibling flag also hides the Shared Network flags of the Lease's Subnet, so the facts are edited."""
+        [subnet] = _SUBNETS[4]
+        catalogue = _catalogue_responses_for_subnets(
+            4,
+            [subnet, {"id": 21, "subnet": "198.18.1.0/24"}],
+            shared_networks=[{"name": "shared"}],
+            members={20: "shared", 21: "shared"},
+            global_settings=_GLOBAL_RESERVATIONS,
+        )
+        with stub_kea(catalogue):
+            own, sibling = subnet_catalogue.display(self.server, 4).subnets
+        host = {"subnet-id": 0, "hw-address": _MAC, "ip-address": "198.18.1.21"}
+        reservation, lease = _typed_reservation(host), typed_lease(_address_lease())
+        for label, hidden in (
+            ("flags", replace(sibling, reservation_flags=None)),
+            ("classes", replace(sibling, configuration=None)),
+        ):
+            with self.subTest(label):
+                match = reservation_match(lease, own, reservation, (own, hidden), global_reservation=None)
+                self.assertEqual(match, _unknown_shared_network(reservation))
+        # The control: the facts as Kea shows them let the address count.
+        self.assertEqual(
+            reservation_match(lease, own, reservation, (own, sibling), global_reservation=None),
+            _pending("198.18.1.21")(reservation),
+        )
 
     def test_without_the_shared_network_an_address_outside_the_subnet_is_unknown_only_when_it_can_change_the_match(
         self,
     ):
-        """Without config-get, a Subnet list without Shared Network names cannot show the siblings of a Subnet."""
+        """A Subnet list entry that does not parse hides which Subnets the Shared Network of the Lease holds."""
         address6 = lease_record("2001:db8::20", subnet_id=30, duid=_DUID, drop=("hw-address",))
         outside4, outside6 = "198.19.0.21", "2001:db8:1::21"
         cases = (
@@ -652,12 +720,300 @@ class ReservationMatchTest(_ViewTestBase):
             (6, _prefix_lease(), {"subnet-id": 0, "ip-addresses": [outside6]}, _unknown_shared_network),
         )
         for family, lease, allocations, outcome in cases:
+            [subnet] = _SUBNETS[family]
+            catalogue = _catalogue_responses_for_subnets(
+                family,
+                [subnet],
+                shared_networks=[{"name": "shared"}],
+                members={subnet["id"]: "shared"},
+                global_settings=_GLOBAL_RESERVATIONS,
+            )
+            catalogue[f"subnet{family}-list"]["arguments"]["subnets"].append({"id": "x", "subnet": "unparsed"})
             host = {"hw-address": _MAC, **allocations} if family == 4 else {"duid": _DUID, **allocations}
             with self.subTest(host=host), with_display_cache_config(leases_ttl=0):
-                (match,), _kea = self._matches(
-                    [lease], _kea_hosts(host), family=family, responses={"config-get": {"result": 1, "text": "down"}}
-                )
+                (match,), _kea = self._matches([lease], _kea_hosts(host), family=family, responses=catalogue)
                 self.assertEqual(match, outcome(_typed_reservation(host)))
+
+    def test_a_reservation_of_a_scope_that_the_subnet_disables_is_ignored(self):
+        in_subnet = {"subnet-id": 20, "hw-address": _MAC, "ip-address": "198.18.0.20"}
+        global_ = {"subnet-id": 0, "hw-address": _MAC, "ip-address": "198.18.0.20"}
+        no_in_subnet = {"reservations-in-subnet": False}
+        cases = (
+            # Kea's default: reservations-global is false.
+            ({}, (global_,), _ignored(IgnoredReservationReason.GLOBAL_RESERVATIONS_DISABLED), global_),
+            ({}, (in_subnet, global_), Reserved, in_subnet),
+            (no_in_subnet, (in_subnet,), _ignored(IgnoredReservationReason.IN_SUBNET_RESERVATIONS_DISABLED), in_subnet),
+            # An enabled scope comes first, and a disabled one only when the enabled scopes hold no Reservation.
+            ({**no_in_subnet, **_GLOBAL_RESERVATIONS}, (in_subnet, global_), Reserved, global_),
+            (
+                no_in_subnet,
+                (in_subnet, global_),
+                _ignored(IgnoredReservationReason.IN_SUBNET_RESERVATIONS_DISABLED),
+                in_subnet,
+            ),
+        )
+        for settings, hosts, outcome, found in cases:
+            catalogue = _catalogue_responses_for_subnets(4, _SUBNETS[4], global_settings=settings)
+            with self.subTest(settings=settings, hosts=hosts), with_display_cache_config(leases_ttl=0):
+                (match,), _kea = self._matches([_address_lease()], _kea_hosts(*hosts), responses=catalogue)
+                self.assertEqual(match, outcome(_typed_reservation(found)))
+
+    def test_the_lookups_try_the_scopes_that_the_flags_enable_first(self):
+        lease = _address_lease()
+        in_subnet_lookups = [(20, "198.18.0.20"), (20, "hw-address")]
+        cases = (
+            ({}, [*in_subnet_lookups, (0, "hw-address")]),
+            ({"reservations-in-subnet": False, **_GLOBAL_RESERVATIONS}, [(0, "hw-address"), *in_subnet_lookups]),
+            ({"reservations-in-subnet": False}, [*in_subnet_lookups, (0, "hw-address")]),
+        )
+        for settings, lookups in cases:
+            catalogue = _catalogue_responses_for_subnets(4, _SUBNETS[4], global_settings=settings)
+            with self.subTest(settings=settings), with_display_cache_config(leases_ttl=0):
+                (match,), kea = self._matches([lease], _NOT_FOUND, responses=catalogue)
+                self.assertIsInstance(match, Unreserved)
+                self.assertEqual(_lookups(kea), lookups)
+
+    def test_with_out_of_pool_an_in_subnet_address_in_a_pool_does_not_count(self):
+        """Kea gives an In-Subnet reserved address only outside the Pools (AllocEngine hasAddressReservation)."""
+        pool = {"pools": [{"pool": "198.18.0.100 - 198.18.0.200"}]}
+        out_of_pool = {"reservations-out-of-pool": True, **_GLOBAL_RESERVATIONS}
+
+        def host(address: str | None, subnet_id: int = 20, mac: str = _MAC) -> dict:
+            return {"subnet-id": subnet_id, "hw-address": mac, **({"ip-address": address} if address else {})}
+
+        ignored = _ignored(IgnoredReservationReason.OUT_OF_POOL)
+        other_mac = "aa:bb:cc:dd:ee:01"
+        cases = (
+            (out_of_pool, _address_lease(), host("198.18.0.150"), ignored),
+            # Kea renews the Lease of the reserved address: it is in a Pool, and it is not reserved for another client.
+            (out_of_pool, _address_lease("198.18.0.150"), host("198.18.0.150"), Reserved),
+            (
+                out_of_pool,
+                _address_lease("198.18.0.150"),
+                host("198.18.0.150", mac=other_mac),
+                lambda reservation: StaleMac(reservation, _MAC),
+            ),
+            (out_of_pool, _address_lease(), host("198.18.0.50"), _pending("198.18.0.50")),
+            (out_of_pool, _address_lease(), host(None), HostOnlyReservation),
+            # Kea checks only an In-Subnet address against the Pools.
+            (out_of_pool, _address_lease(), host("198.18.0.150", subnet_id=0), _pending("198.18.0.150")),
+            (_GLOBAL_RESERVATIONS, _address_lease(), host("198.18.0.150"), _pending("198.18.0.150")),
+        )
+        for settings, lease, reserved, outcome in cases:
+            catalogue = _catalogue_responses_for_subnets(4, [{**_SUBNETS[4][0], **pool}], global_settings=settings)
+            with self.subTest(settings=settings, host=reserved), with_display_cache_config(leases_ttl=0):
+                (match,), _kea = self._matches([lease], _kea_hosts(reserved), responses=catalogue)
+                self.assertEqual(match, outcome(_typed_reservation(reserved)))
+
+    def test_with_out_of_pool_a_reserved_prefix_is_unknown_only_for_a_prefix_lease_that_it_can_change(self):
+        """Kea also checks a prefix against the PD Pools, which the configuration facts do not hold.
+
+        An address Lease does not depend on them: Kea allocates each IA by itself (AllocEngine allocateReservedLeases6).
+        """
+        address6 = lease_record("2001:db8::20", subnet_id=30, duid=_DUID, drop=("hw-address",))
+        held6 = lease_record("2001:db8::150", subnet_id=30, duid=_DUID, drop=("hw-address",))
+        pool = {"pools": [{"pool": "2001:db8::100 - 2001:db8::200"}]}
+        out_of_pool = {"reservations-out-of-pool": True}
+        cases = (
+            (
+                address6,
+                {"ip-addresses": ["2001:db8::150"], "prefixes": [_PREFIX]},
+                _ignored(IgnoredReservationReason.OUT_OF_POOL),
+            ),
+            (address6, {"ip-addresses": ["2001:db8::20"], "prefixes": [_PREFIX]}, Reserved),
+            # Kea keeps an existing Lease of a reserved allocation before it checks the Pools.
+            (held6, {"ip-addresses": ["2001:db8::150"], "prefixes": [_PREFIX]}, Reserved),
+            (_prefix_lease(), {"prefixes": [_PREFIX]}, Reserved),
+            (_prefix_lease(), {"ip-addresses": ["2001:db8::20"], "prefixes": [_PREFIX]}, Reserved),
+            (_prefix_lease(), {"prefixes": ["2001:db8:200::/56"]}, _pools_unknown),
+        )
+        for lease, allocations, outcome in cases:
+            catalogue = _catalogue_responses_for_subnets(6, [{**_SUBNETS[6][0], **pool}], global_settings=out_of_pool)
+            host = {"subnet-id": 30, "duid": _DUID, **allocations}
+            with self.subTest(lease=lease["ip-address"], host=host), with_display_cache_config(leases_ttl=0):
+                (match,), _kea = self._matches([lease], _kea_hosts(host), family=6, responses=catalogue)
+                self.assertEqual(match, outcome(_typed_reservation(host)))
+
+    def test_pools_that_the_configuration_does_not_show_leave_an_in_subnet_address_unknown_when_they_change_it(self):
+        [subnet] = _SUBNETS[4]
+        catalogue = _catalogue_responses_for_subnets(4, [subnet], global_settings={"reservations-out-of-pool": True})
+        with stub_kea(catalogue):
+            [own] = subnet_catalogue.display(self.server, 4).subnets
+        hidden = replace(own, configuration=None)
+        reservation = _typed_reservation({"subnet-id": 20, "hw-address": _MAC, "ip-address": "198.18.0.150"})
+        cases = (
+            (_address_lease(), _pools_unknown(reservation)),
+            # A Lease of the reserved address is Reserved with or without the Pool check.
+            (_address_lease("198.18.0.150"), Reserved(reservation)),
+        )
+        for lease, outcome in cases:
+            with self.subTest(lease=lease["ip-address"]):
+                match = reservation_match(typed_lease(lease), hidden, reservation, (hidden,), global_reservation=None)
+                self.assertEqual(match, outcome)
+
+    def test_dhcpv6_reads_no_global_reservation_when_a_local_allocation_of_the_lease_kind_counts(self):
+        """allocateReservedLeases6 gives the local address outside the Pool and returns before the Global host."""
+        settings = {"reservations-out-of-pool": True, **_GLOBAL_RESERVATIONS}
+        pool6 = {"pools": [{"pool": "2001:db8::100 - 2001:db8::200"}]}
+        catalogue = _catalogue_responses_for_subnets(6, [{**_SUBNETS[6][0], **pool6}], global_settings=settings)
+        lease = lease_record("2001:db8::160", subnet_id=30, duid=_DUID, drop=("hw-address",))
+        local = {"subnet-id": 30, "duid": _DUID, "ip-addresses": ["2001:db8::50"]}
+        global_ = {"subnet-id": 0, "duid": _DUID, "ip-addresses": ["2001:db8::60"]}
+        with with_display_cache_config(leases_ttl=0):
+            (match,), kea = self._matches([lease], _kea_hosts(local, global_), family=6, responses=catalogue)
+        self.assertEqual(match, _pending("2001:db8::50")(_typed_reservation(local)))
+        self.assertNotIn(0, [subnet_id for subnet_id, _key in _lookups(kea)], "no Global lookup")
+
+    def test_kea_tries_the_global_reservation_when_the_in_subnet_one_gives_no_allocation_of_the_lease_kind(self):
+        """DHCPv4 hasAddressReservation and DHCPv6 allocateReservedLeases6 go on to the Global Reservation."""
+        pool4 = {"pools": [{"pool": "198.18.0.100 - 198.18.0.200"}]}
+        shared4 = _catalogue_responses_for_subnets(
+            4,
+            [{**_SUBNETS[4][0], **pool4, "reservations-out-of-pool": True}, {"id": 21, "subnet": "198.18.1.0/24"}],
+            shared_networks=[{"name": "shared"}],
+            members={20: "shared", 21: "shared"},
+            global_settings=_GLOBAL_RESERVATIONS,
+        )
+        out_of_pool6 = {"reservations-out-of-pool": True, **_GLOBAL_RESERVATIONS}
+        pool6 = {"pools": [{"pool": "2001:db8::100 - 2001:db8::200"}]}
+        subnet6 = _catalogue_responses_for_subnets(6, [{**_SUBNETS[6][0], **pool6}], global_settings=out_of_pool6)
+        plain6 = _catalogue_responses_for_subnets(6, _SUBNETS[6], global_settings=_GLOBAL_RESERVATIONS)
+        alone4 = _catalogue_responses_for_subnets(
+            4, [{**_SUBNETS[4][0], **pool4, "reservations-out-of-pool": True}], global_settings=_GLOBAL_RESERVATIONS
+        )
+        hidden4 = _catalogue_responses_for_subnets(
+            4,
+            [{**_SUBNETS[4][0], **pool4, "reservations-out-of-pool": True}],
+            shared_networks=[{"name": "shared"}],
+            members={20: "shared"},
+            global_settings=_GLOBAL_RESERVATIONS,
+        )
+        hidden4["subnet4-list"]["arguments"]["subnets"].append({"id": "x", "subnet": "unparsed"})
+        shared6 = _catalogue_responses_for_subnets(
+            6,
+            [{**_SUBNETS[6][0], **pool6}, {"id": 31, "subnet": "2001:db8:1::/64"}],
+            shared_networks=[{"name": "shared"}],
+            members={30: "shared", 31: "shared"},
+            global_settings=out_of_pool6,
+        )
+        lease4, held4 = _address_lease("198.18.0.160"), _address_lease("198.18.0.150")
+        local4 = {"subnet-id": 0, "hw-address": _MAC, "ip-address": "198.18.0.50"}
+        outside4 = {"subnet-id": 0, "hw-address": _MAC, "ip-address": "198.19.0.50"}
+        lease6, held6 = (
+            lease_record(address, subnet_id=30, duid=_DUID, drop=("hw-address",))
+            for address in ("2001:db8::160", "2001:db8::150")
+        )
+        global4 = {"subnet-id": 0, "hw-address": _MAC, "ip-address": "198.18.1.50"}
+        global6 = {"subnet-id": 0, "duid": _DUID, "ip-addresses": ["2001:db8::50"]}
+        in_subnet4 = {"subnet-id": 20, "hw-address": _MAC, "ip-address": "198.18.0.150"}
+        in_subnet6 = {"subnet-id": 30, "duid": _DUID, "ip-addresses": ["2001:db8::150"]}
+        out_of_pool = _ignored(IgnoredReservationReason.OUT_OF_POOL)
+        cases = (
+            # An In-Subnet Reservation of a sibling Subnet comes before the Global one, and the plugin does not read it.
+            ("v4 sibling", 4, shared4, lease4, in_subnet4, global4, global4, _unknown_shared_network),
+            ("v4 held, sibling", 4, shared4, held4, in_subnet4, global4, global4, _unknown_shared_network),
+            ("v4 membership not shown", 4, hidden4, lease4, in_subnet4, local4, global4, _unknown_shared_network),
+            ("v6 sibling", 6, shared6, lease6, in_subnet6, global6, global6, _unknown_shared_network),
+            # The Global address applies, and currentHost() is the In-Subnet host, so Kea gives the local address.
+            ("v4 Global address here", 4, alone4, lease4, in_subnet4, local4, in_subnet4, _pending("198.18.0.150")),
+            ("v4 held, Global address here", 4, alone4, held4, in_subnet4, local4, in_subnet4, Reserved),
+            # A Global address outside the only eligible Subnet does not apply.
+            ("v4 Global address outside", 4, alone4, lease4, in_subnet4, outside4, in_subnet4, out_of_pool),
+            ("v4 held, Global address outside", 4, alone4, held4, in_subnet4, outside4, in_subnet4, Reserved),
+            (
+                "v4 no Global address",
+                4,
+                shared4,
+                lease4,
+                in_subnet4,
+                {**global4, "ip-address": None},
+                in_subnet4,
+                out_of_pool,
+            ),
+            # A dynamic Subnet Reservation stops the walk: it overrides a Global reserved address.
+            (
+                "v4 Host-Only",
+                4,
+                shared4,
+                lease4,
+                {**in_subnet4, "ip-address": None},
+                global4,
+                None,
+                HostOnlyReservation,
+            ),
+            ("v6 out-of-pool", 6, subnet6, lease6, in_subnet6, global6, global6, _pending("2001:db8::50")),
+            # The address IA does not use the prefix, so the prefix does not stop the walk.
+            (
+                "v6 excluded address and a prefix",
+                6,
+                subnet6,
+                lease6,
+                {**in_subnet6, "prefixes": [_PREFIX]},
+                global6,
+                global6,
+                _pending("2001:db8::50"),
+            ),
+            # DHCPv6 keeps an existing Lease of the In-Subnet Reservation before it looks at the Global one.
+            ("v6 held", 6, subnet6, held6, in_subnet6, global6, in_subnet6, Reserved),
+            # An In-Subnet Reservation of no allocation stops the walk.
+            (
+                "v6 Host-Only",
+                6,
+                subnet6,
+                lease6,
+                {"subnet-id": 30, "duid": _DUID, "hostname": "h", "ip-addresses": []},
+                global6,
+                None,
+                HostOnlyReservation,
+            ),
+            # Without out-of-pool, an In-Subnet Reservation of only prefixes gives no address either.
+            (
+                "v6 only a prefix",
+                6,
+                plain6,
+                lease6,
+                {"subnet-id": 30, "duid": _DUID, "prefixes": [_PREFIX]},
+                global6,
+                global6,
+                _pending("2001:db8::50"),
+            ),
+        )
+        for label, family, catalogue, lease, in_subnet, global_, found, outcome in cases:
+            hosts = [{key: value for key, value in host.items() if value is not None} for host in (in_subnet, global_)]
+            with self.subTest(label), with_display_cache_config(leases_ttl=0):
+                (match,), kea = self._matches([lease], _kea_hosts(*hosts), family=family, responses=catalogue)
+                if found is None:
+                    self.assertEqual(match, outcome(_typed_reservation(hosts[0])))
+                    self.assertNotIn(0, [subnet_id for subnet_id, _key in _lookups(kea)], "no Global lookup")
+                else:
+                    self.assertEqual(
+                        match,
+                        outcome(_typed_reservation({key: value for key, value in found.items() if value is not None})),
+                    )
+
+    def test_flags_that_the_configuration_does_not_show_leave_a_found_reservation_unknown(self):
+        host = {"subnet-id": 20, "hw-address": _MAC, "ip-address": "198.18.0.20"}
+        invalid = _catalogue_responses_for_subnets(4, _SUBNETS[4], global_settings={"reservations-global": "yes"})
+        cases = (
+            ("config-get failed", {"config-get": {"result": 1, "text": "down"}}),
+            ("a flag is not a bool", invalid),
+            (
+                "a Subnet flag is not a bool",
+                _catalogue_responses_for_subnets(
+                    4, [{**_SUBNETS[4][0], "reservations-in-subnet": 1}], global_settings=_GLOBAL_RESERVATIONS
+                ),
+            ),
+        )
+        for label, responses in cases:
+            with self.subTest(label), with_display_cache_config(leases_ttl=0, configuration_ttl=0):
+                (found, none), _kea = self._matches(
+                    [_address_lease(), _address_lease("198.18.0.30", hw_address="aa:bb:cc:dd:ee:01")],
+                    _kea_hosts(host),
+                    responses=responses,
+                )
+                self.assertEqual(found, _flags_unknown(_typed_reservation(host)))
+                # No Reservation in any scope does not depend on a flag.
+                self.assertIsInstance(none, Unreserved)
 
     def test_a_reserved_address_of_another_hardware_address_is_a_stale_mac(self):
         host = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "198.18.0.20"}

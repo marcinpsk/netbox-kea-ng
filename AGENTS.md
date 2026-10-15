@@ -622,10 +622,15 @@ resort, reserved for true external boundaries you cannot run locally.
   `FakeLeaseModelMeta` provide `app_label`/`model_name` so `GetReturnURLMixin`
   resolves in delete views.
 - **Lease badge enrichment**: `_enrich_leases_with_badges()` gets one typed Reservation
-  Match per row from `lease_reservation_reads.reservation_matches()`. Each Lease is looked
-  up by its address or delegated prefix, then by each carried identity in its Subnet, then
-  globally; one call reads each lookup once. `reservations.reservation_match()` is the rule,
-  and the view maps each outcome to its badge, links and Sync with `match` and `assert_never`.
+  Match per row from `lease_reservation_reads.reservation_matches()`. The lookups try the
+  Reservation Scopes that the reservation flags of the Lease's Subnet enable first, then the
+  disabled ones. The In-Subnet scope looks up the address or delegated prefix of the Lease,
+  then each carried identity; the Global scope looks up each identity. When
+  `reservations.tries_global_reservation()` is true (an In-Subnet Reservation that can give
+  no allocation of the Lease kind, for example under `reservations-out-of-pool`), the Global
+  Reservation is read too. One call reads each lookup once. `reservations.reservation_match()`
+  is the rule, and the view maps each outcome to its badge, links and Sync with `match` and
+  `assert_never`.
 - **Sync lifecycle**: IP status is `dhcp` (dynamic lease only), `reserved`
   (reservation only), or `active` (both). `reconcile()` claims all phase reports
   before it removes stale ownership links for complete phases. An incomplete phase

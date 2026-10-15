@@ -70,6 +70,8 @@ from ..published_name import lease_published_name
 from ..reservations import (
     GlobalReservationScope,
     HostOnlyReservation,
+    IgnoredReservation,
+    IgnoredReservationReason,
     OtherKindReservation,
     PendingAddressChange,
     Reservation,
@@ -77,6 +79,7 @@ from ..reservations import (
     ReservationMatchUnknown,
     Reserved,
     StaleMac,
+    UnknownReservationMatch,
     Unreserved,
     lease_identities,
 )
@@ -296,6 +299,8 @@ class PresentedLeases:
     can_delete: bool
     #: The Lease search page without empty parameters; the row actions return to it.
     return_url: str
+    #: Kea does not know a Reservation command, so the page shows one notice and no row shows a Reservation badge.
+    reservation_hook_unavailable: bool
 
 
 def present(
@@ -320,7 +325,7 @@ def present(
         rows = [row.record for row in table.paginated_rows]
     can_delete = request.user.has_perm("netbox_kea.bulk_delete_lease_from_server", obj=server)
     return_url = _strip_empty_params(request.get_full_path())
-    _enrich_leases_with_badges(
+    reservation_hook_unavailable = _enrich_leases_with_badges(
         rows,
         server,
         snapshot.family,
@@ -332,7 +337,7 @@ def present(
     )
     if not can_delete:
         table.columns.hide("pk")
-    return PresentedLeases(table, can_delete, return_url)
+    return PresentedLeases(table, can_delete, return_url, reservation_hook_unavailable)
 
 
 class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
@@ -595,6 +600,7 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
                     "table": table,
                     "next_page": next_page,
                     "lease_notice": notice(snapshot),
+                    "reservation_hook_unavailable": presented.reservation_hook_unavailable,
                     "paginate": True,
                     "page_lengths": EnhancedPaginator.default_page_lengths,
                 },
@@ -1126,7 +1132,69 @@ _NO_RESERVATION_FIELDS: dict[str, Any] = {
     "reservation_mac": "",
     "delete_lease_url": "",
     "can_change_reservation": False,
+    "reservation_unknown_reason": "",
+    "reservation_ignored_reason": "",
 }
+
+#: The title of the Reservation Unknown badge when the lookups of the whole table failed.
+_LOOKUPS_FAILED_REASON = "The Reservation lookups failed."
+
+
+def _unknown_badge_title(reason: UnknownReservationMatch) -> str:
+    """Return the title of the Reservation Unknown badge, or an empty string for the reason that the page shows."""
+    match reason:
+        case UnknownReservationMatch.UNVERIFIED_SUBNET:
+            return "The Subnet Catalogue does not verify the Subnet of this lease, so no Reservation lookup can run."
+        case UnknownReservationMatch.KEA_ERROR:
+            return "Kea returned an error for a Reservation lookup, or did not answer it."
+        case UnknownReservationMatch.MALFORMED_REPLY:
+            return "Kea returned a Reservation lookup reply that cannot be read."
+        case UnknownReservationMatch.INVALID_READ:
+            return "The Server settings are not valid, or Kea returned a Reservation that does not parse or fit the lookup."
+        case UnknownReservationMatch.FOREIGN_IDENTIFIER:
+            return "No Reservation matched, and this lease carries a client identifier that no Reservation can hold."
+        case UnknownReservationMatch.UNKNOWN_SHARED_NETWORK:
+            return (
+                "Kea can give this client an allocation of another Subnet in the Shared Network,"
+                " and the configuration does not show whether it does."
+            )
+        case UnknownReservationMatch.RESERVATION_FLAGS_UNKNOWN:
+            return (
+                "The configuration does not show the reservation flags of this Subnet,"
+                " so it is not known whether Kea applies this Reservation."
+            )
+        case UnknownReservationMatch.POOLS_UNKNOWN:
+            return (
+                "The configuration does not show the Pools of this Subnet,"
+                " and reservations-out-of-pool decides whether Kea gives the reserved address or prefix."
+            )
+        # The page shows one notice for the whole table.
+        case UnknownReservationMatch.RESERVATION_HOOK_UNAVAILABLE:
+            return ""
+        case _:
+            assert_never(reason)
+
+
+def _ignored_badge_title(reason: IgnoredReservationReason) -> str:
+    """Return the title of the Reservation Ignored badge: the flag of the Subnet that makes Kea ignore it."""
+    match reason:
+        case IgnoredReservationReason.GLOBAL_RESERVATIONS_DISABLED:
+            return (
+                "This Subnet does not apply Global Reservations (reservations-global is false),"
+                " so Kea ignores this Reservation."
+            )
+        case IgnoredReservationReason.IN_SUBNET_RESERVATIONS_DISABLED:
+            return (
+                "This Subnet does not apply its own Reservations (reservations-in-subnet is false),"
+                " so Kea ignores this Reservation."
+            )
+        case IgnoredReservationReason.OUT_OF_POOL:
+            return (
+                "This Subnet sets reservations-out-of-pool, and the reserved address is inside a Pool,"
+                " so Kea does not give it and assigns this lease from the pool."
+            )
+        case _:
+            assert_never(reason)
 
 
 def _create_reservation_url(
@@ -1168,11 +1236,12 @@ def _set_reservation_fields(
 ) -> bool:
     """Set the Reservation fields of one Lease row from its Reservation Match, and return whether it may offer Sync.
 
-    Unknown shows no badge and no action.
+    Unknown shows its reason and no action.
     """
     row.update(_NO_RESERVATION_FIELDS)
     match match:
-        case ReservationMatchUnknown():
+        case ReservationMatchUnknown(reason=reason):
+            row["reservation_unknown_reason"] = _unknown_badge_title(reason)
             return False
         case Unreserved(subnet=subnet):
             if can_change:
@@ -1203,6 +1272,11 @@ def _set_reservation_fields(
             _link_reservation(row, reservation, server_pk, can_change, return_url)
             row["other_kind_reservation"] = True
             return True
+        # Kea does not apply the Reservation, so the Lease is dynamic and a Sync cannot contradict it.
+        case IgnoredReservation(reservation=reservation, reason=reason):
+            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            row["reservation_ignored_reason"] = _ignored_badge_title(reason)
+            return True
         case _:
             assert_never(match)
 
@@ -1230,8 +1304,8 @@ def _enrich_leases_with_badges(
     sync: Mapping[AllocationKind, SyncGate],
     return_url: str,
     read_since: datetime,
-) -> None:
-    """In-place: add reservation and NetBox IPAM badge fields to lease dicts.
+) -> bool:
+    """In-place: add reservation and NetBox IPAM badge fields to lease dicts, and return whether Kea lacks host_cmds.
 
     Adds:
     - ``reservation_url``: reservation link if a reservation exists for this IP
@@ -1244,6 +1318,8 @@ def _enrich_leases_with_badges(
     - ``sync_refusal``: the reason when the gate of its kind refuses the user
     - ``can_delete``: whether the current user may delete this lease
     - ``can_change``: whether the current user may edit this lease (gates edit_url)
+    - ``reservation_unknown_reason``: the title of the Reservation Unknown badge when the match is Unknown
+    - ``reservation_ignored_reason``: the title of the Reservation Ignored badge when Kea ignores the Reservation
 
     *return_url* is the lease search page; the lease and Reservation edit forms return to it. Each Reservation lookup
     read before *read_since*, the read time of the Lease table, is read again.
@@ -1254,11 +1330,13 @@ def _enrich_leases_with_badges(
         matches = reservation_matches(server, version, [row["lease"] for row in leases], read_since=read_since)
     except Exception as exc:
         logger.warning("unexpected error during lease enrichment: %s", exc, exc_info=True)
-        # An unexpected failure shows each row as Unknown: no badge and no action.
+        # An unexpected failure shows each row as Unknown, so "could not check" never looks like "not reserved".
         for row in leases:
-            row.update(_NO_RESERVATION_FIELDS)
+            row.update(_NO_RESERVATION_FIELDS, reservation_unknown_reason=_LOOKUPS_FAILED_REASON)
         offers_sync = [False] * len(leases)
+        hook_unavailable = False
     else:
+        hook_unavailable = ReservationMatchUnknown(UnknownReservationMatch.RESERVATION_HOOK_UNAVAILABLE) in matches
         offers_sync = [
             _set_reservation_fields(row, match, server.pk, version, can_change, return_url)
             for row, match in zip(leases, matches, strict=True)
@@ -1291,3 +1369,4 @@ def _enrich_leases_with_badges(
             lease["edit_url"] = reverse(edit_url_name, args=[server.pk, lease["label"]]) + edit_query
         lease["can_delete"] = can_delete
         lease["can_change"] = can_change
+    return hook_unavailable

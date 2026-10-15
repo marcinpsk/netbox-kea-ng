@@ -130,7 +130,7 @@ def _lease_stub(responses: dict):
     return stub_kea({"config-get": configuration, **responses})
 
 
-def _reservation_stub(version: int, responses: dict):
+def _reservation_stub(version: int, responses: dict, *, global_settings: dict | None = None):
     """Add the matching configuration source required by typed Reservation scope.
 
     The Catalogue response shape has one definition in ``kea_stub``; this only points it
@@ -139,7 +139,8 @@ def _reservation_stub(version: int, responses: dict):
     list_response = responses.get(f"subnet{version}-list")
     arguments = list_response.get("arguments", {}) if isinstance(list_response, dict) else {}
     subnets = arguments.get("subnets", []) if isinstance(arguments, dict) else []
-    return stub_kea({**_catalogue_responses_for_subnets(version, subnets), **responses})
+    catalogue = _catalogue_responses_for_subnets(version, subnets, global_settings=global_settings)
+    return stub_kea({**catalogue, **responses})
 
 
 class TestServerLeases4View(_ViewTestBase):
@@ -309,6 +310,38 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         rows = list(csv.DictReader(io.StringIO(response.content.decode())))
         self.assertEqual([(row.get("Reserved"), row.get("NetBox IP")) for row in rows], [("Reserved", "Synced")])
+
+    def test_the_table_export_shows_an_unknown_reservation_match_as_the_badge_does(self):
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        cases = (
+            ("Unknown", {"result": 1, "text": "host database error"}, "Reservation Unknown"),
+            # The control: an Unreserved row exports the text of its action badge.
+            ("Unreserved", {"result": 3}, "+ Reserve"),
+        )
+        for label, reservation_get, exported in cases:
+            with self.subTest(label), _lease_stub(self._badge_responses(**{"reservation-get": reservation_get})):
+                response = self.client.get(url, {"by": "ip", "q": "192.168.1.100", "export": "table"})
+
+            self.assertEqual(response.status_code, 200)
+            rows = list(csv.DictReader(io.StringIO(response.content.decode())))
+            self.assertEqual([row.get("Reserved") for row in rows], [exported])
+
+    def test_the_table_export_shows_an_ignored_reservation_as_the_badge_does(self):
+        """Kea's default reservations-global is false, so it ignores a Global Reservation."""
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        global_ = {**self._RESERVATION4, "subnet-id": 0}
+
+        def reservation_get(body):
+            if body["arguments"]["subnet-id"] == 0:
+                return {"result": 0, "arguments": global_}
+            return {"result": 3}
+
+        with _lease_stub(self._badge_responses(**{"reservation-get": reservation_get})):
+            response = self.client.get(url, {"by": "ip", "q": "192.168.1.100", "export": "table"})
+
+        self.assertEqual(response.status_code, 200)
+        rows = list(csv.DictReader(io.StringIO(response.content.decode())))
+        self.assertEqual([row.get("Reserved") for row in rows], ["Reservation Ignored"])
 
     def test_no_reserved_badge_when_no_reservation(self):
         """When no reservation exists for the lease IP, no badge is rendered."""
@@ -816,7 +849,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
     def _htmx_get(self, url, data):
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
 
-    def test_an_unexpected_lookup_failure_is_logged_and_every_row_offers_no_reservation_action(self):
+    def test_an_unexpected_lookup_failure_is_logged_and_every_row_shows_an_unknown_match_without_actions(self):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         with (
             _reservation_stub(
@@ -839,6 +872,12 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         self.assertIsNone(row["reservation_url"])
         self.assertIsNone(row["create_reservation_url"])
         self.assertIsNone(row.get("sync_url"))
+        cell = BeautifulSoup(str(next(iter(response.context["table"].rows)).get_cell("reserved")), "html.parser")
+        [badge] = cell.select(".badge")
+        self.assertEqual(
+            (badge["class"], badge.get_text(strip=True), badge["title"]),
+            (["badge", "text-bg-warning"], "Reservation Unknown", "The Reservation lookups failed."),
+        )
 
     def test_a_non_integer_subnet_id_excludes_the_lease_with_a_safe_diagnostic(self):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
@@ -895,7 +934,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         # Sync button (hx-post) must appear since no NetBox IP
         self.assertContains(response, "hx-post")
 
-    @with_display_cache_config(leases_ttl=0)
+    @with_display_cache_config(leases_ttl=0, configuration_ttl=0)
     def test_sync_is_offered_only_for_a_reservation_match_that_a_sync_cannot_contradict(self):
         def kea_holding(host):
             def reservation_get(body):
@@ -925,15 +964,18 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
             ("Global Pending", kea_holding({"subnet-id": 0, "hw-address": mac, "ip-address": "10.0.0.6"}), False),
             ("Unknown", {"result": 1, "text": "host database error"}, False),
         )
+        # Kea ignores a Global Reservation by default, so the Lease is dynamic and a Sync cannot contradict it.
+        ignored = ("Ignored", kea_holding({"subnet-id": 0, "hw-address": mac, "ip-address": "10.0.0.6"}), True, {})
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        for label, reservation_get, offered in cases:
+        global_on = {"reservations-global": True}
+        for label, reservation_get, offered, settings in (*((*case, global_on) for case in cases), ignored):
             with self.subTest(label):
                 responses = {
                     "subnet4-list": self._SUBNETS4,
                     "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)},
                     "reservation-get": reservation_get,
                 }
-                with _reservation_stub(4, responses):
+                with _reservation_stub(4, responses, global_settings=settings):
                     response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
                 row = next(iter(response.context["table"].rows)).record
                 self.assertTrue(row["current"])
