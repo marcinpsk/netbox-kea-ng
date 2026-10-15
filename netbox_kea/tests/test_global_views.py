@@ -14,12 +14,11 @@ import yaml
 from django.test import TestCase
 from django.urls import reverse
 from ipam.models import IPAddress
-from netaddr import IPNetwork
 
 from netbox_kea.models import Server
 
 from .kea_stub import _res_page, complete_lease, queued, stub_kea
-from .utils import User, _make_db_server, with_display_cache_config, with_kea_client_config
+from .utils import User, _make_db_server, ownership_link, with_display_cache_config, with_kea_client_config
 
 # ---------------------------------------------------------------------------
 # Kea response fixtures
@@ -870,21 +869,6 @@ _MOCK_RESERVATION_ENRICHED = {
 }
 
 
-def _own(ip: IPAddress, server: Server) -> None:
-    """Link *ip* to the Reservations of *server*, so the Server owns it (ADR 0006)."""
-    from netbox_kea.models import IPAMOwnershipLink, next_confirmation_number
-
-    address = IPNetwork(str(ip.address))
-    IPAMOwnershipLink.objects.create(
-        server=server,
-        family=address.version,
-        source="reservation",
-        ip_address=ip,
-        facts={"hostname": "", "prefix_length": address.prefixlen},
-        confirmation=next_confirmation_number(),
-    )
-
-
 class TestCombinedReservations4Enrichment(_CombinedViewBase):
     """Combined DHCPv4 reservation view must include the same badge enrichment as per-server."""
 
@@ -952,7 +936,9 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
 
     def test_netbox_ip_synced_link_when_ip_in_netbox(self):
         """The combined table shows aggregate synchronization for the Reservation."""
-        _own(IPAddress.objects.create(address="10.0.0.5/32", description="[kea-sync: reservation]"), self.v4_server)
+        ownership_link(
+            IPAddress.objects.create(address="10.0.0.5/32", description="[kea-sync: reservation]"), self.v4_server
+        )
         with _reservation_stub(
             4,
             {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]), "lease4-get-by-state": _leases([])},
@@ -979,7 +965,7 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
         self.assertContains(response, "Not Synchronized 0/1")
 
         synced = IPAddress.objects.create(address="10.0.0.5/32", vrf=sync_vrf, description="[kea-sync: reservation]")
-        _own(synced, self.v4_server)
+        ownership_link(synced, self.v4_server)
         with _reservation_stub(4, stub):
             response = self.client.get(self._url())
         self.assertContains(response, "Synchronized 1/1")

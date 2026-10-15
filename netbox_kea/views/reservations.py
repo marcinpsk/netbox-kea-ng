@@ -554,7 +554,7 @@ def _enrich_reservations_with_badges(
     for row in reservations:
         reservation: Reservation = row["reservation"]
         found = {str(address): ownership[str(address)] for address in reservation.addresses} if ownership else {}
-        owned = {address: item.ip for address, item in found.items() if item.state == "owned"}
+        synchronized = {address: item.ip for address, item in found.items() if item.state == "synchronized"}
         if not isinstance(reservation.scope, InSubnetReservationScope) or not reservation.addresses:
             state = reservation_synchronization_state(reservation, frozenset())
         elif ownership is None:
@@ -562,9 +562,9 @@ def _enrich_reservations_with_badges(
         elif any(item.state == "hidden" for item in found.values()):
             state = ReservationSynchronizationState.unknown(len(reservation.addresses), _IPAM_HIDDEN)
         else:
-            state = reservation_synchronization_state(reservation, frozenset(owned))
+            state = reservation_synchronization_state(reservation, frozenset(synchronized))
         row["sync_state"] = state
-        row["netbox_ip_url"] = next((ip.get_absolute_url() for ip in owned.values() if ip is not None), None)
+        row["netbox_ip_url"] = next((ip.get_absolute_url() for ip in synchronized.values() if ip is not None), None)
         row["sync_url"] = None
         row["sync_refusal"] = ""
         row["sync_title"] = _sync_title(found.values())

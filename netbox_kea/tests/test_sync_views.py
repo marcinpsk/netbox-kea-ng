@@ -50,7 +50,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _make_db_server, with_kea_client_config
+from .utils import _make_db_server, ownership_link, with_kea_client_config
 
 User = get_user_model()
 
@@ -1172,14 +1172,7 @@ class TestReservationCheckNetboxIPView(_SyncViewBase):
 
     def _owned(self, server, source="reservation"):
         ip = NbIP.objects.create(address="10.0.40.1/24", status="reserved", description="[kea-sync: reservation]")
-        IPAMOwnershipLink.objects.create(
-            server=server,
-            family=4,
-            source=source,
-            ip_address=ip,
-            facts={"hostname": "", "prefix_length": 24},
-            confirmation=next_confirmation_number(),
-        )
+        ownership_link(ip, server, source)
 
     def test_an_ip_this_server_owns_from_a_reservation_is_updated(self):
         self._owned(self.server)

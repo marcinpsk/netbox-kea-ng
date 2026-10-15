@@ -682,7 +682,8 @@ class ClaimResult:
         return frozenset(address for address, result in self.addresses.items() if result.synchronized)
 
 
-OwnershipState = Literal["owned", "not-synchronized", "unmarked", "not-in-netbox", "hidden"]
+# The Synchronization State terms of CONTEXT.md; "hidden" is the Unknown of an IP address the user may not view.
+OwnershipState = Literal["synchronized", "not-synchronized", "unmarked", "not-in-netbox", "hidden"]
 
 
 @dataclass(frozen=True)
@@ -695,16 +696,21 @@ class AddressOwnership:
     state: OwnershipState
     ip: IPAddress | None = None
 
+    def __post_init__(self) -> None:
+        if (self.ip is None) != (self.state in ("not-in-netbox", "hidden")):
+            raise ValueError(f"An ownership state {self.state!r} with ip={self.ip!r} is not valid.")
+
 
 def address_ownership(
     server: Server, family: Family, source: str, addresses: Collection[str], user: Any
 ) -> dict[str, AddressOwnership]:
     """Return the ownership of each address by *source* of *server* and *family*, read in two queries.
 
-    An address is owned when its IP address has a marker and a link of this Server, family and source; any link
-    counts, adopted and stale-marked included. A marker without such a link is ``not-synchronized``, and no marker is
-    ``unmarked``. An IP address that *user* may not view is ``hidden``. Of duplicate rows, the first by pk decides, as
-    in a claim. Each key is the canonical text of an address.
+    An address is ``synchronized`` when its IP address has a marker and a link of this Server, family and source; any
+    link counts, adopted and stale-marked included. A marker without such a link is ``not-synchronized``, and no marker
+    is ``unmarked``. An address with an IP address that *user* may not view is ``hidden``, also when it has duplicate
+    rows that the user may view. Else the first duplicate row by pk decides, as in a claim. Each key is the canonical
+    text of an address.
     """
     hosts = {str(ipaddress.ip_address(address)) for address in addresses}
     if not hosts:
@@ -731,7 +737,7 @@ def address_ownership(
 def _ownership_state(row: IPAddress) -> OwnershipState:
     if not _is_owned_description(row.description):
         return "unmarked"
-    return "owned" if row.linked else "not-synchronized"
+    return "synchronized" if row.linked else "not-synchronized"
 
 
 @overload

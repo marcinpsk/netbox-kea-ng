@@ -6,14 +6,14 @@ from django.contrib.contenttypes.models import ContentType
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
-from ipam.models import IPAddress
+from ipam.models import VRF, IPAddress
 from users.models import ObjectPermission
 
-from netbox_kea.ipam_reconciliation import address_ownership
+from netbox_kea.ipam_reconciliation import AddressOwnership, address_ownership
 from netbox_kea.models import IPAMOwnershipLink, Server, next_confirmation_number
 
 from .kea_stub import _catalogue_responses, _res_get, _res_page, stub_kea
-from .utils import User, _make_db_server, _ViewTestBase
+from .utils import User, _make_db_server, _ViewTestBase, ownership_link
 
 _NO_LEASES = {"result": 0, "arguments": {"leases": []}}
 _ADDS_OWNER = "Sync adds this Server as an owner of the IP address."
@@ -30,18 +30,6 @@ def _responses(*hosts: dict) -> dict:
         "reservation-get-page": _res_page(list(hosts)),
         "lease4-get-by-state": _NO_LEASES,
     }
-
-
-def _link(ip: IPAddress, server: Server, source: str = "reservation", **extra) -> IPAMOwnershipLink:
-    return IPAMOwnershipLink.objects.create(
-        server=server,
-        family=4,
-        source=source,
-        ip_address=ip,
-        facts={"hostname": "", "prefix_length": 24},
-        confirmation=next_confirmation_number(),
-        **extra,
-    )
 
 
 class TestReservationOwnershipBadge(_ViewTestBase):
@@ -68,7 +56,7 @@ class TestReservationOwnershipBadge(_ViewTestBase):
 
     def test_an_address_that_only_another_server_owns_is_not_synchronized(self):
         other = _make_db_server(name="other-kea")
-        _link(IPAddress.objects.create(address="10.0.0.5/24", description="[kea-sync: reservation]"), other)
+        ownership_link(IPAddress.objects.create(address="10.0.0.5/24", description="[kea-sync: reservation]"), other)
         for page, url in self._urls().items():
             with self.subTest(page=page):
                 response = self._get(url)
@@ -82,7 +70,7 @@ class TestReservationOwnershipBadge(_ViewTestBase):
 
     def test_a_lease_link_is_not_synchronized_and_row_sync_synchronizes_it(self):
         ip = IPAddress.objects.create(address="10.0.0.5/24", status="dhcp", description="[kea-sync: lease]")
-        _link(ip, self.server, source="lease", allocation_kind="address")
+        ownership_link(ip, self.server, source="lease", allocation_kind="address")
         url = self._urls()["per-server"]
         self.assertContains(self._get(url), "Not Synchronized 0/1")
 
@@ -99,7 +87,7 @@ class TestReservationOwnershipBadge(_ViewTestBase):
         self.assertContains(response, "Synchronized 1/1")
         self.assertContains(response, f'href="{ip.get_absolute_url()}"')
 
-    def test_an_adopted_or_stale_marked_link_counts_as_owned(self):
+    def test_an_adopted_or_stale_marked_link_counts_as_synchronized(self):
         for name, extra in (
             ("adopted", {"adopted": True}),
             ("stale-marked", {"stale_mark": next_confirmation_number()}),
@@ -107,7 +95,7 @@ class TestReservationOwnershipBadge(_ViewTestBase):
             with self.subTest(link=name):
                 IPAddress.objects.all().delete()
                 ip = IPAddress.objects.create(address="10.0.0.5/24", description="[kea-sync: reservation]")
-                _link(ip, self.server, **extra)
+                ownership_link(ip, self.server, **extra)
                 response = self._get(self._urls()["per-server"])
                 self.assertContains(response, "Synchronized 1/1")
                 self.assertContains(response, f'href="{ip.get_absolute_url()}"')
@@ -132,7 +120,7 @@ class TestReservationOwnershipBadge(_ViewTestBase):
         ip = IPAddress.objects.create(
             address="10.0.0.5/24", dns_name="hidden.example.invalid", description="[kea-sync: reservation] rack 4"
         )
-        _link(ip, self.server)
+        ownership_link(ip, self.server)
         limited = User.objects.create_user(username="ownership_limited", password="pass")
         permission = ObjectPermission.objects.create(name="ownership-view-server", actions=["view"])
         permission.object_types.add(ContentType.objects.get_for_model(Server))
@@ -149,6 +137,7 @@ class TestReservationOwnershipBadge(_ViewTestBase):
         self.assertNotContains(response, ip.get_absolute_url())
         self.assertNotContains(response, "hidden.example.invalid")
         self.assertNotContains(response, "rack 4")
+        self.assertContains(response, 'title="You may not view an IP address of this Reservation in NetBox."')
 
     def test_the_query_count_does_not_grow_with_the_rows(self):
         def render(server: Server, count: int) -> int:
@@ -157,14 +146,12 @@ class TestReservationOwnershipBadge(_ViewTestBase):
                 ip = IPAddress.objects.create(
                     address=f"{host['ip-address']}/24", vrf=server.sync_vrf, description="[kea-sync: reservation]"
                 )
-                _link(ip, server)
+                ownership_link(ip, server)
             url = reverse("plugins:netbox_kea:server_reservations4", args=[server.pk])
             with stub_kea(_responses(*hosts)), CaptureQueriesContext(connection) as queries:
                 response = self.client.get(url)
             self.assertContains(response, "Synchronized 1/1", count=count)
             return len(queries)
-
-        from ipam.models import VRF
 
         render(_make_db_server(name="warm-up", sync_vrf=VRF.objects.create(name="warm-up")), 1)  # one-time reads
         one = render(_make_db_server(name="one-row", sync_vrf=VRF.objects.create(name="one-row")), 1)
@@ -177,22 +164,42 @@ class TestAddressOwnershipRead(_ViewTestBase):
         IPAddress.objects.all().delete()
         ip = IPAddress.objects.create(address="10.0.0.5/24", description=description)
         if linked:
-            _link(ip, self.server)
+            ownership_link(ip, self.server)
         return address_ownership(self.server, 4, "reservation", ["10.0.0.5"], self.user)["10.0.0.5"].state
 
     def test_only_a_well_formed_marker_at_the_start_of_the_description_is_a_marker(self):
         for description in ("[kea-sync: reservation]", "[kea-sync: lease] note", "Synced from Kea DHCP reservation"):
             with self.subTest(description=description):
-                self.assertEqual(self._state(description), "owned")
+                self.assertEqual(self._state(description), "synchronized")
         for description in ("", "Router loopback", "rack 4 [kea-sync: lease]", "[kea-sync: lease ]"):
             with self.subTest(description=description):
                 self.assertEqual(self._state(description), "unmarked")
         self.assertEqual(self._state("[kea-sync: reservation]", linked=False), "not-synchronized")
 
     def test_an_address_without_an_ip_address_in_the_sync_vrf_is_not_in_netbox(self):
-        from ipam.models import VRF
-
         IPAddress.objects.create(address="10.0.0.5/24", vrf=VRF.objects.create(name="elsewhere"))
         found = address_ownership(self.server, 4, "reservation", ["10.0.0.5"], self.user)
         self.assertEqual(found["10.0.0.5"].state, "not-in-netbox")
         self.assertIsNone(found["10.0.0.5"].ip)
+
+    def test_the_first_duplicate_row_decides_unless_the_user_may_not_view_one_of_them(self):
+        first = IPAddress.objects.create(address="10.0.0.5/24", description="Router loopback")
+        second = IPAddress.objects.create(address="10.0.0.5/24", description="[kea-sync: reservation]")
+        ownership_link(second, self.server)
+        found = address_ownership(self.server, 4, "reservation", ["10.0.0.5"], self.user)["10.0.0.5"]
+        self.assertEqual((found.state, found.ip), ("unmarked", first))
+
+        limited = User.objects.create_user(username="ownership_one_row", password="pass")
+        permission = ObjectPermission.objects.create(
+            name="ownership-first-row", actions=["view"], constraints={"pk": first.pk}
+        )
+        permission.object_types.add(ContentType.objects.get_for_model(IPAddress))
+        permission.users.add(limited)
+        found = address_ownership(self.server, 4, "reservation", ["10.0.0.5"], limited)["10.0.0.5"]
+        self.assertEqual((found.state, found.ip), ("hidden", None))
+
+    def test_an_ip_address_comes_with_exactly_the_states_that_name_one(self):
+        ip = IPAddress.objects.create(address="10.0.0.5/24")
+        for state, value in (("synchronized", None), ("unmarked", None), ("hidden", ip), ("not-in-netbox", ip)):
+            with self.subTest(state=state), self.assertRaises(ValueError):
+                AddressOwnership(state, value)

@@ -4,22 +4,14 @@
   Advisory fragment shown under the reservation Add form's IP field.
   Rendered by ReservationCheckNetboxIPView; empty body means "no advisory".
 {% endcomment %}
-{% if state == "owned" %}
+{% if state == "synchronized" or state == "not-synchronized" %}
 <div class="alert alert-info d-flex align-items-start mt-2" role="alert">
   <i class="mdi mdi-information-outline me-2 mt-1" aria-hidden="true"></i>
   <div>
-    Already in NetBox IPAM
+    Already in NetBox IPAM{% if state == "not-synchronized" %} from Kea sync, but no Reservation of this Server owns it{% endif %}
     (<a href="{{ nb_ip.get_absolute_url }}">{{ nb_ip.address }}</a>,
-    status: {{ nb_ip.get_status_display }}). Saving will update it.
-  </div>
-</div>
-{% elif state == "not-synchronized" %}
-<div class="alert alert-info d-flex align-items-start mt-2" role="alert">
-  <i class="mdi mdi-information-outline me-2 mt-1" aria-hidden="true"></i>
-  <div>
-    Already in NetBox IPAM from Kea sync, but no Reservation of this Server owns it
-    (<a href="{{ nb_ip.get_absolute_url }}">{{ nb_ip.address }}</a>,
-    status: {{ nb_ip.get_status_display }}). Saving adds this Server as an owner.
+    status: {{ nb_ip.get_status_display }}).
+    {% if state == "synchronized" %}Saving will update it.{% else %}Saving adds this Server as an owner.{% endif %}
   </div>
 </div>
 {% elif state == "unmarked" %}
