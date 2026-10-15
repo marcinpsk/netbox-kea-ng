@@ -10,6 +10,7 @@ from __future__ import annotations
 import ipaddress
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 from unittest.mock import patch
@@ -31,6 +32,7 @@ from netbox_kea.reservations import (
     LeasePresent,
     OtherKindReservation,
     PendingAddressChange,
+    Reservation,
     ReservationMatch,
     ReservationMatchUnknown,
     Reserved,
@@ -459,6 +461,15 @@ def _allocation(text: str) -> Any:
     return ipaddress.ip_network(text) if "/" in text else ipaddress.ip_address(text)
 
 
+def _pending(*allocations: str) -> Callable[[Reservation], ReservationMatch]:
+    """Return the Pending Address Change of a Reservation to *allocations*."""
+    return lambda reservation: PendingAddressChange(reservation, tuple(map(_allocation, allocations)))
+
+
+def _unknown_shared_network(_reservation: Reservation) -> ReservationMatch:
+    return ReservationMatchUnknown(UnknownReservationMatch.UNKNOWN_SHARED_NETWORK)
+
+
 def _kea_hosts(*hosts: dict):
     """Answer each reservation-get as Kea does: by Subnet and address (a prefix by its base), or by identifier."""
 
@@ -529,44 +540,91 @@ class ReservationMatchTest(_ViewTestBase):
             with self.subTest(host=host):
                 self.assertEqual(self._match(lease, host, family=family), Reserved(_typed_reservation(host)))
 
-    def test_a_global_reservation_follows_the_rules_of_an_in_subnet_reservation(self):
+    def test_only_the_allocations_of_a_global_reservation_in_the_lease_subnet_count(self):
         address6 = lease_record("2001:db8::20", subnet_id=30, duid=_DUID, drop=("hw-address",))
+        nothing = {"hostname": "global", "ip-addresses": [], "prefixes": []}
         cases = (
-            (4, _address_lease(), {"ip-address": "198.18.0.21"}, "pending", ("198.18.0.21",)),
-            (4, _address_lease(), {"hostname": "global"}, "host-only", ()),
-            (4, _address_lease(), {"ip-address": "198.19.0.21"}, "host-only", ()),
-            (4, _address_lease(), {"ip-address": "198.18.0.20"}, "reserved", ()),
-            (6, address6, {"ip-addresses": ["2001:db8::21"]}, "pending", ("2001:db8::21",)),
-            (6, address6, {"hostname": "global", "ip-addresses": [], "prefixes": []}, "host-only", ()),
-            (6, address6, {"ip-addresses": ["2001:db8:1::21"]}, "host-only", ()),
-            (6, address6, {"ip-addresses": ["2001:db8::20"]}, "reserved", ()),
-            (6, address6, {"ip-addresses": ["2001:db8:1::21", "2001:db8::21"]}, "pending", ("2001:db8::21",)),
-            (6, address6, {"ip-addresses": ["2001:db8:1::21", "2001:db8::20"]}, "reserved", ()),
-            (6, _prefix_lease(), {"prefixes": ["2001:db8:100:700::/56"]}, "pending", ("2001:db8:100:700::/56",)),
-            (6, _prefix_lease(), {"hostname": "global", "ip-addresses": [], "prefixes": []}, "host-only", ()),
-            (6, _prefix_lease(), {"prefixes": [_PREFIX]}, "reserved", ()),
+            (4, _address_lease(), {"ip-address": "198.18.0.21"}, _pending("198.18.0.21")),
+            (4, _address_lease(), {"hostname": "global"}, HostOnlyReservation),
+            (4, _address_lease(), {"ip-address": "198.19.0.21"}, HostOnlyReservation),
+            (4, _address_lease(), {"ip-address": "198.18.0.20"}, Reserved),
+            (6, address6, {"ip-addresses": ["2001:db8::21"]}, _pending("2001:db8::21")),
+            (6, address6, nothing, HostOnlyReservation),
+            (6, address6, {"ip-addresses": ["2001:db8:1::21"]}, HostOnlyReservation),
+            (6, address6, {"ip-addresses": ["2001:db8::20"]}, Reserved),
+            (6, address6, {"ip-addresses": ["2001:db8:1::21", "2001:db8::21"]}, _pending("2001:db8::21")),
+            (6, address6, {"ip-addresses": ["2001:db8:1::21", "2001:db8::20"]}, Reserved),
+            (6, address6, {"ip-addresses": ["2001:db8:1::21"], "prefixes": [_PREFIX]}, OtherKindReservation),
+            (6, _prefix_lease(), {"prefixes": ["2001:db8:100:700::/56"]}, _pending("2001:db8:100:700::/56")),
+            (6, _prefix_lease(), nothing, HostOnlyReservation),
+            (6, _prefix_lease(), {"ip-addresses": ["2001:db8:1::21"]}, HostOnlyReservation),
+            (6, _prefix_lease(), {"prefixes": [_PREFIX]}, Reserved),
         )
-        for family, lease, allocations, expected, pending in cases:
+        for family, lease, allocations, outcome in cases:
             identifier = {"hw-address": _MAC} if family == 4 else {"duid": _DUID}
             host = {"subnet-id": 0, **identifier, **allocations}
             with self.subTest(family=family, host=host):
-                reservation = _typed_reservation(host)
-                outcome = {
-                    "pending": PendingAddressChange(reservation, tuple(map(_allocation, pending))),
-                    "host-only": HostOnlyReservation(reservation),
-                    "reserved": Reserved(reservation),
-                }[expected]
-                self.assertEqual(self._match(lease, host, family=family), outcome)
+                self.assertEqual(self._match(lease, host, family=family), outcome(_typed_reservation(host)))
 
     def test_a_reserved_prefix_counts_in_every_subnet(self):
-        """Kea delegates a prefix of a Global Reservation in any Subnet: it checks only addresses against the Subnet."""
+        """Kea delegates a prefix of a Global Reservation in any Subnet: it checks only an address against a Subnet."""
         host = {"subnet-id": 0, "duid": _DUID, "prefixes": ["2001:db9:700::/56"]}
 
         match = self._match(_prefix_lease(), host, family=6)
 
-        self.assertEqual(
-            match, PendingAddressChange(_typed_reservation(host), (ipaddress.ip_network("2001:db9:700::/56"),))
+        self.assertEqual(match, _pending("2001:db9:700::/56")(_typed_reservation(host)))
+
+    def test_a_global_address_in_a_sibling_subnet_is_unknown_when_it_changes_the_match(self):
+        """Kea gives it only when the reservation flags and class filter of the sibling allow it."""
+        address6 = lease_record("2001:db8::20", subnet_id=30, duid=_DUID, drop=("hw-address",))
+        shared = {
+            4: [{"id": 21, "subnet": "198.18.1.0/24"}, {"id": 22, "subnet": "198.19.0.0/24"}],
+            6: [{"id": 31, "subnet": "2001:db8:1::/64"}, {"id": 32, "subnet": "2001:db9::/64"}],
+        }
+        cases = (
+            (4, _address_lease(), {"hw-address": _MAC, "ip-address": "198.18.1.21"}, _unknown_shared_network),
+            (4, _address_lease(), {"hw-address": _MAC, "ip-address": "198.19.0.21"}, HostOnlyReservation),
+            (6, address6, {"duid": _DUID, "ip-addresses": ["2001:db8:1::21"]}, _unknown_shared_network),
+            (6, address6, {"duid": _DUID, "ip-addresses": ["2001:db8:1::21", "2001:db8::21"]}, _unknown_shared_network),
+            (6, address6, {"duid": _DUID, "ip-addresses": ["2001:db9::21"]}, HostOnlyReservation),
+            (6, address6, {"duid": _DUID, "ip-addresses": ["2001:db8:1::21", "2001:db8::20"]}, Reserved),
         )
+        for family, lease, allocations, outcome in cases:
+            [subnet] = _SUBNETS[family]
+            sibling, other = shared[family]
+            catalogue = _catalogue_responses_for_subnets(
+                family,
+                [subnet, sibling, other],
+                shared_networks=[{"name": "shared"}],
+                members={subnet["id"]: "shared", sibling["id"]: "shared"},
+            )
+            host = {"subnet-id": 0, **allocations}
+            with self.subTest(host=host), with_display_cache_config(leases_ttl=0):
+                (match,), _kea = self._matches([lease], _kea_hosts(host), family=family, responses=catalogue)
+                self.assertEqual(match, outcome(_typed_reservation(host)))
+
+    def test_without_the_shared_network_an_address_outside_the_subnet_is_unknown_only_when_it_can_change_the_match(
+        self,
+    ):
+        """Without config-get, a Subnet list without Shared Network names cannot show the siblings of a Subnet."""
+        address6 = lease_record("2001:db8::20", subnet_id=30, duid=_DUID, drop=("hw-address",))
+        outside4, outside6 = "198.19.0.21", "2001:db8:1::21"
+        cases = (
+            (4, _address_lease(), {"subnet-id": 0, "ip-address": outside4}, _unknown_shared_network),
+            (4, _address_lease(), {"subnet-id": 0, "ip-address": "198.18.0.21"}, _pending("198.18.0.21")),
+            (4, _address_lease(), {"subnet-id": 20, "ip-address": "198.18.0.21"}, _pending("198.18.0.21")),
+            (6, address6, {"subnet-id": 0, "ip-addresses": ["2001:db8::20", outside6]}, Reserved),
+            (6, address6, {"subnet-id": 0, "ip-addresses": ["2001:db8::21", outside6]}, _unknown_shared_network),
+            (6, _prefix_lease(), {"subnet-id": 0, "ip-addresses": [outside6], "prefixes": [_PREFIX]}, Reserved),
+            (6, _prefix_lease(), {"subnet-id": 0, "ip-addresses": [outside6]}, _unknown_shared_network),
+        )
+        for family, lease, allocations, outcome in cases:
+            host = {"hw-address": _MAC, **allocations} if family == 4 else {"duid": _DUID, **allocations}
+            with self.subTest(host=host), with_display_cache_config(leases_ttl=0):
+                (match,), _kea = self._matches(
+                    [lease], _kea_hosts(host), family=family, responses={"config-get": {"result": 1, "text": "down"}}
+                )
+                self.assertEqual(match, outcome(_typed_reservation(host)))
 
     def test_a_reserved_address_of_another_hardware_address_is_a_stale_mac(self):
         host = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "198.18.0.20"}

@@ -752,7 +752,9 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
         self.assertEqual(len(kea.bodies("reservation-get-page")), 2)
 
 
-_HOST_RESERVATION_TITLE = "This Reservation holds no address, so Kea assigns this lease from the pool."
+_HOST_RESERVATION_TITLE = (
+    "This Reservation holds no address or prefix for this Subnet, so Kea assigns this lease from the pool."
+)
 
 
 def _reserved_badges(response) -> list:
@@ -917,7 +919,9 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
 
         row = response.context["table"].data.data[0]
         self.assertTrue(row["is_reserved"])
+        self.assertFalse(row["host_reservation"])
         self.assertIsNone(row["reservation_url"])
+        self.assertIsNone(row["create_reservation_url"])
         [badge] = _reserved_badges(response)
         self.assertEqual((badge["class"], badge.get_text(strip=True)), (["badge", "text-bg-success"], "Reserved"))
 

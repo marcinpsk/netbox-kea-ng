@@ -106,7 +106,7 @@ The relationship between all addresses in one Reservation and their correspondin
 _Avoid_: Lease status, sync badge
 
 **Reservation Match**:
-The relationship between one Lease and the Reservation of its client. Only reserved allocations in the Lease's Subnet count, for Global and In-Subnet Reservations alike. It is Reserved, Stale MAC, Pending Address Change, Host-Only Reservation, Other-Kind Reservation, Unreserved, or Unknown.
+The relationship between one Lease and the Reservation of its client. Only the reserved allocations that Kea gives for the Lease's Subnet count, for Global and In-Subnet Reservations alike: an address in the Lease's Subnet, and any delegated prefix. An address in another Subnet of its Shared Network depends on the reservation flags and client classes of that Subnet, so it makes the match Unknown when it changes the match. It is Reserved, Stale MAC, Pending Address Change, Host-Only Reservation, Other-Kind Reservation, Unreserved, or Unknown.
 _Avoid_: Reserved badge, lease-reservation correlation
 
 **Current Lease Presence**:

@@ -198,6 +198,16 @@ class CatalogueSnapshot:
             None,
         )
 
+    def shared_network_subnets(self, subnet: VerifiedSubnet) -> tuple[VerifiedSubnet, ...] | None:
+        """Return *subnet* and the other Verified Subnets of its Shared Network. None: the snapshot cannot show them."""
+        if not subnet.membership_known:
+            return None
+        if subnet.shared_network is None:
+            return (subnet,)
+        if not self.confirms_absence or not all(member.membership_known for member in self.subnets):
+            return None
+        return tuple(member for member in self.subnets if member.shared_network == subnet.shared_network)
+
     def find_by_cidr(self, cidr: str) -> VerifiedSubnet | ConfiguredSubnet | None:
         """Return the verified or configured Subnet whose network the CIDR names, if present."""
         network = subnet_network(cidr, self.family)

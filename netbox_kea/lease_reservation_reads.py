@@ -296,7 +296,7 @@ class _ReservationLookups:
         except ValueError as exc:
             logger.debug("A Reservation lookup of server %s was not valid: %s", self._server.pk, type(exc).__name__)
             return ReservationMatchUnknown(UnknownReservationMatch.INVALID_READ)
-        return reservation_match(lease, subnet, found)
+        return reservation_match(lease, subnet, found, self._catalogue.shared_network_subnets(subnet))
 
 
 def reservation_matches(

@@ -363,7 +363,9 @@ class SubnetTable(GenericTable):
         default_columns = ("id", "subnet", "pools", "utilization", "options", "shared_network")
 
 
-_HOST_RESERVATION_TITLE = "This Reservation holds no address, so Kea assigns this lease from the pool."
+_HOST_RESERVATION_TITLE = (
+    "This Reservation holds no address or prefix for this Subnet, so Kea assigns this lease from the pool."
+)
 
 
 class BaseLeaseTable(GenericTable):
