@@ -1126,9 +1126,6 @@ rules:
       - pattern-not-inside: |
           def _read_reservation_page(...):
               ...
-      - pattern-not-inside: |
-          def read_leases(...):
-              ...
       # The DHCP plugin import reads the Reservation Snapshot to synchronize it, not to show it.
       - pattern-not-inside: |
           def _read_reservation_observation(...):
@@ -1146,17 +1143,6 @@ rules:
       # The advisory Pool overlap check after a Pool add reports its own result.
       - pattern-not-inside: |
           def _warn_reservations_in_pool(...):
-              ...
-      # Lease relationship badges of Reservation rows; a failed lookup is an unknown badge.
-      - pattern-not-inside: |
-          def _lease_facts_in_subnet(...):
-              ...
-      - pattern-not-inside: |
-          def _identity_holds_a_lease(...):
-              ...
-      # The Catalogue scopes the Reservation lookups of lease badges.
-      - pattern-not-inside: |
-          def _enrich_leases_with_badges(...):
               ...
       # The DDNS suffix of a hostname preview.
       - pattern-not-inside: |

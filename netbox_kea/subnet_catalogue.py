@@ -22,6 +22,7 @@ from .server_configuration import (
     ServerConfigurationSnapshot,
     SubnetConfiguration,
 )
+from .subnet_settings import ReservationFlags
 
 __all__ = ["Diagnostic", "Pool", "SubnetConfiguration"]
 
@@ -100,6 +101,8 @@ class VerifiedSubnet:
     membership_known: bool
     # The effective DDNS qualifying suffix. None: the configuration does not show it.
     qualifying_suffix: str | None
+    # The effective reservation flags. None: the configuration does not show them.
+    reservation_flags: ReservationFlags | None
 
     @property
     def subnet_id(self) -> int:
@@ -197,6 +200,16 @@ class CatalogueSnapshot:
             (subnet for subnet in self._display_subnets() if subnet.identity.subnet_id == subnet_id),
             None,
         )
+
+    def shared_network_subnets(self, subnet: VerifiedSubnet) -> tuple[VerifiedSubnet, ...] | None:
+        """Return *subnet* and the other Verified Subnets of its Shared Network. None: the snapshot cannot show them."""
+        if not subnet.membership_known:
+            return None
+        if subnet.shared_network is None:
+            return (subnet,)
+        if not self.confirms_absence or not all(member.membership_known for member in self.subnets):
+            return None
+        return tuple(member for member in self.subnets if member.shared_network == subnet.shared_network)
 
     def find_by_cidr(self, cidr: str) -> VerifiedSubnet | ConfiguredSubnet | None:
         """Return the verified or configured Subnet whose network the CIDR names, if present."""
@@ -297,6 +310,7 @@ class _ConfiguredFact:
     shared_network_name: str | None
     membership_complete: bool
     qualifying_suffix: str | None
+    reservation_flags: ReservationFlags | None
 
 
 @dataclass(frozen=True)
@@ -499,6 +513,9 @@ def _configuration_observation(snapshot: server_configuration.ServerConfiguratio
                 shared_network_name=declared.shared_network_name,
                 membership_complete=membership_complete,
                 qualifying_suffix=server_configuration.effective_qualifying_suffix(snapshot, declared),
+                reservation_flags=server_configuration.effective_reservation_flags(
+                    snapshot, declared, membership_complete=membership_complete
+                ),
             )
         )
     kept, collisions, ids, networks = _quarantine_collisions(facts, "configuration")
@@ -721,6 +738,7 @@ def _reconcile(
                     shared_network=_membership(shared_network_name),
                     membership_known=configured_fact.membership_complete or identity_fact.membership_complete,
                     qualifying_suffix=configured_fact.qualifying_suffix,
+                    reservation_flags=configured_fact.reservation_flags,
                 )
             )
         elif not configuration.available or not configuration.complete or not consistent:
@@ -732,6 +750,7 @@ def _reconcile(
                     shared_network=_membership(identity_fact.shared_network_name),
                     membership_known=identity_fact.membership_complete,
                     qualifying_suffix=None,
+                    reservation_flags=None,
                 )
             )
 

@@ -970,6 +970,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "requests" },
+    { name = "typing-extensions" },
 ]
 
 [package.dev-dependencies]
@@ -1010,6 +1011,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0,<3.0" },
     { name = "pyyaml", specifier = ">=6.0,<7.0" },
     { name = "requests", specifier = ">=2.27.0,<3.0.0" },
+    { name = "typing-extensions", specifier = ">=4.1" },
 ]
 
 [package.metadata.requires-dev]

@@ -1067,28 +1067,6 @@ class KeaClient:
             check_response(resp_json, check)
         return resp_json
 
-    def clone(self) -> "KeaClient":
-        """Return a new KeaClient that shares the same connection settings.
-
-        ``requests.Session`` is not thread-safe, so parallel workers must each
-        call ``client.clone()`` rather than sharing a single ``KeaClient``
-        instance across threads.
-        """
-        new = KeaClient.__new__(KeaClient)
-        new.url = self.url
-        new.timeout = self.timeout
-        new.verify = self.verify
-        new.cert = self.cert
-        new._session = requests.Session()
-        new._session.auth = self._session.auth
-        new.persist_config = self.persist_config
-        new.send_service = self.send_service
-        new.max_unpaged_leases = self.max_unpaged_leases
-        # Thread-pool workers do not inherit context variables, so the clone keeps the branch binding.
-        new.write_guard = self.write_guard
-        new.on_write = self.on_write
-        return new
-
     def _refuse(self, command: KeaCommand) -> None:
         """Ask the write guard before a write member, before any side effect of sending it."""
         if command.is_write:
@@ -2303,6 +2281,14 @@ class KeaClient:
         if not isinstance(subnets[0], dict):
             raise RuntimeError(f"subnet{version}-get returned an invalid subnet")
         return dict(subnets[0])
+
+
+def close_quietly(client: KeaClient) -> None:
+    """Close one Kea client, and log a failure instead of raising it, so the page still renders."""
+    try:
+        client.close()
+    except Exception:
+        logger.warning("Could not close a Kea client", exc_info=True)
 
 
 class KeaException(Exception):

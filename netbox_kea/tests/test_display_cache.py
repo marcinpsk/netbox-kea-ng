@@ -72,14 +72,6 @@ class RecordsGenerationTest(TestCase):
         self.assertEqual(len(at_send), 1)
         self.assertNotEqual(self._records(4), at_send[0], "Kea can apply a write whose reply is lost")
 
-    def test_a_write_from_a_clone_rotates_the_records_generation(self):
-        before = self._records(4)
-
-        with stub_kea({"reservation-del": _DELETED}):
-            self.server.get_client(version=4).clone().command(KeaCommand.RESERVATION_DEL, 4, arguments=_RESERVATION)
-
-        self.assertNotEqual(self._records(4), before)
-
     def test_a_write_rotates_only_the_records_generation_of_its_target_family(self):
         before = (self._records(4), self._records(6))
 

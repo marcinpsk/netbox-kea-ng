@@ -317,11 +317,6 @@ class TestGetClientSendService(TestCase):
         client = _make_server(dhcp6_url="https://kea-v6.example.com", has_control_agent=False).get_client(version=6)
         self.assertFalse(client.send_service)
 
-    def test_clone_preserves_send_service(self):
-        # Worker threads clone(); the flag must survive so a cloned direct client stays direct.
-        client = _make_server(has_control_agent=False).get_client(version=4)
-        self.assertFalse(client.clone().send_service)
-
 
 class TestServerCleanFieldValidation(TestCase):
     """Tests for local Server.clean() field validation."""

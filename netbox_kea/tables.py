@@ -363,7 +363,9 @@ class SubnetTable(GenericTable):
         default_columns = ("id", "subnet", "pools", "utilization", "options", "shared_network")
 
 
-_HOST_RESERVATION_TITLE = "This Reservation holds no address, so Kea assigns this lease from the pool."
+_HOST_RESERVATION_TITLE = (
+    "This Reservation holds no address or prefix for this Subnet, so Kea assigns this lease from the pool."
+)
 
 
 class BaseLeaseTable(GenericTable):
@@ -456,6 +458,18 @@ class BaseLeaseTable(GenericTable):
             '<span class="badge text-bg-secondary"'
             ' title="The Reservation of this client holds no allocation of this kind">Reservation</span>'
             "{% endif %}"
+            "{% elif record.reservation_ignored_reason %}"
+            "{% if record.can_change_reservation and record.reservation_url %}"
+            '<a href="{{ record.reservation_url }}" class="badge text-bg-secondary text-decoration-none"'
+            ' title="{{ record.reservation_ignored_reason }}">'
+            '<i class="mdi mdi-cancel" aria-hidden="true"></i> Reservation Ignored</a>'
+            "{% else %}"
+            '<span class="badge text-bg-secondary" title="{{ record.reservation_ignored_reason }}">'
+            '<i class="mdi mdi-cancel" aria-hidden="true"></i> Reservation Ignored</span>'
+            "{% endif %}"
+            "{% elif record.reservation_unknown_reason %}"
+            '<span class="badge text-bg-warning" title="{{ record.reservation_unknown_reason }}">'
+            "Reservation Unknown</span>"
             "{% elif record.create_reservation_url %}"
             '<a href="{{ record.create_reservation_url }}" class="badge text-bg-warning text-decoration-none">'
             "+ Reserve</a>"

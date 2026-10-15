@@ -300,6 +300,7 @@
               ]
             },
             "renew-timer": 1000,
+            "reservations-global": true,
             "store-extended-info": false,
             "subnet4": [
               {
@@ -362,6 +363,7 @@
                 },
                 "renew-timer": 1000,
                 "reservations": [],
+                "reservations-out-of-pool": true,
                 "store-extended-info": false,
                 "subnet": "198.51.100.128/25",
                 "t1-percent": 0.5,
@@ -430,6 +432,7 @@
             },
             "renew-timer": 900,
             "reservations": [],
+            "reservations-in-subnet": false,
             "store-extended-info": false,
             "subnet": "192.0.2.0/24",
             "t1-percent": 0.5,
@@ -445,7 +448,7 @@
         "t2-percent": 0.875,
         "valid-lifetime": 4000
       },
-      "hash": "DDE40219B1A96F4DC66A52D4944B1CDD9CB7989755AB6F91FB891D0C32D9C128"
+      "hash": "A827316D630F5BF68D718F38DABB7BD413ACA185E26D5BD621239147088F6708"
     },
     "result": 0
   },
@@ -454,7 +457,7 @@
     "changes": {
       "after-update": {
         "arguments": {
-          "cltt": 1791435410,
+          "cltt": 1792043629,
           "fqdn-fwd": false,
           "fqdn-rev": false,
           "hostname": "renamed.example.org",
@@ -478,7 +481,7 @@
       },
       "before": {
         "arguments": {
-          "cltt": 1791435410,
+          "cltt": 1792043629,
           "fqdn-fwd": false,
           "fqdn-rev": false,
           "hostname": "host40.example.org",
@@ -525,7 +528,7 @@
       "present": {
         "arguments": {
           "client-id": "01:aa:bb:cc:00:00:10",
-          "cltt": 1791435410,
+          "cltt": 1792043629,
           "fqdn-fwd": true,
           "fqdn-rev": true,
           "hostname": "host10.example.org",
@@ -554,7 +557,7 @@
         "leases": [
           {
             "client-id": "01:aa:bb:cc:00:00:10",
-            "cltt": 1791435410,
+            "cltt": 1792043629,
             "fqdn-fwd": true,
             "fqdn-rev": true,
             "hostname": "host10.example.org",
@@ -575,7 +578,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791435410,
+            "cltt": 1792043629,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -586,7 +589,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1791435410,
+            "cltt": 1792043629,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -597,7 +600,7 @@
             "valid-lft": 86400
           },
           {
-            "cltt": 1791435410,
+            "cltt": 1792043629,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -608,7 +611,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1791435410,
+            "cltt": 1792043629,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -620,7 +623,7 @@
           },
           {
             "client-id": "ff:00:00:00:15:00:02",
-            "cltt": 1791435410,
+            "cltt": 1792043629,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -642,7 +645,7 @@
           "leases": [
             {
               "client-id": "01:aa:bb:cc:00:00:10",
-              "cltt": 1791435410,
+              "cltt": 1792043629,
               "fqdn-fwd": true,
               "fqdn-rev": true,
               "hostname": "host10.example.org",
@@ -663,7 +666,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791435410,
+              "cltt": 1792043629,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -674,7 +677,7 @@
               "valid-lft": 4294967295
             },
             {
-              "cltt": 1791435410,
+              "cltt": 1792043629,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -694,7 +697,7 @@
           "count": 3,
           "leases": [
             {
-              "cltt": 1791435410,
+              "cltt": 1792043629,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -705,7 +708,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1791435410,
+              "cltt": 1792043629,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -717,7 +720,7 @@
             },
             {
               "client-id": "ff:00:00:00:15:00:02",
-              "cltt": 1791435410,
+              "cltt": 1792043629,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -759,7 +762,7 @@
       },
       "after-update-without-expire": {
         "arguments": {
-          "cltt": 1791435410,
+          "cltt": 1792043629,
           "fqdn-fwd": false,
           "fqdn-rev": false,
           "hostname": "",
@@ -951,6 +954,7 @@
               ]
             },
             "renew-timer": 1000,
+            "reservations-global": true,
             "store-extended-info": false,
             "subnet4": [
               {
@@ -1011,6 +1015,7 @@
                   ]
                 },
                 "renew-timer": 1000,
+                "reservations-out-of-pool": true,
                 "store-extended-info": false,
                 "subnet": "198.51.100.128/25",
                 "t1-percent": 0.5,
