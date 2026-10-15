@@ -752,7 +752,9 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
         self.assertEqual(len(kea.bodies("reservation-get-page")), 2)
 
 
-_HOST_RESERVATION_TITLE = "This Reservation holds no address, so Kea assigns this lease from the pool."
+_HOST_RESERVATION_TITLE = (
+    "This Reservation holds no address or prefix for this Subnet, so Kea assigns this lease from the pool."
+)
 
 
 def _reserved_badges(response) -> list:
@@ -877,18 +879,47 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
         self.assertTrue(row["other_kind_reservation"])
         self.assertEqual([badge.get_text(strip=True) for badge in _reserved_badges(response)], ["Reservation"])
 
-    def test_global_reservation_matches_by_identity_and_has_no_mutation_link(self):
-        response = self._get(
-            queued(
-                {"result": 3},
-                {"result": 3},
-                _res_get({"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "global"}),
-            )
+    def _get_global(self, host):
+        return self._get(queued({"result": 3}, {"result": 3}, _res_get({"subnet-id": 0, **host})))
+
+    def test_a_global_reservation_of_no_address_in_the_subnet_shows_host_only_and_no_mutation_link(self):
+        for host in (
+            {"hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "global"},
+            {"hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.19.0.21"},
+        ):
+            with self.subTest(host=host):
+                response = self._get_global(host)
+
+                row = response.context["table"].data.data[0]
+                self.assertFalse(row["is_reserved"])
+                self.assertTrue(row["host_reservation"])
+                self.assertIsNone(row["reservation_url"])
+                self.assertIsNone(row["create_reservation_url"])
+                [badge] = _reserved_badges(response)
+                self.assertEqual(
+                    (badge.name, badge["class"], badge.get_text(strip=True), badge["title"]),
+                    ("span", ["badge", "text-bg-secondary"], "Host reservation", _HOST_RESERVATION_TITLE),
+                )
+
+    def test_a_global_reservation_of_another_address_in_the_subnet_shows_the_pending_change(self):
+        response = self._get_global({"hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.21"})
+
+        row = response.context["table"].data.data[0]
+        self.assertFalse(row["is_reserved"])
+        self.assertTrue(row["pending_ip_change"])
+        self.assertIsNone(row["reservation_url"])
+        self.assertIsNone(row["create_reservation_url"])
+        [badge] = _reserved_badges(response)
+        self.assertEqual(
+            (badge["class"], badge.get_text(strip=True)), (["badge", "text-bg-info"], "Pending 198.18.0.21")
         )
+
+    def test_a_global_reservation_of_the_lease_address_shows_reserved(self):
+        response = self._get_global({"hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"})
 
         row = response.context["table"].data.data[0]
         self.assertTrue(row["is_reserved"])
-        self.assertFalse(row["host_reservation"], "a global Reservation keeps the Reserved badge")
+        self.assertFalse(row["host_reservation"])
         self.assertIsNone(row["reservation_url"])
         self.assertIsNone(row["create_reservation_url"])
         [badge] = _reserved_badges(response)

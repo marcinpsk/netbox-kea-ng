@@ -900,6 +900,8 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         def kea_holding(host):
             def reservation_get(body):
                 arguments = body["arguments"]
+                if arguments["subnet-id"] != host["subnet-id"]:
+                    return {"result": 3}
                 if arguments.get("ip-address", host.get("ip-address")) != host.get("ip-address"):
                     return {"result": 3}
                 if "identifier" in arguments and arguments["identifier"] != host["hw-address"]:
@@ -918,6 +920,9 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
                 False,
             ),
             ("Pending", kea_holding({"subnet-id": 1, "hw-address": mac, "ip-address": "10.0.0.6"}), False),
+            ("Global Reserved", kea_holding({"subnet-id": 0, "hw-address": mac, "ip-address": "10.0.0.5"}), True),
+            ("Global Host-Only", kea_holding({"subnet-id": 0, "hw-address": mac, "ip-address": "10.1.0.9"}), True),
+            ("Global Pending", kea_holding({"subnet-id": 0, "hw-address": mac, "ip-address": "10.0.0.6"}), False),
             ("Unknown", {"result": 1, "text": "host database error"}, False),
         )
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])

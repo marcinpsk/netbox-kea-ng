@@ -780,6 +780,41 @@ class TestSubnetCatalogue(TestCase):
                 # The display keeps the Subnet either way.
                 self.assertEqual(snapshot.find_by_id(1).shared_network, membership)
 
+    def test_the_subnets_of_a_shared_network_need_every_membership_shown(self):
+        a = {"id": 1, "subnet": "198.18.1.0/24"}
+        b = {"id": 2, "subnet": "198.18.2.0/24"}
+        alone = {"id": 3, "subnet": "198.18.3.0/24"}
+        unlisted = {"id": 4, "subnet": "198.18.4.0/24"}
+        network = {"name": "access", "subnet4": [a, b]}
+        member_a, member_b = ({**subnet, "shared-network-name": "access"} for subnet in (a, b))
+        listed_alone = {**alone, "shared-network-name": None}
+        cases = (
+            (
+                "complete",
+                [member_a, member_b, listed_alone],
+                _config(4, [alone], shared_networks=[network]),
+                {1: (1, 2), 3: (3,)},
+            ),
+            (
+                "a member without the membership key and no configuration",
+                [member_a, b, listed_alone],
+                _config(4, [], result=1),
+                {1: None, 3: (3,)},
+            ),
+            (
+                "a Subnet that only the configuration shows",
+                [member_a, member_b, listed_alone],
+                _config(4, [alone, unlisted], shared_networks=[network]),
+                {1: None},
+            ),
+        )
+        for label, identities, configuration, expected in cases:
+            with self.subTest(label), stub_kea({"subnet4-list": _identity(4, identities), "config-get": configuration}):
+                snapshot = display(self.server, 4, refresh=True)
+                for subnet_id, members in expected.items():
+                    found = snapshot.shared_network_subnets(snapshot.find_by_id(subnet_id))
+                    self.assertEqual(None if found is None else tuple(s.subnet_id for s in found), members)
+
     def test_shared_network_membership_disagreement_quarantines_subnet(self):
         identities = _identity(
             4,

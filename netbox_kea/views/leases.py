@@ -1236,7 +1236,7 @@ def _enrich_leases_with_badges(
     Adds:
     - ``reservation_url``: reservation link if a reservation exists for this IP
     - ``can_change_reservation``: whether the user may edit the reservation (gates link vs plain badge)
-    - ``host_reservation``: an In-Subnet Reservation that holds no address and no delegated prefix matched
+    - ``host_reservation``: the matched Reservation holds no address and no delegated prefix for the Lease's Subnet
     - ``create_reservation_url``: pre-filled add link if host_cmds is loaded
     - ``netbox_ip_url``: absolute URL if the address of an address Lease exists in NetBox IPAM
     - ``netbox_prefix_url``: absolute URL if the delegated prefix exists as a Prefix in the Server's sync VRF
