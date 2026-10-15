@@ -7,6 +7,7 @@ They are read through the real KeaClient and the display cache.
 
 from __future__ import annotations
 
+import concurrent.futures
 import ipaddress
 import threading
 import time
@@ -455,19 +456,28 @@ class LeasePresenceLookupTest(_ViewTestBase):
         all_workers = threading.Barrier(10, timeout=10)
         release = threading.Event()
 
+        class ReleaseAfterCancel(concurrent.futures.ThreadPoolExecutor):
+            def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+                # The other workers finish only after the pool has cancelled the lookups that wait for a worker.
+                super().shutdown(wait=False, cancel_futures=cancel_futures)
+                release.set()
+                super().shutdown(wait=wait)
+
         def leases(body):
             subnet_id = body["arguments"]["subnet-id"]
             asked.append(subnet_id)
             if subnet_id < 30:
                 all_workers.wait()
             if subnet_id == 20:
-                # The other workers finish after the pool has seen the failure.
-                threading.Timer(0.5, release.set).start()
                 raise TypeError("unexpected worker failure")
             release.wait(timeout=10)
             return {"result": 3}
 
-        with stub_kea({"lease4-get-by-state": leases}), self.assertRaises(TypeError):
+        with (
+            stub_kea({"lease4-get-by-state": leases}),
+            patch.object(concurrent.futures, "ThreadPoolExecutor", ReleaseAfterCancel),
+            self.assertRaises(TypeError),
+        ):
             lease_presence(self.server, 4, [_typed_reservation(raw) for raw in reservations], read_since=timezone.now())
 
         # The worker of the failed lookup can take one more lookup before the pool cancels the rest.
