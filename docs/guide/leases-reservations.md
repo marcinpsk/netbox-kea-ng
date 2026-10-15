@@ -40,7 +40,7 @@ SPDX-License-Identifier: Apache-2.0
   reserved address that Kea can give, DHCPv6 gives the Global address, and DHCPv4 gives the excluded
   local address after all. In a Shared Network, Kea first tries the Reservations of the other Subnets,
   which the plugin does not read, so that row shows *Reservation Unknown*. A Reservation of no address
-  stops Kea before the Global Reservation.
+  and no delegated prefix stops Kea before the Global Reservation.
 - When the plugin cannot find out how a lease relates to a Reservation, the row shows *Reservation
   Unknown* with the reason, and offers no *Sync* and no *+ Reserve*. When Kea does not load the
   `host_cmds` hook, the page shows one notice instead.
