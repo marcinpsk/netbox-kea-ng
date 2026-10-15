@@ -326,6 +326,23 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
             rows = list(csv.DictReader(io.StringIO(response.content.decode())))
             self.assertEqual([row.get("Reserved") for row in rows], [exported])
 
+    def test_the_table_export_shows_an_ignored_reservation_as_the_badge_does(self):
+        """Kea's default reservations-global is false, so it ignores a Global Reservation."""
+        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        global_ = {**self._RESERVATION4, "subnet-id": 0}
+
+        def reservation_get(body):
+            if body["arguments"]["subnet-id"] == 0:
+                return {"result": 0, "arguments": global_}
+            return {"result": 3}
+
+        with _lease_stub(self._badge_responses(**{"reservation-get": reservation_get})):
+            response = self.client.get(url, {"by": "ip", "q": "192.168.1.100", "export": "table"})
+
+        self.assertEqual(response.status_code, 200)
+        rows = list(csv.DictReader(io.StringIO(response.content.decode())))
+        self.assertEqual([row.get("Reserved") for row in rows], ["Reservation Ignored"])
+
     def test_no_reserved_badge_when_no_reservation(self):
         """When no reservation exists for the lease IP, no badge is rendered."""
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])

@@ -33,7 +33,7 @@ SPDX-License-Identifier: Apache-2.0
 - Kea applies a Reservation only when the flags of the lease's Subnet allow it: `reservations-global`
   (Kea's default is false), `reservations-in-subnet` (default true) and `reservations-out-of-pool`
   (default false), each from the Subnet, its Shared Network or the global configuration. When the flags
-  exclude the Reservation of the client, the row shows *Reservation ignored* with the flag, and offers
+  exclude the Reservation of the client, the row shows *Reservation Ignored* with the flag, and offers
   *Sync*, because the lease is a dynamic one. With `reservations-out-of-pool`, Kea does not give a
   reserved address that is inside a Pool, but it renews a lease that already holds it, so that row
   shows *Reserved*. When the Subnet also applies Global Reservations, Kea gives the Global reserved

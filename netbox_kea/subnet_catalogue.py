@@ -513,7 +513,9 @@ def _configuration_observation(snapshot: server_configuration.ServerConfiguratio
                 shared_network_name=declared.shared_network_name,
                 membership_complete=membership_complete,
                 qualifying_suffix=server_configuration.effective_qualifying_suffix(snapshot, declared),
-                reservation_flags=server_configuration.effective_reservation_flags(snapshot, declared),
+                reservation_flags=server_configuration.effective_reservation_flags(
+                    snapshot, declared, membership_complete=membership_complete
+                ),
             )
         )
     kept, collisions, ids, networks = _quarantine_collisions(facts, "configuration")

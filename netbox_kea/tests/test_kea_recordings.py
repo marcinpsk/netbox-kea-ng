@@ -344,7 +344,12 @@ class TestRecordedReservationFlags(TestCase):
 
     def _effective(self, snapshot) -> dict[int | None, ReservationFlags | None]:
         return {
-            subnet.declared_subnet_id: server_configuration.effective_reservation_flags(snapshot, subnet)
+            subnet.declared_subnet_id: server_configuration.effective_reservation_flags(
+                snapshot,
+                subnet,
+                membership_complete=subnet.declared_subnet_id is not None
+                and snapshot.subnet_with_membership(subnet.declared_subnet_id) is subnet,
+            )
             for subnet in snapshot.subnets
         }
 

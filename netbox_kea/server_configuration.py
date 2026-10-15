@@ -714,18 +714,15 @@ def effective_qualifying_suffix(snapshot: ServerConfigurationSnapshot, subnet: D
 
 
 def effective_reservation_flags(
-    snapshot: ServerConfigurationSnapshot, subnet: DeclaredSubnet
+    snapshot: ServerConfigurationSnapshot, subnet: DeclaredSubnet, *, membership_complete: bool
 ) -> ReservationFlags | None:
     """Return the reservation flags of *subnet*: its own, its Shared Network's, the global ones, then Kea's defaults.
 
     Return None when *snapshot* does not show them, because the read failed or a fact on that path is not valid.
+    *membership_complete* is false when the Shared Network of *subnet* is not known.
     """
     # A member of a Shared Network that does not parse has no network name, but it takes the flags of that network.
-    membership_known = any(
-        declared is subnet and known
-        for declared, known in zip(snapshot.subnets, snapshot._membership_complete, strict=True)
-    )
-    if not subnet.complete or not membership_known or snapshot.reservation_flags is None:
+    if not subnet.complete or not membership_complete or snapshot.reservation_flags is None:
         return None
     levels = [subnet.configuration.settings.reservation_flags]
     if subnet.shared_network_name is not None:

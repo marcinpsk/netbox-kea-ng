@@ -294,7 +294,9 @@ class _ReservationLookups:
         """
         flags = subnet.reservation_flags
         scopes = ((self._in_subnet, flags is None or flags.in_subnet), (self._global, flags is None or flags.global_))
-        for lookup, _enabled in sorted(scopes, key=lambda scope: not scope[1]):
+        enabled = [lookup for lookup, applies in scopes if applies]
+        disabled = [lookup for lookup, applies in scopes if not applies]
+        for lookup in (*enabled, *disabled):
             found = lookup(clients, lease, subnet)
             if found is not None:
                 return found

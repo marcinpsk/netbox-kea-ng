@@ -462,10 +462,10 @@ class BaseLeaseTable(GenericTable):
             "{% if record.can_change_reservation and record.reservation_url %}"
             '<a href="{{ record.reservation_url }}" class="badge text-bg-secondary text-decoration-none"'
             ' title="{{ record.reservation_ignored_reason }}">'
-            '<i class="mdi mdi-cancel" aria-hidden="true"></i> Reservation ignored</a>'
+            '<i class="mdi mdi-cancel" aria-hidden="true"></i> Reservation Ignored</a>'
             "{% else %}"
             '<span class="badge text-bg-secondary" title="{{ record.reservation_ignored_reason }}">'
-            '<i class="mdi mdi-cancel" aria-hidden="true"></i> Reservation ignored</span>'
+            '<i class="mdi mdi-cancel" aria-hidden="true"></i> Reservation Ignored</span>'
             "{% endif %}"
             "{% elif record.reservation_unknown_reason %}"
             '<span class="badge text-bg-warning" title="{{ record.reservation_unknown_reason }}">'

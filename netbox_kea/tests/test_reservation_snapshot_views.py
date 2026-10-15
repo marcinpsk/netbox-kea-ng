@@ -1205,7 +1205,7 @@ class TestReservationIgnoredBadgeOnLeases(_ViewTestBase):
                 [badge] = _reserved_badges(response)
                 self.assertEqual(
                     (badge.name, badge["class"][:2], badge.get_text(strip=True), badge["title"]),
-                    (element, ["badge", "text-bg-secondary"], "Reservation ignored", reason),
+                    (element, ["badge", "text-bg-secondary"], "Reservation Ignored", reason),
                 )
                 row = response.context["table"].data.data[0]
                 self.assertEqual(badge.get("href"), row["reservation_url"])

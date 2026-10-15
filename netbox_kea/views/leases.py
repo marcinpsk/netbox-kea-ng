@@ -1176,7 +1176,7 @@ def _unknown_badge_title(reason: UnknownReservationMatch) -> str:
 
 
 def _ignored_badge_title(reason: IgnoredReservationReason) -> str:
-    """Return the title of the Reservation ignored badge: the flag of the Subnet that makes Kea ignore it."""
+    """Return the title of the Reservation Ignored badge: the flag of the Subnet that makes Kea ignore it."""
     match reason:
         case IgnoredReservationReason.GLOBAL_RESERVATIONS_DISABLED:
             return (
@@ -1319,7 +1319,7 @@ def _enrich_leases_with_badges(
     - ``can_delete``: whether the current user may delete this lease
     - ``can_change``: whether the current user may edit this lease (gates edit_url)
     - ``reservation_unknown_reason``: the title of the Reservation Unknown badge when the match is Unknown
-    - ``reservation_ignored_reason``: the title of the Reservation ignored badge when Kea ignores the Reservation
+    - ``reservation_ignored_reason``: the title of the Reservation Ignored badge when Kea ignores the Reservation
 
     *return_url* is the lease search page; the lease and Reservation edit forms return to it. Each Reservation lookup
     read before *read_since*, the read time of the Lease table, is read again.
