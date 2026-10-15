@@ -300,36 +300,6 @@ class TestDuplicateRowsListUrl(TestCase):
                 self.assertEqual(self.client.get(error.list_url).status_code, 403)
 
 
-class TestIsKeaManagedIP(TestCase):
-    """is_kea_managed_ip classifies an existing NetBox IP as safe-to-overwrite or foreign."""
-
-    def test_blank_description_is_not_managed(self):
-        from ipam.models import IPAddress as NbIP
-
-        from netbox_kea.sync import is_kea_managed_ip
-
-        ip = NbIP(address="10.0.0.1/24", status="active", description="")
-        self.assertFalse(is_kea_managed_ip(ip))
-
-    def test_synced_description_is_managed(self):
-        from ipam.models import IPAddress as NbIP
-
-        from netbox_kea.sync import is_kea_managed_ip
-
-        for description in ("[kea-sync: lease]", "[kea-sync: lease] note", "Synced from Kea DHCP lease"):
-            ip = NbIP(address="10.0.0.2/24", status="active", description=description)
-            self.assertTrue(is_kea_managed_ip(ip), description)
-
-    def test_foreign_description_is_not_managed(self):
-        from ipam.models import IPAddress as NbIP
-
-        from netbox_kea.sync import is_kea_managed_ip
-
-        for description in ("Router loopback", "rack 4 [kea-sync: lease]", "[kea-sync: lease ]"):
-            ip = NbIP(address="10.0.0.3/24", status="active", description=description)
-            self.assertFalse(is_kea_managed_ip(ip), description)
-
-
 class TestOwnershipClaimBehavior(TestCase):
     """Keep the former writer regressions at the public ownership boundary."""
 

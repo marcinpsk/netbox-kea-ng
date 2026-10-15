@@ -50,7 +50,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import with_kea_client_config
+from .utils import _make_db_server, with_kea_client_config
 
 User = get_user_model()
 
@@ -1170,12 +1170,36 @@ class TestReservationCheckNetboxIPView(_SyncViewBase):
         NbIP.objects.create(address="10.0.40.1/24", vrf=sync_vrf, description="[kea-sync: reservation]")
         self.assertIn("Already in NetBox IPAM", self.client.get(self._url(), {"ip": "10.0.40.1"}).content.decode())
 
-    def test_info_alert_for_kea_managed_ip(self):
-        NbIP.objects.create(address="10.0.40.1/24", status="reserved", description="[kea-sync: reservation]")
+    def _owned(self, server, source="reservation"):
+        ip = NbIP.objects.create(address="10.0.40.1/24", status="reserved", description="[kea-sync: reservation]")
+        IPAMOwnershipLink.objects.create(
+            server=server,
+            family=4,
+            source=source,
+            ip_address=ip,
+            facts={"hostname": "", "prefix_length": 24},
+            confirmation=next_confirmation_number(),
+        )
+
+    def test_an_ip_this_server_owns_from_a_reservation_is_updated(self):
+        self._owned(self.server)
         response = self.client.get(self._url(), {"ip": "10.0.40.1"})
-        body = response.content.decode()
-        self.assertIn("alert-info", body)
-        self.assertIn("Already in NetBox IPAM", body)
+        self.assertContains(response, "alert-info")
+        self.assertContains(response, "Saving will update it.")
+        self.assertNotContains(response, "Saving adds this Server as an owner.")
+
+    def test_an_ip_with_a_marker_but_no_reservation_link_of_this_server_gains_an_owner(self):
+        for name, server, source in (
+            ("other Server", _make_db_server(name="check-ip-other"), "reservation"),
+            ("lease link", self.server, "lease"),
+        ):
+            with self.subTest(owner=name):
+                NbIP.objects.all().delete()
+                self._owned(server, source)
+                response = self.client.get(self._url(), {"ip": "10.0.40.1"})
+                self.assertContains(response, "alert-info")
+                self.assertContains(response, "Saving adds this Server as an owner.")
+                self.assertNotContains(response, "Saving will update it.")
 
     def test_warning_for_blank_description_ip_leaves_row_and_links_unchanged(self):
         ip = NbIP.objects.create(address="198.18.0.2/24", status="active", description="")
@@ -1185,7 +1209,7 @@ class TestReservationCheckNetboxIPView(_SyncViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "alert-warning")
         self.assertContains(response, "This IP exists in NetBox and was <strong>not</strong> created by Kea sync")
-        self.assertContains(response, "Syncing will overwrite this entry.")
+        self.assertContains(response, "Saving takes it over.")
         self.assertNotContains(response, "alert-info")
         self.assertNotContains(response, "Already in NetBox IPAM")
         self.assertEqual(NbIP.objects.values().get(pk=ip.pk), before_row)

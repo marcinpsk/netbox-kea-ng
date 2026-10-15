@@ -145,6 +145,12 @@ Integrations that read leases from the plugin must change with the typed lease r
   (Kea qualifies it), or any other name with a trailing dot. A saved Reservation keeps its stored hostname
   until you edit the name
 - Journal entries on add/edit/delete
+- The **NetBox IP** column shows an address as synchronized only when this server owns its NetBox IP address
+  through a reservation link. An address that only another server, or only a lease of this server, owns is
+  *Not Synchronized*, and *Sync all* adds this server as an owner. An address without the sync marker is
+  *Not Synchronized* too, and the title of *Sync all* says that a Sync takes the IP address over. The state is
+  *Unknown*, with the reason in its title, when NetBox cannot be read or you may not view an IP address of the
+  reservation. The add form shows the same facts for the address that you enter
 - Validated YAML or JSON bulk transfer. Export a Complete Snapshot from one server
   or the combined view, then import it from the matching DHCPv4 or DHCPv6 Reservations page
 

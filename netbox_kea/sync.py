@@ -12,7 +12,6 @@ from django.db.utils import IntegrityError, OperationalError, ProgrammingError
 from netaddr import EUI, AddrFormatError, mac_unix_expanded
 
 from . import event_scope
-from .ipam_marker import parse_marker
 from .reservations import GlobalReservationScope, Reservation, ReservationSynchronizationState
 
 if TYPE_CHECKING:
@@ -126,11 +125,6 @@ def sync_mac_address(hw_address: str, hostname: str = ""):
     else:
         return mac_obj
     return None
-
-
-def is_kea_managed_ip(ip_obj: NbIPAddress) -> bool:
-    """Return whether the IP address has a valid ownership marker."""
-    return parse_marker(getattr(ip_obj, "description", "") or "") is not None
 
 
 def reservation_synchronization_state(

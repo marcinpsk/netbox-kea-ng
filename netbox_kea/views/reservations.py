@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
@@ -24,7 +25,14 @@ from utilities.views import register_model_view
 
 from .. import constants, display_cache, forms, server_configuration, tables
 from ..constants import Family
-from ..ipam_reconciliation import RESERVATION, ReservationPhase, claim_permissions, reconcile_permissions
+from ..ipam_reconciliation import (
+    RESERVATION,
+    AddressOwnership,
+    ReservationPhase,
+    address_ownership,
+    claim_permissions,
+    reconcile_permissions,
+)
 from ..kea import KeaException
 from ..lease_reservation_reads import lease_presence
 from ..models import Server
@@ -455,6 +463,7 @@ def present(user: Any, server: Server, read: ReservationRead, *, return_url: str
             rows,
             server,
             snapshot.family,
+            user=user,
             sync=sync_gate(user, claim_permissions(RESERVATION)),
             read_since=snapshot.read_started,
         )
@@ -510,11 +519,18 @@ def _attach_reservation_action_urls(
         row["delete_url"] = f"{delete}?{query}"
 
 
+_IPAM_UNREADABLE = "NetBox IPAM state could not be read."
+_IPAM_HIDDEN = "You may not view an IP address of this Reservation in NetBox."
+_SYNC_TAKES_OVER = "The IP address has no Kea sync marker. Sync takes it over."
+_SYNC_ADDS_OWNER = "Sync adds this Server as an owner of the IP address."
+
+
 def _enrich_reservations_with_badges(
     reservations: list[dict[str, Any]],
     server: Server,
     version: Family,
     *,
+    user: Any,
     sync: SyncGate,
     read_since: datetime,
 ) -> None:
@@ -523,38 +539,35 @@ def _enrich_reservations_with_badges(
     A row that can take a Sync gets ``sync_url`` when *sync* allows it, else ``sync_refusal`` with the reason.
     A Lease badge read before *read_since*, the read time of the Reservation table, is read again.
     """
-    from ..sync import bulk_fetch_netbox_ips, is_kea_managed_ip, reservation_synchronization_state
+    from ..sync import reservation_synchronization_state
 
     _enrich_reservations_with_lease_status(server, reservations, version, read_since=read_since)
 
     addresses = [str(address) for row in reservations for address in row["reservation"].addresses]
+    ownership: dict[str, AddressOwnership] | None
     try:
-        netbox_ips = bulk_fetch_netbox_ips(addresses, vrf_id=server.sync_vrf_id)
-        synchronized = frozenset(address for address, ip in netbox_ips.items() if is_kea_managed_ip(ip))
+        ownership = address_ownership(server, version, RESERVATION, addresses, user)
     except DatabaseError:
         logger.exception("Could not read NetBox IPAM state for Reservation badges")
-        netbox_ips = {}
-        synchronized = None
+        ownership = None
 
     for row in reservations:
         reservation: Reservation = row["reservation"]
-        if synchronized is None and isinstance(reservation.scope, InSubnetReservationScope) and reservation.addresses:
-            state = ReservationSynchronizationState.unknown(
-                len(reservation.addresses),
-                "NetBox IPAM state could not be read.",
-            )
+        found = {str(address): ownership[str(address)] for address in reservation.addresses} if ownership else {}
+        owned = {address: item.ip for address, item in found.items() if item.state == "owned"}
+        if not isinstance(reservation.scope, InSubnetReservationScope) or not reservation.addresses:
+            state = reservation_synchronization_state(reservation, frozenset())
+        elif ownership is None:
+            state = ReservationSynchronizationState.unknown(len(reservation.addresses), _IPAM_UNREADABLE)
+        elif any(item.state == "hidden" for item in found.values()):
+            state = ReservationSynchronizationState.unknown(len(reservation.addresses), _IPAM_HIDDEN)
         else:
-            # Without the IPAM state only a Reservation that is not applicable reaches here; it reads no address.
-            state = reservation_synchronization_state(reservation, synchronized or frozenset())
+            state = reservation_synchronization_state(reservation, frozenset(owned))
         row["sync_state"] = state
-        matched = [
-            netbox_ips[str(address)]
-            for address in reservation.addresses
-            if synchronized is not None and str(address) in synchronized and str(address) in netbox_ips
-        ]
-        row["netbox_ip_url"] = matched[0].get_absolute_url() if matched else None
+        row["netbox_ip_url"] = next((ip.get_absolute_url() for ip in owned.values() if ip is not None), None)
         row["sync_url"] = None
         row["sync_refusal"] = ""
+        row["sync_title"] = _sync_title(found.values())
         if (
             isinstance(reservation.scope, InSubnetReservationScope)
             and reservation.addresses
@@ -574,6 +587,14 @@ def _enrich_reservations_with_badges(
                 row["sync_url"] = f"{base}?{query}"
             else:
                 row["sync_refusal"] = sync.reason
+
+
+def _sync_title(ownership: Iterable[AddressOwnership]) -> str:
+    """Return what a Sync does to the IP addresses that exist but that this Server does not own."""
+    states = {item.state for item in ownership}
+    if "unmarked" in states:
+        return _SYNC_TAKES_OVER
+    return _SYNC_ADDS_OWNER if "not-synchronized" in states else ""
 
 
 def _reservation_list_context(

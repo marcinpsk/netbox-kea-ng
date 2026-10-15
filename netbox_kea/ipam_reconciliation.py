@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast, overloa
 
 from dcim.models import MACAddress
 from django.db import DatabaseError, connection
+from django.db.models import Exists, OuterRef
 from django.utils import timezone
 from ipam.models import IPAddress, IPRange, Prefix
 from netaddr import AddrFormatError, IPNetwork
@@ -679,6 +680,58 @@ class ClaimResult:
     def synchronized_addresses(self) -> frozenset[str]:
         """Return only the addresses whose reports were applied."""
         return frozenset(address for address, result in self.addresses.items() if result.synchronized)
+
+
+OwnershipState = Literal["owned", "not-synchronized", "unmarked", "not-in-netbox", "hidden"]
+
+
+@dataclass(frozen=True)
+class AddressOwnership:
+    """The IPAM Ownership of one address in the sync VRF for one source, as one user may see it.
+
+    ``ip`` is the IP address the user may view; it is ``None`` when the state is ``not-in-netbox`` or ``hidden``.
+    """
+
+    state: OwnershipState
+    ip: IPAddress | None = None
+
+
+def address_ownership(
+    server: Server, family: Family, source: str, addresses: Collection[str], user: Any
+) -> dict[str, AddressOwnership]:
+    """Return the ownership of each address by *source* of *server* and *family*, read in two queries.
+
+    An address is owned when its IP address has a marker and a link of this Server, family and source; any link
+    counts, adopted and stale-marked included. A marker without such a link is ``not-synchronized``, and no marker is
+    ``unmarked``. An IP address that *user* may not view is ``hidden``. Of duplicate rows, the first by pk decides, as
+    in a claim. Each key is the canonical text of an address.
+    """
+    hosts = {str(ipaddress.ip_address(address)) for address in addresses}
+    if not hosts:
+        return {}
+    own_link = IPAMOwnershipLink.objects.filter(ip_address=OuterRef("pk"), server=server, family=family, source=source)
+    rows = list(
+        IPAddress.objects.filter(vrf_id=server.sync_vrf_id, address__net_in=sorted(hosts))
+        .annotate(linked=Exists(own_link))
+        .order_by("pk")
+    )
+    visible = set(
+        IPAddress.objects.restrict(user, "view").filter(pk__in=[row.pk for row in rows]).values_list("pk", flat=True)
+    )
+    found: dict[str, AddressOwnership] = {}
+    for row in rows:
+        host = _host(row.address)
+        if row.pk not in visible:
+            found[host] = AddressOwnership("hidden")
+        elif host not in found:
+            found[host] = AddressOwnership(_ownership_state(row), row)
+    return {host: found.get(host, AddressOwnership("not-in-netbox")) for host in hosts}
+
+
+def _ownership_state(row: IPAddress) -> OwnershipState:
+    if not _is_owned_description(row.description):
+        return "unmarked"
+    return "owned" if row.linked else "not-synchronized"
 
 
 @overload
