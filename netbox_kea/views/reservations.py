@@ -27,7 +27,7 @@ from .. import constants, display_cache, forms, server_configuration, tables
 from ..constants import Family
 from ..ipam_reconciliation import (
     RESERVATION,
-    AddressOwnership,
+    Ownership,
     ReservationPhase,
     address_ownership,
     claim_permissions,
@@ -55,7 +55,7 @@ from ..subnet_catalogue import CatalogueSnapshot, VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
 from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import OptionalViewTab
-from ._base import _safe_return_url
+from ._base import IPAM_UNREADABLE, _safe_return_url, sync_title
 from .notices import HEADLINES, Notice, load_snapshot, notice
 from .read_age import read_age_context, refresh_requested
 from .workspace import ServerFamilyMixin
@@ -519,10 +519,7 @@ def _attach_reservation_action_urls(
         row["delete_url"] = f"{delete}?{query}"
 
 
-_IPAM_UNREADABLE = "NetBox IPAM state could not be read."
 _IPAM_HIDDEN = "You may not view an IP address of this Reservation in NetBox."
-_SYNC_TAKES_OVER = "The IP address has no Kea sync marker. Sync takes it over."
-_SYNC_ADDS_OWNER = "Sync adds this Server as an owner of the IP address."
 
 
 def _enrich_reservations_with_badges(
@@ -542,7 +539,7 @@ def _enrich_reservations_with_badges(
     _enrich_reservations_with_lease_status(server, reservations, version, read_since=read_since)
 
     addresses = [str(address) for row in reservations for address in row["reservation"].addresses]
-    ownership: dict[str, AddressOwnership] | None
+    ownership: dict[str, Ownership] | None
     try:
         ownership = address_ownership(server, version, RESERVATION, addresses, user)
     except DatabaseError:
@@ -576,7 +573,7 @@ def _enrich_reservations_with_badges(
                 row["sync_refusal"] = sync.reason
 
 
-def reservation_badge(reservation: Reservation, ownership: Mapping[str, AddressOwnership] | None) -> dict[str, Any]:
+def reservation_badge(reservation: Reservation, ownership: Mapping[str, Ownership] | None) -> dict[str, Any]:
     """Return the ``sync_state``, ``netbox_ip_url`` and ``sync_title`` of a Reservation row.
 
     *ownership* is the read of :func:`address_ownership` with the Reservation source; ``None`` means that it failed.
@@ -584,11 +581,11 @@ def reservation_badge(reservation: Reservation, ownership: Mapping[str, AddressO
     from ..sync import reservation_synchronization_state
 
     found = {str(address): ownership[str(address)] for address in reservation.addresses} if ownership else {}
-    synchronized = {address: item.ip for address, item in found.items() if item.state == "synchronized"}
+    synchronized = {address: item.obj for address, item in found.items() if item.state == "synchronized"}
     if not isinstance(reservation.scope, InSubnetReservationScope) or not reservation.addresses:
         state = reservation_synchronization_state(reservation, frozenset())
     elif ownership is None:
-        state = ReservationSynchronizationState.unknown(len(reservation.addresses), _IPAM_UNREADABLE)
+        state = ReservationSynchronizationState.unknown(len(reservation.addresses), IPAM_UNREADABLE)
     elif any(item.state == "hidden" for item in found.values()):
         state = ReservationSynchronizationState.unknown(len(reservation.addresses), _IPAM_HIDDEN)
     else:
@@ -600,12 +597,12 @@ def reservation_badge(reservation: Reservation, ownership: Mapping[str, AddressO
     }
 
 
-def _sync_title(ownership: Iterable[AddressOwnership]) -> str:
+def _sync_title(ownership: Iterable[Ownership]) -> str:
     """Return what a Sync does to the IP addresses that exist but that this Server does not own."""
     states = {item.state for item in ownership}
-    if "unmarked" in states:
-        return _SYNC_TAKES_OVER
-    return _SYNC_ADDS_OWNER if "not-synchronized" in states else ""
+    # A takeover changes more than an added owner, so its title wins.
+    state = "unmarked" if "unmarked" in states else "not-synchronized"
+    return sync_title(state, "IP address") if state in states else ""
 
 
 def _reservation_list_context(

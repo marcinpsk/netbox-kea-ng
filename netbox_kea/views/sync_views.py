@@ -316,9 +316,9 @@ class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
         except DatabaseError:
             logger.exception("Could not read NetBox IPAM state for the Reservation advisory")
             return HttpResponse("")
-        if found.ip is None:
+        if found.obj is None:
             return HttpResponse("")
-        return render(request, "netbox_kea/inc/reservation_ip_check.html", {"nb_ip": found.ip, "state": found.state})
+        return render(request, "netbox_kea/inc/reservation_ip_check.html", {"nb_ip": found.obj, "state": found.state})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
