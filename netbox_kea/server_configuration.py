@@ -39,7 +39,15 @@ from .kea import (
 from .models import Server, require_persisted_server
 from .pools import Pool, parse_pool
 from .reservations import IdentifierType, ReservationCapabilities, reservation_identifier_types
-from .subnet_settings import SETTING_KEYS, SubnetSettings, setting_key
+from .subnet_settings import (
+    RESERVATION_FLAG_KEYS,
+    SETTING_KEYS,
+    DeclaredReservationFlags,
+    ReservationFlags,
+    SubnetSettings,
+    inherited_reservation_flags,
+    setting_key,
+)
 from .utilities import kea_error_hint
 
 logger = logging.getLogger(__name__)
@@ -102,6 +110,7 @@ class SharedNetwork:
     complete: bool
     # None: the Shared Network does not set it, so its Subnets take the global value.
     ddns_qualifying_suffix: str | None
+    reservation_flags: DeclaredReservationFlags
 
 
 @dataclass(frozen=True)
@@ -130,6 +139,8 @@ class ServerConfigurationSnapshot:
     option_definitions: tuple[OptionDefinition, ...]
     # The global DDNS qualifying suffix; Kea's default is empty. None: not known.
     ddns_qualifying_suffix: str | None
+    # The global reservation flags. None: not known, because the read failed or a value is not valid.
+    reservation_flags: DeclaredReservationFlags | None
     diagnostics: tuple[Diagnostic, ...]
     # Diagnostics from Subnet and Shared Network facts only, without global option-data and option-def.
     subnet_diagnostics: tuple[Diagnostic, ...]
@@ -187,6 +198,7 @@ def _unavailable(server: Server, family: Family, code: str, message: str) -> Ser
         global_options=(),
         option_definitions=(),
         ddns_qualifying_suffix=None,
+        reservation_flags=None,
         diagnostics=diagnostics,
         subnet_diagnostics=diagnostics,
         configuration_hash=None,
@@ -368,6 +380,7 @@ def _parse_configuration(
             network_suffix = _optional_string(
                 shared_network, _DDNS_QUALIFYING_SUFFIX, path, diagnostics, allow_empty=True
             )
+            network_flags = _reservation_flags(shared_network, path, diagnostics)
             networks.append(
                 SharedNetwork(
                     name=name,
@@ -378,6 +391,7 @@ def _parse_configuration(
                     member_cidrs=tuple(member_cidrs),
                     complete=len(diagnostics) == network_diagnostics,
                     ddns_qualifying_suffix=network_suffix,
+                    reservation_flags=network_flags,
                 )
             )
 
@@ -386,6 +400,8 @@ def _parse_configuration(
         if _DDNS_QUALIFYING_SUFFIX in configuration
         else ""
     )
+    flag_diagnostics = len(diagnostics)
+    global_flags = _reservation_flags(configuration, f"Dhcp{family}", diagnostics)
     subnet_diagnostics = tuple(diagnostics)
     options = _parse_options(configuration.get("option-data", []), f"Dhcp{family}", diagnostics)
     global_options_complete = len(diagnostics) == len(subnet_diagnostics)
@@ -402,6 +418,7 @@ def _parse_configuration(
         global_options=options,
         option_definitions=definitions,
         ddns_qualifying_suffix=global_suffix,
+        reservation_flags=global_flags if len(subnet_diagnostics) == flag_diagnostics else None,
         diagnostics=tuple(diagnostics),
         subnet_diagnostics=subnet_diagnostics,
         available=True,
@@ -696,6 +713,26 @@ def effective_qualifying_suffix(snapshot: ServerConfigurationSnapshot, subnet: D
     return snapshot.ddns_qualifying_suffix
 
 
+def effective_reservation_flags(
+    snapshot: ServerConfigurationSnapshot, subnet: DeclaredSubnet, *, membership_complete: bool
+) -> ReservationFlags | None:
+    """Return the reservation flags of *subnet*: its own, its Shared Network's, the global ones, then Kea's defaults.
+
+    Return None when *snapshot* does not show them, because the read failed or a fact on that path is not valid.
+    *membership_complete* is false when the Shared Network of *subnet* is not known.
+    """
+    # A member of a Shared Network that does not parse has no network name, but it takes the flags of that network.
+    if not subnet.complete or not membership_complete or snapshot.reservation_flags is None:
+        return None
+    levels = [subnet.configuration.settings.reservation_flags]
+    if subnet.shared_network_name is not None:
+        network = _shared_network(snapshot, subnet.shared_network_name)
+        if network is None or not network.complete:
+            return None
+        levels.append(network.reservation_flags)
+    return inherited_reservation_flags(*levels, snapshot.reservation_flags)
+
+
 def candidate_snapshot(server: Server, candidate: CandidateConfiguration) -> ServerConfigurationSnapshot:
     """Return the configuration facts of *candidate*, parsed the same way as a live read."""
     return _parse_configuration(server, candidate.arguments[f"Dhcp{candidate.family}"], candidate.family, None)
@@ -762,7 +799,25 @@ def _parse_settings(
         relay_addresses=_relay_addresses(entry.get("relay"), family, path, diagnostics),
         client_classes=_client_classes(entry, path, diagnostics),
         require_client_classes=_additional_classes(entry, path, diagnostics),
+        reservation_flags=_reservation_flags(entry, path, diagnostics),
     )
+
+
+def _reservation_flags(entry: dict[str, Any], path: str, diagnostics: list[Diagnostic]) -> DeclaredReservationFlags:
+    """Read the reservation flags that one configuration level sets; a value that is not a bool is a diagnostic."""
+    values: dict[str, bool] = {}
+    for field, key in RESERVATION_FLAG_KEYS.items():
+        if key not in entry:
+            continue
+        if isinstance(entry[key], bool):
+            values[field] = entry[key]
+        else:
+            diagnostics.append(
+                Diagnostic(
+                    "invalid-setting", f"Kea returned an invalid {key} setting.", "configuration", f"{path}.{key}"
+                )
+            )
+    return DeclaredReservationFlags(**values)
 
 
 def _parse_setting(entry: dict[str, Any], field: str, path: str, diagnostics: list[Diagnostic]) -> int | str | None:

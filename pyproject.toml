@@ -35,6 +35,7 @@ dependencies = [
   "pyyaml>=6.0,<7.0",
   "beautifulsoup4>=4.12,<5",
   "pydantic>=2.0,<3.0",
+  "typing-extensions>=4.1",
 ]
 
 [project.urls]
@@ -226,7 +227,8 @@ omit = ["*/migrations/*", "*/tests/*"]
 
 [tool.coverage.report]
 show_missing = true
-exclude_also = ["raise NotImplementedError"]
+# A `case _:` arm that calls assert_never cannot run: mypy proves the match exhaustive.
+exclude_also = ["raise NotImplementedError", "case _:\\n\\s*assert_never\\("]
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
@@ -267,4 +269,4 @@ changelog_file = "CHANGELOG.md"
 allowed_tags = ["feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert"]
 minor_tags = ["feat"]
 patch_tags = ["fix", "perf"]
-parse_squash_commits = false
+parse_squash_commits = true

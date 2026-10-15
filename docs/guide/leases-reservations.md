@@ -30,6 +30,20 @@ SPDX-License-Identifier: Apache-2.0
   gave them, match the request.
 - A Reservation of the client that holds only the other kind (addresses for a delegated prefix, or
   prefixes for an address) shows as *Reservation*, not *Reserved*, and the row offers no *+ Reserve*.
+- Kea applies a Reservation only when the flags of the lease's Subnet allow it: `reservations-global`
+  (Kea's default is false), `reservations-in-subnet` (default true) and `reservations-out-of-pool`
+  (default false), each from the Subnet, its Shared Network or the global configuration. When the flags
+  exclude the Reservation of the client, the row shows *Reservation Ignored* with the flag, and offers
+  *Sync*, because the lease is a dynamic one. With `reservations-out-of-pool`, Kea does not give a
+  reserved address that is inside a Pool, but it renews a lease that already holds it, so that row
+  shows *Reserved*. When the Subnet also applies Global Reservations and the client has a Global
+  reserved address that Kea can give, DHCPv6 gives the Global address, and DHCPv4 gives the excluded
+  local address after all. In a Shared Network, Kea first tries the Reservations of the other Subnets,
+  which the plugin does not read, so that row shows *Reservation Unknown*. A Reservation of no address
+  and no delegated prefix stops Kea before the Global Reservation.
+- When the plugin cannot find out how a lease relates to a Reservation, the row shows *Reservation
+  Unknown* with the reason, and offers no *Sync* and no *+ Reserve*. When Kea does not load the
+  `host_cmds` hook, the page shows one notice instead.
 - The `lease_added` and `leases_deleted` signals carry typed values (see `netbox_kea/signals.py`).
   `lease_added` sends `creation`, the request that Kea confirmed, and `lease`, the lease that the read
   back observed, or `None` when that read failed or does not match the request. A CSV import sends

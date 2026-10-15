@@ -33,9 +33,7 @@ from .kea_stub import (
     LeaseDaemon,
     _catalogue_responses_for_subnets,
     _http_response,
-    _leases_per_subnet,
     _raw_http_response,
-    _res_page,
     _subnet_stats,
     lease_page,
     lease_pages,
@@ -92,7 +90,6 @@ def _prefix_only_at(address: str, record: dict):
 
 
 #: A DHCPv4 client ID that a lease can carry (Kea allows 255 octets) but a Reservation cannot (128).
-_LONG_CLIENT_ID = ":".join(["01"] * 129)
 
 
 def _csv_rows(response) -> list[dict[str, str]]:
@@ -607,91 +604,6 @@ class LeaseRestTest(_ViewTestBase):
         self.assertEqual(prefix["expiration"], {"infinite": True, "expires_at": None})
         self.assertEqual(results["2001:db8:1::11"]["state"], "registered")
         self.assertTrue(response.json()["complete"])
-
-
-class ReservationLeaseRelationshipTest(_ViewTestBase):
-    """Only a Current Lease is a live relationship; "No Lease" needs a complete observation."""
-
-    def _rows(self, family: int, reservation: dict, responses: dict):
-        subnets = _SUBNETS4 if family == 4 else _SUBNETS6
-        registry = {
-            **_catalogue_responses_for_subnets(family, subnets),
-            "reservation-get-page": _res_page([reservation]),
-            **responses,
-        }
-        url = reverse(f"plugins:netbox_kea:server_reservations{family}", args=[self.server.pk])
-        with stub_kea(registry):
-            response = self.client.get(url)
-        self.assertEqual(response.status_code, 200)
-        return response, response.context["table"].data.data
-
-    def test_a_registered_dhcpv6_address_is_an_active_lease(self):
-        registered = lease_record("2001:db8:1::11", state=4)
-        reservation = {"subnet-id": 10, "duid": "00:01:02:03:04:05", "ip-addresses": ["2001:db8:1::11"]}
-        # Kea's assigned-state query does not return a registered lease; only the whole Subnet does.
-        response, rows = self._rows(
-            6,
-            reservation,
-            {"lease6-get-by-state": {"result": 3}, "lease6-get-all": _leases_per_subnet({10: [registered]})},
-        )
-
-        self.assertIs(rows[0]["has_active_lease"], True)
-        self.assertContains(response, "Active Lease")
-
-    def test_an_expired_assigned_lease_is_not_an_active_lease(self):
-        expired = lease_record("192.0.2.10", cltt=int(time.time()) - 7200, valid_lft=3600)
-        reservation = {"subnet-id": 10, "hw-address": "aa:bb:cc:00:00:10", "ip-address": "192.0.2.10"}
-        response, rows = self._rows(4, reservation, {"lease4-get-by-state": _leases_per_subnet({10: [expired]})})
-
-        self.assertIs(rows[0]["has_active_lease"], False)
-        self.assertContains(response, "No Lease")
-
-    def test_an_infinite_lease_is_an_active_lease(self):
-        infinite = lease_record("192.0.2.10", valid_lft=0xFFFFFFFF, cltt=1)
-        reservation = {"subnet-id": 10, "hw-address": "aa:bb:cc:00:00:10", "ip-address": "192.0.2.10"}
-        _response, rows = self._rows(4, reservation, {"lease4-get-by-state": _leases_per_subnet({10: [infinite]})})
-
-        self.assertIs(rows[0]["has_active_lease"], True)
-
-    @with_kea_client_config(lease_query_max_unpaged_leases=2)
-    def test_a_subnet_read_over_the_cap_is_unknown_not_no_lease(self):
-        inactive = [
-            lease_record("2001:db8:1::31", state=1, duid="00:00:00", drop=("hw-address",)),
-            lease_record("2001:db8:1::32", state=3),
-            lease_record("2001:db8:1::33", state=2),
-        ]
-        reservation = {"subnet-id": 10, "duid": "00:01:02:03:04:05", "ip-addresses": ["2001:db8:1::20"]}
-        # Kea counts only assigned addresses and prefixes, so the measured Subnet looks small.
-        response, rows = self._rows(
-            6,
-            reservation,
-            {
-                "stat-lease6-get": _subnet_stats(6, 10, assigned=1),
-                "lease6-get-all": _leases_per_subnet({10: inactive}),
-            },
-        )
-
-        self.assertIsNone(rows[0]["has_active_lease"])
-        self.assertNotContains(response, "No Lease")
-
-    def test_a_lease_identifier_that_no_reservation_can_hold_makes_the_relationship_unknown(self):
-        lease = lease_record("192.0.2.60", hw_address="", client_id=_LONG_CLIENT_ID)
-        reservation = {"subnet-id": 10, "hw-address": "aa:bb:cc:00:00:99", "ip-address": "192.0.2.50"}
-        response, rows = self._rows(4, reservation, {"lease4-get-by-state": _leases_per_subnet({10: [lease]})})
-
-        self.assertIsNone(rows[0]["has_active_lease"])
-        self.assertNotContains(response, "No Lease")
-        self.assertContains(response, "Lease Unknown")
-
-    def test_a_partial_observation_shows_an_unknown_relationship_not_no_lease(self):
-        malformed = lease_record("192.0.2.20", hostname=["private"])
-        reservation = {"subnet-id": 10, "hw-address": "aa:bb:cc:00:00:10", "ip-address": "192.0.2.10"}
-        response, rows = self._rows(4, reservation, {"lease4-get-by-state": _leases_per_subnet({10: [malformed]})})
-
-        self.assertIsNone(rows[0]["has_active_lease"])
-        self.assertNotContains(response, "No Lease")
-        self.assertContains(response, "Lease Unknown")
-        self.assertContains(response, "a missing Lease cannot be confirmed")
 
 
 @with_kea_client_config(lease_query_max_unpaged_leases=1000)

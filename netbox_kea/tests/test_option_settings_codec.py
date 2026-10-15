@@ -17,7 +17,7 @@ from django.urls import reverse
 
 from netbox_kea import server_configuration
 from netbox_kea.dhcp_options import address_list, form_option_fields
-from netbox_kea.subnet_settings import SETTING_KEYS, SubnetSettings
+from netbox_kea.subnet_settings import RESERVATION_FLAG_KEYS, SETTING_KEYS, SubnetSettings
 
 from .kea_stub import SubnetDaemon, _catalogue_responses_for_subnets, stub_kea
 from .test_views_shared_networks import _RunningConfiguration
@@ -26,7 +26,7 @@ from .utils import _page_data, _ViewTestBase
 _PACKAGE = Path(__file__).resolve().parents[1]
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
 # The settings fields with a shape of their own, which the table does not hold.
-_SHAPED_FIELDS = {"relay_addresses", "client_classes", "require_client_classes"}
+_SHAPED_FIELDS = {"relay_addresses", "client_classes", "require_client_classes", "reservation_flags"}
 # Their own parse of Kea configuration (ADR 0003), and the tests.
 _SCAN_EXEMPT = ("subnet_settings.py", "mappers/", "integrations/", "tests/")
 _STANDARD_TABLES = {"KEA_DHCP4_STD_OPTIONS", "KEA_DHCP6_STD_OPTIONS"}
@@ -48,8 +48,8 @@ _OPTIONS = {
 
 
 def _settings_key_literals() -> list[str]:
-    """Return each string literal that equals a settings table key, outside the modules that may hold one."""
-    keys = {setting.key for setting in SETTING_KEYS.values()}
+    """Return each string literal that equals a settings or reservation flag key, outside the modules that may hold one."""
+    keys = {setting.key for setting in SETTING_KEYS.values()} | set(RESERVATION_FLAG_KEYS.values())
     found = []
     for path in sorted(_PACKAGE.rglob("*.py")):
         rel = path.relative_to(_PACKAGE).as_posix()

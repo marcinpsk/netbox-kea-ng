@@ -9,9 +9,8 @@ use a **real** ``KeaClient`` while stubbing only the HTTP boundary —
 be asserted on. This is what lets a payload regression (e.g. a stray/missing
 ``service`` key) actually fail a test.
 
-Patched at the **class** level (``requests.Session.post``) so it also covers
-``KeaClient.clone()``, which builds a fresh ``requests.Session`` for the worker
-threads used by the reservation/lease-enrichment views.
+Patched at the **class** level (``requests.Session.post``) so it also covers the
+``requests.Session`` of each client that a worker thread of the badge lookups builds.
 """
 
 from __future__ import annotations
@@ -325,9 +324,8 @@ class KeaHttpStub:
     ``KeaClient`` expects a JSON list (one entry per targeted service); a payload
     that is not already a list is wrapped in a single-element list.
 
-    Request recording and queue dispatch are guarded by a lock because the
-    reservation/lease-enrichment views ``clone()`` the client and POST from worker
-    threads.
+    Request recording and queue dispatch are guarded by a lock because the badge
+    lookups POST from worker threads.
     """
 
     def __init__(self, responses: dict[str, Any]) -> None:
@@ -545,6 +543,7 @@ def _catalogue_responses(
     config_hash: str = "shared-catalogue",
     global_options: tuple[dict[str, Any], ...] = (),
     option_definitions: tuple[dict[str, Any], ...] = (),
+    global_settings: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Every response one Subnet Catalogue read of a single subnet needs.
 
@@ -557,6 +556,7 @@ def _catalogue_responses(
         config_hash=config_hash,
         global_options=global_options,
         option_definitions=option_definitions,
+        global_settings=global_settings,
     )
 
 
@@ -569,13 +569,15 @@ def _catalogue_responses_for_subnets(
     members: Mapping[int, str] | None = None,
     global_options: tuple[dict[str, Any], ...] = (),
     option_definitions: tuple[dict[str, Any], ...] = (),
+    global_settings: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The same Catalogue responses for an explicit *subnets* list.
 
     Callers that already carry their own ``subnet{v}-list`` reach the Catalogue shape
     through this entry point, so it stays defined once. *members* maps a Subnet ID to
     the name of its Shared Network: the list then names the network of each Subnet, and
-    ``config-get`` nests each member Subnet in its network.
+    ``config-get`` nests each member Subnet in its network. *global_settings* adds keys,
+    such as ``reservations-global``, to the global ``Dhcp{v}`` level of ``config-get``.
     """
     subnets = list(subnets)
     listed = subnets
@@ -595,6 +597,7 @@ def _catalogue_responses_for_subnets(
         f"subnet{version}": subnets,
         "shared-networks": networks,
         "hooks-libraries": _host_cmds_hooks(),
+        **(global_settings or {}),
     }
     if global_options:
         configuration["option-data"] = list(global_options)
