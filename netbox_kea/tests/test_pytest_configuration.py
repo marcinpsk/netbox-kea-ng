@@ -202,6 +202,22 @@ def test_codecov_waits_for_every_coverage_upload_in_ci():
     assert codecov.get("comment", {}).get("after_n_builds") == uploads
 
 
+def test_codecov_uploads_only_the_report_that_reads_the_coverage_configuration():
+    """Each upload sends only the pytest-cov XML, because a report the uploader makes itself ignores the exclusions."""
+    jobs = yaml.safe_load((REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text())["jobs"]
+    uploads = [
+        step.get("with", {})
+        for job in jobs.values()
+        for step in job.get("steps", [])
+        if "codecov/codecov-action" in str(step.get("uses", ""))
+    ]
+    assert uploads, "ci.yml uploads no coverage; this guard would pass without reading anything."
+    for upload in uploads:
+        assert upload.get("files") == "./coverage.xml"
+        assert upload.get("plugins") == "noop", "the uploader runs `coverage xml` again, without pyproject.toml"
+        assert upload.get("disable_search") is True, "the uploader adds every coverage file it finds"
+
+
 def test_the_ci_default_guard_reads_the_value_each_claim_names():
     """Fail a claim only for the value it actually names.
 
