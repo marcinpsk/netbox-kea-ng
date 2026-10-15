@@ -54,7 +54,7 @@ from ..utilities import (
 from ._base import ConditionalLoginRequiredMixin, _client_settings_error, _KeaChangeMixin
 from .leases import _LEASES_TAB, _add_lease_journal, lease_sync_gates
 from .reservation_mutations import _confirmed_side_effects, _identity_from_request, _reservation_target_scope
-from .reservations import _RESERVATIONS_TAB, _live_capabilities
+from .reservations import _RESERVATIONS_TAB, _live_capabilities, reservation_badge
 from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
@@ -182,11 +182,12 @@ class _BaseReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin,
                 catalogue,
             ):
                 from ..ipam_reconciliation import claim
-                from ..sync import reservation_synchronization_state
 
                 result = claim(server, self.dhcp_version, [reservation], force=True, catalogue=catalogue)
-                state = reservation_synchronization_state(
-                    reservation, synchronized_addresses=result.synchronized_addresses
+                # The badge reads the links as the page does, so a reload shows the same state.
+                addresses = [str(address) for address in reservation.addresses]
+                badge = reservation_badge(
+                    reservation, address_ownership(server, self.dhcp_version, RESERVATION, addresses, request.user)
                 )
         except event_scope.EventDispatchError:
             raise
@@ -203,11 +204,7 @@ class _BaseReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin,
             "netbox_kea/inc/claim_results.html",
             {
                 "claim_result": result,
-                "record": {
-                    "sync_state": state,
-                    "netbox_ip_url": result.primary.get_absolute_url() if result.primary else "",
-                    "sync_url": None,
-                },
+                "record": {**badge, "sync_url": None},
             },
         )
 
@@ -306,6 +303,8 @@ class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
         try:
             address = ipaddress.ip_address(raw_ip)
         except ValueError:
+            return HttpResponse("")
+        if getattr(address, "scope_id", None):
             return HttpResponse("")
         family = cast("Family", address.version)
         # The read is limited to the IP addresses the user may view, so the advisory leaks no field of another one.

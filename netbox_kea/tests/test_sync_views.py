@@ -1216,6 +1216,12 @@ class TestReservationCheckNetboxIPView(_SyncViewBase):
         self.assertIn("not", body.lower())
         self.assertIn("Router loopback", body)
 
+    def test_empty_for_a_scoped_ipv6_address(self):
+        NbIP.objects.create(address="fe80::1/64", status="active", description="Router loopback")
+        response = self.client.get(self._url(), {"ip": "fe80::1%eth0"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content.decode().strip(), "")
+
     def test_matches_noncanonical_ipv6_query(self):
         """A non-canonical IPv6 query (expanded/zero-padded) still matches the
         canonical stored record — the view normalizes the input before the lookup.

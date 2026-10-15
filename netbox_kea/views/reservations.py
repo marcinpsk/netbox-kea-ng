@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
@@ -539,8 +539,6 @@ def _enrich_reservations_with_badges(
     A row that can take a Sync gets ``sync_url`` when *sync* allows it, else ``sync_refusal`` with the reason.
     A Lease badge read before *read_since*, the read time of the Reservation table, is read again.
     """
-    from ..sync import reservation_synchronization_state
-
     _enrich_reservations_with_lease_status(server, reservations, version, read_since=read_since)
 
     addresses = [str(address) for row in reservations for address in row["reservation"].addresses]
@@ -553,21 +551,10 @@ def _enrich_reservations_with_badges(
 
     for row in reservations:
         reservation: Reservation = row["reservation"]
-        found = {str(address): ownership[str(address)] for address in reservation.addresses} if ownership else {}
-        synchronized = {address: item.ip for address, item in found.items() if item.state == "synchronized"}
-        if not isinstance(reservation.scope, InSubnetReservationScope) or not reservation.addresses:
-            state = reservation_synchronization_state(reservation, frozenset())
-        elif ownership is None:
-            state = ReservationSynchronizationState.unknown(len(reservation.addresses), _IPAM_UNREADABLE)
-        elif any(item.state == "hidden" for item in found.values()):
-            state = ReservationSynchronizationState.unknown(len(reservation.addresses), _IPAM_HIDDEN)
-        else:
-            state = reservation_synchronization_state(reservation, frozenset(synchronized))
-        row["sync_state"] = state
-        row["netbox_ip_url"] = next((ip.get_absolute_url() for ip in synchronized.values() if ip is not None), None)
+        row.update(reservation_badge(reservation, ownership))
+        state = row["sync_state"]
         row["sync_url"] = None
         row["sync_refusal"] = ""
-        row["sync_title"] = _sync_title(found.values())
         if (
             isinstance(reservation.scope, InSubnetReservationScope)
             and reservation.addresses
@@ -587,6 +574,30 @@ def _enrich_reservations_with_badges(
                 row["sync_url"] = f"{base}?{query}"
             else:
                 row["sync_refusal"] = sync.reason
+
+
+def reservation_badge(reservation: Reservation, ownership: Mapping[str, AddressOwnership] | None) -> dict[str, Any]:
+    """Return the ``sync_state``, ``netbox_ip_url`` and ``sync_title`` of a Reservation row.
+
+    *ownership* is the read of :func:`address_ownership` with the Reservation source; ``None`` means that it failed.
+    """
+    from ..sync import reservation_synchronization_state
+
+    found = {str(address): ownership[str(address)] for address in reservation.addresses} if ownership else {}
+    synchronized = {address: item.ip for address, item in found.items() if item.state == "synchronized"}
+    if not isinstance(reservation.scope, InSubnetReservationScope) or not reservation.addresses:
+        state = reservation_synchronization_state(reservation, frozenset())
+    elif ownership is None:
+        state = ReservationSynchronizationState.unknown(len(reservation.addresses), _IPAM_UNREADABLE)
+    elif any(item.state == "hidden" for item in found.values()):
+        state = ReservationSynchronizationState.unknown(len(reservation.addresses), _IPAM_HIDDEN)
+    else:
+        state = reservation_synchronization_state(reservation, frozenset(synchronized))
+    return {
+        "sync_state": state,
+        "netbox_ip_url": next((ip.get_absolute_url() for ip in synchronized.values() if ip is not None), None),
+        "sync_title": _sync_title(found.values()),
+    }
 
 
 def _sync_title(ownership: Iterable[AddressOwnership]) -> str:

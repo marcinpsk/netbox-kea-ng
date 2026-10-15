@@ -676,11 +676,6 @@ class ClaimResult:
         """Return the first successfully synchronized row for the aggregate badge."""
         return next((result.ip for result in self.addresses.values() if result.synchronized), None)
 
-    @property
-    def synchronized_addresses(self) -> frozenset[str]:
-        """Return only the addresses whose reports were applied."""
-        return frozenset(address for address, result in self.addresses.items() if result.synchronized)
-
 
 # The Synchronization State terms of CONTEXT.md; "hidden" is the Unknown of an IP address the user may not view.
 OwnershipState = Literal["synchronized", "not-synchronized", "unmarked", "not-in-netbox", "hidden"]
@@ -712,7 +707,10 @@ def address_ownership(
     rows that the user may view. Else the first duplicate row by pk decides, as in a claim. Each key is the canonical
     text of an address.
     """
-    hosts = {str(ipaddress.ip_address(address)) for address in addresses}
+    parsed = [ipaddress.ip_address(address) for address in addresses]
+    if any(getattr(address, "scope_id", None) for address in parsed):
+        raise ValueError("A NetBox IP address has no IPv6 scope zone.")
+    hosts = {str(address) for address in parsed}
     if not hosts:
         return {}
     own_link = IPAMOwnershipLink.objects.filter(ip_address=OuterRef("pk"), server=server, family=family, source=source)

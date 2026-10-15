@@ -87,6 +87,22 @@ class TestReservationOwnershipBadge(_ViewTestBase):
         self.assertContains(response, "Synchronized 1/1")
         self.assertContains(response, f'href="{ip.get_absolute_url()}"')
 
+    def test_the_row_sync_reply_shows_the_state_that_the_page_shows_after_an_owner_disagreement(self):
+        other = _make_db_server(name="other-kea")
+        ip = IPAddress.objects.create(address="10.0.0.5/24", status="reserved", description="[kea-sync: reservation]")
+        ownership_link(ip, other)
+        sync = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
+        # The Subnet gives prefix length 25, and the live link of the other Server stored 24.
+        with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/25"), "reservation-get": _res_get(_host(5))}):
+            reply = self.client.post(f"{sync}?identifier_type=hw-address&identifier=aa%3Abb%3Acc%3A00%3A00%3A05")
+        self.assertContains(reply, "Owner disagreement")
+
+        with stub_kea({**_responses(_host(5)), **_catalogue_responses(4, 1, "10.0.0.0/25")}):
+            page = self.client.get(self._urls()["per-server"])
+        state = self._row(page)["sync_state"]
+        self.assertEqual(reply.context["record"]["sync_state"], state)
+        self.assertContains(reply, f"{state.label} {state.synchronized}/{state.total}")
+
     def test_an_adopted_or_stale_marked_link_counts_as_synchronized(self):
         for name, extra in (
             ("adopted", {"adopted": True}),
@@ -203,3 +219,7 @@ class TestAddressOwnershipRead(_ViewTestBase):
         for state, value in (("synchronized", None), ("unmarked", None), ("hidden", ip), ("not-in-netbox", ip)):
             with self.subTest(state=state), self.assertRaises(ValueError):
                 AddressOwnership(state, value)
+
+    def test_a_scoped_ipv6_address_is_refused(self):
+        with self.assertRaises(ValueError):
+            address_ownership(self.server, 6, "reservation", ["fe80::1%eth0"], self.user)
