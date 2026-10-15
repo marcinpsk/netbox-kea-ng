@@ -184,11 +184,6 @@ class _BaseReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin,
                 from ..ipam_reconciliation import claim
 
                 result = claim(server, self.dhcp_version, [reservation], force=True, catalogue=catalogue)
-                # The badge reads the links as the page does, so a reload shows the same state.
-                addresses = [str(address) for address in reservation.addresses]
-                badge = reservation_badge(
-                    reservation, address_ownership(server, self.dhcp_version, RESERVATION, addresses, request.user)
-                )
         except event_scope.EventDispatchError:
             raise
         except Http404:
@@ -199,12 +194,19 @@ class _BaseReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin,
         except (requests.RequestException, DatabaseError, RuntimeError, ValidationError, ValueError):
             logger.exception("Could not synchronize a DHCPv%s Reservation", self.dhcp_version)
             return _row_error(request, "Reservation synchronization failed. See server logs.")
+        # The badge reads the links as the page does, so a reload shows the same state.
+        addresses = [str(address) for address in reservation.addresses]
+        try:
+            ownership = address_ownership(server, self.dhcp_version, RESERVATION, addresses, request.user)
+        except DatabaseError:
+            logger.exception("Could not read NetBox IPAM state after a DHCPv%s Reservation Sync", self.dhcp_version)
+            ownership = None
         return render(
             request,
             "netbox_kea/inc/claim_results.html",
             {
                 "claim_result": result,
-                "record": {**badge, "sync_url": None},
+                "record": {**reservation_badge(reservation, ownership), "sync_url": None},
             },
         )
 

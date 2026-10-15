@@ -223,3 +223,38 @@ class TestAddressOwnershipRead(_ViewTestBase):
     def test_a_scoped_ipv6_address_is_refused(self):
         with self.assertRaises(ValueError):
             address_ownership(self.server, 6, "reservation", ["fe80::1%eth0"], self.user)
+
+
+class TestOwnershipReadFailures(_ViewTestBase):
+    def test_a_failed_read_after_a_row_sync_keeps_the_claim_and_shows_unknown(self):
+        from unittest.mock import patch
+
+        from django.db import DatabaseError
+
+        sync = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
+        with (
+            stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/24"), "reservation-get": _res_get(_host(5))}),
+            patch(
+                "netbox_kea.views.sync_views.address_ownership", autospec=True, side_effect=DatabaseError("read failed")
+            ),
+            self.assertLogs("netbox_kea.views.sync_views", level="ERROR"),
+        ):
+            reply = self.client.post(f"{sync}?identifier_type=hw-address&identifier=aa%3Abb%3Acc%3A00%3A00%3A05")
+
+        self.assertNotContains(reply, "synchronization failed")
+        self.assertEqual(reply.context["record"]["sync_state"].code, "unknown")
+        ip = IPAddress.objects.get(address__net_host="10.0.0.5")
+        self.assertContains(reply, ip.get_absolute_url())
+        self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address=ip, server=self.server).exists())
+
+    def test_a_kea_reservation_with_a_scoped_address_is_excluded_and_the_page_renders(self):
+        host = {"subnet-id": 1, "duid": "00:01:aa:bb", "ip-addresses": ["2001:db8::5%eth0"]}
+        responses = {
+            **_catalogue_responses(6, 1, "2001:db8::/64"),
+            "reservation-get-page": _res_page([host]),
+            "lease6-get-all": _NO_LEASES,
+        }
+        with stub_kea(responses):
+            response = self.client.get(reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(response.context["table"].rows), [])

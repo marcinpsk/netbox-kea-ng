@@ -1152,7 +1152,8 @@ def _addresses(raw: dict[str, Any], family: Family) -> tuple[IPAddressValue, ...
             raise MalformedReservation(
                 "invalid-address", "The Reservation contains an invalid address.", field
             ) from exc
-        if address.version != family or address in parsed:
+        # A scoped IPv6 address (fe80::1%eth0) is no allocation, and NetBox IPAM cannot hold one.
+        if address.version != family or address in parsed or getattr(address, "scope_id", None):
             raise MalformedReservation(
                 "invalid-address", "The Reservation contains an invalid or duplicate address.", field
             )
