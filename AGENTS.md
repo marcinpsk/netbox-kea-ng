@@ -406,8 +406,9 @@ sends nothing unless its `MutationScope` returns a Verified Subnet with both.
 disable. An operation returns a `RuntimeChangeOutcome` (`applied`/`unknown` and diagnostics) or raises
 `ChangeRejected`. Both modules classify through `change_outcome` (`before_change`, `mutate`, `never_sent`): a failed
 read before the write or a connect-phase failure is `not-sent`; a lost or malformed reply, a Control Agent forward
-failure or result 5 is `unknown`. A failure result on a Lease write or a wipe is `unknown`, and on `dhcp-enable` or
-`dhcp-disable` a rejection; no operation reads Kea after the send. A fresh read that does not match the shown Lease,
+failure or result 5 is `unknown`. Result 2 is a rejection for every command. Any other failure result on a Lease
+write or a wipe is `unknown`, and on `dhcp-enable` or `dhcp-disable` a rejection; no operation reads Kea after the
+send. A fresh read that does not match the shown Lease,
 a Lease that is gone before the send, result 3 on `lease{v}-del` and result 4 on `lease{v}-update` are
 `target-changed`. A view runs one change through `_run_change` and a loop of changes (multi-Lease delete, Lease CSV
 import) through `_run_change_loop`, which stops at the first `unknown` row. The journal entry, the signals and the

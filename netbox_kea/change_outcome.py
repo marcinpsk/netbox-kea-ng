@@ -89,7 +89,8 @@ def mutate(
 ) -> tuple[Application, tuple[str, ...]]:
     """Send one command that can change Kea, and classify what Kea did with it.
 
-    A lost reply, a Control Agent forward failure and result 5 are unknown whatever *on_failure* says.
+    A lost reply, a Control Agent forward failure and result 5 are unknown, and result 2 is a rejection, whatever
+    *on_failure* says.
     """
     try:
         send()
@@ -98,7 +99,8 @@ def mutate(
         diagnostic = kea_error_message(exc)
         if exc.response.get("result") == _RESULT_FATAL or client.forwarding_failed(exc, family):
             return "unknown", (diagnostic,)
-        if on_failure == "reject":
+        # Result 2: no hook supports the command, so Kea ran no handler for it (ADR 0011).
+        if on_failure == "reject" or exc.unsupported_command:
             raise ChangeRejected("kea-rejected", (diagnostic,)) from exc
         if isinstance(on_failure, str):
             return "unknown", (diagnostic,)

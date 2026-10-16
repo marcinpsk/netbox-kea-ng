@@ -34,6 +34,10 @@ _SHOWN = shown_lease(typed_lease(_LEASE))
 _CREATION = DHCPv4LeaseRequest(address=ipaddress.IPv4Address("192.0.2.50"), hw_address="aa:bb:cc:00:00:50")
 _RENAME = LeaseEdit(hostname="renamed.example.org")
 _LOST = "Kea's reply to the change was lost or unreadable."
+_HOOK_NOT_LOADED = (
+    "Kea does not support this command. "
+    "The required hook library may not be loaded, for example host_cmds, lease_cmds or subnet_cmds."
+)
 
 
 def _forward_failure(family: int) -> dict[str, Any]:
@@ -176,6 +180,16 @@ class ApplicationTests(TestCase):
                 outcome, commands = self._result(operation, failure)
                 self.assertEqual(outcome.application, "unknown")
                 self.assertEqual(outcome.diagnostics, ("Kea replied: Lease for address 192.0.2.50 already exists.",))
+                self.assertEqual(commands, [*operation.before, operation.write])
+
+    def test_result_2_is_a_rejection_for_every_operation(self):
+        """Kea runs no handler for a command that its hooks do not support (ADR 0011)."""
+        for operation in _OPERATIONS:
+            with self.subTest(operation.name):
+                responses = operation.responses({"result": 2, "text": f"'{operation.write}' command not supported."})
+                rejection, commands = self._rejection(operation, responses)
+                self.assertEqual(rejection.reason, "kea-rejected")
+                self.assertEqual(rejection.diagnostics, (_HOOK_NOT_LOADED,))
                 self.assertEqual(commands, [*operation.before, operation.write])
 
     def test_result_128_on_a_lease_write_shows_the_fixed_guidance(self):
