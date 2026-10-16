@@ -57,3 +57,10 @@ def ok_view_sends_the_signal_of_an_added_lease(request, server):
 def ok_view_reads_the_daemon_status(client):
     # ok: kea-runtime-write-outside-runtime-change
     return client.daemon_status(4)
+
+
+# A data migration is not exempt. `opengrep test` does not apply path filters, so a directory scan proves the path.
+def bad_migration_wipes_the_leases(apps, schema_editor):
+    server = apps.get_model("netbox_kea", "Server").objects.first()
+    # ruleid: kea-runtime-write-outside-runtime-change
+    server.get_client(version=4).lease_wipe(4, 1)
