@@ -38,6 +38,7 @@ A Reservation add, edit or delete is a Configuration Change.
   a target that is gone, gives a rejection with the reason `target-changed`.
 - Result 3 on `reservation-del` means that no host data source had the Reservation. It gives a rejection with
   the reason `target-changed`.
+- Result 2 (the command is not supported) is a rejection, as in ADR 0011.
 - Any other failure result gives `unknown`, with no read after it. `host_cmds` writes each selected host data
   source in turn and does not roll back the earlier sources when a later one fails, and a SQL source can lose
   the commit acknowledgement. A read cannot show which sources changed. The message shows Kea's text, as in

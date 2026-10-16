@@ -51,8 +51,10 @@ live. It raises `ChangeRejected` when the change is not live, as far as NetBox c
 - The classifier of ADR 0005 (`_before_change`, `_mutate`, `_never_sent`) moves from `config_write` into one
   shared module. `config_write` and `runtime_change` both use it.
 - A failed read before the write, such as the fresh read of the shown Lease, means that the change was not sent.
-- A connect-phase failure means that the change was not sent. A lost or malformed reply, a Control Agent forward
-  failure, or result 5 gives `unknown`.
+- A connect-phase failure means that the change was not sent. An HTTP 401 or 403 answer, a TLS handshake failure
+  and an invalid URL also mean that the change was not sent, because Kea did not run the command. A lost or
+  malformed reply, a Control Agent forward failure, or result 5 gives `unknown`.
+- Result 2 is a rejection for every command: the command is not supported, so Kea ran no handler for it.
 - Any other failure result on `dhcp-enable` or `dhcp-disable` is a rejection, with no read after it. These
   commands change only the state in Kea memory, so a failure result means that nothing changed. A command added
   later that can fail after it applies gives `unknown` on a failure result.
@@ -60,8 +62,8 @@ live. It raises `ChangeRejected` when the change is not live, as far as NetBox c
   lose the commit acknowledgement, and it writes the DHCPv6 extended-info rows after the Lease row. Kea then
   returns result 1 after the Lease changed. A read after the failure cannot prove that nothing changed, because
   the DHCP service, an HA peer or another API client can write the same Lease in the meantime.
-- Any failure result on `lease4-wipe` or `lease6-wipe` gives `unknown`. The memfile backend deletes the Leases
-  of the Subnet one at a time, so a failed lease-file write returns result 1 after earlier Leases are gone.
+- Any other failure result on `lease4-wipe` or `lease6-wipe` gives `unknown`. The memfile backend deletes the
+  Leases of the Subnet one at a time, so a failed lease-file write returns result 1 after earlier Leases are gone.
   No read can show which Leases this request deleted, because Kea allocates Leases at the same time.
 - These give a rejection with the reason `target-changed`: a fresh read that does not match the shown Lease, a
   Lease that is gone before the send, result 3 on `lease-del` (the Lease is gone), and result 4 on `lease-update`
