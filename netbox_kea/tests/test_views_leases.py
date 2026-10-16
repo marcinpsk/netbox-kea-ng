@@ -814,6 +814,24 @@ class TestLeaseDeleteFullFlow(_ViewTestBase):
             [f"Lease 10.0.0.5: {UNCONFIRMED_RUNTIME} Kea replied: lease not found"],
         )
 
+    def test_a_client_that_cannot_be_built_stops_the_delete_with_one_error(self):
+        """Every row would fail the same way, so the loop stops at the first one and lists the rest as not sent."""
+        save_key_without_certificate(self.server)
+        tokens = [shown_token(lease_record(address, subnet_id=1)) for address in ("10.0.0.1", "10.0.0.2", "10.0.0.3")]
+        with _lease_stub({}) as kea:
+            response = self.client.post(self._url(), {"pk": tokens, "_confirm": "1"})
+        self.assertEqual(kea.commands(), [])
+        self.assertEqual(
+            [(message.level, str(message)) for message in get_messages(response.wsgi_request)],
+            [
+                (django_messages.ERROR, f"Lease 10.0.0.1: {INVALID_SERVER_SETTINGS}"),
+                (
+                    django_messages.WARNING,
+                    "NetBox stopped at lease 10.0.0.1 and did not send the delete of 2 lease(s): 10.0.0.2, 10.0.0.3.",
+                ),
+            ],
+        )
+
     def test_post_confirmed_with_a_client_that_cannot_be_built_is_a_settings_error(self):
         """A key without a certificate is a Server setting error, not a connection failure; nothing is deleted."""
         save_key_without_certificate(self.server)
@@ -3035,20 +3053,26 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         self.assertNotContains(response, "internal detail")
         self.assertContains(response, "CSV parsing failed. Check the file format and column headers.")
 
-    def test_a_client_that_cannot_be_built_rejects_each_row(self):
-        """A key without a certificate makes get_client() raise ValueError, so no row is sent."""
+    def test_a_client_that_cannot_be_built_stops_the_import_at_the_first_row(self):
+        """A key without a certificate fails every row the same way, so the import reports it once."""
         import io
 
         save_key_without_certificate(self.server)
-        csv_file = io.BytesIO(b"ip-address,hw-address\n10.0.0.1,aa:bb:cc:00:00:01")
+        csv_file = io.BytesIO(
+            b"ip-address,hw-address\n10.0.0.1,aa:bb:cc:00:00:01\n10.0.0.2,aa:bb:cc:00:00:02\n10.0.0.3,aa:bb:cc:00:00:03"
+        )
         csv_file.name = "leases.csv"
         with _lease_stub({}) as kea:
             response = self.client.post(self._url(), {"csv_file": csv_file})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
         self.assertEqual(
-            response.context["result"]["problem_rows"],
-            [{"line": 2, "address": "10.0.0.1", "status": "Not applied", "message": INVALID_SERVER_SETTINGS}],
+            [(row["line"], row["status"], row["message"]) for row in response.context["result"]["problem_rows"]],
+            [
+                (2, "Not applied", INVALID_SERVER_SETTINGS),
+                (3, "Not sent", "NetBox stopped at an earlier row and did not send this row."),
+                (4, "Not sent", "NetBox stopped at an earlier row and did not send this row."),
+            ],
         )
 
     def test_a_malformed_reply_body_is_an_unconfirmed_row(self):
@@ -3274,7 +3298,7 @@ class TestLeasePartialDelete(_ViewTestBase):
                 ),
                 (
                     django_messages.WARNING,
-                    "NetBox stopped at the unconfirmed lease and did not send the delete of 1 lease(s): 10.0.0.3.",
+                    "NetBox stopped at lease 10.0.0.2 and did not send the delete of 1 lease(s): 10.0.0.3.",
                 ),
             ],
         )
@@ -3288,7 +3312,7 @@ class TestLeasePartialDelete(_ViewTestBase):
             [text for _level, text in shown],
             [
                 f"Lease 10.0.0.1: {UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable.",
-                "NetBox stopped at the unconfirmed lease and did not send the delete of 2 lease(s): 10.0.0.2, 10.0.0.3.",
+                "NetBox stopped at lease 10.0.0.1 and did not send the delete of 2 lease(s): 10.0.0.2, 10.0.0.3.",
             ],
         )
 
