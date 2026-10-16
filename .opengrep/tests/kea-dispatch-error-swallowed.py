@@ -147,6 +147,16 @@ def runtime_error_around_a_reconciliation_reraised(server, phases):
         print(type(exc))
 
 
+def sync_after_an_applied_lease_add(request, server, leases):
+    try:
+        # ok: kea-dispatch-error-swallowed
+        claim(server, 4, leases, force=False)
+    except event_scope.EventDispatchError:
+        messages.error(request, "Lease created, but NetBox could not dispatch the events of the sync.")
+    except (RuntimeError, ValueError):
+        messages.error(request, "Lease created but NetBox IPAM sync failed.")
+
+
 def claim(*args, **kwargs):
     return args, kwargs
 

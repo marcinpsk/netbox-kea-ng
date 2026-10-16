@@ -237,7 +237,13 @@ def _run_lease_sync_to_netbox(
             nb_action = outcome if outcome in {"created", "updated"} else "already up to date"
             messages.success(request, f"IPAddress {address} {nb_action} in NetBox.")
     except event_scope.EventDispatchError:
-        raise
+        # The sync committed after Kea applied the Lease, so the failed dispatch must not end the request.
+        logger.exception("The events of the NetBox IPAM sync of lease %s could not be dispatched", address)
+        messages.error(
+            request,
+            "Lease created, and NetBox IPAM sync saved it, but NetBox could not dispatch the events of the sync;"
+            " see server logs.",
+        )
     except (CatalogueUnavailable, RuntimeError, OSError, ValueError, DatabaseError, ValidationError):
         logger.exception("Failed to sync lease %s to NetBox", address)
         messages.error(request, "Lease created but NetBox IPAM sync failed; see server logs.")

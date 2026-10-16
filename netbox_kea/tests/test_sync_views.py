@@ -27,8 +27,6 @@ via ``kea_stub.stub_kea``:
 
 from __future__ import annotations
 
-import sys
-
 import requests
 from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
@@ -80,6 +78,12 @@ def _reservation_get(hostname, address, *, version=4, **extra):
         "result": 0,
         "arguments": {**address_fields, "hostname": hostname, "subnet-id": 1, **extra},
     }
+
+
+def fail_ip_address_dispatch(events: list) -> None:
+    """Stand in for an events pipeline that fails for the events of an IP address and accepts every other event."""
+    if any(event["object_type"].model == "ipaddress" for event in events):
+        raise RuntimeError("The events pipeline is down")
 
 
 def _make_server(**kwargs) -> Server:
@@ -1361,10 +1365,11 @@ class TestLeaseSyncEventDispatch(TransactionTestCase):
             self.client.post(f"{url}?identifier_type=hw-address&identifier=aa%3Abb%3Acc%3A00%3A00%3A02")
         self.assertTrue(NbIP.objects.filter(address__net_host="10.0.0.50").exists())
 
-    def test_a_committed_claim_after_a_lease_creation_whose_events_fail_to_dispatch_is_not_reported_as_failed(self):
-        from django.core.signals import got_request_exception
+    def test_an_applied_lease_add_whose_ipam_sync_events_fail_reports_the_lease_and_a_separate_error(self):
+        """Kea applied the Lease, so a failed dispatch of the sync events is a side-effect error, not an HTTP 500."""
+        from django.contrib.messages import get_messages
 
-        from netbox_kea.event_scope import _NESTED_TRACKING, EventDispatchError
+        from netbox_kea.event_scope import _NESTED_TRACKING
 
         from .kea_stub import LeaseDaemon
 
@@ -1372,9 +1377,10 @@ class TestLeaseSyncEventDispatch(TransactionTestCase):
             self.skipTest("Before NetBox 4.6.9 a claim row is a plain transaction and dispatches with the request")
         self.client.force_login(User.objects.create_superuser(username="dispatch-add-user", password="dispatch-pass"))
         server = _make_server()
+        daemon = LeaseDaemon(4)
         responses = {
             **_catalogue_responses_for_subnets(4, [{"id": 10, "subnet": "192.0.2.0/24"}]),
-            **LeaseDaemon(4).responses(),
+            **daemon.responses(),
         }
         data = {
             "ip_address": "192.0.2.50",
@@ -1382,22 +1388,27 @@ class TestLeaseSyncEventDispatch(TransactionTestCase):
             "subnet_id": "10",
             "sync_to_netbox": "on",
         }
-        raised = []
+        with (
+            override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_sync_views.fail_ip_address_dispatch"]),
+            stub_kea(responses),
+            self.assertLogs("netbox_kea.views.leases", "ERROR") as logs,
+        ):
+            response = self.client.post(reverse("plugins:netbox_kea:server_lease4_add", args=[server.pk]), data)
 
-        def record(sender, request, **kwargs):
-            raised.append(sys.exc_info()[1])
-
-        # Django turns the view error into a 500 inside NetBox's request scope, which then flushes the journal event
-        # and fails again; the test client re-raises only that last error, so the view error is read from the signal.
-        got_request_exception.connect(record)
-        try:
-            with (
-                override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_event_scope.fail_dispatch"]),
-                stub_kea(responses),
-                self.assertRaises(RuntimeError),
-            ):
-                self.client.post(reverse("plugins:netbox_kea:server_lease4_add", args=[server.pk]), data)
-        finally:
-            got_request_exception.disconnect(record)
-        self.assertTrue(any(isinstance(error, EventDispatchError) for error in raised), raised)
+        self.assertEqual(response.status_code, 302)
+        self.assertIsNotNone(daemon.lease("192.0.2.50"))
         self.assertTrue(NbIP.objects.filter(address__net_host="192.0.2.50").exists())
+        self.assertEqual(
+            [(message.level, str(message)) for message in get_messages(response.wsgi_request)],
+            [
+                (django_messages.SUCCESS, "Lease for 192.0.2.50 created."),
+                (
+                    django_messages.ERROR,
+                    (
+                        "Lease created, and NetBox IPAM sync saved it, but NetBox could not dispatch the events of"
+                        " the sync; see server logs."
+                    ),
+                ),
+            ],
+        )
+        self.assertIn("EventDispatchError", "\n".join(logs.output))
