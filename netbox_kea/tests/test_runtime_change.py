@@ -8,8 +8,10 @@ may read Kea after the send to classify the change.
 
 import ipaddress
 import json
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -465,3 +467,59 @@ class SentArgumentsTests(TestCase):
             kea.bodies("dhcp-disable")[0],
             {"command": "dhcp-disable", "service": ["dhcp6"], "arguments": {"max-period": 300}},
         )
+
+
+class _RedirectingKea(BaseHTTPRequestHandler):
+    """A web server that answers a command with HTTP 303 and would answer the redirect target with a success."""
+
+    paths: list[str]
+
+    def do_POST(self) -> None:
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self.paths.append(f"POST {self.path}")
+        self.send_response(303)
+        self.send_header("Location", "/elsewhere")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_GET(self) -> None:
+        self.paths.append(f"GET {self.path}")
+        body = json.dumps([{"result": 0, "text": "done"}]).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+        """Keep the test output clean."""
+
+
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
+class RedirectTests(TestCase):
+    """NetBox does not follow a redirect for a command: the target cannot say what the first request did (ADR 0011)."""
+
+    def test_a_redirect_answer_is_unknown_and_sends_no_second_request(self):
+        handler = type("Handler", (_RedirectingKea,), {"paths": []})
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        kea = _make_db_server(ca_url=f"http://127.0.0.1:{server.server_address[1]}/")
+
+        outcome = runtime_change.enable_dhcp(kea, 4)
+
+        self.assertEqual((outcome.application, outcome.diagnostics), ("unknown", (_LOST,)))
+        self.assertEqual(handler.paths, ["POST /"])
+
+    def test_a_redirect_answer_through_the_stub_is_unknown(self):
+        server = _make_db_server()
+        for operation in _OPERATIONS:
+            with self.subTest(operation.name):
+                reply = _http_response([{"result": 0, "text": "done"}], status=303)
+                with stub_kea(operation.responses(reply)) as kea:
+                    outcome = operation.run(server)
+                self.assertEqual((outcome.application, outcome.diagnostics), ("unknown", (_LOST,)))
+                self.assertEqual(kea.commands(), [*operation.before, operation.write])

@@ -1018,7 +1018,7 @@ class KeaClient:
             ValueError: If *target* is not 4, 6 or None.
             BranchActive: If *command* is a write and the write guard refuses it, for example in a branch.
             KeaTLSFileError: If requests cannot find a TLS file of the client. It is a ``RequestException``.
-            requests.HTTPError: If the HTTP response status is not 2xx.
+            requests.HTTPError: If the HTTP response status is a redirect or not 2xx.
             MalformedReply: If the reply body is not JSON or not a list, is empty, or has a malformed entry.
             KeaException: If any response result code is not in *check*.
 
@@ -1040,7 +1040,10 @@ class KeaClient:
         if command.is_write:
             self._notify_write(command, target, "before", configuration=False)
         try:
-            resp = self._session.post(self.url, json=body, timeout=self.timeout, verify=self.verify, cert=self.cert)
+            # A redirect target cannot tell what the first request did, so NetBox never follows one (ADR 0011).
+            resp = self._session.post(
+                self.url, json=body, timeout=self.timeout, verify=self.verify, cert=self.cert, allow_redirects=False
+            )
         except requests.RequestException:
             raise
         except OSError as exc:
@@ -1049,6 +1052,8 @@ class KeaClient:
             # Kea can apply a write whose reply is lost, so a display read during the send must not stay cached.
             if command.is_write:
                 self._notify_write(command, target, "after", configuration=False)
+        if 300 <= resp.status_code < 400:
+            raise requests.HTTPError(f"Kea answered with a redirect (HTTP {resp.status_code}).", response=resp)
         resp.raise_for_status()
         try:
             resp_json = resp.json()
