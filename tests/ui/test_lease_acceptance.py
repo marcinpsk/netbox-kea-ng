@@ -327,8 +327,8 @@ def test_an_edit_refuses_a_lease_whose_binding_changed_in_kea(
     page.get_by_role("button", name="Save").click()
 
     expect(page.locator(".toast-body")).to_have_text(
-        f"Lease {ADDRESS4} was not changed: its client binding changed in Kea after the form was shown."
-        " Reload the form and try again."
+        f"Lease {ADDRESS4}: This request changed nothing. Its client binding changed in Kea after the form was"
+        " shown. Reload the form and try again."
     )
     stored = kea.command("lease4-get", 4, arguments={"ip-address": ADDRESS4})[0]["arguments"]
     assert stored["hostname"] == "stale-edit"
@@ -429,9 +429,9 @@ def test_a_delete_refuses_a_lease_whose_binding_changed_in_kea(
 
     confirm.click()
 
-    expect(page.locator(".toast-body", has_text=f"Lease {ADDRESS4} was not deleted")).to_have_text(
-        f"Lease {ADDRESS4} was not deleted: its client binding changed in Kea after the list was shown."
-        " Reload the list and try again."
+    expect(page.locator(".toast-body", has_text=f"Lease {ADDRESS4}: This request changed nothing")).to_have_text(
+        f"Lease {ADDRESS4}: This request changed nothing. Its client binding changed in Kea after the list was"
+        " shown. Reload the list and try again."
     )
     stored = kea.command("lease4-get", 4, arguments={"ip-address": ADDRESS4})[0]["arguments"]
     assert stored["hw-address"] == "08:08:08:08:08:09"

@@ -12,16 +12,18 @@ External consumers can connect to these signals to react to DHCP changes::
 
     lease_added.connect(on_lease_added)
 
-All signals are fired *after* the Kea API call succeeds, so receivers can
-safely assume the change is in effect. They are *not* fired when the call fails.
+All signals are fired *after* Kea applied the change, so receivers can
+safely assume the change is in effect. They are *not* fired when Kea rejected the change or did not
+confirm it (ADR 0011): an unconfirmed Lease change can be live in Kea with no signal.
 They *are* fired when the change was applied but Kea could not write it to disk
-(``config-write`` failed) — it is live now and may not survive a restart.
+(``config-write`` failed), because it is live now and may not survive a restart.
+A receiver that raises does not undo the change: the page reports the change and a separate error.
 
 Signals
 -------
 lease_added
     Fired when Kea confirms a lease that the plugin UI added, once for each created row of a
-    lease CSV import. kwargs: ``server``, ``creation`` (the ``LeaseRequest`` that Kea confirmed),
+    lease CSV import. A CSV import stops at the first row that Kea did not confirm. kwargs: ``server``, ``creation`` (the ``LeaseRequest`` that Kea confirmed),
     ``lease`` (the ``Lease`` that a fresh read observed after the creation, or ``None``
     when that read failed, found no lease, found a malformed one, or found one whose client
     binding, Subnet or hostname differs from the request; a CSV import reads nothing back and

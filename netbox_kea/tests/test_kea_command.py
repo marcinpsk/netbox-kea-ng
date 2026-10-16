@@ -285,7 +285,7 @@ def test_the_runtime_package_imports_no_other_http_client():
         if any(name == module or name.startswith(f"{module}.") for module in _OTHER_HTTP_MODULES)
     ]
 
-    assert imported == ["config_write.py: urllib3.exceptions"]
+    assert imported == ["change_outcome.py: urllib3.exceptions"]
 
 
 def _kea_client_builds(modules: list[tuple[str, ast.Module]]) -> dict[str, str]:

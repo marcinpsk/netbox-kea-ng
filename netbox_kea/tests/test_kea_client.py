@@ -41,10 +41,8 @@ from netbox_kea.leases import (
     AllocationKind,
     DHCPv4LeaseRequest,
     DHCPv6LeaseRequest,
+    FreshLease,
     LeaseAbsent,
-    LeaseChanged,
-    LeaseChangeRefused,
-    LeaseConflict,
     LeaseEdit,
     LeaseFound,
     LeaseIdentity,
@@ -52,7 +50,6 @@ from netbox_kea.leases import (
     LeaseSnapshot,
     MalformedLeaseResponse,
     _creation_arguments,
-    shown_lease,
 )
 from netbox_kea.subnet_catalogue import SubnetIdentity
 from netbox_kea.tests.kea_stub import (
@@ -774,7 +771,7 @@ def _recorded_changes(family: int) -> dict:
 
 
 class TestLeaseChanges(TestCase):
-    """Edit and delete read the shown Lease again and change only a Lease that agrees with the shown facts.
+    """The single-command Lease write primitives that ``runtime_change`` sends, and the fresh read before them.
 
     The Kea replies are the ones recorded from a real Kea 3.2.0 (the ``changes`` section of the recordings).
     """
@@ -782,14 +779,17 @@ class TestLeaseChanges(TestCase):
     def setUp(self):
         self.client = kea_client(url="http://kea:8000")
         self.prefix = _recorded_changes(6)["before"]["arguments"]
-        self.shown = shown_lease(typed_lease(self.prefix))
+        self.identity = typed_lease(self.prefix).identity
 
-    def test_an_edit_sends_the_fresh_body_with_only_the_written_field_changed(self):
+    def test_an_update_sends_the_fresh_body_with_only_the_written_field_changed(self):
         daemon = LeaseDaemon(6, self.prefix)
         with stub_kea(daemon.responses()) as kea:
-            result = self.client.lease_update(self.shown, LeaseEdit(hostname="renamed.example.org"))
+            fresh = self.client.lease_get_fresh(self.identity)
+            self.assertIsInstance(fresh, FreshLease)
+            applied = self.client.lease_update(6, fresh.edited(LeaseEdit(hostname="renamed.example.org")))
 
-        self.assertEqual(result, LeaseChanged(lease=typed_lease(self.prefix)))
+        self.assertTrue(applied)
+        self.assertEqual(fresh.lease, typed_lease(self.prefix))
         self.assertEqual(kea.commands(), ["lease6-get", "lease6-update"])
         self.assertEqual(
             kea.bodies("lease6-get")[0]["arguments"], {"ip-address": "2001:db8:100:600::", "type": "IA_PD"}
@@ -802,60 +802,38 @@ class TestLeaseChanges(TestCase):
         after = _recorded_changes(6)["after-update"]["arguments"]
         self.assertEqual({**after, "hostname": self.prefix["hostname"]}, self.prefix)
 
-    def test_a_fresh_read_that_contradicts_the_shown_facts_sends_no_change(self):
-        cases = {
-            ("binding",): {"iaid": 31},
-            ("subnet_id",): {"subnet-id": 11},
-            ("prefix_length",): {"prefix-len": 60},
-            ("hostname",): {"hostname": "changed.example.org"},
-        }
-        for fields, change in cases.items():
-            with self.subTest(fields=fields):
-                with stub_kea(LeaseDaemon(6, {**self.prefix, **change}).responses()) as kea:
-                    result = self.client.lease_update(self.shown, LeaseEdit(hostname="renamed.example.org"))
-                self.assertEqual(result, LeaseConflict(fields=fields))
-                self.assertEqual(kea.commands(), ["lease6-get"])
-
-    def test_a_lease_that_is_gone_is_not_created_again(self):
+    def test_a_fresh_read_of_a_lease_that_is_gone_is_absent(self):
         with stub_kea(LeaseDaemon(6).responses()) as kea:
-            update = self.client.lease_update(self.shown, LeaseEdit(hostname="renamed.example.org"))
-            delete = self.client.lease_delete(self.shown)
+            fresh = self.client.lease_get_fresh(self.identity)
 
-        self.assertEqual(update, LeaseAbsent(identity=self.shown.identity))
-        self.assertEqual(delete, LeaseAbsent(identity=self.shown.identity))
-        self.assertEqual(kea.commands(), ["lease6-get", "lease6-get"])
+        self.assertEqual(fresh, LeaseAbsent(identity=self.identity))
+        self.assertEqual(kea.commands(), ["lease6-get"])
 
-    def test_an_update_that_kea_refuses_as_changed_after_the_read_is_a_conflict(self):
+    def test_an_update_that_kea_refuses_as_changed_after_the_read_is_not_applied(self):
         daemon = LeaseDaemon(6, self.prefix)
-        daemon.before("lease6-update", lambda held: held.leases.clear())
-        with stub_kea(daemon.responses()) as kea:
-            result = self.client.lease_update(self.shown, LeaseEdit(hostname="renamed.example.org"))
+        with stub_kea(daemon.responses()):
+            fresh = self.client.lease_get_fresh(self.identity)
+            daemon.leases.clear()
+            applied = self.client.lease_update(6, fresh.edited(LeaseEdit(hostname="renamed.example.org")))
 
         # Kea 3.2.0 answers result 4, and the update did not create the lease again.
         self.assertEqual(_recorded_changes(6)["update-absent"]["result"], 4)
-        self.assertEqual(result, LeaseChangeRefused(identity=self.shown.identity))
-        self.assertEqual(kea.commands(), ["lease6-get", "lease6-update"])
+        self.assertFalse(applied)
         self.assertEqual(daemon.leases, {})
 
-    def test_a_malformed_fresh_read_sends_no_change(self):
+    def test_a_malformed_fresh_read_is_a_failed_lookup(self):
         malformed = {"result": 0, "text": "IPv6 lease found.", "arguments": {**self.prefix, "state": "assigned"}}
-        with stub_kea({"lease6-get": malformed}) as kea:
-            result = self.client.lease_delete(self.shown)
+        with stub_kea({"lease6-get": malformed}):
+            fresh = self.client.lease_get_fresh(self.identity)
 
-        self.assertIsInstance(result, LeaseLookupFailed)
-        self.assertEqual(kea.commands(), ["lease6-get"])
+        self.assertIsInstance(fresh, LeaseLookupFailed)
 
-    def test_an_edit_that_writes_nothing_is_refused_before_kea(self):
-        with stub_kea({}) as kea, self.assertRaises(ValueError):
-            self.client.lease_update(self.shown, LeaseEdit())
-        self.assertEqual(kea.commands(), [])
-
-    def test_a_delete_sends_the_kind_of_the_shown_lease(self):
+    def test_a_delete_sends_the_kind_of_the_lease(self):
         daemon = LeaseDaemon(6, self.prefix)
         with stub_kea(daemon.responses()) as kea:
-            result = self.client.lease_delete(self.shown)
+            applied = self.client.lease_delete(self.identity)
 
-        self.assertEqual(result, LeaseChanged(lease=typed_lease(self.prefix)))
+        self.assertTrue(applied)
         self.assertEqual(
             kea.bodies("lease6-del")[0]["arguments"], {"ip-address": "2001:db8:100:600::", "type": "IA_PD"}
         )
@@ -863,15 +841,13 @@ class TestLeaseChanges(TestCase):
         # Kea 3.2.0 deletes a delegated prefix only with its type.
         self.assertEqual(_recorded_changes(6)["delete-without-type"]["result"], 3)
 
-    def test_a_delete_that_finds_the_lease_gone_after_the_read_is_absent(self):
-        daemon = LeaseDaemon(4, _recorded_changes(4)["before"]["arguments"])
-        shown = shown_lease(typed_lease(_recorded_changes(4)["before"]["arguments"]))
-        daemon.before("lease4-del", lambda held: held.leases.clear())
-        with stub_kea(daemon.responses()) as kea:
-            result = self.client.lease_delete(shown)
+    def test_a_delete_of_a_lease_that_is_gone_is_not_applied(self):
+        identity = typed_lease(_recorded_changes(4)["before"]["arguments"]).identity
+        with stub_kea(LeaseDaemon(4).responses()) as kea:
+            applied = self.client.lease_delete(identity)
 
-        self.assertEqual(result, LeaseAbsent(identity=shown.identity))
-        self.assertEqual(kea.commands(), ["lease4-get", "lease4-del"])
+        self.assertFalse(applied)
+        self.assertEqual(kea.commands(), ["lease4-del"])
 
     def test_the_daemon_derives_the_transaction_time_of_an_add_from_its_expire(self):
         # The add request of `_renewal` in scripts/record_kea_config_get.py; Kea 3.2.0 answered the recorded read.

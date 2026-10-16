@@ -11,15 +11,19 @@ import time
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlencode, urlsplit
 
+from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
+from django.db import DatabaseError
+from django.db.models.signals import pre_save
 from django.urls import reverse
 from django.utils.html import escape
+from extras.models import JournalEntry
 
 from netbox_kea import signals
 from netbox_kea.leases import DHCPv4LeaseRequest, DHCPv6PrefixLease
 
-from .kea_stub import LeaseDaemon, _catalogue_responses_for_subnets, lease_record, stub_kea
-from .utils import _ViewTestBase, with_display_cache_config
+from .kea_stub import LeaseDaemon, _catalogue_responses_for_subnets, lease_record, shown_token, stub_kea
+from .utils import UNCONFIRMED_RUNTIME, _ViewTestBase, with_display_cache_config
 
 _SUBNETS = {4: [{"id": 10, "subnet": "192.0.2.0/24"}], 6: [{"id": 10, "subnet": "2001:db8:1::/64"}]}
 _PREFIX = "2001:db8:100:600::"
@@ -119,7 +123,7 @@ class LeaseEditTest(_ViewTestBase):
 
                 self.assertEqual(kea.commands(), ["lease4-get"])
                 (message,) = _messages(response)
-                self.assertIn("Lease 192.0.2.40 was not changed", message)
+                self.assertTrue(message.startswith("Lease 192.0.2.40: This request changed nothing. Its "), message)
                 self.assertIn("Reload", message)
 
     def test_a_changed_dhcpv6_iaid_sends_no_update(self):
@@ -153,7 +157,7 @@ class LeaseEditTest(_ViewTestBase):
         (message,) = _messages(response)
         self.assertEqual(
             message,
-            "Lease 192.0.2.40 was not changed: its hostname and valid lifetime changed in Kea"
+            "Lease 192.0.2.40: This request changed nothing. Its hostname and valid lifetime changed in Kea"
             " after the form was shown. Reload the form and try again.",
         )
 
@@ -200,7 +204,9 @@ class LeaseEditTest(_ViewTestBase):
         self.assertEqual(daemon.leases, {})
         self.assertEqual(
             _messages(response),
-            ["Lease 192.0.2.40 was not found in Kea; nothing was changed. The edit did not recreate it."],
+            [
+                "Lease 192.0.2.40: This request changed nothing. Kea no longer holds it. The edit did not create it again."
+            ],
         )
 
     def test_a_target_deleted_after_the_check_is_reported_and_not_recreated(self):
@@ -213,8 +219,15 @@ class LeaseEditTest(_ViewTestBase):
         self.assertEqual(kea.commands(), ["lease4-get", "lease4-update"])
         self.assertNotIn("force-create", kea.bodies("lease4-update")[0]["arguments"])
         self.assertEqual(daemon.leases, {})
-        (message,) = _messages(response)
-        self.assertIn("Kea did not change lease 192.0.2.40", message)
+        self.assertEqual(
+            _messages(response),
+            [
+                (
+                    "Lease 192.0.2.40: This request changed nothing. Kea reports that it was deleted or changed after"
+                    " the check. Reload the form and try again."
+                )
+            ],
+        )
 
     def test_a_delegated_prefix_is_edited_as_a_prefix(self):
         daemon = LeaseDaemon(6, _prefix(user_context=_CONTEXT))
@@ -309,7 +322,7 @@ class LeaseDeleteTest(_ViewTestBase):
         self.assertEqual(kea.commands(), ["lease6-get", "lease6-del"])
         self.assertEqual(kea.bodies("lease6-del")[0]["arguments"], {"ip-address": _PREFIX, "type": "IA_PD"})
         self.assertEqual(daemon.leases, {})
-        self.assertEqual(_messages(response), ["Deleted 1 DHCPv6 lease(s)."])
+        self.assertEqual(_messages(response), [f"Deleted 1 DHCPv6 lease(s): {_PREFIX}/56."])
         (call,) = received.calls
         self.assertEqual(set(call), {"signal", "server", "leases", "dhcp_version", "request"})
         (deleted,) = call["leases"]
@@ -330,7 +343,9 @@ class LeaseDeleteTest(_ViewTestBase):
                 self.assertEqual(kea.commands(), ["lease6-get"])
                 self.assertEqual(len(daemon.leases), 1)
                 messages = _messages(response)
-                self.assertIn(f"Lease {_PREFIX}/56 was not deleted", messages[0])
+                self.assertTrue(
+                    messages[0].startswith(f"Lease {_PREFIX}/56: This request changed nothing. Its "), messages[0]
+                )
         self.assertEqual(received.calls, [])
 
     def test_one_refused_lease_shows_one_message(self):
@@ -357,7 +372,7 @@ class LeaseDeleteTest(_ViewTestBase):
 
         self.assertEqual(kea.commands(), ["lease4-get", "lease4-del"])
         self.assertEqual(daemon.leases, {})
-        self.assertEqual(_messages(response), ["Deleted 1 DHCPv4 lease(s)."])
+        self.assertEqual(_messages(response), ["Deleted 1 DHCPv4 lease(s): 192.0.2.40."])
 
     def test_an_address_lease_of_another_kind_is_not_deleted(self):
         received = _Received(self, signals.leases_deleted)
@@ -370,7 +385,9 @@ class LeaseDeleteTest(_ViewTestBase):
 
         self.assertNotIn("lease6-del", kea.commands())
         self.assertEqual(list(daemon.leases), [("IA_NA", _PREFIX)])
-        self.assertEqual(_messages(response), [f"Lease {_PREFIX}/56 was not found in Kea; nothing was deleted."])
+        self.assertEqual(
+            _messages(response), [f"Lease {_PREFIX}/56: This request changed nothing. Kea no longer holds it."]
+        )
         self.assertEqual(received.calls, [])
 
 
@@ -396,6 +413,64 @@ class LeaseAddTest(_ViewTestBase):
             (str(call["creation"].address), call["creation"].hw_address), ("192.0.2.50", "aa:bb:cc:00:00:50")
         )
         self.assertEqual((str(call["lease"].address), call["lease"].subnet_id), ("192.0.2.50", 10))
+
+    def test_a_failing_signal_receiver_after_an_applied_creation_is_a_separate_error(self):
+        """The receiver runs after the change, outside the call that classifies it (ADR 0011, side effects)."""
+
+        def fail(sender, **kwargs):
+            raise RuntimeError("receiver bug")
+
+        signals.lease_added.connect(fail)
+        self.addCleanup(signals.lease_added.disconnect, fail)
+        daemon = LeaseDaemon(4)
+        with stub_kea(daemon.responses()), self.assertLogs("netbox_kea.views.leases", "ERROR") as logs:
+            response = self.client.post(self._url(), {"ip_address": "192.0.2.50", "hw_address": "aa:bb:cc:00:00:50"})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIsNotNone(daemon.lease("192.0.2.50"))
+        self.assertEqual(
+            [(message.level, str(message)) for message in get_messages(response.wsgi_request)],
+            [
+                (django_messages.SUCCESS, "Lease for 192.0.2.50 created."),
+                (
+                    django_messages.ERROR,
+                    "Kea applied the change, but a receiver of the lease_added signal failed; see server logs.",
+                ),
+            ],
+        )
+        self.assertIn("lease_added", logs.output[0])
+        self.assertNotIn("receiver bug", " ".join(str(message) for message in get_messages(response.wsgi_request)))
+        (journal,) = JournalEntry.objects.filter(assigned_object_id=self.server.pk)
+        self.assertIn("192.0.2.50", journal.comments)
+
+    def test_a_failed_journal_write_after_an_applied_delete_is_a_separate_error(self):
+        """The delete stays reported as applied, and the signal still goes out."""
+
+        def refuse(sender, instance, **kwargs):
+            raise DatabaseError("journal table is locked")
+
+        pre_save.connect(refuse, sender=JournalEntry)
+        self.addCleanup(pre_save.disconnect, refuse, sender=JournalEntry)
+        received = _Received(self, signals.leases_deleted)
+        daemon = LeaseDaemon(4, _address4())
+        token = shown_token(_address4())
+        url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        with stub_kea(daemon.responses()) as kea:
+            response = self.client.post(url, {"pk": [token], "_confirm": "1"})
+
+        self.assertEqual(kea.commands(), ["lease4-get", "lease4-del"])
+        self.assertEqual(daemon.leases, {})
+        self.assertEqual(
+            [(message.level, str(message)) for message in get_messages(response.wsgi_request)],
+            [
+                (django_messages.SUCCESS, "Deleted 1 DHCPv4 lease(s): 192.0.2.40."),
+                (
+                    django_messages.ERROR,
+                    "Kea applied the change, but NetBox could not write the journal entry; see server logs.",
+                ),
+            ],
+        )
+        self.assertEqual(len(received.calls), 1)
 
     def test_a_mixed_case_hostname_that_kea_stores_in_lowercase_is_an_observation(self):
         received = _Received(self, signals.lease_added)
@@ -465,14 +540,21 @@ class LeaseAddTest(_ViewTestBase):
         (call,) = received.calls
         self.assertIsNone(call["lease"])
 
-    def test_a_refused_creation_emits_nothing(self):
+    def test_a_failed_creation_is_unconfirmed_and_emits_nothing(self):
+        """A SQL backend can store the Lease and still answer result 1, so the add is unconfirmed (ADR 0011)."""
         received = _Received(self, signals.lease_added)
         daemon = LeaseDaemon(4, lease_record("192.0.2.50", subnet_id=10))
-        with stub_kea(daemon.responses()):
+        with stub_kea(daemon.responses()) as kea:
             response = self.client.post(self._url(), {"ip_address": "192.0.2.50", "hw_address": "aa:bb:cc:00:00:50"})
 
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands(), ["lease4-add"])
+        self.assertEqual(
+            _messages(response),
+            [f"Lease 192.0.2.50: {UNCONFIRMED_RUNTIME} Kea replied: Lease for address 192.0.2.50 already exists."],
+        )
         self.assertEqual(received.calls, [])
+        self.assertFalse(JournalEntry.objects.filter(assigned_object_id=self.server.pk).exists())
 
     def test_a_dhcpv4_creation_needs_a_hardware_address(self):
         with stub_kea(LeaseDaemon(4).responses()) as kea:

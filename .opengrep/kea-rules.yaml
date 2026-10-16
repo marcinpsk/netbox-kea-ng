@@ -312,14 +312,16 @@ rules:
     severity: ERROR
     message: >-
       Do not catch ChangeRejected in a view. Run the change through
-      _run_change() in views/_base.py, which is the one place that turns an
-      outcome or a rejection into a message (ADR 0005). A second handler gives the
-      same rejection a different message.
+      _run_change(), or a loop of changes through _run_change_loop(), in
+      views/_base.py. They are the one place that turns an outcome or a rejection
+      into a message (ADR 0005, ADR 0011). A second handler gives the same
+      rejection a different message.
     metadata:
       category: maintainability
       confidence: HIGH
       references:
         - "docs/adr/0005-configuration-changes-return-a-typed-outcome.md: Presentation"
+        - "docs/adr/0011-runtime-changes-return-a-typed-outcome.md: Shared types and presentation"
     paths:
       include:
         - "**/views/**"
@@ -349,44 +351,53 @@ rules:
       - pattern-not-inside: |
           def _run_change(...):
               ...
+      - pattern-not-inside: |
+          def _run_change_loop(...):
+              ...
       - focus-metavariable: $EXC
 
   - id: kea-change-mapper-outside-base
     languages: [python]
     severity: ERROR
     message: >-
-      Define _run_change only in views/_base.py. The rule
+      Define _run_change and _run_change_loop only in views/_base.py. The rule
       kea-change-rejection-caught-outside-mapper exempts a function by
-      this name, so a second definition in another view would hide its catch of
+      these names, so a second definition in another view would hide its catch of
       ChangeRejected.
     metadata:
       category: maintainability
       confidence: HIGH
       references:
         - "docs/adr/0005-configuration-changes-return-a-typed-outcome.md: Presentation"
+        - "docs/adr/0011-runtime-changes-return-a-typed-outcome.md: Shared types and presentation"
     paths:
       include:
         - "**/views/**"
       exclude:
         - "**/views/_base.py"
-    pattern: |
-      def _run_change(...):
-          ...
+    pattern-either:
+      - pattern: |
+          def _run_change(...):
+              ...
+      - pattern: |
+          def _run_change_loop(...):
+              ...
 
   - id: kea-change-in-broad-except
     languages: [python]
     severity: ERROR
     message: >-
-      Do not call a config_write operation inside a try whose except catches
-      Exception, BaseException, or everything. That handler also catches
-      ChangeRejected and hides it from _run_change() in
-      views/_base.py. Pass the call to _run_change() as a lambda, and
+      Do not call a config_write or runtime_change operation inside a try whose
+      except catches Exception, BaseException, or everything. That handler also
+      catches ChangeRejected and hides it from _run_change() in views/_base.py.
+      Pass the call to _run_change() or _run_change_loop() as a lambda, and
       catch only the errors that you expect.
     metadata:
       category: maintainability
       confidence: HIGH
       references:
         - "docs/adr/0005-configuration-changes-return-a-typed-outcome.md: Presentation"
+        - "docs/adr/0011-runtime-changes-return-a-typed-outcome.md: Shared types and presentation"
     paths:
       include:
         - "**/views/**"
@@ -419,9 +430,12 @@ rules:
                   ...
               except:
                   ...
-      - pattern: config_write.$OP(...)
+      - pattern-either:
+          - pattern: config_write.$OP(...)
+          - pattern: runtime_change.$OP(...)
       # The mapper catches the rejection only when it runs the change: a lambda, not an eager call.
       - pattern-not-inside: "_run_change(..., lambda: ..., ...)"
+      - pattern-not-inside: "_run_change_loop(..., lambda $ROW: ..., ...)"
 
   - id: subprocess-without-timeout
     languages: [python]
@@ -1023,8 +1037,8 @@ rules:
       Snapshot to notice(), or run a raised Reservation or Lease read through load_snapshot(), in
       views/notices.py, and show the Notice through show_notices(), a template or ServerNotices. A view
       that picks a level by hand codes the rule again, and the copies drift.
-      Exempt: the Configuration Change outcome in _run_change(), the Reservation search that
-      builds its Snapshot in _read_reservations(), the lease export refusal in
+      Exempt: the change outcome in _run_change(), _rejection_message() and _unconfirmed_message(), the
+      Reservation search that builds its Snapshot in _read_reservations(), the lease export refusal in
       _incomplete_export_message(), and a function that parses a Reservation Transfer Document.
       Limits: an alias (a messages constant imported by name, or the diagnostics of a variable passed
       to a helper outside views/) and templates are not seen. A messages.error() or messages.warning()
@@ -1044,9 +1058,15 @@ rules:
           - pattern: $VALUE.diagnostics
           - pattern: messages.ERROR
           - pattern: messages.WARNING
-      # A Configuration Change outcome or rejection, not a Snapshot (ADR 0005).
+      # A change outcome or rejection, not a Snapshot (ADR 0005, ADR 0011).
       - pattern-not-inside: |
           def _run_change(...):
+              ...
+      - pattern-not-inside: |
+          def _rejection_message(...):
+              ...
+      - pattern-not-inside: |
+          def _unconfirmed_message(...):
               ...
       # It builds the Reservation search Snapshot from its pages; the caller loads it through load_snapshot().
       - pattern-not-inside: |

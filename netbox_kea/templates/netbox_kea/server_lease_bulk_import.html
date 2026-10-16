@@ -61,8 +61,16 @@
             <div class="text-muted small">Created</div>
           </div>
           <div class="col">
-            <div class="display-6 text-danger">{{ result.errors }}</div>
-            <div class="text-muted small">Errors</div>
+            <div class="display-6 text-danger">{{ result.rejected }}</div>
+            <div class="text-muted small">Not applied</div>
+          </div>
+          <div class="col">
+            <div class="display-6 text-warning">{{ result.unknown }}</div>
+            <div class="text-muted small">Not confirmed</div>
+          </div>
+          <div class="col">
+            <div class="display-6 text-secondary">{{ result.not_sent }}</div>
+            <div class="text-muted small">Not sent</div>
           </div>
           <div class="col">
             <div class="display-6">{{ result.total }}</div>
@@ -70,22 +78,30 @@
           </div>
         </div>
 
-        {% if result.error_rows %}
-        <h6 class="mt-3">Error Details</h6>
+        {% if result.unknown %}
+        <div class="alert alert-warning" role="alert">
+          Kea did not confirm one row, so NetBox stopped there. Check the Server before you import the rows again.
+        </div>
+        {% endif %}
+
+        {% if result.problem_rows %}
+        <h6 class="mt-3">Rows that Kea did not apply</h6>
         <table class="table table-bordered mb-0">
           <thead>
             <tr>
               <th>Line</th>
               <th>Address</th>
-              <th>Error</th>
+              <th>Status</th>
+              <th>Message</th>
             </tr>
           </thead>
           <tbody>
-            {% for item in result.error_rows %}
-            <tr class="table-danger">
+            {% for item in result.problem_rows %}
+            <tr class="{% if item.status == 'Not applied' %}table-danger{% elif item.status == 'Not confirmed' %}table-warning{% endif %}">
               <td>{{ item.line }}</td>
               <td><code>{{ item.address }}</code></td>
-              <td>{{ item.error }}</td>
+              <td>{{ item.status }}</td>
+              <td>{{ item.message }}</td>
             </tr>
             {% endfor %}
           </tbody>

@@ -15,7 +15,7 @@ from netbox.views import generic
 from utilities.htmx import htmx_partial
 from utilities.views import register_model_view
 
-from .. import config_write, forms, server_configuration, subnet_catalogue, tables
+from .. import config_write, forms, runtime_change, server_configuration, subnet_catalogue, tables
 from ..constants import Family
 from ..dhcp_options import AmbiguousFormOption, DHCPOption, form_option_fields
 from ..kea import KeaException, subnet_network
@@ -33,12 +33,10 @@ from ..subnet_catalogue import (
 from ..utilities import (
     OptionalViewTab,
     export_table,
-    kea_error_hint,
 )
 from ._base import (
     _POOL_RE,
     _catalogue_subnet_row,
-    _client_settings_error,
     _enrich_subnet_statistics,
     _KeaChangeMixin,
     _run_change,
@@ -793,29 +791,11 @@ class _BaseSubnetWipeView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         return_url = _safe_return_url(request, self._subnets_url(pk))
-        try:
-            client = server.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(server, exc))
-            return redirect(return_url)
-        try:
-            client.lease_wipe(version=self.dhcp_version, subnet_id=subnet_id)
-            messages.success(request, f"All leases in subnet {subnet_id} wiped.")
-        except KeaException as exc:
-            logger.exception("Failed to wipe leases in subnet %s", subnet_id)
-            if exc.unsupported_command:
-                messages.error(
-                    request,
-                    "Failed to wipe leases: ensure the lease_cmds hook is loaded.",
-                )
-            else:
-                messages.error(request, kea_error_hint(exc))
-        except requests.RequestException:
-            logger.exception("Failed to wipe leases in subnet %s (network error)", subnet_id)
-            messages.error(request, "Network error communicating with Kea: see server logs.")
-        except (RuntimeError, ValueError):
-            logger.exception("Failed to wipe leases in subnet %s", subnet_id)
-            messages.error(request, "Failed to wipe leases: see server logs for details.")
+        _run_change(
+            request,
+            f"All leases in subnet {subnet_id} wiped.",
+            lambda: runtime_change.wipe_leases(server, self.dhcp_version, subnet_id),
+        )
         return redirect(return_url)
 
 

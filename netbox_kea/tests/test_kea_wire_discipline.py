@@ -97,6 +97,7 @@ _NON_WIRE_HYPHENATED = {
     "page-limit-reached": "Reservation snapshot diagnostic",
     "pagination-stalled": "Reservation snapshot diagnostic",
     "state-command": "Lease preflight diagnostic",
+    "target-changed": "Change rejection reason (ADR 0011)",
     "target-mismatch": "Reservation mutation diagnostic",
     "unknown-field": "Transfer validation diagnostic",
     "unknown-state": "Lease validation diagnostic",

@@ -331,6 +331,15 @@ class _ViewTestBase(TestCase):
 
 
 _UNCONFIRMED = "Kea did not confirm the change. Check the server configuration before retrying."
+#: The message of an unconfirmed Runtime Change, before its diagnostics (ADR 0011).
+UNCONFIRMED_RUNTIME = (
+    "Kea did not confirm the change. Check the Server before you try again. NetBox recorded nothing for this change."
+)
+#: The message of a change whose Kea client cannot be built.
+INVALID_SERVER_SETTINGS = (
+    "The change was not sent to Kea, because the Server settings are not valid. "
+    "NetBox could not build a Kea client from the Server connection settings."
+)
 
 
 def _read_modify_write_cases(confirmed: str) -> tuple:
