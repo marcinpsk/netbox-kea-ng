@@ -3,7 +3,7 @@
 """Configuration Changes to a Server Configuration, and their typed outcome (ADR 0005).
 
 An operation returns a ``ConfigChangeOutcome`` when the change is live or can be live, and raises
-``ConfigChangeRejected`` when it is not live as far as NetBox can tell.
+``ChangeRejected`` when it is not live as far as NetBox can tell.
 """
 
 from __future__ import annotations
@@ -14,20 +14,18 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, TypeVar
+from typing import TYPE_CHECKING, Any
 
-import requests
 from django.db import DatabaseError, OperationalError, connection
-from urllib3.exceptions import MaxRetryError, NewConnectionError
 
 from . import event_scope, server_configuration
+from .change_outcome import Application, ChangeRejected, before_change, build_client, mutate, read_before
 from .constants import Family, IPNetworkValue, Persistence
 from .kea import (
     CandidateConfiguration,
     CandidateTargetMissing,
     KeaClient,
     KeaException,
-    KeaTLSFileError,
     MalformedConfiguration,
     PoolAction,
     SharedNetworkEdit,
@@ -54,14 +52,7 @@ logger = logging.getLogger(__name__)
 # How long an operation waits for another operation on the same Kea daemon.
 LOCK_WAIT_SECONDS = 10.0
 
-Application = Literal["applied", "unknown"]
-RejectionReason = Literal["kea-rejected", "config-test-rejected", "not-sent", "invalid-client-configuration"]
-
-# Kea result 5: Kea could not return to a working configuration.
-_RESULT_FATAL = 5
 _LOCK_NOT_AVAILABLE = "55P03"
-
-T = TypeVar("T")
 
 
 def _int4(text: str) -> int:
@@ -73,7 +64,6 @@ _LOCK_CLASS = _int4("netbox_kea.config_write")
 
 
 SUBNET_LIST_UNCONFIRMED = "NetBox could not confirm Kea's Subnet list, so it did not send the change. Try again later."
-_READ_UNUSABLE = "Kea did not return a usable reply to the read before the change."
 _CONFIG_TEST_UNUSABLE = "Kea did not return a usable reply to config-test."
 # A live value that the edit form cannot show, so the operator cannot have seen it.
 _UNSHOWABLE = "has a live value that the edit form cannot show."
@@ -100,22 +90,12 @@ class SubnetAddOutcome(ConfigChangeOutcome):
     subnet_id: int = field(kw_only=True)
 
 
-class ConfigChangeRejected(Exception):
-    """A Configuration Change that is not live, as far as NetBox can tell."""
-
-    def __init__(self, reason: RejectionReason, diagnostics: tuple[str, ...]) -> None:
-        """Keep the reason and the diagnostics that explain it."""
-        super().__init__(reason, *diagnostics)
-        self.reason = reason
-        self.diagnostics = diagnostics
-
-
 def add_shared_network(server: Server, family: Family, name: str) -> ConfigChangeOutcome:
     """Add an empty Shared Network named *name*."""
-    with _client(server, family) as client, _serialized(client, family):
-        if _read_before(lambda: client.shared_network_exists(family, name)):
-            raise ConfigChangeRejected("not-sent", (f"Shared Network '{name}' already exists.",))
-        application, diagnostics = _mutate(
+    with build_client(server, family) as client, _serialized(client, family):
+        if read_before(lambda: client.shared_network_exists(family, name)):
+            raise ChangeRejected("not-sent", (f"Shared Network '{name}' already exists.",))
+        application, diagnostics = mutate(
             client,
             family,
             lambda: client.network_add(family, name),
@@ -126,10 +106,10 @@ def add_shared_network(server: Server, family: Family, name: str) -> ConfigChang
 
 def delete_shared_network(server: Server, family: Family, name: str) -> ConfigChangeOutcome:
     """Delete the Shared Network named *name*. Its member Subnets stay."""
-    with _client(server, family) as client, _serialized(client, family):
-        if not _read_before(lambda: client.shared_network_exists(family, name)):
-            raise ConfigChangeRejected("not-sent", (f"Shared Network '{name}' not found.",))
-        application, diagnostics = _mutate(
+    with build_client(server, family) as client, _serialized(client, family):
+        if not read_before(lambda: client.shared_network_exists(family, name)):
+            raise ChangeRejected("not-sent", (f"Shared Network '{name}' not found.",))
+        application, diagnostics = mutate(
             client,
             family,
             lambda: client.network_del(family, name),
@@ -157,7 +137,7 @@ def add_subnet(
         CatalogueUnavailable: If the Subnet list is incomplete, so NetBox cannot check the new identity.
 
     """
-    with _client(server, family) as client, _serialized(client, family):
+    with build_client(server, family) as client, _serialized(client, family):
         identity, application, diagnostics = _create_subnet(
             server, client, family, cidr, subnet_id, fields, shared_network
         )
@@ -174,9 +154,9 @@ def add_subnet(
 def _require_shared_network(client: KeaClient, family: Family, name: str, shown: bool | None) -> None:
     """Reject the change when Kea has no Shared Network *name*. *shown* is what the scope read shows, None: unknown."""
     if shown is None:
-        shown = _read_before(lambda: client.shared_network_exists(family, name))
+        shown = read_before(lambda: client.shared_network_exists(family, name))
     if not shown:
-        raise ConfigChangeRejected("not-sent", (f"Shared Network '{name}' not found.",))
+        raise ChangeRejected("not-sent", (f"Shared Network '{name}' not found.",))
 
 
 def _create_subnet(
@@ -206,7 +186,7 @@ def _create_subnet(
         return current is None or taken
 
     def send() -> tuple[Application, tuple[str, ...]]:
-        return _mutate(
+        return mutate(
             client,
             family,
             lambda: client.subnet_add(family, identity.subnet_id, identity.cidr, fields),
@@ -215,7 +195,7 @@ def _create_subnet(
 
     try:
         application, diagnostics = send()
-    except ConfigChangeRejected:
+    except ChangeRejected:
         # The check read, not Kea's error text, shows that another writer took the allocated ID.
         if requested_id is not None or not taken:
             raise
@@ -267,35 +247,33 @@ def edit_subnet(
     Subnet from its Shared Network, adds it to the new one, and then updates the fields. When a step did not apply,
     it undoes the membership steps before it.
     """
-    with _client(server, family) as client, _serialized(client, family):
+    with build_client(server, family) as client, _serialized(client, family):
         with mutation(server, family) as scope:
             subnet = _subnet_as_seen(scope, subnet_id, cidr, membership=True)
             target_shown = None if shared_network is None else scope.has_shared_network(shared_network)
         current = subnet.shared_network.name if subnet.shared_network is not None else None
         if current != original_network:
             # Another writer moved the Subnet, so a move to *shared_network* would undo that change.
-            raise ConfigChangeRejected(
+            raise ChangeRejected(
                 "not-sent",
                 (f"The Shared Network of Subnet {subnet_id} ({cidr}) changed in Kea. Reload the page and try again.",),
             )
         if shared_network is not None and shared_network != current:
             _require_shared_network(client, family, shared_network, target_shown)
-        definition = _read_before(lambda: client.subnet_definition(family, subnet_id))
+        definition = read_before(lambda: client.subnet_definition(family, subnet_id))
         if definition.network != subnet.network:
-            raise ConfigChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
+            raise ChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
         live = server_configuration.shown_subnet_definition(definition)
         if live is None:
-            raise ConfigChangeRejected("not-sent", (f"Subnet {subnet_id} ({cidr}) {_UNSHOWABLE}",))
+            raise ChangeRejected("not-sent", (f"Subnet {subnet_id} ({cidr}) {_UNSHOWABLE}",))
         # A value that changed after the page showed it would go back to the old value with the update.
         if live.written_by(edit) != shown.written_by(edit):
-            raise ConfigChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
+            raise ChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
         try:
             edited = definition.edited(edit)
         except MalformedConfiguration as exc:
             logger.warning("The Subnet that Kea returned cannot be edited", exc_info=True)
-            raise ConfigChangeRejected(
-                "not-sent", ("Kea returned a configuration that NetBox cannot edit safely.",)
-            ) from exc
+            raise ChangeRejected("not-sent", ("Kea returned a configuration that NetBox cannot edit safely.",)) from exc
         moves: list[_Step] = []
         if shared_network != current:
             if current is not None:
@@ -391,7 +369,7 @@ def _run_steps(
     After an unknown step, send nothing more. When a step did not apply, undo the applied steps, newest first.
 
     Raises:
-        ConfigChangeRejected: If a step did not apply and nothing that the change wrote is live. *rolled_back* comes
+        ChangeRejected: If a step did not apply and nothing that the change wrote is live. *rolled_back* comes
             first in the diagnostics when the operation undid a step.
 
     """
@@ -410,8 +388,8 @@ def _send_step(
     """Send the step after *done*. Return None when it applied, and the result of the change when it did not."""
     text = f"Step {len(done) + 1}, {command.text}"
     try:
-        application, diagnostics = _mutate(client, family, command.send, not_live=command.not_live)
-    except ConfigChangeRejected as rejection:
+        application, diagnostics = mutate(client, family, command.send, not_live=command.not_live)
+    except ChangeRejected as rejection:
         return _roll_back(client, family, done, text, rejection, rolled_back)
     if application == "unknown":
         return "unknown", (*_applied_states(done), f"{text}: unknown.", *diagnostics)
@@ -423,13 +401,13 @@ def _roll_back(
     family: Family,
     done: Sequence[_Applied],
     failed: str,
-    rejection: ConfigChangeRejected,
+    rejection: ChangeRejected,
     rolled_back: str,
 ) -> tuple[Application, tuple[str, ...]]:
     """Undo the *done* steps, newest first, after the step *failed* did not apply. Stop at the first undo that fails.
 
     Raises:
-        ConfigChangeRejected: If nothing that the change wrote is live: no step applied before, or every undo applied.
+        ChangeRejected: If nothing that the change wrote is live: no step applied before, or every undo applied.
 
     """
     if not done:
@@ -441,7 +419,7 @@ def _roll_back(
         if problem is not None:
             return "unknown", (*states, *problem)
         states.append(f"{step}: applied.")
-    raise ConfigChangeRejected(rejection.reason, (rolled_back, *rejection.diagnostics)) from rejection
+    raise ChangeRejected(rejection.reason, (rolled_back, *rejection.diagnostics)) from rejection
 
 
 def _applied_states(done: Sequence[_Applied]) -> tuple[str, ...]:
@@ -458,8 +436,8 @@ def _undo(client: KeaClient, family: Family, step: str, undo: _Undo) -> tuple[st
     if not holds:
         return (f"{step}: not sent, because the Subnet changed in Kea.",)
     try:
-        application, diagnostics = _mutate(client, family, undo.send, not_live=undo.not_live)
-    except ConfigChangeRejected as rejection:
+        application, diagnostics = mutate(client, family, undo.send, not_live=undo.not_live)
+    except ChangeRejected as rejection:
         return (f"{step}: not applied.", *rejection.diagnostics)
     if application == "unknown":
         return (f"{step}: unknown.", *diagnostics)
@@ -468,10 +446,10 @@ def _undo(client: KeaClient, family: Family, step: str, undo: _Undo) -> tuple[st
 
 def delete_subnet(server: Server, family: Family, subnet_id: int, cidr: str) -> ConfigChangeOutcome:
     """Delete the Subnet with *subnet_id*, only while that ID names the network *cidr*."""
-    with _client(server, family) as client, _serialized(client, family):
+    with build_client(server, family) as client, _serialized(client, family):
         with mutation(server, family) as scope:
             subnet = _subnet_as_seen(scope, subnet_id, cidr)
-        application, diagnostics = _mutate(
+        application, diagnostics = mutate(
             client,
             family,
             lambda: client.subnet_del(family, subnet.subnet_id),
@@ -493,11 +471,11 @@ def delete_pool(server: Server, family: Family, subnet_id: int, cidr: str, pool:
 def _change_pool(
     server: Server, family: Family, action: PoolAction, subnet_id: int, cidr: str, pool: Pool
 ) -> ConfigChangeOutcome:
-    with _client(server, family) as client, _serialized(client, family):
+    with build_client(server, family) as client, _serialized(client, family):
         with mutation(server, family) as scope:
             subnet = _subnet_as_seen(scope, subnet_id, cidr)
         _require_pool_state(subnet, action, pool)
-        application, diagnostics = _mutate(
+        application, diagnostics = mutate(
             client,
             family,
             lambda: client.pool_change(family, action, subnet.subnet_id, subnet.declared_cidr, pool.range),
@@ -525,7 +503,7 @@ def set_subnet_options(
         DHCPOptionNameChange: If a row renames a coded DHCP Option.
 
     """
-    with _client(server, family) as client, _serialized(client, family):
+    with build_client(server, family) as client, _serialized(client, family):
         with mutation(server, family) as scope:
             subnet = _subnet_as_seen(scope, subnet_id, cidr)
         return _send_candidate(
@@ -579,9 +557,9 @@ def edit_shared_network(
         # The edit refuses a missing Shared Network first. The operation never sends a rejected candidate.
         candidate.edit_shared_network(name, edit)
         if live is None:
-            raise ConfigChangeRejected("not-sent", (f"Shared Network '{name}' {_UNSHOWABLE}",))
+            raise ChangeRejected("not-sent", (f"Shared Network '{name}' {_UNSHOWABLE}",))
         if live != shown:
-            raise ConfigChangeRejected(
+            raise ChangeRejected(
                 "not-sent", (f"Shared Network '{name}' changed in Kea. Reload the page and try again.",)
             )
 
@@ -592,7 +570,7 @@ def _read_modify_write(
     server: Server, family: Family, edit: Callable[[CandidateConfiguration], None], *, missing: str | None
 ) -> ConfigChangeOutcome:
     """Edit the running configuration and send it back with config-set, all under the lock."""
-    with _client(server, family) as client, _serialized(client, family):
+    with build_client(server, family) as client, _serialized(client, family):
         return _send_candidate(client, family, edit, missing=missing)
 
 
@@ -603,11 +581,11 @@ def _send_candidate(
 
     *missing* explains a target that *edit* does not find. None: *edit* names no target.
     """
-    candidate = _read_before(lambda: client.config_candidate(family))
+    candidate = read_before(lambda: client.config_candidate(family))
     _edit(candidate, edit, missing)
     _test_before(client, family, candidate)
     # config-set commits and then runs the hook initialization, so no failure result proves it is not live.
-    application, diagnostics = _mutate(client, family, lambda: client.config_set(candidate), not_live=None)
+    application, diagnostics = mutate(client, family, lambda: client.config_set(candidate), not_live=None)
     return _persisted(client, family, application, diagnostics)
 
 
@@ -620,12 +598,10 @@ def _edit(
     except CandidateTargetMissing as exc:
         if missing is None:
             raise
-        raise ConfigChangeRejected("not-sent", (missing,)) from exc
+        raise ChangeRejected("not-sent", (missing,)) from exc
     except MalformedConfiguration as exc:
         logger.warning("The configuration that Kea returned cannot be edited", exc_info=True)
-        raise ConfigChangeRejected(
-            "not-sent", ("Kea returned a configuration that NetBox cannot edit safely.",)
-        ) from exc
+        raise ChangeRejected("not-sent", ("Kea returned a configuration that NetBox cannot edit safely.",)) from exc
 
 
 def _test_before(client: KeaClient, family: Family, candidate: CandidateConfiguration) -> None:
@@ -641,20 +617,9 @@ def _test_before(client: KeaClient, family: Family, candidate: CandidateConfigur
             if client.forwarding_failed(exc, family):
                 raise
             logger.warning("config-test rejected a Configuration Change: %s", exc)
-            raise ConfigChangeRejected("config-test-rejected", (f"Kea replied: {exc.reply_text}",)) from exc
+            raise ChangeRejected("config-test-rejected", (f"Kea replied: {exc.reply_text}",)) from exc
 
-    _before_change(test, _CONFIG_TEST_UNUSABLE)
-
-
-def _client(server: Server, family: Family) -> KeaClient:
-    try:
-        return server.get_client(version=family)
-    except ValueError as exc:
-        logger.warning("Could not build a DHCPv%s client for Server %s", family, server.pk, exc_info=True)
-        raise ConfigChangeRejected(
-            "invalid-client-configuration",
-            ("NetBox could not build a Kea client from the Server connection settings.",),
-        ) from exc
+    before_change(test, _CONFIG_TEST_UNUSABLE)
 
 
 @contextmanager
@@ -675,7 +640,7 @@ def _serialized(client: KeaClient, family: Family) -> Iterator[None]:
                 except OperationalError as exc:
                     if getattr(exc.__cause__, "sqlstate", None) != _LOCK_NOT_AVAILABLE:
                         raise
-                    raise ConfigChangeRejected(
+                    raise ChangeRejected(
                         "not-sent", ("Another change to this Kea server is still running. Try again later.",)
                     ) from exc
                 cursor.execute("SELECT set_config('lock_timeout', %s, true)", [previous])
@@ -708,9 +673,9 @@ def _subnet_as_seen(scope: MutationScope, subnet_id: int, cidr: str, *, membersh
     try:
         subnet = scope.find_with_membership(subnet_id) if membership else scope.find_by_id(subnet_id)
     except CatalogueUnavailable as exc:
-        raise ConfigChangeRejected("not-sent", (SUBNET_LIST_UNCONFIRMED,)) from exc
+        raise ChangeRejected("not-sent", (SUBNET_LIST_UNCONFIRMED,)) from exc
     if subnet is None or subnet.network != subnet_network(cidr, scope.family):
-        raise ConfigChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
+        raise ChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
     return subnet
 
 
@@ -725,7 +690,7 @@ def _require_pool_state(subnet: VerifiedSubnet, action: PoolAction, pool: Pool) 
         problem = f"already has Pool {pool.range}"
     else:
         return
-    raise ConfigChangeRejected(
+    raise ChangeRejected(
         "not-sent", (f"Subnet {subnet.subnet_id} ({subnet.cidr}) {problem}. Reload the page and try again.",)
     )
 
@@ -778,86 +743,3 @@ def _pools_now(server: Server, family: Family, subnet: VerifiedSubnet) -> tuple[
     if current.configuration is None:
         raise CatalogueUnavailable("Kea did not return the configuration facts of the Subnet.")
     return current.configuration.pools
-
-
-def _read_before(read: Callable[[], T]) -> T:
-    """Run the read that comes before the change. A failure means that the change was not sent."""
-    return _before_change(read, _READ_UNUSABLE)
-
-
-def _before_change(step: Callable[[], T], unusable: str) -> T:
-    """Run a step before the change. A failure means that the change was not sent; *unusable* explains a bad reply."""
-    try:
-        return step()
-    except KeaException as exc:
-        logger.warning("A step before a Configuration Change failed: %s", exc)
-        raise ConfigChangeRejected("not-sent", (f"Kea replied: {exc.reply_text}",)) from exc
-    except KeaTLSFileError as exc:
-        raise _missing_tls_file(exc) from exc
-    except (requests.RequestException, ValueError, RuntimeError) as exc:
-        logger.warning("A step before a Configuration Change failed", exc_info=True)
-        raise ConfigChangeRejected("not-sent", (unusable,)) from exc
-
-
-def _mutate(
-    client: KeaClient, family: Family, send: Callable[[], None], *, not_live: Callable[[], bool] | None
-) -> tuple[Application, tuple[str, ...]]:
-    """Send one command that can change the configuration, and classify what Kea did with it.
-
-    *not_live* reads whether a failed command left the configuration unchanged. None: no read can show it.
-    """
-    try:
-        send()
-    except KeaException as exc:
-        logger.warning("A Configuration Change failed: %s", exc)
-        diagnostic = f"Kea replied: {exc.reply_text}"
-        if not_live is None or exc.response.get("result") == _RESULT_FATAL or client.forwarding_failed(exc, family):
-            return "unknown", (diagnostic,)
-        try:
-            unchanged = not_live()
-        except (KeaException, OSError, ValueError, RuntimeError):
-            logger.warning("The check read after a failed Configuration Change failed", exc_info=True)
-            return "unknown", (diagnostic, "The read after the failure did not succeed.")
-        if unchanged:
-            raise ConfigChangeRejected("kea-rejected", (diagnostic,)) from exc
-        return "unknown", (diagnostic, "The read after the failure shows the change.")
-    except KeaTLSFileError as exc:
-        raise _missing_tls_file(exc) from exc
-    except requests.RequestException as exc:
-        if _never_sent(exc):
-            logger.warning("A Configuration Change could not connect to Kea", exc_info=True)
-            raise ConfigChangeRejected("not-sent", ("Kea could not be reached.",)) from exc
-        logger.warning("The reply to a Configuration Change was lost or unreadable", exc_info=True)
-        return "unknown", ("Kea's reply to the change was lost or unreadable.",)
-    except (ValueError, RuntimeError):
-        logger.warning("The reply to a Configuration Change was malformed", exc_info=True)
-        return "unknown", ("Kea's reply to the change was lost or unreadable.",)
-    return "applied", ()
-
-
-def _never_sent(exc: requests.RequestException) -> bool:
-    """Return whether the request failed while it connected, before any byte reached Kea."""
-    if isinstance(exc, requests.ConnectTimeout):
-        return True
-    if not isinstance(exc, requests.ConnectionError):
-        return False
-    pending: list[BaseException] = [exc]
-    while pending:
-        current = pending.pop()
-        if isinstance(current, NewConnectionError):
-            return True
-        # requests passes urllib3's MaxRetryError as an argument, not as the cause.
-        pending.extend(arg for arg in current.args if isinstance(arg, BaseException))
-        if isinstance(current, MaxRetryError) and current.reason is not None:
-            pending.append(current.reason)
-        if current.__cause__ is not None:
-            pending.append(current.__cause__)
-    return False
-
-
-def _missing_tls_file(exc: KeaTLSFileError) -> ConfigChangeRejected:
-    """Return the rejection for a TLS file that requests could not find before it sent anything."""
-    logger.warning("A TLS file of the Server is missing", exc_info=exc)
-    return ConfigChangeRejected(
-        "invalid-client-configuration", ("A TLS certificate, key or CA file of the Server could not be found.",)
-    )

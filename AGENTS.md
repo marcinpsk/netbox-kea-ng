@@ -214,6 +214,7 @@ URL request
       sync_jobs.py      (jobs tab, periodic sync management)
       settings_page.py  (Settings page: one section per settings singleton; ADR 0010)
   → config_write.py     (Configuration Changes: typed outcome, advisory lock, persist step)
+  → change_outcome.py   (ChangeRejected and the Application classifier that every change shares; ADR 0011)
   → kea.py              (HTTP POST to each daemon's / control socket)
   → display_cache.py    (the display cache: keys, generations, TTLs, admission; ADR 0009)
   → lease_reads.py      (the cached Lease Snapshot reads of the Leases tab and of the Lease badges; ADR 0009)
@@ -374,7 +375,7 @@ URL request
 ```text
 Exception
  ├── KeaException                  # base: any non-ok result from Kea
- └── ConfigChangeRejected          # config_write: the change is not live, with a reason
+ └── ChangeRejected                # change_outcome: the change is not live, with a reason
 ```
 
 **`views/notices.py` owns every Snapshot notice** (ADR 0003, Presentation). A view passes a Catalogue or Server
@@ -389,12 +390,12 @@ the sweep's exempt list.
 
 **`config_write` owns every Configuration Change** (ADR 0005). An
 operation returns a `ConfigChangeOutcome` (`applied`/`unknown` and
-`persisted`/`failed`/`not-requested`) or raises `ConfigChangeRejected` with a reason.
-A view runs it through `_run_config_change` in `views/_base.py`, which owns the
+`persisted`/`failed`/`not-requested`) or raises `ChangeRejected` with a reason.
+A view runs it through `_run_change` in `views/_base.py`, which owns the
 messages, and catches nothing itself. Shared Network add, edit and delete, Subnet add, edit and
 delete, Pool add and delete, Subnet and server DHCP Options, and Option Definition add and
-delete use it. An OpenGrep rule refuses an `except` of `ConfigChangeRejected` in `views/`
-outside `_run_config_change`. A second rule keeps that function in `views/_base.py`, and a third
+delete use it. An OpenGrep rule refuses an `except` of `ChangeRejected` in `views/`
+outside `_run_change`. A second rule keeps that function in `views/_base.py`, and a third
 refuses a broad `except` around a direct `config_write` call in a view. Only `config_write` operations take the per-daemon advisory
 lock. Reservation mutations call `KeaClient.persist`, but they do not wait for the lock. A Subnet, Pool
 or Subnet DHCP Options operation takes the Subnet ID and the CIDR that the page showed, and
@@ -465,7 +466,7 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
 - **Catch `(KeaException, requests.RequestException, RuntimeError, ValueError)`
   consistently** in user-facing handlers. `check_response()` raises `RuntimeError` for a
   malformed reply entry. Split `KeaException` when you need `kea_error_hint(exc)` for
-  hook-related errors (result=2). A Configuration Change goes through `_run_config_change`
+  hook-related errors (result=2). A Configuration Change goes through `_run_change`
   instead (see "Exception hierarchy").
 - **Use `kea_error_hint(exc)` for user-facing Kea error messages** — it maps result
   codes to actionable hints (result=2 → hook library not loaded, etc.).
