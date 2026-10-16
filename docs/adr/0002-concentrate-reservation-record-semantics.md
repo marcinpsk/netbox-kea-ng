@@ -46,7 +46,8 @@ Identity and scope are immutable during update. A change to either requires expl
 An update refetches the latest raw record, checks a signed fingerprint of managed facts, applies explicit unchanged,
 set, and clear operations, and preserves unknown Kea fields. A managed-fact conflict rejects the update. A concurrent
 change to an unknown field does not cause a false conflict. Mutation results distinguish intended state, applied
-state, persisted state, and verified state. Existing reservation signals use one typed before-and-after payload.
+state, persisted state, and verified state. [ADR 0012](0012-reservation-writes-are-configuration-changes.md) replaces this result
+with a Configuration Change Outcome. Existing reservation signals use one typed before-and-after payload.
 
 The module provides one shared immutable DHCP Option value and parser for Reservations, the Subnet Catalogue, and
 the DHCP plugin adapter. Unknown reservation fields stay private and are preserved during read-modify-write. They do

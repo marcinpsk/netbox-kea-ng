@@ -191,6 +191,8 @@ deleted. An OpenGrep rule refuses an `except` of the write exceptions in `views/
 
 Lease writes, lease wipe, and `dhcp-enable` or `dhcp-disable` change runtime state, not the Server
 Configuration. They are not Configuration Changes.
+[ADR 0011](0011-runtime-changes-return-a-typed-outcome.md) gives them the same Application rules.
+[ADR 0012](0012-reservation-writes-are-configuration-changes.md) makes Reservation writes Configuration Changes.
 
 ## Consequences
 
