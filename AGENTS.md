@@ -411,7 +411,9 @@ failure or result 5 is `unknown`. A failure result on a Lease write or a wipe is
 a Lease that is gone before the send, result 3 on `lease{v}-del` and result 4 on `lease{v}-update` are
 `target-changed`. A view runs one change through `_run_change` and a loop of changes (multi-Lease delete, Lease CSV
 import) through `_run_change_loop`, which stops at the first `unknown` row. The journal entry, the signals and the
-IPAM synchronization run in the view only after `applied`; a failure there shows a separate error.
+IPAM synchronization run in the view only after `applied`; a failure there shows a separate error. The OpenGrep rule
+`kea-runtime-write-outside-runtime-change` refuses a call to a `KeaClient` runtime write primitive outside
+`runtime_change`.
 
 Subnet add is the first multi-step change: `add_subnet` adds the Subnet and then assigns it to
 a Shared Network. When the assignment does not apply, it deletes the Subnet again, but only
