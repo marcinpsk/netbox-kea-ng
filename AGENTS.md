@@ -215,6 +215,7 @@ URL request
       settings_page.py  (Settings page: one section per settings singleton; ADR 0010)
   → config_write.py     (Configuration Changes: typed outcome, advisory lock, persist step)
   → change_outcome.py   (ChangeRejected and the Application classifier that every change shares; ADR 0011)
+  → runtime_change.py   (Runtime Changes: Lease add/edit/delete/wipe, DHCP enable/disable; ADR 0011)
   → kea.py              (HTTP POST to each daemon's / control socket)
   → display_cache.py    (the display cache: keys, generations, TTLs, admission; ADR 0009)
   → lease_reads.py      (the cached Lease Snapshot reads of the Leases tab and of the Lease badges; ADR 0009)
@@ -395,11 +396,22 @@ A view runs it through `_run_change` in `views/_base.py`, which owns the
 messages, and catches nothing itself. Shared Network add, edit and delete, Subnet add, edit and
 delete, Pool add and delete, Subnet and server DHCP Options, and Option Definition add and
 delete use it. An OpenGrep rule refuses an `except` of `ChangeRejected` in `views/`
-outside `_run_change`. A second rule keeps that function in `views/_base.py`, and a third
-refuses a broad `except` around a direct `config_write` call in a view. Only `config_write` operations take the per-daemon advisory
+outside `_run_change` and `_run_change_loop`. A second rule keeps those functions in `views/_base.py`, and a third
+refuses a broad `except` around a direct `config_write` or `runtime_change` call in a view. Only `config_write` operations take the per-daemon advisory
 lock. Reservation mutations call `KeaClient.persist`, but they do not wait for the lock. A Subnet, Pool
 or Subnet DHCP Options operation takes the Subnet ID and the CIDR that the page showed, and
 sends nothing unless its `MutationScope` returns a Verified Subnet with both.
+
+**`runtime_change` owns every Runtime Change** (ADR 0011): Lease add, edit, delete and wipe, and DHCP enable and
+disable. An operation returns a `RuntimeChangeOutcome` (`applied`/`unknown` and diagnostics) or raises
+`ChangeRejected`. Both modules classify through `change_outcome` (`before_change`, `mutate`, `never_sent`): a failed
+read before the write or a connect-phase failure is `not-sent`; a lost or malformed reply, a Control Agent forward
+failure or result 5 is `unknown`. A failure result on a Lease write or a wipe is `unknown`, and on `dhcp-enable` or
+`dhcp-disable` a rejection; no operation reads Kea after the send. A fresh read that does not match the shown Lease,
+a Lease that is gone before the send, result 3 on `lease{v}-del` and result 4 on `lease{v}-update` are
+`target-changed`. A view runs one change through `_run_change` and a loop of changes (multi-Lease delete, Lease CSV
+import) through `_run_change_loop`, which stops at the first `unknown` row. The journal entry, the signals and the
+IPAM synchronization run in the view only after `applied`; a failure there shows a separate error.
 
 Subnet add is the first multi-step change: `add_subnet` adds the Subnet and then assigns it to
 a Shared Network. When the assignment does not apply, it deletes the Subnet again, but only

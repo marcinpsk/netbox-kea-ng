@@ -1173,8 +1173,10 @@ def test_lease_deleted_before_delete(
     kea.command(f"lease{family}-del", family, arguments={"ip-address": ip})
 
     page.locator('button[name="_confirm"]').click()
-    # Kea returns result 3, so nothing is reported as deleted.
-    expect(page.locator(".toast-body")).to_have_text(f"Lease {ip} was not found in Kea; nothing was deleted.")
+    # The fresh read before the delete finds no lease, so nothing is sent or reported as deleted.
+    expect(page.locator(".toast-body")).to_have_text(
+        f"Lease {ip}: This request changed nothing. Kea no longer holds it."
+    )
 
 
 @pytest.mark.parametrize("family", (6, 4))

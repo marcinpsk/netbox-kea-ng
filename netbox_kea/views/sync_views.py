@@ -16,7 +16,7 @@ from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
 from django.views import View
 
-from .. import event_scope, forms
+from .. import event_scope, forms, runtime_change
 from ..constants import Family
 from ..ipam_reconciliation import (
     RESERVATION,
@@ -32,6 +32,7 @@ from ..leases import (
     LeaseFound,
     LeaseIdentity,
     LeaseLookupFailed,
+    LeaseRequest,
     is_current,
     parse_selection,
     shown_lease,
@@ -51,8 +52,8 @@ from ..utilities import (
     kea_error_hint,
     parse_lease_csv,
 )
-from ._base import ConditionalLoginRequiredMixin, _client_settings_error, _KeaChangeMixin
-from .leases import _LEASES_TAB, _add_lease_journal, lease_sync_gates
+from ._base import ConditionalLoginRequiredMixin, _client_settings_error, _KeaChangeMixin, _run_change_loop
+from .leases import _LEASES_TAB, _journal_applied, _signal_applied, lease_sync_gates
 from .reservation_mutations import _confirmed_side_effects, _identity_from_request, _reservation_target_scope
 from .reservations import _RESERVATIONS_TAB, _live_capabilities, reservation_badge
 from .workspace import ServerFamilyMixin
@@ -510,13 +511,16 @@ class ServerReservation6BulkImportView(_BaseBulkReservationImportView):
 # Bulk Lease CSV Import
 # ─────────────────────────────────────────────────────────────────────────────
 
+_NOT_SENT = "NetBox stopped at the unconfirmed row and did not send this row."
+
 
 class _BaseBulkLeaseImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Upload a CSV file and create one Lease for each row via ``lease_add``.
 
     **GET**: render the upload form.
-    **POST**: parse each row into a typed creation request → loop :meth:`KeaClient.lease_add` → show summary.
-    A row that is not a valid request rejects the whole file before Kea sees any row.
+    **POST**: parse each row into a typed creation request → one ``runtime_change.add_lease`` per row → show summary.
+    A row that is not a valid request rejects the whole file before Kea sees any row. The import stops at the first
+    row that Kea did not confirm.
     """
 
     workspace_section = "leases"
@@ -572,48 +576,36 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLo
             form.add_error("csv_file", "CSV parsing failed. Check the file format and column headers.")
             return self._render(request, instance, form, None)
 
-        try:
-            client = instance.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            form.add_error(None, _client_settings_error(instance, exc))
-            return self._render(request, instance, form, None)
-        created: list[str] = []
-        error_rows: list[dict[str, Any]] = []
-
-        for line, creation in rows:
-            failed = {"line": line, "address": str(creation.address)}
-            try:
-                client.lease_add(creation)
-            except KeaException as exc:
-                error_rows.append({**failed, "error": kea_error_hint(exc)})
-            except requests.RequestException:
-                logger.exception("Connection error importing lease CSV line %s", line)
-                error_rows.append({**failed, "error": "Connection error: could not reach the Kea server."})
-            except (RuntimeError, ValueError):
-                logger.exception("Data error importing lease CSV line %s", line)
-                error_rows.append({**failed, "error": "Invalid response from Kea: could not parse the server reply."})
-            else:
-                created.append(str(creation.address))
-                # A bulk import reads nothing back, so no observed Lease goes with the confirmed request.
-                lease_added.send_robust(
-                    sender=None,
-                    server=instance,
-                    creation=creation,
-                    lease=None,
-                    dhcp_version=self.dhcp_version,
-                    request=request,
-                )
-
+        loop = _run_change_loop(rows, lambda row: runtime_change.add_lease(instance, self.dhcp_version, row[1]))
+        created = [str(creation.address) for (_line, creation), _outcome in loop.applied]
         if created:
-            try:
-                _add_lease_journal(instance, request.user, "added", created)
-            except DatabaseError:
-                logger.exception("Failed to record the lease import journal for server %s", instance.pk)
+            _journal_applied(request, instance, "added", created)
+        for (_line, creation), _outcome in loop.applied:
+            # A bulk import reads nothing back, so no observed Lease goes with the confirmed request.
+            _signal_applied(
+                request,
+                lease_added,
+                "lease_added",
+                server=instance,
+                creation=creation,
+                lease=None,
+                dhcp_version=self.dhcp_version,
+            )
+
+        def entry(row: tuple[int, LeaseRequest], status: str, message: str = "") -> dict[str, Any]:
+            return {"line": row[0], "address": str(row[1].address), "status": status, "message": message}
+
+        problem_rows = [entry(row, "Not applied", message) for row, message in loop.rejected]
+        if loop.unknown is not None:
+            problem_rows.append(entry(loop.unknown[0], "Not confirmed", loop.unknown[1]))
+        problem_rows.extend(entry(row, "Not sent", _NOT_SENT) for row in loop.not_sent)
         result = {
             "created": len(created),
-            "errors": len(error_rows),
-            "error_rows": error_rows,
-            "total": len(created) + len(error_rows),
+            "rejected": len(loop.rejected),
+            "unknown": int(loop.unknown is not None),
+            "not_sent": len(loop.not_sent),
+            "problem_rows": sorted(problem_rows, key=lambda item: item["line"]),
+            "total": len(rows),
         }
         return self._render(request, instance, self.form_class(), result)
 

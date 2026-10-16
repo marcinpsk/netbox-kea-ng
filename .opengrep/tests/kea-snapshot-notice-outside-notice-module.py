@@ -54,6 +54,16 @@ def _run_change(request, change):
     return outcome
 
 
+def _rejection_message(rejection):
+    # ok: kea-snapshot-notice-outside-notice-module
+    return " ".join(rejection.diagnostics)
+
+
+def _unconfirmed_message(outcome):
+    # ok: kea-snapshot-notice-outside-notice-module
+    return " ".join(outcome.diagnostics)
+
+
 def _read_reservations(client, version, catalogue, diagnostics):
     page = client.reservation_page(version, catalogue)
     # ok: kea-snapshot-notice-outside-notice-module

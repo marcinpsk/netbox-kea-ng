@@ -33,15 +33,11 @@ from .dhcp_options import (
 from .leases import (
     ALL_LEASES,
     ExactLeaseResult,
+    FreshLease,
     Lease,
     LeaseAbsent,
-    LeaseChanged,
-    LeaseChangeRefused,
-    LeaseChangeResult,
-    LeaseConflict,
     LeaseCoverage,
     LeaseDiagnostic,
-    LeaseEdit,
     LeaseFound,
     LeaseIdentity,
     LeaseLookupFailed,
@@ -49,12 +45,9 @@ from .leases import (
     LeaseRead,
     LeaseRequest,
     LeaseSnapshot,
-    ShownLease,
     _creation_arguments,
-    _edited_arguments,
     allocation_identities,
     confirm_lease_creation,
-    lease_edit_conflicts,
     lookup_arguments,
     read_exact_lease,
     read_lease_change,
@@ -1734,69 +1727,48 @@ class KeaClient:
         )
         return read_exact_lease(response, identity)
 
-    def _checked_lease(
-        self, shown: ShownLease, edit: LeaseEdit
-    ) -> tuple[Lease, dict[str, Any]] | LeaseConflict | LeaseAbsent | LeaseLookupFailed:
-        """Read the shown Lease again; return it with its raw body, or the reason to send no change."""
-        family = shown.identity.family
-        response = self.command(LEASE_GET[family], family, arguments=lookup_arguments(shown.identity), check=(0, 3))
-        result = read_exact_lease(response, shown.identity)
-        if not isinstance(result, LeaseFound):
-            return result
-        conflicts = lease_edit_conflicts(shown, result.lease, edit)
-        if conflicts:
-            return LeaseConflict(fields=conflicts)
-        # read_exact_lease found one record object in this reply.
-        return result.lease, cast("dict[str, Any]", response[0]["arguments"])
-
-    def lease_update(self, shown: ShownLease, edit: LeaseEdit) -> LeaseChangeResult:
-        """Write the fields of *edit* to the shown Lease, after a fresh read agrees with the shown facts.
-
-        The update sends the fresh Kea body with only the written fields changed, so renewal fields and
-        extension values stay as Kea holds them. The check is not atomic: another writer can change the
-        Lease between the read and the update. A Lease that is gone is never created again.
-
-        Raises:
-            ValueError: If *edit* writes no field.
-            KeaException: If Kea returns an unexpected result.
-            MalformedLeaseResponse: If a reply envelope is unusable.
-
-        """
-        if not edit.written:
-            raise ValueError("A Lease edit must write at least one field.")
-        checked = self._checked_lease(shown, edit)
-        if not isinstance(checked, tuple):
-            return checked
-        fresh, raw = checked
-        response = self.command(
-            LEASE_UPDATE[fresh.family], fresh.family, arguments=_edited_arguments(raw, fresh, edit), check=(0, 4)
-        )
-        if read_lease_change(response, refused=4):
-            return LeaseChanged(lease=fresh)
-        return LeaseChangeRefused(identity=fresh.identity)
-
-    def lease_delete(self, shown: ShownLease) -> LeaseChangeResult:
-        """Delete the shown Lease, after a fresh read agrees with its binding, Subnet and kind.
-
-        The check is not atomic: another writer can change the Lease between the read and the deletion.
+    def lease_get_fresh(self, identity: LeaseIdentity) -> FreshLease | LeaseAbsent | LeaseLookupFailed:
+        """Read the one Lease with *identity* before a change, with the Kea body that an update sends back.
 
         Raises:
             KeaException: If Kea returns a result other than success or not found.
-            MalformedLeaseResponse: If a reply envelope is unusable.
+            MalformedLeaseResponse: If the reply envelope is unusable.
 
         """
-        checked = self._checked_lease(shown, LeaseEdit())
-        if not isinstance(checked, tuple):
-            return checked
-        fresh, _raw = checked
         response = self.command(
-            LEASE_DEL[fresh.family], fresh.family, arguments=lookup_arguments(fresh.identity), check=(0, 3)
+            LEASE_GET[identity.family], identity.family, arguments=lookup_arguments(identity), check=(0, 3)
         )
-        return (
-            LeaseChanged(lease=fresh)
-            if read_lease_change(response, refused=3)
-            else LeaseAbsent(identity=fresh.identity)
+        result = read_exact_lease(response, identity)
+        if not isinstance(result, LeaseFound):
+            return result
+        # read_exact_lease found one record object in this reply.
+        return FreshLease(result.lease, cast("dict[str, Any]", response[0]["arguments"]))
+
+    def lease_update(self, family: Family, body: dict[str, Any]) -> bool:
+        """Send one ``lease{v}-update`` of *body*, as ``FreshLease.edited`` built it. A Lease is never created.
+
+        Returns False when Kea answers that the Lease was deleted or changed after the read (result 4).
+
+        Raises:
+            KeaException: If Kea returns another failure result.
+            MalformedLeaseResponse: If the reply envelope is unusable.
+
+        """
+        response = self.command(LEASE_UPDATE[family], family, arguments=body, check=(0, 4))
+        return read_lease_change(response, refused=4)
+
+    def lease_delete(self, identity: LeaseIdentity) -> bool:
+        """Send one ``lease{v}-del`` of the Lease with *identity*. Returns False when Kea holds no such Lease (result 3).
+
+        Raises:
+            KeaException: If Kea returns another failure result.
+            MalformedLeaseResponse: If the reply envelope is unusable.
+
+        """
+        response = self.command(
+            LEASE_DEL[identity.family], identity.family, arguments=lookup_arguments(identity), check=(0, 3)
         )
+        return read_lease_change(response, refused=3)
 
     def lease_search(
         self,

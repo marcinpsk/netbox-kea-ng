@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 import logging
 import re
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 from urllib.parse import parse_qsl, unquote, urlparse, urlsplit
 from urllib.parse import urlencode as _urlencode
 
@@ -24,6 +24,7 @@ from ..constants import Family
 from ..dhcp_options import shown_options
 from ..kea import DaemonStatus, DaemonVersion, KeaClient, KeaCommand, KeaException, SubnetUtilization, close_quietly
 from ..models import Server
+from ..runtime_change import RuntimeChangeOutcome
 from ..server_configuration import SharedNetwork
 from ..subnet_catalogue import ConfiguredSubnet, VerifiedSubnet
 
@@ -40,19 +41,23 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseTable)
-OutcomeT = TypeVar("OutcomeT", bound=ConfigChangeOutcome)
+OutcomeT = TypeVar("OutcomeT", bound=ConfigChangeOutcome | RuntimeChangeOutcome)
+RowT = TypeVar("RowT")
 
 # Allowed characters in a pool range/CIDR string (digits, dots, colons, letters a-f, slash, hyphen).
 # Protects the <path:pool> URL parameter from injection before it reaches the Kea API.
 _POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
 
 _UNCONFIRMED = "Kea did not confirm the change. Check the server configuration before retrying."
+_UNCONFIRMED_RUNTIME = (
+    "Kea did not confirm the change. Check the Server before you try again. NetBox recorded nothing for this change."
+)
 _REJECTED: dict[RejectionReason, str] = {
     "kea-rejected": "Kea rejected the change.",
     "config-test-rejected": "Kea's config-test rejected the change, so it was not applied.",
     "not-sent": "The change was not sent to Kea.",
     "invalid-client-configuration": "The change was not sent to Kea, because the Server settings are not valid.",
-    "target-changed": "The target changed in Kea, so this request changed nothing.",
+    "target-changed": "This request changed nothing.",
 }
 
 
@@ -142,31 +147,77 @@ class _KeaChangeMixin:
 
 
 def _run_change(
-    request: HttpRequest, confirmed: str | Callable[[OutcomeT], str], change: Callable[[], OutcomeT]
+    request: HttpRequest,
+    confirmed: str | Callable[[OutcomeT], str],
+    change: Callable[[], OutcomeT],
+    *,
+    subject: str = "",
 ) -> OutcomeT | None:
     """Run one change, show one message for its outcome or its rejection, and return the outcome.
 
     *confirmed* is the message for a change that Kea applied, such as "Shared network 'x' created.", or a function
-    that builds it from the outcome. Returns None after a rejection.
+    that builds it from the outcome. *subject*, such as "Lease 192.0.2.10", starts any other message. Returns None
+    after a rejection.
     """
     try:
         outcome = change()
     except ChangeRejected as rejection:
-        messages.error(request, " ".join((_REJECTED[rejection.reason], *rejection.diagnostics)))
+        messages.error(request, _about(subject, _rejection_message(rejection)))
         return None
     if outcome.application == "unknown":
-        # Never claim the change is live: the disk warning names the running configuration only.
-        not_saved = ("Kea also could not save its running configuration to disk.",)
-        parts = (_UNCONFIRMED, *(not_saved if outcome.persistence == "failed" else ()), *outcome.diagnostics)
-        messages.warning(request, " ".join(parts))
+        messages.warning(request, _about(subject, _unconfirmed_message(outcome)))
         return outcome
     text = confirmed if isinstance(confirmed, str) else confirmed(outcome)
-    if outcome.persistence == "failed":
+    if isinstance(outcome, ConfigChangeOutcome) and outcome.persistence == "failed":
         restart = "It is live, but it may not survive a Kea restart, because Kea did not save it to disk."
         messages.warning(request, " ".join((text, restart, *outcome.diagnostics)))
     else:
         messages.success(request, text)
     return outcome
+
+
+@dataclass
+class ChangeLoop(Generic[RowT, OutcomeT]):
+    """The rows of a loop of changes, by what Kea did with them, each with its outcome or its message."""
+
+    applied: list[tuple[RowT, OutcomeT]] = field(default_factory=list)
+    rejected: list[tuple[RowT, str]] = field(default_factory=list)
+    unknown: tuple[RowT, str] | None = None
+    #: The rows after the unknown row, which the loop did not send.
+    not_sent: list[RowT] = field(default_factory=list)
+
+
+def _run_change_loop(rows: Sequence[RowT], change: Callable[[RowT], OutcomeT]) -> ChangeLoop[RowT, OutcomeT]:
+    """Send one change for each of *rows*. Stop at the first unknown row; a rejected row does not stop the loop."""
+    loop: ChangeLoop[RowT, OutcomeT] = ChangeLoop()
+    for index, row in enumerate(rows):
+        try:
+            outcome = change(row)
+        except ChangeRejected as rejection:
+            loop.rejected.append((row, _rejection_message(rejection)))
+            continue
+        if outcome.application == "unknown":
+            loop.unknown = (row, _unconfirmed_message(outcome))
+            loop.not_sent = list(rows[index + 1 :])
+            break
+        loop.applied.append((row, outcome))
+    return loop
+
+
+def _rejection_message(rejection: ChangeRejected) -> str:
+    return " ".join((_REJECTED[rejection.reason], *rejection.diagnostics))
+
+
+def _unconfirmed_message(outcome: ConfigChangeOutcome | RuntimeChangeOutcome) -> str:
+    if isinstance(outcome, RuntimeChangeOutcome):
+        return " ".join((_UNCONFIRMED_RUNTIME, *outcome.diagnostics))
+    # Never claim the change is live: the disk warning names the running configuration only.
+    not_saved = ("Kea also could not save its running configuration to disk.",)
+    return " ".join((_UNCONFIRMED, *(not_saved if outcome.persistence == "failed" else ()), *outcome.diagnostics))
+
+
+def _about(subject: str, text: str) -> str:
+    return f"{subject}: {text}" if subject else text
 
 
 def _catalogue_subnet_row(

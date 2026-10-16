@@ -44,7 +44,7 @@ from .kea_stub import (
     stub_kea,
 )
 from .test_ipam_reconciliation import _kea, _lease, _links, _reconcile, _row, _server
-from .utils import _make_db_server, _ViewTestBase, lease_phase, with_kea_client_config
+from .utils import UNCONFIRMED_RUNTIME, _make_db_server, _ViewTestBase, lease_phase, with_kea_client_config
 
 _SUBNETS4 = [{"id": 10, "subnet": "192.0.2.0/24"}]
 _SUBNETS6 = [{"id": 10, "subnet": "2001:db8:1::/64"}]
@@ -327,7 +327,7 @@ class LeaseDeleteTest(_ViewTestBase):
             {"ip-address": "2001:db8:100:100::", "type": "IA_PD"}, [b["arguments"] for b in kea.bodies("lease6-del")]
         )
         messages = [str(message) for message in get_messages(response.wsgi_request)]
-        self.assertEqual(messages, ["Deleted 2 DHCPv6 lease(s)."])
+        self.assertEqual(messages, ["Deleted 2 DHCPv6 lease(s): 2001:db8:1::10, 2001:db8:100:100::/56."])
 
     def test_a_lease_kea_does_not_hold_is_not_reported_deleted(self):
         received = []
@@ -345,11 +345,11 @@ class LeaseDeleteTest(_ViewTestBase):
 
         self.assertEqual(kea.commands(), ["lease6-get"])
         messages = [str(message) for message in get_messages(response.wsgi_request)]
-        self.assertEqual(messages, ["Lease 2001:db8:1::10 was not found in Kea; nothing was deleted."])
+        self.assertEqual(messages, ["Lease 2001:db8:1::10: This request changed nothing. Kea no longer holds it."])
         self.assertEqual(received, [])
         self.assertFalse(JournalEntry.objects.filter(assigned_object_id=self.server.pk).exists())
 
-    def test_an_empty_delete_reply_fails_that_lease_and_the_rest_continue(self):
+    def test_an_empty_delete_reply_is_unconfirmed_and_stops_the_delete(self):
         records = [lease_record(address, subnet_id=10) for address in ("2001:db8:1::10", "2001:db8:1::11")]
         daemon = LeaseDaemon(6, *records)
         responses = daemon.responses()
@@ -359,14 +359,13 @@ class LeaseDeleteTest(_ViewTestBase):
             )
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(list(daemon.leases), [("IA_NA", "2001:db8:1::10")])
+        self.assertEqual(list(daemon.leases), [("IA_NA", "2001:db8:1::10"), ("IA_NA", "2001:db8:1::11")])
         messages = [str(message) for message in get_messages(response.wsgi_request)]
         self.assertEqual(
             messages,
             [
-                "Error deleting lease 2001:db8:1::10: see server logs for details.",
-                "Deleted 1 DHCPv6 lease(s).",
-                "Failed to delete 1 lease(s). See above for details.",
+                f"Lease 2001:db8:1::10: {UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable.",
+                "NetBox stopped at the unconfirmed lease and did not send the delete of 1 lease(s): 2001:db8:1::11.",
             ],
         )
 

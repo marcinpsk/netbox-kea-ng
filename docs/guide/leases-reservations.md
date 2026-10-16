@@ -25,6 +25,12 @@ SPDX-License-Identifier: Apache-2.0
   between the check and the change. A lease that is gone is never created again.
 - An edit writes only the fields that you change. A blank hostname clears the hostname; a blank
   client identifier or valid lifetime keeps the current value.
+- When Kea does not confirm an add, edit, delete or wipe, the page says so and tells you to check the
+  Server: the reply was lost, or Kea returned an error after it can have changed the lease, for example
+  from a SQL lease database. The message shows Kea's own text when Kea sent one. NetBox then writes no
+  journal entry and sends no signal. A delete of several leases and a CSV import stop at the first
+  lease that Kea did not confirm, and list the leases that NetBox did not send. A lease that NetBox did
+  not send, or that changed in Kea before the change, does not stop them.
 - After an add, the plugin reads the new lease back from Kea. *Sync to NetBox IPAM* claims it only
   when that read shows a current lease whose client binding, and Subnet and hostname when the form
   gave them, match the request.

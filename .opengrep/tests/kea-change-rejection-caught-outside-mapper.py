@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Test fixtures for kea-change-rejection-caught-outside-mapper. Intentionally
 # contains rule-violating code; excluded from ruff (see pyproject exclude).
-from netbox_kea import change_outcome, config_write
+from netbox_kea import change_outcome, config_write, runtime_change
 from netbox_kea.change_outcome import ChangeRejected
 
 
@@ -49,3 +49,24 @@ def ok_view_catches_a_form_error(request, form):
     # ok: kea-change-rejection-caught-outside-mapper
     except ValueError:
         messages.error(request, "The form is not valid.")
+
+
+# The path exclude of kea-change-mapper-outside-base does not apply in `opengrep test`.
+# ruleid: kea-change-mapper-outside-base
+def _run_change_loop(rows, change):
+    loop = []
+    for row in rows:
+        try:
+            loop.append(change(row))
+        # ok: kea-change-rejection-caught-outside-mapper
+        except ChangeRejected as rejection:
+            loop.append(rejection.reason)
+    return loop
+
+
+def bad_view_catches_a_runtime_change_rejection(request, server, shown):
+    try:
+        runtime_change.delete_lease(server, 4, shown)
+    # ruleid: kea-change-rejection-caught-outside-mapper
+    except change_outcome.ChangeRejected:
+        messages.error(request, "Kea did not delete the Lease.")

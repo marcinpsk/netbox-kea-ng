@@ -20,3 +20,12 @@ def _run_change(request, confirmed, change):
 # ok: kea-change-mapper-outside-base
 def _run_subnet_change(request, change):
     return _run_change(request, "Saved.", change)
+
+
+# ruleid: kea-change-mapper-outside-base
+def _run_change_loop(rows, change):
+    try:
+        return [change(row) for row in rows]
+    # ok: kea-change-rejection-caught-outside-mapper
+    except ChangeRejected:
+        return []
