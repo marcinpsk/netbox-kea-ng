@@ -42,6 +42,7 @@ from ..kea import (
     KeaException,
     LeaseQueryGuardError,
     LeaseQueryUnknownSubnet,
+    kea_error_message,
     lease_query_guard_message,
 )
 from ..lease_reads import LeaseSearch, cached_read, read_leases
@@ -93,7 +94,6 @@ from ..utilities import (
     OptionalViewTab,
     diagnostic_reasons,
     export_table,
-    kea_error_message,
     lease_csv_response,
     snapshot_rows,
 )

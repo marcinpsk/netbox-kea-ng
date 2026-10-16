@@ -178,6 +178,18 @@ class ApplicationTests(TestCase):
                 self.assertEqual(outcome.diagnostics, ("Kea replied: Lease for address 192.0.2.50 already exists.",))
                 self.assertEqual(commands, [*operation.before, operation.write])
 
+    def test_result_128_on_a_lease_write_shows_the_fixed_guidance(self):
+        for operation in _LEASE_WRITES:
+            with self.subTest(operation.name):
+                outcome, _commands = self._result(operation, {"result": 128, "text": "Connection refused"})
+                self.assertEqual(outcome.application, "unknown")
+                self.assertEqual(
+                    outcome.diagnostics,
+                    (
+                        "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable.",
+                    ),
+                )
+
     def test_result_1_on_a_service_change_is_a_rejection_with_kea_text(self):
         for operation in _SERVICE_CHANGES:
             with self.subTest(operation.name):

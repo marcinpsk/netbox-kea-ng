@@ -17,7 +17,7 @@ import requests
 from urllib3.exceptions import MaxRetryError, NewConnectionError
 
 from .constants import Family
-from .kea import KeaClient, KeaException, KeaTLSFileError
+from .kea import KeaClient, KeaException, KeaTLSFileError, kea_error_message
 
 if TYPE_CHECKING:
     from .models import Server
@@ -71,7 +71,7 @@ def before_change(step: Callable[[], T], unusable: str) -> T:
         return step()
     except KeaException as exc:
         logger.warning("A step before a change failed: %s", exc)
-        raise ChangeRejected("not-sent", (f"Kea replied: {exc.reply_text}",)) from exc
+        raise ChangeRejected("not-sent", (kea_error_message(exc),)) from exc
     except KeaTLSFileError as exc:
         raise _missing_tls_file(exc) from exc
     except (requests.RequestException, ValueError, RuntimeError) as exc:
@@ -95,7 +95,7 @@ def mutate(
         send()
     except KeaException as exc:
         logger.warning("A change failed: %s", exc)
-        diagnostic = f"Kea replied: {exc.reply_text}"
+        diagnostic = kea_error_message(exc)
         if exc.response.get("result") == _RESULT_FATAL or client.forwarding_failed(exc, family):
             return "unknown", (diagnostic,)
         if on_failure == "reject":

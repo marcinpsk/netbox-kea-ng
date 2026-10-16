@@ -26,7 +26,7 @@ from ..ipam_reconciliation import (
     reconcile,
     reconcile_permissions,
 )
-from ..kea import KeaClient, KeaException
+from ..kea import KeaClient, KeaException, kea_error_message
 from ..leases import (
     ExactLeaseResult,
     LeaseFound,
@@ -49,7 +49,6 @@ from ..subnet_catalogue import CatalogueUnavailable, MutationScope, for_synchron
 from ..sync_permissions import sync_gate
 from ..utilities import (
     LeaseCSVError,
-    kea_error_message,
     parse_lease_csv,
 )
 from ._base import ConditionalLoginRequiredMixin, _client_settings_error, _KeaChangeMixin, _run_change_loop
