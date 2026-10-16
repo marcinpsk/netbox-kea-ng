@@ -477,11 +477,12 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
   handlers.
 - **Catch `(KeaException, requests.RequestException, RuntimeError, ValueError)`
   consistently** in user-facing handlers. `check_response()` raises `RuntimeError` for a
-  malformed reply entry. Split `KeaException` when you need `kea_error_hint(exc)` for
-  hook-related errors (result=2). A Configuration Change goes through `_run_change`
+  malformed reply entry. Split `KeaException` when you show Kea's answer with
+  `kea_error_message(exc)`. A Configuration Change or a Runtime Change goes through `_run_change`
   instead (see "Exception hierarchy").
-- **Use `kea_error_hint(exc)` for user-facing Kea error messages** — it maps result
-  codes to actionable hints (result=2 → hook library not loaded, etc.).
+- **Use `kea_error_message(exc)` for user-facing Kea error messages**: fixed guidance for result 2 (hook
+  library not loaded) and result 128 (daemon not reachable), else `Kea replied: <text>`. Show Kea's text, never
+  the text of a Python exception.
 - **Guard action URLs/buttons by permission AND lookup state.** Don't offer
   Sync/Reserve for a Lease whose Reservation Match is Unknown; don't offer add/edit to
   users without `change` permission.

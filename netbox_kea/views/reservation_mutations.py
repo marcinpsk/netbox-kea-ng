@@ -47,7 +47,7 @@ from ..reservations import (
 from ..signals import reservation_created, reservation_deleted, reservation_updated
 from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, MutationScope, SubnetIdentity, VerifiedSubnet
 from ..sync_permissions import sync_gate
-from ..utilities import kea_error_hint
+from ..utilities import kea_error_message
 from ._base import _client_settings_error, _KeaChangeMixin, _safe_return_url
 from .notices import notice, show_notices
 from .reservations import (
@@ -625,7 +625,7 @@ class _ReservationAddView(_ReservationMutationView):
                 form.add_error("hostname", str(exc))
             except KeaException as exc:
                 logger.exception("Kea rejected a DHCPv%s Reservation create", self.dhcp_version)
-                messages.error(request, kea_error_hint(exc))
+                messages.error(request, kea_error_message(exc))
             except (requests.RequestException, RuntimeError, ValueError):
                 logger.exception("Could not create a DHCPv%s Reservation", self.dhcp_version)
                 messages.error(request, "The Reservation could not be created. See server logs.")
@@ -788,7 +788,7 @@ class _ReservationEditView(_ReservationMutationView):
                         form.add_error("hostname", str(exc))
                     except KeaException as exc:
                         logger.exception("Kea rejected a Reservation update")
-                        messages.error(request, kea_error_hint(exc))
+                        messages.error(request, kea_error_message(exc))
                     except (requests.RequestException, RuntimeError, ValueError):
                         logger.exception("Could not update the Reservation")
                         messages.error(request, "The Reservation could not be updated. See server logs.")
@@ -910,7 +910,7 @@ class _ReservationDeleteView(_ReservationMutationView):
             messages.error(request, "The Reservation changed or no longer exists.")
         except KeaException as exc:
             logger.exception("Kea rejected a Reservation delete")
-            messages.error(request, kea_error_hint(exc))
+            messages.error(request, kea_error_message(exc))
         except (requests.RequestException, RuntimeError, ValueError):
             logger.exception("Could not delete the Reservation")
             messages.error(request, "The Reservation could not be deleted. See server logs.")

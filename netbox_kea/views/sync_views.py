@@ -49,7 +49,7 @@ from ..subnet_catalogue import CatalogueUnavailable, MutationScope, for_synchron
 from ..sync_permissions import sync_gate
 from ..utilities import (
     LeaseCSVError,
-    kea_error_hint,
+    kea_error_message,
     parse_lease_csv,
 )
 from ._base import ConditionalLoginRequiredMixin, _client_settings_error, _KeaChangeMixin, _run_change_loop
@@ -191,7 +191,7 @@ class _BaseReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin,
             return _row_error(request, "The Reservation or its Subnet is no longer in Kea. Reload the list.")
         except KeaException as exc:
             logger.exception("Kea error synchronizing a DHCPv%s Reservation", self.dhcp_version)
-            return _row_error(request, f"Reservation synchronization failed: {kea_error_hint(exc)}")
+            return _row_error(request, f"Reservation synchronization failed: {kea_error_message(exc)}")
         except (requests.RequestException, DatabaseError, RuntimeError, ValidationError, ValueError):
             logger.exception("Could not synchronize a DHCPv%s Reservation", self.dhcp_version)
             return _row_error(request, "Reservation synchronization failed. See server logs.")
@@ -404,7 +404,7 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
                 mutation_result = client.reservation_create(reservation, catalogue)
             except KeaException as exc:
                 logger.exception("Kea rejected Reservation document entry %s", index)
-                failure = {"position": f"reservations[{index}]", "message": kea_error_hint(exc)}
+                failure = {"position": f"reservations[{index}]", "message": kea_error_message(exc)}
                 break
             except (requests.RequestException, RuntimeError, ValueError):
                 logger.exception("Reservation document entry %s failed", index)

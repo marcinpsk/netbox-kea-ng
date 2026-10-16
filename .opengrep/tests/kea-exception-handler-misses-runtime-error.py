@@ -12,7 +12,7 @@ def bad_toggle_misses_runtime_error(request, client):
     try:
         client.command("dhcp-enable", 4)
     except KeaException as exc:
-        messages.error(request, kea_error_hint(exc))
+        messages.error(request, kea_error_message(exc))
     except (requests.RequestException, ValueError):
         messages.error(request, "An internal error occurred.")
 
@@ -42,7 +42,7 @@ def ok_sibling_clause_catches_runtime_error(request, client):
     try:
         client.command("dhcp-enable", 4)
     except KeaException as exc:
-        messages.error(request, kea_error_hint(exc))
+        messages.error(request, kea_error_message(exc))
     except (requests.RequestException, RuntimeError, ValueError):
         messages.error(request, "An internal error occurred.")
 
