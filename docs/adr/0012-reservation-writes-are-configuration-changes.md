@@ -36,10 +36,12 @@ A Reservation add, edit or delete is a Configuration Change.
 - The live reads before the write (the Subnet Catalogue `MutationScope`, the target read and the fingerprint
   check) run as reads before the change: a failure means that the change was not sent. A changed fingerprint, or
   a target that is gone, gives a rejection with the reason `target-changed`.
-- The write follows the ADR 0005 rule for a native command. After a failure result, other than a Control Agent
-  forward failure or result 5, the operation reads the Reservation again by its Reservation Identity under the
-  lock. When the read shows none of the requested changes, the result is a rejection. Otherwise, or when the read
-  fails, the result is `unknown`.
+- Result 3 on `reservation-del` means that no host data source had the Reservation. It gives a rejection with
+  the reason `target-changed`.
+- Any other failure result gives `unknown`, with no read after it. `host_cmds` writes each selected host data
+  source in turn and does not roll back the earlier sources when a later one fails, and a SQL source can lose
+  the commit acknowledgement. A read cannot show which sources changed. The message shows Kea's text, as in
+  ADR 0011.
 - The verification read runs only after `applied`.
 - `KeaClient` keeps the Reservation commands, cursors and raw record handling of ADR 0002 and ADR 0004.
   `config_write` owns sequencing, the lock, the classification and the outcome.
@@ -57,7 +59,8 @@ Reservation writes and Subnet changes to one daemon wait for each other.
 
 A lost reply on a Reservation write reads as unconfirmed, and NetBox records no journal entry or IPAM claim for it.
 
-This decision changes the result type of ADR 0002 and the scope of the ADR 0005 lock.
+This decision changes the result type of ADR 0002 and the scope of the ADR 0005 lock. Reservation writes do not
+use the check read of ADR 0005.
 
 ## Rejected alternatives
 
@@ -65,5 +68,8 @@ This decision changes the result type of ADR 0002 and the scope of the ADR 0005 
   and Runtime Changes take none.
 - Leave Reservation writes to a later move of the edit protocol out of the views: rejected because the lock gap
   and the false failure report are live now.
-- Classify a failure result without the read after it: rejected because ADR 0005 does not assume that a native
-  command fails before it applies, and nothing shows that `host_cmds` does.
+- Read the Reservation again after a failure result, as ADR 0005 does for a native command: rejected because
+  the read can find the Reservation in a source that the write did not reach yet, and then calls a partial
+  write a rejection.
+- Classify a failure result as a rejection: rejected because a later host data source can fail after an earlier
+  one changed.
