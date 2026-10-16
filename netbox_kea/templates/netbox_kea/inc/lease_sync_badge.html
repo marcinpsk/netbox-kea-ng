@@ -1,0 +1,27 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{# The Lease Synchronization State of a Lease row (views/leases.py _lease_badge); the state badge is the NetBox link. #}
+{% with state=record.sync_state %}
+<span class="d-inline-flex flex-wrap gap-1">
+{% if state.code == "synchronized" %}
+<a href="{{ record.netbox_url }}" class="badge text-bg-success text-decoration-none"><i class="mdi mdi-link-variant" aria-hidden="true"></i> Synced</a>
+{% elif state.code == "not-synchronized" %}
+<a href="{{ record.netbox_url }}" class="badge text-bg-secondary text-decoration-none"><i class="mdi mdi-link-variant" aria-hidden="true"></i> Not Synchronized</a>
+{% elif state.code == "unmarked" %}
+<a href="{{ record.netbox_url }}" class="badge text-bg-warning text-decoration-none"><i class="mdi mdi-link-variant" aria-hidden="true"></i> Unmarked</a>
+{% elif state.code == "unknown" %}
+<span class="badge text-bg-warning" title="{{ state.reason }}">Unknown</span>
+{% elif not state and record.netbox_url %}
+<a href="{{ record.netbox_url }}" class="badge text-bg-secondary text-decoration-none"><i class="mdi mdi-link-variant" aria-hidden="true"></i> NetBox</a>
+{% endif %}
+{% if record.sync_url %}
+<button type="button" hx-post="{{ record.sync_url }}"
+  hx-vals='{"ip_address":"{{ record.label|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}'
+  {% include "netbox_kea/inc/row_action_htmx.html" %}
+  {% if record.sync_title %}title="{{ record.sync_title }}" {% endif %}class="badge text-bg-secondary border-0" style="cursor:pointer">
+  <i class="mdi mdi-sync" aria-hidden="true"></i> Sync</button>
+{% elif record.sync_refusal %}
+{% include "netbox_kea/inc/sync_refused.html" with reason=record.sync_refusal label="Sync" icon="mdi-sync" button_class="badge text-bg-secondary border-0 opacity-50" %}
+{% endif %}
+</span>
+{% endwith %}

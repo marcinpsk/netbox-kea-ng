@@ -211,9 +211,9 @@ class LeaseBrowsingTest(_ViewTestBase):
             response = self.client.get(self._url(6), {"by": "subnet_id", "q": "10"}, HTTP_HX_REQUEST="true")
 
         rows = {row.record["kind"]: row.record for row in response.context["table"].rows}
-        self.assertEqual(rows["address"].get("netbox_ip_url"), address.get_absolute_url())
-        self.assertIsNone(rows["delegated-prefix"].get("netbox_ip_url"))
-        self.assertContains(response, " Synced</a>", count=1)
+        self.assertEqual(rows["address"]["netbox_url"], address.get_absolute_url())
+        self.assertIsNone(rows["delegated-prefix"]["netbox_url"])
+        self.assertContains(response, " Unmarked</a>", count=1)
 
     def test_a_delegated_prefix_row_shows_its_length_and_searches_prefixes(self):
         records = [

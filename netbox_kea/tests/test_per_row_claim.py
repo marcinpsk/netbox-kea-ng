@@ -27,6 +27,11 @@ def _typed(**changes):
     return typed_lease(complete_lease({**_LEASE, **changes}))
 
 
+def _synchronized(result) -> frozenset[str]:
+    """Return the addresses whose reports the claim applied."""
+    return frozenset(address for address, row in result.addresses.items() if row.synchronized)
+
+
 class PerRowLeaseCleanupTest(TestCase):
     def test_lease_sync_uses_the_same_kea_subnet_facts_as_reconciliation(self):
         from ipam.models import Prefix
@@ -143,7 +148,7 @@ class ClaimOwnershipTest(TestCase):
         self.assertEqual(IPAddress.objects.values().get(pk=ip.pk), before)
         self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=ip).exists())
         self.assertEqual(result.addresses["198.18.0.11"].outcome, "created")
-        self.assertEqual(result.synchronized_addresses, frozenset({"198.18.0.11"}))
+        self.assertEqual(_synchronized(result), frozenset({"198.18.0.11"}))
         self.assertEqual(str(IPAMOwnershipLink.objects.get().ip_address.address.ip), "198.18.0.11")
 
     def test_a_created_reservation_row_checks_its_mac_once_with_a_bounded_query(self):
@@ -179,7 +184,7 @@ class ClaimOwnershipTest(TestCase):
             result = claim(self.server, 4, records, force=True, catalogue=_catalogue({}, 4))
             self.assertEqual(result.addresses, {})
             self.assertIsNone(result.primary)
-            self.assertEqual(result.synchronized_addresses, frozenset())
+            self.assertEqual(_synchronized(result), frozenset())
         self.assertFalse(IPAddress.objects.exists())
         self.assertFalse(IPAMOwnershipLink.objects.exists())
         self.assertEqual(self.kea.commands(), [])
@@ -282,7 +287,7 @@ class ClaimOwnershipTest(TestCase):
         from netbox_kea.ipam_reconciliation import claim
 
         result = claim(self.server, 4, [self.lease, _typed(**{"ip-address": "198.18.0.11"})], force=False)
-        self.assertEqual(len(result.synchronized_addresses), 2)
+        self.assertEqual(len(_synchronized(result)), 2)
         self.assertEqual(self.kea.commands().count("subnet4-list"), 1)
         self.assertEqual(self.kea.commands().count("config-get"), 1)
 
@@ -412,7 +417,7 @@ class ClaimOwnershipTest(TestCase):
             {address: row.outcome for address, row in result.addresses.items()},
             {"2001:db8::20": "conflict", "2001:db8::21": "created"},
         )
-        self.assertEqual(result.synchronized_addresses, frozenset({"2001:db8::21"}))
+        self.assertEqual(_synchronized(result), frozenset({"2001:db8::21"}))
         self.assertEqual(IPAddress.objects.values().get(pk=foreign.pk), before)
         self.assertEqual(set(IPAMOwnershipLink.objects.values_list("family", "source")), {(6, "reservation")})
         self.assertEqual(str(result.primary.address), "2001:db8::21/64")

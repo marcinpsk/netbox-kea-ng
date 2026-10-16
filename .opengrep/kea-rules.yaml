@@ -1217,3 +1217,34 @@ rules:
           - metavariable-regex:
               metavariable: $NAME
               regex: ^_
+
+  - id: kea-ownership-read-without-database-error
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A view reads the IPAM Ownership with address_ownership() or prefix_ownership() outside a try that catches
+      DatabaseError. The read only feeds a badge or an advisory, so a failed read must show the unknown state or no
+      advisory, not a 500 reply. Catch DatabaseError, log it, and degrade as the Reservation and Lease pages and Row
+      Sync do.
+      Limits: a call inside an except or finally block of such a try, an aliased import and a call through a
+      helper are not seen.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "**/views/**"
+    patterns:
+      - pattern-either:
+          - pattern: address_ownership(...)
+          - pattern: prefix_ownership(...)
+      - pattern-not-inside: |
+          try:
+              ...
+          except DatabaseError:
+              ...
+      - pattern-not-inside: |
+          try:
+              ...
+          except (..., DatabaseError, ...):
+              ...

@@ -1,9 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 import csv
+import ipaddress
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, cast
 
 import requests
 from django.contrib import messages
@@ -14,13 +15,13 @@ from django.http.request import HttpRequest
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
 from django.views import View
-from netaddr import AddrFormatError, IPAddress
 
 from .. import event_scope, forms
 from ..constants import Family
 from ..ipam_reconciliation import (
     RESERVATION,
     ReservationPhase,
+    address_ownership,
     claim_permissions,
     reconcile,
     reconcile_permissions,
@@ -53,7 +54,7 @@ from ..utilities import (
 from ._base import ConditionalLoginRequiredMixin, _client_settings_error, _KeaChangeMixin
 from .leases import _LEASES_TAB, _add_lease_journal, lease_sync_gates
 from .reservation_mutations import _confirmed_side_effects, _identity_from_request, _reservation_target_scope
-from .reservations import _RESERVATIONS_TAB, _live_capabilities
+from .reservations import _RESERVATIONS_TAB, _live_capabilities, reservation_badge
 from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
@@ -181,12 +182,8 @@ class _BaseReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin,
                 catalogue,
             ):
                 from ..ipam_reconciliation import claim
-                from ..sync import reservation_synchronization_state
 
                 result = claim(server, self.dhcp_version, [reservation], force=True, catalogue=catalogue)
-                state = reservation_synchronization_state(
-                    reservation, synchronized_addresses=result.synchronized_addresses
-                )
         except event_scope.EventDispatchError:
             raise
         except Http404:
@@ -197,16 +194,19 @@ class _BaseReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin,
         except (requests.RequestException, DatabaseError, RuntimeError, ValidationError, ValueError):
             logger.exception("Could not synchronize a DHCPv%s Reservation", self.dhcp_version)
             return _row_error(request, "Reservation synchronization failed. See server logs.")
+        # The badge reads the links as the page does, so a reload shows the same state.
+        addresses = [str(address) for address in reservation.addresses]
+        try:
+            ownership = address_ownership(server, self.dhcp_version, RESERVATION, addresses, request.user)
+        except DatabaseError:
+            logger.exception("Could not read NetBox IPAM state after a DHCPv%s Reservation Sync", self.dhcp_version)
+            ownership = None
         return render(
             request,
             "netbox_kea/inc/claim_results.html",
             {
                 "claim_result": result,
-                "record": {
-                    "sync_state": state,
-                    "netbox_ip_url": result.primary.get_absolute_url() if result.primary else "",
-                    "sync_url": None,
-                },
+                "record": {**reservation_badge(reservation, ownership), "sync_url": None},
             },
         )
 
@@ -286,19 +286,16 @@ class ServerReservation6BulkSyncView(_BaseBulkReservationSyncView):
 
 
 class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
-    """Advisory GET endpoint: report whether *ip* already exists in NetBox IPAM.
+    """Advisory GET endpoint: report what saving the Reservation does to the IP address *ip* in NetBox IPAM.
 
-    Used by the reservation **Add** form to warn (without blocking) when the IP
-    the user is entering already exists in NetBox — especially when it is a
-    *foreign* (manually-curated) entry that a sync would overwrite.
-
-    Server-scoped via ``pk`` so the existing ``Server`` view permission applies.
-    Returns an empty body when the ``ip`` query param is missing/invalid or the
-    IP is not present in NetBox; otherwise renders an advisory HTML fragment.
+    Used by the Reservation form to warn, without blocking. Server-scoped via ``pk`` so the existing ``Server``
+    view permission applies. Returns an empty body when the ``ip`` query param is missing or invalid, or when the
+    sync VRF holds no IP address that the user may view, or when the IPAM read fails; otherwise renders an advisory
+    HTML fragment.
     """
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
-        """Look up *ip* in NetBox IPAM and return an advisory fragment (or empty body)."""
+        """Read the IPAM Ownership of *ip* and return an advisory fragment (or empty body)."""
         # Scope to a viewable server so anonymous/unauthorised probes can't
         # enumerate NetBox IPAM through this endpoint.
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
@@ -307,30 +304,21 @@ class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
         if not raw_ip:
             return HttpResponse("")
         try:
-            # Canonicalize before the DB lookup: non-canonical forms (especially
-            # IPv6 case/zero-compression variants) would otherwise miss the stored
-            # canonical record and suppress the conflict advisory.
-            ip_str = str(IPAddress(raw_ip))
-        except (AddrFormatError, ValueError):
+            address = ipaddress.ip_address(raw_ip)
+        except ValueError:
             return HttpResponse("")
-
-        from ipam.models import IPAddress as NbIP
-
-        from ..sync import is_kea_managed_ip
-
-        # Scope the lookup to IPs this user may view so the advisory never leaks an
-        # IP's status/description/assignment to someone without IPAM access. Mirrors
-        # get_netbox_ip()'s host match but adds NetBox object-level permission filtering.
-        visible = NbIP.objects.restrict(request.user, "view")
-        nb_ip = visible.filter(address__net_host=ip_str, vrf_id=server.sync_vrf_id).first()
-        if nb_ip is None:
+        if getattr(address, "scope_id", None):
             return HttpResponse("")
-
-        return render(
-            request,
-            "netbox_kea/inc/reservation_ip_check.html",
-            {"nb_ip": nb_ip, "kea_managed": is_kea_managed_ip(nb_ip)},
-        )
+        family = cast("Family", address.version)
+        # The read is limited to the IP addresses the user may view, so the advisory leaks no field of another one.
+        try:
+            (found,) = address_ownership(server, family, RESERVATION, [str(address)], request.user).values()
+        except DatabaseError:
+            logger.exception("Could not read NetBox IPAM state for the Reservation advisory")
+            return HttpResponse("")
+        if found.obj is None:
+            return HttpResponse("")
+        return render(request, "netbox_kea/inc/reservation_ip_check.html", {"nb_ip": found.obj, "state": found.state})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
