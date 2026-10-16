@@ -772,11 +772,11 @@ class BaseServerLeasesDeleteView(ServerFamilyMixin, GetReturnURLMixin, generic.O
         if loop.unknown is not None:
             shown, message = loop.unknown
             message.show(request, f"Lease {shown.label}")
-        if loop.not_sent:
+        if loop.stopped_at is not None and loop.not_sent:
             not_sent = ", ".join(shown.label for shown in loop.not_sent)
             messages.warning(
                 request,
-                f"NetBox stopped at the unconfirmed lease and did not send the delete of {len(loop.not_sent)}"
+                f"NetBox stopped at lease {loop.stopped_at.label} and did not send the delete of {len(loop.not_sent)}"
                 f" lease(s): {not_sent}.",
             )
         return _after_lease_delete(request, return_url)

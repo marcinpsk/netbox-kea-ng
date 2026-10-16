@@ -510,7 +510,7 @@ class ServerReservation6BulkImportView(_BaseBulkReservationImportView):
 # Bulk Lease CSV Import
 # ─────────────────────────────────────────────────────────────────────────────
 
-_NOT_SENT = "NetBox stopped at the unconfirmed row and did not send this row."
+_NOT_SENT = "NetBox stopped at an earlier row and did not send this row."
 
 
 class _BaseBulkLeaseImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):

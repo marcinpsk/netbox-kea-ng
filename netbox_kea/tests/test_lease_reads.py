@@ -365,7 +365,7 @@ class LeaseDeleteTest(_ViewTestBase):
             messages,
             [
                 f"Lease 2001:db8:1::10: {UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable.",
-                "NetBox stopped at the unconfirmed lease and did not send the delete of 1 lease(s): 2001:db8:1::11.",
+                "NetBox stopped at lease 2001:db8:1::10 and did not send the delete of 1 lease(s): 2001:db8:1::11.",
             ],
         )
 

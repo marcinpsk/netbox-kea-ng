@@ -199,24 +199,34 @@ class ChangeLoop(Generic[RowT, OutcomeT]):
     applied: list[tuple[RowT, OutcomeT]] = field(default_factory=list)
     rejected: list[tuple[RowT, ChangeMessage]] = field(default_factory=list)
     unknown: tuple[RowT, ChangeMessage] | None = None
-    #: The rows after the unknown row, which the loop did not send.
+    #: The row where the loop stopped: the unknown row, or a row whose client could not be built.
+    stopped_at: RowT | None = None
+    #: The rows after *stopped_at*, which the loop did not send.
     not_sent: list[RowT] = field(default_factory=list)
 
 
 def _run_change_loop(rows: Sequence[RowT], change: Callable[[RowT], OutcomeT]) -> ChangeLoop[RowT, OutcomeT]:
-    """Send one change for each of *rows*. Stop at the first unknown row; a rejected row does not stop the loop."""
+    """Send one change for each of *rows*. A rejected row does not stop the loop.
+
+    The loop stops at the first unknown row, and at the first row whose client could not be built, because every
+    later row would fail the same way.
+    """
     loop: ChangeLoop[RowT, OutcomeT] = ChangeLoop()
     for index, row in enumerate(rows):
         try:
             outcome = change(row)
         except ChangeRejected as rejection:
             loop.rejected.append((row, _rejection_message(rejection)))
-            continue
-        if outcome.application == "unknown":
+            if rejection.reason != "invalid-client-configuration":
+                continue
+        else:
+            if outcome.application == "applied":
+                loop.applied.append((row, outcome))
+                continue
             loop.unknown = (row, _unconfirmed_message(outcome))
-            loop.not_sent = list(rows[index + 1 :])
-            break
-        loop.applied.append((row, outcome))
+        loop.stopped_at = row
+        loop.not_sent = list(rows[index + 1 :])
+        break
     return loop
 
 
