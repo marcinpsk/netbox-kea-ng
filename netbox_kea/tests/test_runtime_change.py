@@ -131,41 +131,40 @@ class ApplicationTests(TestCase):
                     self.assertEqual(rejection.diagnostics, ("Kea could not be reached.",))
                     self.assertEqual(commands, [*operation.before, operation.write])
 
-    def test_an_http_401_or_403_answer_is_not_sent(self):
-        """The web server in front of Kea refused the request, so Kea did not run the command (ADR 0011)."""
+    def test_an_http_401_answer_is_not_sent(self):
+        """The web server in front of Kea refused the credentials, so Kea did not run the command (ADR 0011)."""
         for operation in _OPERATIONS:
-            for status in (401, 403):
-                with self.subTest(operation.name, status=status):
-                    reply = _http_response({"error": "Forbidden"}, status=status)
-                    rejection, commands = self._rejection(operation, operation.responses(reply))
-                    self.assertEqual(rejection.reason, "not-sent")
-                    self.assertEqual(
-                        rejection.diagnostics,
-                        (f"Kea refused the request (HTTP {status}). Check the user name and password of the Server.",),
-                    )
-                    self.assertEqual(commands, [*operation.before, operation.write])
+            with self.subTest(operation.name):
+                reply = _http_response({"error": "Unauthorized"}, status=401)
+                rejection, commands = self._rejection(operation, operation.responses(reply))
+                self.assertEqual(rejection.reason, "not-sent")
+                self.assertEqual(
+                    rejection.diagnostics,
+                    ("Kea refused the credentials (HTTP 401). Check the user name and password of the Server.",),
+                )
+                self.assertEqual(commands, [*operation.before, operation.write])
 
-    def test_a_server_error_from_a_proxy_is_unknown(self):
+    def test_any_other_http_error_is_unknown(self):
+        """A proxy can forward the command and then block Kea's reply, for example with HTTP 403."""
         for operation in _OPERATIONS:
-            for status in (500, 502, 503):
+            for status in (403, 500, 502, 503):
                 with self.subTest(operation.name, status=status):
                     outcome, _commands = self._result(operation, _http_response({"error": "down"}, status=status))
                     self.assertEqual((outcome.application, outcome.diagnostics), ("unknown", (_LOST,)))
 
-    def test_a_tls_handshake_failure_is_not_sent(self):
-        errors = _tls_errors()
+    def test_a_tls_certificate_verification_failure_is_not_sent(self):
+        failure = _tls_errors()["verify"]
         for operation in _OPERATIONS:
-            for name in ("handshake", "verify"):
-                with self.subTest(operation.name, failure=name):
-                    rejection, _commands = self._rejection(operation, operation.responses(errors[name]))
-                    self.assertEqual(rejection.reason, "not-sent")
-                    self.assertEqual(
-                        rejection.diagnostics,
-                        ("The TLS handshake with Kea failed. Check the TLS settings of the Server.",),
-                    )
+            with self.subTest(operation.name):
+                rejection, _commands = self._rejection(operation, operation.responses(failure))
+                self.assertEqual(rejection.reason, "not-sent")
+                self.assertEqual(
+                    rejection.diagnostics,
+                    ("NetBox could not verify the TLS certificate of Kea. Check the TLS settings of the Server.",),
+                )
 
-    def test_a_tls_failure_after_the_send_is_unknown(self):
-        failure = _tls_errors()["after send"]
+    def test_any_other_tls_failure_is_unknown(self):
+        failure = _tls_errors()["handshake"]
         self.assertIsInstance(failure, requests.exceptions.SSLError)
         for operation in _OPERATIONS:
             with self.subTest(operation.name):

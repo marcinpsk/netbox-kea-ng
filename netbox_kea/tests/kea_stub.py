@@ -550,10 +550,9 @@ def _tls_server_context() -> ssl.SSLContext:
 
 
 def _tls_errors() -> dict[str, requests.RequestException]:
-    """Return real TLS errors that requests raises: two in the handshake, and one after the request was sent.
+    """Return two real TLS errors that requests raises while it connects. Call it outside ``stub_kea``.
 
-    Call it outside ``stub_kea``. The handshake fails on a server that answers in plain HTTP and on a certificate
-    that the client cannot verify. After the send, the server writes a TLS record that the client cannot decrypt.
+    "verify": the client cannot verify a self-signed certificate. "handshake": the server answers in plain HTTP.
     """
 
     def plain_http(connection: socket.socket) -> None:
@@ -564,23 +563,8 @@ def _tls_errors() -> dict[str, requests.RequestException]:
         with suppress(ssl.SSLError):
             _tls_server_context().wrap_socket(connection, server_side=True)
 
-    def broken_record_after_the_request(connection: socket.socket) -> None:
-        raw = connection.dup()
-        _tls_server_context().wrap_socket(connection, server_side=True).recv(65536)
-        raw.sendall(b"\x17\x03\x03\x00\x10" + b"x" * 16)
-        # Close only after the client: an early close can reach the client as a reset before the broken record.
-        raw.settimeout(5)
-        with suppress(OSError):
-            while raw.recv(4096):
-                pass
-        raw.close()
-
     errors = {}
-    for name, handle, verify in (
-        ("handshake", plain_http, False),
-        ("verify", handshake, True),
-        ("after send", broken_record_after_the_request, False),
-    ):
+    for name, handle, verify in (("handshake", plain_http, False), ("verify", handshake, True)):
         port, thread = _serve_once(handle)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
