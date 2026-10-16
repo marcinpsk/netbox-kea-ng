@@ -253,7 +253,7 @@ def _add_lease_journal(
     server: "Server",
     user: Any,
     action: str,
-    ip_addresses: "list[str] | str",
+    ip_addresses: list[str],
     hw_address: str = "",
     hostname: str = "",
     duid: str = "",
@@ -264,7 +264,7 @@ def _add_lease_journal(
         server: The Server instance the journal entry is attached to.
         user: The request.user who performed the action.
         action: Human-readable action name: "added" or "deleted".
-        ip_addresses: A single IP string or list of IPs affected.
+        ip_addresses: The addresses or delegated prefixes of the leases.
         hw_address: Optional hardware address (for add events).
         hostname: Optional hostname (for add events).
         duid: Optional DUID (for DHCPv6 add events).
@@ -274,8 +274,6 @@ def _add_lease_journal(
             so callers log the error and continue.
 
     """
-    if isinstance(ip_addresses, str):
-        ip_addresses = [ip_addresses]
     ip_list = ", ".join(ip_addresses)
     if len(ip_addresses) == 1:
         parts = [f"Lease {action}: {ip_list}"]
