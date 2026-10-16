@@ -51,10 +51,12 @@ live. It raises `ChangeRejected` when the change is not live, as far as NetBox c
 - The classifier of ADR 0005 (`_before_change`, `_mutate`, `_never_sent`) moves from `config_write` into one
   shared module. `config_write` and `runtime_change` both use it.
 - A failed read before the write, such as the fresh read of the shown Lease, means that the change was not sent.
-- A connect-phase failure means that the change was not sent. An HTTP 401 or 403 answer, a TLS handshake failure
-  and an invalid URL also mean that the change was not sent, because Kea did not run the command. A lost or
-  malformed reply, a Control Agent forward failure, or result 5 gives `unknown`.
-- Result 2 is a rejection for every command: the command is not supported, so Kea ran no handler for it.
+- A connect-phase failure means that the change was not sent. An HTTP 401 answer, a TLS certificate verification
+  failure and an invalid URL also mean that the change was not sent, because Kea did not run the command. NetBox
+  does not follow a redirect for a command. A lost or malformed reply, any other HTTP error, a Control Agent
+  forward failure, or result 5 gives `unknown`.
+- Result 2 in a well-formed reply is a rejection for every command: the command is not supported, so Kea ran
+  no handler for it.
 - Any other failure result on `dhcp-enable` or `dhcp-disable` is a rejection, with no read after it. These
   commands change only the state in Kea memory, so a failure result means that nothing changed. A command added
   later that can fail after it applies gives `unknown` on a failure result.
@@ -136,6 +138,7 @@ The view read ladders stay hand-written for now, but they use the new formatter.
 - Ask Kea for its lease backend and trust a failure result from memfile: rejected because it adds a configuration
   read on the failure path, and the form validation in NetBox already stops most argument errors.
 - Run the side effects after `unknown`: rejected because NetBox can then record a change that never happened.
+- Treat an HTTP 403 answer as not sent: rejected because a proxy can block the reply after Kea ran the command.
 - Keep the Lease result variants beside the outcome: rejected because one operation then has two vocabularies.
 - Show only fixed messages: rejected because the operator loses Kea's own answer, such as a Lease that already
   exists.
