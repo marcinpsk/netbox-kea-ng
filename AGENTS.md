@@ -658,7 +658,9 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Transactions**: open every transaction with `event_scope.atomic()`, never `transaction.atomic`
   (opengrep `kea-raw-atomic`). At the top level of a tracked request, on a NetBox release whose `event_tracking` nests (`event_scope._nested_tracking`), it is a unit, whose events
   dispatch after its COMMIT or not at all. Put `except event_scope.EventDispatchError: raise` before a broad
-  `except`. Read `docs/design/savepoint-event-queue.md` (sections 22 and 24) before you change it.
+  `except`. The one exception is a side effect after a Runtime Change that Kea applied: the Lease add view
+  reports the failed dispatch of its IPAM sync as a separate error, because the request must report the applied
+  change. Read `docs/design/savepoint-event-queue.md` (sections 22 and 24) before you change it.
 - **Kea option names per family**: DNS is `domain-name-servers` (v4) or `dns-servers` (v6), and NTP is
   `ntp-servers` (v4) or `sntp-servers` (v6). `dhcp_options._FORM_MANAGED_OPTIONS` maps each form field to them.
 - **Forms**: lease search forms inherit `BaseLeasesSarchForm` (the typo is

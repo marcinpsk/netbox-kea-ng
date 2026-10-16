@@ -629,10 +629,12 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Add "except event_scope.EventDispatchError: raise" before the broad handler of this try.
-      The unit committed and its events did not dispatch, so the run must fail, not report a failed row.
-      Limits: the handler order is not checked; a try with finally and handlers around callers of
-      event_scope.atomic other than claim() and reconcile() are not seen.
+      Add an "except event_scope.EventDispatchError:" clause before the broad handler of this try.
+      The unit committed and its events did not dispatch, so the run must fail ("raise"), not report a
+      failed row. After a Runtime Change that Kea applied, the clause can report the failed dispatch as a
+      side-effect error instead (ADR 0011). Limits: the handler order and the body of the clause are not
+      checked; a try with finally and handlers around callers of event_scope.atomic other than claim() and
+      reconcile() are not seen.
     metadata:
       category: correctness
       confidence: HIGH
@@ -802,19 +804,19 @@ rules:
           try:
               ...
           except event_scope.EventDispatchError:
-              raise
+              ...
       - pattern-not-inside: |
           try:
               ...
           except event_scope.EventDispatchError:
-              raise
+              ...
           else:
               ...
       - pattern-not-inside: |
           try:
               ...
           except event_scope.EventDispatchError:
-              raise
+              ...
           finally:
               ...
       - pattern-either:
