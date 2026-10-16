@@ -103,6 +103,25 @@ def _assert_lease_read_failed(test, response):
     _assert_no_error_template(test, response)
 
 
+_IMPORT_NOT_SENT = "NetBox stopped at an earlier row and did not send this row."
+
+
+def _import_counts(response) -> dict[str, int]:
+    """Return the number of rows of each status of a Lease CSV import report."""
+    return {group.status: len(group.rows) for group in response.context["result"]["groups"]}
+
+
+def _import_report(response) -> dict[str, tuple[str, list[tuple[str, ...]]]]:
+    """Return the heading and the table rows of each rendered section of a Lease CSV import report."""
+    page = BeautifulSoup(response.content, "html.parser")
+    report = {}
+    for section in page.select("section[data-import-status]"):
+        heading = section.find("h6")
+        rows = [tuple(cell.get_text(strip=True) for cell in row.select("td")) for row in section.select("tbody tr")]
+        report[str(section["data-import-status"])] = (heading.get_text(strip=True) if heading else "", rows)
+    return report
+
+
 def _lease_lines(response) -> list[str]:
     """Return one line per excluded record of the Lease Notice, as the partial lists them."""
     found = response.context["lease_notice"]
@@ -2496,7 +2515,7 @@ class TestBulkLeaseImportView(_ViewTestBase):
         in_use = {"result": 1, "text": "lease for address 10.0.0.11 already exists"}
         with _lease_stub({"lease4-add": queued({"result": 0}, in_use)}):
             response = self.client.post(self._url(version=4), self._post(csv_bytes=self._csv4(rows)))
-        self.assertEqual(response.context["result"]["created"], 1)
+        self.assertEqual(_import_counts(response)["created"], 1)
         journal = JournalEntry.objects.get(assigned_object_id=self.server.pk)
         self.assertEqual(journal.comments, "Lease added: 10.0.0.10")
         self.assertEqual(journal.created_by, self.user)
@@ -2512,7 +2531,7 @@ class TestBulkLeaseImportView(_ViewTestBase):
         ):
             response = self.client.post(self._url(version=4), self._post(version=4))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["result"]["created"], 1)
+        self.assertEqual(_import_counts(response)["created"], 1)
         self.assertEqual(
             [str(message) for message in get_messages(response.wsgi_request)],
             ["Kea applied the change, but NetBox could not write the journal entry; see server logs."],
@@ -2577,16 +2596,18 @@ class TestBulkLeaseImportView(_ViewTestBase):
             response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), ["lease4-add", "lease4-add"])
-        result = response.context["result"]
+        self.assertEqual(_import_counts(response), {"created": 1, "unconfirmed": 1, "not-applied": 0, "not-sent": 1})
         self.assertEqual(
-            (result["created"], result["rejected"], result["unknown"], result["not_sent"], result["total"]),
-            (1, 0, 1, 1, 3),
+            _import_report(response),
+            {
+                "created": ("Rows that Kea created", [("2", "10.0.0.10")]),
+                "unconfirmed": (
+                    "Row that Kea did not confirm",
+                    [("3", "10.0.0.11", f"{UNCONFIRMED_RUNTIME} Kea replied: bad")],
+                ),
+                "not-sent": ("Rows that NetBox did not send", [("4", "10.0.0.12", _IMPORT_NOT_SENT)]),
+            },
         )
-        self.assertEqual(
-            [(row["line"], row["address"], row["status"]) for row in result["problem_rows"]],
-            [(3, "10.0.0.11", "Not confirmed"), (4, "10.0.0.12", "Not sent")],
-        )
-        self.assertEqual(result["problem_rows"][0]["message"], f"{UNCONFIRMED_RUNTIME} Kea replied: bad")
         self.assertContains(response, "Kea did not confirm one row, so NetBox stopped there.")
 
     def test_each_created_row_sends_lease_added_without_a_read_back(self) -> None:
@@ -2609,7 +2630,7 @@ class TestBulkLeaseImportView(_ViewTestBase):
         with _lease_stub({"lease4-add": queued({"result": 0}, refused, {"result": 0})}) as kea:
             response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
 
-        self.assertEqual(response.context["result"]["created"], 2)
+        self.assertEqual(_import_counts(response)["created"], 2)
         self.assertNotIn("lease4-get", kea.commands())
         self.assertEqual(
             [(str(call["creation"].address), call["lease"], call["dhcp_version"]) for call in received],
@@ -2629,8 +2650,8 @@ class TestBulkLeaseImportView(_ViewTestBase):
         with _lease_stub({"lease4-add": []}):
             response = self.client.post(self._url(version=4), self._post(version=4))
 
-        result = response.context["result"]
-        self.assertEqual((result["created"], result["unknown"]), (0, 1))
+        counts = _import_counts(response)
+        self.assertEqual((counts["created"], counts["unconfirmed"]), (0, 1))
         self.assertEqual(received, [])
 
     def test_a_rejected_row_names_the_file_line_after_comment_and_blank_lines(self):
@@ -2647,14 +2668,15 @@ class TestBulkLeaseImportView(_ViewTestBase):
             response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
-            [
-                (item["line"], item["address"], item["status"], item["message"])
-                for item in response.context["result"]["problem_rows"]
-            ],
-            [(5, "10.0.0.11", "Not applied", "The change was not sent to Kea. Kea could not be reached.")],
+            _import_report(response),
+            {
+                "created": ("Rows that Kea created", [("3", "10.0.0.10")]),
+                "not-applied": (
+                    "Rows that Kea did not apply",
+                    [("5", "10.0.0.11", "The change was not sent to Kea. Kea could not be reached.")],
+                ),
+            },
         )
-        self.assertContains(response, "<th>Line</th>", html=True)
-        self.assertContains(response, "<td>5</td>", html=True)
 
     def test_post_empty_csv_shows_form_error(self):
         """Uploading a CSV with only a header (no data rows) returns 200 with empty result."""
@@ -2664,9 +2686,8 @@ class TestBulkLeaseImportView(_ViewTestBase):
             response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
-        result = response.context.get("result")
-        if result is not None:
-            self.assertEqual(result["created"], 0)
+        if response.context.get("result") is not None:
+            self.assertEqual(_import_counts(response)["created"], 0)
 
     def test_get_requires_login(self):
         """Unauthenticated GET redirects to login."""
@@ -3067,12 +3088,14 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
         self.assertEqual(
-            [(row["line"], row["status"], row["message"]) for row in response.context["result"]["problem_rows"]],
-            [
-                (2, "Not applied", INVALID_SERVER_SETTINGS),
-                (3, "Not sent", "NetBox stopped at an earlier row and did not send this row."),
-                (4, "Not sent", "NetBox stopped at an earlier row and did not send this row."),
-            ],
+            _import_report(response),
+            {
+                "not-applied": ("Rows that Kea did not apply", [("2", "10.0.0.1", INVALID_SERVER_SETTINGS)]),
+                "not-sent": (
+                    "Rows that NetBox did not send",
+                    [("3", "10.0.0.2", _IMPORT_NOT_SENT), ("4", "10.0.0.3", _IMPORT_NOT_SENT)],
+                ),
+            },
         )
 
     def test_a_malformed_reply_body_is_an_unconfirmed_row(self):
@@ -3090,15 +3113,19 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
                     response = self.client.post(self._url(), {"csv_file": csv_file})
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(
-                    response.context["result"]["problem_rows"],
-                    [
-                        {
-                            "line": 2,
-                            "address": "10.0.0.1",
-                            "status": "Not confirmed",
-                            "message": f"{UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable.",
-                        }
-                    ],
+                    _import_report(response),
+                    {
+                        "unconfirmed": (
+                            "Row that Kea did not confirm",
+                            [
+                                (
+                                    "2",
+                                    "10.0.0.1",
+                                    f"{UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable.",
+                                )
+                            ],
+                        )
+                    },
                 )
                 self.assertNotIn("aa:bb:cc:00:00:01", "\n".join(logs.output))
 
