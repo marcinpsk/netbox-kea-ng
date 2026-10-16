@@ -93,7 +93,7 @@ from ..utilities import (
     OptionalViewTab,
     diagnostic_reasons,
     export_table,
-    kea_error_hint,
+    kea_error_message,
     lease_csv_response,
     snapshot_rows,
 )
@@ -460,7 +460,7 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             return redirect(request.path)
         except KeaException as exc:
             logger.exception("Failed to fetch leases for export on server %s", instance.pk)
-            messages.error(request, kea_error_hint(exc))
+            messages.error(request, kea_error_message(exc))
             return redirect(request.path)
         except (requests.RequestException, RuntimeError, ValueError):
             logger.exception("Transport/parse error fetching leases for export on server %s", instance.pk)
@@ -506,7 +506,7 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             )
         except KeaException as exc:
             logger.exception("Failed to fetch all leases for export on server %s", instance.pk)
-            messages.error(request, kea_error_hint(exc))
+            messages.error(request, kea_error_message(exc))
             return redirect(request.path)
         except (requests.RequestException, ValueError, RuntimeError):
             logger.exception("Transport/parse error fetching all leases for export on server %s", instance.pk)
@@ -875,7 +875,7 @@ class _BaseLeaseEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginReq
             result = client.lease_get(identity)
         except KeaException as exc:
             logger.exception("Failed to fetch lease %s on server %s", ip_address, pk)
-            messages.error(request, kea_error_hint(exc))
+            messages.error(request, kea_error_message(exc))
             return redirect(self._leases_url(server))
         except (requests.RequestException, RuntimeError, ValueError):
             logger.exception("Failed to fetch lease %s on server %s", ip_address, pk)

@@ -813,7 +813,7 @@ class TestReservationMutationViews(_ViewTestBase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Kea reported an error")
+        self.assertContains(response, "Kea replied: duplicate reservation")
 
     def test_edit_ipv6_updates_mutable_facts_and_emits_typed_signal(self):
         responses = _mutation_responses(6, 10, "2001:db8::/64", ["duid"])

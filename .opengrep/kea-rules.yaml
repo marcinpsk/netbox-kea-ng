@@ -107,7 +107,7 @@ rules:
       Do not leak exception details to user-facing responses. str(exc) or an
       f-string interpolating a caught exception can expose internal URLs, TLS
       details, or Kea API config. Log server-side with logger.exception() and
-      return a generic message (or a sanitised kea_error_hint()).
+      return a generic message (or kea_error_message(), which shows Kea's own reply text).
     metadata:
       category: security
       confidence: HIGH
