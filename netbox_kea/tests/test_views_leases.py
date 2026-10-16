@@ -2678,6 +2678,29 @@ class TestBulkLeaseImportView(_ViewTestBase):
             },
         )
 
+    def test_the_line_and_address_columns_stay_narrow_so_the_message_takes_the_width(self):
+        csv_bytes = self._csv4(
+            rows=["10.0.0.10,aa:bb:cc:dd:ee:01,1,3600,h1\n", "10.0.0.11,aa:bb:cc:dd:ee:02,1,3600,h2\n"]
+        )
+        with _lease_stub({"lease4-add": queued({"result": 0}, _refused_connection())}):
+            response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
+        page = BeautifulSoup(response.content, "html.parser")
+        for status, narrow_columns in (("created", ["Line"]), ("not-applied", ["Line", "Address"])):
+            with self.subTest(status):
+                section = page.select_one(f'section[data-import-status="{status}"]')
+                self.assertIsNotNone(section)
+                narrow = [
+                    th.get_text(strip=True)
+                    for th in section.select("th")
+                    if "text-nowrap" in (th.get("class") or []) and "width: 1%" in th.get("style", "")
+                ]
+                self.assertEqual(narrow, narrow_columns)
+                for row in section.select("tbody tr"):
+                    cells = row.select("td")
+                    self.assertTrue(
+                        all("text-nowrap" in cell.get("class", []) for cell in cells[: len(narrow_columns)])
+                    )
+
     def test_post_empty_csv_shows_form_error(self):
         """Uploading a CSV with only a header (no data rows) returns 200 with empty result."""
         csv_bytes = b"ip-address,hw-address\n"
