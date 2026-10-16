@@ -21,7 +21,6 @@ import json
 import shutil
 import socket
 import ssl
-import subprocess
 import tempfile
 import threading
 import time
@@ -30,6 +29,7 @@ from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from functools import cache
 from pathlib import Path
@@ -37,6 +37,10 @@ from typing import Any, cast
 from unittest.mock import patch
 
 import requests
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 from requests.adapters import HTTPAdapter
 
 from netbox_kea import branching, server_configuration
@@ -528,19 +532,28 @@ def _serve_once(handle: Callable[[socket.socket], None]) -> tuple[int, threading
 @cache
 def _self_signed_certificate() -> tuple[str, str]:
     """Return the certificate and key file of a self-signed certificate for 127.0.0.1."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    now = datetime.now(tz=timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
     directory = Path(tempfile.mkdtemp(prefix="kea-tls-"))
     atexit.register(shutil.rmtree, directory, ignore_errors=True)
-    certificate, key = directory / "cert.pem", directory / "key.pem"
-    subprocess.run(
-        [
-            *("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=127.0.0.1"),
-            *("-keyout", str(key), "-out", str(certificate)),
-        ],
-        check=True,
-        capture_output=True,
-        timeout=60,
+    certificate_file, key_file = directory / "cert.pem", directory / "key.pem"
+    certificate_file.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key_file.write_bytes(
+        key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
     )
-    return str(certificate), str(key)
+    return str(certificate_file), str(key_file)
 
 
 def _tls_server_context() -> ssl.SSLContext:
