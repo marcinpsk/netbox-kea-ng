@@ -194,6 +194,17 @@ class TestServerDHCP4DisableView(_ViewTestBase):
         self.assertEqual(body["service"], ["dhcp4"])
         self.assertEqual(body["arguments"], {"max-period": 300})
 
+    def test_an_applied_disable_is_a_warning_because_the_service_is_down(self):
+        for data, text in (
+            ({"confirm": "1"}, f"DHCPv4 disabled on {self.server}."),
+            ({"confirm": "1", "max_period": "300"}, f"DHCPv4 disabled on {self.server} for up to 300s."),
+        ):
+            self._fresh_client()
+            with self.subTest(data=data), _control_stub():
+                response = self.client.post(self._url(), data)
+            levels = [(message.level, str(message)) for message in django_messages.get_messages(response.wsgi_request)]
+            self.assertEqual(levels, [(django_messages.WARNING, text)])
+
     def test_post_with_invalid_max_period_rerenders_form(self):
         """POST with non-integer max_period must re-render the form (no Kea call)."""
         with stub_kea({}) as kea:

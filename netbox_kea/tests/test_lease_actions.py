@@ -154,7 +154,8 @@ class LeaseEditTest(_ViewTestBase):
 
         _kea, response = self._save(daemon, 4, "192.0.2.40", form, hostname="renamed.example.org", valid_lft="1800")
 
-        (message,) = _messages(response)
+        ((level, message),) = [(item.level, str(item)) for item in get_messages(response.wsgi_request)]
+        self.assertEqual(level, django_messages.WARNING)
         self.assertEqual(
             message,
             "Lease 192.0.2.40: This request changed nothing. Its hostname and valid lifetime changed in Kea"
@@ -386,7 +387,8 @@ class LeaseDeleteTest(_ViewTestBase):
         self.assertNotIn("lease6-del", kea.commands())
         self.assertEqual(list(daemon.leases), [("IA_NA", _PREFIX)])
         self.assertEqual(
-            _messages(response), [f"Lease {_PREFIX}/56: This request changed nothing. Kea no longer holds it."]
+            [(item.level, str(item)) for item in get_messages(response.wsgi_request)],
+            [(django_messages.WARNING, f"Lease {_PREFIX}/56: This request changed nothing. Kea no longer holds it.")],
         )
         self.assertEqual(received.calls, [])
 

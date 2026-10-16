@@ -755,7 +755,7 @@ class BaseServerLeasesDeleteView(ServerFamilyMixin, GetReturnURLMixin, generic.O
 
         loop = _run_change_loop(selected, lambda shown: runtime_change.delete_lease(instance, self.dhcp_version, shown))
         for shown, message in loop.rejected:
-            messages.error(request, f"Lease {shown.label}: {message}")
+            message.show(request, f"Lease {shown.label}")
         deleted = [outcome.lease for _shown, outcome in loop.applied]
         if deleted:
             labels = [shown_lease(lease).label for lease in deleted]
@@ -771,7 +771,7 @@ class BaseServerLeasesDeleteView(ServerFamilyMixin, GetReturnURLMixin, generic.O
             )
         if loop.unknown is not None:
             shown, message = loop.unknown
-            messages.warning(request, f"Lease {shown.label}: {message}")
+            message.show(request, f"Lease {shown.label}")
         if loop.not_sent:
             not_sent = ", ".join(shown.label for shown in loop.not_sent)
             messages.warning(
