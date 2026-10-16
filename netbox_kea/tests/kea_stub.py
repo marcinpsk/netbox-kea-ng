@@ -568,6 +568,11 @@ def _tls_errors() -> dict[str, requests.RequestException]:
         raw = connection.dup()
         _tls_server_context().wrap_socket(connection, server_side=True).recv(65536)
         raw.sendall(b"\x17\x03\x03\x00\x10" + b"x" * 16)
+        # Close only after the client: an early close can reach the client as a reset before the broken record.
+        raw.settimeout(5)
+        with suppress(OSError):
+            while raw.recv(4096):
+                pass
         raw.close()
 
     errors = {}
