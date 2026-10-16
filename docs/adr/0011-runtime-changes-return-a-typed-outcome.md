@@ -53,17 +53,22 @@ live. It raises `ChangeRejected` when the change is not live, as far as NetBox c
 - A failed read before the write, such as the fresh read of the shown Lease, means that the change was not sent.
 - A connect-phase failure means that the change was not sent. A lost or malformed reply, a Control Agent forward
   failure, or result 5 gives `unknown`.
-- Any other failure result is a rejection, with no read after it. Each of these commands applies as one
-  operation in Kea, so a failure result means that nothing changed: `lease4-add`, `lease6-add`,
-  `lease4-update`, `lease6-update`, `lease4-del`, `lease6-del`, `dhcp-enable` and `dhcp-disable`. A command
-  added later that can fail after it applies needs the check read of ADR 0005.
+- Any other failure result on `dhcp-enable` or `dhcp-disable` is a rejection, with no read after it. These
+  commands change only the state in Kea memory, so a failure result means that nothing changed. A command added
+  later that can fail after it applies needs the check read of ADR 0005.
+- A Lease add, update or delete can fail after it applies. A MySQL or PostgreSQL backend can lose the commit
+  acknowledgement, and it writes the DHCPv6 extended-info rows after the Lease row. Kea then returns result 1,
+  the same result as for an argument error. After any other failure result, the operation reads the Lease again
+  by its address. When the read shows the Lease exactly as the fresh read before the send showed it (for an add,
+  no Lease), the result is a rejection. Otherwise, or when the read fails, the result is `unknown`.
 - Any failure result on `lease4-wipe` or `lease6-wipe` gives `unknown`. The memfile backend deletes the Leases
   of the Subnet one at a time, so a failed lease-file write returns result 1 after earlier Leases are gone.
   No read can show which Leases this request deleted, because Kea allocates Leases at the same time.
 - These give a rejection with the reason `target-changed`: a fresh read that does not match the shown Lease, a
   Lease that is gone before the send, result 3 on `lease-del` (the Lease is gone), and result 4 on `lease-update`
   (a conflict). This request did not change that Lease. `LeaseChangeResult` and its variants are deleted.
-- No operation reads Kea to turn `unknown` into `applied`. The read after an applied Lease add is a display read.
+- No operation reads Kea to turn `unknown` into `applied`. The check read can only give a rejection or
+  `unknown`. The read after an applied Lease add is a display read.
 
 ### Shared types and presentation
 
@@ -118,8 +123,12 @@ The view read ladders stay hand-written for now, but they use the new formatter.
   client call.
 - Let `KeaClient` raise "not sent" and "lost" errors: rejected for the reason of ADR 0005, domain classification
   does not belong in the wire client.
-- Read every target again after a failure result: rejected because these commands apply as one operation, and a
-  concurrent Kea allocation can make the read lie.
+- Read the target again after a failure result of `dhcp-enable` or `dhcp-disable`: rejected because these
+  commands apply as one operation in memory.
+- Classify every Lease failure result as a rejection: rejected because a SQL backend can apply the Lease and
+  still return result 1.
+- Classify every Lease failure result as `unknown`: rejected because Kea also returns result 1 for an argument
+  error, and the operator then must check the Server after each typing error.
 - Run the side effects after `unknown`: rejected because NetBox can then record a change that never happened.
 - Keep the Lease result variants beside the outcome: rejected because one operation then has two vocabularies.
 - Show only fixed messages: rejected because the operator loses Kea's own answer, such as a Lease that already
