@@ -8,7 +8,7 @@ from netbox.plugins import PluginConfig
 
 from . import branching
 
-__version__ = "3.6.0"
+__version__ = "3.6.1"
 
 logger = logging.getLogger(__name__)
 

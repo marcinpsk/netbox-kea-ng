@@ -13,6 +13,58 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.6.1 (2026-10-16)
+
+### Bug Fixes
+
+- **leases**: Refuse a Kea lease with a scoped IPv6 address
+  ([`b3e3557`](https://github.com/marcinpsk/netbox-kea-ng/commit/b3e3557bdf4db301f4a913799f156fe99b36c6e7))
+
+- **leases**: Show the Lease Synchronization State from the ownership read
+  ([`097c426`](https://github.com/marcinpsk/netbox-kea-ng/commit/097c4268c1a4d27bde98a81d8a456c438ac24533))
+
+- **reservations**: Build the Row Sync badge from the ownership read
+  ([`1e4ba93`](https://github.com/marcinpsk/netbox-kea-ng/commit/1e4ba9311a0904146ee98a0af92438f150c2d422))
+
+- **reservations**: Keep a Row Sync result when the ownership read fails
+  ([`2e6d80e`](https://github.com/marcinpsk/netbox-kea-ng/commit/2e6d80e85aa3d316354aa9bc3aa7c469bb997f13))
+
+- **reservations**: Read the Reservation sync state from the ownership links
+  ([`168fe39`](https://github.com/marcinpsk/netbox-kea-ng/commit/168fe39ded76c8a7df1ca19003198c0d8b5c2271))
+
+- **reservations**: Return no advisory when the ownership read fails
+  ([`9aa6d14`](https://github.com/marcinpsk/netbox-kea-ng/commit/9aa6d148138a1b9cd5a5e598c8bc022ff5b75e55))
+
+### Chores
+
+- **opengrep**: Refuse a Prefix ownership read in a view without a DatabaseError handler
+  ([`c654cae`](https://github.com/marcinpsk/netbox-kea-ng/commit/c654cae21fcd9cc12eb1c34432227887be1e6064))
+
+- **opengrep**: Refuse an ownership read in a view without a DatabaseError handler
+  ([`1ca34d5`](https://github.com/marcinpsk/netbox-kea-ng/commit/1ca34d53d229c527dd5bd236d2d8ed25693c9235))
+
+### Code Style
+
+- **leases**: Keep a gap between the state badge and Sync when the cell wraps
+  ([`34b604e`](https://github.com/marcinpsk/netbox-kea-ng/commit/34b604e95bfbc95aa452913cacd41215c5ad7197))
+
+### Documentation
+
+- **context**: Define ownership of the Reservation and Lease Synchronization States
+  ([`293d5b3`](https://github.com/marcinpsk/netbox-kea-ng/commit/293d5b3dded258cc95de7fad312f27386961d248))
+
+### Refactoring
+
+- **ipam**: Read the ownership of a Prefix with the rules of an IP address
+  ([`f54bb6d`](https://github.com/marcinpsk/netbox-kea-ng/commit/f54bb6d4188cebe21fa6744f72538362876f2569))
+
+- **ipam**: Take the ownership link field from the model and pin the Lease state labels
+  ([`2d47d57`](https://github.com/marcinpsk/netbox-kea-ng/commit/2d47d570500bf4ee2f76fd488cf7a011d5ab0fcc))
+
+- **reservations**: Name the ownership states after CONTEXT.md
+  ([`7c4cf80`](https://github.com/marcinpsk/netbox-kea-ng/commit/7c4cf8036d2b6f6cb5d5da61373993c1651afe17))
+
+
 ## v3.6.0 (2026-10-15)
 
 ### Bug Fixes
