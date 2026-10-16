@@ -594,9 +594,9 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLo
         def entry(row: tuple[int, LeaseRequest], status: str, message: str = "") -> dict[str, Any]:
             return {"line": row[0], "address": str(row[1].address), "status": status, "message": message}
 
-        problem_rows = [entry(row, "Not applied", message) for row, message in loop.rejected]
+        problem_rows = [entry(row, "Not applied", message.text) for row, message in loop.rejected]
         if loop.unknown is not None:
-            problem_rows.append(entry(loop.unknown[0], "Not confirmed", loop.unknown[1]))
+            problem_rows.append(entry(loop.unknown[0], "Not confirmed", loop.unknown[1].text))
         problem_rows.extend(entry(row, "Not sent", _NOT_SENT) for row in loop.not_sent)
         result = {
             "created": len(created),

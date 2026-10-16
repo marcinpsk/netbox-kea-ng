@@ -152,28 +152,44 @@ def _run_change(
     change: Callable[[], OutcomeT],
     *,
     subject: str = "",
+    applied_warning: bool = False,
 ) -> OutcomeT | None:
     """Run one change, show one message for its outcome or its rejection, and return the outcome.
 
     *confirmed* is the message for a change that Kea applied, such as "Shared network 'x' created.", or a function
-    that builds it from the outcome. *subject*, such as "Lease 192.0.2.10", starts any other message. Returns None
-    after a rejection.
+    that builds it from the outcome. *applied_warning* shows it as a warning, for a change that stops a service.
+    *subject*, such as "Lease 192.0.2.10", starts any other message. Returns None after a rejection.
     """
     try:
         outcome = change()
     except ChangeRejected as rejection:
-        messages.error(request, _about(subject, _rejection_message(rejection)))
+        _rejection_message(rejection).show(request, subject)
         return None
     if outcome.application == "unknown":
-        messages.warning(request, _about(subject, _unconfirmed_message(outcome)))
+        _unconfirmed_message(outcome).show(request, subject)
         return outcome
     text = confirmed if isinstance(confirmed, str) else confirmed(outcome)
     if isinstance(outcome, ConfigChangeOutcome) and outcome.persistence == "failed":
         restart = "It is live, but it may not survive a Kea restart, because Kea did not save it to disk."
         messages.warning(request, " ".join((text, restart, *outcome.diagnostics)))
+    elif applied_warning:
+        messages.warning(request, text)
     else:
         messages.success(request, text)
     return outcome
+
+
+@dataclass(frozen=True)
+class ChangeMessage:
+    """The message of a change that Kea did not apply or did not confirm. *warning* False shows it as an error."""
+
+    text: str
+    warning: bool
+
+    def show(self, request: HttpRequest, subject: str = "") -> None:
+        """Queue the message, after *subject* when one is given."""
+        show = messages.warning if self.warning else messages.error
+        show(request, _about(subject, self.text))
 
 
 @dataclass
@@ -181,8 +197,8 @@ class ChangeLoop(Generic[RowT, OutcomeT]):
     """The rows of a loop of changes, by what Kea did with them, each with its outcome or its message."""
 
     applied: list[tuple[RowT, OutcomeT]] = field(default_factory=list)
-    rejected: list[tuple[RowT, str]] = field(default_factory=list)
-    unknown: tuple[RowT, str] | None = None
+    rejected: list[tuple[RowT, ChangeMessage]] = field(default_factory=list)
+    unknown: tuple[RowT, ChangeMessage] | None = None
     #: The rows after the unknown row, which the loop did not send.
     not_sent: list[RowT] = field(default_factory=list)
 
@@ -204,16 +220,19 @@ def _run_change_loop(rows: Sequence[RowT], change: Callable[[RowT], OutcomeT]) -
     return loop
 
 
-def _rejection_message(rejection: ChangeRejected) -> str:
-    return " ".join((_REJECTED[rejection.reason], *rejection.diagnostics))
+def _rejection_message(rejection: ChangeRejected) -> ChangeMessage:
+    # Another writer changed the target, so nothing is wrong with the request or the Server.
+    text = " ".join((_REJECTED[rejection.reason], *rejection.diagnostics))
+    return ChangeMessage(text, warning=rejection.reason == "target-changed")
 
 
-def _unconfirmed_message(outcome: ConfigChangeOutcome | RuntimeChangeOutcome) -> str:
+def _unconfirmed_message(outcome: ConfigChangeOutcome | RuntimeChangeOutcome) -> ChangeMessage:
     if isinstance(outcome, RuntimeChangeOutcome):
-        return " ".join((_UNCONFIRMED_RUNTIME, *outcome.diagnostics))
+        return ChangeMessage(" ".join((_UNCONFIRMED_RUNTIME, *outcome.diagnostics)), warning=True)
     # Never claim the change is live: the disk warning names the running configuration only.
     not_saved = ("Kea also could not save its running configuration to disk.",)
-    return " ".join((_UNCONFIRMED, *(not_saved if outcome.persistence == "failed" else ()), *outcome.diagnostics))
+    parts = (_UNCONFIRMED, *(not_saved if outcome.persistence == "failed" else ()), *outcome.diagnostics)
+    return ChangeMessage(" ".join(parts), warning=True)
 
 
 def _about(subject: str, text: str) -> str:

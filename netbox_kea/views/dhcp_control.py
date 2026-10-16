@@ -76,6 +76,7 @@ class _BaseServerDHCPDisableView(_KeaChangeMixin, ServerFamilyMixin, generic.Obj
             request,
             f"DHCPv{self.dhcp_version} disabled on {instance}{period}.",
             lambda: runtime_change.disable_dhcp(instance, self.dhcp_version, max_period),
+            applied_warning=True,
         )
         return redirect(server_family_url(request, instance, self, "server"))
 
