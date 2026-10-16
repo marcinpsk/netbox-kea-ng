@@ -80,16 +80,21 @@
           <table class="table table-bordered mb-0">
             <thead>
               <tr>
-                <th>Line</th>
+                {# A width of 1% with no wrap keeps a column as narrow as its widest cell. #}
+                <th class="text-nowrap" style="width: 1%">Line</th>
+                {% if group.has_messages %}
+                <th class="text-nowrap" style="width: 1%">Address</th>
+                <th>Message</th>
+                {% else %}
                 <th>Address</th>
-                {% if group.has_messages %}<th>Message</th>{% endif %}
+                {% endif %}
               </tr>
             </thead>
             <tbody>
               {% for item in group.rows %}
               <tr class="table-{{ group.color }}">
-                <td>{{ item.line }}</td>
-                <td><code>{{ item.address }}</code></td>
+                <td class="text-nowrap">{{ item.line }}</td>
+                <td class="text-nowrap"><code>{{ item.address }}</code></td>
                 {% if group.has_messages %}<td>{{ item.message }}</td>{% endif %}
               </tr>
               {% endfor %}
