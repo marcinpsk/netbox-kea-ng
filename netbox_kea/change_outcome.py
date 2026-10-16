@@ -79,27 +79,31 @@ def before_change(step: Callable[[], T], unusable: str) -> T:
         raise ChangeRejected("not-sent", (unusable,)) from exc
 
 
-def one_operation_in_memory() -> bool:
-    """Return True: the *not_live* of a command that Kea applies as one operation in memory, with no read."""
-    return True
+#: What a failure result of the change means: "reject" (the change is not live), "unknown", or a check read that
+#: returns whether the failed command left the target unchanged (ADR 0005).
+FailurePolicy = Literal["reject", "unknown"] | Callable[[], bool]
 
 
 def mutate(
-    client: KeaClient, family: Family, send: Callable[[], None], *, not_live: Callable[[], bool] | None
+    client: KeaClient, family: Family, send: Callable[[], None], *, on_failure: FailurePolicy
 ) -> tuple[Application, tuple[str, ...]]:
     """Send one command that can change Kea, and classify what Kea did with it.
 
-    *not_live* reads whether a failed command left the target unchanged. None: no read can show it.
+    A lost reply, a Control Agent forward failure and result 5 are unknown whatever *on_failure* says.
     """
     try:
         send()
     except KeaException as exc:
         logger.warning("A change failed: %s", exc)
         diagnostic = f"Kea replied: {exc.reply_text}"
-        if not_live is None or exc.response.get("result") == _RESULT_FATAL or client.forwarding_failed(exc, family):
+        if exc.response.get("result") == _RESULT_FATAL or client.forwarding_failed(exc, family):
+            return "unknown", (diagnostic,)
+        if on_failure == "reject":
+            raise ChangeRejected("kea-rejected", (diagnostic,)) from exc
+        if isinstance(on_failure, str):
             return "unknown", (diagnostic,)
         try:
-            unchanged = not_live()
+            unchanged = on_failure()
         except (KeaException, OSError, ValueError, RuntimeError):
             logger.warning("The check read after a failed change failed", exc_info=True)
             return "unknown", (diagnostic, "The read after the failure did not succeed.")

@@ -99,7 +99,7 @@ def add_shared_network(server: Server, family: Family, name: str) -> ConfigChang
             client,
             family,
             lambda: client.network_add(family, name),
-            not_live=lambda: not client.shared_network_exists(family, name),
+            on_failure=lambda: not client.shared_network_exists(family, name),
         )
         return _persisted(client, family, application, diagnostics)
 
@@ -113,7 +113,7 @@ def delete_shared_network(server: Server, family: Family, name: str) -> ConfigCh
             client,
             family,
             lambda: client.network_del(family, name),
-            not_live=lambda: client.shared_network_exists(family, name),
+            on_failure=lambda: client.shared_network_exists(family, name),
         )
         return _persisted(client, family, application, diagnostics)
 
@@ -190,7 +190,7 @@ def _create_subnet(
             client,
             family,
             lambda: client.subnet_add(family, identity.subnet_id, identity.cidr, fields),
-            not_live=absent,
+            on_failure=absent,
         )
 
     try:
@@ -388,7 +388,7 @@ def _send_step(
     """Send the step after *done*. Return None when it applied, and the result of the change when it did not."""
     text = f"Step {len(done) + 1}, {command.text}"
     try:
-        application, diagnostics = mutate(client, family, command.send, not_live=command.not_live)
+        application, diagnostics = mutate(client, family, command.send, on_failure=command.not_live)
     except ChangeRejected as rejection:
         return _roll_back(client, family, done, text, rejection, rolled_back)
     if application == "unknown":
@@ -436,7 +436,7 @@ def _undo(client: KeaClient, family: Family, step: str, undo: _Undo) -> tuple[st
     if not holds:
         return (f"{step}: not sent, because the Subnet changed in Kea.",)
     try:
-        application, diagnostics = mutate(client, family, undo.send, not_live=undo.not_live)
+        application, diagnostics = mutate(client, family, undo.send, on_failure=undo.not_live)
     except ChangeRejected as rejection:
         return (f"{step}: not applied.", *rejection.diagnostics)
     if application == "unknown":
@@ -453,7 +453,7 @@ def delete_subnet(server: Server, family: Family, subnet_id: int, cidr: str) -> 
             client,
             family,
             lambda: client.subnet_del(family, subnet.subnet_id),
-            not_live=lambda: _still_there(server, family, subnet.subnet_id, subnet.network),
+            on_failure=lambda: _still_there(server, family, subnet.subnet_id, subnet.network),
         )
         return _persisted(client, family, application, diagnostics)
 
@@ -480,7 +480,7 @@ def _change_pool(
             family,
             lambda: client.pool_change(family, action, subnet.subnet_id, subnet.declared_cidr, pool.range),
             # Not live: an added Pool is absent, or a deleted Pool is still there.
-            not_live=lambda: (pool in _pools_now(server, family, subnet)) == (action == "del"),
+            on_failure=lambda: (pool in _pools_now(server, family, subnet)) == (action == "del"),
         )
         return _persisted(client, family, application, diagnostics)
 
@@ -585,7 +585,7 @@ def _send_candidate(
     _edit(candidate, edit, missing)
     _test_before(client, family, candidate)
     # config-set commits and then runs the hook initialization, so no failure result proves it is not live.
-    application, diagnostics = mutate(client, family, lambda: client.config_set(candidate), not_live=None)
+    application, diagnostics = mutate(client, family, lambda: client.config_set(candidate), on_failure="unknown")
     return _persisted(client, family, application, diagnostics)
 
 
