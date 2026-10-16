@@ -55,8 +55,11 @@ live. It raises `ChangeRejected` when the change is not live, as far as NetBox c
   failure, or result 5 gives `unknown`.
 - Any other failure result is a rejection, with no read after it. Each of these commands applies as one
   operation in Kea, so a failure result means that nothing changed: `lease4-add`, `lease6-add`,
-  `lease4-update`, `lease6-update`, `lease4-del`, `lease6-del`, `lease4-wipe`, `lease6-wipe`, `dhcp-enable` and
-  `dhcp-disable`. A command added later that can fail after it applies needs the check read of ADR 0005.
+  `lease4-update`, `lease6-update`, `lease4-del`, `lease6-del`, `dhcp-enable` and `dhcp-disable`. A command
+  added later that can fail after it applies needs the check read of ADR 0005.
+- Any failure result on `lease4-wipe` or `lease6-wipe` gives `unknown`. The memfile backend deletes the Leases
+  of the Subnet one at a time, so a failed lease-file write returns result 1 after earlier Leases are gone.
+  No read can show which Leases this request deleted, because Kea allocates Leases at the same time.
 - These give a rejection with the reason `target-changed`: a fresh read that does not match the shown Lease, a
   Lease that is gone before the send, result 3 on `lease-del` (the Lease is gone), and result 4 on `lease-update`
   (a conflict). This request did not change that Lease. `LeaseChangeResult` and its variants are deleted.
