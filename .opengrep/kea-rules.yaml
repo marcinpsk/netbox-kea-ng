@@ -307,12 +307,12 @@ rules:
             - pattern: <... IPRange.objects ...>
             - pattern: <... IPAddress.objects ...>
 
-  - id: kea-config-change-rejection-caught-outside-mapper
+  - id: kea-change-rejection-caught-outside-mapper
     languages: [python]
     severity: ERROR
     message: >-
-      Do not catch ConfigChangeRejected in a view. Run the change through
-      _run_config_change() in views/_base.py, which is the one place that turns an
+      Do not catch ChangeRejected in a view. Run the change through
+      _run_change() in views/_base.py, which is the one place that turns an
       outcome or a rejection into a message (ADR 0005). A second handler gives the
       same rejection a different message.
     metadata:
@@ -344,21 +344,21 @@ rules:
       - metavariable-pattern:
           metavariable: $EXC
           pattern-either:
-            - pattern: ConfigChangeRejected
-            - pattern: $MODULE.ConfigChangeRejected
+            - pattern: ChangeRejected
+            - pattern: $MODULE.ChangeRejected
       - pattern-not-inside: |
-          def _run_config_change(...):
+          def _run_change(...):
               ...
       - focus-metavariable: $EXC
 
-  - id: kea-config-change-mapper-outside-base
+  - id: kea-change-mapper-outside-base
     languages: [python]
     severity: ERROR
     message: >-
-      Define _run_config_change only in views/_base.py. The rule
-      kea-config-change-rejection-caught-outside-mapper exempts a function by
+      Define _run_change only in views/_base.py. The rule
+      kea-change-rejection-caught-outside-mapper exempts a function by
       this name, so a second definition in another view would hide its catch of
-      ConfigChangeRejected.
+      ChangeRejected.
     metadata:
       category: maintainability
       confidence: HIGH
@@ -370,17 +370,17 @@ rules:
       exclude:
         - "**/views/_base.py"
     pattern: |
-      def _run_config_change(...):
+      def _run_change(...):
           ...
 
-  - id: kea-config-change-in-broad-except
+  - id: kea-change-in-broad-except
     languages: [python]
     severity: ERROR
     message: >-
       Do not call a config_write operation inside a try whose except catches
       Exception, BaseException, or everything. That handler also catches
-      ConfigChangeRejected and hides it from _run_config_change() in
-      views/_base.py. Pass the call to _run_config_change() as a lambda, and
+      ChangeRejected and hides it from _run_change() in
+      views/_base.py. Pass the call to _run_change() as a lambda, and
       catch only the errors that you expect.
     metadata:
       category: maintainability
@@ -421,7 +421,7 @@ rules:
                   ...
       - pattern: config_write.$OP(...)
       # The mapper catches the rejection only when it runs the change: a lambda, not an eager call.
-      - pattern-not-inside: "_run_config_change(..., lambda: ..., ...)"
+      - pattern-not-inside: "_run_change(..., lambda: ..., ...)"
 
   - id: subprocess-without-timeout
     languages: [python]
@@ -1023,7 +1023,7 @@ rules:
       Snapshot to notice(), or run a raised Reservation or Lease read through load_snapshot(), in
       views/notices.py, and show the Notice through show_notices(), a template or ServerNotices. A view
       that picks a level by hand codes the rule again, and the copies drift.
-      Exempt: the Configuration Change outcome in _run_config_change(), the Reservation search that
+      Exempt: the Configuration Change outcome in _run_change(), the Reservation search that
       builds its Snapshot in _read_reservations(), the lease export refusal in
       _incomplete_export_message(), and a function that parses a Reservation Transfer Document.
       Limits: an alias (a messages constant imported by name, or the diagnostics of a variable passed
@@ -1046,7 +1046,7 @@ rules:
           - pattern: messages.WARNING
       # A Configuration Change outcome or rejection, not a Snapshot (ADR 0005).
       - pattern-not-inside: |
-          def _run_config_change(...):
+          def _run_change(...):
               ...
       # It builds the Reservation search Snapshot from its pages; the caller loads it through load_snapshot().
       - pattern-not-inside: |

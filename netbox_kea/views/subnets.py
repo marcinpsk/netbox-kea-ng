@@ -41,7 +41,7 @@ from ._base import (
     _client_settings_error,
     _enrich_subnet_statistics,
     _KeaChangeMixin,
-    _run_config_change,
+    _run_change,
     _safe_return_url,
 )
 from .notices import notice, show_notices
@@ -279,7 +279,7 @@ class _BasePoolAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
             return self._render(request, server, subnet_id, form)
         pool: Pool = form.cleaned_data["pool"]
         cidr: str = form.cleaned_data["subnet_cidr"]
-        outcome = _run_config_change(
+        outcome = _run_change(
             request,
             # Kea accepts an explicit range for both families, and the Subnets table shows this text.
             f"Pool {pool.range} added to subnet {subnet_id}.",
@@ -356,7 +356,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView
         except ValueError:
             messages.error(request, f"Pool {pool} is not a valid Pool of Subnet {cidr}. Nothing was sent to Kea.")
             return redirect(return_url)
-        _run_config_change(
+        _run_change(
             request,
             f"Pool {parsed_pool.range} removed from subnet {subnet_id}.",
             lambda: config_write.delete_pool(server, self.dhcp_version, subnet_id, cidr, parsed_pool),
@@ -500,7 +500,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView)
             return f"Subnet {outcome.subnet_id} ({cidr}) added{joined}."
 
         try:
-            outcome = _run_config_change(
+            outcome = _run_change(
                 request,
                 added,
                 lambda: config_write.add_subnet(
@@ -661,7 +661,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView
             form.add_error("subnet_cidr", f"Enter an IPv{self.dhcp_version} Subnet CIDR.")
             return self._render_post(request, server, subnet_id, form)
         edit, shown = form.to_edit(), form.shown()
-        outcome = _run_config_change(
+        outcome = _run_change(
             request,
             f"Subnet {subnet_id} ({cidr}) updated.",
             lambda: config_write.edit_subnet(
@@ -737,7 +737,7 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectVi
             messages.error(request, _NO_SUBNET_CIDR)
             return redirect(return_url)
         cidr: str = form.cleaned_data["subnet_cidr"]
-        _run_config_change(
+        _run_change(
             request,
             f"Subnet {subnet_id} ({cidr}) deleted.",
             lambda: config_write.delete_subnet(server, self.dhcp_version, subnet_id, cidr),

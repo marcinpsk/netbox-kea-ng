@@ -43,11 +43,11 @@ def good_view_reads_another_attribute(observed):
     return not observed.subnet_diagnostics
 
 
-# ruleid: kea-config-change-mapper-outside-base
-def _run_config_change(request, change):
+# ruleid: kea-change-mapper-outside-base
+def _run_change(request, change):
     try:
         outcome = change()
-    except ConfigChangeRejected as rejection:
+    except ChangeRejected as rejection:
         # ok: kea-snapshot-notice-outside-notice-module
         messages.error(request, " ".join(rejection.diagnostics))
         return None

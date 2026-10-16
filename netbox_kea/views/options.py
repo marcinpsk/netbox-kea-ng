@@ -25,7 +25,7 @@ from ._base import (
     ConditionalLoginRequiredMixin,
     LazyClient,
     _KeaChangeMixin,
-    _run_config_change,
+    _run_change,
     _safe_return_url,
     daemon_version,
 )
@@ -56,7 +56,7 @@ def config_nav_context(server_pk: int, section: str, dhcp_version: Family) -> di
 def _run_option_change(request: HttpRequest, confirmed: str, change: Callable[[], ConfigChangeOutcome]) -> None:
     """Run a DHCP Option change. A stale or renamed option row is a form error, not a Configuration Change result."""
     try:
-        _run_config_change(request, confirmed, change)
+        _run_change(request, confirmed, change)
     except DHCPOptionConflict:
         messages.error(request, "DHCP Options changed or are ambiguous. Reload the form before saving.")
     except DHCPOptionNameChange:
@@ -473,7 +473,7 @@ class BaseServerOptionDefAddView(_KeaChangeMixin, ServerFamilyMixin, Conditional
         }
         if form.cleaned_data.get("array"):
             option_def["array"] = True
-        _run_config_change(
+        _run_change(
             request,
             f"Option definition '{option_def['name']}' (code {option_def['code']}) added.",
             lambda: config_write.add_option_definition(server, self.dhcp_version, option_def),
@@ -528,7 +528,7 @@ class BaseServerOptionDefDeleteView(_KeaChangeMixin, ServerFamilyMixin, Conditio
     def post(self, request: HttpRequest, pk: int, code: int, space: str) -> HttpResponse:
         """Delete the option definition."""
         server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
-        _run_config_change(
+        _run_change(
             request,
             f"Option definition code={code} space={space} deleted.",
             lambda: config_write.delete_option_definition(server, self.dhcp_version, code, space),

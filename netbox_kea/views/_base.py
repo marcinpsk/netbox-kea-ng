@@ -18,7 +18,8 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from netbox.tables import BaseTable
 
 from .. import display_cache
-from ..config_write import ConfigChangeOutcome, ConfigChangeRejected, RejectionReason
+from ..change_outcome import ChangeRejected, RejectionReason
+from ..config_write import ConfigChangeOutcome
 from ..constants import Family
 from ..dhcp_options import shown_options
 from ..kea import DaemonStatus, DaemonVersion, KeaClient, KeaCommand, KeaException, SubnetUtilization, close_quietly
@@ -51,6 +52,7 @@ _REJECTED: dict[RejectionReason, str] = {
     "config-test-rejected": "Kea's config-test rejected the change, so it was not applied.",
     "not-sent": "The change was not sent to Kea.",
     "invalid-client-configuration": "The change was not sent to Kea, because the Server settings are not valid.",
+    "target-changed": "The target changed in Kea, so this request changed nothing.",
 }
 
 
@@ -139,17 +141,17 @@ class _KeaChangeMixin:
         return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
 
 
-def _run_config_change(
+def _run_change(
     request: HttpRequest, confirmed: str | Callable[[OutcomeT], str], change: Callable[[], OutcomeT]
 ) -> OutcomeT | None:
-    """Run one Configuration Change, show one message for its outcome or its rejection, and return the outcome.
+    """Run one change, show one message for its outcome or its rejection, and return the outcome.
 
     *confirmed* is the message for a change that Kea applied, such as "Shared network 'x' created.", or a function
     that builds it from the outcome. Returns None after a rejection.
     """
     try:
         outcome = change()
-    except ConfigChangeRejected as rejection:
+    except ChangeRejected as rejection:
         messages.error(request, " ".join((_REJECTED[rejection.reason], *rejection.diagnostics)))
         return None
     if outcome.application == "unknown":
