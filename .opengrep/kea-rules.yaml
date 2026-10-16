@@ -192,6 +192,32 @@ rules:
           metavariable: $M
           regex: ^RESERVATION_
 
+  - id: kea-runtime-write-outside-runtime-change
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Send a Runtime Change through runtime_change, not through a KeaClient write
+      primitive. runtime_change reads the shown Lease before the write, classifies the
+      reply as applied, unknown or a rejection, and never reads Kea after the send
+      (ADR 0011). A direct call reads a lost reply as a failure, although Kea can have
+      applied the change. The rule matches the method name, so it cannot see a call
+      through an alias.
+    metadata:
+      category: correctness
+      confidence: HIGH
+      references:
+        - "docs/adr/0011-runtime-changes-return-a-typed-outcome.md: Guard"
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+        - "netbox_kea/runtime_change.py"
+    patterns:
+      - pattern: $CLIENT.$METHOD(...)
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: ^(lease_add|lease_update|lease_delete|lease_wipe|dhcp_enable|dhcp_disable)$
+
   - id: kea-config-read-modify-write-without-reader
     languages: [python]
     severity: ERROR

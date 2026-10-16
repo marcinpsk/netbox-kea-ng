@@ -98,7 +98,7 @@ def bad_request_exception_alone(client):
 def bad_request_exception_without_runtime_error(request, client):
     # ruleid: kea-exception-handler-misses-runtime-error
     try:
-        client.lease_add(4, row)
+        client.lease_get(identity)
     except requests.RequestException:
         messages.error(request, "Connection error.")
     except ValueError:
@@ -125,7 +125,7 @@ def bad_get_client_catches_request_exception(server):
 def ok_request_exception_with_runtime_error(request, client):
     # ok: kea-exception-handler-misses-runtime-error
     try:
-        client.lease_wipe(version=4, subnet_id=1)
+        client.subnet_utilization(4)
     except requests.RequestException:
         messages.error(request, "Network error.")
     except (RuntimeError, ValueError):
