@@ -15,14 +15,20 @@ Patched at the **class** level (``requests.Session.post``) so it also covers the
 
 from __future__ import annotations
 
+import atexit
 import ipaddress
 import json
+import shutil
 import socket
+import ssl
+import subprocess
+import tempfile
 import threading
 import time
+import warnings
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from enum import Enum
 from functools import cache
@@ -482,6 +488,100 @@ def _refused_connection() -> requests.ConnectionError:
     finally:
         session.close()
     raise AssertionError(f"A connection to the closed port {port} did not fail.")
+
+
+def _post_error(url: str, *, verify: bool = True) -> requests.RequestException:
+    """Return the error that a real ``requests`` POST to *url* raises. Call it outside ``stub_kea``."""
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        session.post(url, json={}, timeout=5, verify=verify)
+    except requests.RequestException as exc:
+        return exc
+    finally:
+        session.close()
+    raise AssertionError(f"The POST to {url} did not fail.")
+
+
+def _serve_once(handle: Callable[[socket.socket], None]) -> tuple[int, threading.Thread]:
+    """Accept one connection on a free local port in a thread, and run *handle* on it."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+
+    def run() -> None:
+        connection, _address = listener.accept()
+        try:
+            handle(connection)
+        except OSError:
+            pass
+        finally:
+            connection.close()
+            listener.close()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return port, thread
+
+
+@cache
+def _self_signed_certificate() -> tuple[str, str]:
+    """Return the certificate and key file of a self-signed certificate for 127.0.0.1."""
+    directory = Path(tempfile.mkdtemp(prefix="kea-tls-"))
+    atexit.register(shutil.rmtree, directory, ignore_errors=True)
+    certificate, key = directory / "cert.pem", directory / "key.pem"
+    subprocess.run(
+        [
+            *("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=127.0.0.1"),
+            *("-keyout", str(key), "-out", str(certificate)),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    return str(certificate), str(key)
+
+
+def _tls_server_context() -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(*_self_signed_certificate())
+    return context
+
+
+def _tls_errors() -> dict[str, requests.RequestException]:
+    """Return real TLS errors that requests raises: two in the handshake, and one after the request was sent.
+
+    Call it outside ``stub_kea``. The handshake fails on a server that answers in plain HTTP and on a certificate
+    that the client cannot verify. After the send, the server writes a TLS record that the client cannot decrypt.
+    """
+
+    def plain_http(connection: socket.socket) -> None:
+        connection.recv(4096)
+        connection.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+
+    def handshake(connection: socket.socket) -> None:
+        with suppress(ssl.SSLError):
+            _tls_server_context().wrap_socket(connection, server_side=True)
+
+    def broken_record_after_the_request(connection: socket.socket) -> None:
+        raw = connection.dup()
+        _tls_server_context().wrap_socket(connection, server_side=True).recv(65536)
+        raw.sendall(b"\x17\x03\x03\x00\x10" + b"x" * 16)
+        raw.close()
+
+    errors = {}
+    for name, handle, verify in (
+        ("handshake", plain_http, False),
+        ("verify", handshake, True),
+        ("after send", broken_record_after_the_request, False),
+    ):
+        port, thread = _serve_once(handle)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            errors[name] = _post_error(f"https://127.0.0.1:{port}/", verify=verify)
+        thread.join(timeout=5)
+    return errors
 
 
 def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):

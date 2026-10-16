@@ -10,7 +10,9 @@ what Kea did with it.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+import ssl
+import traceback
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Literal, TypeVar
 
 import requests
@@ -34,6 +36,7 @@ _RESULT_FATAL = 5
 
 READ_UNUSABLE = "Kea did not return a usable reply to the read before the change."
 _REPLY_LOST = "Kea's reply to the change was lost or unreadable."
+_UNREACHABLE = "Kea could not be reached."
 
 T = TypeVar("T")
 
@@ -115,9 +118,10 @@ def mutate(
     except KeaTLSFileError as exc:
         raise _missing_tls_file(exc) from exc
     except requests.RequestException as exc:
-        if never_sent(exc):
-            logger.warning("A change could not connect to Kea", exc_info=True)
-            raise ChangeRejected("not-sent", ("Kea could not be reached.",)) from exc
+        reason = never_sent(exc)
+        if reason is not None:
+            logger.warning("A change did not reach Kea", exc_info=True)
+            raise ChangeRejected("not-sent", (reason,)) from exc
         logger.warning("The reply to a change was lost or unreadable", exc_info=True)
         return "unknown", (_REPLY_LOST,)
     except (ValueError, RuntimeError):
@@ -126,24 +130,53 @@ def mutate(
     return "applied", ()
 
 
-def never_sent(exc: requests.RequestException) -> bool:
-    """Return whether the request failed while it connected, before any byte reached Kea."""
+def never_sent(exc: requests.RequestException) -> str | None:
+    """Return why Kea did not run the request, or None when Kea can have run it.
+
+    Kea did not run it when the connection or its TLS handshake failed, the URL is not valid, or the web server in
+    front of Kea answered HTTP 401 or 403.
+    """
+    if isinstance(
+        exc, (requests.exceptions.InvalidURL, requests.exceptions.InvalidSchema, requests.exceptions.MissingSchema)
+    ):
+        return "The URL of the Server is not valid."
+    if isinstance(exc, requests.HTTPError) and exc.response is not None and exc.response.status_code in (401, 403):
+        return (
+            f"Kea refused the request (HTTP {exc.response.status_code}). "
+            "Check the user name and password of the Server."
+        )
     if isinstance(exc, requests.ConnectTimeout):
-        return True
+        return _UNREACHABLE
     if not isinstance(exc, requests.ConnectionError):
-        return False
+        return None
+    for current in _causes(exc):
+        if isinstance(current, NewConnectionError):
+            return _UNREACHABLE
+        if _in_handshake(current):
+            return "The TLS handshake with Kea failed. Check the TLS settings of the Server."
+    return None
+
+
+def _causes(exc: BaseException) -> Iterator[BaseException]:
+    """Yield *exc* and each error that it wraps, through urllib3's MaxRetryError too."""
     pending: list[BaseException] = [exc]
     while pending:
         current = pending.pop()
-        if isinstance(current, NewConnectionError):
-            return True
+        yield current
         # requests passes urllib3's MaxRetryError as an argument, not as the cause.
         pending.extend(arg for arg in current.args if isinstance(arg, BaseException))
         if isinstance(current, MaxRetryError) and current.reason is not None:
             pending.append(current.reason)
         if current.__cause__ is not None:
             pending.append(current.__cause__)
-    return False
+
+
+def _in_handshake(exc: BaseException) -> bool:
+    """Return whether *exc* is a TLS error that the handshake raised, before the request was sent."""
+    # The same ssl.SSLError type also reports a broken record in the reply, so the raising frame decides.
+    return isinstance(exc, ssl.SSLError) and any(
+        frame.f_code.co_name == "do_handshake" for frame, _line in traceback.walk_tb(exc.__traceback__)
+    )
 
 
 def _missing_tls_file(exc: KeaTLSFileError) -> ChangeRejected:

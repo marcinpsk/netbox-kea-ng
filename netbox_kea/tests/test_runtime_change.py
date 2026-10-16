@@ -23,7 +23,15 @@ from netbox_kea.leases import DHCPv4LeaseRequest, LeaseEdit, shown_lease
 from netbox_kea.models import Server
 from netbox_kea.runtime_change import LeaseDeleteOutcome, RuntimeChangeOutcome
 
-from .kea_stub import LeaseDaemon, _refused_connection, stub_kea, typed_lease
+from .kea_stub import (
+    LeaseDaemon,
+    _http_response,
+    _post_error,
+    _refused_connection,
+    _tls_errors,
+    stub_kea,
+    typed_lease,
+)
 from .utils import _make_db_server, with_kea_client_config
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
@@ -122,6 +130,63 @@ class ApplicationTests(TestCase):
                     self.assertEqual(rejection.reason, "not-sent")
                     self.assertEqual(rejection.diagnostics, ("Kea could not be reached.",))
                     self.assertEqual(commands, [*operation.before, operation.write])
+
+    def test_an_http_401_or_403_answer_is_not_sent(self):
+        """The web server in front of Kea refused the request, so Kea did not run the command (ADR 0011)."""
+        for operation in _OPERATIONS:
+            for status in (401, 403):
+                with self.subTest(operation.name, status=status):
+                    reply = _http_response({"error": "Forbidden"}, status=status)
+                    rejection, commands = self._rejection(operation, operation.responses(reply))
+                    self.assertEqual(rejection.reason, "not-sent")
+                    self.assertEqual(
+                        rejection.diagnostics,
+                        (f"Kea refused the request (HTTP {status}). Check the user name and password of the Server.",),
+                    )
+                    self.assertEqual(commands, [*operation.before, operation.write])
+
+    def test_a_server_error_from_a_proxy_is_unknown(self):
+        for operation in _OPERATIONS:
+            for status in (500, 502, 503):
+                with self.subTest(operation.name, status=status):
+                    outcome, _commands = self._result(operation, _http_response({"error": "down"}, status=status))
+                    self.assertEqual((outcome.application, outcome.diagnostics), ("unknown", (_LOST,)))
+
+    def test_a_tls_handshake_failure_is_not_sent(self):
+        errors = _tls_errors()
+        for operation in _OPERATIONS:
+            for name in ("handshake", "verify"):
+                with self.subTest(operation.name, failure=name):
+                    rejection, _commands = self._rejection(operation, operation.responses(errors[name]))
+                    self.assertEqual(rejection.reason, "not-sent")
+                    self.assertEqual(
+                        rejection.diagnostics,
+                        ("The TLS handshake with Kea failed. Check the TLS settings of the Server.",),
+                    )
+
+    def test_a_tls_failure_after_the_send_is_unknown(self):
+        failure = _tls_errors()["after send"]
+        self.assertIsInstance(failure, requests.exceptions.SSLError)
+        for operation in _OPERATIONS:
+            with self.subTest(operation.name):
+                outcome, _commands = self._result(operation, failure)
+                self.assertEqual((outcome.application, outcome.diagnostics), ("unknown", (_LOST,)))
+
+    def test_an_invalid_url_is_not_sent(self):
+        errors = {
+            "missing schema": _post_error("kea.example.invalid/"),
+            "invalid schema": _post_error("ftp://kea.example.invalid/"),
+            "invalid url": _post_error("http://"),
+        }
+        self.assertEqual(
+            [type(error).__name__ for error in errors.values()], ["MissingSchema", "InvalidSchema", "InvalidURL"]
+        )
+        for operation in _OPERATIONS:
+            for name, error in errors.items():
+                with self.subTest(operation.name, failure=name):
+                    rejection, _commands = self._rejection(operation, operation.responses(error))
+                    self.assertEqual(rejection.reason, "not-sent")
+                    self.assertEqual(rejection.diagnostics, ("The URL of the Server is not valid.",))
 
     def test_a_failed_read_before_the_write_is_not_sent(self):
         failures = {
