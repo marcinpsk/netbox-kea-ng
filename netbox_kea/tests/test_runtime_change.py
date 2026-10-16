@@ -8,8 +8,10 @@ may read Kea after the send to classify the change.
 
 import ipaddress
 import json
+import socket
 import threading
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -523,3 +525,43 @@ class RedirectTests(TestCase):
                     outcome = operation.run(server)
                 self.assertEqual((outcome.application, outcome.diagnostics), ("unknown", (_LOST,)))
                 self.assertEqual(kea.commands(), [*operation.before, operation.write])
+
+
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
+class RetryTests(TestCase):
+    """A command is sent once: a retry after the bytes left NetBox would hide that Kea received the first one."""
+
+    def test_the_client_session_never_retries(self):
+        client = _make_db_server().get_client(version=4)
+        self.addCleanup(client.close)
+        # requests' default adapter: Retry(0, read=False). The client mounts no other adapter.
+        self.assertEqual([adapter.max_retries.total for adapter in client._session.adapters.values()], [0, 0])
+
+    def test_a_connection_dropped_after_the_send_is_unknown_and_not_sent_again(self) -> None:
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(2)
+        listener.settimeout(5)
+        self.addCleanup(listener.close)
+        received: list[bytes] = []
+
+        def drop_after_the_request() -> None:
+            connection, _address = listener.accept()
+            received.append(connection.recv(65536))
+            connection.close()
+            # A retry would open a second connection here.
+            with suppress(OSError):
+                second, _address = listener.accept()
+                received.append(second.recv(65536))
+                second.close()
+
+        thread = threading.Thread(target=drop_after_the_request, daemon=True)
+        thread.start()
+        kea = _make_db_server(ca_url=f"http://127.0.0.1:{listener.getsockname()[1]}/")
+
+        outcome = runtime_change.enable_dhcp(kea, 4)
+        thread.join(timeout=10)
+
+        self.assertEqual((outcome.application, outcome.diagnostics), ("unknown", (_LOST,)))
+        self.assertEqual(len(received), 1)
+        self.assertTrue(received[0].startswith(b"POST / "), received[0])
