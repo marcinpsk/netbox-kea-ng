@@ -3,8 +3,10 @@
 import csv
 import ipaddress
 import logging
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import requests
 from django.contrib import messages
@@ -512,6 +514,32 @@ class ServerReservation6BulkImportView(_BaseBulkReservationImportView):
 
 _NOT_SENT = "NetBox stopped at an earlier row and did not send this row."
 
+ImportStatus = Literal["created", "unconfirmed", "not-applied", "not-sent"]
+
+#: The count label, the heading and the Bootstrap color of each status of an import row, in report order.
+_IMPORT_GROUPS: dict[ImportStatus, tuple[str, str, str]] = {
+    "created": ("Created", "Rows that Kea created", "success"),
+    "unconfirmed": ("Not confirmed", "Row that Kea did not confirm", "warning"),
+    "not-applied": ("Not applied", "Rows that Kea did not apply", "danger"),
+    "not-sent": ("Not sent", "Rows that NetBox did not send", "secondary"),
+}
+
+
+@dataclass(frozen=True)
+class ImportGroup:
+    """The rows of one status of a Lease CSV import report, with the label, heading and color of the status."""
+
+    status: ImportStatus
+    label: str
+    heading: str
+    color: str
+    rows: list[dict[str, Any]]
+
+    @property
+    def has_messages(self) -> bool:
+        """Return whether the rows carry a message: every status except a created row does."""
+        return self.status != "created"
+
 
 class _BaseBulkLeaseImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Upload a CSV file and create one Lease for each row via ``lease_add``.
@@ -591,19 +619,20 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLo
                 dhcp_version=self.dhcp_version,
             )
 
-        def entry(row: tuple[int, LeaseRequest], status: str, message: str = "") -> dict[str, Any]:
-            return {"line": row[0], "address": str(row[1].address), "status": status, "message": message}
+        def entries(rows: Iterable[tuple[tuple[int, LeaseRequest], str]]) -> list[dict[str, Any]]:
+            return [
+                {"line": line, "address": str(creation.address), "message": text} for (line, creation), text in rows
+            ]
 
-        problem_rows = [entry(row, "Not applied", message.text) for row, message in loop.rejected]
-        if loop.unknown is not None:
-            problem_rows.append(entry(loop.unknown[0], "Not confirmed", loop.unknown[1].text))
-        problem_rows.extend(entry(row, "Not sent", _NOT_SENT) for row in loop.not_sent)
+        rows_by_status: dict[ImportStatus, list[dict[str, Any]]] = {
+            "created": entries((row, "") for row, _outcome in loop.applied),
+            "unconfirmed": entries([(loop.unknown[0], loop.unknown[1].text)] if loop.unknown else []),
+            "not-applied": entries((row, message.text) for row, message in loop.rejected),
+            "not-sent": entries((row, _NOT_SENT) for row in loop.not_sent),
+        }
         result = {
-            "created": len(created),
-            "rejected": len(loop.rejected),
-            "unknown": int(loop.unknown is not None),
-            "not_sent": len(loop.not_sent),
-            "problem_rows": sorted(problem_rows, key=lambda item: item["line"]),
+            "groups": [ImportGroup(status, *_IMPORT_GROUPS[status], rows) for status, rows in rows_by_status.items()],
+            "unconfirmed": loop.unknown is not None,
             "total": len(rows),
         }
         return self._render(request, instance, self.form_class(), result)
