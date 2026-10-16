@@ -405,9 +405,9 @@ sends nothing unless its `MutationScope` returns a Verified Subnet with both.
 **`runtime_change` owns every Runtime Change** (ADR 0011): Lease add, edit, delete and wipe, and DHCP enable and
 disable. An operation returns a `RuntimeChangeOutcome` (`applied`/`unknown` and diagnostics) or raises
 `ChangeRejected`. Both modules classify through `change_outcome` (`before_change`, `mutate`, `never_sent`): a failed
-read before the write, a connect-phase or TLS handshake failure, an invalid URL or an HTTP 401 or 403 answer is
-`not-sent`; a lost or malformed reply, a Control Agent forward
-failure or result 5 is `unknown`. Result 2 is a rejection for every command. Any other failure result on a Lease
+read before the write, a connect-phase failure, a TLS certificate verification failure, an invalid URL or an HTTP
+401 answer is `not-sent`; a lost or malformed reply, any other HTTP or TLS error, a redirect, a Control Agent forward
+failure or result 5 is `unknown`. Result 2 in a well-formed reply is a rejection for every command. Any other failure result on a Lease
 write or a wipe is `unknown`, and on `dhcp-enable` or `dhcp-disable` a rejection; no operation reads Kea after the
 send. A fresh read that does not match the shown Lease,
 a Lease that is gone before the send, result 3 on `lease{v}-del` and result 4 on `lease{v}-update` are

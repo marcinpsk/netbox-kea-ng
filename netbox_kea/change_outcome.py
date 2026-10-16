@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import ssl
-import traceback
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Literal, TypeVar
 
@@ -133,18 +132,15 @@ def mutate(
 def never_sent(exc: requests.RequestException) -> str | None:
     """Return why Kea did not run the request, or None when Kea can have run it.
 
-    Kea did not run it when the connection or its TLS handshake failed, the URL is not valid, or the web server in
-    front of Kea answered HTTP 401 or 403.
+    Kea did not run it when the connection failed, NetBox could not verify Kea's TLS certificate, the URL is not
+    valid, or the web server in front of Kea refused the credentials with HTTP 401 (ADR 0011).
     """
     if isinstance(
         exc, (requests.exceptions.InvalidURL, requests.exceptions.InvalidSchema, requests.exceptions.MissingSchema)
     ):
         return "The URL of the Server is not valid."
-    if isinstance(exc, requests.HTTPError) and exc.response is not None and exc.response.status_code in (401, 403):
-        return (
-            f"Kea refused the request (HTTP {exc.response.status_code}). "
-            "Check the user name and password of the Server."
-        )
+    if isinstance(exc, requests.HTTPError) and exc.response is not None and exc.response.status_code == 401:
+        return "Kea refused the credentials (HTTP 401). Check the user name and password of the Server."
     if isinstance(exc, requests.ConnectTimeout):
         return _UNREACHABLE
     if not isinstance(exc, requests.ConnectionError):
@@ -152,8 +148,8 @@ def never_sent(exc: requests.RequestException) -> str | None:
     for current in _causes(exc):
         if isinstance(current, NewConnectionError):
             return _UNREACHABLE
-        if _in_handshake(current):
-            return "The TLS handshake with Kea failed. Check the TLS settings of the Server."
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return "NetBox could not verify the TLS certificate of Kea. Check the TLS settings of the Server."
     return None
 
 
@@ -169,14 +165,6 @@ def _causes(exc: BaseException) -> Iterator[BaseException]:
             pending.append(current.reason)
         if current.__cause__ is not None:
             pending.append(current.__cause__)
-
-
-def _in_handshake(exc: BaseException) -> bool:
-    """Return whether *exc* is a TLS error that the handshake raised, before the request was sent."""
-    # The same ssl.SSLError type also reports a broken record in the reply, so the raising frame decides.
-    return isinstance(exc, ssl.SSLError) and any(
-        frame.f_code.co_name == "do_handshake" for frame, _line in traceback.walk_tb(exc.__traceback__)
-    )
 
 
 def _missing_tls_file(exc: KeaTLSFileError) -> ChangeRejected:
