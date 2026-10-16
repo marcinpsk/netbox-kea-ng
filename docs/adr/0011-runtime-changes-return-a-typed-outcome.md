@@ -55,20 +55,19 @@ live. It raises `ChangeRejected` when the change is not live, as far as NetBox c
   failure, or result 5 gives `unknown`.
 - Any other failure result on `dhcp-enable` or `dhcp-disable` is a rejection, with no read after it. These
   commands change only the state in Kea memory, so a failure result means that nothing changed. A command added
-  later that can fail after it applies needs the check read of ADR 0005.
-- A Lease add, update or delete can fail after it applies. A MySQL or PostgreSQL backend can lose the commit
-  acknowledgement, and it writes the DHCPv6 extended-info rows after the Lease row. Kea then returns result 1,
-  the same result as for an argument error. After any other failure result, the operation reads the Lease again
-  by its address. When the read shows the Lease exactly as the fresh read before the send showed it (for an add,
-  no Lease), the result is a rejection. Otherwise, or when the read fails, the result is `unknown`.
+  later that can fail after it applies gives `unknown` on a failure result.
+- Any other failure result on a Lease add, update or delete gives `unknown`. A MySQL or PostgreSQL backend can
+  lose the commit acknowledgement, and it writes the DHCPv6 extended-info rows after the Lease row. Kea then
+  returns result 1 after the Lease changed. A read after the failure cannot prove that nothing changed, because
+  the DHCP service, an HA peer or another API client can write the same Lease in the meantime.
 - Any failure result on `lease4-wipe` or `lease6-wipe` gives `unknown`. The memfile backend deletes the Leases
   of the Subnet one at a time, so a failed lease-file write returns result 1 after earlier Leases are gone.
   No read can show which Leases this request deleted, because Kea allocates Leases at the same time.
 - These give a rejection with the reason `target-changed`: a fresh read that does not match the shown Lease, a
   Lease that is gone before the send, result 3 on `lease-del` (the Lease is gone), and result 4 on `lease-update`
   (a conflict). This request did not change that Lease. `LeaseChangeResult` and its variants are deleted.
-- No operation reads Kea to turn `unknown` into `applied`. The check read can only give a rejection or
-  `unknown`. The read after an applied Lease add is a display read.
+- No operation reads Kea after the send to classify the change. The read after an applied Lease add is a
+  display read.
 
 ### Shared types and presentation
 
@@ -77,7 +76,8 @@ live. It raises `ChangeRejected` when the change is not live, as far as NetBox c
   fields.
 - `_run_config_change` becomes `_run_change` in `views/_base.py`. It maps every outcome and rejection to one
   message. The message for `unknown` says that Kea did not confirm the change and that the operator must check
-  the Server before trying again.
+  the Server before trying again. When Kea returned a failure result, the message also shows Kea's text, so an
+  argument error stays visible.
 - One formatter replaces `kea_error_hint` everywhere, reads included. It gives fixed guidance for result 2 (the
   hook library is not loaded) and result 128 (the daemon cannot be reached), and otherwise `Kea replied: <text>`.
   No Python exception text reaches the operator.
@@ -85,8 +85,10 @@ live. It raises `ChangeRejected` when the change is not live, as far as NetBox c
 ### Side effects
 
 The journal entry, the signals and the IPAM synchronization run only after `applied`, outside the call that
-classifies the change. An error in a side effect therefore never reads as a Kea failure. After `unknown`, the
-message says that NetBox recorded nothing. The next periodic synchronization brings IPAM up to date.
+classifies the change. An error in a side effect therefore never reads as a Kea failure. When a side effect fails
+after `applied`, the view still reports the change as applied, logs the error, and shows a separate error that
+names the side effect that failed. After `unknown`, the message says that NetBox recorded nothing. The next
+periodic synchronization brings IPAM up to date.
 
 ### Loops
 
@@ -127,8 +129,10 @@ The view read ladders stay hand-written for now, but they use the new formatter.
   commands apply as one operation in memory.
 - Classify every Lease failure result as a rejection: rejected because a SQL backend can apply the Lease and
   still return result 1.
-- Classify every Lease failure result as `unknown`: rejected because Kea also returns result 1 for an argument
-  error, and the operator then must check the Server after each typing error.
+- Read the Lease again after a failure result, and give a rejection when it is unchanged: rejected because
+  another writer can put back the earlier Lease, and the read then calls an applied change a rejection.
+- Ask Kea for its lease backend and trust a failure result from memfile: rejected because it adds a configuration
+  read on the failure path, and the form validation in NetBox already stops most argument errors.
 - Run the side effects after `unknown`: rejected because NetBox can then record a change that never happened.
 - Keep the Lease result variants beside the outcome: rejected because one operation then has two vocabularies.
 - Show only fixed messages: rejected because the operator loses Kea's own answer, such as a Lease that already

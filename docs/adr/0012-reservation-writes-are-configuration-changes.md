@@ -45,7 +45,8 @@ A Reservation add, edit or delete is a Configuration Change.
   `config_write` owns sequencing, the lock, the classification and the outcome.
 - The views present the outcome through `_run_change` ([ADR 0011](0011-runtime-changes-return-a-typed-outcome.md)).
   The journal entry, the signals and `claim()` run only after `applied`, outside the call that classifies the
-  change.
+  change. When one of them fails, for example `claim()` with `EventDispatchError`, the view still reports the
+  Reservation as applied and shows the side-effect failure as a separate error, as ADR 0011 says.
 - The bulk Reservation import runs one Configuration Change per entry. An `unknown` entry or a rejected entry
   stops the import, and the report states the applied entries.
 - Global Reservations stay read only, as in ADR 0002.
