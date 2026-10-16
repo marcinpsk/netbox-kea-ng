@@ -23,7 +23,7 @@ from .. import forms, subnet_catalogue
 from ..constants import Family, IPAddressValue
 from ..dhcp_options import DHCPOption
 from ..ipam_reconciliation import RESERVATION, claim, claim_permissions
-from ..kea import KeaClient, KeaException
+from ..kea import KeaClient, KeaException, kea_error_message
 from ..models import Server
 from ..pools import addresses_in_pools
 from ..published_name import published_name, stored_hostname
@@ -47,7 +47,6 @@ from ..reservations import (
 from ..signals import reservation_created, reservation_deleted, reservation_updated
 from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, MutationScope, SubnetIdentity, VerifiedSubnet
 from ..sync_permissions import sync_gate
-from ..utilities import kea_error_message
 from ._base import _client_settings_error, _KeaChangeMixin, _safe_return_url
 from .notices import notice, show_notices
 from .reservations import (

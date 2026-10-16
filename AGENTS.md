@@ -482,7 +482,7 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
   malformed reply entry. Split `KeaException` when you show Kea's answer with
   `kea_error_message(exc)`. A Configuration Change or a Runtime Change goes through `_run_change`
   instead (see "Exception hierarchy").
-- **Use `kea_error_message(exc)` for user-facing Kea error messages**: fixed guidance for result 2 (hook
+- **Use `kea.kea_error_message(exc)` for user-facing Kea error messages**, also in change diagnostics: fixed guidance for result 2 (hook
   library not loaded) and result 128 (daemon not reachable), else `Kea replied: <text>`. Show Kea's text, never
   the text of a Python exception.
 - **Guard action URLs/buttons by permission AND lookup state.** Don't offer

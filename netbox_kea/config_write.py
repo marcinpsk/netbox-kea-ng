@@ -31,6 +31,7 @@ from .kea import (
     SharedNetworkEdit,
     SubnetEdit,
     SubnetFields,
+    kea_error_message,
     subnet_network,
 )
 from .pools import Pool
@@ -617,7 +618,7 @@ def _test_before(client: KeaClient, family: Family, candidate: CandidateConfigur
             if client.forwarding_failed(exc, family):
                 raise
             logger.warning("config-test rejected a Configuration Change: %s", exc)
-            raise ChangeRejected("config-test-rejected", (f"Kea replied: {exc.reply_text}",)) from exc
+            raise ChangeRejected("config-test-rejected", (kea_error_message(exc),)) from exc
 
     before_change(test, _CONFIG_TEST_UNUSABLE)
 

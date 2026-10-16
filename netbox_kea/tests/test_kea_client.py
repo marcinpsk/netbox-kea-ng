@@ -35,6 +35,7 @@ from netbox_kea.kea import (
     SubnetFields,
     SubnetUtilization,
     check_response,
+    kea_error_message,
     lease_query_guard_message,
 )
 from netbox_kea.leases import (
@@ -348,6 +349,42 @@ class TestKeaException(TestCase):
         resp = {"result": 1, "text": "err"}
         exc = KeaException(resp)
         self.assertIsInstance(exc, Exception)
+
+
+class TestKeaErrorMessage(TestCase):
+    """kea_error_message() gives fixed guidance for result 2 and 128, and Kea's own text for any other result."""
+
+    def _message(self, result_code: int, text: str | None = "some error") -> str:
+        reply: KeaResponse = {"result": result_code, "arguments": None, "text": text}
+        return kea_error_message(KeaException(reply, index=0))
+
+    def test_result_2_names_the_hook_library(self):
+        self.assertEqual(
+            self._message(2, "'reservation-add' command not supported."),
+            "Kea does not support this command. "
+            "The required hook library may not be loaded, for example host_cmds, lease_cmds or subnet_cmds.",
+        )
+
+    def test_result_128_names_the_daemon(self):
+        self.assertEqual(
+            self._message(128),
+            "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable.",
+        )
+
+    def test_any_other_result_shows_kea_text(self):
+        for code, text in (
+            (1, "specified reservation '10.0.0.5' is not matching the IPv4 subnet prefix '192.168.1.0/24'"),
+            (1, "Host database not available, cannot add host."),
+            (3, "No matching lease found."),
+            (4, "IPv4 lease already exists."),
+            (42, "unexpected"),
+        ):
+            with self.subTest(code=code, text=text):
+                self.assertEqual(self._message(code, text), f"Kea replied: {text}")
+
+    def test_a_reply_without_text_shows_its_result_code(self):
+        self.assertEqual(self._message(1, None), "Kea replied: result 1")
+        self.assertEqual(self._message(1, ""), "Kea replied: result 1")
 
 
 class TestCheckResponse(TestCase):

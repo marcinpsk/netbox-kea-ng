@@ -33,6 +33,7 @@ from .kea import (
     SubnetEdit,
     SubnetFields,
     description_as_shown,
+    kea_error_message,
     shared_network_description,
     subnet_network,
 )
@@ -48,7 +49,6 @@ from .subnet_settings import (
     inherited_reservation_flags,
     setting_key,
 )
-from .utilities import kea_error_message
 
 logger = logging.getLogger(__name__)
 

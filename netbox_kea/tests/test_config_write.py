@@ -52,6 +52,11 @@ from .kea_stub import (
 from .utils import _make_db_server, with_kea_client_config
 
 _OK = {"result": 0, "text": "ok"}
+_HOOK_NOT_LOADED = (
+    "Kea does not support this command. "
+    "The required hook library may not be loaded, for example host_cmds, lease_cmds or subnet_cmds."
+)
+_DAEMON_UNREACHABLE = "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable."
 _PERSIST = ["config-get", "config-test", "config-write"]
 _CONTROL_AGENT = json.loads((Path(__file__).with_name("kea_recordings") / "control-agent.json").read_text())
 
@@ -234,7 +239,7 @@ class RejectionReasonTests(TestCase):
         with stub_kea(_add("net-a", _OK, **{"network4-get": unsupported})) as kea:
             rejection = self._rejection(lambda: config_write.add_shared_network(self.server, 4, "net-a"))
         self.assertEqual(rejection.reason, "not-sent")
-        self.assertEqual(rejection.diagnostics, ("Kea replied: 'network4-get' command not supported.",))
+        self.assertEqual(rejection.diagnostics, (_HOOK_NOT_LOADED,))
         self.assertEqual(kea.commands(), ["network4-get"])
 
     def test_a_read_before_the_change_that_names_another_network_is_not_sent(self):
@@ -2683,6 +2688,13 @@ class ReadModifyWriteTests(TestCase):
                     self.assertEqual(rejection.reason, "config-test-rejected")
                     self.assertEqual(rejection.diagnostics, ("Kea replied: subnet overlaps",))
                     self.assertEqual(kea.commands(), [*self._reads(version, name), "config-test"])
+
+    def test_a_config_test_that_cannot_reach_the_daemon_shows_the_fixed_guidance(self):
+        unreachable = {"result": 128, "text": "Connection refused"}
+        with stub_kea(_rmw_responses(4, **{"config-test": unreachable})):
+            rejection = self._rejection(lambda: config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])]))
+        self.assertEqual(rejection.reason, "config-test-rejected")
+        self.assertEqual(rejection.diagnostics, (_DAEMON_UNREACHABLE,))
 
     def test_an_unsupported_config_test_is_skipped(self):
         unsupported = {"result": 2, "text": "'config-test' command not supported."}

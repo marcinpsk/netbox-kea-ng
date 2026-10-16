@@ -20,7 +20,6 @@ from utilities.views import ViewTab
 from . import constants
 from .constants import Family
 from .decimal_text import parse_decimal
-from .kea import KeaException
 from .leases import (
     DHCPv4AddressLease,
     DHCPv4LeaseRequest,
@@ -228,18 +227,6 @@ def parse_delegated_prefixes(value: str, separator: str = ",") -> list[str]:
     if len(prefixes) > MAX_DELEGATED_PREFIXES:
         raise ValueError(f"At most {MAX_DELEGATED_PREFIXES} delegated prefixes per reservation.")
     return prefixes
-
-
-def kea_error_message(exc: KeaException) -> str:
-    """Return the operator message for a failure result of Kea: fixed guidance for result 2 and 128, else Kea's text."""
-    if exc.unsupported_command:
-        return (
-            "Kea does not support this command. "
-            "The required hook library may not be loaded, for example host_cmds, lease_cmds or subnet_cmds."
-        )
-    if exc.response.get("result") == 128:
-        return "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable."
-    return f"Kea replied: {exc.reply_text}"
 
 
 class LeaseCSVError(ValueError):
