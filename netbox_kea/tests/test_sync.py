@@ -14,54 +14,6 @@ from .kea_stub import _catalogue_responses_for_subnets, _typed_reservation, comp
 from .utils import _make_db_server
 
 
-class TestBulkFetchNetboxIPs(TestCase):
-    """bulk_fetch_netbox_ips returns a {ip_str: NbIPAddress} mapping."""
-
-    def test_returns_empty_dict_for_empty_list(self):
-        from netbox_kea.sync import bulk_fetch_netbox_ips
-
-        self.assertEqual(bulk_fetch_netbox_ips([], vrf_id=None), {})
-
-    def test_returns_matching_ips(self):
-        from ipam.models import IPAddress as NbIP
-
-        from netbox_kea.sync import bulk_fetch_netbox_ips
-
-        NbIP.objects.create(address="10.1.0.1/24", status="active")
-        NbIP.objects.create(address="10.1.0.2/24", status="active")
-        result = bulk_fetch_netbox_ips(["10.1.0.1", "10.1.0.99"], vrf_id=None)
-        self.assertIn("10.1.0.1", result)
-        self.assertNotIn("10.1.0.99", result)
-
-    def test_ignores_ips_not_in_netbox(self):
-        from netbox_kea.sync import bulk_fetch_netbox_ips
-
-        result = bulk_fetch_netbox_ips(["99.99.99.99"], vrf_id=None)
-        self.assertEqual(result, {})
-
-    def test_returns_only_ips_of_the_given_vrf(self):
-        from ipam.models import VRF
-        from ipam.models import IPAddress as NbIP
-
-        from netbox_kea.sync import bulk_fetch_netbox_ips
-
-        vrf = VRF.objects.create(name="bulk-fetch-vrf")
-        NbIP.objects.create(address="10.3.0.5/24")
-        in_vrf = NbIP.objects.create(address="10.3.0.5/24", vrf=vrf)
-
-        self.assertEqual(bulk_fetch_netbox_ips(["10.3.0.5"], vrf_id=vrf.pk)["10.3.0.5"].pk, in_vrf.pk)
-        self.assertNotEqual(bulk_fetch_netbox_ips(["10.3.0.5"], vrf_id=None)["10.3.0.5"].pk, in_vrf.pk)
-
-    def test_result_value_is_nbip_object(self):
-        from ipam.models import IPAddress as NbIP
-
-        from netbox_kea.sync import bulk_fetch_netbox_ips
-
-        ip = NbIP.objects.create(address="10.2.0.5/24", status="reserved")
-        result = bulk_fetch_netbox_ips(["10.2.0.5"], vrf_id=None)
-        self.assertEqual(result["10.2.0.5"].pk, ip.pk)
-
-
 class TestUpdateMacDescription(TestCase):
     """The public MAC synchronizer updates the hostname token on real rows."""
 

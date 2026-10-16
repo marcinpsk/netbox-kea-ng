@@ -4,7 +4,7 @@ import logging
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 from urllib.parse import parse_qsl, unquote, urlparse, urlsplit
 from urllib.parse import urlencode as _urlencode
 
@@ -25,6 +25,9 @@ from ..kea import DaemonStatus, DaemonVersion, KeaClient, KeaCommand, KeaExcepti
 from ..models import Server
 from ..server_configuration import SharedNetwork
 from ..subnet_catalogue import ConfiguredSubnet, VerifiedSubnet
+
+if TYPE_CHECKING:
+    from ..ipam_reconciliation import OwnershipState
 
 try:
     from utilities.views import ConditionalLoginRequiredMixin
@@ -49,6 +52,19 @@ _REJECTED: dict[RejectionReason, str] = {
     "not-sent": "The change was not sent to Kea.",
     "invalid-client-configuration": "The change was not sent to Kea, because the Server settings are not valid.",
 }
+
+
+#: The Unknown reason of a Synchronization State when the IPAM Ownership read fails.
+IPAM_UNREADABLE = "NetBox IPAM state could not be read."
+
+
+def sync_title(state: "OwnershipState", noun: str) -> str:
+    """Return the title of a Sync button: what a Sync does to a *noun* in *state*, empty for another state."""
+    if state == "unmarked":
+        return f"The {noun} has no Kea sync marker. Sync takes it over."
+    if state == "not-synchronized":
+        return f"Sync adds this Server as an owner of the {noun}."
+    return ""
 
 
 def _safe_return_url(request: HttpRequest, fallback: str) -> str:

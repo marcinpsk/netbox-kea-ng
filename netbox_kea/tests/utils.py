@@ -183,6 +183,19 @@ def ownership_link(ip, server: Server, source: str = "reservation", **fields) ->
     )
 
 
+def prefix_ownership_link(prefix, server: Server, source: str = "lease-prefix") -> IPAMOwnershipLink:
+    """Link the NetBox Prefix *prefix* to *source* of *server* (ADR 0006), with its prefix length as the facts."""
+    network = IPNetwork(str(prefix.prefix))
+    return IPAMOwnershipLink.objects.create(
+        server=server,
+        family=network.version,
+        source=source,
+        prefix=prefix,
+        facts={"prefix_length": network.prefixlen},
+        confirmation=next_confirmation_number(),
+    )
+
+
 _WRITE_VERBS = ("INSERT", "UPDATE", "DELETE")
 
 # What NetBox's events pipeline received while a test routes EVENTS_PIPELINE to record_dispatched_events.

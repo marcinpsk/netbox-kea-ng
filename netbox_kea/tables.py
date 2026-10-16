@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: 2023-2025 Devon Mar <devon-mar@users.noreply.github.com>
 # SPDX-FileCopyrightText: 2026 Andrew Backeby <andrew@backeby.eu>
 # SPDX-License-Identifier: Apache-2.0
+from typing import Any
+
 import django_tables2 as tables
 from django.urls import reverse
 from django.utils.html import format_html
@@ -479,29 +481,14 @@ class BaseLeaseTable(GenericTable):
     netbox_ip = tables.TemplateColumn(
         verbose_name="NetBox IP",
         orderable=False,
-        template_code=(
-            "{% if record.netbox_ip_url %}"
-            '<a href="{{ record.netbox_ip_url }}" class="badge text-bg-success text-decoration-none">'
-            '<i class="mdi mdi-link-variant" aria-hidden="true"></i> Synced</a>'
-            "{% elif record.netbox_prefix_url %}"
-            '<a href="{{ record.netbox_prefix_url }}" class="badge text-bg-success text-decoration-none">'
-            '<i class="mdi mdi-link-variant" aria-hidden="true"></i> Synced</a>'
-            "{% elif record.sync_url %}"
-            '<button type="button"'
-            ' hx-post="{{ record.sync_url }}"'
-            # The label is the address, or address/length for a delegated prefix.
-            ' hx-vals=\'{"ip_address":"{{ record.label|escapejs }}","hostname":"{{ record.hostname|default:""|escapejs }}"}\''
-            ' {% include "netbox_kea/inc/row_action_htmx.html" %}'
-            ' class="badge text-bg-secondary border-0"'
-            ' style="cursor:pointer">'
-            '<i class="mdi mdi-sync" aria-hidden="true"></i> Sync</button>'
-            "{% elif record.sync_refusal %}"
-            '{% include "netbox_kea/inc/sync_refused.html" with reason=record.sync_refusal label="Sync"'
-            ' icon="mdi-sync" button_class="badge text-bg-secondary border-0 opacity-50" %}'
-            "{% endif %}"
-        ),
+        template_name="netbox_kea/inc/lease_sync_badge.html",
     )
     actions = ActionsColumn(LEASE_ACTIONS)
+
+    def value_netbox_ip(self, record: dict[str, Any]) -> str:
+        """Export the Lease Synchronization State term, empty for a Lease that is not current."""
+        state = record.get("sync_state")
+        return state.label if state is not None else ""
 
     class Meta(GenericTable.Meta):
         empty_text = "No leases found."

@@ -1222,9 +1222,10 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      A view reads the IPAM Ownership with address_ownership() outside a try that catches DatabaseError. The read
-      only feeds a badge or an advisory, so a failed read must show the unknown state or no advisory, not a 500
-      reply. Catch DatabaseError, log it, and degrade as the Reservation page and Row Sync do.
+      A view reads the IPAM Ownership with address_ownership() or prefix_ownership() outside a try that catches
+      DatabaseError. The read only feeds a badge or an advisory, so a failed read must show the unknown state or no
+      advisory, not a 500 reply. Catch DatabaseError, log it, and degrade as the Reservation and Lease pages and Row
+      Sync do.
       Limits: a call inside an except or finally block of such a try, an aliased import and a call through a
       helper are not seen.
     metadata:
@@ -1234,7 +1235,9 @@ rules:
       include:
         - "**/views/**"
     patterns:
-      - pattern: address_ownership(...)
+      - pattern-either:
+          - pattern: address_ownership(...)
+          - pattern: prefix_ownership(...)
       - pattern-not-inside: |
           try:
               ...

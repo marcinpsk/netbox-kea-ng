@@ -44,6 +44,16 @@ SPDX-License-Identifier: Apache-2.0
 - When the plugin cannot find out how a lease relates to a Reservation, the row shows *Reservation
   Unknown* with the reason, and offers no *Sync* and no *+ Reserve*. When Kea does not load the
   `host_cmds` hook, the page shows one notice instead.
+- The **NetBox IP** column of a current lease shows its object in the sync VRF: the IP address of an address
+  lease, or the Prefix of a delegated prefix. *Synced* links an object that this server owns through a lease
+  link. *Not Synchronized* links an object with the sync marker that only another server, or only a Reservation,
+  owns, and the title of *Sync* says that a Sync adds this server as an owner. *Unmarked* links an object without
+  the sync marker, and the title of *Sync* says that a Sync takes the object over. A lease without an object
+  offers *Sync* only. The state is *Unknown*, with the reason in its title, when NetBox cannot be read or you may
+  not view the object; the row then shows no link and no *Sync*. A lease that is not current shows only a
+  *NetBox* link to an object that you may view. The table export writes the state in the NetBox IP column
+  (*Synchronized*, *Not Synchronized*, *Unmarked*, *Not in NetBox* or *Unknown*), and nothing for a lease that
+  is not current.
 - The `lease_added` and `leases_deleted` signals carry typed values (see `netbox_kea/signals.py`).
   `lease_added` sends `creation`, the request that Kea confirmed, and `lease`, the lease that the read
   back observed, or `None` when that read failed or does not match the request. A CSV import sends

@@ -9,7 +9,7 @@ from django.urls import reverse
 from ipam.models import VRF, IPAddress
 from users.models import ObjectPermission
 
-from netbox_kea.ipam_reconciliation import AddressOwnership, address_ownership
+from netbox_kea.ipam_reconciliation import Ownership, address_ownership
 from netbox_kea.models import IPAMOwnershipLink, Server, next_confirmation_number
 
 from .kea_stub import _catalogue_responses, _res_get, _res_page, stub_kea
@@ -196,14 +196,14 @@ class TestAddressOwnershipRead(_ViewTestBase):
         IPAddress.objects.create(address="10.0.0.5/24", vrf=VRF.objects.create(name="elsewhere"))
         found = address_ownership(self.server, 4, "reservation", ["10.0.0.5"], self.user)
         self.assertEqual(found["10.0.0.5"].state, "not-in-netbox")
-        self.assertIsNone(found["10.0.0.5"].ip)
+        self.assertIsNone(found["10.0.0.5"].obj)
 
     def test_the_first_duplicate_row_decides_unless_the_user_may_not_view_one_of_them(self):
         first = IPAddress.objects.create(address="10.0.0.5/24", description="Router loopback")
         second = IPAddress.objects.create(address="10.0.0.5/24", description="[kea-sync: reservation]")
         ownership_link(second, self.server)
         found = address_ownership(self.server, 4, "reservation", ["10.0.0.5"], self.user)["10.0.0.5"]
-        self.assertEqual((found.state, found.ip), ("unmarked", first))
+        self.assertEqual((found.state, found.obj), ("unmarked", first))
 
         limited = User.objects.create_user(username="ownership_one_row", password="pass")
         permission = ObjectPermission.objects.create(
@@ -212,13 +212,13 @@ class TestAddressOwnershipRead(_ViewTestBase):
         permission.object_types.add(ContentType.objects.get_for_model(IPAddress))
         permission.users.add(limited)
         found = address_ownership(self.server, 4, "reservation", ["10.0.0.5"], limited)["10.0.0.5"]
-        self.assertEqual((found.state, found.ip), ("hidden", None))
+        self.assertEqual((found.state, found.obj), ("hidden", None))
 
     def test_an_ip_address_comes_with_exactly_the_states_that_name_one(self):
         ip = IPAddress.objects.create(address="10.0.0.5/24")
         for state, value in (("synchronized", None), ("unmarked", None), ("hidden", ip), ("not-in-netbox", ip)):
             with self.subTest(state=state), self.assertRaises(ValueError):
-                AddressOwnership(state, value)
+                Ownership(state, value)
 
     def test_a_scoped_ipv6_address_is_refused(self):
         with self.assertRaises(ValueError):
