@@ -16,10 +16,10 @@ from typing import TYPE_CHECKING, Literal
 from .change_outcome import (
     Application,
     ChangeRejected,
+    FailurePolicy,
     before_change,
     build_client,
     mutate,
-    one_operation_in_memory,
     read_before,
 )
 from .constants import Family
@@ -120,15 +120,13 @@ def wipe_leases(server: Server, family: Family, subnet_id: int) -> RuntimeChange
 def enable_dhcp(server: Server, family: Family) -> RuntimeChangeOutcome:
     """Start the DHCP service of *family* again after ``disable_dhcp``."""
     with build_client(server, family) as client:
-        return _outcome(client, family, lambda: client.dhcp_enable(family), not_live=one_operation_in_memory)
+        return _outcome(client, family, lambda: client.dhcp_enable(family), on_failure="reject")
 
 
 def disable_dhcp(server: Server, family: Family, max_period: int | None) -> RuntimeChangeOutcome:
     """Stop the DHCP service of *family*, for *max_period* seconds, or until ``enable_dhcp`` when it is None."""
     with build_client(server, family) as client:
-        return _outcome(
-            client, family, lambda: client.dhcp_disable(family, max_period=max_period), not_live=one_operation_in_memory
-        )
+        return _outcome(client, family, lambda: client.dhcp_disable(family, max_period=max_period), on_failure="reject")
 
 
 def _outcome(
@@ -136,10 +134,10 @@ def _outcome(
     family: Family,
     send: Callable[[], None],
     *,
-    not_live: Callable[[], bool] | None = None,
+    on_failure: FailurePolicy = "unknown",
 ) -> RuntimeChangeOutcome:
-    """Send the change and return its outcome. *not_live* None: any failure result is unknown."""
-    application, diagnostics = mutate(client, family, send, not_live=not_live)
+    """Send the change and return its outcome. By default any failure result is unknown."""
+    application, diagnostics = mutate(client, family, send, on_failure=on_failure)
     return RuntimeChangeOutcome(application, diagnostics)
 
 
