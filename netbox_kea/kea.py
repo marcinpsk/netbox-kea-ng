@@ -1713,11 +1713,12 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea refuses the Lease, for example because the address is in use.
+            MalformedReply: If the reply does not hold exactly one result.
             MalformedLeaseResponse: If the reply confirms no creation.
 
         """
-        response = self.command(LEASE_ADD[request.family], request.family, arguments=_creation_arguments(request))
-        confirm_lease_creation(response)
+        family = request.family
+        confirm_lease_creation([self._one_command(LEASE_ADD[family], family, _creation_arguments(request))])
 
     def lease_get(self, identity: LeaseIdentity) -> ExactLeaseResult:
         """Read the one Lease with *identity*: found, confirmed absent, or a failed observation.
@@ -1756,24 +1757,22 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns another failure result.
-            MalformedLeaseResponse: If the reply envelope is unusable.
+            MalformedReply: If the reply does not hold exactly one result.
 
         """
-        response = self.command(LEASE_UPDATE[family], family, arguments=body, check=(0, 4))
-        return read_lease_change(response, refused=4)
+        return read_lease_change([self._one_command(LEASE_UPDATE[family], family, body, (0, 4))], refused=4)
 
     def lease_delete(self, identity: LeaseIdentity) -> bool:
         """Send one ``lease{v}-del`` of the Lease with *identity*. Returns False when Kea holds no such Lease (result 3).
 
         Raises:
             KeaException: If Kea returns another failure result.
-            MalformedLeaseResponse: If the reply envelope is unusable.
+            MalformedReply: If the reply does not hold exactly one result.
 
         """
-        response = self.command(
-            LEASE_DEL[identity.family], identity.family, arguments=lookup_arguments(identity), check=(0, 3)
-        )
-        return read_lease_change(response, refused=3)
+        family = identity.family
+        reply = self._one_command(LEASE_DEL[family], family, lookup_arguments(identity), (0, 3))
+        return read_lease_change([reply], refused=3)
 
     def lease_search(
         self,

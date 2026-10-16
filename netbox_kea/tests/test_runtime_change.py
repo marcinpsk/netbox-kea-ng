@@ -226,6 +226,18 @@ class ApplicationTests(TestCase):
                     self.assertEqual(outcome.diagnostics, (_LOST,))
                     self.assertEqual(commands, [*operation.before, operation.write])
 
+    def test_result_2_in_a_reply_of_two_entries_is_unknown(self):
+        """Result 2 is a rejection only in a well-formed reply; this reply is malformed (ADR 0011)."""
+        for operation in _OPERATIONS:
+            for reply in (
+                [{"result": 0, "text": "done"}, {"result": 2, "text": "not supported"}],
+                [{"result": 2, "text": "not supported"}, {"result": 0, "text": "done"}],
+            ):
+                with self.subTest(operation.name, first=reply[0]["result"]):
+                    outcome, commands = self._result(operation, reply)
+                    self.assertEqual((outcome.application, outcome.diagnostics), ("unknown", (_LOST,)))
+                    self.assertEqual(commands, [*operation.before, operation.write])
+
     def test_a_recorded_control_agent_forward_failure_is_unknown(self):
         recorded = _forward_failure(4)
         for operation in _OPERATIONS:
