@@ -122,7 +122,7 @@ def mutate(
             logger.warning("A change did not reach Kea", exc_info=True)
             raise ChangeRejected("not-sent", (reason,)) from exc
         logger.warning("The reply to a change was lost or unreadable", exc_info=True)
-        return "unknown", (_REPLY_LOST,)
+        return "unknown", (_tls_failure(exc) or _REPLY_LOST,)
     except (ValueError, RuntimeError):
         logger.warning("The reply to a change was malformed", exc_info=True)
         return "unknown", (_REPLY_LOST,)
@@ -132,8 +132,9 @@ def mutate(
 def never_sent(exc: requests.RequestException) -> str | None:
     """Return why Kea did not run the request, or None when Kea can have run it.
 
-    Kea did not run it when the connection failed, NetBox could not verify Kea's TLS certificate, the URL is not
-    valid, or the web server in front of Kea refused the credentials with HTTP 401 (ADR 0011).
+    Kea did not run it when the connection failed, the URL is not valid, or the web server in front of Kea refused
+    the credentials with HTTP 401. A TLS failure is never proof: a TLS 1.2 server can renegotiate after it received
+    the command (ADR 0011).
     """
     if isinstance(
         exc, (requests.exceptions.InvalidURL, requests.exceptions.InvalidSchema, requests.exceptions.MissingSchema)
@@ -148,8 +149,19 @@ def never_sent(exc: requests.RequestException) -> str | None:
     for current in _causes(exc):
         if isinstance(current, NewConnectionError):
             return _UNREACHABLE
-        if isinstance(current, ssl.SSLCertVerificationError):
-            return "NetBox could not verify the TLS certificate of Kea. Check the TLS settings of the Server."
+    return None
+
+
+def _tls_failure(exc: requests.RequestException) -> str | None:
+    """Return the diagnostic of a TLS failure of the connection to Kea, or None for another failure."""
+    causes = list(_causes(exc))
+    if any(isinstance(current, ssl.SSLCertVerificationError) for current in causes):
+        return (
+            "The TLS connection to Kea failed: NetBox could not verify the certificate of Kea."
+            " Check the TLS settings of the Server."
+        )
+    if isinstance(exc, requests.exceptions.SSLError) or any(isinstance(current, ssl.SSLError) for current in causes):
+        return "The TLS connection to Kea failed. Check the TLS settings of the Server."
     return None
 
 

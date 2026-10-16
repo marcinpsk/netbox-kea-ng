@@ -156,24 +156,22 @@ class ApplicationTests(TestCase):
                     outcome, _commands = self._result(operation, _http_response({"error": "down"}, status=status))
                     self.assertEqual((outcome.application, outcome.diagnostics), ("unknown", (_LOST,)))
 
-    def test_a_tls_certificate_verification_failure_is_not_sent(self):
-        failure = _tls_errors()["verify"]
+    def test_a_tls_failure_is_unknown_and_names_the_tls_connection(self):
+        """A TLS 1.2 server can renegotiate after it received the command, so no TLS error proves "not sent"."""
+        errors = _tls_errors()
+        diagnostics = {
+            "verify": (
+                "The TLS connection to Kea failed: NetBox could not verify the certificate of Kea."
+                " Check the TLS settings of the Server."
+            ),
+            "handshake": "The TLS connection to Kea failed. Check the TLS settings of the Server.",
+        }
         for operation in _OPERATIONS:
-            with self.subTest(operation.name):
-                rejection, _commands = self._rejection(operation, operation.responses(failure))
-                self.assertEqual(rejection.reason, "not-sent")
-                self.assertEqual(
-                    rejection.diagnostics,
-                    ("NetBox could not verify the TLS certificate of Kea. Check the TLS settings of the Server.",),
-                )
-
-    def test_any_other_tls_failure_is_unknown(self):
-        failure = _tls_errors()["handshake"]
-        self.assertIsInstance(failure, requests.exceptions.SSLError)
-        for operation in _OPERATIONS:
-            with self.subTest(operation.name):
-                outcome, _commands = self._result(operation, failure)
-                self.assertEqual((outcome.application, outcome.diagnostics), ("unknown", (_LOST,)))
+            for name, diagnostic in diagnostics.items():
+                with self.subTest(operation.name, failure=name):
+                    outcome, commands = self._result(operation, errors[name])
+                    self.assertEqual((outcome.application, outcome.diagnostics), ("unknown", (diagnostic,)))
+                    self.assertEqual(commands, [*operation.before, operation.write])
 
     def test_an_invalid_url_is_not_sent(self):
         errors = {
