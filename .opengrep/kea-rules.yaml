@@ -210,7 +210,6 @@ rules:
     paths:
       exclude:
         - "**/tests/**"
-        - "**/migrations/**"
         - "netbox_kea/runtime_change.py"
     patterns:
       - pattern: $CLIENT.$METHOD(...)
