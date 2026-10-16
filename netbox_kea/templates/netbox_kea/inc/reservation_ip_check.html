@@ -4,17 +4,17 @@
   Advisory fragment shown under the reservation Add form's IP field.
   Rendered by ReservationCheckNetboxIPView; empty body means "no advisory".
 {% endcomment %}
-{% if nb_ip %}
-{% if kea_managed %}
+{% if state == "synchronized" or state == "not-synchronized" %}
 <div class="alert alert-info d-flex align-items-start mt-2" role="alert">
   <i class="mdi mdi-information-outline me-2 mt-1" aria-hidden="true"></i>
   <div>
-    Already in NetBox IPAM
+    Already in NetBox IPAM{% if state == "not-synchronized" %} from Kea sync, but no Reservation of this Server owns it{% endif %}
     (<a href="{{ nb_ip.get_absolute_url }}">{{ nb_ip.address }}</a>,
-    status: {{ nb_ip.get_status_display }}). Saving will update it.
+    status: {{ nb_ip.get_status_display }}).
+    {% if state == "synchronized" %}Saving will update it.{% else %}Saving adds this Server as an owner.{% endif %}
   </div>
 </div>
-{% else %}
+{% elif state == "unmarked" %}
 <div class="alert alert-warning d-flex align-items-start mt-2" role="alert">
   <i class="mdi mdi-alert-outline me-2 mt-1" aria-hidden="true"></i>
   <div>
@@ -23,8 +23,7 @@
     status: {{ nb_ip.get_status_display }}{% if nb_ip.description %},
     description: <code>{{ nb_ip.description }}</code>{% endif %}{% if nb_ip.assigned_object %},
     assigned to: {% if nb_ip.assigned_object.parent_object %}{{ nb_ip.assigned_object.parent_object }}/{% endif %}{{ nb_ip.assigned_object }}{% endif %}).
-    Syncing will overwrite this entry.
+    Saving takes it over.
   </div>
 </div>
-{% endif %}
 {% endif %}

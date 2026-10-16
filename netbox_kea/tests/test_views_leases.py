@@ -28,6 +28,7 @@ import io
 import ipaddress
 import json
 import re
+import time
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -69,6 +70,8 @@ from .utils import (
     _make_db_server,
     _ViewTestBase,
     active_tabs,
+    ownership_link,
+    prefix_ownership_link,
     save_key_without_certificate,
     with_display_cache_config,
     with_kea_client_config,
@@ -302,14 +305,18 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
 
     def test_the_table_export_fills_the_badge_columns_of_the_page(self):
         """The "table" export presents its rows as the page does, so the badge columns carry their state."""
-        NbIP.objects.create(address="192.168.1.100/24", status="dhcp")
+        ip = NbIP.objects.create(address="192.168.1.100/24", status="dhcp", description="[kea-sync: lease]")
+        ownership_link(ip, self.server, source="lease", allocation_kind="address")
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        with _lease_stub(self._badge_responses(**{"reservation-get": {"result": 0, "arguments": self._RESERVATION4}})):
+        # Only a Current Lease has a Lease Synchronization State.
+        current = {"result": 0, "arguments": {**self._LEASE4, "cltt": int(time.time())}}
+        reserved = {"result": 0, "arguments": self._RESERVATION4}
+        with _lease_stub(self._badge_responses(**{"lease4-get": current, "reservation-get": reserved})):
             response = self.client.get(url, {"by": "ip", "q": "192.168.1.100", "export": "table"})
 
         self.assertEqual(response.status_code, 200)
         rows = list(csv.DictReader(io.StringIO(response.content.decode())))
-        self.assertEqual([(row.get("Reserved"), row.get("NetBox IP")) for row in rows], [("Reserved", "Synced")])
+        self.assertEqual([(row.get("Reserved"), row.get("NetBox IP")) for row in rows], [("Reserved", "Synchronized")])
 
     def test_the_table_export_shows_an_unknown_reservation_match_as_the_badge_does(self):
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
@@ -919,7 +926,6 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
 
     def test_sync_url_set_when_no_netbox_ip(self):
         """When the lease IP is absent from NetBox, sync_url must be set on the lease dict."""
-        # No NbIP created → bulk_fetch_netbox_ips returns {} from the real (empty) DB.
         url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
         with _reservation_stub(
             4,
@@ -980,22 +986,6 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
                 row = next(iter(response.context["table"].rows)).record
                 self.assertTrue(row["current"])
                 self.assertEqual(row.get("sync_url") is not None, offered)
-
-    def test_synced_badge_set_when_netbox_ip_exists(self):
-        """When the lease IP exists in NetBox IPAM, netbox_ip_url must be set (Synced badge)."""
-        NbIP.objects.create(address="10.0.0.5/24")  # real IPAM row → resolved by bulk_fetch_netbox_ips
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
-        with _reservation_stub(
-            4,
-            {
-                "subnet4-list": self._SUBNETS4,
-                "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)},
-                "reservation-get": {"result": 3},  # no reservation
-            },
-        ):
-            response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Synced")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1063,7 +1053,7 @@ class TestDelegatedPrefixSyncBadges(_ViewTestBase):
             rows["delegated-prefix"].get("sync_url"),
             reverse("plugins:netbox_kea:server_lease6_sync", args=[self.server.pk]),
         )
-        self.assertIsNone(rows["delegated-prefix"].get("netbox_prefix_url"))
+        self.assertIsNone(rows["delegated-prefix"]["netbox_url"])
         posted = self._sync_values(response)
         # The search container pushes its URL, so each Sync button and the Attribute control opt out.
         self.assertEqual(response.content.decode().count('hx-push-url="false"'), 3)
@@ -1075,32 +1065,19 @@ class TestDelegatedPrefixSyncBadges(_ViewTestBase):
         self.assertEqual(str(Prefix.objects.get(vrf=self.vrf).prefix), _PD_LABEL)
         self.assertFalse(NbIP.objects.exists())
 
-    def test_a_prefix_in_the_sync_vrf_shows_the_synced_link(self):
+    def test_a_prefix_in_the_sync_vrf_that_the_server_owns_shows_the_synced_link(self):
         from ipam.models import Prefix
 
-        prefix = Prefix.objects.create(prefix=_PD_LABEL, vrf=self.vrf)
+        prefix = Prefix.objects.create(prefix=_PD_LABEL, vrf=self.vrf, description="[kea-sync: delegated prefix]")
+        prefix_ownership_link(prefix, self.server)
 
         response, rows = self._rows()
 
-        self.assertEqual(rows["delegated-prefix"].get("netbox_prefix_url"), prefix.get_absolute_url())
+        self.assertEqual(rows["delegated-prefix"]["netbox_url"], prefix.get_absolute_url())
         self.assertIsNone(rows["delegated-prefix"].get("sync_url"))
-        self.assertIsNone(rows["delegated-prefix"].get("netbox_ip_url"))
         self.assertContains(response, f'<a href="{prefix.get_absolute_url()}" class="badge text-bg-success')
         # The address row still offers its own Sync.
         self.assertTrue(rows["address"].get("sync_url"))
-
-    def test_a_prefix_outside_the_sync_vrf_or_of_another_length_does_not_count(self):
-        from ipam.models import VRF, Prefix
-
-        Prefix.objects.create(prefix=_PD_LABEL)
-        Prefix.objects.create(prefix=_PD_LABEL, vrf=VRF.objects.create(name="other-vrf"))
-        Prefix.objects.create(prefix="2001:db8:100:100::/60", vrf=self.vrf)
-        Prefix.objects.create(prefix="2001:db8:100::/48", vrf=self.vrf)
-
-        _response, rows = self._rows()
-
-        self.assertIsNone(rows["delegated-prefix"].get("netbox_prefix_url"))
-        self.assertTrue(rows["delegated-prefix"].get("sync_url"))
 
     def test_only_an_address_in_the_sync_vrf_shows_the_synced_link(self):
         from ipam.models import VRF
@@ -1110,12 +1087,13 @@ class TestDelegatedPrefixSyncBadges(_ViewTestBase):
 
         _response, rows = self._rows()
 
-        self.assertIsNone(rows["address"].get("netbox_ip_url"))
+        self.assertIsNone(rows["address"]["netbox_url"])
         self.assertTrue(rows["address"].get("sync_url"))
 
-        synced = NbIP.objects.create(address="2001:db8:1::10/64", vrf=self.vrf)
+        synced = NbIP.objects.create(address="2001:db8:1::10/64", vrf=self.vrf, description="[kea-sync: lease]")
+        ownership_link(synced, self.server, source="lease", allocation_kind="address")
         _response, rows = self._rows()
-        self.assertEqual(rows["address"].get("netbox_ip_url"), synced.get_absolute_url())
+        self.assertEqual(rows["address"]["netbox_url"], synced.get_absolute_url())
         self.assertIsNone(rows["address"].get("sync_url"))
 
     def test_a_refused_sync_replaces_its_button_with_the_reason(self):

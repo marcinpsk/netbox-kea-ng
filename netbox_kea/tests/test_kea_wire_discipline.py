@@ -108,6 +108,7 @@ _NON_WIRE_HYPHENATED = {
     "wrong-family": "Transfer validation diagnostic",
     "in-subnet": "Reservation Scope enum value",
     "not-applicable": "Synchronization State enum value",
+    "not-in-netbox": "Synchronization State enum value",
     "not-requested": "Synchronization State enum value",
     "not-synchronized": "Synchronization State enum value",
     "partially-synchronized": "Synchronization State enum value",

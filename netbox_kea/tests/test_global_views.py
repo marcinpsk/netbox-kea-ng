@@ -18,7 +18,7 @@ from ipam.models import IPAddress
 from netbox_kea.models import Server
 
 from .kea_stub import _res_page, complete_lease, queued, stub_kea
-from .utils import User, _make_db_server, with_display_cache_config, with_kea_client_config
+from .utils import User, _make_db_server, ownership_link, with_display_cache_config, with_kea_client_config
 
 # ---------------------------------------------------------------------------
 # Kea response fixtures
@@ -936,7 +936,9 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
 
     def test_netbox_ip_synced_link_when_ip_in_netbox(self):
         """The combined table shows aggregate synchronization for the Reservation."""
-        IPAddress.objects.create(address="10.0.0.5/32", description="[kea-sync: reservation]")
+        ownership_link(
+            IPAddress.objects.create(address="10.0.0.5/32", description="[kea-sync: reservation]"), self.v4_server
+        )
         with _reservation_stub(
             4,
             {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_ENRICHED)]), "lease4-get-by-state": _leases([])},
@@ -963,6 +965,7 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
         self.assertContains(response, "Not Synchronized 0/1")
 
         synced = IPAddress.objects.create(address="10.0.0.5/32", vrf=sync_vrf, description="[kea-sync: reservation]")
+        ownership_link(synced, self.v4_server)
         with _reservation_stub(4, stub):
             response = self.client.get(self._url())
         self.assertContains(response, "Synchronized 1/1")
@@ -977,7 +980,11 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
         }
         with (
             _reservation_stub(4, stub),
-            patch("netbox_kea.sync.bulk_fetch_netbox_ips", autospec=True, side_effect=DatabaseError("read failed")),
+            patch(
+                "netbox_kea.views.reservations.address_ownership",
+                autospec=True,
+                side_effect=DatabaseError("read failed"),
+            ),
             self.assertLogs("netbox_kea.views.reservations", level="ERROR"),
         ):
             response = self.client.get(self._url())

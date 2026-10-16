@@ -16,15 +16,18 @@ from django.db import connection
 from django.test import Client, TestCase
 from django.test.utils import CaptureQueriesContext, TestContextDecorator
 from django.urls import reverse
+from netaddr import IPNetwork
 from users.models import ObjectPermission
 
 from netbox_kea.models import (
     DhcpIntegrationConfig,
     DisplayCacheConfig,
+    IPAMOwnershipLink,
     KeaClientConfig,
     Server,
     SettingsSingleton,
     SyncConfig,
+    next_confirmation_number,
 )
 
 from .kea_stub import stub_kea
@@ -164,6 +167,33 @@ def _make_db_server(**kwargs) -> Server:
     }
     defaults.update(kwargs)
     return Server.objects.create(**defaults)
+
+
+def ownership_link(ip, server: Server, source: str = "reservation", **fields) -> IPAMOwnershipLink:
+    """Link the NetBox IP address *ip* to *source* of *server* (ADR 0006), with empty-hostname facts."""
+    address = IPNetwork(str(ip.address))
+    return IPAMOwnershipLink.objects.create(
+        server=server,
+        family=address.version,
+        source=source,
+        ip_address=ip,
+        facts={"hostname": "", "prefix_length": address.prefixlen},
+        confirmation=next_confirmation_number(),
+        **fields,
+    )
+
+
+def prefix_ownership_link(prefix, server: Server, source: str = "lease-prefix") -> IPAMOwnershipLink:
+    """Link the NetBox Prefix *prefix* to *source* of *server* (ADR 0006), with its prefix length as the facts."""
+    network = IPNetwork(str(prefix.prefix))
+    return IPAMOwnershipLink.objects.create(
+        server=server,
+        family=network.version,
+        source=source,
+        prefix=prefix,
+        facts={"prefix_length": network.prefixlen},
+        confirmation=next_confirmation_number(),
+    )
 
 
 _WRITE_VERBS = ("INSERT", "UPDATE", "DELETE")

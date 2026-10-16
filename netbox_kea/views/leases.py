@@ -1,6 +1,5 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-import ipaddress
 import logging
 import uuid
 from abc import ABCMeta
@@ -29,7 +28,15 @@ from utilities.views import GetReturnURLMixin, register_model_view
 
 from .. import event_scope, forms, subnet_catalogue, tables
 from ..constants import Family, LeaseState
-from ..ipam_reconciliation import LEASE, LEASE_PREFIX, claim, claim_permissions
+from ..ipam_reconciliation import (
+    LEASE,
+    LEASE_PREFIX,
+    Ownership,
+    address_ownership,
+    claim,
+    claim_permissions,
+    prefix_ownership,
+)
 from ..kea import (
     KeaClient,
     KeaException,
@@ -95,12 +102,14 @@ from ..utilities import (
     snapshot_rows,
 )
 from ._base import (
+    IPAM_UNREADABLE,
     ConditionalLoginRequiredMixin,
     LazyClient,
     _client_settings_error,
     _KeaChangeMixin,
     _safe_return_url,
     _strip_empty_params,
+    sync_title,
 )
 from .notices import Notice, load_snapshot, notice, show_notices
 from .read_age import read_age_context, refresh_requested
@@ -331,6 +340,7 @@ def present(
         snapshot.family,
         can_delete=can_delete,
         can_change=request.user.has_perm("netbox_kea.change_server", obj=server),
+        user=request.user,
         sync=lease_sync_gates(request.user),
         return_url=return_url,
         read_since=snapshot.read_started,
@@ -1102,11 +1112,6 @@ class ServerLease6AddView(_BaseLeaseAddView):
     _active_tab = _LEASES_TAB
 
 
-def _row_address(row: dict[str, Any]) -> str:
-    """Return the canonical address of the typed Lease of one presentation row."""
-    return str(row["lease"].identity.address)
-
-
 def _canonical_reservation_url(server_pk: int, reservation: Reservation, return_url: str) -> str | None:
     if isinstance(reservation.scope, GlobalReservationScope):
         return None
@@ -1281,17 +1286,71 @@ def _set_reservation_fields(
             assert_never(match)
 
 
-def _sync_vrf_prefixes(server: "Server", leases: list[Lease]) -> dict[ipaddress.IPv6Network, Any]:
-    """Return the NetBox Prefix in the Server's sync VRF for each delegated prefix of *leases*, in one query."""
-    from ipam.models import Prefix
+LeaseSyncCode = Literal["synchronized", "not-synchronized", "unmarked", "not-in-netbox", "unknown"]
 
-    delegated = [str(lease.prefix) for lease in leases if isinstance(lease, DHCPv6PrefixLease)]
-    if not delegated:
-        return {}
-    found: dict[ipaddress.IPv6Network, Any] = {}
-    for prefix in Prefix.objects.filter(vrf_id=server.sync_vrf_id, prefix__in=delegated):
-        found.setdefault(ipaddress.IPv6Network(str(prefix.prefix)), prefix)
-    return found
+#: The Lease Synchronization State terms of CONTEXT.md, which the table export writes.
+_LEASE_SYNC_LABELS: dict[LeaseSyncCode, str] = {
+    "synchronized": "Synchronized",
+    "not-synchronized": "Not Synchronized",
+    "unmarked": "Unmarked",
+    "not-in-netbox": "Not in NetBox",
+    "unknown": "Unknown",
+}
+_SYNC_STATES: frozenset[LeaseSyncCode] = frozenset({"not-synchronized", "unmarked", "not-in-netbox"})
+
+
+@dataclass(frozen=True)
+class LeaseSynchronizationState:
+    """The Lease Synchronization State of one Current Lease, with the reason of an Unknown state."""
+
+    code: LeaseSyncCode
+    reason: str = ""
+
+    @property
+    def label(self) -> str:
+        """Return the term of CONTEXT.md for the state."""
+        return _LEASE_SYNC_LABELS[self.code]
+
+
+def _ownership_key(observed: Lease) -> str:
+    """Return the key of the ownership read of a Lease: its delegated prefix, or its address."""
+    return str(observed.prefix) if isinstance(observed, DHCPv6PrefixLease) else str(observed.identity.address)
+
+
+def _read_ownership(server: "Server", version: Family, leases: list[Lease], user: Any) -> dict[str, Ownership] | None:
+    """Read the IPAM Ownership of the object of each Lease, by its lease source; ``None`` when the read fails."""
+    addresses = [_ownership_key(lease) for lease in leases if not isinstance(lease, DHCPv6PrefixLease)]
+    prefixes = [_ownership_key(lease) for lease in leases if isinstance(lease, DHCPv6PrefixLease)]
+    try:
+        return {
+            **address_ownership(server, version, LEASE, addresses, user),
+            **prefix_ownership(server, version, LEASE_PREFIX, prefixes, user),
+        }
+    except DatabaseError:
+        logger.exception("Could not read NetBox IPAM state for Lease badges")
+        return None
+
+
+def _lease_badge(observed: Lease, current: bool, ownership: Mapping[str, Ownership] | None) -> dict[str, Any]:
+    """Return the ``sync_state``, ``netbox_url`` and ``sync_title`` of a Lease row.
+
+    A Lease that is not current has no state, only the link of an object that the user may view. *ownership* is the
+    read of :func:`_read_ownership`; ``None`` means that it failed.
+    """
+    noun = "Prefix" if isinstance(observed, DHCPv6PrefixLease) else "IP address"
+    found = ownership[_ownership_key(observed)] if ownership is not None else None
+    url = found.obj.get_absolute_url() if found is not None and found.obj is not None else None
+    state: LeaseSynchronizationState | None
+    if not current:
+        state = None
+    elif found is None:
+        state = LeaseSynchronizationState("unknown", IPAM_UNREADABLE)
+    elif found.state == "hidden":
+        state = LeaseSynchronizationState("unknown", f"You may not view the {noun} of this lease in NetBox.")
+    else:
+        state = LeaseSynchronizationState(found.state)
+    title = sync_title(found.state, noun) if current and found is not None else ""
+    return {"sync_state": state, "netbox_url": url, "sync_title": title}
 
 
 def _enrich_leases_with_badges(
@@ -1301,6 +1360,7 @@ def _enrich_leases_with_badges(
     can_delete: bool = False,
     can_change: bool = False,
     *,
+    user: Any,
     sync: Mapping[AllocationKind, SyncGate],
     return_url: str,
     read_since: datetime,
@@ -1312,9 +1372,10 @@ def _enrich_leases_with_badges(
     - ``can_change_reservation``: whether the user may edit the reservation (gates link vs plain badge)
     - ``host_reservation``: the matched Reservation holds no address and no delegated prefix for the Lease's Subnet
     - ``create_reservation_url``: pre-filled add link if host_cmds is loaded
-    - ``netbox_ip_url``: absolute URL if the address of an address Lease exists in NetBox IPAM
-    - ``netbox_prefix_url``: absolute URL if the delegated prefix exists as a Prefix in the Server's sync VRF
-    - ``sync_url``: POST endpoint URL to claim the Lease when neither link is set and the gate of its kind allows it
+    - ``sync_state``: the Lease Synchronization State of a Current Lease, ``None`` for another Lease
+    - ``netbox_url``: the IP address or Prefix of the Lease in the sync VRF, when *user* may view it
+    - ``sync_title``: what a Sync does to an object that the Server does not own
+    - ``sync_url``: POST endpoint URL to claim a Current Lease whose state, Reservation Match and gate allow it
     - ``sync_refusal``: the reason when the gate of its kind refuses the user
     - ``can_delete``: whether the current user may delete this lease
     - ``can_change``: whether the current user may edit this lease (gates edit_url)
@@ -1324,8 +1385,6 @@ def _enrich_leases_with_badges(
     *return_url* is the lease search page; the lease and Reservation edit forms return to it. Each Reservation lookup
     read before *read_since*, the read time of the Lease table, is read again.
     """
-    from ..sync import bulk_fetch_netbox_ips
-
     try:
         matches = reservation_matches(server, version, [row["lease"] for row in leases], read_since=read_since)
     except Exception as exc:
@@ -1345,21 +1404,13 @@ def _enrich_leases_with_badges(
     sync_url = reverse(f"plugins:netbox_kea:server_lease{version}_sync", args=[server.pk])
     edit_url_name = f"plugins:netbox_kea:server_lease{version}_edit"
     edit_query = f"?{_urlencode({'return_url': return_url})}" if return_url else ""
-    # A delegated prefix is not an IP Address, so only an address Lease links one.
-    addresses = [_row_address(lease) for lease in leases if lease["lease"].kind == "address"]
-    nb_ips = bulk_fetch_netbox_ips(addresses, vrf_id=server.sync_vrf_id)
-    nb_prefixes = _sync_vrf_prefixes(server, [lease["lease"] for lease in leases])
+    ownership = _read_ownership(server, version, [lease["lease"] for lease in leases], user)
     for lease, sync_allowed in zip(leases, offers_sync, strict=True):
-        ip = _row_address(lease)
         observed = lease["lease"]
-        if isinstance(observed, DHCPv6PrefixLease):
-            synced, url_key = nb_prefixes.get(observed.prefix), "netbox_prefix_url"
-        else:
-            synced, url_key = nb_ips.get(ip), "netbox_ip_url"
-        if synced is not None:
-            lease[url_key] = synced.get_absolute_url()
-        # Sync needs a Current Lease and a Reservation Match that a Sync cannot contradict.
-        elif lease["current"] and sync_allowed:
+        lease.update(_lease_badge(observed, lease["current"], ownership))
+        state = lease["sync_state"]
+        # Sync needs a Current Lease that the Server does not own and a Reservation Match that a Sync cannot contradict.
+        if state is not None and state.code in _SYNC_STATES and sync_allowed:
             gate = sync[observed.kind]
             if gate.allowed:
                 lease["sync_url"] = sync_url
