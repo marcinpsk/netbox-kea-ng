@@ -392,6 +392,14 @@ class ReservationEditTests(TestCase):
             ("unknown", "not-run", ("Kea replied: db error",)),
         )
 
+    def test_result_2_is_a_rejection_without_a_persist_step(self):
+        reply = {"result": 2, "text": "'reservation-update' command not supported."}
+        responses = _responses(**{"reservation-get": _res_get(_RAW), "reservation-update": reply})
+        with stub_kea(responses) as kea, self.assertRaises(ChangeRejected) as raised:
+            self._edit(ReservationChange(hostname=SetValue("new.example.invalid")))
+        self.assertEqual(raised.exception.reason, "kea-rejected")
+        self.assertEqual(kea.commands(), [*_SCOPE, "reservation-get", "reservation-update"])
+
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)
 class ReservationDeleteTests(TestCase):
@@ -446,6 +454,14 @@ class ReservationDeleteTests(TestCase):
             (outcome.application, outcome.verification, outcome.diagnostics),
             ("unknown", "not-run", ("Kea replied: db error",)),
         )
+
+    def test_result_2_is_a_rejection_without_a_persist_step(self):
+        reply = {"result": 2, "text": "'reservation-del' command not supported."}
+        responses = _responses(**{"reservation-get": _res_get(_RAW), "reservation-del": reply})
+        with stub_kea(responses) as kea, self.assertRaises(ChangeRejected) as raised:
+            self._delete()
+        self.assertEqual(raised.exception.reason, "kea-rejected")
+        self.assertEqual(kea.commands(), [*_SCOPE, "reservation-get", "reservation-del"])
 
     def test_a_persist_step_whose_configuration_read_fails_writes_nothing(self):
         responses = _responses(**{"reservation-get": queued(_res_get(_RAW), {"result": 3}), "reservation-del": _OK})

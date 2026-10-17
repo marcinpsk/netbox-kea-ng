@@ -1706,6 +1706,9 @@ reservations:
         self.assertEqual(rows[0][:2], ("reservations[1]", "hw-address aa:bb:cc:dd:ee:02"))
         self.assertIn("Kea rejected the change.", rows[0][2])
         self.assertNotContains(response, "Kea did not confirm one entry")
+        self.assertContains(
+            response, "NetBox stopped at the entry that was not applied and did not send the entries after it."
+        )
 
     def test_a_created_entry_that_kea_did_not_save_or_verify_carries_a_note(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])

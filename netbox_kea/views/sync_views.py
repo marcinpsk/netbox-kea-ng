@@ -413,7 +413,9 @@ def _import_report(
         label, heading, color = _IMPORT_GROUPS[status]
         heading = heading.format(One=noun.one.capitalize(), Many=noun.many.capitalize())
         groups.append(ImportGroup(status, label, heading, color, rows))
-    return {"groups": groups, "unconfirmed": loop.unknown is not None, "total": total, "noun": noun}
+    unconfirmed = loop.unknown is not None
+    stopped = loop.stopped_at is not None and not unconfirmed
+    return {"groups": groups, "unconfirmed": unconfirmed, "stopped": stopped, "total": total, "noun": noun}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

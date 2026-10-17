@@ -542,7 +542,7 @@ def add_reservation(
         )
         reservation = build(subnet, catalogue)
         if reservation.family != family or reservation.scope != InSubnetReservationScope(subnet.identity):
-            raise ValueError("The Reservation must belong to the Subnet that the scope read verified.")
+            raise RuntimeError("The Reservation must belong to the Subnet that the scope read verified.")
         application, diagnostics = mutate(
             client, family, lambda: client.reservation_add(reservation), on_failure="unknown"
         )
