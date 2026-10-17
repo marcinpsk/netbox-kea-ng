@@ -28,6 +28,7 @@ from rest_framework.test import APIClient
 
 from netbox_kea import signals
 from netbox_kea.ipam_reconciliation import reconcile
+from netbox_kea.views.notices import HEADLINES
 
 from .kea_stub import (
     LeaseDaemon,
@@ -288,7 +289,7 @@ class LeaseBrowsingTest(_ViewTestBase):
 
         self.assertEqual(response.status_code, 302)
         messages = [str(message) for message in get_messages(response.wsgi_request)]
-        self.assertEqual(messages, ["Kea returned a lease that could not be read; it cannot be edited."])
+        self.assertEqual(messages, [HEADLINES["lease_target"], "A required lease field is missing."])
 
 
 class LeaseDeleteTest(_ViewTestBase):

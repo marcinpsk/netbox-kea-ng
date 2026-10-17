@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 
 import requests
 from bs4 import BeautifulSoup
+from django.contrib.messages import get_messages
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TransactionTestCase, override_settings
 from django.urls import reverse
@@ -14,8 +15,9 @@ from django.utils.html import escape
 
 from netbox_kea import constants, display_cache, server_configuration
 from netbox_kea.subnet_catalogue import display
+from netbox_kea.views.notices import HEADLINES
 
-from .kea_stub import _host_cmds_hooks, _res_get, _res_page, _subnet_list, queued, stub_kea
+from .kea_stub import READ_FAILURES, _host_cmds_hooks, _res_get, _res_page, _subnet_list, queued, stub_kea
 from .utils import _make_db_server, _ViewTestBase, active_tabs, with_kea_client_config
 
 
@@ -1776,6 +1778,102 @@ def _import_rows(response) -> dict[str, tuple[str, list[tuple[str, ...]]]]:
         rows = [tuple(cell.get_text(strip=True) for cell in row.select("td")) for row in section.select("tbody tr")]
         report[str(section["data-import-status"])] = (heading.get_text(strip=True) if heading else "", rows)
     return report
+
+
+_IMPORT_DOCUMENT = """version: 1
+reservations:
+  - family: 4
+    scope: {type: in-subnet, subnet: {cidr: 198.18.0.0/24}}
+    identity: {type: hw-address, value: "aa:bb:cc:dd:ee:01"}
+    addresses: [198.18.0.10]
+    delegated_prefixes: []
+    hostname: ""
+    options: []
+"""
+
+
+class TestReservationTargetReadFailures(_ViewTestBase):
+    """An exact Reservation load that fails shows the shared Reservation headline and Kea's answer, never a 500."""
+
+    _CURRENT = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "old.example.invalid"}
+
+    def _url(self, action: str) -> str:
+        url = reverse(f"plugins:netbox_kea:server_reservation4_{action}", args=[self.server.pk, 20])
+        return f"{url}?{_identity_query()}"
+
+    def _messages(self, response) -> list[str]:
+        return [str(message) for message in get_messages(response.wsgi_request)]
+
+    def _expected(self, line: str | None) -> list[str]:
+        return [HEADLINES["reservation_target"], *([line] if line else [])]
+
+    def test_the_edit_and_delete_pages_show_the_reservation_notice(self):
+        for action in ("edit", "delete"):
+            for name, reply, line in READ_FAILURES:
+                with self.subTest(action=action, failure=name):
+                    self._fresh_client()
+                    responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+                    with stub_kea({**responses, "reservation-get": reply}):
+                        response = self.client.get(self._url(action))
+                    self.assertEqual(response.status_code, 302)
+                    self.assertEqual(self._messages(response), self._expected(line))
+
+    def test_the_edit_save_shows_the_reservation_notice_and_sends_no_change(self):
+        for name, reply, line in READ_FAILURES:
+            with self.subTest(failure=name):
+                self._fresh_client()
+                responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+                with stub_kea({**responses, "reservation-get": reply}) as kea:
+                    response = self.client.post(
+                        self._url("edit"), {"hostname": "new.example.invalid", "managed_fingerprint": "unused"}
+                    )
+                self.assertEqual(response.status_code, 302)
+                self.assertNotIn("reservation-update", kea.commands())
+                self.assertEqual(self._messages(response), self._expected(line))
+
+    def test_a_reservation_record_that_cannot_be_read_is_a_malformed_reply(self):
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        malformed = _res_get({**self._CURRENT, "hostname": 42})
+        for action in ("edit", "delete"):
+            with self.subTest(action=action):
+                self._fresh_client()
+                with stub_kea({**responses, "reservation-get": malformed}):
+                    response = self.client.get(self._url(action))
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(self._messages(response), self._expected(None))
+
+
+class TestReservationImportReadFailures(_ViewTestBase):
+    """The live reads that validate an import show the shared Notice as form errors."""
+
+    def _post(self, responses: dict):
+        url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
+        with stub_kea(responses) as kea:
+            response = self.client.post(url, {"format": "yaml", "document": _IMPORT_DOCUMENT})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([command for command in kea.commands() if command.startswith("reservation-")], [])
+        return list(response.context["form"].non_field_errors())
+
+    def test_a_failed_configuration_read_shows_the_configuration_notice(self):
+        for name, reply, line in READ_FAILURES:
+            with self.subTest(name):
+                errors = self._post({"config-get": reply})
+                self.assertEqual(errors[0], HEADLINES["configuration"])
+                if line:
+                    self.assertEqual(errors[1:], [f"Kea configuration facts are unavailable. {line}"])
+
+    def test_a_failed_catalogue_read_shows_the_catalogue_notice(self):
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        unreachable = requests.ConnectionError("Kea is unreachable")
+        errors = self._post(
+            {**responses, "config-get": queued(responses["config-get"], unreachable), "subnet4-list": unreachable}
+        )
+        self.assertEqual(errors[0], HEADLINES["catalogue"])
+
+    def test_a_server_without_host_cmds_names_the_missing_hook(self):
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        responses["config-get"]["arguments"]["Dhcp4"]["hooks-libraries"] = []
+        self.assertEqual(self._post(responses), ["The host_cmds hook is not loaded."])
 
 
 class TestMutationCapabilityGate(_ViewTestBase):

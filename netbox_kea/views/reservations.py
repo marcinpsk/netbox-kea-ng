@@ -55,7 +55,7 @@ from ..subnet_catalogue import CatalogueSnapshot, VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
 from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import OptionalViewTab
-from ._base import IPAM_UNREADABLE, _safe_return_url, sync_title
+from ._base import IPAM_UNREADABLE, _client_settings_error, _safe_return_url, sync_title
 from .notices import HEADLINES, Notice, load_snapshot, notice
 from .read_age import read_age_context, refresh_requested
 from .workspace import ServerFamilyMixin
@@ -671,10 +671,17 @@ def _reservation_export_response(request: HttpRequest, server: Server, version: 
     if format_name not in ("yaml", "json"):
         raise BadRequest("Reservation export format must be YAML or JSON.")
     try:
-        snapshot = _read_reservations(server, version, ReservationQuery(full=True), subnet_catalogue(server, version))
-    except (KeaException, requests.RequestException, RuntimeError, ValueError):
-        logger.exception("Could not export DHCPv%s Reservations", version)
-        return HttpResponse("The Reservation Snapshot could not be exported.", status=502)
+        server.get_client(version=version).close()
+    except ValueError as exc:
+        return HttpResponse(_client_settings_error(server, exc), status=500, content_type="text/plain")
+    loaded = load_snapshot(
+        server,
+        "reservation",
+        lambda: _read_reservations(server, version, ReservationQuery(full=True), subnet_catalogue(server, version)),
+    )
+    if isinstance(loaded, Notice):
+        return HttpResponse(loaded.text, status=502, content_type="text/plain")
+    snapshot = loaded
     if not snapshot.complete:
         return HttpResponse("The Reservation Snapshot is incomplete and cannot be exported.", status=409)
     content = export_reservation_document(snapshot.records, format_name)

@@ -13,6 +13,7 @@ from netbox_kea.views.notices import HEADLINES, Notice
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
 from .kea_stub import (
+    READ_FAILURES,
     _catalogue_responses,
     _catalogue_responses_for_subnets,
     _res_get,
@@ -300,9 +301,8 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         )
         self.assertEqual(response.context["table"].data.data, [])
         self.assertNotContains(response, "Snapshot is incomplete")
-        self.assertContains(
-            response, f'<div class="alert alert-danger" role="alert">{HEADLINES["reservation"]}</div>', html=True
-        )
+        alert = BeautifulSoup(response.content, "html.parser").select_one(".alert-danger")
+        self.assertEqual((alert.strong.get_text(), alert.select("li")), (HEADLINES["reservation"], []))
         self.assertNotContains(response, "This bounded Snapshot is complete")
         self.assertNotIn(HEADLINES["reservation"], [str(message) for message in response.context["messages"]])
 
@@ -614,6 +614,17 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
             response = self.client.get(self._url(), {"export": "json"})
 
         self.assertEqual(response.status_code, 409)
+
+    def test_a_failed_read_is_a_502_reply_with_the_reservation_notice(self):
+        for name, reply, line in READ_FAILURES:
+            with self.subTest(name):
+                responses = {**_catalogue_responses(4, 20, "198.18.0.0/24"), "reservation-get-page": reply}
+                with stub_kea(responses):
+                    response = self.client.get(self._url(), {"export": "yaml"})
+                self.assertEqual(response.status_code, 502)
+                self.assertEqual(response["Content-Type"], "text/plain")
+                expected = " ".join([HEADLINES["reservation"], *([line] if line else [])])
+                self.assertEqual(response.content.decode(), expected)
 
 
 class TestCombinedReservationSnapshots(_ViewTestBase):

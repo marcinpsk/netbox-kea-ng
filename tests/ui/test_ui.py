@@ -1196,7 +1196,9 @@ def test_a_refused_lease_sync_shows_its_reason_in_the_row(
     row.get_by_role("button", name="Sync", exact=True).click()
 
     # htmx swaps no error reply by default; the cell of the row button accepts this one.
-    expect(row.locator("span.badge.text-bg-danger")).to_have_text("Could not fetch live data from Kea.")
+    expect(row.locator("span.badge.text-bg-danger")).to_have_text(
+        "The lease is no longer in Kea. Reload the lease list."
+    )
     assert page.url == search_url
 
 

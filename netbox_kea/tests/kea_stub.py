@@ -475,6 +475,15 @@ def _network_absent(name: str) -> dict[str, Any]:
     return {"result": 3, "text": f"No '{name}' shared network found"}
 
 
+#: A Kea refusal, a transport failure and a malformed reply of one read, with the line that the refusal adds under
+#: the headline of the Notice (a transport failure and a malformed reply add none).
+READ_FAILURES: tuple[tuple[str, Any, str | None], ...] = (
+    ("refusal", {"result": 1, "text": "the host backend is down"}, "Kea replied: the host backend is down"),
+    ("transport", requests.ConnectionError("Kea is unreachable"), None),
+    ("malformed", ["not", "a", "reply"], None),
+)
+
+
 def _refused_connection() -> requests.ConnectionError:
     """Return the error that requests raises for a real refused connection.
 

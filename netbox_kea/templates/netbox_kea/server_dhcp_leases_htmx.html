@@ -52,10 +52,8 @@
     </div>
   </div>
 
-  {% if not is_embedded and form.is_valid and lease_notice and lease_notice.kind != "lease" %}
+  {% if not is_embedded and form.is_valid and lease_notice and lease_notice.kind != "lease" or not is_embedded and form.is_valid and lease_notice.unavailable %}
     {% include "netbox_kea/inc/notice_alert.html" with notice=lease_notice %}
-  {% elif not is_embedded and form.is_valid and lease_notice.unavailable %}
-    <div class="alert alert-danger" role="alert">{{ lease_notice.headline }}</div>
   {% elif not is_embedded and form.is_valid %}
     {% if lease_notice %}
     {% with diagnostics=lease_notice.diagnostics %}

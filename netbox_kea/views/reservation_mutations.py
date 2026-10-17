@@ -6,7 +6,6 @@ from dataclasses import replace
 from typing import Any, Literal
 from urllib.parse import urlencode
 
-import requests
 from django.contrib import messages
 from django.core import signing
 from django.core.exceptions import BadRequest, ValidationError
@@ -22,7 +21,6 @@ from ..config_write import ReservationChangeOutcome
 from ..constants import Family, IPAddressValue
 from ..dhcp_options import DHCPOption
 from ..ipam_reconciliation import RESERVATION, claim, claim_permissions
-from ..kea import KeaException
 from ..models import Server
 from ..pools import addresses_in_pools
 from ..published_name import published_name, stored_hostname
@@ -53,7 +51,7 @@ from ._base import (
     _safe_return_url,
     _signal_applied,
 )
-from .notices import notice, show_notices
+from .notices import Notice, load_target, notice, show_notices
 from .reservations import (
     _RESERVATIONS_TAB,
     _build_reservation_options_formset,
@@ -737,13 +735,13 @@ class _ReservationEditView(_ReservationMutationView):
         identity = _identity_from_request(request, self.dhcp_version)
         catalogue = subnet_catalogue.display(server, self.dhcp_version)
         show_notices(request, notice(catalogue))
-        try:
-            reservation = _load_target(server, self.dhcp_version, subnet_id, identity)
-            suffix = _shown_suffix(reservation, catalogue)
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Could not load the Reservation edit target")
-            messages.error(request, "The Reservation could not be loaded. See server logs.")
+        reservation = load_target(
+            server, "reservation_target", lambda: _load_target(server, self.dhcp_version, subnet_id, identity)
+        )
+        if isinstance(reservation, Notice):
+            show_notices(request, reservation)
             return redirect(self._return_url(server))
+        suffix = _shown_suffix(reservation, catalogue)
         capabilities = _display_capabilities(server, self.dhcp_version)
         form = self._form_for(server, reservation, suffix, capabilities)
         form.offer_subnets(catalogue.subnet_choices)
@@ -765,13 +763,13 @@ class _ReservationEditView(_ReservationMutationView):
         catalogue = subnet_catalogue.display(server, self.dhcp_version)
         # The disabled fields take their values from the initial data. The fingerprint check under the lock guards
         # the write.
-        try:
-            current = _load_target(server, self.dhcp_version, subnet_id, identity)
-            suffix = _shown_suffix(current, catalogue)
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Could not reload the Reservation edit target")
-            messages.error(request, "The Reservation could not be reloaded. Edit stopped.")
+        current = load_target(
+            server, "reservation_target", lambda: _load_target(server, self.dhcp_version, subnet_id, identity)
+        )
+        if isinstance(current, Notice):
+            show_notices(request, current)
             return redirect(return_url)
+        suffix = _shown_suffix(current, catalogue)
         form = self._form(server, capabilities, data=request.POST, initial=self._initial(current, suffix))
         form.offer_subnets(catalogue.subnet_choices)
         for field in ("subnet_cidr", "identifier_type", "identifier"):
@@ -884,13 +882,11 @@ class _ReservationDeleteView(_ReservationMutationView):
             messages.error(request, _client_settings_error(server, exc))
             return redirect(self._return_url(server))
         identity = _identity_from_request(request, self.dhcp_version)
-        try:
-            reservation = _load_target(server, self.dhcp_version, subnet_id, identity)
-        except Http404:
-            raise
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Could not load the Reservation delete target")
-            messages.error(request, "The Reservation could not be loaded. See server logs.")
+        reservation = load_target(
+            server, "reservation_target", lambda: _load_target(server, self.dhcp_version, subnet_id, identity)
+        )
+        if isinstance(reservation, Notice):
+            show_notices(request, reservation)
             return redirect(self._return_url(server))
         return render(
             request,
