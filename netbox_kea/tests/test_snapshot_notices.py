@@ -313,7 +313,7 @@ class TestRecordPagesShowAFailedReadThroughTheLoader(_ViewTestBase):
                 HTTP_HX_REQUEST="true",
             )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(_danger_alerts(response), [(HEADLINES["lease"], [])])
+        self.assertEqual(_danger_alerts(response), [("Failed to load Leases from Kea.", [])])
         self.assertNotContains(response, 'id="lease-delete-form"')
 
     def test_the_reservation_page_shows_keas_answer_under_the_headline(self):
@@ -328,9 +328,12 @@ class TestRecordPagesShowAFailedReadThroughTheLoader(_ViewTestBase):
     def test_a_missing_host_cmds_hook_shows_its_panel_and_no_second_guidance(self):
         unsupported = {"result": 2, "text": "unknown command 'reservation-get-page'"}
         responses = {**_catalogue_responses(4, 20, "198.18.0.0/24"), "reservation-get-page": unsupported}
+        # The configuration loads no hook, so the mutation capabilities name the missing host_cmds hook too.
+        responses["config-get"]["arguments"]["Dhcp4"]["hooks-libraries"] = []
         with stub_kea(responses):
             response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
         self.assertContains(response, "hook library is not loaded on this Kea server", count=1)
+        self.assertContains(response, "host_cmds", count=1)
         self.assertNotContains(response, "The required hook library may not be loaded")
         self.assertEqual(_danger_alerts(response), [])
 
@@ -403,12 +406,14 @@ class TestReservationEditNotice(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertIn((django_messages.WARNING, "Kea configuration facts are unavailable."), _page_messages(response))
 
-    def test_an_unavailable_catalogue_is_an_error_before_the_failed_target_read(self):
+    def test_an_unavailable_catalogue_stops_the_target_read_with_one_catalogue_notice(self):
         failure = requests.ConnectionError("unreachable")
         response = self._edit({"subnet4-list": failure, "config-get": failure})
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(_page_messages(response)[0], (django_messages.ERROR, HEADLINES["catalogue"]))
-        self.assertIn((django_messages.ERROR, HEADLINES["reservation_target"]), _page_messages(response))
+        messages = _page_messages(response)
+        self.assertEqual(messages[0], (django_messages.ERROR, HEADLINES["catalogue"]))
+        self.assertEqual([text for _level, text in messages].count(_IDENTITY_UNAVAILABLE), 1)
+        self.assertNotIn(HEADLINES["reservation_target"], [text for _level, text in messages])
 
 
 _CONFIGURATION_UNAVAILABLE = "Kea configuration facts are unavailable."

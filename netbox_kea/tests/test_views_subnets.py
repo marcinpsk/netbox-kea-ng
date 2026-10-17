@@ -3994,8 +3994,8 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
     def _pool_add_url(self):
         return reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 42])
 
-    def test_pool_add_reservation_lookup_failure_shows_the_notice_and_that_the_check_did_not_run(self):
-        """A failed read shows the shared headline and Kea's answer, and says that no overlap check ran."""
+    def test_pool_add_reservation_lookup_failure_is_one_warning_after_the_success(self):
+        """The Pool is added, so the failed advisory read is one warning: no check ran, with the Notice text."""
         not_checked = (
             "The Reservation overlap check did not run. "
             "Pool 10.0.0.100-10.0.0.200 was not checked against existing Reservations."
@@ -4008,11 +4008,8 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
                 )
             shown = [(message.level, str(message)) for message in get_messages(response.wsgi_request)]
             self.assertEqual(shown[0][0], django_messages.SUCCESS)
-            expected = [HEADLINES["reservation"], *([line] if line else [])]
-            self.assertEqual(
-                shown[1:],
-                [*((django_messages.ERROR, text) for text in expected), (django_messages.WARNING, not_checked)],
-            )
+            notice_text = " ".join([HEADLINES["reservation"], *([line] if line else [])])
+            self.assertEqual(shown[1:], [(django_messages.WARNING, f"{not_checked} {notice_text}")])
 
     def test_pool_add_client_creation_failure_shows_an_error(self):
         """A real get_client() failure (cert without key → ValueError) leaves no Subnet to add the Pool to."""

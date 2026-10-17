@@ -190,8 +190,8 @@ def _warn_reservations_in_pool(
             lambda: client.reservation_snapshot(catalogue.family, catalogue, page_size=200, subnet_id=subnet.subnet_id),
         )
     if isinstance(loaded, Notice):
-        show_notices(request, loaded)
-        messages.warning(request, not_checked)
+        # The Pool is added, so the failed advisory read is a warning, not an error.
+        messages.warning(request, f"{not_checked} {loaded.text}")
         return
     if not loaded.complete:
         # No warning below would otherwise read as "no overlapping reservation".

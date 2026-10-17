@@ -17,7 +17,16 @@ from netbox_kea import constants, display_cache, server_configuration
 from netbox_kea.subnet_catalogue import display
 from netbox_kea.views.notices import HEADLINES
 
-from .kea_stub import READ_FAILURES, _host_cmds_hooks, _res_get, _res_page, _subnet_list, queued, stub_kea
+from .kea_stub import (
+    READ_FAILURES,
+    SUBNET_LIST_FAILURES,
+    _host_cmds_hooks,
+    _res_get,
+    _res_page,
+    _subnet_list,
+    queued,
+    stub_kea,
+)
 from .utils import _make_db_server, _ViewTestBase, active_tabs, with_kea_client_config
 
 
@@ -1831,6 +1840,20 @@ class TestReservationTargetReadFailures(_ViewTestBase):
                 self.assertNotIn("reservation-update", kea.commands())
                 self.assertEqual(self._messages(response), self._expected(line))
 
+    def test_a_failed_subnet_list_read_shows_the_catalogue_notice(self):
+        """The Subnet of the Reservation cannot be confirmed, so the page shows the Catalogue Notice with Kea's text."""
+        for action, method in (("edit", "get"), ("edit", "post"), ("delete", "get")):
+            for name, reply, _line in READ_FAILURES:
+                with self.subTest(action=action, method=method, failure=name):
+                    self._fresh_client()
+                    responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+                    responses.update({"subnet4-list": reply, "reservation-get": _res_get(self._CURRENT)})
+                    with stub_kea(responses) as kea:
+                        response = getattr(self.client, method)(self._url(action))
+                    self.assertEqual(response.status_code, 302)
+                    self.assertNotIn("reservation-get", kea.commands())
+                    self.assertEqual(self._messages(response), [HEADLINES["catalogue"], SUBNET_LIST_FAILURES[name]])
+
     def test_a_reservation_record_that_cannot_be_read_is_a_malformed_reply(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         malformed = _res_get({**self._CURRENT, "hostname": 42})
@@ -1862,13 +1885,12 @@ class TestReservationImportReadFailures(_ViewTestBase):
                 if line:
                     self.assertEqual(errors[1:], [f"Kea configuration facts are unavailable. {line}"])
 
-    def test_a_failed_catalogue_read_shows_the_catalogue_notice(self):
-        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
-        unreachable = requests.ConnectionError("Kea is unreachable")
-        errors = self._post(
-            {**responses, "config-get": queued(responses["config-get"], unreachable), "subnet4-list": unreachable}
-        )
-        self.assertEqual(errors[0], HEADLINES["catalogue"])
+    def test_a_failed_subnet_list_read_shows_the_catalogue_notice(self):
+        for name, reply, _line in READ_FAILURES:
+            with self.subTest(name):
+                responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+                errors = self._post({**responses, "subnet4-list": reply})
+                self.assertEqual(errors, [HEADLINES["catalogue"], SUBNET_LIST_FAILURES[name]])
 
     def test_a_server_without_host_cmds_names_the_missing_hook(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])

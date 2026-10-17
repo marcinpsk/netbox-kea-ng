@@ -51,6 +51,24 @@ def bad_ladder_after_a_value_error_clause(request, server, identity):
     return reservation
 
 
+def _read_reservations(server, version, query, catalogue):
+    client = server.get_client(version=version)
+    # ruleid: kea-view-read-ladder
+    try:
+        return client.reservation_page(version, catalogue, cursor=query.cursor, limit=100)
+    except (KeaException, requests.RequestException, RuntimeError, ValueError):
+        return None
+
+
+def _read_later_search_page(client, version, catalogue, cursor, subnet_id):
+    # ok: kea-view-read-ladder
+    try:
+        return client.reservation_page(version, catalogue, cursor=cursor, limit=100, subnet_id=subnet_id)
+    except (KeaException, requests.RequestException, RuntimeError, ValueError):
+        logger.exception("Failed to continue DHCPv%s Reservation search", version)
+        return None
+
+
 class GoodLeaseEditView:
     def get(self, request, server, client, identity):
         # ok: kea-view-read-ladder

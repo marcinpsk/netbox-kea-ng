@@ -484,6 +484,14 @@ READ_FAILURES: tuple[tuple[str, Any, str | None], ...] = (
 )
 
 
+#: The Catalogue diagnostic of each failure of READ_FAILURES on a ``subnet{v}-list`` read.
+SUBNET_LIST_FAILURES: dict[str, str] = {
+    "refusal": "Kea subnet identity facts are unavailable. Kea replied: the host backend is down",
+    "transport": "Kea subnet identity facts are unavailable.",
+    "malformed": "Kea returned a malformed subnet identity response.",
+}
+
+
 def _refused_connection() -> requests.ConnectionError:
     """Return the error that requests raises for a real refused connection.
 

@@ -1182,9 +1182,10 @@ rules:
     severity: ERROR
     message: >-
       This view function reads a Catalogue, Server Configuration, Reservation or Lease Snapshot, but it
-      calls neither notice() nor load_snapshot() from views/notices.py. The page then does not show an
-      unavailable or incomplete Snapshot (ADR 0003, Presentation). Pass the Snapshot to notice(), or run
-      a raised Reservation or Lease read through load_snapshot(), and show the Notice.
+      calls none of notice(), failed_load() and load_snapshot() from views/notices.py. The page then does
+      not show an unavailable or incomplete Snapshot (ADR 0003, Presentation). Pass the Snapshot to
+      notice() (or to failed_load() when a load cannot go on), or run a raised Reservation or Lease read
+      through load_snapshot(), and show the Notice.
       Exempt by name: the read helpers whose callers use load_snapshot(), and the reads that only feed
       another read, a badge, a check or a preview.
       Limits: a read through a helper that this rule does not name, a read function passed by reference
@@ -1232,12 +1233,20 @@ rules:
               ...
               <... load_snapshot(...) ...>
               ...
+      - pattern-not-inside: |
+          def $FUNC(...):
+              ...
+              <... failed_load(...) ...>
+              ...
       # Read helpers: each caller runs them through load_snapshot(), or an export refuses a failed read.
       - pattern-not-inside: |
           def _read_reservations(...):
               ...
       - pattern-not-inside: |
           def _read_reservation_page(...):
+              ...
+      - pattern-not-inside: |
+          def _read_later_search_page(...):
               ...
       # The DHCP plugin import reads the Reservation Snapshot to synchronize it, not to show it.
       - pattern-not-inside: |
@@ -1340,7 +1349,7 @@ rules:
               ...
       # A later page of a Reservation search ends the batch with a diagnostic; the first page raises to the loader.
       - pattern-not-inside: |
-          def _read_reservations(...):
+          def _read_later_search_page(...):
               ...
       # The DHCP plugin import records an unread Reservation Snapshot in its summary.
       - pattern-not-inside: |

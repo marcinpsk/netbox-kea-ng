@@ -89,8 +89,8 @@ _EXPECTED: dict[str, frozenset[NoticeKind]] = {
     "server_subnet_pool_delete": frozenset({"catalogue"}),
     "server_leases": frozenset({"catalogue"}),
     "server_reservation_add": frozenset({"catalogue"}),
-    "server_reservation_edit": frozenset({"catalogue", "reservation_target"}),
-    "server_reservation_delete": frozenset({"reservation_target"}),
+    "server_reservation_edit": frozenset({"catalogue"}),
+    "server_reservation_delete": frozenset({"catalogue"}),
     "server_lease_edit": frozenset({"lease_target"}),
     "server_reservations": frozenset({"reservation"}),
 }

@@ -34,17 +34,15 @@ RecordKind = Literal["reservation", "lease"]
 TargetKind = Literal["lease_target", "reservation_target"]
 NoticeKind = SnapshotKind | TargetKind
 Snapshot = CatalogueSnapshot | ServerConfigurationSnapshot | ReservationSnapshot | LeaseSnapshot
-#: What a Reservation or Lease read returns: a Snapshot, or a display cache entry that holds one.
-RecordRead = TypeVar("RecordRead")
-#: What an exact Reservation load returns.
-TargetRead = TypeVar("TargetRead")
+#: What a read returns when it does not fail: a Snapshot, a display cache entry that holds one, or one record.
+Read = TypeVar("Read")
 
 #: The first line of an unavailable Notice, one per kind.
 HEADLINES: dict[NoticeKind, str] = {
     "catalogue": "Failed to load subnet configuration from Kea.",
     "configuration": "Failed to load the Server Configuration from Kea.",
     "reservation": "Failed to load Reservations from Kea.",
-    "lease": "Failed to query server",
+    "lease": "Failed to load Leases from Kea.",
     "lease_target": "Failed to load the Lease from Kea.",
     "reservation_target": "Failed to load the Reservation from Kea.",
 }
@@ -122,10 +120,16 @@ def notice(snapshot: Snapshot) -> Notice | None:
     return None
 
 
-_Read = TypeVar("_Read")
+def failed_load(snapshot: CatalogueSnapshot | ServerConfigurationSnapshot) -> Notice:
+    """Return the error Notice of a Snapshot that cannot give the facts that a load needs, with its diagnostics.
+
+    An exact load cannot go on without them, so the Notice is an error also when the Snapshot is usable.
+    """
+    kind = _kind(snapshot)
+    return Notice(kind, messages.ERROR, snapshot.diagnostics)
 
 
-def _classified(server: Server, kind: RecordKind | TargetKind, read: Callable[[], _Read]) -> _Read | Notice:
+def _classified(server: Server, kind: RecordKind | TargetKind, read: Callable[[], Read]) -> Read | Notice:
     """Run *read*, and return an unavailable Notice when Kea refuses it, the transport fails or the reply is malformed.
 
     A Kea refusal carries Kea's answer. Every other exception still raises.
@@ -144,10 +148,11 @@ def _classified(server: Server, kind: RecordKind | TargetKind, read: Callable[[]
         return Notice(kind, messages.ERROR, unreachable=isinstance(exc, requests.RequestException))
 
 
-def load_snapshot(server: Server, kind: RecordKind, read: Callable[[], RecordRead]) -> RecordRead | Notice:
+def load_snapshot(server: Server, kind: RecordKind, read: Callable[[], Read]) -> Read | Notice:
     """Run a Reservation or Lease read, and return an unavailable Notice when Kea, the transport or the reply fails.
 
-    A refused Lease query (``LeaseQueryGuardError``) and a ``ValueError`` are outside the rule and still raise.
+    A refused Lease query (``LeaseQueryGuardError``) still raises. A ``ValueError`` still raises, except
+    ``MalformedReservation``, which is a malformed reply.
     """
     return _classified(server, kind, read)
 
@@ -161,16 +166,14 @@ def load_target(
 
 
 @overload
-def load_target(
-    server: Server, kind: Literal["reservation_target"], read: Callable[[], TargetRead]
-) -> TargetRead | Notice: ...
+def load_target(server: Server, kind: Literal["reservation_target"], read: Callable[[], Read]) -> Read | Notice: ...
 
 
 def load_target(server: Server, kind: TargetKind, read: Callable[[], object]) -> object:
     """Run an exact Lease or Reservation load, and return an unavailable Notice when Kea, the transport or the reply fails.
 
     A Lease that Kea returned but that cannot be read (``LeaseLookupFailed``) is a malformed reply. A ``ValueError``
-    is outside the rule and still raises.
+    still raises, except ``MalformedReservation``, which is a malformed reply.
     """
     loaded = _classified(server, kind, read)
     if isinstance(loaded, LeaseLookupFailed):

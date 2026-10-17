@@ -126,6 +126,18 @@ def _client_settings_error(server: Server, exc: ValueError) -> str:
     return f"The Kea client settings of Server {server.name} are invalid. Check the client certificate and key."
 
 
+def _client_settings_refusal(server: Server, version: Family) -> str:
+    """Return the client settings error of *server*, or an empty string when its Kea client can be built.
+
+    It builds the client and closes it again, so it sends nothing.
+    """
+    try:
+        server.get_client(version=version).close()
+    except ValueError as exc:
+        return _client_settings_error(server, exc)
+    return ""
+
+
 class _KeaChangeMixin:
     """Mixin that gates a view behind ``netbox_kea.change_server``.
 

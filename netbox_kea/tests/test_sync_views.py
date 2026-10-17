@@ -43,6 +43,7 @@ from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
 from .kea_stub import (
     READ_FAILURES,
+    SUBNET_LIST_FAILURES,
     _catalogue_responses,
     _catalogue_responses_for_subnets,
     _res_page,
@@ -770,6 +771,17 @@ class TestRowSyncReadFailures(_SyncViewBase):
             response = self.client.post(url, {"ip_address": "198.18.0.10"})
         self.assertEqual(_row_badge(response), "The lease is no longer in Kea. Reload the lease list.")
         self.assertFalse(NbIP.objects.exists())
+
+    def test_a_failed_subnet_list_read_shows_the_catalogue_notice(self):
+        url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
+        url = f"{url}?identifier_type=hw-address&identifier=aa%3Abb%3Acc%3A00%3A00%3A02"
+        for name, reply, _line in READ_FAILURES:
+            responses = {**_catalogue_responses(4, 1, "10.0.0.0/24"), "subnet4-list": reply}
+            with self.subTest(name), stub_kea(responses) as kea:
+                response = self.client.post(url)
+            self.assertNotIn("reservation-get", kea.commands())
+            self.assertEqual(_row_badge(response), " ".join((HEADLINES["catalogue"], SUBNET_LIST_FAILURES[name])))
+            self.assertFalse(NbIP.objects.exists())
 
     def test_a_failed_reservation_read_shows_the_reservation_notice(self):
         url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])

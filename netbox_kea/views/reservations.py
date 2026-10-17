@@ -33,7 +33,7 @@ from ..ipam_reconciliation import (
     claim_permissions,
     reconcile_permissions,
 )
-from ..kea import KeaException
+from ..kea import KeaClient, KeaException
 from ..lease_reservation_reads import lease_presence
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
@@ -55,7 +55,7 @@ from ..subnet_catalogue import CatalogueSnapshot, VerifiedSubnet
 from ..subnet_catalogue import display as subnet_catalogue
 from ..sync_permissions import SyncGate, sync_gate
 from ..utilities import OptionalViewTab
-from ._base import IPAM_UNREADABLE, _client_settings_error, _safe_return_url, sync_title
+from ._base import IPAM_UNREADABLE, _client_settings_refusal, _safe_return_url, sync_title
 from .notices import HEADLINES, Notice, load_snapshot, notice
 from .read_age import read_age_context, refresh_requested
 from .workspace import ServerFamilyMixin
@@ -278,6 +278,19 @@ class _ReservationPage:
         return self.snapshot.settled and self.catalogue.settled
 
 
+def _read_later_search_page(
+    client: KeaClient, version: Family, catalogue: CatalogueSnapshot, cursor: str | None, subnet_id: int | None
+) -> ReservationSnapshot | None:
+    """Read a later page of a Reservation search, or return None and log the failure: it ends the search batch."""
+    try:
+        return client.reservation_page(
+            version, catalogue, cursor=cursor, limit=_RESERVATION_PAGE_SIZE, subnet_id=subnet_id, max_raw_pages=1
+        )
+    except (KeaException, requests.RequestException, RuntimeError, ValueError):
+        logger.exception("Failed to continue DHCPv%s Reservation search", version)
+        return None
+
+
 def _read_reservations(
     server: Server, version: Family, query: ReservationQuery, catalogue: CatalogueSnapshot
 ) -> ReservationSnapshot:
@@ -309,8 +322,10 @@ def _read_reservations(
     diagnostics = []
     complete = True
     for page_index in range(_RESERVATION_SEARCH_PAGE_LIMIT):
-        try:
-            page = client.reservation_page(
+        read: ReservationSnapshot | None
+        # The first page raises to the loader of the caller; a later page that fails ends the batch.
+        if page_index == 0:
+            read = client.reservation_page(
                 version,
                 catalogue,
                 cursor=cursor,
@@ -318,10 +333,9 @@ def _read_reservations(
                 subnet_id=read_subnet_id,
                 max_raw_pages=1,
             )
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            if page_index == 0:
-                raise
-            logger.exception("Failed to continue DHCPv%s Reservation search", version)
+        else:
+            read = _read_later_search_page(client, version, catalogue, cursor, read_subnet_id)
+        if read is None:
             diagnostics.append(
                 ReservationDiagnostic(
                     code=RESERVATION_PAGE_FETCH_FAILED,
@@ -337,6 +351,7 @@ def _read_reservations(
                 next_cursor=cursor,
                 read_started=started,
             )
+        page = read
         matches = tuple(record for record in page.records if _reservation_matches(record, q, subnet_id, scope))
         diagnostics.extend(page.diagnostics)
         complete = complete and page.complete
@@ -649,7 +664,8 @@ def _reservation_list_context(
         "snapshot_complete": presented.snapshot is not None and presented.snapshot.complete,
         "reservation_notice": presented.notice if hook_available else None,
         "next_page_url": _next_reservation_page_url(request, presented.next_cursor),
-        "mutation_unavailable": bool(presented.mutation_unavailable_reason),
+        # The host_cmds panel already says why Reservations cannot change, so one cause shows one banner.
+        "mutation_unavailable": hook_available and bool(presented.mutation_unavailable_reason),
         "mutation_unavailable_reason": presented.mutation_unavailable_reason,
         "add_url": reverse(f"plugins:netbox_kea:server_reservation{version}_add", args=[server.pk])
         + f"?{urlencode({'return_url': _safe_return_url(request, request.get_full_path())})}"
@@ -670,10 +686,8 @@ def _reservation_export_response(request: HttpRequest, server: Server, version: 
     format_name = request.GET.get("export")
     if format_name not in ("yaml", "json"):
         raise BadRequest("Reservation export format must be YAML or JSON.")
-    try:
-        server.get_client(version=version).close()
-    except ValueError as exc:
-        return HttpResponse(_client_settings_error(server, exc), status=500, content_type="text/plain")
+    if refusal := _client_settings_refusal(server, version):
+        return HttpResponse(refusal, status=500, content_type="text/plain")
     loaded = load_snapshot(
         server,
         "reservation",

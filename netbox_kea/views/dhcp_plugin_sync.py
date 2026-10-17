@@ -31,7 +31,7 @@ from ..mappers.kea_to_dhcp import ServerConfigIntent, parse_dhcp_config
 from ..models import Server
 from ..server_configuration import ServerConfigurationSnapshot
 from ..sync_permissions import sync_gate
-from .notices import Notice, notice, show_notices
+from .notices import Notice, failed_load, show_notices
 from .workspace import server_family_url
 
 logger = logging.getLogger(__name__)
@@ -74,10 +74,7 @@ def _fetch_config_intent(server: Server, version: Family) -> ServerConfigIntent 
     read = server_configuration.for_import(server, version)
     if isinstance(read, ServerConfigurationSnapshot):
         logger.warning("DHCP-plugin sync: config-get failed for %s (v%s)", server.name, version)
-        found = notice(read)
-        if found is None:
-            raise TypeError("An unavailable Server Configuration Snapshot has no Notice.")
-        return found
+        return failed_load(read)
     try:
         intent = parse_dhcp_config(read.configuration, version)
     except (ValueError, RuntimeError):
@@ -180,14 +177,13 @@ def compute_drift(server: Server) -> dict:
     kea_unreachable = False
     for version in _enabled_versions(server):
         intent = _fetch_config_intent(server, version)
-        if isinstance(intent, Notice):
-            intent = None
         links = {
             link.kea_subnet_id: link
             for link in KeaDhcpLink.objects.filter(server=server, family=version, kea_subnet_id__isnull=False)
         }
         rows = []
-        if intent is None:
+        # A failed read (a Notice) and a configuration that could not be parsed (None) both give no live rows.
+        if not isinstance(intent, ServerConfigIntent):
             kea_unreachable = True
             # Without a live read we can still list what was imported before.
             for sid, link in sorted(links.items()):
