@@ -43,9 +43,11 @@ class NetBoxKeaConfig(PluginConfig):
     """NetBox plugin configuration for the Kea DHCP integration."""
 
     name = "netbox_kea"
-    verbose_name = "Kea"
+    verbose_name = "NetBox Kea NG"
     description = "Kea integration for NetBox"
     version = __version__
+    author = "Marcin Zieba"
+    author_email = "marcinpsk@gmail.com"
     base_url = "kea"
     middleware = ("netbox_kea.branching.BranchRefusalMiddleware",)
 

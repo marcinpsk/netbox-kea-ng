@@ -171,14 +171,21 @@ whether every fact parsed. Valid facts survive an invalid one.
 _Avoid_: Configuration Snapshot, Dhcp4 dict
 
 **Configuration Change**:
-One operator-requested change to a Server Configuration, such as adding a Subnet or moving it to another
-Shared Network. It can need several Kea commands, and it is applied, rejected, or unconfirmed as a whole.
+One operator-requested change to a Server Configuration or to the Reservations of a Server, such as adding a
+Subnet, moving it to another Shared Network, or editing a Reservation. It can need several Kea commands, and it is
+applied, rejected, or unknown as a whole.
 _Avoid_: Config write, config mutation, config-set
 
 **Configuration Change Outcome**:
 The observed result of a Configuration Change that is live or can be live. It states whether the change is
 applied or unknown, and whether it is persisted, failed to persist, or had no persistence requested.
 _Avoid_: Partial persist, ambiguous config-set
+
+**Runtime Change**:
+One operator-requested change to the runtime state of a Server, such as adding, editing or deleting a Lease, wiping
+the Leases of a Subnet, or disabling or enabling the DHCP service. It does not change the Server Configuration. It is
+applied, rejected, or unknown.
+_Avoid_: Kea action, direct action, runtime write
 
 **IPAM Ownership**:
 The fact that one Server and address family synchronized a NetBox IP address, Prefix, or IP Range from one Kea
