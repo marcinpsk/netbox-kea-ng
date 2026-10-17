@@ -161,7 +161,18 @@ Integrations that read leases from the plugin must change with the typed lease r
   hostname that makes Kea publish the entered name: the labels without the suffix, a single label as entered
   (Kea qualifies it), or any other name with a trailing dot. A saved Reservation keeps its stored hostname
   until you edit the name
-- Journal entries on add/edit/delete
+- Journal entries on add/edit/delete, and the `reservation_created`, `reservation_updated` and
+  `reservation_deleted` signals
+- An add, edit or delete waits for any other change that NetBox sends to the same Kea daemon, such as a Subnet
+  edit, so that a `config-set` cannot erase it. An edit sends nothing when the Reservation changed in Kea after
+  the form was opened, and an edit or a delete sends nothing when the Reservation or its Subnet is gone. Reload
+  and try again
+- When Kea does not confirm an add, edit or delete, the page says so and tells you to check the Server: the reply
+  was lost, or Kea returned an error after a host data source can have changed the Reservation. The message shows
+  Kea's own text when Kea sent one. NetBox then writes no journal entry, sends no signal and does not sync the
+  Reservation to NetBox IPAM
+- When Kea applied the change but the journal entry, a signal receiver or the IPAM sync fails, the page still
+  reports the change, and shows a separate error that names the step that failed
 - The **NetBox IP** column shows an address as synchronized only when this server owns its NetBox IP address
   through a reservation link. An address that only another server, or only a lease of this server, owns is
   *Not Synchronized*, and *Sync all* adds this server as an owner. An address without the sync marker is
@@ -169,7 +180,12 @@ Integrations that read leases from the plugin must change with the typed lease r
   *Unknown*, with the reason in its title, when NetBox cannot be read or you may not view an IP address of the
   reservation. The add form shows the same facts for the address that you enter
 - Validated YAML or JSON bulk transfer. Export a Complete Snapshot from one server
-  or the combined view, then import it from the matching DHCPv4 or DHCPv6 Reservations page
+  or the combined view, then import it from the matching DHCPv4 or DHCPv6 Reservations page. A document error, a
+  Subnet that Kea does not have or an identifier type that Kea does not support stops the import before NetBox
+  sends anything. Then the import creates one Reservation at a time, and stops at the first entry that Kea does
+  not apply or does not confirm, or when the Server connection settings are not valid. The report lists each entry
+  by its position in the document (`reservations[N]`) and its identity: the entries that Kea created, the entry
+  where the import stopped, and the entries that NetBox did not send
 
 *+ Reserve* on a lease opens the Reservation form with the address, the client identifier and the hostname of
 the lease. After the save, the lease search shows the lease as *Reserved*.
