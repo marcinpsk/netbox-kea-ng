@@ -29,8 +29,9 @@ SPDX-License-Identifier: Apache-2.0
   Server: the reply was lost, or Kea returned an error after it can have changed the lease, for example
   from a SQL lease database. The message shows Kea's own text when Kea sent one. NetBox then writes no
   journal entry and sends no signal. A delete of several leases and a CSV import stop at the first
-  lease that Kea did not confirm, and list the leases that NetBox did not send. A lease that NetBox did
-  not send, or that changed in Kea before the change, does not stop them.
+  lease that Kea did not confirm, and list the leases that NetBox did not send. They also stop when the
+  Server connection settings are not valid, because every lease would fail the same way. Another lease
+  that NetBox did not send, or that changed in Kea before the change, does not stop them.
 - After an add, the plugin reads the new lease back from Kea. *Sync to NetBox IPAM* claims it only
   when that read shows a current lease whose client binding, and Subnet and hostname when the form
   gave them, match the request.
