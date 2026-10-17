@@ -1062,6 +1062,7 @@ class KeaClient:
             ValueError: If *target* is not 4, 6 or None.
             BranchActive: If *command* is a write and the write guard refuses it, for example in a branch.
             KeaTLSFileError: If requests cannot find a TLS file of the client. It is a ``RequestException``.
+            KeaRequestEncodingError: If requests cannot encode the Basic Auth credentials. It is a ``RequestException``.
             requests.HTTPError: If the HTTP response status is a redirect or not 2xx.
             MalformedReply: If the reply body is not JSON or not a list, is empty, or has a malformed entry.
             KeaException: If any response result code is not in *check*.
@@ -1092,6 +1093,8 @@ class KeaClient:
             raise
         except OSError as exc:
             raise KeaTLSFileError("A TLS CA, certificate or key file of the client could not be found.") from exc
+        except UnicodeEncodeError as exc:
+            raise KeaRequestEncodingError("The user name or password of the client is not Latin-1 text.") from exc
         finally:
             # Kea can apply a write whose reply is lost, so a display read during the send must not stay cached.
             if command.is_write:
@@ -2289,6 +2292,14 @@ class KeaTLSFileError(requests.exceptions.RequestException):
 
     requests raises a plain ``OSError`` for this case. ``KeaClient.command`` raises this subclass of
     ``RequestException`` instead, so each handler of request errors also handles it. The ``OSError`` is the cause.
+    """
+
+
+class KeaRequestEncodingError(requests.exceptions.RequestException):
+    """Raised when requests cannot encode the Basic Auth credentials of the client as Latin-1. Nothing was sent.
+
+    requests raises a ``UnicodeEncodeError`` (a ``ValueError``) while it prepares the request. ``KeaClient.command``
+    raises this subclass of ``RequestException`` instead, so each handler of request errors also handles it.
     """
 
 

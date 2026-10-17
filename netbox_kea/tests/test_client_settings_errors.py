@@ -13,6 +13,9 @@ from django.contrib.messages import get_messages
 from django.urls import reverse
 from django.utils.html import escape
 
+from netbox_kea.models import Server
+from netbox_kea.views.notices import HEADLINES
+
 from .kea_stub import LeaseDaemon, stub_kea
 from .test_lease_actions import _address4, _inputs
 from .utils import INVALID_SERVER_SETTINGS, _ViewTestBase, save_key_without_certificate
@@ -22,6 +25,39 @@ _IDENTITY = {"identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"}
 
 def _messages(response) -> list[str]:
     return [str(message) for message in get_messages(response.wsgi_request)]
+
+
+class CredentialEncodingTest(_ViewTestBase):
+    """Credentials that requests cannot encode are a transport failure of the read, never a 500 reply.
+
+    The Server form refuses them in its connectivity check, but a row can hold them from another path.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # No stub: requests encodes the Basic Auth header before it opens a connection.
+        Server.objects.filter(pk=self.server.pk).update(
+            ca_url="http://127.0.0.1:1/", ca_username="kea", ca_password="pass\u20ac"
+        )
+
+    def _url(self, name: str, *args) -> str:
+        return reverse(f"plugins:netbox_kea:{name}", args=[self.server.pk, *args])
+
+    def test_the_lease_reads_show_the_lease_notice(self):
+        for name, url, kind in (
+            ("export all", self._url("server_leases4") + "?export_all=1", "lease"),
+            ("edit", self._url("server_lease4_edit", "192.0.2.40"), "lease_target"),
+        ):
+            with self.subTest(name):
+                self._fresh_client()
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(_messages(response), [HEADLINES[kind]])
+
+    def test_the_reservation_export_is_a_502_reply_with_the_reservation_notice(self):
+        response = self.client.get(self._url("server_reservations4"), {"export": "yaml"})
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.content.decode(), HEADLINES["reservation"])
 
 
 class ClientSettingsErrorTest(_ViewTestBase):

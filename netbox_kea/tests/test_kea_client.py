@@ -23,6 +23,7 @@ from netbox_kea.kea import (
     KeaClient,
     KeaCommand,
     KeaException,
+    KeaRequestEncodingError,
     KeaResponse,
     KeaTLSFileError,
     LeaseQueryGuardError,
@@ -198,6 +199,18 @@ class TestKeaClientTLSFileError(TestCase):
         with stub_kea({"version-get": refused}), self.assertRaises(requests.ConnectionError) as caught:
             kea_client(url="https://kea:8000").command(KeaCommand.VERSION_GET, None)
         self.assertIs(caught.exception, refused)
+
+
+class TestKeaClientRequestEncodingError(TestCase):
+    """Credentials that requests cannot encode are a request error of the client, and nothing is sent."""
+
+    def test_a_password_that_is_not_latin_1_is_a_request_error(self):
+        # No stub: requests encodes the Basic Auth header before it opens a connection.
+        client = kea_client(url="http://127.0.0.1:1/", username="kea", password="pass\u20ac")
+        with self.assertRaises(KeaRequestEncodingError) as caught:
+            client.command(KeaCommand.VERSION_GET, None)
+        self.assertIsInstance(caught.exception, requests.RequestException)
+        self.assertIs(type(caught.exception.__cause__), UnicodeEncodeError)
 
 
 class TestKeaClientCommand(TestCase):

@@ -18,7 +18,7 @@ import requests
 from urllib3.exceptions import MaxRetryError, NewConnectionError
 
 from .constants import Family
-from .kea import KeaClient, KeaException, KeaTLSFileError, kea_error_message
+from .kea import KeaClient, KeaException, KeaRequestEncodingError, KeaTLSFileError, kea_error_message
 
 if TYPE_CHECKING:
     from .models import Server
@@ -74,8 +74,8 @@ def before_change(step: Callable[[], T], unusable: str) -> T:
     except KeaException as exc:
         logger.warning("A step before a change failed: %s", exc)
         raise ChangeRejected("not-sent", (kea_error_message(exc),)) from exc
-    except KeaTLSFileError as exc:
-        raise _missing_tls_file(exc) from exc
+    except (KeaTLSFileError, KeaRequestEncodingError) as exc:
+        raise _client_setting_failure(exc) from exc
     except (requests.RequestException, ValueError, RuntimeError) as exc:
         logger.warning("A step before a change failed", exc_info=True)
         raise ChangeRejected("not-sent", (unusable,)) from exc
@@ -114,8 +114,8 @@ def mutate(
         if unchanged:
             raise ChangeRejected("kea-rejected", (diagnostic,)) from exc
         return "unknown", (diagnostic, "The read after the failure shows the change.")
-    except KeaTLSFileError as exc:
-        raise _missing_tls_file(exc) from exc
+    except (KeaTLSFileError, KeaRequestEncodingError) as exc:
+        raise _client_setting_failure(exc) from exc
     except requests.RequestException as exc:
         reason = never_sent(exc)
         if reason is not None:
@@ -179,9 +179,11 @@ def _causes(exc: BaseException) -> Iterator[BaseException]:
             pending.append(current.__cause__)
 
 
-def _missing_tls_file(exc: KeaTLSFileError) -> ChangeRejected:
-    """Return the rejection for a TLS file that requests could not find before it sent anything."""
-    logger.warning("A TLS file of the Server is missing", exc_info=exc)
-    return ChangeRejected(
-        "invalid-client-configuration", ("A TLS certificate, key or CA file of the Server could not be found.",)
-    )
+def _client_setting_failure(exc: KeaTLSFileError | KeaRequestEncodingError) -> ChangeRejected:
+    """Return the rejection for a client setting that stopped requests before it sent anything."""
+    logger.warning("A client setting of the Server stopped the request", exc_info=exc)
+    if isinstance(exc, KeaRequestEncodingError):
+        diagnostic = "NetBox cannot send the user name or password of the Server: it is not Latin-1 text."
+    else:
+        diagnostic = "A TLS certificate, key or CA file of the Server could not be found."
+    return ChangeRejected("invalid-client-configuration", (diagnostic,))

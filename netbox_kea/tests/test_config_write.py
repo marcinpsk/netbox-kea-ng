@@ -267,6 +267,18 @@ class RejectionReasonTests(TestCase):
             rejection.diagnostics, ("A TLS certificate, key or CA file of the Server could not be found.",)
         )
 
+    def test_credentials_that_cannot_be_encoded_are_an_invalid_client_configuration(self):
+        # No stub: requests encodes the Basic Auth header before it opens a connection, so nothing is sent.
+        self.server.ca_url = "http://127.0.0.1:1/"
+        self.server.ca_username = "kea"
+        self.server.ca_password = "pass\u20ac"
+        rejection = self._rejection(lambda: config_write.add_shared_network(self.server, 4, "net-a"))
+        self.assertEqual(rejection.reason, "invalid-client-configuration")
+        self.assertEqual(
+            rejection.diagnostics,
+            ("NetBox cannot send the user name or password of the Server: it is not Latin-1 text.",),
+        )
+
     def test_a_missing_tls_file_on_the_change_is_an_invalid_client_configuration(self):
         # requests raises a plain OSError for a missing TLS file; the client reports it as KeaTLSFileError.
         missing = OSError("Could not find the TLS certificate file, invalid path: /nonexistent/client.pem")
