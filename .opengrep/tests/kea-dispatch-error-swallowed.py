@@ -147,7 +147,7 @@ def runtime_error_around_a_reconciliation_reraised(server, phases):
         print(type(exc))
 
 
-def sync_after_an_applied_lease_add(request, server, leases):
+def _run_lease_sync_to_netbox(request, server, leases):
     try:
         # ok: kea-dispatch-error-swallowed
         claim(server, 4, leases, force=False)
@@ -177,7 +177,7 @@ def dispatch_error_only_logged(server, leases):
         messages.error(request, "Lease created but NetBox IPAM sync failed.")
 
 
-def dispatch_error_logged_and_reported(request, server, leases):
+def _sync_to_netbox(request, server, leases):
     try:
         # ok: kea-dispatch-error-swallowed
         claim(server, 4, leases, force=False)
@@ -186,6 +186,28 @@ def dispatch_error_logged_and_reported(request, server, leases):
         messages.error(request, "Lease created, but NetBox could not dispatch the events of the sync.")
     except (RuntimeError, ValueError):
         messages.error(request, "Lease created but NetBox IPAM sync failed.")
+
+
+def dispatch_error_reported_after_an_ordinary_unit(request, obj):
+    try:
+        # ruleid: kea-dispatch-error-swallowed
+        with event_scope.atomic():
+            obj.save()
+    except event_scope.EventDispatchError:
+        messages.error(request, "Saved, but NetBox could not dispatch the events.")
+    except RuntimeError:
+        messages.error(request, "The save failed.")
+
+
+def dispatch_error_reported_after_a_claim_outside_a_runtime_change(request, server, leases):
+    try:
+        # ruleid: kea-dispatch-error-swallowed
+        claim(server, 4, leases, force=False)
+    except event_scope.EventDispatchError:
+        messages.error(request, "Synced, but NetBox could not dispatch the events of the sync.")
+    except (RuntimeError, ValueError):
+        messages.error(request, "NetBox IPAM sync failed.")
+
 
 def claim(*args, **kwargs):
     return args, kwargs

@@ -656,8 +656,9 @@ rules:
     message: >-
       Add an "except event_scope.EventDispatchError:" clause before the broad handler of this try.
       The unit committed and its events did not dispatch, so the run must fail ("raise"), not report a
-      failed row. After a Runtime Change that Kea applied, the clause can instead report the failed
-      dispatch as a side-effect error with messages.error() (ADR 0011). Limits: the handler order is not
+      failed row. In the IPAM sync after a Runtime Change that Kea applied (_run_lease_sync_to_netbox,
+      _sync_to_netbox), the clause can instead report the failed dispatch as a side-effect error with
+      messages.error() (ADR 0011). Limits: the handler order is not
       checked; a try with finally and handlers around callers of event_scope.atomic other than claim() and
       reconcile() are not seen.
     metadata:
@@ -844,31 +845,42 @@ rules:
               raise
           finally:
               ...
-      - pattern-not-inside: |
-          try:
-              ...
-          except event_scope.EventDispatchError:
-              ...
-              messages.error(...)
-              ...
-      - pattern-not-inside: |
-          try:
-              ...
-          except event_scope.EventDispatchError:
-              ...
-              messages.error(...)
-              ...
-          else:
-              ...
-      - pattern-not-inside: |
-          try:
-              ...
-          except event_scope.EventDispatchError:
-              ...
-              messages.error(...)
-              ...
-          finally:
-              ...
+      - pattern-either:
+          - patterns:
+              - pattern: $CALL(...)
+              - pattern-not-inside: |
+                  try:
+                      ...
+                  except event_scope.EventDispatchError:
+                      ...
+                      messages.error(...)
+                      ...
+              - pattern-not-inside: |
+                  try:
+                      ...
+                  except event_scope.EventDispatchError:
+                      ...
+                      messages.error(...)
+                      ...
+                  else:
+                      ...
+              - pattern-not-inside: |
+                  try:
+                      ...
+                  except event_scope.EventDispatchError:
+                      ...
+                      messages.error(...)
+                      ...
+                  finally:
+                      ...
+          # Only the IPAM sync after an applied Runtime Change can report the failed dispatch.
+          - patterns:
+              - pattern-inside: |
+                  def $FUNC(...):
+                      ...
+              - metavariable-regex:
+                  metavariable: $FUNC
+                  regex: ^(?!(_run_lease_sync_to_netbox|_sync_to_netbox)$)
       - pattern-either:
           - pattern: event_scope.atomic(...)
           # Each claim and reconciliation row is an event_scope unit inside the call.
