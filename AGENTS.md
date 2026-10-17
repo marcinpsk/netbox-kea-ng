@@ -281,7 +281,10 @@ URL request
   if any result code is not in `check`. `command()` passes the TLS settings (`verify`, `cert`) on each request, so the
   `REQUESTS_CA_BUNDLE` environment variable cannot replace a CA file or `ssl_verify=False`. A TLS file
   that requests cannot find raises `KeaTLSFileError`, a `requests.RequestException`, so each
-  handler of request errors also handles it. A client is not thread-safe, so each worker thread builds its own.
+  handler of request errors also handles it. Basic Auth credentials that are not Latin-1 text raise
+  `KeaRequestEncodingError`, also a `requests.RequestException`. In both cases nothing was sent, and
+  `change_outcome` rejects a change as `invalid-client-configuration`. A client is not thread-safe, so each worker
+  thread builds its own.
   **`send_service`**: `command()` sends the target as the `service`
   argument only when the server is fronted by a Control Agent
   (`send_service = has_control_agent`); a direct daemon drops it, because Kea 3.2.0+
@@ -380,26 +383,34 @@ Exception
  └── ChangeRejected                # change_outcome: the change is not live, with a reason
 ```
 
-**`views/notices.py` owns every Snapshot notice and every notice of a failed Kea read** (ADR 0003, Presentation). A
-view passes a Catalogue or Server Configuration Snapshot to `notice()` and runs a Reservation or Lease read through
-`load_snapshot()`. An exact load of one Lease or one Reservation (an edit, a delete, a row Sync) goes through
-`load_target()`, with the kind `lease_target` or `reservation_target`. Both loaders share one classifier: a Kea
-refusal, a transport failure and a malformed reply (`MalformedReply`, `MalformedLeaseResponse`,
-`MalformedReservation`, and a `LeaseLookupFailed` result of `load_target()`) become an unavailable Notice, and the
-failure is logged. A Kea refusal adds `kea_error_message(exc)` as a line under the headline (`Notice.reply`), so every
-channel shows Kea's answer. The Reservations tab shows its `host_cmds` panel instead of the Notice when the hook is
-missing, so the guidance shows once. The view shows the Notice with `show_notices()`, in a template
-(`inc/notice_alert.html`), with `ServerNotices` on a combined page, or as `Notice.text` in a row badge or a plain-text
-reply; it never chooses the level and never writes its own read-failure text. All headlines live in `HEADLINES`. A
-refused Lease query (`LeaseQueryGuardError`) and a `ValueError` are outside the rule: a site catches only a
-`ValueError` that it can raise (a bad selection, the client settings) and shows an accurate message for it, and a
-combined page adds them to the `ServerNotices` lists itself. Three OpenGrep rules
-(`kea-snapshot-notice-outside-notice-module`, `kea-snapshot-read-without-notice`, `kea-view-read-ladder`) and
-`test_snapshot_notice_sweep.py` guard it. `kea-view-read-ladder` refuses an `except` of `KeaException` or
-`requests.RequestException` in `views/`; the reads that degrade silently and log the failure (utilization, status,
-the read back of a created Lease, a later page of a Reservation search, the Reservation read of the DHCP plugin
-import) are exempt by function name. A new Server page that reads no Snapshot needs an entry with a reason in the
-sweep's exempt list.
+**`views/notices.py` owns every Snapshot notice and every notice of a failed Kea read** (ADR 0003, Presentation).
+- A view passes a Catalogue or Server Configuration Snapshot to `notice()`. It runs a Reservation or Lease read
+  through `load_snapshot()`.
+- An exact load of one Lease or one Reservation (an edit, a delete, a row Sync) goes through `load_target()`, with
+  the kind `lease_target` or `reservation_target`.
+- When a load needs facts that a Catalogue or Server Configuration Snapshot cannot give, the view shows
+  `failed_load(snapshot)`: the error Notice of that Snapshot. For example, a Reservation load whose `subnet{v}-list`
+  read failed shows the Catalogue Notice, not a Reservation headline.
+- Both loaders share one classifier. A Kea refusal, a transport failure and a malformed reply become an unavailable
+  Notice, and the failure is logged. A malformed reply is a `MalformedReply`, a `MalformedLeaseResponse`, a
+  `MalformedReservation`, or a `LeaseLookupFailed` result of `load_target()`.
+- A Kea refusal adds `kea_error_message(exc)` as a line under the headline (`Notice.reply`). So every channel shows
+  Kea's answer.
+- The channels are `show_notices()`, a template (`inc/notice_alert.html`), `ServerNotices` on a combined page, and
+  `Notice.text` in a row badge or a plain-text reply. A view never chooses the level. It never writes its own
+  read-failure text. All headlines live in `HEADLINES`.
+- When the `host_cmds` hook is missing, the Reservations tab shows its hook panel. It shows no Notice and no
+  mutation warning for the same cause, so the guidance shows once.
+- A refused Lease query (`LeaseQueryGuardError`) still raises. Every `ValueError` except `MalformedReservation` still
+  raises. A site catches only a `ValueError` that it can raise (a bad selection, the client settings) and shows an
+  accurate message for it. `_client_settings_refusal()` in `views/_base.py` checks the client settings. A combined
+  page adds these errors to the `ServerNotices` lists itself.
+- Three OpenGrep rules (`kea-snapshot-notice-outside-notice-module`, `kea-snapshot-read-without-notice`,
+  `kea-view-read-ladder`) and `test_snapshot_notice_sweep.py` guard the rule. `kea-view-read-ladder` refuses an
+  `except` of `KeaException` or `requests.RequestException` in `views/`. The reads that degrade silently and log
+  the failure are exempt by function name: utilization, status, the read back of a created Lease, a later page of a
+  Reservation search, and the Reservation read of the DHCP plugin import.
+- A new Server page that reads no Snapshot needs an entry with a reason in the sweep's exempt list.
 
 **`config_write` owns every Configuration Change** (ADR 0005). An
 operation returns a `ConfigChangeOutcome` (`applied`/`unknown` and
