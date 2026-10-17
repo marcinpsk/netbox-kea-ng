@@ -53,8 +53,15 @@ from ..utilities import (
     LeaseCSVError,
     parse_lease_csv,
 )
-from ._base import ConditionalLoginRequiredMixin, _client_settings_error, _KeaChangeMixin, _run_change_loop
-from .leases import _LEASES_TAB, _journal_applied, _signal_applied, lease_sync_gates
+from ._base import (
+    ConditionalLoginRequiredMixin,
+    _client_settings_error,
+    _journal_applied,
+    _KeaChangeMixin,
+    _run_change_loop,
+    _signal_applied,
+)
+from .leases import _LEASES_TAB, _lease_journal_comments, lease_sync_gates
 from .reservation_mutations import _confirmed_side_effects, _identity_from_request, _reservation_target_scope
 from .reservations import _RESERVATIONS_TAB, _live_capabilities, reservation_badge
 from .workspace import ServerFamilyMixin
@@ -625,7 +632,7 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLo
         )
         created = [str(creation.address) for (_line, creation), _outcome in loop.applied]
         if created:
-            _journal_applied(request, instance, "added", created)
+            _journal_applied(request, instance, _lease_journal_comments("added", created))
 
         def entries(rows: Iterable[tuple[tuple[int, LeaseRequest], str]]) -> list[dict[str, Any]]:
             return [

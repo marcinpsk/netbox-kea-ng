@@ -14,13 +14,11 @@ import requests
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError
-from django.dispatch import Signal
 from django.http import HttpResponse, HttpResponseForbidden
 from django.http.request import HttpRequest, QueryDict
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
-from extras.models import JournalEntry
 from netbox.tables import BaseTable
 from netbox.views import generic
 from typing_extensions import assert_never
@@ -102,10 +100,12 @@ from ._base import (
     ConditionalLoginRequiredMixin,
     LazyClient,
     _client_settings_error,
+    _journal_applied,
     _KeaChangeMixin,
     _run_change,
     _run_change_loop,
     _safe_return_url,
+    _signal_applied,
     _strip_empty_params,
     sync_title,
 )
@@ -249,31 +249,14 @@ def _run_lease_sync_to_netbox(
         messages.error(request, "Lease created but NetBox IPAM sync failed; see server logs.")
 
 
-def _add_lease_journal(
-    server: "Server",
-    user: Any,
+def _lease_journal_comments(
     action: str,
     ip_addresses: list[str],
     hw_address: str = "",
     hostname: str = "",
     duid: str = "",
-) -> None:
-    """Create a JournalEntry on *server* recording a lease CRUD event.
-
-    Args:
-        server: The Server instance the journal entry is attached to.
-        user: The request.user who performed the action.
-        action: Human-readable action name: "added" or "deleted".
-        ip_addresses: The addresses or delegated prefixes of the leases.
-        hw_address: Optional hardware address (for add events).
-        hostname: Optional hostname (for add events).
-        duid: Optional DUID (for DHCPv6 add events).
-
-    Raises:
-        DatabaseError: If the entry cannot be saved. The lease change in Kea is already done,
-            so callers log the error and continue.
-
-    """
+) -> str:
+    """Return the journal text of a Lease change: the *action* ("added" or "deleted"), the addresses and the facts."""
     ip_list = ", ".join(ip_addresses)
     if len(ip_addresses) == 1:
         parts = [f"Lease {action}: {ip_list}"]
@@ -285,33 +268,7 @@ def _add_lease_journal(
         parts.append(f"duid: {duid}")
     if hostname:
         parts.append(f"hostname: {hostname}")
-    JournalEntry.objects.create(
-        assigned_object=server,
-        created_by=user,
-        kind="info",
-        comments="; ".join(parts),
-    )
-
-
-def _journal_applied(request: HttpRequest, server: Server, action: str, ip_addresses: list[str], **facts: str) -> None:
-    """Write the journal entry of an applied Lease change. A failure shows a separate error and keeps the change."""
-    try:
-        _add_lease_journal(server, request.user, action, ip_addresses, **facts)
-    except DatabaseError:
-        logger.exception("Failed to record the lease journal for server %s", server.pk)
-        messages.error(
-            request, "Kea applied the change, but NetBox could not write the journal entry; see server logs."
-        )
-
-
-def _signal_applied(request: HttpRequest, signal: Signal, name: str, **kwargs: Any) -> None:
-    """Send *signal* after an applied Lease change. A receiver that fails shows a separate error."""
-    responses = signal.send_robust(sender=None, request=request, **kwargs)
-    errors = [response for _receiver, response in responses if isinstance(response, Exception)]
-    for error in errors:
-        logger.error("A receiver of the %s signal failed", name, exc_info=error)
-    if errors:
-        messages.error(request, f"Kea applied the change, but a receiver of the {name} signal failed; see server logs.")
+    return "; ".join(parts)
 
 
 def _incomplete_export_message(snapshot: LeaseSnapshot) -> str:
@@ -758,7 +715,7 @@ class BaseServerLeasesDeleteView(ServerFamilyMixin, GetReturnURLMixin, generic.O
         if deleted:
             labels = [shown_lease(lease).label for lease in deleted]
             messages.success(request, f"Deleted {len(deleted)} DHCPv{self.dhcp_version} lease(s): {', '.join(labels)}.")
-            _journal_applied(request, instance, "deleted", labels)
+            _journal_applied(request, instance, _lease_journal_comments("deleted", labels))
             _signal_applied(
                 request,
                 leases_deleted,
@@ -1027,15 +984,14 @@ class _BaseLeaseAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
         address = str(creation.address)
         with LazyClient(server, self.dhcp_version) as client:
             created = _read_created_lease(request, client, creation)
-        _journal_applied(
-            request,
-            server,
+        comments = _lease_journal_comments(
             "added",
             [address],
             hw_address=creation.hw_address if isinstance(creation, DHCPv4LeaseRequest) else "",
             hostname=creation.hostname or "",
             duid=creation.duid if isinstance(creation, DHCPv6LeaseRequest) else "",
         )
+        _journal_applied(request, server, comments)
         _signal_applied(
             request,
             lease_added,

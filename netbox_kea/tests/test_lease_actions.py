@@ -425,7 +425,7 @@ class LeaseAddTest(_ViewTestBase):
         signals.lease_added.connect(fail)
         self.addCleanup(signals.lease_added.disconnect, fail)
         daemon = LeaseDaemon(4)
-        with stub_kea(daemon.responses()), self.assertLogs("netbox_kea.views.leases", "ERROR") as logs:
+        with stub_kea(daemon.responses()), self.assertLogs("netbox_kea.views", "ERROR") as logs:
             response = self.client.post(self._url(), {"ip_address": "192.0.2.50", "hw_address": "aa:bb:cc:00:00:50"})
 
         self.assertEqual(response.status_code, 302)
