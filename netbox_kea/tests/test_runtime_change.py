@@ -33,6 +33,7 @@ from .kea_stub import (
     _post_error,
     _refused_connection,
     _tls_errors,
+    redirect_to_netrc_host,
     stub_kea,
     typed_lease,
 )
@@ -214,6 +215,14 @@ class ApplicationTests(TestCase):
                     self.assertEqual(outcome.application, "unknown")
                     self.assertEqual(outcome.diagnostics, (_LOST,))
                     self.assertEqual(commands, [*operation.before, operation.write])
+
+    def test_an_encode_failure_after_the_send_is_unknown(self):
+        """requests sent the write, then failed to encode the .netrc credentials of the redirect target (ADR 0011)."""
+        self.server.ca_url = "http://kea.example.invalid/"
+        with redirect_to_netrc_host() as sent:
+            outcome = runtime_change.enable_dhcp(self.server, 4)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual((outcome.application, outcome.diagnostics), ("unknown", (_LOST,)))
 
     def test_a_malformed_reply_is_unknown(self):
         for operation in _OPERATIONS:

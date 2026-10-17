@@ -27,9 +27,11 @@ from ..dhcp_mapping_lifecycle import MetadataBusy
 from ..integrations import dhcp_plugin
 from ..ipam_reconciliation import complete_import_observation
 from ..kea import KeaException
-from ..mappers.kea_to_dhcp import parse_dhcp_config
+from ..mappers.kea_to_dhcp import ServerConfigIntent, parse_dhcp_config
 from ..models import Server
+from ..server_configuration import ServerConfigurationSnapshot
 from ..sync_permissions import sync_gate
+from .notices import Notice, failed_load, show_notices
 from .workspace import server_family_url
 
 logger = logging.getLogger(__name__)
@@ -62,17 +64,17 @@ def _enabled_versions(server: Server) -> list[Family]:
     return versions
 
 
-def _fetch_config_intent(server: Server, version: Family):
+def _fetch_config_intent(server: Server, version: Family) -> ServerConfigIntent | Notice | None:
     """Read live configuration for one version and parse it to intent (read-only).
 
     ``config-get`` is issued exactly once here. Reservations use their separate
-    typed Snapshot read. Returns the :class:`ServerConfigIntent`, or ``None`` if
-    Kea could not be read.
+    typed Snapshot read. Returns the :class:`ServerConfigIntent`, the Notice of a
+    read that failed, or ``None`` when the configuration could not be parsed.
     """
     read = server_configuration.for_import(server, version)
-    if read is None:
+    if isinstance(read, ServerConfigurationSnapshot):
         logger.warning("DHCP-plugin sync: config-get failed for %s (v%s)", server.name, version)
-        return None
+        return failed_load(read)
     try:
         intent = parse_dhcp_config(read.configuration, version)
     except (ValueError, RuntimeError):
@@ -136,19 +138,26 @@ def _summary_problems(summary) -> list[str]:
     return problems
 
 
-def run_dhcp_plugin_import(server: Server) -> list[tuple[Family, dhcp_plugin.ImportSummary]]:
+def run_dhcp_plugin_import(server: Server) -> list[tuple[Family, dhcp_plugin.ImportSummary | Notice]]:
     """Import every enabled version's live Kea config into the DHCP plugin.
 
-    Returns a list of ``(version, ImportSummary)`` for the versions that were read.
+    Returns ``(version, ImportSummary)`` for each version that was imported, and ``(version, Notice)`` for each
+    version whose configuration Kea did not give. A version whose configuration could not be parsed is left out.
     """
-    results: list[tuple[Family, dhcp_plugin.ImportSummary]] = []
+    results: list[tuple[Family, dhcp_plugin.ImportSummary | Notice]] = []
     for version in _enabled_versions(server):
         intent = _fetch_config_intent(server, version)
         if intent is None:
             continue
+        if isinstance(intent, Notice):
+            results.append((version, intent))
+            continue
         snapshot = _read_reservation_observation(server, version)
         results.append((version, dhcp_plugin.import_server_config(server, intent, snapshot)))
-    complete_import_observation(server, {family: summary.ownership for family, summary in results})
+    complete_import_observation(
+        server,
+        {family: summary.ownership for family, summary in results if not isinstance(summary, Notice)},
+    )
     return results
 
 
@@ -173,7 +182,8 @@ def compute_drift(server: Server) -> dict:
             for link in KeaDhcpLink.objects.filter(server=server, family=version, kea_subnet_id__isnull=False)
         }
         rows = []
-        if intent is None:
+        # A failed read (a Notice) and a configuration that could not be parsed (None) both give no live rows.
+        if not isinstance(intent, ServerConfigIntent):
             kea_unreachable = True
             # Without a live read we can still list what was imported before.
             for sid, link in sorted(links.items()):
@@ -282,21 +292,20 @@ class ServerDhcpPluginSyncNowView(View):
         except MetadataBusy as error:
             messages.error(request, error.message)
             return redirect
-        except (KeaException, requests.RequestException, ValueError):
-            # Expected external-boundary failures (Kea read / validation).
-            logger.exception("DHCP-plugin import failed for server %s (Kea read/validation)", server.name)
-            messages.error(request, "An internal error occurred during the DHCP-plugin import.")
-            return redirect
         except Exception:
+            # The import writes NetBox and DHCP plugin rows; a failure of any of them ends the import.
             logger.exception("DHCP-plugin import failed for server %s", server.name)
             messages.error(request, "An internal error occurred during the DHCP-plugin import.")
             return redirect
 
         if not results:
-            messages.warning(request, "No Kea configuration could be read (is the server reachable?).")
+            messages.warning(request, "No Kea configuration could be imported. See server logs.")
             return redirect
 
         for version, summary in results:
+            if isinstance(summary, Notice):
+                show_notices(request, summary)
+                continue
             text = (
                 f"DHCPv{version}: {summary.subnets_created} subnets created, "
                 f"{summary.subnets_updated} updated, {summary.pools_created} pools, "

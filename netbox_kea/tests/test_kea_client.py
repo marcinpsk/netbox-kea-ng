@@ -23,6 +23,7 @@ from netbox_kea.kea import (
     KeaClient,
     KeaCommand,
     KeaException,
+    KeaRequestEncodingError,
     KeaResponse,
     KeaTLSFileError,
     LeaseQueryGuardError,
@@ -66,6 +67,7 @@ from netbox_kea.tests.kea_stub import (
     lease_reply,
     queued,
     record_transport,
+    redirect_to_netrc_host,
     stub_kea,
     typed_lease,
 )
@@ -198,6 +200,27 @@ class TestKeaClientTLSFileError(TestCase):
         with stub_kea({"version-get": refused}), self.assertRaises(requests.ConnectionError) as caught:
             kea_client(url="https://kea:8000").command(KeaCommand.VERSION_GET, None)
         self.assertIs(caught.exception, refused)
+
+
+class TestKeaClientRequestEncodingError(TestCase):
+    """Credentials that requests cannot encode are a request error of the client, and nothing is sent."""
+
+    def test_an_encode_failure_after_the_send_is_not_a_never_sent_error(self):
+        # requests prepares the redirect after the send, and fails to encode its .netrc credentials.
+        client = kea_client(url="http://kea.example.invalid/", username="kea", password="ascii")
+        with redirect_to_netrc_host() as sent, self.assertRaises(requests.RequestException) as caught:
+            client.command(KeaCommand.VERSION_GET, None)
+        self.assertEqual(len(sent), 1)
+        self.assertNotIsInstance(caught.exception, KeaRequestEncodingError)
+        self.assertIs(type(caught.exception.__cause__), UnicodeEncodeError)
+
+    def test_a_password_that_is_not_latin_1_is_a_request_error(self):
+        # No stub: requests encodes the Basic Auth header before it opens a connection.
+        client = kea_client(url="http://127.0.0.1:1/", username="kea", password="pass\u20ac")
+        with self.assertRaises(KeaRequestEncodingError) as caught:
+            client.command(KeaCommand.VERSION_GET, None)
+        self.assertIsInstance(caught.exception, requests.RequestException)
+        self.assertIs(type(caught.exception.__cause__), UnicodeEncodeError)
 
 
 class TestKeaClientCommand(TestCase):
@@ -352,7 +375,7 @@ class TestKeaException(TestCase):
 
 
 class TestKeaErrorMessage(TestCase):
-    """kea_error_message() gives fixed guidance for result 2 and 128, and Kea's own text for any other result."""
+    """kea_error_message() preserves Kea's reply and adds guidance for result 2 and 128."""
 
     def _message(self, result_code: int, text: str | None = "some error") -> str:
         reply: KeaResponse = {"result": result_code, "arguments": None, "text": text}
@@ -362,13 +385,15 @@ class TestKeaErrorMessage(TestCase):
         self.assertEqual(
             self._message(2, "'reservation-add' command not supported."),
             "Kea does not support this command. "
-            "The required hook library may not be loaded, for example host_cmds, lease_cmds or subnet_cmds.",
+            "The required hook library may not be loaded, for example host_cmds, lease_cmds or subnet_cmds. "
+            "Kea replied: 'reservation-add' command not supported.",
         )
 
     def test_result_128_names_the_daemon(self):
         self.assertEqual(
             self._message(128),
-            "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable.",
+            "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable. "
+            "Kea replied: some error",
         )
 
     def test_any_other_result_shows_kea_text(self):
@@ -383,8 +408,10 @@ class TestKeaErrorMessage(TestCase):
                 self.assertEqual(self._message(code, text), f"Kea replied: {text}")
 
     def test_a_reply_without_text_shows_its_result_code(self):
-        self.assertEqual(self._message(1, None), "Kea replied: result 1")
-        self.assertEqual(self._message(1, ""), "Kea replied: result 1")
+        for code in (1, 2, 128):
+            for text in (None, ""):
+                with self.subTest(code=code, text=text):
+                    self.assertTrue(self._message(code, text).endswith(f"Kea replied: result {code}"))
 
 
 class TestCheckResponse(TestCase):

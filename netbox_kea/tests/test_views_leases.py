@@ -50,9 +50,10 @@ from netbox_kea.models import Server
 from netbox_kea.signals import lease_added
 from netbox_kea.utilities import parse_lease_csv
 from netbox_kea.views.leases import fetch
-from netbox_kea.views.notices import HEADLINES, Notice
+from netbox_kea.views.notices import HEADLINES, Notice, NoticeKind
 
 from .kea_stub import (
+    READ_FAILURES,
     LeaseDaemon,
     _catalogue_responses,
     _catalogue_responses_for_subnets,
@@ -101,7 +102,8 @@ def _assert_rendered_error_template(test, response):
 def _assert_lease_read_failed(test, response):
     """Assert the partial keeps the form and shows the unavailable Lease Notice in place of the table."""
     test.assertEqual(response.status_code, 200)
-    test.assertContains(response, f'<div class="alert alert-danger" role="alert">{HEADLINES["lease"]}</div>', html=True)
+    alert = BeautifulSoup(response.content, "html.parser").select_one(".alert-danger strong")
+    test.assertEqual(alert.get_text() if alert else None, HEADLINES["lease"])
     test.assertContains(response, 'id="lease-search-btn"')
     test.assertNotContains(response, 'id="lease-delete-form"')
     _assert_no_error_template(test, response)
@@ -151,6 +153,15 @@ def _assert_no_error_template(test, response):
     """Assert the HTMX handler rendered no part of exception_htmx.html."""
     test.assertNotRegex(response.content.decode(), _ERROR_TEMPLATE)
     test.assertNotContains(response, "An internal error occurred. Reference ID:")
+
+
+def _shown_messages(response) -> list[str]:
+    return [str(message) for message in get_messages(response.wsgi_request)]
+
+
+def _notice_lines(kind: NoticeKind, line: str | None) -> list[str]:
+    """Return the lines of the unavailable Notice of *kind*: the headline, then Kea's answer to a refusal."""
+    return [HEADLINES[kind], *([line] if line else [])]
 
 
 def _held4(*addresses: str) -> tuple[dict, list[str]]:
@@ -733,6 +744,16 @@ class TestLeaseExport(_ViewTestBase):
             response = self.client.get(self._url(), {"export": "table", "by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
+
+    def test_a_failed_read_shows_the_lease_notice(self):
+        """A Kea refusal, a transport failure and a malformed reply show the shared headline and Kea's answer."""
+        for name, reply, line in READ_FAILURES:
+            with self.subTest(name):
+                self._fresh_client()
+                with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get": reply}):
+                    response = self.client.get(self._url(), {"export": "all", "by": "ip", "q": "10.0.0.5"})
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(_shown_messages(response), _notice_lines("lease", line))
 
     def test_export_with_invalid_form_redirects(self):
         """?export=all with missing q/by must redirect (not crash)."""
@@ -1361,6 +1382,16 @@ class TestLeaseExportAll(_ViewTestBase):
 
     def _url6(self):
         return reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+
+    def test_a_failed_read_shows_the_lease_notice(self):
+        """A Kea refusal, a transport failure and a malformed reply show the shared headline and Kea's answer."""
+        for name, reply, line in READ_FAILURES:
+            with self.subTest(name):
+                self._fresh_client()
+                with _lease_stub({"lease4-get-page": reply}):
+                    response = self.client.get(self._url4(), {"export_all": "1"})
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(_shown_messages(response), _notice_lines("lease", line))
 
     def test_export_all_returns_csv(self):
         """?export_all=1 must return text/csv."""
@@ -2876,6 +2907,34 @@ class TestLeaseEditGet(_ViewTestBase):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
 
+    def test_a_failed_read_shows_the_lease_target_notice(self):
+        """A Kea refusal, a transport failure and a malformed reply show the shared headline and Kea's answer."""
+        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        for name, reply, line in READ_FAILURES:
+            with self.subTest(name):
+                self._fresh_client()
+                with _lease_stub({"lease4-get": reply}):
+                    response = self.client.get(url)
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(_shown_messages(response), _notice_lines("lease_target", line))
+
+    def test_a_lease_that_cannot_be_read_shows_the_lease_target_notice_and_its_reason(self):
+        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        with _lease_stub({"lease4-get": {"result": 0, "arguments": {"hw-address": "aa:bb:cc:dd:ee:ff"}}}):
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(_shown_messages(response), [HEADLINES["lease_target"], "A required lease field is missing."])
+
+    def test_a_selection_that_is_not_a_lease_names_the_selection_and_reads_nothing(self):
+        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "not-an-address"])
+        with _lease_stub({}) as kea:
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands(), [])
+        self.assertEqual(
+            _shown_messages(response), ["not-an-address is not a DHCPv4 lease address or delegated prefix."]
+        )
+
     def test_get_lease_not_found_redirects(self):
         """result=3 (not found) in lease4 GET redirects to leases page."""
         url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
@@ -3545,14 +3604,6 @@ class TestLeaseExportTransportErrors(_ViewTestBase):
             )
         self.assertIn(response.status_code, [200, 302])
 
-    def test_value_error_redirects_with_error(self):
-        with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get-all": ValueError("bad JSON")}):
-            response = self.client.get(
-                self._url(),
-                {"export": "1", "by": "subnet_id", "q": "1"},
-            )
-        self.assertIn(response.status_code, [200, 302])
-
 
 # ---------------------------------------------------------------------------
 # F3: Single-lease GET — transport errors
@@ -3566,14 +3617,6 @@ class TestSingleLeaseGetTransportErrors(_ViewTestBase):
         """requests.RequestException from lease-get must redirect with error message."""
         url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
         with _lease_stub({"lease4-get": requests.ConnectionError("down")}):
-            response = self.client.get(url)
-        self.assertEqual(response.status_code, 302)
-        self.assertIn(str(self.server.pk), response.url)
-
-    def test_value_error_redirects(self):
-        """ValueError from lease-get must redirect with error message."""
-        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
-        with _lease_stub({"lease4-get": ValueError("bad JSON")}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self.assertIn(str(self.server.pk), response.url)
@@ -4042,6 +4085,13 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
             _lease_lines(response),
             [f"leases[{index}] (record): Kea returned a lease that is not an object." for index in range(3)],
         )
+
+    def test_a_refused_search_shows_keas_answer_under_the_headline(self):
+        with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get-by-hw-address": READ_FAILURES[0][1]}):
+            response = self._htmx_get(self._url(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
+        _assert_lease_read_failed(self, response)
+        alert = BeautifulSoup(response.content, "html.parser").select_one(".alert-danger")
+        self.assertEqual([item.get_text() for item in alert.select("li")], [READ_FAILURES[0][2]])
 
     def test_multiple_result_none_arguments_renders_error(self):
         """Multiple-result with None arguments must trigger RuntimeError."""

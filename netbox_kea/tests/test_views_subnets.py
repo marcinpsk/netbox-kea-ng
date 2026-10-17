@@ -37,6 +37,7 @@ from ..dhcp_options import ShownOption
 from ..views.notices import HEADLINES
 from ..views.subnets import _NO_SUBNET_CIDR
 from .kea_stub import (
+    READ_FAILURES,
     Applied,
     SubnetDaemon,
     _catalogue_responses_for_subnets,
@@ -3496,16 +3497,16 @@ class TestPoolAddPostErrors(_ViewTestBase):
         malformed_probe = {"result": 0, "arguments": {"hosts": None, "next": {"from": 0, "source-index": 0}}}
 
         with self._pool_add_stub(**{"reservation-get-page": malformed_probe}) as kea:
-            with self.assertLogs("netbox_kea.views.subnets", level="WARNING") as logs:
+            with self.assertLogs("netbox_kea.views.notices", level="WARNING") as logs:
                 response = self.client.post(
                     self._url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.10-10.0.0.20"}, follow=True
                 )
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("subnet4-delta-add", kea.commands())
-        overlap_records = [record for record in logs.records if "overlap" in record.getMessage()]
-        self.assertTrue(overlap_records)
-        self.assertIsNotNone(overlap_records[0].exc_info)
+        read_records = [record for record in logs.records if "Failed to read reservation" in record.getMessage()]
+        self.assertTrue(read_records, logs.output)
+        self.assertIsNotNone(read_records[0].exc_info)
 
 
 # Every command that changes Kea state on the Pool add path.
@@ -3993,32 +3994,22 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
     def _pool_add_url(self):
         return reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 42])
 
-    def test_pool_add_reservation_lookup_failure_warns_that_the_check_did_not_run(self):
-        """A Kea contract error must tell the operator that no overlap check ran."""
-        with self.assertLogs("netbox_kea.views.subnets", level="WARNING") as logs:
-            with self._pool_add_stub(**{"reservation-get-page": {"result": 2, "text": "host_cmds not loaded"}}):
+    def test_pool_add_reservation_lookup_failure_is_one_warning_after_the_success(self):
+        """The Pool is added, so the failed advisory read is one warning: no check ran, with the Notice text."""
+        not_checked = (
+            "The Reservation overlap check did not run. "
+            "Pool 10.0.0.100-10.0.0.200 was not checked against existing Reservations."
+        )
+        for name, reply, line in READ_FAILURES:
+            with self.subTest(name), self._pool_add_stub(**{"reservation-get-page": reply}):
+                self._fresh_client()
                 response = self.client.post(
-                    self._pool_add_url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"}, follow=True
+                    self._pool_add_url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"}
                 )
-        self.assertEqual(response.status_code, 200)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.SUCCESS for m in msgs))
-        self.assertTrue(any("overlap check did not run" in m.message.lower() for m in msgs))
-        overlap_records = [record for record in logs.records if "overlap" in record.getMessage()]
-        self.assertTrue(overlap_records, logs.output)
-        self.assertEqual(overlap_records[0].levelname, "WARNING", logs.output)
-        self.assertIsNotNone(overlap_records[0].exc_info)
-
-    def test_pool_add_reservation_lookup_request_exception_warns_that_the_check_did_not_run(self):
-        """A transport error must tell the operator that no overlap check ran."""
-        with self._pool_add_stub(**{"reservation-get-page": requests.RequestException("timeout")}):
-            response = self.client.post(
-                self._pool_add_url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"}, follow=True
-            )
-        self.assertEqual(response.status_code, 200)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.SUCCESS for m in msgs))
-        self.assertTrue(any("overlap check did not run" in m.message.lower() for m in msgs))
+            shown = [(message.level, str(message)) for message in get_messages(response.wsgi_request)]
+            self.assertEqual(shown[0][0], django_messages.SUCCESS)
+            notice_text = " ".join([HEADLINES["reservation"], *([line] if line else [])])
+            self.assertEqual(shown[1:], [(django_messages.WARNING, f"{not_checked} {notice_text}")])
 
     def test_pool_add_client_creation_failure_shows_an_error(self):
         """A real get_client() failure (cert without key → ValueError) leaves no Subnet to add the Pool to."""

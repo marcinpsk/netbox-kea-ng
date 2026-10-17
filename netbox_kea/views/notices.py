@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """The one rule that turns a Snapshot into a notice for the operator (ADR 0003, Presentation).
 
-A view gets a :class:`Notice` from :func:`notice` or :func:`load_snapshot` and hands it to a channel:
-:func:`show_notices` on a full page, the Notice itself in a template, or :class:`ServerNotices` on a combined page.
+A view gets a :class:`Notice` from :func:`notice`, :func:`load_snapshot` or :func:`load_target` and hands it to a
+channel: :func:`show_notices` on a full page, the Notice itself in a template, :class:`ServerNotices` on a combined
+page, or :attr:`Notice.text` in a row badge or a plain-text reply.
 """
 
 from __future__ import annotations
@@ -11,16 +12,16 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Literal, TypeVar
+from typing import Literal, TypeVar, overload
 
 import requests
 from django.contrib import messages
 from django.http import HttpRequest
 
-from ..kea import KeaException
-from ..leases import LeaseDiagnostic, LeaseSnapshot
+from ..kea import KeaException, kea_error_message
+from ..leases import LeaseAbsent, LeaseDiagnostic, LeaseFound, LeaseLookupFailed, LeaseSnapshot
 from ..models import Server
-from ..reservations import ReservationDiagnostic, ReservationSnapshot
+from ..reservations import MalformedReservation, ReservationDiagnostic, ReservationSnapshot
 from ..server_configuration import Diagnostic, ServerConfigurationSnapshot
 from ..subnet_catalogue import CatalogueSnapshot
 from ..utilities import diagnostic_reasons
@@ -29,31 +30,38 @@ logger = logging.getLogger(__name__)
 
 SnapshotKind = Literal["catalogue", "configuration", "reservation", "lease"]
 RecordKind = Literal["reservation", "lease"]
+#: An exact load of one Lease or one Reservation, which is not a Snapshot.
+TargetKind = Literal["lease_target", "reservation_target"]
+NoticeKind = SnapshotKind | TargetKind
 Snapshot = CatalogueSnapshot | ServerConfigurationSnapshot | ReservationSnapshot | LeaseSnapshot
-#: What a Reservation or Lease read returns: a Snapshot, or a display cache entry that holds one.
-RecordRead = TypeVar("RecordRead")
+#: What a read returns when it does not fail: a Snapshot, a display cache entry that holds one, or one record.
+Read = TypeVar("Read")
 
-#: The first line of an unavailable Notice, one per Snapshot kind.
-HEADLINES: dict[SnapshotKind, str] = {
+#: The first line of an unavailable Notice, one per kind.
+HEADLINES: dict[NoticeKind, str] = {
     "catalogue": "Failed to load subnet configuration from Kea.",
     "configuration": "Failed to load the Server Configuration from Kea.",
     "reservation": "Failed to load Reservations from Kea.",
-    "lease": "Failed to query server",
+    "lease": "Failed to load Leases from Kea.",
+    "lease_target": "Failed to load the Lease from Kea.",
+    "reservation_target": "Failed to load the Reservation from Kea.",
 }
 _RECORD_KINDS: frozenset[SnapshotKind] = frozenset({"reservation", "lease"})
 
 
 @dataclass(frozen=True)
 class Notice:
-    """The level of one Snapshot and its typed diagnostics. A channel formats them."""
+    """The level of one Snapshot or exact load and its typed diagnostics. A channel formats them."""
 
-    kind: SnapshotKind
+    kind: NoticeKind
     level: int
     diagnostics: tuple[Diagnostic | ReservationDiagnostic | LeaseDiagnostic, ...] = ()
     #: A raised read failed because Kea does not know the command, so its hook library is not loaded.
     unsupported_command: bool = False
     #: A raised read failed at the transport, so Kea did not answer.
     unreachable: bool = False
+    #: Kea's answer to a refused read, from ``kea_error_message()``; empty for any other failure.
+    reply: str = ""
 
     @property
     def unavailable(self) -> bool:
@@ -72,14 +80,19 @@ class Notice:
 
     @property
     def lines(self) -> tuple[str, ...]:
-        """Return the headline, then each distinct message. A record list shows Reservation and Lease diagnostics."""
+        """Return the headline, Kea's answer, then each distinct message. A record list shows record diagnostics."""
         texts = () if self.kind in _RECORD_KINDS else tuple(diagnostic.message for diagnostic in self.diagnostics)
-        return tuple(dict.fromkeys(text for text in (self.headline, *texts) if text))
+        return tuple(dict.fromkeys(text for text in (self.headline, self.reply, *texts) if text))
 
     @property
-    def reasons(self) -> str:
-        """Return each distinct diagnostic message once, in order."""
-        return diagnostic_reasons(self.diagnostics)
+    def details(self) -> tuple[str, ...]:
+        """Return the lines under the headline."""
+        return tuple(line for line in self.lines if line != self.headline)
+
+    @property
+    def text(self) -> str:
+        """Return every line in one string, for a row badge or a plain-text reply."""
+        return " ".join(self.lines)
 
 
 def _kind(snapshot: Snapshot) -> SnapshotKind:
@@ -107,10 +120,19 @@ def notice(snapshot: Snapshot) -> Notice | None:
     return None
 
 
-def load_snapshot(server: Server, kind: RecordKind, read: Callable[[], RecordRead]) -> RecordRead | Notice:
-    """Run a Reservation or Lease read, and return an unavailable Notice when Kea, the transport or the reply fails.
+def failed_load(snapshot: CatalogueSnapshot | ServerConfigurationSnapshot) -> Notice:
+    """Return the error Notice of a Snapshot that cannot give the facts that a load needs, with its diagnostics.
 
-    A refused Lease query (``LeaseQueryGuardError``) and a ``ValueError`` are outside the rule and still raise.
+    An exact load cannot go on without them, so the Notice is an error also when the Snapshot is usable.
+    """
+    kind = _kind(snapshot)
+    return Notice(kind, messages.ERROR, snapshot.diagnostics)
+
+
+def _classified(server: Server, kind: RecordKind | TargetKind, read: Callable[[], Read]) -> Read | Notice:
+    """Run *read*, and return an unavailable Notice when Kea refuses it, the transport fails or the reply is malformed.
+
+    A Kea refusal carries Kea's answer. Every other exception still raises.
     """
     try:
         return read()
@@ -119,11 +141,50 @@ def load_snapshot(server: Server, kind: RecordKind, read: Callable[[], RecordRea
             logger.info("Server %s does not provide the %s read: its hook library is not loaded", server.pk, kind)
         else:
             logger.exception("Kea refused the %s read of server %s", kind, server.pk)
-        return Notice(kind, messages.ERROR, unsupported_command=exc.unsupported_command)
-    # MalformedReply and MalformedLeaseResponse are RuntimeErrors.
-    except (requests.RequestException, RuntimeError) as exc:
+        return Notice(kind, messages.ERROR, unsupported_command=exc.unsupported_command, reply=kea_error_message(exc))
+    # MalformedReply and MalformedLeaseResponse are RuntimeErrors; MalformedReservation is a ValueError.
+    except (requests.RequestException, RuntimeError, MalformedReservation) as exc:
         logger.exception("Failed to read %s from server %s", kind, server.pk)
         return Notice(kind, messages.ERROR, unreachable=isinstance(exc, requests.RequestException))
+
+
+def load_snapshot(server: Server, kind: RecordKind, read: Callable[[], Read]) -> Read | Notice:
+    """Run a Reservation or Lease read, and return an unavailable Notice when Kea, the transport or the reply fails.
+
+    A refused Lease query (``LeaseQueryGuardError``) still raises. A ``ValueError`` still raises, except
+    ``MalformedReservation``, which is a malformed reply.
+    """
+    return _classified(server, kind, read)
+
+
+@overload
+def load_target(
+    server: Server,
+    kind: Literal["lease_target"],
+    read: Callable[[], LeaseFound | LeaseAbsent | LeaseLookupFailed],
+) -> LeaseFound | LeaseAbsent | Notice: ...
+
+
+@overload
+def load_target(server: Server, kind: Literal["reservation_target"], read: Callable[[], Read]) -> Read | Notice: ...
+
+
+def load_target(server: Server, kind: TargetKind, read: Callable[[], object]) -> object:
+    """Run an exact Lease or Reservation load, and return an unavailable Notice when Kea, the transport or the reply fails.
+
+    A Lease that Kea returned but that cannot be read (``LeaseLookupFailed``) is a malformed reply. A ``ValueError``
+    still raises, except ``MalformedReservation``, which is a malformed reply.
+    """
+    loaded = _classified(server, kind, read)
+    if isinstance(loaded, LeaseLookupFailed):
+        logger.warning(
+            "Server %s returned a %s that could not be read: %s",
+            server.pk,
+            kind,
+            diagnostic_reasons(loaded.diagnostics),
+        )
+        return Notice(kind, messages.ERROR, loaded.diagnostics)
+    return loaded
 
 
 def _worst_levels(notices: tuple[Notice | None, ...]) -> dict[str, int]:

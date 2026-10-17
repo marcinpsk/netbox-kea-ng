@@ -5,7 +5,6 @@ import logging
 import re
 from typing import Any
 
-import requests
 from django.contrib import messages
 from django.http import HttpResponse, QueryDict
 from django.http.request import HttpRequest
@@ -18,7 +17,7 @@ from utilities.views import register_model_view
 from .. import config_write, forms, runtime_change, server_configuration, subnet_catalogue, tables
 from ..constants import Family
 from ..dhcp_options import AmbiguousFormOption, DHCPOption, form_option_fields
-from ..kea import KeaException, subnet_network
+from ..kea import subnet_network
 from ..models import Server
 from ..pools import Pool, addresses_in_pools, parse_pool
 from ..reservations import InSubnetReservationScope
@@ -37,12 +36,13 @@ from ..utilities import (
 from ._base import (
     _POOL_RE,
     _catalogue_subnet_row,
+    _client_settings_error,
     _enrich_subnet_statistics,
     _KeaChangeMixin,
     _run_change,
     _safe_return_url,
 )
-from .notices import notice, show_notices
+from .notices import Notice, load_snapshot, notice, show_notices
 from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
@@ -175,38 +175,47 @@ def _warn_reservations_in_pool(
 
     Warns when the check cannot run.
     """
-    check_failed_message = (
+    not_checked = (
         f"The Reservation overlap check did not run. Pool {pool.range} was not checked against existing Reservations."
     )
     try:
         client = server.get_client(version=catalogue.family)
-        snapshot = client.reservation_snapshot(catalogue.family, catalogue, page_size=200, subnet_id=subnet.subnet_id)
-        if not snapshot.complete:
-            # No warning below would otherwise read as "no overlapping reservation".
-            messages.warning(
-                request,
-                f"Could not read every reservation on this server, so pool {pool.range} was checked "
-                "against an incomplete list.",
-            )
-        addresses = [
-            address
-            for reservation in snapshot.records
-            if isinstance(reservation.scope, InSubnetReservationScope)
-            and reservation.scope.subnet.subnet_id == subnet.subnet_id
-            for address in reservation.addresses
-        ]
-        overlapping = [str(address) for address, _pool in addresses_in_pools(addresses, (pool,))]
-        if overlapping:
-            sample = ", ".join(overlapping[:5])
-            extra = f" (+{len(overlapping) - 5} more)" if len(overlapping) > 5 else ""
-            messages.warning(
-                request,
-                f"Pool {pool.range} overlaps {len(overlapping)} existing reservation(s): {sample}{extra}. "
-                "Kea allows this. Reservations take priority over pool allocation.",
-            )
-    except (KeaException, requests.RequestException, OSError, RuntimeError, ValueError):
-        logger.warning("Could not check Pool and Reservation overlap for subnet %s", subnet.subnet_id, exc_info=True)
-        messages.warning(request, check_failed_message)
+    except ValueError as exc:
+        messages.warning(request, f"{_client_settings_error(server, exc)} {not_checked}")
+        return
+    with client:
+        loaded = load_snapshot(
+            server,
+            "reservation",
+            lambda: client.reservation_snapshot(catalogue.family, catalogue, page_size=200, subnet_id=subnet.subnet_id),
+        )
+    if isinstance(loaded, Notice):
+        # The Pool is added, so the failed advisory read is a warning, not an error.
+        messages.warning(request, f"{not_checked} {loaded.text}")
+        return
+    if not loaded.complete:
+        # No warning below would otherwise read as "no overlapping reservation".
+        messages.warning(
+            request,
+            f"Could not read every reservation on this server, so pool {pool.range} was checked "
+            "against an incomplete list.",
+        )
+    addresses = [
+        address
+        for reservation in loaded.records
+        if isinstance(reservation.scope, InSubnetReservationScope)
+        and reservation.scope.subnet.subnet_id == subnet.subnet_id
+        for address in reservation.addresses
+    ]
+    overlapping = [str(address) for address, _pool in addresses_in_pools(addresses, (pool,))]
+    if overlapping:
+        sample = ", ".join(overlapping[:5])
+        extra = f" (+{len(overlapping) - 5} more)" if len(overlapping) > 5 else ""
+        messages.warning(
+            request,
+            f"Pool {pool.range} overlaps {len(overlapping)} existing reservation(s): {sample}{extra}. "
+            "Kea allows this. Reservations take priority over pool allocation.",
+        )
 
 
 def _unconfirmed_subnet(request: HttpRequest, subnet_id: int, return_url: str) -> HttpResponse:

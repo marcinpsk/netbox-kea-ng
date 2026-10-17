@@ -40,7 +40,6 @@ from ..kea import (
     KeaException,
     LeaseQueryGuardError,
     LeaseQueryUnknownSubnet,
-    kea_error_message,
     lease_query_guard_message,
 )
 from ..lease_reads import LeaseSearch, cached_read, read_leases
@@ -109,7 +108,7 @@ from ._base import (
     _strip_empty_params,
     sync_title,
 )
-from .notices import Notice, load_snapshot, notice, show_notices
+from .notices import Notice, load_snapshot, load_target, notice, show_notices
 from .read_age import read_age_context, refresh_requested
 from .reservations import empty_text
 from .workspace import ServerFamilyMixin
@@ -407,26 +406,24 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
         except ValueError as exc:
             messages.error(request, _client_settings_error(instance, exc))
             return redirect(request.path)
+        search = LeaseSearch(by, form.cleaned_data["q"], state_filter)
         try:
             # An export reads the Leases live.
-            read = read_leases(
-                client, instance, self.dhcp_version, LeaseSearch(by, form.cleaned_data["q"], state_filter)
-            )
-            if isinstance(read.loaded, CatalogueSnapshot):
-                show_notices(request, _catalogue_notice(read.loaded))
-                return redirect(request.path)
-            snapshot = read.loaded
+            loaded = load_snapshot(instance, "lease", lambda: read_leases(client, instance, self.dhcp_version, search))
         except LeaseQueryGuardError as exc:
             messages.warning(request, lease_query_guard_message(exc, state_filter))
             return redirect(request.path)
-        except KeaException as exc:
-            logger.exception("Failed to fetch leases for export on server %s", instance.pk)
-            messages.error(request, kea_error_message(exc))
+        except ValueError:
+            logger.exception("The lease export search of server %s is not valid", instance.pk)
+            messages.error(request, "The lease search is not valid, so it was not exported.")
             return redirect(request.path)
-        except (requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Transport/parse error fetching leases for export on server %s", instance.pk)
-            messages.error(request, "Failed to fetch leases for export; see server logs.")
+        if isinstance(loaded, Notice):
+            show_notices(request, loaded)
             return redirect(request.path)
+        if isinstance(loaded.loaded, CatalogueSnapshot):
+            show_notices(request, _catalogue_notice(loaded.loaded))
+            return redirect(request.path)
+        snapshot = loaded.loaded
 
         limited = request.GET["export"] == "table"
         if not limited and not snapshot.complete:
@@ -458,21 +455,17 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
         except ValueError as exc:
             messages.error(request, _client_settings_error(instance, exc))
             return redirect(request.path)
-        try:
-            snapshot = client.lease_get_all(
-                self.dhcp_version,
-                per_page=per_page,
-                max_leases=_LEASE_EXPORT_MAX_LEASES,
-                server_id=instance.pk,
-            )
-        except KeaException as exc:
-            logger.exception("Failed to fetch all leases for export on server %s", instance.pk)
-            messages.error(request, kea_error_message(exc))
+        loaded = load_snapshot(
+            instance,
+            "lease",
+            lambda: client.lease_get_all(
+                self.dhcp_version, per_page=per_page, max_leases=_LEASE_EXPORT_MAX_LEASES, server_id=instance.pk
+            ),
+        )
+        if isinstance(loaded, Notice):
+            show_notices(request, loaded)
             return redirect(request.path)
-        except (requests.RequestException, ValueError, RuntimeError):
-            logger.exception("Transport/parse error fetching all leases for export on server %s", instance.pk)
-            messages.error(request, "Failed to fetch leases for export; see server logs.")
-            return redirect(request.path)
+        snapshot = loaded
 
         if snapshot.coverage != "exhaustive":
             logger.warning(
@@ -833,22 +826,17 @@ class _BaseLeaseEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginReq
             return redirect(self._leases_url(server))
         try:
             label, identity = parse_selection(self.dhcp_version, ip_address)
-            result = client.lease_get(identity)
-        except KeaException as exc:
-            logger.exception("Failed to fetch lease %s on server %s", ip_address, pk)
-            messages.error(request, kea_error_message(exc))
+        except ValueError:
+            messages.error(
+                request, f"{ip_address} is not a DHCPv{self.dhcp_version} lease address or delegated prefix."
+            )
             return redirect(self._leases_url(server))
-        except (requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Failed to fetch lease %s on server %s", ip_address, pk)
-            messages.error(request, "Failed to fetch lease: see server logs for details.")
+        result = load_target(server, "lease_target", lambda: client.lease_get(identity))
+        if isinstance(result, Notice):
+            show_notices(request, result)
             return redirect(self._leases_url(server))
-
         if isinstance(result, LeaseAbsent):
             messages.warning(request, f"Lease {label} not found.")
-            return redirect(self._leases_url(server))
-        if not isinstance(result, LeaseFound):
-            logger.warning("Kea returned a malformed lease %s on server %s", label, pk)
-            messages.error(request, "Kea returned a lease that could not be read; it cannot be edited.")
             return redirect(self._leases_url(server))
         lease = result.lease
         shown = shown_lease(lease)
