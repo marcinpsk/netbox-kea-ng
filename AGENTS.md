@@ -213,7 +213,7 @@ URL request
       sync_views.py     (per-server IPAM sync UI)
       sync_jobs.py      (jobs tab, periodic sync management)
       settings_page.py  (Settings page: one section per settings singleton; ADR 0010)
-  → config_write.py     (Configuration Changes: typed outcome, advisory lock, persist step)
+  → config_write.py     (Configuration Changes, Reservation writes included: typed outcome, advisory lock, persist step)
   → change_outcome.py   (ChangeRejected and the Application classifier that every change shares; ADR 0011)
   → runtime_change.py   (Runtime Changes: Lease add/edit/delete/wipe, DHCP enable/disable; ADR 0011)
   → kea.py              (HTTP POST to each daemon's / control socket)
@@ -331,7 +331,8 @@ URL request
   of a Subnet export), the API, `ipam_reconciliation`, the edit and delete target loads, `_checked_lease`, the read
   back of a created Lease and the `version-get` connectivity check of `server_connection` read live. `KeaClient.command()` calls
   `on_write(family, configuration=False)` before and after each write command, also when the send fails, and
-  `_config_mutation_command` calls `on_write(family, configuration=True)` around a live configuration mutation.
+  `_config_mutation_command` calls `on_write(family, configuration=True)` around a live configuration mutation,
+  a Reservation write included.
   `Server.get_client()` binds it to `rotate_after_write`, which rotates the records generation (both families for
   `None`) and, for a configuration change, the configuration generation. `MutationScope` calls
   `rotate_configuration`. A rotation failure is logged, and the write continues. The callers validate the family;
@@ -398,9 +399,26 @@ delete, Pool add and delete, Subnet and server DHCP Options, and Option Definiti
 delete use it. An OpenGrep rule refuses an `except` of `ChangeRejected` in `views/`
 outside `_run_change` and `_run_change_loop`. A second rule keeps those functions in `views/_base.py`, and a third
 refuses a broad `except` around a direct `config_write` or `runtime_change` call in a view. Only `config_write` operations take the per-daemon advisory
-lock. Reservation mutations call `KeaClient.persist`, but they do not wait for the lock. A Subnet, Pool
+lock. A Subnet, Pool
 or Subnet DHCP Options operation takes the Subnet ID and the CIDR that the page showed, and
 sends nothing unless its `MutationScope` returns a Verified Subnet with both.
+
+Reservation add, edit and delete are Configuration Changes too (ADR 0012): `add_reservation`, `edit_reservation`
+and `delete_reservation` hold the lock from the `MutationScope` read to the end of the persist step and return a
+`ReservationChangeOutcome` (the previous and intended Reservation, the verification state and the Catalogue of the
+scope read, which `claim()` takes). The view passes a builder callback that turns the form into the Reservation, or
+into the `ReservationChange` of the Reservation that the read under the lock returned; an error of the builder
+(`_UnknownSuffix`, `ReservationConflict`, a `ValueError`) propagates unchanged, so the view maps it to a form error.
+A Subnet or a Reservation that is gone, a changed fingerprint and result 3 on `reservation-del` are
+`target-changed`; result 2 is a rejection; any other failure result, result 5, a forward failure or a lost reply is
+`unknown`, with no read after it. The persist step runs after `applied` and `unknown`, and the verification read only
+after `applied`. `KeaClient` keeps the single commands (`reservation_add`, `reservation_update`, `reservation_del`,
+sent through `_config_mutation_command`, so a display read during the write is not kept), the reads and the raw
+record handling (`FreshReservation.updated` keeps each Kea field that NetBox does not manage). The OpenGrep rule
+`kea-reservation-write-outside-config-write` refuses a call to these write primitives outside `config_write`. The
+bulk Reservation import sends one change for each entry through `_run_change_loop(..., stop_on_rejection=True)`, so
+an unknown or a rejected entry stops it, and shows the import report that it shares with the Lease CSV import
+(`_import_report` in `views/sync_views.py`, `inc/import_report.html`).
 
 **`runtime_change` owns every Runtime Change** (ADR 0011): Lease add, edit, delete and wipe, and DHCP enable and
 disable. An operation returns a `RuntimeChangeOutcome` (`applied`/`unknown` and diagnostics) or raises
@@ -413,7 +431,9 @@ send. A fresh read that does not match the shown Lease,
 a Lease that is gone before the send, result 3 on `lease{v}-del` and result 4 on `lease{v}-update` are
 `target-changed`. A view runs one change through `_run_change` and a loop of changes (multi-Lease delete, Lease CSV
 import) through `_run_change_loop`, which stops at the first `unknown` row. The journal entry, the signals and the
-IPAM synchronization run in the view only after `applied`; a failure there shows a separate error. The OpenGrep rule
+IPAM synchronization run in the view only after `applied`; a failure there shows a separate error. `_journal_applied`
+and `_signal_applied` in `views/_base.py` write the journal entry and send a signal for Lease and Reservation changes
+alike; `send_robust()` returns a receiver error, so `_signal_applied` reads its responses. The OpenGrep rule
 `kea-runtime-write-outside-runtime-change` refuses a call to a `KeaClient` runtime write primitive outside
 `runtime_change`.
 
@@ -658,9 +678,9 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Transactions**: open every transaction with `event_scope.atomic()`, never `transaction.atomic`
   (opengrep `kea-raw-atomic`). At the top level of a tracked request, on a NetBox release whose `event_tracking` nests (`event_scope._nested_tracking`), it is a unit, whose events
   dispatch after its COMMIT or not at all. Put `except event_scope.EventDispatchError: raise` before a broad
-  `except`. The one exception is a side effect after a Runtime Change that Kea applied: the Lease add view
-  reports the failed dispatch of its IPAM sync as a separate error, because the request must report the applied
-  change. Read `docs/design/savepoint-event-queue.md` (sections 22 and 24) before you change it.
+  `except`. The one exception is a side effect after a change that Kea applied: the Lease add view and the
+  Reservation add and edit views report the failed dispatch of their IPAM sync as a separate error, because the
+  request must report the applied change. Read `docs/design/savepoint-event-queue.md` (sections 22 and 24) before you change it.
 - **Kea option names per family**: DNS is `domain-name-servers` (v4) or `dns-servers` (v6), and NTP is
   `ntp-servers` (v4) or `sntp-servers` (v6). `dhcp_options._FORM_MANAGED_OPTIONS` maps each form field to them.
 - **Forms**: lease search forms inherit `BaseLeasesSarchForm` (the typo is
