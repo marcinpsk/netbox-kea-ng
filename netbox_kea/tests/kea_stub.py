@@ -558,6 +558,7 @@ def _self_signed_certificate() -> tuple[str, str]:
 
 def _tls_server_context() -> ssl.SSLContext:
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(*_self_signed_certificate())
     return context
 
