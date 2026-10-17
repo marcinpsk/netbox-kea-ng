@@ -3648,7 +3648,7 @@ class TestLeaseAddValueError(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# F9: the journal entry of an applied Lease change catches database errors only
+# F9: the journal entry of an applied Lease change catches database and validation errors only
 # ---------------------------------------------------------------------------
 
 

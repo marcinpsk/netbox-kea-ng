@@ -18,6 +18,10 @@
 <div class="alert alert-warning" role="alert">
   Kea did not confirm one {{ result.noun.one }}, so NetBox stopped there. Check the Server before you import the {{ result.noun.many }} again.
 </div>
+{% elif result.stopped %}
+<div class="alert alert-danger" role="alert">
+  NetBox stopped at the {{ result.noun.one }} that was not applied and did not send the {{ result.noun.many }} after it.
+</div>
 {% endif %}
 
 {% for group in result.groups %}{% if group.rows %}

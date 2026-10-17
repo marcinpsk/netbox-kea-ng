@@ -795,7 +795,7 @@ class _ReservationEditView(_ReservationMutationView):
                     subject=f"Reservation {_identity_label(identity)}",
                 )
             except ReservationConflict as exc:
-                form.add_error(None, f"{exc} Reload the form before you try again.")
+                form.add_error(None, f"{exc} Reload the form and try again.")
             except _UnknownSuffix as exc:
                 form.add_error("hostname", str(exc))
             except ValueError:

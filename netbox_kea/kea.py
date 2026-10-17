@@ -1272,7 +1272,7 @@ class KeaClient:
         catalogue,
         scope: ReservationScope,
         identity: ReservationIdentity,
-    ) -> "FreshReservation | None":
+    ) -> FreshReservation | None:
         """Read one exact Reservation, with the raw record that an update starts from. None: Kea does not hold it.
 
         Raises:

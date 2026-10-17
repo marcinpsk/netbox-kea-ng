@@ -408,7 +408,8 @@ and `delete_reservation` hold the lock from the `MutationScope` read to the end 
 `ReservationChangeOutcome` (the previous and intended Reservation, the verification state and the Catalogue of the
 scope read, which `claim()` takes). The view passes a builder callback that turns the form into the Reservation, or
 into the `ReservationChange` of the Reservation that the read under the lock returned; an error of the builder
-(`_UnknownSuffix`, `ReservationConflict`, a `ValueError`) propagates unchanged, so the view maps it to a form error.
+(`_UnknownSuffix`, `ReservationConflict`, a `ValueError`) propagates unchanged: the view shows the first two as form
+errors and a `ValueError` as a page error.
 A Subnet or a Reservation that is gone, a changed fingerprint and result 3 on `reservation-del` are
 `target-changed`; result 2 is a rejection; any other failure result, result 5, a forward failure or a lost reply is
 `unknown`, with no read after it. The persist step runs after `applied` and `unknown`, and the verification read only
