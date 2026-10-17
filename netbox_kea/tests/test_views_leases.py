@@ -29,6 +29,7 @@ import ipaddress
 import json
 import re
 import time
+from contextlib import contextmanager
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -36,8 +37,11 @@ import requests
 from bs4 import BeautifulSoup
 from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
+from django.db.models.signals import post_save
+from django.test import SimpleTestCase
 from django.urls import reverse
 from django.utils.html import escape
+from extras.models import JournalEntry
 from ipam.models import IPAddress as NbIP
 
 from netbox_kea import constants
@@ -104,6 +108,20 @@ def _assert_lease_read_failed(test, response):
 
 
 _IMPORT_NOT_SENT = "NetBox stopped at an earlier row and did not send this row."
+
+
+@contextmanager
+def _failing_journal(error: Exception):
+    """Make each JournalEntry save raise *error*, as a save signal of another plugin can."""
+
+    def fail(sender, **kwargs):
+        raise error
+
+    post_save.connect(fail, sender=JournalEntry)
+    try:
+        yield
+    finally:
+        post_save.disconnect(fail, sender=JournalEntry)
 
 
 def _import_counts(response) -> dict[str, int]:
@@ -2527,7 +2545,7 @@ class TestBulkLeaseImportView(_ViewTestBase):
         with (
             _lease_stub({"lease4-add": {"result": 0}}),
             patch("extras.models.JournalEntry.objects.create", autospec=True, side_effect=OperationalError("db gone")),
-            self.assertLogs("netbox_kea.views.leases", level="ERROR"),
+            self.assertLogs("netbox_kea.views", level="ERROR"),
         ):
             response = self.client.post(self._url(version=4), self._post(version=4))
         self.assertEqual(response.status_code, 200)
@@ -2797,29 +2815,23 @@ class TestLeaseJournalEntries(_ViewTestBase):
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# _add_lease_journal error handling
+# _lease_journal_comments
 # ---------------------------------------------------------------------------
 
 
-class TestJournalHelperEdgeCases(_ViewTestBase):
-    """Unit tests for _add_lease_journal."""
+class TestJournalHelperEdgeCases(SimpleTestCase):
+    """The journal text of a Lease change."""
 
     def test_lease_journal_multiple_ips(self):
-        """_add_lease_journal with a list of IP addresses uses the 'N lease(s)' branch."""
-        from netbox_kea.views.leases import _add_lease_journal
+        """A list of IP addresses uses the 'N lease(s)' form."""
+        from netbox_kea.views.leases import _lease_journal_comments
 
-        with patch("extras.models.JournalEntry.objects.create", autospec=True) as mock_create:
-            mock_create.return_value = None
-            _add_lease_journal(
-                self.server,
-                self.user,
-                "deleted",
-                ip_addresses=["10.0.0.1", "10.0.0.2"],
-                hw_address="aa:bb:cc:dd:ee:ff",
-                hostname="host1",
-            )
-            call_kwargs = mock_create.call_args[1]
-            self.assertIn("2 lease(s)", call_kwargs["comments"])
+        comments = _lease_journal_comments(
+            "deleted", ["10.0.0.1", "10.0.0.2"], hw_address="aa:bb:cc:dd:ee:ff", hostname="host1"
+        )
+        self.assertEqual(
+            comments, "2 lease(s) deleted: 10.0.0.1, 10.0.0.2; hw-address: aa:bb:cc:dd:ee:ff; hostname: host1"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3636,37 +3648,32 @@ class TestLeaseAddValueError(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# F9: _add_lease_journal bare except narrowing
+# F9: the journal entry of an applied Lease change catches database errors only
 # ---------------------------------------------------------------------------
 
 
 class TestLeaseJournalExceptionNarrowing(_ViewTestBase):
-    """_add_lease_journal except must only catch DB errors, not all exceptions."""
+    """A database error of the journal entry after an applied Lease add does not fail the request."""
 
-    @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
-    def test_database_error_does_not_fail_request(self, mock_journal):
-        """DatabaseError from _add_lease_journal must be caught; the lease is still reported created."""
+    def _post_with_failing_journal(self, error: Exception, address: str, hw_address: str):
+        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+        with _failing_journal(error), _lease_stub(LeaseDaemon(4).responses()):
+            return self.client.post(url, {"ip_address": address, "hw_address": hw_address})
+
+    def test_database_error_does_not_fail_request(self):
         from django.db import DatabaseError
 
-        mock_journal.side_effect = DatabaseError("DB error")
-        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
-        with _lease_stub(LeaseDaemon(4).responses()):
-            response = self.client.post(url, {"ip_address": "10.0.0.55", "hw_address": "aa:bb:cc:00:00:55"})
+        response = self._post_with_failing_journal(DatabaseError("DB error"), "10.0.0.55", "aa:bb:cc:00:00:55")
         self.assertEqual(response.status_code, 302)
-        mock_journal.assert_called_once()
-        self.assertIn("Lease for 10.0.0.55 created.", [str(m) for m in get_messages(response.wsgi_request)])
+        shown = [str(m) for m in get_messages(response.wsgi_request)]
+        self.assertIn("Lease for 10.0.0.55 created.", shown)
+        self.assertIn("Kea applied the change, but NetBox could not write the journal entry; see server logs.", shown)
 
-    @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
-    def test_operational_error_does_not_fail_request(self, mock_journal):
-        """OperationalError from _add_lease_journal must be caught; the lease is still reported created."""
+    def test_operational_error_does_not_fail_request(self):
         from django.db import OperationalError
 
-        mock_journal.side_effect = OperationalError("DB lock")
-        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
-        with _lease_stub(LeaseDaemon(4).responses()):
-            response = self.client.post(url, {"ip_address": "10.0.0.56", "hw_address": "aa:bb:cc:00:00:56"})
+        response = self._post_with_failing_journal(OperationalError("DB lock"), "10.0.0.56", "aa:bb:cc:00:00:56")
         self.assertEqual(response.status_code, 302)
-        mock_journal.assert_called_once()
         self.assertIn("Lease for 10.0.0.56 created.", [str(m) for m in get_messages(response.wsgi_request)])
 
 
@@ -3833,14 +3840,15 @@ class TestLeaseAddSideEffectErrors(_ViewTestBase):
     def _valid_form(self):
         return {"ip_address": "10.0.0.1", "subnet_id": "1", "hw_address": "aa:bb:cc:00:00:01", "valid_lft": "3600"}
 
-    @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
-    def test_journal_db_error_still_succeeds(self, mock_journal):
+    def test_journal_db_error_still_succeeds(self):
         """DatabaseError in journal entry creation still redirects successfully."""
         from django.db import DatabaseError
 
-        mock_journal.side_effect = DatabaseError("DB error")
         subnets = _subnet_list(4, [])
-        with _lease_stub({**LeaseDaemon(4).responses(), "subnet4-list": subnets}):
+        with (
+            _failing_journal(DatabaseError("DB error")),
+            _lease_stub({**LeaseDaemon(4).responses(), "subnet4-list": subnets}),
+        ):
             response = self.client.post(self._url(), self._valid_form(), follow=True)
         self.assertEqual(response.status_code, 200)
 
@@ -4123,14 +4131,12 @@ class TestLeaseDeletePartialFailure(_ViewTestBase):
             ],
         )
 
-    @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
-    def test_journal_database_error_still_completes(self, mock_journal):
+    def test_journal_database_error_still_completes(self):
         """DatabaseError from journal creation must not prevent deletion from completing."""
         from django.db import DatabaseError
 
-        mock_journal.side_effect = DatabaseError("table locked")
         held, selected = _held4("10.0.0.1")
-        with _lease_stub({**held, "lease4-del": {"result": 0}}):
+        with _failing_journal(DatabaseError("table locked")), _lease_stub({**held, "lease4-del": {"result": 0}}):
             response = self.client.post(
                 self._url(),
                 {"pk": selected, "_confirm": "1"},
