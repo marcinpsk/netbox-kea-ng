@@ -67,6 +67,7 @@ from netbox_kea.tests.kea_stub import (
     lease_reply,
     queued,
     record_transport,
+    redirect_to_netrc_host,
     stub_kea,
     typed_lease,
 )
@@ -203,6 +204,15 @@ class TestKeaClientTLSFileError(TestCase):
 
 class TestKeaClientRequestEncodingError(TestCase):
     """Credentials that requests cannot encode are a request error of the client, and nothing is sent."""
+
+    def test_an_encode_failure_after_the_send_is_not_a_never_sent_error(self):
+        # requests prepares the redirect after the send, and fails to encode its .netrc credentials.
+        client = kea_client(url="http://kea.example.invalid/", username="kea", password="ascii")
+        with redirect_to_netrc_host() as sent, self.assertRaises(requests.RequestException) as caught:
+            client.command(KeaCommand.VERSION_GET, None)
+        self.assertEqual(len(sent), 1)
+        self.assertNotIsInstance(caught.exception, KeaRequestEncodingError)
+        self.assertIs(type(caught.exception.__cause__), UnicodeEncodeError)
 
     def test_a_password_that_is_not_latin_1_is_a_request_error(self):
         # No stub: requests encodes the Basic Auth header before it opens a connection.

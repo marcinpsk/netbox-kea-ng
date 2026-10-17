@@ -282,8 +282,11 @@ URL request
   `REQUESTS_CA_BUNDLE` environment variable cannot replace a CA file or `ssl_verify=False`. A TLS file
   that requests cannot find raises `KeaTLSFileError`, a `requests.RequestException`, so each
   handler of request errors also handles it. Basic Auth credentials that are not Latin-1 text raise
-  `KeaRequestEncodingError`, also a `requests.RequestException`. In both cases nothing was sent, and
-  `change_outcome` rejects a change as `invalid-client-configuration`. A client is not thread-safe, so each worker
+  `KeaRequestEncodingError`, also a `requests.RequestException`, when `command()` prepares the request before the
+  send. In both cases nothing was sent, and `change_outcome` rejects a change as `invalid-client-configuration`.
+  requests can also fail to encode credentials after the send: it prepares the next request of a redirect reply
+  (from `.netrc`) also when it does not follow it. That failure is a plain `RequestException`, so a change is
+  `unknown`. A client is not thread-safe, so each worker
   thread builds its own.
   **`send_service`**: `command()` sends the target as the `service`
   argument only when the server is fronted by a Control Agent

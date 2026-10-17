@@ -16,7 +16,7 @@ from django.utils.html import escape
 from netbox_kea.models import Server
 from netbox_kea.views.notices import HEADLINES
 
-from .kea_stub import LeaseDaemon, stub_kea
+from .kea_stub import LeaseDaemon, redirect_to_netrc_host, stub_kea
 from .test_lease_actions import _address4, _inputs
 from .utils import INVALID_SERVER_SETTINGS, _ViewTestBase, save_key_without_certificate
 
@@ -53,6 +53,14 @@ class CredentialEncodingTest(_ViewTestBase):
                 response = self.client.get(url)
                 self.assertEqual(response.status_code, 302)
                 self.assertEqual(_messages(response), [HEADLINES[kind]])
+
+    def test_an_encode_failure_after_the_send_is_the_transport_notice_of_the_read(self):
+        Server.objects.filter(pk=self.server.pk).update(ca_url="http://kea.example.invalid/", ca_password="ascii")
+        with redirect_to_netrc_host() as sent:
+            response = self.client.get(self._url("server_lease4_edit", "192.0.2.40"))
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(_messages(response), [HEADLINES["lease_target"]])
 
     def test_the_reservation_export_is_a_502_reply_with_the_reservation_notice(self):
         response = self.client.get(self._url("server_reservations4"), {"export": "yaml"})
