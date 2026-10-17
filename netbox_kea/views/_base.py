@@ -23,7 +23,7 @@ from netbox.tables import BaseTable
 
 from .. import display_cache
 from ..change_outcome import ChangeRejected, RejectionReason
-from ..config_write import ConfigChangeOutcome
+from ..config_write import ConfigChangeOutcome, ReservationChangeOutcome
 from ..constants import Family
 from ..dhcp_options import shown_options
 from ..kea import DaemonStatus, DaemonVersion, KeaClient, KeaCommand, KeaException, SubnetUtilization, close_quietly
@@ -53,9 +53,9 @@ RowT = TypeVar("RowT")
 _POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
 
 _UNCONFIRMED = "Kea did not confirm the change. Check the server configuration before retrying."
-_UNCONFIRMED_RUNTIME = (
-    "Kea did not confirm the change. Check the Server before you try again. NetBox recorded nothing for this change."
-)
+_RECORDED_NOTHING = "NetBox recorded nothing for this change."
+_UNCONFIRMED_RUNTIME = f"Kea did not confirm the change. Check the Server before you try again. {_RECORDED_NOTHING}"
+_NOT_SAVED = "It is live, but it may not survive a Kea restart, because Kea did not save it to disk."
 _REJECTED: dict[RejectionReason, str] = {
     "kea-rejected": "Kea rejected the change.",
     "config-test-rejected": "Kea's config-test rejected the change, so it was not applied.",
@@ -173,9 +173,9 @@ def _run_change(
         _unconfirmed_message(outcome).show(request, subject)
         return outcome
     text = confirmed if isinstance(confirmed, str) else confirmed(outcome)
-    if isinstance(outcome, ConfigChangeOutcome) and outcome.persistence == "failed":
-        restart = "It is live, but it may not survive a Kea restart, because Kea did not save it to disk."
-        messages.warning(request, " ".join((text, restart, *outcome.diagnostics)))
+    not_saved = _persistence_failure(outcome)
+    if not_saved is not None:
+        messages.warning(request, f"{text} {not_saved}")
     elif applied_warning:
         messages.warning(request, text)
     else:
@@ -203,14 +203,17 @@ class ChangeLoop(Generic[RowT, OutcomeT]):
     applied: list[tuple[RowT, OutcomeT]] = field(default_factory=list)
     rejected: list[tuple[RowT, ChangeMessage]] = field(default_factory=list)
     unknown: tuple[RowT, ChangeMessage] | None = None
-    #: The row where the loop stopped: the unknown row, or a row whose client could not be built.
+    #: The row where the loop stopped: the unknown row, a rejected row that stops the loop, or a row whose client
+    #: could not be built.
     stopped_at: RowT | None = None
     #: The rows after *stopped_at*, which the loop did not send.
     not_sent: list[RowT] = field(default_factory=list)
 
 
-def _run_change_loop(rows: Sequence[RowT], change: Callable[[RowT], OutcomeT]) -> ChangeLoop[RowT, OutcomeT]:
-    """Send one change for each of *rows*. A rejected row does not stop the loop.
+def _run_change_loop(
+    rows: Sequence[RowT], change: Callable[[RowT], OutcomeT], *, stop_on_rejection: bool = False
+) -> ChangeLoop[RowT, OutcomeT]:
+    """Send one change for each of *rows*. A rejected row does not stop the loop, unless *stop_on_rejection* is true.
 
     The loop stops at the first unknown row, and at the first row whose client could not be built, because every
     later row would fail the same way.
@@ -221,7 +224,7 @@ def _run_change_loop(rows: Sequence[RowT], change: Callable[[RowT], OutcomeT]) -
             outcome = change(row)
         except ChangeRejected as rejection:
             loop.rejected.append((row, _rejection_message(rejection)))
-            if rejection.reason != "invalid-client-configuration":
+            if not stop_on_rejection and rejection.reason != "invalid-client-configuration":
                 continue
         else:
             if outcome.application == "applied":
@@ -245,8 +248,16 @@ def _unconfirmed_message(outcome: ConfigChangeOutcome | RuntimeChangeOutcome) ->
         return ChangeMessage(" ".join((_UNCONFIRMED_RUNTIME, *outcome.diagnostics)), warning=True)
     # Never claim the change is live: the disk warning names the running configuration only.
     not_saved = ("Kea also could not save its running configuration to disk.",)
-    parts = (_UNCONFIRMED, *(not_saved if outcome.persistence == "failed" else ()), *outcome.diagnostics)
+    recorded = (_RECORDED_NOTHING,) if isinstance(outcome, ReservationChangeOutcome) else ()
+    parts = (_UNCONFIRMED, *recorded, *(not_saved if outcome.persistence == "failed" else ()), *outcome.diagnostics)
     return ChangeMessage(" ".join(parts), warning=True)
+
+
+def _persistence_failure(outcome: ConfigChangeOutcome | RuntimeChangeOutcome) -> str | None:
+    """Return the warning for an applied change that Kea did not save to disk, or None when nothing failed."""
+    if isinstance(outcome, ConfigChangeOutcome) and outcome.persistence == "failed":
+        return " ".join((_NOT_SAVED, *outcome.diagnostics))
+    return None
 
 
 def _journal_applied(request: HttpRequest, server: Server, comments: str) -> None:

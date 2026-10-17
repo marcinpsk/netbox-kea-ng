@@ -1089,9 +1089,10 @@ rules:
       Snapshot to notice(), or run a raised Reservation or Lease read through load_snapshot(), in
       views/notices.py, and show the Notice through show_notices(), a template or ServerNotices. A view
       that picks a level by hand codes the rule again, and the copies drift.
-      Exempt: the change outcome in _run_change(), _rejection_message() and _unconfirmed_message(), the
-      Reservation search that builds its Snapshot in _read_reservations(), the lease export refusal in
-      _incomplete_export_message(), and a function that parses a Reservation Transfer Document.
+      Exempt: the change outcome in _run_change(), _rejection_message(), _unconfirmed_message() and
+      _persistence_failure(), the Reservation search that builds its Snapshot in _read_reservations(), the
+      lease export refusal in _incomplete_export_message(), and a function that parses a Reservation
+      Transfer Document.
       Limits: an alias (a messages constant imported by name, or the diagnostics of a variable passed
       to a helper outside views/) and templates are not seen. A messages.error() or messages.warning()
       call is not seen either, because non-Snapshot messages use these calls correctly.
@@ -1119,6 +1120,9 @@ rules:
               ...
       - pattern-not-inside: |
           def _unconfirmed_message(...):
+              ...
+      - pattern-not-inside: |
+          def _persistence_failure(...):
               ...
       # It builds the Reservation search Snapshot from its pages; the caller loads it through load_snapshot().
       - pattern-not-inside: |

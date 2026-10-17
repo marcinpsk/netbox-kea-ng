@@ -34,6 +34,7 @@ from netbox_kea.kea import (
     SubnetFields,
 )
 from netbox_kea.pools import parse_pool
+from netbox_kea.reservations import InSubnetReservationScope, IPv4Reservation, ReservationIdentity
 from netbox_kea.subnet_catalogue import CatalogueUnavailable, SharedNetworkMembership, SubnetIdentityConflict
 
 from .kea_stub import (
@@ -2383,6 +2384,59 @@ class LockTests(TransactionTestCase):
         self.assertEqual(
             kea.commands(),
             ["network4-get", "network4-add", *_PERSIST, "subnet4-list", "config-get", "subnet4-del", *_PERSIST],
+        )
+
+    def test_a_reservation_write_waits_for_another_change_and_reads_its_scope_only_under_the_lock(self):
+        """A Reservation write is a Configuration Change, so it takes the same lock (ADR 0012)."""
+        catalogue = _catalogue_responses_for_subnets(4, [{"id": 20, "subnet": "198.18.0.0/24"}])
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        waiter_result = {}
+
+        def build(subnet, _catalogue):
+            return IPv4Reservation(
+                scope=InSubnetReservationScope(subnet.identity),
+                identity=ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:ff"),
+                addresses=(ipaddress.IPv4Address("198.18.0.20"),),
+            )
+
+        def run_add():
+            try:
+                waiter_result["add"] = config_write.add_reservation(self.same_url, 4, "198.18.0.0/24", build)
+            finally:
+                connection.close()
+
+        responses = {
+            **self._responses(),
+            "subnet4-list": catalogue["subnet4-list"],
+            "config-get": catalogue["config-get"],
+            "reservation-add": _OK,
+            "reservation-get": {"result": 0, "arguments": raw},
+        }
+        with stub_kea(responses) as kea:
+            holder = self._hold()
+            waiter = threading.Thread(target=run_add, name="waiter", daemon=True)
+            waiter.start()
+            self._wait_until_a_lock_waits()
+            self.assertNotIn("subnet4-list", kea.commands())
+            self.release.set()
+            holder.join(timeout=30)
+            waiter.join(timeout=30)
+        outcome = waiter_result["add"]
+        self.assertEqual(
+            (outcome.application, outcome.persistence, outcome.verification), ("applied", "persisted", "verified")
+        )
+        self.assertEqual(
+            kea.commands(),
+            [
+                "network4-get",
+                "network4-add",
+                *_PERSIST,
+                "subnet4-list",
+                "config-get",
+                "reservation-add",
+                *_PERSIST,
+                "reservation-get",
+            ],
         )
 
     def test_a_second_operation_on_the_same_url_waits_for_the_first(self):
