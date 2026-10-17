@@ -375,7 +375,7 @@ class TestKeaException(TestCase):
 
 
 class TestKeaErrorMessage(TestCase):
-    """kea_error_message() gives fixed guidance for result 2 and 128, and Kea's own text for any other result."""
+    """kea_error_message() preserves Kea's reply and adds guidance for result 2 and 128."""
 
     def _message(self, result_code: int, text: str | None = "some error") -> str:
         reply: KeaResponse = {"result": result_code, "arguments": None, "text": text}
@@ -385,13 +385,15 @@ class TestKeaErrorMessage(TestCase):
         self.assertEqual(
             self._message(2, "'reservation-add' command not supported."),
             "Kea does not support this command. "
-            "The required hook library may not be loaded, for example host_cmds, lease_cmds or subnet_cmds.",
+            "The required hook library may not be loaded, for example host_cmds, lease_cmds or subnet_cmds. "
+            "Kea replied: 'reservation-add' command not supported.",
         )
 
     def test_result_128_names_the_daemon(self):
         self.assertEqual(
             self._message(128),
-            "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable.",
+            "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable. "
+            "Kea replied: some error",
         )
 
     def test_any_other_result_shows_kea_text(self):
@@ -406,8 +408,10 @@ class TestKeaErrorMessage(TestCase):
                 self.assertEqual(self._message(code, text), f"Kea replied: {text}")
 
     def test_a_reply_without_text_shows_its_result_code(self):
-        self.assertEqual(self._message(1, None), "Kea replied: result 1")
-        self.assertEqual(self._message(1, ""), "Kea replied: result 1")
+        for code in (1, 2, 128):
+            for text in (None, ""):
+                with self.subTest(code=code, text=text):
+                    self.assertTrue(self._message(code, text).endswith(f"Kea replied: result {code}"))
 
 
 class TestCheckResponse(TestCase):

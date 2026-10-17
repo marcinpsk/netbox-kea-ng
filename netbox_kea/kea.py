@@ -2283,14 +2283,18 @@ class KeaException(Exception):
 
 
 def kea_error_message(exc: "KeaException") -> str:
-    """Return the operator message for a failure result of Kea: fixed guidance for result 2 and 128, else Kea's text."""
+    """Return Kea's failure reply with operator guidance for result 2 and 128."""
     if exc.unsupported_command:
         return (
             "Kea does not support this command. "
-            "The required hook library may not be loaded, for example host_cmds, lease_cmds or subnet_cmds."
+            "The required hook library may not be loaded, for example host_cmds, lease_cmds or subnet_cmds. "
+            f"Kea replied: {exc.reply_text}"
         )
     if exc.daemon_unreachable:
-        return "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable."
+        return (
+            "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable. "
+            f"Kea replied: {exc.reply_text}"
+        )
     return f"Kea replied: {exc.reply_text}"
 
 
