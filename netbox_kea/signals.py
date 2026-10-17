@@ -23,7 +23,9 @@ Signals
 -------
 lease_added
     Fired when Kea confirms a lease that the plugin UI added, once for each created row of a
-    lease CSV import. A CSV import stops at the first row that Kea did not confirm. kwargs: ``server``, ``creation`` (the ``LeaseRequest`` that Kea confirmed),
+    lease CSV import. A rejected row does not stop a CSV import: it stops at a row whose outcome is
+    unknown, or whose client could not be built.
+    kwargs: ``server``, ``creation`` (the ``LeaseRequest`` that Kea confirmed),
     ``lease`` (the ``Lease`` that a fresh read observed after the creation, or ``None``
     when that read failed, found no lease, found a malformed one, or found one whose client
     binding, Subnet or hostname differs from the request; a CSV import reads nothing back and
