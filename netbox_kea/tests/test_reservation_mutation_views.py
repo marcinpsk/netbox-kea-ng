@@ -328,6 +328,12 @@ class TestReservationMutationViews(_ViewTestBase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("reservation-add"), 1)
+        from django.contrib.messages import get_messages
+
+        self.assertIn(
+            "Kea applied the change, but a receiver of the reservation_created signal failed; see server logs.",
+            [str(message) for message in get_messages(response.wsgi_request)],
+        )
         self.assertEqual(len(received), 1)
         self.assertEqual(received[0]["server"], self.server)
         self.assertIs(received[0]["request"], response.wsgi_request)

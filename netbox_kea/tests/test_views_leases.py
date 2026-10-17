@@ -3676,6 +3676,15 @@ class TestLeaseJournalExceptionNarrowing(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("Lease for 10.0.0.56 created.", [str(m) for m in get_messages(response.wsgi_request)])
 
+    def test_validation_error_does_not_fail_request(self):
+        from django.core.exceptions import ValidationError
+
+        response = self._post_with_failing_journal(ValidationError("refused"), "10.0.0.57", "aa:bb:cc:00:00:57")
+        self.assertEqual(response.status_code, 302)
+        shown = [str(m) for m in get_messages(response.wsgi_request)]
+        self.assertIn("Lease for 10.0.0.57 created.", shown)
+        self.assertIn("Kea applied the change, but NetBox could not write the journal entry; see server logs.", shown)
+
 
 # ---------------------------------------------------------------------------
 # Coverage: get_export() error paths
