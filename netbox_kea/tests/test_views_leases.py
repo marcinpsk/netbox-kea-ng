@@ -2639,6 +2639,23 @@ class TestBulkLeaseImportView(_ViewTestBase):
         self.assertEqual({call["server"] for call in received}, {self.server})
         self.assertEqual({call["creation"].hostname for call in received}, {"h1", "h3"})
 
+    def test_each_created_row_sends_lease_added_before_the_next_row_goes_to_kea(self) -> None:
+        sent_before_signal: list[int] = []
+        csv_bytes = self._csv4(
+            rows=["10.0.0.10,aa:bb:cc:dd:ee:01,1,3600,h1\n", "10.0.0.11,aa:bb:cc:dd:ee:02,1,3600,h2\n"]
+        )
+        with _lease_stub(LeaseDaemon(4).responses()) as kea:
+
+            def receive(sender, **kwargs):
+                sent_before_signal.append(kea.commands().count("lease4-add"))
+
+            lease_added.connect(receive)
+            self.addCleanup(lease_added.disconnect, receive)
+            response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
+
+        self.assertEqual(_import_counts(response)["created"], 2)
+        self.assertEqual(sent_before_signal, [1, 2])
+
     def test_an_empty_kea_reply_creates_no_row_and_sends_no_signal(self) -> None:
         received: list[dict] = []
 
