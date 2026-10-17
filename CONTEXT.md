@@ -35,9 +35,36 @@ _Avoid_: Network, subnet group
 A vendor-neutral, family-specific DHCP selection domain for Subnets on one client attachment or relay-selected link. Kea Shared Network, ISC DHCP shared-network, Microsoft Superscope, Cisco Network or Link, and Infoblox Shared Network are vendor implementations. A DHCP Link does not require an aggregate Prefix.
 _Avoid_: Aggregate Prefix, Shared Prefix
 
+**DHCP Import**:
+The one-way copy of one Server's Kea configuration and Reservations into the NetBox DHCP plugin. It takes only
+Declared Values. It writes each fact for which the installed DHCP plugin has the DHCP Plugin Capability, and reports
+every other fact as unsupported or not imported.
+_Avoid_: DHCP plugin sync, export to the DHCP plugin
+
+**DHCP Plugin Capability**:
+Whether the installed DHCP plugin can hold one kind of Kea fact, such as a field, a choice, a value range, or a
+uniqueness scope. A fact without its capability is unsupported: the DHCP Import reports it and writes it as soon as
+an installed plugin release gains the capability.
+_Avoid_: Plugin gap, plugin version check
+
+**Stale DHCP Import Object**:
+A NetBox DHCP object with a DHCP Import Mapping whose Kea source a Complete observation of the same kind no longer
+reports. The DHCP Import removes it. An Incomplete observation cannot make an object stale. A Pool whose range
+changes in Kea is a different Pool, so the old one becomes stale.
+_Avoid_: Orphan, orphaned Subnet
+
+**Declared Value**:
+A value that a Kea object sets for itself, as opposed to one it inherits from its Shared Network or the global
+configuration. Subnet Settings are effective values and do not say which values are declared.
+_Avoid_: Override, explicit setting
+
 **DHCP Import Mapping**:
-An association between a Kea source object and its imported NetBox DHCP object. The source identity includes
-the Server, address family, and either a Kea subnet ID or a Reservation Identity in Global scope.
+An association between a Kea source object and its imported NetBox DHCP object. Every top-level object of a DHCP
+Import has one: the global configuration of one address family, a Shared Network, a Subnet, a Pool, a
+delegated-prefix Pool, a Reservation, a client class, and a custom Option Definition. The source identity includes
+the Server, address family, and the Kea identity of the object: a Shared Network name, a Kea subnet ID, a Pool within
+its Subnet, a Reservation Identity, a client class name, or an Option Definition's space and code. A DHCP Option is identified within the object that
+assigns it.
 _Avoid_: DHCP Link, ownership link
 
 **Aggregate Prefix**:
