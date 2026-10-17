@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""Configuration Changes to a Server Configuration, and their typed outcome (ADR 0005).
+"""Configuration Changes to a Server Configuration, and their typed outcome (ADR 0005, ADR 0012).
 
 An operation returns a ``ConfigChangeOutcome`` when the change is live or can be live, and raises
-``ChangeRejected`` when it is not live as far as NetBox can tell.
+``ChangeRejected`` when it is not live as far as NetBox can tell. Reservation writes are Configuration Changes too.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from django.db import DatabaseError, OperationalError, connection
 
@@ -24,6 +24,7 @@ from .constants import Family, IPNetworkValue, Persistence
 from .kea import (
     CandidateConfiguration,
     CandidateTargetMissing,
+    FreshReservation,
     KeaClient,
     KeaException,
     MalformedConfiguration,
@@ -35,7 +36,17 @@ from .kea import (
     subnet_network,
 )
 from .pools import Pool
+from .reservations import (
+    InSubnetReservationScope,
+    Reservation,
+    ReservationChange,
+    ReservationIdentity,
+    apply_reservation_change,
+    reservation_fingerprint,
+    reservation_matches_intent,
+)
 from .subnet_catalogue import (
+    CatalogueSnapshot,
     CatalogueUnavailable,
     MutationScope,
     NewSubnetIdentity,
@@ -66,6 +77,7 @@ _LOCK_CLASS = _int4("netbox_kea.config_write")
 
 SUBNET_LIST_UNCONFIRMED = "NetBox could not confirm Kea's Subnet list, so it did not send the change. Try again later."
 _CONFIG_TEST_UNUSABLE = "Kea did not return a usable reply to config-test."
+_RESERVATION_UPDATE_UNUSABLE = "NetBox could not build the update from the Reservation that Kea returned."
 # A live value that the edit form cannot show, so the operator cannot have seen it.
 _UNSHOWABLE = "has a live value that the edit form cannot show."
 
@@ -82,6 +94,25 @@ class ConfigChangeOutcome:
     application: Application
     persistence: Persistence
     diagnostics: tuple[str, ...] = ()
+
+
+#: Whether a fresh read after an applied Reservation change shows what the change sent. "not-run": not applied.
+Verification = Literal["verified", "failed", "not-run"]
+
+
+@dataclass(frozen=True)
+class ReservationChangeOutcome(ConfigChangeOutcome):
+    """The outcome of a Reservation add, edit or delete (ADR 0012).
+
+    *previous* is the Reservation that the read before the change observed, and *intended* the Reservation that the
+    change sent; an add has no *previous* and a delete no *intended*. *catalogue* is the Subnet Catalogue in which the
+    scope read verified the Subnet.
+    """
+
+    previous: Reservation | None = field(kw_only=True)
+    intended: Reservation | None = field(kw_only=True)
+    verification: Verification = field(kw_only=True)
+    catalogue: CatalogueSnapshot = field(kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -492,6 +523,165 @@ def _persisted(
     """Run the persist step and return the outcome of the change."""
     persisted = client.persist(family)
     return ConfigChangeOutcome(application, persisted.persistence, diagnostics + persisted.diagnostics)
+
+
+def add_reservation(
+    server: Server,
+    family: Family,
+    subnet_cidr: str,
+    build: Callable[[VerifiedSubnet, CatalogueSnapshot], Reservation],
+) -> ReservationChangeOutcome:
+    """Create the Reservation that *build* returns for the Subnet *subnet_cidr*.
+
+    *build* gets the Verified Subnet and the Catalogue of the scope read under the lock. An error that it raises
+    propagates unchanged.
+    """
+    with build_client(server, family) as client, _serialized(client, family):
+        subnet, catalogue = _reservation_subnet(
+            server, family, lambda scope: scope.find_by_cidr(subnet_cidr), f"Subnet {subnet_cidr}"
+        )
+        reservation = build(subnet, catalogue)
+        if reservation.family != family or reservation.scope != InSubnetReservationScope(subnet.identity):
+            raise ValueError("The Reservation must belong to the Subnet that the scope read verified.")
+        application, diagnostics = mutate(
+            client, family, lambda: client.reservation_add(reservation), on_failure="unknown"
+        )
+        return _reservation_outcome(client, family, application, diagnostics, catalogue, None, reservation)
+
+
+def edit_reservation(
+    server: Server,
+    family: Family,
+    subnet_id: int,
+    identity: ReservationIdentity,
+    expected_fingerprint: str,
+    build: Callable[[Reservation, CatalogueSnapshot], ReservationChange],
+) -> ReservationChangeOutcome:
+    """Apply the change that *build* returns to the Reservation with *identity* in the Subnet with *subnet_id*.
+
+    The operation acts only while the managed facts of the Reservation have *expected_fingerprint*: the Reservation
+    that the operator saw. *build* gets the Reservation and the Catalogue that the reads under the lock returned. An
+    error that it raises propagates unchanged. The update keeps each Kea field that NetBox does not manage.
+    """
+    with build_client(server, family) as client, _serialized(client, family):
+        subnet, catalogue = _reservation_subnet(
+            server, family, lambda scope: scope.find_by_id(subnet_id), f"Subnet {subnet_id}"
+        )
+        fresh = _reservation_now(client, family, catalogue, subnet, identity, "The edit did not create it again.")
+        if reservation_fingerprint(fresh.reservation) != expected_fingerprint:
+            raise ChangeRejected(
+                "target-changed", ("It changed after the edit form was opened. Reload the form and try again.",)
+            )
+        change = build(fresh.reservation, catalogue)
+        intended, record = before_change(lambda: _updated(fresh, change), _RESERVATION_UPDATE_UNUSABLE)
+        application, diagnostics = mutate(
+            client, family, lambda: client.reservation_update(family, record), on_failure="unknown"
+        )
+        return _reservation_outcome(client, family, application, diagnostics, catalogue, fresh.reservation, intended)
+
+
+def delete_reservation(
+    server: Server, family: Family, subnet_id: int, identity: ReservationIdentity
+) -> ReservationChangeOutcome:
+    """Delete the Reservation with *identity* in the Subnet with *subnet_id*."""
+    with build_client(server, family) as client, _serialized(client, family):
+        subnet, catalogue = _reservation_subnet(
+            server, family, lambda scope: scope.find_by_id(subnet_id), f"Subnet {subnet_id}"
+        )
+        current = _reservation_now(client, family, catalogue, subnet, identity).reservation
+        scope = InSubnetReservationScope(subnet.identity)
+
+        def send() -> None:
+            if not client.reservation_del(family, scope, identity):
+                raise ChangeRejected("target-changed", ("Kea reports that no host data source holds it.",))
+
+        application, diagnostics = mutate(client, family, send, on_failure="unknown")
+        return _reservation_outcome(client, family, application, diagnostics, catalogue, current, None)
+
+
+def _reservation_subnet(
+    server: Server, family: Family, find: Callable[[MutationScope], VerifiedSubnet | None], shown: str
+) -> tuple[VerifiedSubnet, CatalogueSnapshot]:
+    """Return the Verified Subnet that *find* returns from a live scope, and the Catalogue of that scope."""
+    with mutation(server, family) as scope:
+        try:
+            subnet = find(scope)
+        except CatalogueUnavailable as exc:
+            raise ChangeRejected("not-sent", (SUBNET_LIST_UNCONFIRMED,)) from exc
+        catalogue = scope.snapshot
+    if subnet is None or catalogue is None:
+        raise ChangeRejected(
+            "target-changed", (f"{shown} is not in the Subnet list of Kea. Reload the page and try again.",)
+        )
+    return subnet, catalogue
+
+
+def _reservation_now(
+    client: KeaClient,
+    family: Family,
+    catalogue: CatalogueSnapshot,
+    subnet: VerifiedSubnet,
+    identity: ReservationIdentity,
+    *not_changed: str,
+) -> FreshReservation:
+    """Read the Reservation with *identity* in *subnet* before the change. A Reservation that is gone rejects it."""
+    scope = InSubnetReservationScope(subnet.identity)
+    fresh = read_before(lambda: client.reservation_get_fresh(family, catalogue, scope, identity))
+    if fresh is None:
+        raise ChangeRejected("target-changed", ("Kea no longer holds it.", *not_changed))
+    return fresh
+
+
+def _updated(fresh: FreshReservation, change: ReservationChange) -> tuple[Reservation, dict[str, Any]]:
+    """Return the Reservation that *change* makes of *fresh*, and the record that the update sends."""
+    intended = apply_reservation_change(fresh.reservation, change)
+    return intended, fresh.updated(intended)
+
+
+def _reservation_outcome(
+    client: KeaClient,
+    family: Family,
+    application: Application,
+    diagnostics: tuple[str, ...],
+    catalogue: CatalogueSnapshot,
+    previous: Reservation | None,
+    intended: Reservation | None,
+) -> ReservationChangeOutcome:
+    """Run the persist step, and the verification read after an applied change. The caller holds the lock."""
+    persisted = client.persist(family)
+    verification: Verification = "not-run"
+    if application == "applied":
+        verification = _verified(client, family, catalogue, previous, intended)
+    return ReservationChangeOutcome(
+        application,
+        persisted.persistence,
+        diagnostics + persisted.diagnostics,
+        previous=previous,
+        intended=intended,
+        verification=verification,
+        catalogue=catalogue,
+    )
+
+
+def _verified(
+    client: KeaClient,
+    family: Family,
+    catalogue: CatalogueSnapshot,
+    previous: Reservation | None,
+    intended: Reservation | None,
+) -> Verification:
+    """Read the Reservation again and compare it with *intended*. A delete (*intended* None) expects no Reservation."""
+    target = intended if intended is not None else previous
+    if target is None:
+        raise ValueError("A Reservation change needs the Reservation before or after it.")
+    try:
+        observed = client.reservation_by_identity(family, catalogue, target.scope, target.identity)
+    except (KeaException, OSError, ValueError, RuntimeError):
+        logger.warning("Could not verify an applied Reservation change", exc_info=True)
+        return "failed"
+    if observed is None or intended is None:
+        return "verified" if observed is None and intended is None else "failed"
+    return "verified" if reservation_matches_intent(observed, intended) else "failed"
 
 
 def set_subnet_options(

@@ -3,6 +3,7 @@
 # SPDX-FileCopyrightText: 2026 Andrew Backeby <andrew@backeby.eu>
 # SPDX-License-Identifier: Apache-2.0
 import base64
+import dataclasses
 import ipaddress
 import itertools
 import json
@@ -64,21 +65,15 @@ from .reservations import (
     InSubnetReservationScope,
     MalformedReservation,
     Reservation,
-    ReservationChange,
-    ReservationConflict,
     ReservationDiagnostic,
     ReservationIdentity,
-    ReservationMutationResult,
     ReservationScope,
     ReservationSnapshot,
     _exact_reservation,
     _option_data,
     _parse_reservation_page,
     _reservation_to_raw,
-    apply_reservation_change,
-    reservation_fingerprint,
     reservation_identifier_types,
-    reservation_matches_intent,
 )
 from .subnet_settings import setting_key
 
@@ -291,6 +286,55 @@ def _merge_reservation_options(
         merged_option.update(_option_data(intended_option))
         merged_options.append(merged_option)
     return merged_options
+
+
+# The keys of a raw Reservation that NetBox manages. An update replaces them and keeps every other key.
+_MANAGED_RESERVATION_KEYS = frozenset(
+    {
+        "subnet-id",
+        "hw-address",
+        "duid",
+        "circuit-id",
+        "client-id",
+        "flex-id",
+        "remote-id",
+        "ip-address",
+        "ip-addresses",
+        "prefixes",
+        "hostname",
+        "option-data",
+    }
+)
+
+
+@dataclass(frozen=True)
+class FreshReservation:
+    """The Reservation that a fresh read before a change observed, and the raw record that it came from."""
+
+    reservation: Reservation
+    raw: dict[str, Any] = dataclasses.field(repr=False, compare=False)
+
+    def updated(self, intended: Reservation) -> dict[str, Any]:
+        """Return the ``reservation-update`` record: *intended* over the raw record, with each unmanaged key kept.
+
+        Raises:
+            ValueError: If *intended* has another Scope or Identity.
+            MalformedReservation: If the raw record holds DHCP Options that are not valid.
+
+        """
+        if intended.scope != self.reservation.scope or intended.identity != self.reservation.identity:
+            raise ValueError("An update cannot change the Scope or the Identity of a Reservation.")
+        raw_options = self.raw.get("option-data", [])
+        if not isinstance(raw_options, list) or any(not isinstance(option, dict) for option in raw_options):
+            raise MalformedReservation("invalid-options", "The Reservation contains invalid DHCP Options.")
+        serialized = _reservation_to_raw(intended)
+        if intended.options:
+            serialized["option-data"] = _merge_reservation_options(
+                raw_options, self.reservation.options, intended.options
+            )
+        merged = {key: value for key, value in self.raw.items() if key not in _MANAGED_RESERVATION_KEYS}
+        merged.update(serialized)
+        return merged
 
 
 class KeaResponse(TypedDict):
@@ -1079,8 +1123,10 @@ class KeaClient:
         except Exception:
             logger.exception("The display cache rotation %s Kea command %s failed", when, command.value)
 
-    def _config_mutation_command(self, command: KeaCommand, family: Family, arguments: dict[str, Any]) -> None:
-        """Send one live configuration mutation between configuration notifications, and require one success reply."""
+    def _config_mutation_command(
+        self, command: KeaCommand, family: Family, arguments: dict[str, Any], ok_codes: Sequence[int] = (0,)
+    ) -> KeaResponse:
+        """Send one live configuration mutation between configuration notifications, and return its one reply."""
         self._refuse(command)
         self._notify_write(command, family, "before", configuration=True)
         try:
@@ -1088,7 +1134,7 @@ class KeaClient:
         finally:
             # Kea can apply a change whose reply is lost, so a read during the request must not stay cached.
             self._notify_write(command, family, "after", configuration=True)
-        _one_reply(command, family, response)
+        return _one_reply(command, family, response, ok_codes)
 
     def close(self) -> None:
         """Close the underlying requests.Session and release connection resources."""
@@ -1217,6 +1263,25 @@ class KeaClient:
         identity: ReservationIdentity,
     ) -> Reservation | None:
         """Return one exact typed Reservation Identity target."""
+        fresh = self.reservation_get_fresh(version, catalogue, scope, identity)
+        return None if fresh is None else fresh.reservation
+
+    def reservation_get_fresh(
+        self,
+        version: Family,
+        catalogue,
+        scope: ReservationScope,
+        identity: ReservationIdentity,
+    ) -> "FreshReservation | None":
+        """Read one exact Reservation, with the raw record that an update starts from. None: Kea does not hold it.
+
+        Raises:
+            ValueError: If *version* or the identifier type is not valid.
+            KeaException: If Kea returns a failure result other than "not found".
+            MalformedReservation: If Kea returns a record that does not match *scope* and *identity*.
+            RuntimeError: If the reply is malformed.
+
+        """
         if version not in (4, 6):
             raise ValueError(f"version must be 4 or 6, got {version!r}")
         if identity.identifier_type not in reservation_identifier_types(version):
@@ -1230,7 +1295,7 @@ class KeaClient:
                 "target-mismatch",
                 "Kea returned a Reservation that does not match the exact target.",
             )
-        return reservation
+        return FreshReservation(reservation, raw)
 
     def _reservation_raw_by_identity(
         self,
@@ -1416,136 +1481,46 @@ class KeaClient:
             read_started=started,
         )
 
-    def _reservation_mutation_command(self, command: KeaCommand, version: Family, arguments: dict[str, Any]) -> None:
-        """Apply one Reservation command and require one success reply."""
-        _one_reply(command, version, self.command(command, version, arguments=arguments, check=None))
+    def reservation_add(self, reservation: Reservation) -> None:
+        """Send one ``reservation-add`` of the In-Subnet *reservation*. It does not persist.
 
-    def _verify_reservation(
-        self,
-        intended: Reservation | None,
-        target: Reservation,
-        catalogue,
-    ) -> Literal["verified", "failed"]:
-        """Refetch one mutation target and compare its managed typed facts."""
-        try:
-            observed = self.reservation_by_identity(
-                target.family,
-                catalogue,
-                target.scope,
-                target.identity,
-            )
-        except (KeaException, MalformedReservation, requests.RequestException, RuntimeError, ValueError):
-            logger.warning("Could not verify a confirmed Reservation mutation", exc_info=True)
-            return "failed"
-        if observed is None or intended is None:
-            return "verified" if observed is intended else "failed"
-        return "verified" if reservation_matches_intent(observed, intended) else "failed"
+        Raises:
+            ValueError: If *reservation* is a Global Reservation.
+            KeaException: If Kea returns a failure result.
+            MalformedReply: If the reply does not hold exactly one result.
 
-    def reservation_create(self, reservation: Reservation, catalogue) -> ReservationMutationResult:
-        """Create one typed In-Subnet Reservation and verify the result."""
+        """
         if isinstance(reservation.scope, GlobalReservationScope):
             raise ValueError("Creating Global Reservations is not supported.")
-        raw = _reservation_to_raw(reservation)
-        self._reservation_mutation_command(
-            KeaCommand.RESERVATION_ADD,
-            reservation.family,
-            {"reservation": raw},
-        )
-        persisted = self.persist(reservation.family)
-        return ReservationMutationResult(
-            previous=None,
-            intended=reservation,
-            application="applied",
-            persistence=persisted.persistence,
-            persistence_diagnostics=persisted.diagnostics,
-            verification=self._verify_reservation(reservation, reservation, catalogue),
-        )
+        arguments = {"reservation": _reservation_to_raw(reservation)}
+        self._config_mutation_command(KeaCommand.RESERVATION_ADD, reservation.family, arguments)
 
-    def reservation_change(
-        self,
-        target: Reservation,
-        expected_fingerprint: str,
-        change: ReservationChange,
-        catalogue,
-    ) -> ReservationMutationResult:
-        """Update mutable managed facts and preserve the latest unknown Kea fields."""
-        if isinstance(target.scope, GlobalReservationScope):
-            raise ValueError("Updating Global Reservations is not supported.")
-        raw = self._reservation_raw_by_identity(target.family, target.scope, target.identity)
-        if raw is None:
-            raise ReservationConflict("The Reservation no longer exists.")
-        current = _exact_reservation(raw, target.family, catalogue)
-        if current.scope != target.scope or current.identity != target.identity:
-            raise MalformedReservation("target-mismatch", "Kea returned a different Reservation target.")
-        if reservation_fingerprint(current) != expected_fingerprint:
-            raise ReservationConflict("The Reservation changed after the edit form was opened.")
-        intended = apply_reservation_change(current, change)
-        raw_options = raw.get("option-data", [])
-        if not isinstance(raw_options, list) or any(not isinstance(option, dict) for option in raw_options):
-            raise MalformedReservation("invalid-options", "The Reservation contains invalid DHCP Options.")
-        serialized = _reservation_to_raw(intended)
-        if intended.options:
-            serialized["option-data"] = _merge_reservation_options(raw_options, current.options, intended.options)
-        merged = dict(raw)
-        for key in (
-            "subnet-id",
-            "hw-address",
-            "duid",
-            "circuit-id",
-            "client-id",
-            "flex-id",
-            "remote-id",
-            "ip-address",
-            "ip-addresses",
-            "prefixes",
-            "hostname",
-            "option-data",
-        ):
-            merged.pop(key, None)
-        merged.update(serialized)
-        self._reservation_mutation_command(
-            KeaCommand.RESERVATION_UPDATE,
-            target.family,
-            {"reservation": merged},
-        )
-        persisted = self.persist(target.family)
-        return ReservationMutationResult(
-            previous=current,
-            intended=intended,
-            application="applied",
-            persistence=persisted.persistence,
-            persistence_diagnostics=persisted.diagnostics,
-            verification=self._verify_reservation(intended, target, catalogue),
-        )
+    def reservation_update(self, family: Family, record: dict[str, Any]) -> None:
+        """Send one ``reservation-update`` of *record*, as ``FreshReservation.updated`` built it. It does not persist.
 
-    def reservation_delete(self, target: Reservation, catalogue) -> ReservationMutationResult:
-        """Delete one typed In-Subnet Reservation by Scope and Identity."""
-        if isinstance(target.scope, GlobalReservationScope):
-            raise ValueError("Deleting Global Reservations is not supported.")
-        raw = self._reservation_raw_by_identity(target.family, target.scope, target.identity)
-        if raw is None:
-            raise ReservationConflict("The Reservation no longer exists.")
-        current = _exact_reservation(raw, target.family, catalogue)
-        if current.scope != target.scope or current.identity != target.identity:
-            raise MalformedReservation("target-mismatch", "Kea returned a different Reservation target.")
-        self._reservation_mutation_command(
-            KeaCommand.RESERVATION_DEL,
-            target.family,
-            {
-                "subnet-id": target.scope.subnet.subnet_id,
-                "identifier-type": target.identity.identifier_type,
-                "identifier": target.identity.value,
-            },
-        )
-        persisted = self.persist(target.family)
-        return ReservationMutationResult(
-            previous=current,
-            intended=None,
-            application="applied",
-            persistence=persisted.persistence,
-            persistence_diagnostics=persisted.diagnostics,
-            verification=self._verify_reservation(None, target, catalogue),
-        )
+        Raises:
+            KeaException: If Kea returns a failure result.
+            MalformedReply: If the reply does not hold exactly one result.
+
+        """
+        self._config_mutation_command(KeaCommand.RESERVATION_UPDATE, family, {"reservation": record})
+
+    def reservation_del(self, family: Family, scope: InSubnetReservationScope, identity: ReservationIdentity) -> bool:
+        """Send one ``reservation-del`` of the Reservation with *identity* in *scope*. It does not persist.
+
+        Returns False when no host data source holds the Reservation (result 3).
+
+        Raises:
+            KeaException: If Kea returns another failure result.
+            MalformedReply: If the reply does not hold exactly one result.
+
+        """
+        arguments = {
+            "subnet-id": scope.subnet.subnet_id,
+            "identifier-type": identity.identifier_type,
+            "identifier": identity.value,
+        }
+        return self._config_mutation_command(KeaCommand.RESERVATION_DEL, family, arguments, (0, 3))["result"] == 0
 
     def subnet_add(self, version: Family, subnet_id: int, cidr: str, fields: SubnetFields) -> None:
         """Send one ``subnet{v}-add`` for the Subnet *cidr* with *subnet_id*. It does not persist.

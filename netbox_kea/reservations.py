@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 
 from typing_extensions import assert_never
 
-from .constants import Family, IPAddressValue, Persistence
+from .constants import Family, IPAddressValue
 from .dhcp_options import DHCPOption, parse_dhcp_options
 from .identifiers import normalize_hex
 from .leases import DHCPv4AddressLease, DHCPv6PrefixLease, Lease, LeaseSnapshot
@@ -773,18 +773,6 @@ class ReservationChange:
 
 
 @dataclass(frozen=True)
-class ReservationMutationResult:
-    """The separate application, persistence, and verification outcomes."""
-
-    previous: Reservation | None
-    intended: Reservation | None
-    application: Literal["applied"]
-    persistence: Persistence
-    persistence_diagnostics: tuple[str, ...]
-    verification: Literal["verified", "failed"]
-
-
-@dataclass(frozen=True)
 class ReservationCapabilities:
     """Live identifier and mutation capabilities for one DHCP family."""
 
@@ -796,7 +784,7 @@ class ReservationCapabilities:
 
 
 class ReservationConflict(RuntimeError):
-    """The live managed facts changed after the operator opened the edit form."""
+    """The edit form no longer matches the Reservation or the Subnet that it showed, so it cannot save."""
 
 
 @dataclass(frozen=True)
