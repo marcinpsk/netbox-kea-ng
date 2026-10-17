@@ -10,6 +10,13 @@ SPDX-License-Identifier: Apache-2.0
 
 # Concentrate Reservation record semantics
 
+_Amended 2026-10-17 by ADR 0013: the typed Reservation also carries every host reservation key that the DHCP plugin
+can represent: client classes, `next-server`, `server-hostname`, `boot-file-name`, `excluded-prefixes`, and the
+client classes of each DHCP Option. It exposes `user-context` read-only as one opaque JSON value, so the DHCP
+Import can plan it. Our forms never edit it, and an update preserves it. This is the target model:
+marcinpsk/netbox-kea-ng#102 builds it, and marcinpsk/netbox-kea-ng#100 and #104 import it. Until then, these keys
+stay unknown fields that an update preserves._
+
 ## Context
 
 The repository interprets raw Kea host reservation dictionaries in views, forms, REST actions, synchronization,
@@ -32,9 +39,11 @@ interpret raw Kea reservation dictionaries outside its private adapters.
 
 The public model contains immutable IPv4 and IPv6 Reservation variants. Each Reservation has one address family,
 one Reservation Scope, exactly one Reservation Identity, ordered allocation addresses, ordered delegated prefixes,
-a hostname, and DHCP Options. Global and In-Subnet scopes are distinct. Zero or multiple identifiers make a record
-malformed. Hardware address, DUID, and client identifier values use canonical lowercase colon notation. Circuit ID
-and Flex ID remain exact opaque values. `remote-id` is not a Reservation Identity. User help explains how Kea Flex ID
+a hostname, and DHCP Options. **Amended 2026-10-17 (ADR 0013):** it also carries client classes, the DHCPv4 boot
+fields (`next-server`, `server-hostname`, `boot-file-name`) and the DHCPv6 excluded prefix of each delegated
+prefix, and a DHCP Option keeps its client classes (target model, marcinpsk/netbox-kea-ng#102). Global and
+In-Subnet scopes are distinct. Zero or multiple identifiers make a record malformed. Hardware address, DUID, and
+client identifier values use canonical lowercase colon notation. Circuit ID and Flex ID remain exact opaque values. `remote-id` is not a Reservation Identity. User help explains how Kea Flex ID
 can derive identity from relay remote ID.
 
 The Kea client owns command selection, response-envelope validation, exact lookup, bounded pages, and page cursors.
