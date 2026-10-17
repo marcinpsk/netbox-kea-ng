@@ -13,6 +13,43 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.6.2 (2026-10-17)
+
+### Bug Fixes
+
+- **plugin**: Show the fork name and author in the Plugins table
+  ([`52feb6e`](https://github.com/marcinpsk/netbox-kea-ng/commit/52feb6e6c9cccfa4a97b12dd8417ca2c9e91bd80))
+
+### Documentation
+
+- Use unknown for an outcome that Kea did not confirm
+  ([`3792caf`](https://github.com/marcinpsk/netbox-kea-ng/commit/3792caf81ad2a4d80d98a4bbfd8d298021833654))
+
+- **adr**: Classify a failed Lease wipe as unknown
+  ([`388f9bc`](https://github.com/marcinpsk/netbox-kea-ng/commit/388f9bcfc1a72bae6cd60eee0f0c5f6281ca8ff4))
+
+- **adr**: Give unknown for a failed Lease write and define side-effect errors
+  ([`ab068a3`](https://github.com/marcinpsk/netbox-kea-ng/commit/ab068a3d1a53b089eadafee36e580025ff9d29be))
+
+- **adr**: Give unknown for a failed Reservation write
+  ([`686a610`](https://github.com/marcinpsk/netbox-kea-ng/commit/686a610347bb79b781ca1fe9c7abb002ceb76890))
+
+- **adr**: Give unknown for every TLS failure of a command
+  ([`3571132`](https://github.com/marcinpsk/netbox-kea-ng/commit/357113267e3dccf1ca84482353d86da105090eeb))
+
+- **adr**: Narrow the not-sent rule to answers that Kea never ran
+  ([`52302ae`](https://github.com/marcinpsk/netbox-kea-ng/commit/52302ae1f04f963272f0f086d6c8d04cd806617c))
+
+- **adr**: Read a Lease again after a failed Lease write
+  ([`4f2862a`](https://github.com/marcinpsk/netbox-kea-ng/commit/4f2862a24f39c7cf1d3a9c2b6ecc372379ddcf60))
+
+- **adr**: Record Runtime Changes and Reservation writes as typed changes
+  ([`e062600`](https://github.com/marcinpsk/netbox-kea-ng/commit/e062600f35f801ddc573c8930dbb2c6247a7d18d))
+
+- **adr**: Reject a change that Kea did not run
+  ([`6f8304b`](https://github.com/marcinpsk/netbox-kea-ng/commit/6f8304b40ff12058a1cf19d16aab02b2ef1fe167))
+
+
 ## v3.6.1 (2026-10-16)
 
 ### Bug Fixes
