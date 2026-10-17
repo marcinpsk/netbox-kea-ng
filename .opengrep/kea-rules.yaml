@@ -217,6 +217,32 @@ rules:
           metavariable: $METHOD
           regex: ^(lease_add|lease_update|lease_delete|lease_wipe|dhcp_enable|dhcp_disable)$
 
+  - id: kea-reservation-write-outside-config-write
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Send a Reservation write through config_write.add_reservation(), edit_reservation()
+      or delete_reservation(), not through a KeaClient write primitive. config_write holds
+      the advisory lock of the Kea daemon from the scope read to the end of the persist step,
+      classifies the reply as applied, unknown or a rejection, and verifies only an applied
+      change (ADR 0012). A direct call takes no lock, so a concurrent config-set can erase
+      it, and it reads a lost reply as a failure. The rule matches the method name, so it
+      cannot see a call through an alias.
+    metadata:
+      category: correctness
+      confidence: HIGH
+      references:
+        - "docs/adr/0012-reservation-writes-are-configuration-changes.md"
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "netbox_kea/config_write.py"
+    patterns:
+      - pattern: $CLIENT.$METHOD(...)
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: ^(reservation_add|reservation_update|reservation_del)$
+
   - id: kea-config-read-modify-write-without-reader
     languages: [python]
     severity: ERROR
