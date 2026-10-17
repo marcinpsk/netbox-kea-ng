@@ -52,13 +52,13 @@ A Reservation add, edit or delete is a Configuration Change.
   Reservation as applied and shows the side-effect failure as a separate error, as ADR 0011 says.
 - The bulk Reservation import runs one Configuration Change per entry. An `unknown` entry or a rejected entry
   stops the import, and the report states the applied entries.
-- Global Reservations stay read only, as in ADR 0002.
+- Global Reservations stay read-only, as in ADR 0002.
 
 ## Consequences
 
 Reservation writes and Subnet changes to one daemon wait for each other.
 
-A lost reply on a Reservation write reads as unconfirmed, and NetBox records no journal entry or IPAM claim for it.
+A lost reply on a Reservation write gives `unknown`, and NetBox records no journal entry or IPAM claim for it.
 
 This decision changes the result type of ADR 0002 and the scope of the ADR 0005 lock. Reservation writes do not
 use the check read of ADR 0005.
