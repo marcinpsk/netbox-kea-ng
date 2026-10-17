@@ -2261,6 +2261,11 @@ class KeaException(Exception):
         return self.response.get("result") == 2
 
     @property
+    def daemon_unreachable(self) -> bool:
+        """Return whether Kea answered result 128: the Control Agent could not reach the daemon."""
+        return self.response.get("result") == 128
+
+    @property
     def reply_text(self) -> str:
         """Return the text of Kea's failure reply, or its result code when the reply has no text."""
         text = self.response.get("text")
@@ -2274,7 +2279,7 @@ def kea_error_message(exc: "KeaException") -> str:
             "Kea does not support this command. "
             "The required hook library may not be loaded, for example host_cmds, lease_cmds or subnet_cmds."
         )
-    if exc.response.get("result") == 128:
+    if exc.daemon_unreachable:
         return "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable."
     return f"Kea replied: {exc.reply_text}"
 

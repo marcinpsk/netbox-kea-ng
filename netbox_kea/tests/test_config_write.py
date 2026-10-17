@@ -2743,12 +2743,13 @@ class ReadModifyWriteTests(TestCase):
                     self.assertEqual(rejection.diagnostics, ("Kea replied: subnet overlaps",))
                     self.assertEqual(kea.commands(), [*self._reads(version, name), "config-test"])
 
-    def test_a_config_test_that_cannot_reach_the_daemon_shows_the_fixed_guidance(self):
+    def test_a_config_test_that_cannot_reach_the_daemon_is_not_sent(self):
         unreachable = {"result": 128, "text": "Connection refused"}
-        with stub_kea(_rmw_responses(4, **{"config-test": unreachable})):
+        with stub_kea(_rmw_responses(4, **{"config-test": unreachable})) as kea:
             rejection = self._rejection(lambda: config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])]))
-        self.assertEqual(rejection.reason, "config-test-rejected")
+        self.assertEqual(rejection.reason, "not-sent")
         self.assertEqual(rejection.diagnostics, (_DAEMON_UNREACHABLE,))
+        self.assertEqual(kea.commands(), ["config-get", "config-test"])
 
     def test_an_unsupported_config_test_is_skipped(self):
         unsupported = {"result": 2, "text": "'config-test' command not supported."}

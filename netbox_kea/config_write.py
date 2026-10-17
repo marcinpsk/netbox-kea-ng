@@ -805,7 +805,7 @@ def _test_before(client: KeaClient, family: Family, candidate: CandidateConfigur
             if exc.unsupported_command:
                 logger.debug("config-test is not supported on DHCPv%s, so the candidate was not tested", family)
                 return
-            if client.forwarding_failed(exc, family):
+            if client.forwarding_failed(exc, family) or exc.daemon_unreachable:
                 raise
             logger.warning("config-test rejected a Configuration Change: %s", exc)
             raise ChangeRejected("config-test-rejected", (kea_error_message(exc),)) from exc
