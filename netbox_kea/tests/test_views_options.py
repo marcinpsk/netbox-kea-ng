@@ -1224,6 +1224,19 @@ class TestCombinedStatusBadgeError(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("offline", response.content.decode().lower())
 
+    def test_a_daemon_that_does_not_answer_is_offline_and_logged(self):
+        url = reverse("plugins:netbox_kea:combined_server_status_badge", args=[self.server.pk])
+        for failure, name in (
+            ({"result": 1, "text": "error"}, "KeaException"),
+            (requests.ConnectionError("unreachable"), "ConnectionError"),
+            (["not", "a", "reply"], "MalformedReply"),
+        ):
+            with self.subTest(name), stub_kea({"version-get": failure}):
+                with self.assertLogs("netbox_kea.views.options", level="WARNING") as logs:
+                    response = self.client.get(url)
+            self.assertIn("offline", response.content.decode().lower())
+            self.assertIn(f"did not answer the status badge read ({name})", logs.output[0])
+
 
 class TestConfigurationOptionIdentity(_ViewTestBase):
     def test_concurrent_option_addition_aborts_before_configuration_write(self):

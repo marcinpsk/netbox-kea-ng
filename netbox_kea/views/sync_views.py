@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, cast
 
-import requests
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError
@@ -18,7 +17,7 @@ from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
 from django.views import View
 
-from .. import config_write, event_scope, forms, runtime_change, subnet_catalogue
+from .. import config_write, event_scope, forms, runtime_change, server_configuration, subnet_catalogue
 from ..constants import Family
 from ..ipam_reconciliation import (
     RESERVATION,
@@ -28,12 +27,8 @@ from ..ipam_reconciliation import (
     reconcile,
     reconcile_permissions,
 )
-from ..kea import KeaClient, KeaException, kea_error_message
 from ..leases import (
-    ExactLeaseResult,
-    LeaseFound,
-    LeaseIdentity,
-    LeaseLookupFailed,
+    LeaseAbsent,
     LeaseRequest,
     is_current,
     parse_selection,
@@ -47,6 +42,7 @@ from ..reservation_transfer import (
     parse_reservation_document,
     resolve_import_proposal,
 )
+from ..reservations import ReservationCapabilities
 from ..signals import lease_added
 from ..subnet_catalogue import CatalogueUnavailable, for_synchronization
 from ..sync_permissions import sync_gate
@@ -60,6 +56,7 @@ from ._base import (
     OutcomeT,
     RowT,
     _client_settings_error,
+    _client_settings_refusal,
     _journal_applied,
     _KeaChangeMixin,
     _persistence_failure,
@@ -67,6 +64,7 @@ from ._base import (
     _signal_applied,
 )
 from .leases import _LEASES_TAB, _lease_journal_comments, lease_sync_gates
+from .notices import Notice, failed_load, load_target
 from .reservation_mutations import (
     _VERIFICATION_FAILED,
     _identity_from_request,
@@ -74,7 +72,7 @@ from .reservation_mutations import (
     _live_target,
     _record_applied,
 )
-from .reservations import _RESERVATIONS_TAB, _live_capabilities, reservation_badge
+from .reservations import _MUTATION_UNCONFIRMED, _RESERVATIONS_TAB, reservation_badge
 from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
@@ -121,12 +119,11 @@ class _BaseSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
         except ValueError as exc:
             return _row_error(request, _client_settings_error(server, exc))
 
-        observed = self._fetch_live_data(client, identity)
-        if isinstance(observed, LeaseLookupFailed):
-            logger.warning("Kea returned a malformed lease%s for %s", self.dhcp_version, label)
-            return _row_error(request, "Sync error: see server logs for details.")
-        if not isinstance(observed, LeaseFound):
-            return _row_error(request, "Could not fetch live data from Kea.")
+        observed = load_target(server, "lease_target", lambda: client.lease_get(identity))
+        if isinstance(observed, Notice):
+            return _row_error(request, observed.text)
+        if isinstance(observed, LeaseAbsent):
+            return _row_error(request, "The lease is no longer in Kea. Reload the lease list.")
         lease = observed.lease
         # The label holds the kind and the prefix length, so a changed allocation does not match.
         if shown_lease(lease).label != label:
@@ -155,14 +152,6 @@ class _BaseSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
             "netbox_kea/inc/claim_results.html",
             {"claim_result": result},
         )
-
-    def _fetch_live_data(self, client: KeaClient, identity: LeaseIdentity) -> ExactLeaseResult | None:
-        """Read the live Lease with *identity* from Kea, or ``None`` when the read fails."""
-        try:
-            return client.lease_get(identity)
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Failed to fetch live lease%s data for %s", self.dhcp_version, identity.address)
-            return None
 
 
 class ServerLease4SyncView(_BaseSyncView):
@@ -195,19 +184,24 @@ class _BaseReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin,
             return _row_error(request, gate.reason)
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
         identity = _identity_from_request(request, self.dhcp_version)
+        if refusal := _client_settings_refusal(server, self.dhcp_version):
+            return _row_error(request, refusal)
         try:
-            reservation, catalogue = _live_target(server, self.dhcp_version, subnet_id, identity)
+            loaded = load_target(
+                server, "reservation_target", lambda: _live_target(server, self.dhcp_version, subnet_id, identity)
+            )
+        except Http404:
+            return _row_error(request, "The Reservation or its Subnet is no longer in Kea. Reload the list.")
+        if isinstance(loaded, Notice):
+            return _row_error(request, loaded.text)
+        reservation, catalogue = loaded
+        try:
             from ..ipam_reconciliation import claim
 
             result = claim(server, self.dhcp_version, [reservation], force=True, catalogue=catalogue)
         except event_scope.EventDispatchError:
             raise
-        except Http404:
-            return _row_error(request, "The Reservation or its Subnet is no longer in Kea. Reload the list.")
-        except KeaException as exc:
-            logger.exception("Kea error synchronizing a DHCPv%s Reservation", self.dhcp_version)
-            return _row_error(request, f"Reservation synchronization failed: {kea_error_message(exc)}")
-        except (requests.RequestException, DatabaseError, RuntimeError, ValidationError, ValueError):
+        except (DatabaseError, RuntimeError, ValidationError, ValueError):
             logger.exception("Could not synchronize a DHCPv%s Reservation", self.dhcp_version)
             return _row_error(request, "Reservation synchronization failed. See server logs.")
         # The badge reads the links as the page does, so a reload shows the same state.
@@ -423,6 +417,13 @@ def _import_report(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class _ImportRefusal:
+    """Why the live Server cannot validate a Reservation import: one form error per line."""
+
+    lines: tuple[str, ...]
+
+
 class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Validate one document, then create its Reservations, one Configuration Change for each entry (ADR 0012).
 
@@ -457,30 +458,59 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
 
     def _validate(
         self, instance: Server, proposals: Sequence[ReservationImportProposal]
-    ) -> list[ReservationTransferDiagnostic]:
-        """Return a diagnostic for each entry whose Subnet or Identity type the live Kea server does not have."""
-        capabilities = _live_capabilities(instance, self.dhcp_version)
+    ) -> list[ReservationTransferDiagnostic] | _ImportRefusal:
+        """Return a diagnostic for each entry whose Subnet or Identity type the live Kea server does not have.
+
+        Return the refusal of the whole import when a live read cannot confirm the facts or the Server cannot take
+        Reservation changes.
+        """
+        configuration = server_configuration.for_verification(instance, self.dhcp_version)
+        if configuration.unavailable:
+            return _ImportRefusal(failed_load(configuration).lines)
+        capabilities = server_configuration.reservation_capabilities(configuration)
         if capabilities is None or not capabilities.mutation_available:
-            raise RuntimeError("Reservation mutation commands are unavailable.")
-        diagnostics: list[ReservationTransferDiagnostic] = []
+            return _ImportRefusal(
+                ((capabilities.explanation if capabilities is not None else "") or _MUTATION_UNCONFIRMED,)
+            )
         with subnet_catalogue.mutation(instance, self.dhcp_version) as scope:
-            for index, proposal in enumerate(proposals):
-                if proposal.identity.identifier_type not in capabilities.identifiers:
-                    diagnostics.append(
-                        ReservationTransferDiagnostic(
-                            code="unavailable-identity",
-                            message="The live Kea server does not support this Reservation Identity type.",
-                            source_position=f"reservations[{index}].identity.type",
-                        )
+            catalogue = scope.snapshot
+            if catalogue is None:
+                raise TypeError("An entered mutation scope holds its Catalogue.")
+            try:
+                return self._entry_diagnostics(scope, capabilities, proposals)
+            except CatalogueUnavailable:
+                return _ImportRefusal(failed_load(catalogue).lines)
+
+    @staticmethod
+    def _entry_diagnostics(
+        scope: subnet_catalogue.MutationScope,
+        capabilities: ReservationCapabilities,
+        proposals: Sequence[ReservationImportProposal],
+    ) -> list[ReservationTransferDiagnostic]:
+        """Return a diagnostic for each entry whose Identity type or Subnet the live Server does not have.
+
+        Raises:
+            CatalogueUnavailable: If the live Catalogue cannot confirm that a CIDR is absent.
+
+        """
+        diagnostics: list[ReservationTransferDiagnostic] = []
+        for index, proposal in enumerate(proposals):
+            if proposal.identity.identifier_type not in capabilities.identifiers:
+                diagnostics.append(
+                    ReservationTransferDiagnostic(
+                        code="unavailable-identity",
+                        message="The live Kea server does not support this Reservation Identity type.",
+                        source_position=f"reservations[{index}].identity.type",
                     )
-                elif scope.find_by_cidr(proposal.subnet_cidr) is None:
-                    diagnostics.append(
-                        ReservationTransferDiagnostic(
-                            code="unknown-subnet",
-                            message="The live Subnet Catalogue does not contain this CIDR.",
-                            source_position=f"reservations[{index}].scope.subnet.cidr",
-                        )
+                )
+            elif scope.find_by_cidr(proposal.subnet_cidr) is None:
+                diagnostics.append(
+                    ReservationTransferDiagnostic(
+                        code="unknown-subnet",
+                        message="The live Subnet Catalogue does not contain this CIDR.",
+                        source_position=f"reservations[{index}].scope.subnet.cidr",
                     )
+                )
         return diagnostics
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
@@ -503,16 +533,13 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
         if parsed.diagnostics:
             return self._render(request, instance, form, {"diagnostics": parsed.diagnostics})
 
-        try:
-            instance.get_client(version=self.dhcp_version).close()
-        except ValueError as exc:
-            form.add_error(None, _client_settings_error(instance, exc))
+        if refusal := _client_settings_refusal(instance, self.dhcp_version):
+            form.add_error(None, refusal)
             return self._render(request, instance, form, None)
-        try:
-            diagnostics = self._validate(instance, parsed.proposals)
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Could not prepare Reservation document import for server %s", instance.pk)
-            form.add_error(None, "The live Kea server could not validate this import. See server logs.")
+        diagnostics = self._validate(instance, parsed.proposals)
+        if isinstance(diagnostics, _ImportRefusal):
+            for line in diagnostics.lines:
+                form.add_error(None, line)
             return self._render(request, instance, form, None)
         if diagnostics:
             return self._render(request, instance, form, {"diagnostics": diagnostics})

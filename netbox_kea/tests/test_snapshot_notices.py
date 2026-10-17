@@ -5,12 +5,13 @@
 from typing import Any, cast
 
 import requests
+from bs4 import BeautifulSoup
 from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
 from django.urls import reverse
 
 from netbox_kea import display_cache, server_configuration, subnet_catalogue
-from netbox_kea.kea import LeaseQueryPreflightUnavailable
+from netbox_kea.kea import KeaException, LeaseQueryPreflightUnavailable, kea_error_message
 from netbox_kea.server_configuration import Diagnostic
 from netbox_kea.views.notices import HEADLINES, Notice, ServerNotices, load_snapshot, notice, show_notices
 
@@ -35,6 +36,16 @@ def _config4(*subnets: dict, **service: object) -> dict:
         "result": 0,
         "arguments": {"Dhcp4": {"subnet4": list(subnets), "shared-networks": [], **service}, "hash": "h1"},
     }
+
+
+def _danger_alerts(response) -> list[tuple[str, list[str]]]:
+    """Return the headline and the listed lines of each inline error alert of a Notice."""
+    page = BeautifulSoup(response.content, "html.parser")
+    return [
+        (alert.strong.get_text(), [item.get_text() for item in alert.select("li")])
+        for alert in page.select(".alert-danger")
+        if alert.strong is not None
+    ]
 
 
 def _page_messages(response) -> list[tuple[int, str]]:
@@ -130,17 +141,19 @@ class TestRecordSnapshotNotices(_ViewTestBase):
         self.assertIsNone(notice(snapshot))
 
     def test_a_failed_reservation_read_is_an_unavailable_notice(self):
-        for page, unsupported, unreachable in (
-            (requests.ConnectionError("unreachable"), False, True),
-            ({"result": 1, "text": "database error"}, False, False),
-            (["not", "entries"], False, False),
-            ({"result": 2, "text": "unknown command"}, True, False),
+        hook = kea_error_message(KeaException({"result": 2, "text": "unknown command"}))
+        for page, unsupported, unreachable, reply in (
+            (requests.ConnectionError("unreachable"), False, True, ""),
+            ({"result": 1, "text": "database error"}, False, False, "Kea replied: database error"),
+            (["not", "entries"], False, False, ""),
+            ({"result": 2, "text": "unknown command"}, True, False, hook),
         ):
             with self.subTest(page=page):
                 result = self._reservations(page)
-                expected = Notice("reservation", django_messages.ERROR, (), unsupported, unreachable)
+                expected = Notice("reservation", django_messages.ERROR, (), unsupported, unreachable, reply)
                 self.assertEqual(result, expected)
-                self.assertEqual(result.lines, (HEADLINES["reservation"],))
+                # Kea's answer shows under the headline; a transport or reply failure shows no exception text.
+                self.assertEqual(result.lines, tuple(line for line in (HEADLINES["reservation"], reply) if line))
 
     def test_a_lease_record_that_cannot_be_read_is_a_warning(self):
         broken = complete_lease({"ip-address": "198.18.0.10", "valid-lft": -1})
@@ -149,7 +162,10 @@ class TestRecordSnapshotNotices(_ViewTestBase):
             snapshot = client.lease_search(4, "hostname", "host.example.invalid", server_id=self.server.pk)
         result = notice(snapshot)
         self.assertEqual((result.kind, result.level, len(result.diagnostics)), ("lease", django_messages.WARNING, 1))
-        self.assertEqual(result.reasons, "A lease field is outside the range that Kea permits.")
+        self.assertEqual(
+            [diagnostic.message for diagnostic in result.diagnostics],
+            ["A lease field is outside the range that Kea permits."],
+        )
 
     def test_a_lease_page_with_a_continuation_and_no_diagnostics_gives_no_notice(self):
         snapshot = self._leases(lease_page(complete_lease({"ip-address": "198.18.0.10"})))
@@ -164,13 +180,15 @@ class TestRecordSnapshotNotices(_ViewTestBase):
         self.assertIsNone(notice(snapshot))
 
     def test_a_failed_lease_read_is_an_unavailable_notice(self):
-        for reply, unreachable in (
-            (requests.ReadTimeout("timed out"), True),
-            ({"result": 1, "text": "error"}, False),
-            ({"result": 0}, False),
+        for reply, unreachable, text in (
+            (requests.ReadTimeout("timed out"), True, ""),
+            ({"result": 1, "text": "error"}, False, "Kea replied: error"),
+            ({"result": 0}, False, ""),
         ):
             with self.subTest(reply=reply):
-                self.assertEqual(self._leases(reply), Notice("lease", django_messages.ERROR, unreachable=unreachable))
+                self.assertEqual(
+                    self._leases(reply), Notice("lease", django_messages.ERROR, unreachable=unreachable, reply=text)
+                )
 
     @with_kea_client_config(lease_query_max_unpaged_leases=100)
     def test_a_refused_lease_query_and_a_value_error_stay_outside_the_rule(self):
@@ -282,9 +300,7 @@ class TestRecordPagesShowAFailedReadThroughTheLoader(_ViewTestBase):
             response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(_page_messages(response), [])
-        self.assertContains(
-            response, f'<div class="alert alert-danger" role="alert">{HEADLINES["reservation"]}</div>', html=True
-        )
+        self.assertEqual(_danger_alerts(response), [(HEADLINES["reservation"], [])])
         # A failed read is not an incomplete Snapshot, so the page gives it no second headline.
         self.assertNotContains(response, "Snapshot is incomplete")
         self.assertNotContains(response, "This bounded Snapshot is complete")
@@ -297,10 +313,29 @@ class TestRecordPagesShowAFailedReadThroughTheLoader(_ViewTestBase):
                 HTTP_HX_REQUEST="true",
             )
         self.assertEqual(response.status_code, 200)
-        self.assertContains(
-            response, f'<div class="alert alert-danger" role="alert">{HEADLINES["lease"]}</div>', html=True
-        )
+        self.assertEqual(_danger_alerts(response), [("Failed to load Leases from Kea.", [])])
         self.assertNotContains(response, 'id="lease-delete-form"')
+
+    def test_the_reservation_page_shows_keas_answer_under_the_headline(self):
+        refusal = {"result": 1, "text": "the host backend is down"}
+        responses = {**_catalogue_responses(4, 20, "198.18.0.0/24"), "reservation-get-page": refusal}
+        with stub_kea(responses):
+            response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
+        self.assertEqual(
+            _danger_alerts(response), [(HEADLINES["reservation"], ["Kea replied: the host backend is down"])]
+        )
+
+    def test_a_missing_host_cmds_hook_shows_its_panel_and_no_second_guidance(self):
+        unsupported = {"result": 2, "text": "unknown command 'reservation-get-page'"}
+        responses = {**_catalogue_responses(4, 20, "198.18.0.0/24"), "reservation-get-page": unsupported}
+        # The configuration loads no hook, so the mutation capabilities name the missing host_cmds hook too.
+        responses["config-get"]["arguments"]["Dhcp4"]["hooks-libraries"] = []
+        with stub_kea(responses):
+            response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
+        self.assertContains(response, "hook library is not loaded on this Kea server", count=1)
+        self.assertContains(response, "host_cmds", count=1)
+        self.assertNotContains(response, "The required hook library may not be loaded")
+        self.assertEqual(_danger_alerts(response), [])
 
     @with_kea_client_config(lease_query_max_unpaged_leases=100)
     def test_a_refused_lease_query_keeps_its_own_message(self):
@@ -330,13 +365,18 @@ class TestCombinedPagesKeepANoticePerServer(_ViewTestBase):
         self.assertContains(response, _INVALID_POOLS, count=2)
 
     def test_a_failed_reservation_read_is_an_error_of_its_server(self):
-        responses = {**_catalogue_responses(4, 20, "198.18.0.0/24"), "reservation-get-page": {"result": 1}}
+        refusal = {"result": 1, "text": "the host backend is down"}
+        responses = {**_catalogue_responses(4, 20, "198.18.0.0/24"), "reservation-get-page": refusal}
         with stub_kea(responses):
             response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["errors"], [(self.server.name, HEADLINES["reservation"])])
+        reply = "Kea replied: the host backend is down"
+        self.assertEqual(
+            response.context["errors"], [(self.server.name, HEADLINES["reservation"]), (self.server.name, reply)]
+        )
         self.assertContains(response, '<div class="alert alert-danger mt-3" role="alert">')
         self.assertContains(response, f"<li><strong>{self.server.name}</strong>: {HEADLINES['reservation']}</li>")
+        self.assertContains(response, f"<li><strong>{self.server.name}</strong>: {reply}</li>")
 
     def test_a_client_that_cannot_be_built_is_an_error_with_the_headline_of_its_kind(self):
         type(self.server).objects.filter(pk=self.server.pk).update(
@@ -366,14 +406,14 @@ class TestReservationEditNotice(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertIn((django_messages.WARNING, "Kea configuration facts are unavailable."), _page_messages(response))
 
-    def test_an_unavailable_catalogue_is_an_error_before_the_failed_target_read(self):
+    def test_an_unavailable_catalogue_stops_the_target_read_with_one_catalogue_notice(self):
         failure = requests.ConnectionError("unreachable")
         response = self._edit({"subnet4-list": failure, "config-get": failure})
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(_page_messages(response)[0], (django_messages.ERROR, HEADLINES["catalogue"]))
-        self.assertIn(
-            (django_messages.ERROR, "The Reservation could not be loaded. See server logs."), _page_messages(response)
-        )
+        messages = _page_messages(response)
+        self.assertEqual(messages[0], (django_messages.ERROR, HEADLINES["catalogue"]))
+        self.assertEqual([text for _level, text in messages].count(_IDENTITY_UNAVAILABLE), 1)
+        self.assertNotIn(HEADLINES["reservation_target"], [text for _level, text in messages])
 
 
 _CONFIGURATION_UNAVAILABLE = "Kea configuration facts are unavailable."

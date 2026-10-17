@@ -267,9 +267,12 @@ def test_the_runtime_package_has_one_http_send_in_kea_client_command():
                 requests_calls.append(f"{rel}::{scope}: requests.{func.attr}")
 
     assert sends == ["kea.py::KeaClient.command"]
-    # The redirect answer of a command becomes an HTTPError; building the error sends nothing.
+    # command() prepares a Request before the send to check its encoding, and turns an encode failure after the send
+    # and a redirect answer into request errors. None of them sends anything.
     assert requests_calls == [
         "kea.py::KeaClient.__init__: requests.Session",
+        "kea.py::KeaClient.command: requests.Request",
+        "kea.py::KeaClient.command: requests.RequestException",
         "kea.py::KeaClient.command: requests.HTTPError",
     ]
 

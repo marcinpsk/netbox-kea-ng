@@ -6,7 +6,6 @@ from dataclasses import replace
 from typing import Any, Literal
 from urllib.parse import urlencode
 
-import requests
 from django.contrib import messages
 from django.core import signing
 from django.core.exceptions import BadRequest, ValidationError
@@ -22,7 +21,6 @@ from ..config_write import ReservationChangeOutcome
 from ..constants import Family, IPAddressValue
 from ..dhcp_options import DHCPOption
 from ..ipam_reconciliation import RESERVATION, claim, claim_permissions
-from ..kea import KeaException
 from ..models import Server
 from ..pools import addresses_in_pools
 from ..published_name import published_name, stored_hostname
@@ -46,14 +44,14 @@ from ..signals import reservation_created, reservation_deleted, reservation_upda
 from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, SubnetIdentity, VerifiedSubnet
 from ..sync_permissions import sync_gate
 from ._base import (
-    _client_settings_error,
+    _client_settings_refusal,
     _journal_applied,
     _KeaChangeMixin,
     _run_change,
     _safe_return_url,
     _signal_applied,
 )
-from .notices import notice, show_notices
+from .notices import Notice, failed_load, load_target, notice, show_notices
 from .reservations import (
     _RESERVATIONS_TAB,
     _build_reservation_options_formset,
@@ -321,7 +319,7 @@ def _identity_label(identity: ReservationIdentity) -> str:
     return f"{identity.identifier_type} {identity.value}"
 
 
-def _read_reservation_target(
+def _exact_reservation(
     server: Server,
     version: Family,
     subnet: VerifiedSubnet | None,
@@ -341,26 +339,57 @@ def _read_reservation_target(
 
 def _live_target(
     server: Server, version: Family, subnet_id: int, identity: ReservationIdentity
-) -> tuple[Reservation, CatalogueSnapshot]:
-    """Return one live Reservation and the Catalogue with configuration facts in which its Subnet is verified."""
+) -> tuple[Reservation, CatalogueSnapshot] | Notice:
+    """Return one live Reservation and the Catalogue with configuration facts in which its Subnet is verified.
+
+    Return the Catalogue Notice when the live Catalogue cannot confirm the Subnet.
+    """
     with subnet_catalogue.mutation(server, version) as scope:
-        subnet = scope.find_by_id(subnet_id)
         catalogue = scope.snapshot
-    if catalogue is None:
-        raise RuntimeError("The Subnet Catalogue is unavailable.")
-    return _read_reservation_target(server, version, subnet, catalogue, identity), catalogue
+        if catalogue is None:
+            raise TypeError("An entered mutation scope holds its Catalogue.")
+        try:
+            subnet = scope.find_by_id(subnet_id)
+        except CatalogueUnavailable:
+            return failed_load(catalogue)
+    return _exact_reservation(server, version, subnet, catalogue, identity), catalogue
 
 
-def _load_target(
+def _read_reservation_target(
     server: Server,
     version: Family,
     subnet_id: int,
     identity: ReservationIdentity,
-) -> Reservation:
-    """Return one live Reservation without invalidating the display snapshots."""
+) -> Reservation | Notice:
+    """Return one live Reservation without invalidating the display snapshots.
+
+    Return the Catalogue Notice when the ``subnet{v}-list`` read cannot confirm the Subnet.
+    """
     observation = subnet_catalogue.read_identity(server, version)
-    subnet = observation.find_by_id(subnet_id)
-    return _read_reservation_target(server, version, subnet, observation.snapshot, identity)
+    try:
+        subnet = observation.find_by_id(subnet_id)
+    except CatalogueUnavailable:
+        return failed_load(observation.snapshot)
+    return _exact_reservation(server, version, subnet, observation.snapshot, identity)
+
+
+def _target_or_redirect(
+    request: HttpRequest,
+    server: Server,
+    version: Family,
+    subnet_id: int,
+    identity: ReservationIdentity,
+    return_url: str,
+    *shown: Notice | None,
+) -> Reservation | HttpResponse:
+    """Load the Reservation to change, or show the Notice of the failed load with *shown* and redirect."""
+    loaded = load_target(
+        server, "reservation_target", lambda: _read_reservation_target(server, version, subnet_id, identity)
+    )
+    if isinstance(loaded, Notice):
+        show_notices(request, loaded, *shown)
+        return redirect(return_url)
+    return loaded
 
 
 def _record_applied(
@@ -529,10 +558,8 @@ class _ReservationMutationView(_KeaChangeMixin, ServerFamilyMixin, generic.Objec
 
     def _mutation_capabilities(self, request: HttpRequest, server: Server) -> ReservationCapabilities | HttpResponse:
         """Return the live confirmed mutation capabilities, or the response that refuses the mutation."""
-        try:
-            server.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(server, exc))
+        if refusal := _client_settings_refusal(server, self.dhcp_version):
+            messages.error(request, refusal)
             return redirect(self._return_url(server))
         capabilities = _live_capabilities(server, self.dhcp_version)
         if capabilities is None or not capabilities.mutation_available:
@@ -587,11 +614,9 @@ class _ReservationAddView(_ReservationMutationView):
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        try:
-            server.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(server, exc))
-            capabilities = None
+        capabilities = None
+        if refusal := _client_settings_refusal(server, self.dhcp_version):
+            messages.error(request, refusal)
         else:
             capabilities = _display_capabilities(server, self.dhcp_version)
         snapshot = subnet_catalogue.display(server, self.dhcp_version)
@@ -729,21 +754,18 @@ class _ReservationEditView(_ReservationMutationView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        try:
-            server.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(server, exc))
+        if refusal := _client_settings_refusal(server, self.dhcp_version):
+            messages.error(request, refusal)
             return redirect(self._return_url(server))
         identity = _identity_from_request(request, self.dhcp_version)
         catalogue = subnet_catalogue.display(server, self.dhcp_version)
+        reservation = _target_or_redirect(
+            request, server, self.dhcp_version, subnet_id, identity, self._return_url(server), notice(catalogue)
+        )
+        if isinstance(reservation, HttpResponse):
+            return reservation
         show_notices(request, notice(catalogue))
-        try:
-            reservation = _load_target(server, self.dhcp_version, subnet_id, identity)
-            suffix = _shown_suffix(reservation, catalogue)
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Could not load the Reservation edit target")
-            messages.error(request, "The Reservation could not be loaded. See server logs.")
-            return redirect(self._return_url(server))
+        suffix = _shown_suffix(reservation, catalogue)
         capabilities = _display_capabilities(server, self.dhcp_version)
         form = self._form_for(server, reservation, suffix, capabilities)
         form.offer_subnets(catalogue.subnet_choices)
@@ -765,13 +787,10 @@ class _ReservationEditView(_ReservationMutationView):
         catalogue = subnet_catalogue.display(server, self.dhcp_version)
         # The disabled fields take their values from the initial data. The fingerprint check under the lock guards
         # the write.
-        try:
-            current = _load_target(server, self.dhcp_version, subnet_id, identity)
-            suffix = _shown_suffix(current, catalogue)
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Could not reload the Reservation edit target")
-            messages.error(request, "The Reservation could not be reloaded. Edit stopped.")
-            return redirect(return_url)
+        current = _target_or_redirect(request, server, self.dhcp_version, subnet_id, identity, return_url)
+        if isinstance(current, HttpResponse):
+            return current
+        suffix = _shown_suffix(current, catalogue)
         form = self._form(server, capabilities, data=request.POST, initial=self._initial(current, suffix))
         form.offer_subnets(catalogue.subnet_choices)
         for field in ("subnet_cidr", "identifier_type", "identifier"):
@@ -878,20 +897,15 @@ class _ReservationDeleteView(_ReservationMutationView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        try:
-            server.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(server, exc))
+        if refusal := _client_settings_refusal(server, self.dhcp_version):
+            messages.error(request, refusal)
             return redirect(self._return_url(server))
         identity = _identity_from_request(request, self.dhcp_version)
-        try:
-            reservation = _load_target(server, self.dhcp_version, subnet_id, identity)
-        except Http404:
-            raise
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Could not load the Reservation delete target")
-            messages.error(request, "The Reservation could not be loaded. See server logs.")
-            return redirect(self._return_url(server))
+        reservation = _target_or_redirect(
+            request, server, self.dhcp_version, subnet_id, identity, self._return_url(server)
+        )
+        if isinstance(reservation, HttpResponse):
+            return reservation
         return render(
             request,
             self.template_name,
