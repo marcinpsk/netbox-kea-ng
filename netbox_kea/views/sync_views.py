@@ -603,21 +603,29 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLo
             form.add_error("csv_file", "CSV parsing failed. Check the file format and column headers.")
             return self._render(request, instance, form, None)
 
-        loop = _run_change_loop(rows, lambda row: runtime_change.add_lease(instance, self.dhcp_version, row[1]))
+        def signal_added(
+            creation: LeaseRequest, outcome: runtime_change.RuntimeChangeOutcome
+        ) -> runtime_change.RuntimeChangeOutcome:
+            # Signal each applied row before the next row goes to Kea, so a later failure loses no signal.
+            if outcome.application == "applied":
+                # A bulk import reads nothing back, so no observed Lease goes with the confirmed request.
+                _signal_applied(
+                    request,
+                    lease_added,
+                    "lease_added",
+                    server=instance,
+                    creation=creation,
+                    lease=None,
+                    dhcp_version=self.dhcp_version,
+                )
+            return outcome
+
+        loop = _run_change_loop(
+            rows, lambda row: signal_added(row[1], runtime_change.add_lease(instance, self.dhcp_version, row[1]))
+        )
         created = [str(creation.address) for (_line, creation), _outcome in loop.applied]
         if created:
             _journal_applied(request, instance, "added", created)
-        for (_line, creation), _outcome in loop.applied:
-            # A bulk import reads nothing back, so no observed Lease goes with the confirmed request.
-            _signal_applied(
-                request,
-                lease_added,
-                "lease_added",
-                server=instance,
-                creation=creation,
-                lease=None,
-                dhcp_version=self.dhcp_version,
-            )
 
         def entries(rows: Iterable[tuple[tuple[int, LeaseRequest], str]]) -> list[dict[str, Any]]:
             return [
