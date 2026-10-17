@@ -22,6 +22,7 @@ class BadSubnetsView:
 
 
 def bad_partial_reads_leases_without_the_loader(client, server, by, q):
+    # ruleid: kea-view-read-ladder
     try:
         # ruleid: kea-snapshot-read-without-notice
         snapshot = client.lease_search(4, by, q, server_id=server.pk)
@@ -98,8 +99,13 @@ def good_combined_page_fills_its_lists(executor, servers):
 
 
 def get_export(request, client, server):
-    # ok: kea-snapshot-read-without-notice
+    # ruleid: kea-snapshot-read-without-notice
     return client.lease_get_all(4, server_id=server.pk)
+
+
+def get_export_all(request, client, server):
+    # ok: kea-snapshot-read-without-notice
+    return load_snapshot(server, "lease", lambda: client.lease_get_all(4, server_id=server.pk))
 
 
 def good_exact_and_synchronization_reads(client, server, identity):

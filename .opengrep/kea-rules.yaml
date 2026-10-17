@@ -1185,9 +1185,8 @@ rules:
       calls neither notice() nor load_snapshot() from views/notices.py. The page then does not show an
       unavailable or incomplete Snapshot (ADR 0003, Presentation). Pass the Snapshot to notice(), or run
       a raised Reservation or Lease read through load_snapshot(), and show the Notice.
-      Exempt by name: the read helpers whose callers use load_snapshot(), the exports that refuse a
-      failed or incomplete read, and the reads that only feed another read, a badge, a check or a
-      preview.
+      Exempt by name: the read helpers whose callers use load_snapshot(), and the reads that only feed
+      another read, a badge, a check or a preview.
       Limits: a read through a helper that this rule does not name, a read function passed by reference
       other than to executor.submit(), an aliased import, and a Notice made in a called helper are not
       seen.
@@ -1244,20 +1243,6 @@ rules:
       - pattern-not-inside: |
           def _read_reservation_observation(...):
               ...
-      # Exports refuse a failed or incomplete read; they show no Snapshot.
-      - pattern-not-inside: |
-          def get_export(...):
-              ...
-      - pattern-not-inside: |
-          def get_export_all(...):
-              ...
-      - pattern-not-inside: |
-          def _reservation_export_response(...):
-              ...
-      # The advisory Pool overlap check after a Pool add reports its own result.
-      - pattern-not-inside: |
-          def _warn_reservations_in_pool(...):
-              ...
       # The DDNS suffix of a hostname preview.
       - pattern-not-inside: |
           def _published_name_preview(...):
@@ -1268,6 +1253,98 @@ rules:
               ...
       - pattern-not-inside: |
           def _live_capabilities(...):
+              ...
+
+  - id: kea-view-read-ladder
+    languages: [python]
+    severity: ERROR
+    message: >-
+      This view catches KeaException or requests.RequestException itself. A user-facing Kea read goes through
+      load_snapshot() or load_target() in views/notices.py: they turn a Kea refusal, a transport failure and a
+      malformed reply into one Notice with the shared headline and Kea's text (kea_error_message()), and they log
+      the failure. A hand-written ladder writes its own text, and the texts drift. Run the read through the loader,
+      and catch only a ValueError that the site can raise, with an accurate message.
+      Exempt by name: the reads that degrade silently and log the failure (utilization, status, the read back of a
+      created Lease, a later page of a Reservation search, the Reservation read of the DHCP plugin import).
+      Limits: an except of Exception, of RuntimeError alone, of a subclass such as requests.ConnectionError, or of
+      an aliased import is not seen, and the rule does not check that a handler logs.
+    metadata:
+      category: correctness
+      confidence: HIGH
+      references:
+        - "docs/adr/0003-separate-server-configuration-authority.md: Presentation"
+        - "docs/adr/0011-runtime-changes-return-a-typed-outcome.md: Consequences"
+    paths:
+      include:
+        - "netbox_kea/views/**"
+        - "kea-view-read-ladder.py"
+      exclude:
+        - "netbox_kea/views/notices.py"
+    patterns:
+      - pattern-either:
+          - pattern: |
+              try:
+                  ...
+              except KeaException:
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except KeaException as $E:
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except (..., KeaException, ...):
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except (..., KeaException, ...) as $E:
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except requests.RequestException:
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except requests.RequestException as $E:
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except (..., requests.RequestException, ...):
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except (..., requests.RequestException, ...) as $E:
+                  ...
+      # Subnet utilization is optional: a failed read leaves the utilization columns empty.
+      - pattern-not-inside: |
+          def _enrich_subnet_statistics(...):
+              ...
+      # The Overview leaves a daemon whose status cannot be read out of its status table.
+      - pattern-not-inside: |
+          def _get_statuses(...):
+              ...
+      # The combined dashboard badge shows a daemon that cannot be read as offline.
+      - pattern-not-inside: |
+          def _daemon_online(...):
+              ...
+      # The read back after an applied Lease add only feeds the IPAM sync; the add already succeeded.
+      - pattern-not-inside: |
+          def _read_created_lease(...):
+              ...
+      # A later page of a Reservation search ends the batch with a diagnostic; the first page raises to the loader.
+      - pattern-not-inside: |
+          def _read_reservations(...):
+              ...
+      # The DHCP plugin import records an unread Reservation Snapshot in its summary.
+      - pattern-not-inside: |
+          def _read_reservation_observation(...):
               ...
 
   - id: kea-catalogue-absence-without-consistency
