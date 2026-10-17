@@ -47,7 +47,14 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _make_db_server, _page_data, _ViewTestBase, save_key_without_certificate
+from .utils import (
+    INVALID_SERVER_SETTINGS,
+    UNCONFIRMED_RUNTIME,
+    _make_db_server,
+    _page_data,
+    _ViewTestBase,
+    save_key_without_certificate,
+)
 
 # Shared stub responses for the subnet list/table views, which issue config-get
 # (subnets + shared-networks) then stat-lease{v}-get (utilisation; degrades if the
@@ -558,12 +565,12 @@ class TestServerSubnet4WipeView(_ViewTestBase):
 
     def test_post_with_a_client_that_cannot_be_built_is_a_settings_error(self):
         """A key without a certificate is a Server setting error, not a connection failure; nothing is wiped."""
-        expected = save_key_without_certificate(self.server)
+        save_key_without_certificate(self.server)
         with stub_kea({}) as kea:
             response = self.client.post(self._url(subnet_id=10))
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands(), [])
-        self.assertEqual([str(message) for message in get_messages(response.wsgi_request)], [expected])
+        self.assertEqual([str(message) for message in get_messages(response.wsgi_request)], [INVALID_SERVER_SETTINGS])
 
     def test_post_on_a_subnet_without_leases_reports_success(self):
         """Kea 3.2.0 answers result 3 when there is no lease to delete; the Subnet is still empty."""
@@ -574,31 +581,29 @@ class TestServerSubnet4WipeView(_ViewTestBase):
         self.assertIn((django_messages.SUCCESS, "All leases in subnet 10 wiped."), shown)
         self.assertNotIn(django_messages.ERROR, [level for level, _text in shown])
 
-    def test_post_on_kea_exception_shows_error_message(self):
-        """POST that causes a KeaException must flash an error and redirect (no 500)."""
-        with stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": {"result": 1, "text": "hook not loaded"}}):
+    def test_post_on_a_failure_result_is_unconfirmed_with_kea_text(self):
+        """The backend deletes the Leases one at a time, so a failure result can follow deleted Leases (ADR 0011)."""
+        with stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": {"result": 1, "text": "could not write the lease file"}}):
             response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
-
-    def test_post_on_unexpected_exception_shows_error_message(self):
-        """POST that raises an unexpected exception must redirect (no 500)."""
-        with stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": ValueError("unexpected")}):
-            response = self.client.post(self._url())
-        self.assertEqual(response.status_code, 302)
-        self._assert_no_none_pk_redirect(response)
-
-    def test_post_on_malformed_reply_shows_error_message(self):
-        """A reply entry without a result must redirect with an error (no 500)."""
-        from django.contrib.messages import get_messages
-
-        with stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": ["ok"]}):
-            response = self.client.post(self._url())
-        self.assertEqual(response.status_code, 302)
         self.assertEqual(
             [str(message) for message in get_messages(response.wsgi_request)],
-            ["Failed to wipe leases: see server logs for details."],
+            [f"{UNCONFIRMED_RUNTIME} Kea replied: could not write the lease file"],
         )
+
+    def test_post_on_a_lost_or_malformed_reply_is_unconfirmed(self):
+        """A lost or malformed reply asks the operator to check the Server, never an HTTP 500."""
+        for name, reply in (("lost", requests.ReadTimeout("read timed out")), ("malformed", ["ok"])):
+            self._fresh_client()
+            with self.subTest(name), stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": reply}) as kea:
+                response = self.client.post(self._url())
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(
+                [str(message) for message in get_messages(response.wsgi_request)],
+                [f"{UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable."],
+            )
+            self.assertEqual(kea.commands(), ["lease4-wipe"])
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""
@@ -1686,12 +1691,6 @@ def _incomplete_networks(*members: dict) -> dict:
     return {"result": 0, "arguments": {"Dhcp4": {"subnet4": [], "shared-networks": networks}}}
 
 
-_INVALID_SERVER_SETTINGS = (
-    "The change was not sent to Kea, because the Server settings are not valid. "
-    "NetBox could not build a Kea client from the Server connection settings."
-)
-
-
 class TestSubnetAddExceptionPaths(_ViewTestBase):
     """_BaseSubnetAddView GET/POST paths around the change."""
 
@@ -1731,7 +1730,7 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
         with stub_kea(SubnetDaemon(4).responses()) as kea:
             response = self.client.post(url, _SUBNET_ADD_POST)
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, _INVALID_SERVER_SETTINGS)
+        self.assertContains(response, INVALID_SERVER_SETTINGS)
         self.assertEqual(kea.commands(), [])
 
 
@@ -2700,7 +2699,7 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
                 bad_url = url.replace(f"/servers/{self.server.pk}/", f"/servers/{bad.pk}/")
                 messages, kea = self._post(bad_url, data, _change_responses(_subnet_1()))
                 self.assertEqual(kea.commands(), [])
-                self.assertEqual(messages, [(django_messages.ERROR, _INVALID_SERVER_SETTINGS)])
+                self.assertEqual(messages, [(django_messages.ERROR, INVALID_SERVER_SETTINGS)])
 
     def test_a_pool_delete_whose_pool_is_outside_the_cidr_sends_nothing(self):
         url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 1, "10.0.1.10-10.0.1.20"])
@@ -3986,7 +3985,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         with stub_kea({}) as kea:
             response = self.client.post(url, {**_shown(), "subnet_cidr": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, _INVALID_SERVER_SETTINGS)
+        self.assertContains(response, INVALID_SERVER_SETTINGS)
         self.assertEqual(kea.commands(), [])
 
     # ── 6. Pool add with reservation overlap warning ────

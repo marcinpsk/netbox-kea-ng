@@ -33,6 +33,7 @@ from .kea import (
     SubnetEdit,
     SubnetFields,
     description_as_shown,
+    kea_error_message,
     shared_network_description,
     subnet_network,
 )
@@ -48,7 +49,6 @@ from .subnet_settings import (
     inherited_reservation_flags,
     setting_key,
 )
-from .utilities import kea_error_hint
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +228,7 @@ def _read_configuration(
             server,
             family,
             "configuration-unavailable",
-            f"Kea configuration facts are unavailable. {kea_error_hint(exc)}",
+            f"Kea configuration facts are unavailable. {kea_error_message(exc)}",
         )
     except MalformedReply:
         logger.warning("Server configuration read failed for DHCPv%s", family, exc_info=True)

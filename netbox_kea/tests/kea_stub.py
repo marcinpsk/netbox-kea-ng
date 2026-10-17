@@ -15,15 +15,21 @@ Patched at the **class** level (``requests.Session.post``) so it also covers the
 
 from __future__ import annotations
 
+import atexit
 import ipaddress
 import json
+import shutil
 import socket
+import ssl
+import tempfile
 import threading
 import time
+import warnings
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from functools import cache
 from pathlib import Path
@@ -31,6 +37,10 @@ from typing import Any, cast
 from unittest.mock import patch
 
 import requests
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 from requests.adapters import HTTPAdapter
 
 from netbox_kea import branching, server_configuration
@@ -482,6 +492,99 @@ def _refused_connection() -> requests.ConnectionError:
     finally:
         session.close()
     raise AssertionError(f"A connection to the closed port {port} did not fail.")
+
+
+def _post_error(url: str, *, verify: bool = True) -> requests.RequestException:
+    """Return the error that a real ``requests`` POST to *url* raises. Call it outside ``stub_kea``."""
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        session.post(url, json={}, timeout=5, verify=verify)
+    except requests.RequestException as exc:
+        return exc
+    finally:
+        session.close()
+    raise AssertionError(f"The POST to {url} did not fail.")
+
+
+def _serve_once(handle: Callable[[socket.socket], None]) -> tuple[int, threading.Thread]:
+    """Accept one connection on a free local port in a thread, and run *handle* on it."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+
+    def run() -> None:
+        connection, _address = listener.accept()
+        try:
+            handle(connection)
+        except OSError:
+            pass
+        finally:
+            connection.close()
+            listener.close()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return port, thread
+
+
+@cache
+def _self_signed_certificate() -> tuple[str, str]:
+    """Return the certificate and key file of a self-signed certificate for 127.0.0.1."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    now = datetime.now(tz=timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    directory = Path(tempfile.mkdtemp(prefix="kea-tls-"))
+    atexit.register(shutil.rmtree, directory, ignore_errors=True)
+    certificate_file, key_file = directory / "cert.pem", directory / "key.pem"
+    certificate_file.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key_file.write_bytes(
+        key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+    )
+    return str(certificate_file), str(key_file)
+
+
+def _tls_server_context() -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(*_self_signed_certificate())
+    return context
+
+
+def _tls_errors() -> dict[str, requests.RequestException]:
+    """Return two real TLS errors that requests raises while it connects. Call it outside ``stub_kea``.
+
+    "verify": the client cannot verify a self-signed certificate. "handshake": the server answers in plain HTTP.
+    """
+
+    def plain_http(connection: socket.socket) -> None:
+        connection.recv(4096)
+        connection.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+
+    def handshake(connection: socket.socket) -> None:
+        with suppress(ssl.SSLError):
+            _tls_server_context().wrap_socket(connection, server_side=True)
+
+    errors = {}
+    for name, handle, verify in (("handshake", plain_http, False), ("verify", handshake, True)):
+        port, thread = _serve_once(handle)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            errors[name] = _post_error(f"https://127.0.0.1:{port}/", verify=verify)
+        thread.join(timeout=5)
+    return errors
 
 
 def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):

@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """A Server whose Kea client cannot be built names its client settings on every page that acts on Kea.
 
+A Runtime Change gives the rejection of the shared mapper instead, as a Configuration Change does.
+
 ``Server.get_client()`` sends nothing, so its ``ValueError`` is a Server setting error, never a connection failure, a
 Kea reply error or an internal error. Each test saves a client key without a certificate with ``.update()``, drives
 the real view, and checks that no Kea command was sent.
@@ -13,7 +15,7 @@ from django.utils.html import escape
 
 from .kea_stub import LeaseDaemon, stub_kea
 from .test_lease_actions import _address4, _inputs
-from .utils import _ViewTestBase, save_key_without_certificate
+from .utils import INVALID_SERVER_SETTINGS, _ViewTestBase, save_key_without_certificate
 
 _IDENTITY = {"identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"}
 
@@ -26,16 +28,17 @@ class ClientSettingsErrorTest(_ViewTestBase):
     def _url(self, name: str, *args) -> str:
         return reverse(f"plugins:netbox_kea:{name}", args=[self.server.pk, *args])
 
-    def test_dhcp_enable_and_disable_name_the_client_settings(self):
+    def test_runtime_changes_are_not_sent_with_invalid_server_settings(self):
+        """A Runtime Change gives the rejection of the shared mapper, as a Configuration Change does (ADR 0011)."""
         for name, data in (("server_dhcp4_enable", {}), ("server_dhcp4_disable", {"confirm": "True"})):
             with self.subTest(name):
                 self._fresh_client()
-                expected = save_key_without_certificate(self.server)
+                save_key_without_certificate(self.server)
                 with stub_kea({}) as kea:
                     response = self.client.post(self._url(name), data)
                 self.assertEqual(response.status_code, 302)
                 self.assertEqual(kea.commands(), [])
-                self.assertEqual(_messages(response), [expected])
+                self.assertEqual(_messages(response), [INVALID_SERVER_SETTINGS])
 
     def test_the_export_of_all_leases_names_the_client_settings(self):
         expected = save_key_without_certificate(self.server)
@@ -53,26 +56,26 @@ class ClientSettingsErrorTest(_ViewTestBase):
         self.assertEqual(kea.commands(), [])
         self.assertEqual(_messages(response), [expected])
 
-    def test_a_lease_edit_save_names_the_client_settings(self):
+    def test_a_lease_edit_save_is_not_sent_with_invalid_server_settings(self):
         url = self._url("server_lease4_edit", "192.0.2.40")
         with stub_kea(LeaseDaemon(4, _address4()).responses()):
             form = _inputs(self.client.get(url))
-        expected = save_key_without_certificate(self.server)
+        save_key_without_certificate(self.server)
         with stub_kea({}) as kea:
             response = self.client.post(url, {**form, "hostname": "renamed.example.org"})
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands(), [])
-        self.assertEqual(_messages(response), [expected])
+        self.assertEqual(_messages(response), [f"Lease 192.0.2.40: {INVALID_SERVER_SETTINGS}"])
 
-    def test_a_lease_add_names_the_client_settings(self):
-        expected = save_key_without_certificate(self.server)
+    def test_a_lease_add_is_not_sent_with_invalid_server_settings(self):
+        save_key_without_certificate(self.server)
         with stub_kea({}) as kea:
             response = self.client.post(
                 self._url("server_lease4_add"), {"ip_address": "192.0.2.50", "hw_address": "aa:bb:cc:00:00:50"}
             )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
-        self.assertEqual(_messages(response), [expected])
+        self.assertEqual(_messages(response), [f"Lease 192.0.2.50: {INVALID_SERVER_SETTINGS}"])
 
     def test_a_lease_sync_row_names_the_client_settings(self):
         expected = save_key_without_certificate(self.server)

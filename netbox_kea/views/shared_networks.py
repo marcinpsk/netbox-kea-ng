@@ -17,7 +17,7 @@ from ..models import Server
 from ._base import (
     ConditionalLoginRequiredMixin,
     _KeaChangeMixin,
-    _run_config_change,
+    _run_change,
     _safe_return_url,
     _shared_network_row,
 )
@@ -145,7 +145,7 @@ class BaseServerSharedNetworkAddView(_KeaChangeMixin, ServerFamilyMixin, Conditi
                 },
             )
         name = form.cleaned_data["name"]
-        _run_config_change(
+        _run_change(
             request,
             f"Shared network '{name}' created.",
             lambda: config_write.add_shared_network(server, self.dhcp_version, name),
@@ -201,7 +201,7 @@ class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ServerFamilyMixin, Cond
     def post(self, request: HttpRequest, pk: int, network_name: str) -> HttpResponse:
         """Delete the shared network."""
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        _run_config_change(
+        _run_change(
             request,
             f"Shared network '{network_name}' deleted.",
             lambda: config_write.delete_shared_network(server, self.dhcp_version, network_name),
@@ -279,7 +279,7 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ServerFamilyMixin, Condit
             )
 
         edit, shown = form.to_edit(), form.shown()
-        _run_config_change(
+        _run_change(
             request,
             f"Shared network '{network_name}' updated.",
             lambda: config_write.edit_shared_network(server, self.dhcp_version, network_name, edit, shown=shown),

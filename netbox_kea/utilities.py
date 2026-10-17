@@ -229,51 +229,6 @@ def parse_delegated_prefixes(value: str, separator: str = ",") -> list[str]:
     return prefixes
 
 
-def kea_error_hint(exc: Any) -> str:
-    """Return a human-readable hint for a :exc:`~netbox_kea.kea.KeaException`.
-
-    Maps Kea result codes to actionable messages so users see something useful
-    instead of a generic "see server logs" error.
-
-    Result codes:
-        0  — success (should not normally be an error)
-        1  — generic error
-        2  — command not supported (hook library not loaded)
-        3  — empty result / not found
-        4  — conflict with the server state (lease_cmds: the lease exists, or a concurrent change)
-        128 — service not connected / daemon unreachable
-    """
-    result = getattr(exc, "response", {}).get("result", -1)
-    if result == 2:
-        return (
-            "This command is not supported by the Kea server. "
-            "The required hook library may not be loaded (e.g. host_cmds, lease_cmds, subnet_cmds)."
-        )
-    if result == 3:
-        return "No matching records found in Kea."
-    if result == 4:
-        return (
-            "The change conflicts with the current state of the Kea server: for example, the lease already exists,"
-            " or another request changed it at the same time. Check the current state and try again."
-        )
-    if result == 128:
-        return "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable."
-    if result == 0:
-        return "Operation reported success."
-    if result == 1:
-        # host_cmds' reservationAddHandler raises this text (see
-        # HostCmdsImpl::validateHostForSubnet4/6 in Kea's host_cmds hook) when the
-        # reserved address falls outside the subnet's CIDR range.
-        text = getattr(exc, "response", {}).get("text", "") or ""
-        if (
-            "is not matching the ipv4 subnet prefix" in text.lower()
-            or "is not matching the ipv6 subnet prefix" in text.lower()
-        ):
-            return "The reserved IP address is outside the subnet's CIDR range."
-        return "Kea reported an error. Check the server logs for details."
-    return f"Kea returned an unexpected result code ({result}). Check the server logs for details."
-
-
 class LeaseCSVError(ValueError):
     """A lease CSV row is not a valid creation request; the message names the file line and the column, never a value."""
 

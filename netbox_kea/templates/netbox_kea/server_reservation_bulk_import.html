@@ -21,7 +21,8 @@
             <li>Use a subnet CIDR. The import resolves its current Kea subnet ID from the live Subnet Catalogue.</li>
             <li>Each record needs exactly one native Kea identity.</li>
             <li>Global scope is valid in exports, but import currently supports only <code>in-subnet</code>.</li>
-            <li>Any validation error stops the complete import. A Kea write failure stops the remaining records.</li>
+            <li>Any validation error stops the complete import. NetBox then sends nothing.</li>
+            <li>NetBox creates the Reservations one at a time. An entry that Kea does not apply or does not confirm stops the import.</li>
           </ul>
         </div>
 
@@ -79,19 +80,7 @@ reservations:
           </tbody>
         </table>
         {% else %}
-        <div class="row text-center mb-3">
-          <div class="col"><div class="display-6 text-success">{{ result.created }}</div><div class="text-muted small">Created</div></div>
-          <div class="col"><div class="display-6 text-danger">{{ result.failed }}</div><div class="text-muted small">Failed</div></div>
-          <div class="col"><div class="display-6 text-secondary">{{ result.not_attempted }}</div><div class="text-muted small">Not attempted</div></div>
-          <div class="col"><div class="display-6">{{ result.total }}</div><div class="text-muted small">Total</div></div>
-        </div>
-        {% if result.failure %}
-        <div class="alert alert-danger" role="alert">
-          Import stopped at <code>{{ result.failure.position }}</code>: {{ result.failure.message }}
-        </div>
-        {% else %}
-        <div class="alert alert-success mb-0" role="status">All Reservations were created.</div>
-        {% endif %}
+        {% include "netbox_kea/inc/import_report.html" %}
         {% endif %}
       </div>
     </div>

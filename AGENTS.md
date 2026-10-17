@@ -213,7 +213,9 @@ URL request
       sync_views.py     (per-server IPAM sync UI)
       sync_jobs.py      (jobs tab, periodic sync management)
       settings_page.py  (Settings page: one section per settings singleton; ADR 0010)
-  → config_write.py     (Configuration Changes: typed outcome, advisory lock, persist step)
+  → config_write.py     (Configuration Changes, Reservation writes included: typed outcome, advisory lock, persist step)
+  → change_outcome.py   (ChangeRejected and the Application classifier that every change shares; ADR 0011)
+  → runtime_change.py   (Runtime Changes: Lease add/edit/delete/wipe, DHCP enable/disable; ADR 0011)
   → kea.py              (HTTP POST to each daemon's / control socket)
   → display_cache.py    (the display cache: keys, generations, TTLs, admission; ADR 0009)
   → lease_reads.py      (the cached Lease Snapshot reads of the Leases tab and of the Lease badges; ADR 0009)
@@ -329,7 +331,8 @@ URL request
   of a Subnet export), the API, `ipam_reconciliation`, the edit and delete target loads, `_checked_lease`, the read
   back of a created Lease and the `version-get` connectivity check of `server_connection` read live. `KeaClient.command()` calls
   `on_write(family, configuration=False)` before and after each write command, also when the send fails, and
-  `_config_mutation_command` calls `on_write(family, configuration=True)` around a live configuration mutation.
+  `_config_mutation_command` calls `on_write(family, configuration=True)` around a live configuration mutation,
+  a Reservation write included.
   `Server.get_client()` binds it to `rotate_after_write`, which rotates the records generation (both families for
   `None`) and, for a configuration change, the configuration generation. `MutationScope` calls
   `rotate_configuration`. A rotation failure is logged, and the write continues. The callers validate the family;
@@ -374,7 +377,7 @@ URL request
 ```text
 Exception
  ├── KeaException                  # base: any non-ok result from Kea
- └── ConfigChangeRejected          # config_write: the change is not live, with a reason
+ └── ChangeRejected                # change_outcome: the change is not live, with a reason
 ```
 
 **`views/notices.py` owns every Snapshot notice** (ADR 0003, Presentation). A view passes a Catalogue or Server
@@ -389,16 +392,51 @@ the sweep's exempt list.
 
 **`config_write` owns every Configuration Change** (ADR 0005). An
 operation returns a `ConfigChangeOutcome` (`applied`/`unknown` and
-`persisted`/`failed`/`not-requested`) or raises `ConfigChangeRejected` with a reason.
-A view runs it through `_run_config_change` in `views/_base.py`, which owns the
+`persisted`/`failed`/`not-requested`) or raises `ChangeRejected` with a reason.
+A view runs it through `_run_change` in `views/_base.py`, which owns the
 messages, and catches nothing itself. Shared Network add, edit and delete, Subnet add, edit and
 delete, Pool add and delete, Subnet and server DHCP Options, and Option Definition add and
-delete use it. An OpenGrep rule refuses an `except` of `ConfigChangeRejected` in `views/`
-outside `_run_config_change`. A second rule keeps that function in `views/_base.py`, and a third
-refuses a broad `except` around a direct `config_write` call in a view. Only `config_write` operations take the per-daemon advisory
-lock. Reservation mutations call `KeaClient.persist`, but they do not wait for the lock. A Subnet, Pool
+delete use it. An OpenGrep rule refuses an `except` of `ChangeRejected` in `views/`
+outside `_run_change` and `_run_change_loop`. A second rule keeps those functions in `views/_base.py`, and a third
+refuses a broad `except` around a direct `config_write` or `runtime_change` call in a view. Only `config_write` operations take the per-daemon advisory
+lock. A Subnet, Pool
 or Subnet DHCP Options operation takes the Subnet ID and the CIDR that the page showed, and
 sends nothing unless its `MutationScope` returns a Verified Subnet with both.
+
+Reservation add, edit and delete are Configuration Changes too (ADR 0012): `add_reservation`, `edit_reservation`
+and `delete_reservation` hold the lock from the `MutationScope` read to the end of the persist step and return a
+`ReservationChangeOutcome` (the previous and intended Reservation, the verification state and the Catalogue of the
+scope read, which `claim()` takes). The view passes a builder callback that turns the form into the Reservation, or
+into the `ReservationChange` of the Reservation that the read under the lock returned; an error of the builder
+(`_UnknownSuffix`, `ReservationConflict`, a `ValueError`) propagates unchanged: the view shows the first two as form
+errors and a `ValueError` as a page error.
+A Subnet or a Reservation that is gone, a changed fingerprint and result 3 on `reservation-del` are
+`target-changed`; result 2 is a rejection; any other failure result, result 5, a forward failure or a lost reply is
+`unknown`, with no read after it. The persist step runs after `applied` and `unknown`, and the verification read only
+after `applied`. `KeaClient` keeps the single commands (`reservation_add`, `reservation_update`, `reservation_del`,
+sent through `_config_mutation_command`, so a display read during the write is not kept), the reads and the raw
+record handling (`FreshReservation.updated` keeps each Kea field that NetBox does not manage). The OpenGrep rule
+`kea-reservation-write-outside-config-write` refuses a call to these write primitives outside `config_write`. The
+bulk Reservation import sends one change for each entry through `_run_change_loop(..., stop_on_rejection=True)`, so
+an unknown or a rejected entry stops it, and shows the import report that it shares with the Lease CSV import
+(`_import_report` in `views/sync_views.py`, `inc/import_report.html`).
+
+**`runtime_change` owns every Runtime Change** (ADR 0011): Lease add, edit, delete and wipe, and DHCP enable and
+disable. An operation returns a `RuntimeChangeOutcome` (`applied`/`unknown` and diagnostics) or raises
+`ChangeRejected`. Both modules classify through `change_outcome` (`before_change`, `mutate`, `never_sent`): a failed
+read before the write, a connect-phase failure, an invalid URL or an HTTP 401 answer is `not-sent`; a lost or
+malformed reply, any other HTTP error, every TLS failure (its diagnostic names the TLS connection), a redirect, a
+Control Agent forward failure or result 5 is `unknown`. Result 2 in a well-formed reply is a rejection for every command. Any other failure result on a Lease
+write or a wipe is `unknown`, and on `dhcp-enable` or `dhcp-disable` a rejection; no operation reads Kea after the
+send. A fresh read that does not match the shown Lease,
+a Lease that is gone before the send, result 3 on `lease{v}-del` and result 4 on `lease{v}-update` are
+`target-changed`. A view runs one change through `_run_change` and a loop of changes (multi-Lease delete, Lease CSV
+import) through `_run_change_loop`, which stops at the first `unknown` row. The journal entry, the signals and the
+IPAM synchronization run in the view only after `applied`; a failure there shows a separate error. `_journal_applied`
+and `_signal_applied` in `views/_base.py` write the journal entry and send a signal for Lease and Reservation changes
+alike; `send_robust()` returns a receiver error, so `_signal_applied` reads its responses. The OpenGrep rule
+`kea-runtime-write-outside-runtime-change` refuses a call to a `KeaClient` runtime write primitive outside
+`runtime_change`.
 
 Subnet add is the first multi-step change: `add_subnet` adds the Subnet and then assigns it to
 a Shared Network. When the assignment does not apply, it deletes the Subnet again, but only
@@ -464,11 +502,12 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
   handlers.
 - **Catch `(KeaException, requests.RequestException, RuntimeError, ValueError)`
   consistently** in user-facing handlers. `check_response()` raises `RuntimeError` for a
-  malformed reply entry. Split `KeaException` when you need `kea_error_hint(exc)` for
-  hook-related errors (result=2). A Configuration Change goes through `_run_config_change`
+  malformed reply entry. Split `KeaException` when you show Kea's answer with
+  `kea_error_message(exc)`. A Configuration Change or a Runtime Change goes through `_run_change`
   instead (see "Exception hierarchy").
-- **Use `kea_error_hint(exc)` for user-facing Kea error messages** — it maps result
-  codes to actionable hints (result=2 → hook library not loaded, etc.).
+- **Use `kea.kea_error_message(exc)` for user-facing Kea error messages**, also in change diagnostics: fixed guidance for result 2 (hook
+  library not loaded) and result 128 (daemon not reachable), else `Kea replied: <text>`. Show Kea's text, never
+  the text of a Python exception.
 - **Guard action URLs/buttons by permission AND lookup state.** Don't offer
   Sync/Reserve for a Lease whose Reservation Match is Unknown; don't offer add/edit to
   users without `change` permission.
@@ -640,7 +679,9 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Transactions**: open every transaction with `event_scope.atomic()`, never `transaction.atomic`
   (opengrep `kea-raw-atomic`). At the top level of a tracked request, on a NetBox release whose `event_tracking` nests (`event_scope._nested_tracking`), it is a unit, whose events
   dispatch after its COMMIT or not at all. Put `except event_scope.EventDispatchError: raise` before a broad
-  `except`. Read `docs/design/savepoint-event-queue.md` (sections 22 and 24) before you change it.
+  `except`. The one exception is a side effect after a change that Kea applied: the Lease add view and the
+  Reservation add and edit views report the failed dispatch of their IPAM sync as a separate error, because the
+  request must report the applied change. Read `docs/design/savepoint-event-queue.md` (sections 22 and 24) before you change it.
 - **Kea option names per family**: DNS is `domain-name-servers` (v4) or `dns-servers` (v6), and NTP is
   `ntp-servers` (v4) or `sntp-servers` (v6). `dhcp_options._FORM_MANAGED_OPTIONS` maps each form field to them.
 - **Forms**: lease search forms inherit `BaseLeasesSarchForm` (the typo is

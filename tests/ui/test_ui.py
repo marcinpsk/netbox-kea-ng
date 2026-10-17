@@ -1173,8 +1173,10 @@ def test_lease_deleted_before_delete(
     kea.command(f"lease{family}-del", family, arguments={"ip-address": ip})
 
     page.locator('button[name="_confirm"]').click()
-    # Kea returns result 3, so nothing is reported as deleted.
-    expect(page.locator(".toast-body")).to_have_text(f"Lease {ip} was not found in Kea; nothing was deleted.")
+    # The fresh read before the delete finds no lease, so nothing is sent or reported as deleted.
+    expect(page.locator(".toast-body")).to_have_text(
+        f"Lease {ip}: This request changed nothing. Kea no longer holds it."
+    )
 
 
 @pytest.mark.parametrize("family", (6, 4))
@@ -1982,7 +1984,10 @@ def test_reservation_document_import_and_export_round_trip(
         )
     page.get_by_role("button", name="Validate and import").click()
 
-    expect(page.get_by_text("All Reservations were created.", exact=True)).to_be_visible()
+    created = page.locator('section[data-import-status="created"] tbody tr')
+    expect(created).to_have_count(1)
+    expect(created).to_contain_text(f"{identifier_type} {identifier}")
+    expect(page.locator("section[data-import-status]")).to_have_count(1)
     stored = _reservation_get(kea_client, version, RESERVATION_SUBNET_ID, identifier_type, identifier)
     assert stored is not None
     if version == 4:

@@ -107,7 +107,7 @@ rules:
       Do not leak exception details to user-facing responses. str(exc) or an
       f-string interpolating a caught exception can expose internal URLs, TLS
       details, or Kea API config. Log server-side with logger.exception() and
-      return a generic message (or a sanitised kea_error_hint()).
+      return a generic message (or kea_error_message(), which shows Kea's own reply text).
     metadata:
       category: security
       confidence: HIGH
@@ -191,6 +191,57 @@ rules:
       - metavariable-regex:
           metavariable: $M
           regex: ^RESERVATION_
+
+  - id: kea-runtime-write-outside-runtime-change
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Send a Runtime Change through runtime_change, not through a KeaClient write
+      primitive. runtime_change reads the shown Lease before the write, classifies the
+      reply as applied, unknown or a rejection, and never reads Kea after the send
+      (ADR 0011). A direct call reads a lost reply as a failure, although Kea can have
+      applied the change. The rule matches the method name, so it cannot see a call
+      through an alias.
+    metadata:
+      category: correctness
+      confidence: HIGH
+      references:
+        - "docs/adr/0011-runtime-changes-return-a-typed-outcome.md: Guard"
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "netbox_kea/runtime_change.py"
+    patterns:
+      - pattern: $CLIENT.$METHOD(...)
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: ^(lease_add|lease_update|lease_delete|lease_wipe|dhcp_enable|dhcp_disable)$
+
+  - id: kea-reservation-write-outside-config-write
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Send a Reservation write through config_write.add_reservation(), edit_reservation()
+      or delete_reservation(), not through a KeaClient write primitive. config_write holds
+      the advisory lock of the Kea daemon from the scope read to the end of the persist step,
+      classifies the reply as applied, unknown or a rejection, and verifies only an applied
+      change (ADR 0012). A direct call takes no lock, so a concurrent config-set can erase
+      it, and it reads a lost reply as a failure. The rule matches the method name, so it
+      cannot see a call through an alias.
+    metadata:
+      category: correctness
+      confidence: HIGH
+      references:
+        - "docs/adr/0012-reservation-writes-are-configuration-changes.md"
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "netbox_kea/config_write.py"
+    patterns:
+      - pattern: $CLIENT.$METHOD(...)
+      - metavariable-regex:
+          metavariable: $METHOD
+          regex: ^(reservation_add|reservation_update|reservation_del)$
 
   - id: kea-config-read-modify-write-without-reader
     languages: [python]
@@ -307,19 +358,21 @@ rules:
             - pattern: <... IPRange.objects ...>
             - pattern: <... IPAddress.objects ...>
 
-  - id: kea-config-change-rejection-caught-outside-mapper
+  - id: kea-change-rejection-caught-outside-mapper
     languages: [python]
     severity: ERROR
     message: >-
-      Do not catch ConfigChangeRejected in a view. Run the change through
-      _run_config_change() in views/_base.py, which is the one place that turns an
-      outcome or a rejection into a message (ADR 0005). A second handler gives the
-      same rejection a different message.
+      Do not catch ChangeRejected in a view. Run the change through
+      _run_change(), or a loop of changes through _run_change_loop(), in
+      views/_base.py. They are the one place that turns an outcome or a rejection
+      into a message (ADR 0005, ADR 0011). A second handler gives the same
+      rejection a different message.
     metadata:
       category: maintainability
       confidence: HIGH
       references:
         - "docs/adr/0005-configuration-changes-return-a-typed-outcome.md: Presentation"
+        - "docs/adr/0011-runtime-changes-return-a-typed-outcome.md: Shared types and presentation"
     paths:
       include:
         - "**/views/**"
@@ -344,49 +397,58 @@ rules:
       - metavariable-pattern:
           metavariable: $EXC
           pattern-either:
-            - pattern: ConfigChangeRejected
-            - pattern: $MODULE.ConfigChangeRejected
+            - pattern: ChangeRejected
+            - pattern: $MODULE.ChangeRejected
       - pattern-not-inside: |
-          def _run_config_change(...):
+          def _run_change(...):
+              ...
+      - pattern-not-inside: |
+          def _run_change_loop(...):
               ...
       - focus-metavariable: $EXC
 
-  - id: kea-config-change-mapper-outside-base
+  - id: kea-change-mapper-outside-base
     languages: [python]
     severity: ERROR
     message: >-
-      Define _run_config_change only in views/_base.py. The rule
-      kea-config-change-rejection-caught-outside-mapper exempts a function by
-      this name, so a second definition in another view would hide its catch of
-      ConfigChangeRejected.
+      Define _run_change and _run_change_loop only in views/_base.py. The rule
+      kea-change-rejection-caught-outside-mapper exempts a function by
+      these names, so a second definition in another view would hide its catch of
+      ChangeRejected.
     metadata:
       category: maintainability
       confidence: HIGH
       references:
         - "docs/adr/0005-configuration-changes-return-a-typed-outcome.md: Presentation"
+        - "docs/adr/0011-runtime-changes-return-a-typed-outcome.md: Shared types and presentation"
     paths:
       include:
         - "**/views/**"
       exclude:
         - "**/views/_base.py"
-    pattern: |
-      def _run_config_change(...):
-          ...
+    pattern-either:
+      - pattern: |
+          def _run_change(...):
+              ...
+      - pattern: |
+          def _run_change_loop(...):
+              ...
 
-  - id: kea-config-change-in-broad-except
+  - id: kea-change-in-broad-except
     languages: [python]
     severity: ERROR
     message: >-
-      Do not call a config_write operation inside a try whose except catches
-      Exception, BaseException, or everything. That handler also catches
-      ConfigChangeRejected and hides it from _run_config_change() in
-      views/_base.py. Pass the call to _run_config_change() as a lambda, and
+      Do not call a config_write or runtime_change operation inside a try whose
+      except catches Exception, BaseException, or everything. That handler also
+      catches ChangeRejected and hides it from _run_change() in views/_base.py.
+      Pass the call to _run_change() or _run_change_loop() as a lambda, and
       catch only the errors that you expect.
     metadata:
       category: maintainability
       confidence: HIGH
       references:
         - "docs/adr/0005-configuration-changes-return-a-typed-outcome.md: Presentation"
+        - "docs/adr/0011-runtime-changes-return-a-typed-outcome.md: Shared types and presentation"
     paths:
       include:
         - "**/views/**"
@@ -419,9 +481,12 @@ rules:
                   ...
               except:
                   ...
-      - pattern: config_write.$OP(...)
+      - pattern-either:
+          - pattern: config_write.$OP(...)
+          - pattern: runtime_change.$OP(...)
       # The mapper catches the rejection only when it runs the change: a lambda, not an eager call.
-      - pattern-not-inside: "_run_config_change(..., lambda: ..., ...)"
+      - pattern-not-inside: "_run_change(..., lambda: ..., ...)"
+      - pattern-not-inside: "_run_change_loop(..., lambda $ROW: ..., ...)"
 
   - id: subprocess-without-timeout
     languages: [python]
@@ -589,10 +654,13 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Add "except event_scope.EventDispatchError: raise" before the broad handler of this try.
-      The unit committed and its events did not dispatch, so the run must fail, not report a failed row.
-      Limits: the handler order is not checked; a try with finally and handlers around callers of
-      event_scope.atomic other than claim() and reconcile() are not seen.
+      Add an "except event_scope.EventDispatchError:" clause before the broad handler of this try.
+      The unit committed and its events did not dispatch, so the run must fail ("raise"), not report a
+      failed row. In the IPAM sync after a Runtime Change that Kea applied (_run_lease_sync_to_netbox,
+      _sync_to_netbox), the clause can instead report the failed dispatch as a side-effect error with
+      messages.error() (ADR 0011). Limits: the handler order is not
+      checked; a try with finally and handlers around callers of event_scope.atomic other than claim() and
+      reconcile() are not seen.
     metadata:
       category: correctness
       confidence: HIGH
@@ -777,6 +845,42 @@ rules:
               raise
           finally:
               ...
+      - pattern-either:
+          - patterns:
+              - pattern: $CALL(...)
+              - pattern-not-inside: |
+                  try:
+                      ...
+                  except event_scope.EventDispatchError:
+                      ...
+                      messages.error(...)
+                      ...
+              - pattern-not-inside: |
+                  try:
+                      ...
+                  except event_scope.EventDispatchError:
+                      ...
+                      messages.error(...)
+                      ...
+                  else:
+                      ...
+              - pattern-not-inside: |
+                  try:
+                      ...
+                  except event_scope.EventDispatchError:
+                      ...
+                      messages.error(...)
+                      ...
+                  finally:
+                      ...
+          # Only the IPAM sync after an applied Runtime Change can report the failed dispatch.
+          - patterns:
+              - pattern-inside: |
+                  def $FUNC(...):
+                      ...
+              - metavariable-regex:
+                  metavariable: $FUNC
+                  regex: ^(?!(_run_lease_sync_to_netbox|_sync_to_netbox)$)
       - pattern-either:
           - pattern: event_scope.atomic(...)
           # Each claim and reconciliation row is an event_scope unit inside the call.
@@ -1023,9 +1127,10 @@ rules:
       Snapshot to notice(), or run a raised Reservation or Lease read through load_snapshot(), in
       views/notices.py, and show the Notice through show_notices(), a template or ServerNotices. A view
       that picks a level by hand codes the rule again, and the copies drift.
-      Exempt: the Configuration Change outcome in _run_config_change(), the Reservation search that
-      builds its Snapshot in _read_reservations(), the lease export refusal in
-      _incomplete_export_message(), and a function that parses a Reservation Transfer Document.
+      Exempt: the change outcome in _run_change(), _rejection_message(), _unconfirmed_message() and
+      _persistence_failure(), the Reservation search that builds its Snapshot in _read_reservations(), the
+      lease export refusal in _incomplete_export_message(), and a function that parses a Reservation
+      Transfer Document.
       Limits: an alias (a messages constant imported by name, or the diagnostics of a variable passed
       to a helper outside views/) and templates are not seen. A messages.error() or messages.warning()
       call is not seen either, because non-Snapshot messages use these calls correctly.
@@ -1044,9 +1149,18 @@ rules:
           - pattern: $VALUE.diagnostics
           - pattern: messages.ERROR
           - pattern: messages.WARNING
-      # A Configuration Change outcome or rejection, not a Snapshot (ADR 0005).
+      # A change outcome or rejection, not a Snapshot (ADR 0005, ADR 0011).
       - pattern-not-inside: |
-          def _run_config_change(...):
+          def _run_change(...):
+              ...
+      - pattern-not-inside: |
+          def _rejection_message(...):
+              ...
+      - pattern-not-inside: |
+          def _unconfirmed_message(...):
+              ...
+      - pattern-not-inside: |
+          def _persistence_failure(...):
               ...
       # It builds the Reservation search Snapshot from its pages; the caller loads it through load_snapshot().
       - pattern-not-inside: |

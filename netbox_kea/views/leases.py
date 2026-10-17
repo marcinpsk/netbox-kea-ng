@@ -19,14 +19,13 @@ from django.http.request import HttpRequest, QueryDict
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
-from extras.models import JournalEntry
 from netbox.tables import BaseTable
 from netbox.views import generic
 from typing_extensions import assert_never
 from utilities.paginator import EnhancedPaginator, get_paginate_count
 from utilities.views import GetReturnURLMixin, register_model_view
 
-from .. import event_scope, forms, subnet_catalogue, tables
+from .. import event_scope, forms, runtime_change, subnet_catalogue, tables
 from ..constants import Family, LeaseState
 from ..ipam_reconciliation import (
     LEASE,
@@ -38,10 +37,10 @@ from ..ipam_reconciliation import (
     prefix_ownership,
 )
 from ..kea import (
-    KeaClient,
     KeaException,
     LeaseQueryGuardError,
     LeaseQueryUnknownSubnet,
+    kea_error_message,
     lease_query_guard_message,
 )
 from ..lease_reads import LeaseSearch, cached_read, read_leases
@@ -56,18 +55,14 @@ from ..leases import (
     DHCPv6PrefixLease,
     Lease,
     LeaseAbsent,
-    LeaseChanged,
-    LeaseChangeRefused,
-    LeaseChangeResult,
-    LeaseConflict,
     LeaseEdit,
-    LeaseFact,
     LeaseFound,
     LeaseRequest,
     LeaseSnapshot,
     ShownLease,
     address_identity,
     creation_mismatches,
+    fact_words,
     is_current,
     parse_selection,
     shown_lease,
@@ -97,7 +92,6 @@ from ..utilities import (
     OptionalViewTab,
     diagnostic_reasons,
     export_table,
-    kea_error_hint,
     lease_csv_response,
     snapshot_rows,
 )
@@ -106,8 +100,12 @@ from ._base import (
     ConditionalLoginRequiredMixin,
     LazyClient,
     _client_settings_error,
+    _journal_applied,
     _KeaChangeMixin,
+    _run_change,
+    _run_change_loop,
     _safe_return_url,
+    _signal_applied,
     _strip_empty_params,
     sync_title,
 )
@@ -174,15 +172,15 @@ def lease_sync_gates(user: Any) -> dict[AllocationKind, SyncGate]:
     }
 
 
-def _read_created_lease(request: HttpRequest, client: KeaClient, creation: LeaseRequest) -> Lease | None:
-    """Read the Lease that Kea just created and check it against *creation*.
+def _read_created_lease(request: HttpRequest, client: LazyClient, creation: LeaseRequest) -> Lease | None:
+    """Read the Lease that Kea just created and check it against *creation*. It is a display read.
 
     Return ``None`` when the read fails, finds nothing, reads a malformed Lease or reads one that
     contradicts the request.
     """
     address = str(creation.address)
     try:
-        result = client.lease_get(address_identity(creation.family, address))
+        result = client().lease_get(address_identity(creation.family, address))
     except (KeaException, requests.RequestException, RuntimeError, ValueError):
         logger.exception("Kea created lease %s, but the read back failed", address)
         return None
@@ -191,7 +189,7 @@ def _read_created_lease(request: HttpRequest, client: KeaClient, creation: Lease
         return None
     mismatches = creation_mismatches(creation, result.lease)
     if mismatches:
-        facts = _fact_words(mismatches)
+        facts = fact_words(mismatches)
         logger.warning("Kea created lease %s, but the read back has another %s", address, facts)
         messages.warning(
             request, f"Lease {address} created, but the lease that Kea returned does not match the request ({facts})."
@@ -226,7 +224,7 @@ def _run_lease_sync_to_netbox(
         result = claim(server, created.family, [created], force=False)
         outcome = next(iter(result.addresses.values())).outcome
         if outcome == "error":
-            messages.warning(request, "Lease created but NetBox IPAM sync failed; see server logs.")
+            messages.error(request, "Lease created but NetBox IPAM sync failed; see server logs.")
         elif outcome == "disagreement":
             messages.warning(request, f"Lease created, but NetBox IPAM owners disagree about {address}.")
         elif outcome == "conflict":
@@ -239,39 +237,26 @@ def _run_lease_sync_to_netbox(
             nb_action = outcome if outcome in {"created", "updated"} else "already up to date"
             messages.success(request, f"IPAddress {address} {nb_action} in NetBox.")
     except event_scope.EventDispatchError:
-        raise
+        # The sync committed after Kea applied the Lease, so the failed dispatch must not end the request.
+        logger.exception("The events of the NetBox IPAM sync of lease %s could not be dispatched", address)
+        messages.error(
+            request,
+            "Lease created, and NetBox IPAM sync saved it, but NetBox could not dispatch the events of the sync;"
+            " see server logs.",
+        )
     except (CatalogueUnavailable, RuntimeError, OSError, ValueError, DatabaseError, ValidationError):
         logger.exception("Failed to sync lease %s to NetBox", address)
-        messages.warning(request, "Lease created but NetBox IPAM sync failed; see server logs.")
+        messages.error(request, "Lease created but NetBox IPAM sync failed; see server logs.")
 
 
-def _add_lease_journal(
-    server: "Server",
-    user: Any,
+def _lease_journal_comments(
     action: str,
-    ip_addresses: "list[str] | str",
+    ip_addresses: list[str],
     hw_address: str = "",
     hostname: str = "",
     duid: str = "",
-) -> None:
-    """Create a JournalEntry on *server* recording a lease CRUD event.
-
-    Args:
-        server: The Server instance the journal entry is attached to.
-        user: The request.user who performed the action.
-        action: Human-readable action name: "added" or "deleted".
-        ip_addresses: A single IP string or list of IPs affected.
-        hw_address: Optional hardware address (for add events).
-        hostname: Optional hostname (for add events).
-        duid: Optional DUID (for DHCPv6 add events).
-
-    Raises:
-        DatabaseError: If the entry cannot be saved. The lease change in Kea is already done,
-            so callers log the error and continue.
-
-    """
-    if isinstance(ip_addresses, str):
-        ip_addresses = [ip_addresses]
+) -> str:
+    """Return the journal text of a Lease change: the *action* ("added" or "deleted"), the addresses and the facts."""
     ip_list = ", ".join(ip_addresses)
     if len(ip_addresses) == 1:
         parts = [f"Lease {action}: {ip_list}"]
@@ -283,12 +268,7 @@ def _add_lease_journal(
         parts.append(f"duid: {duid}")
     if hostname:
         parts.append(f"hostname: {hostname}")
-    JournalEntry.objects.create(
-        assigned_object=server,
-        created_by=user,
-        kind="info",
-        comments="; ".join(parts),
-    )
+    return "; ".join(parts)
 
 
 def _incomplete_export_message(snapshot: LeaseSnapshot) -> str:
@@ -441,7 +421,7 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             return redirect(request.path)
         except KeaException as exc:
             logger.exception("Failed to fetch leases for export on server %s", instance.pk)
-            messages.error(request, kea_error_hint(exc))
+            messages.error(request, kea_error_message(exc))
             return redirect(request.path)
         except (requests.RequestException, RuntimeError, ValueError):
             logger.exception("Transport/parse error fetching leases for export on server %s", instance.pk)
@@ -487,7 +467,7 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             )
         except KeaException as exc:
             logger.exception("Failed to fetch all leases for export on server %s", instance.pk)
-            messages.error(request, kea_error_hint(exc))
+            messages.error(request, kea_error_message(exc))
             return redirect(request.path)
         except (requests.RequestException, ValueError, RuntimeError):
             logger.exception("Transport/parse error fetching all leases for export on server %s", instance.pk)
@@ -728,48 +708,32 @@ class BaseServerLeasesDeleteView(ServerFamilyMixin, GetReturnURLMixin, generic.O
                 },
             )
 
-        try:
-            client = instance.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(instance, exc))
-            return _after_lease_delete(request, return_url)
-
-        deleted: list[Lease] = []
-        failed_count = 0
-        for shown in selected:
-            try:
-                result = client.lease_delete(shown)
-            except KeaException as exc:
-                logger.exception("Kea error deleting lease %s on server %s", shown.label, instance.pk)
-                messages.error(request, f"Error deleting lease {shown.label}: {kea_error_hint(exc)}")
-                failed_count += 1
-                continue
-            except (requests.RequestException, RuntimeError, ValueError):
-                logger.exception("Error deleting lease %s on server %s", shown.label, instance.pk)
-                messages.error(request, f"Error deleting lease {shown.label}: see server logs for details.")
-                failed_count += 1
-                continue
-            if isinstance(result, LeaseChanged):
-                deleted.append(result.lease)
-            else:
-                failed_count += _report_outcome(request, shown.label, result, "delete")
-
+        loop = _run_change_loop(selected, lambda shown: runtime_change.delete_lease(instance, self.dhcp_version, shown))
+        for shown, message in loop.rejected:
+            message.show(request, f"Lease {shown.label}")
+        deleted = [outcome.lease for _shown, outcome in loop.applied]
         if deleted:
-            messages.success(request, f"Deleted {len(deleted)} DHCPv{self.dhcp_version} lease(s).")
-            try:
-                _add_lease_journal(instance, request.user, "deleted", [shown_lease(lease).label for lease in deleted])
-            except DatabaseError:
-                logger.exception("Failed to record lease journal for server %s; continuing", instance.pk)
-            leases_deleted.send_robust(
-                sender=None,
+            labels = [shown_lease(lease).label for lease in deleted]
+            messages.success(request, f"Deleted {len(deleted)} DHCPv{self.dhcp_version} lease(s): {', '.join(labels)}.")
+            _journal_applied(request, instance, _lease_journal_comments("deleted", labels))
+            _signal_applied(
+                request,
+                leases_deleted,
+                "leases_deleted",
                 server=instance,
                 leases=tuple(deleted),
                 dhcp_version=self.dhcp_version,
-                request=request,
             )
-
-        if failed_count:
-            messages.warning(request, f"Failed to delete {failed_count} lease(s). See above for details.")
+        if loop.unknown is not None:
+            shown, message = loop.unknown
+            message.show(request, f"Lease {shown.label}")
+        if loop.stopped_at is not None and loop.not_sent:
+            not_sent = ", ".join(shown.label for shown in loop.not_sent)
+            messages.warning(
+                request,
+                f"NetBox stopped at lease {loop.stopped_at.label} and did not send the delete of {len(loop.not_sent)}"
+                f" lease(s): {not_sent}.",
+            )
         return _after_lease_delete(request, return_url)
 
 
@@ -798,45 +762,7 @@ class ServerLeases4DeleteView(BaseServerLeasesDeleteView):
     tab = _LEASES_TAB
 
 
-# The words of each Lease fact whose name alone does not read well.
-_FACT_NAMES: dict[LeaseFact, str] = {"identity": "kind", "subnet_id": "Subnet", "binding": "client binding"}
 _KIND_LABELS = {"address": "Address", "delegated-prefix": "Delegated prefix"}
-# The past participle and the page of each Lease action.
-_ACTIONS: dict[str, tuple[str, str]] = {"edit": ("changed", "the form"), "delete": ("deleted", "the list")}
-
-
-def _fact_words(facts: tuple[LeaseFact, ...]) -> str:
-    *rest, last = (_FACT_NAMES.get(fact, fact.replace("_", " ")) for fact in facts)
-    return f"{', '.join(rest)} and {last}" if rest else last
-
-
-def _report_outcome(
-    request: HttpRequest, label: str, result: LeaseChangeResult, action: Literal["edit", "delete"]
-) -> bool:
-    """Queue the one message of a Lease edit or delete outcome; return whether the action failed."""
-    verb, page = _ACTIONS[action]
-    if isinstance(result, LeaseChanged):
-        messages.success(request, f"Lease {label} updated.")
-    elif isinstance(result, LeaseAbsent):
-        not_recreated = " The edit did not recreate it." if action == "edit" else ""
-        messages.warning(request, f"Lease {label} was not found in Kea; nothing was {verb}.{not_recreated}")
-    elif isinstance(result, LeaseConflict):
-        messages.warning(
-            request,
-            f"Lease {label} was not {verb}: its {_fact_words(result.fields)} changed in Kea after {page} was shown."
-            f" Reload {page} and try again.",
-        )
-    elif isinstance(result, LeaseChangeRefused):
-        messages.warning(
-            request,
-            f"Kea did not change lease {label}: it reports that the lease was deleted or changed after the check."
-            f" Reload {page} and try again.",
-        )
-    else:
-        logger.warning("Kea returned a malformed lease %s", label)
-        messages.error(request, f"Lease {label} was not {verb}: Kea returned a lease that could not be read.")
-        return True
-    return False
 
 
 def _binding_text(binding: DHCPv4Binding | DHCPv6Binding) -> str:
@@ -910,7 +836,7 @@ class _BaseLeaseEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginReq
             result = client.lease_get(identity)
         except KeaException as exc:
             logger.exception("Failed to fetch lease %s on server %s", ip_address, pk)
-            messages.error(request, kea_error_hint(exc))
+            messages.error(request, kea_error_message(exc))
             return redirect(self._leases_url(server))
         except (requests.RequestException, RuntimeError, ValueError):
             logger.exception("Failed to fetch lease %s on server %s", ip_address, pk)
@@ -958,21 +884,12 @@ class _BaseLeaseEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginReq
         if not edit.written:
             messages.info(request, f"Lease {label} was not changed: the form holds the shown values.")
             return redirect(self._leases_url(server))
-        try:
-            client = server.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(server, exc))
-            return redirect(self._leases_url(server))
-        try:
-            result = client.lease_update(shown, edit)
-        except KeaException as exc:
-            logger.exception("Error updating lease %s", label)
-            messages.error(request, kea_error_hint(exc))
-        except (requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Error updating lease %s (transport/parse error)", label)
-            messages.error(request, "Failed to update lease: see server logs for details.")
-        else:
-            _report_outcome(request, label, result, "edit")
+        _run_change(
+            request,
+            f"Lease {label} updated.",
+            lambda: runtime_change.edit_lease(server, self.dhcp_version, shown, edit),
+            subject=f"Lease {label}",
+        )
         return redirect(self._leases_url(server))
 
 
@@ -1048,50 +965,44 @@ class _BaseLeaseAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
             return self._render(request, server, form)
         creation: LeaseRequest = form.cleaned_data["request"]
         address = str(creation.address)
-        try:
-            client = server.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(server, exc))
+        outcome = _run_change(
+            request,
+            f"Lease for {address} created.",
+            lambda: runtime_change.add_lease(server, self.dhcp_version, creation),
+            subject=f"Lease {address}",
+        )
+        if outcome is None:
             return self._render(request, server, form)
-        try:
-            client.lease_add(creation)
-        except KeaException as exc:
-            logger.exception("Failed to create DHCPv%s lease for %s", self.dhcp_version, address)
-            messages.error(request, kea_error_hint(exc))
-            return self._render(request, server, form)
-        except requests.RequestException:
-            logger.exception("Failed to create DHCPv%s lease for %s", self.dhcp_version, address)
-            messages.error(request, "Failed to create lease: see server logs for details.")
-            return self._render(request, server, form)
-        except (RuntimeError, ValueError):
-            logger.exception("Failed to create DHCPv%s lease for %s (parse error)", self.dhcp_version, address)
-            messages.error(request, "Failed to create lease: invalid response from Kea.")
-            return self._render(request, server, form)
-        messages.success(request, f"Lease for {address} created.")
-        created = _read_created_lease(request, client, creation)
-        try:
-            _add_lease_journal(
-                server,
-                request.user,
-                "added",
-                address,
-                hw_address=creation.hw_address if isinstance(creation, DHCPv4LeaseRequest) else "",
-                hostname=creation.hostname or "",
-                duid=creation.duid if isinstance(creation, DHCPv6LeaseRequest) else "",
-            )
-        except DatabaseError:
-            logger.exception("Failed to record journal entry for lease %s", address)
-        lease_added.send_robust(
-            sender=None,
+        if outcome.application == "applied":
+            self._after_creation(request, server, creation, gate, sync=form.cleaned_data["sync_to_netbox"])
+        return redirect(self._leases_url(server))
+
+    def _after_creation(
+        self, request: HttpRequest, server: Server, creation: LeaseRequest, gate: SyncGate, *, sync: bool
+    ) -> None:
+        """Run the side effects of an applied creation: the display read, the journal, the signal and the sync."""
+        address = str(creation.address)
+        with LazyClient(server, self.dhcp_version) as client:
+            created = _read_created_lease(request, client, creation)
+        comments = _lease_journal_comments(
+            "added",
+            [address],
+            hw_address=creation.hw_address if isinstance(creation, DHCPv4LeaseRequest) else "",
+            hostname=creation.hostname or "",
+            duid=creation.duid if isinstance(creation, DHCPv6LeaseRequest) else "",
+        )
+        _journal_applied(request, server, comments)
+        _signal_applied(
+            request,
+            lease_added,
+            "lease_added",
             server=server,
             creation=creation,
             lease=created,
             dhcp_version=self.dhcp_version,
-            request=request,
         )
-        if form.cleaned_data["sync_to_netbox"]:
+        if sync:
             _run_lease_sync_to_netbox(request, server, address, created, gate)
-        return redirect(self._leases_url(server))
 
 
 @register_model_view(Server, "lease4_add", path="leases4/add")
