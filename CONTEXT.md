@@ -76,7 +76,11 @@ An inclusive address range within a Subnet from which Kea can allocate leases. K
 _Avoid_: Range
 
 **DHCP Option**:
-A DHCP parameter assignment identified by an option space and a code or name. It includes encoded data and Kea delivery flags. Its declaration scope determines which clients receive it. The same value semantics apply wherever Kea assigns the option.
+A DHCP parameter assignment. Within the object that assigns it, the option space, the code, and the set of client
+classes identify one DHCP Option. A missing space is the default space of the address family, and a name identifies
+the code that its Option Definition gives it; a name with no known definition identifies the option by name. The same
+option can be assigned once for each set of client classes. It includes encoded data and Kea delivery flags. Its
+declaration scope determines which clients receive it. The same value semantics apply wherever Kea assigns the option.
 _Avoid_: Option, option-data, Subnet option, reservation option
 
 **Lease**:
@@ -145,7 +149,7 @@ Whether the client of one Reservation holds a Current Lease: Present, Absent, or
 _Avoid_: Lease status, active lease badge
 
 **Reservation Transfer Document**:
-A YAML or JSON document that represents one or more Reservations with explicit Reservation Scope. The same structure supports export and proposed creation. The complete document must be valid before any creation starts.
+A YAML or JSON document that represents one or more Reservations with explicit Reservation Scope. The same structure supports export and proposed creation. The complete document must be valid before any creation starts. It carries the stored Reservation hostname, not the Published Name.
 _Avoid_: CSV import, CSV export, Kea payload
 
 **Subnet Settings**:
