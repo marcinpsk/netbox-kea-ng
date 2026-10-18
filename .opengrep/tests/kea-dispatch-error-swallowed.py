@@ -167,10 +167,11 @@ def dispatch_error_passed(server, leases):
         messages.error(request, "Lease created but NetBox IPAM sync failed.")
 
 
-def dispatch_error_only_logged(server, leases):
+def dispatch_error_only_logged(request, obj):
     try:
         # ruleid: kea-dispatch-error-swallowed
-        claim(server, 4, leases, force=False)
+        with event_scope.atomic():
+            obj.save()
     except event_scope.EventDispatchError:
         logger.exception("The events of the sync could not be dispatched")
     except (RuntimeError, ValueError):

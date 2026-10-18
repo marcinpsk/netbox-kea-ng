@@ -532,7 +532,7 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
   `check_response()` raises `RuntimeError` for a malformed reply entry. A Configuration Change or a Runtime Change
   goes through `_run_change` instead (see "Exception hierarchy").
 - **Use `kea.kea_error_message(exc)` for user-facing Kea error messages**, also in change diagnostics: fixed guidance for result 2 (hook
-  library not loaded) and result 128 (daemon not reachable), else `Kea replied: <text>`. Show Kea's text, never
+  library not loaded) and result 128 (daemon not reachable), followed by `Kea replied: <text>` for every result. Show Kea's text, never
   the text of a Python exception.
 - **Guard action URLs/buttons by permission AND lookup state.** Don't offer
   Sync/Reserve for a Lease whose Reservation Match is Unknown; don't offer add/edit to

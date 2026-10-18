@@ -83,7 +83,7 @@ live. It raises `ChangeRejected` when the change is not live, as far as NetBox c
   the Server before trying again. When Kea returned a failure result, the message also shows Kea's text, so an
   argument error stays visible.
 - One formatter replaces `kea_error_hint` everywhere, reads included. It gives fixed guidance for result 2 (the
-  hook library is not loaded) and result 128 (the daemon cannot be reached), and otherwise `Kea replied: <text>`.
+  hook library is not loaded) and result 128 (the daemon cannot be reached), followed by `Kea replied: <text>` for every result.
   No Python exception text reaches the operator.
 
 ### Side effects

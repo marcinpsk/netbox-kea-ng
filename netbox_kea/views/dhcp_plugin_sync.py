@@ -31,7 +31,7 @@ from ..mappers.kea_to_dhcp import ServerConfigIntent, parse_dhcp_config
 from ..models import Server
 from ..server_configuration import ServerConfigurationSnapshot
 from ..sync_permissions import sync_gate
-from .notices import Notice, failed_load, show_notices
+from .notices import Notice, failed_load
 from .workspace import server_family_url
 
 logger = logging.getLogger(__name__)
@@ -304,7 +304,8 @@ class ServerDhcpPluginSyncNowView(View):
 
         for version, summary in results:
             if isinstance(summary, Notice):
-                show_notices(request, summary)
+                for line in summary.lines:
+                    messages.add_message(request, summary.level, f"DHCPv{version}: {line}")
                 continue
             text = (
                 f"DHCPv{version}: {summary.subnets_created} subnets created, "

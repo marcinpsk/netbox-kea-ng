@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlsplit
 import requests
 from bs4 import BeautifulSoup
 from django.apps import apps
-from django.contrib.messages import get_messages
+from django.contrib.messages import ERROR, get_messages
 from django.db import connection
 from django.test import SimpleTestCase, TestCase
 from django.test.utils import CaptureQueriesContext
@@ -461,8 +461,24 @@ class SyncNowErrorHandlingTest(TestCase):
             self.assertEqual(kea.commands(), ["config-get"])
             self.assertEqual(
                 [str(message) for message in get_messages(response.wsgi_request)],
-                [HEADLINES["configuration"], line],
+                [f"DHCPv4: {HEADLINES['configuration']}", f"DHCPv4: {line}"],
             )
+
+    def test_failed_configuration_reads_name_each_family(self):
+        self.server.dhcp6 = True
+        self.server.save()
+        with stub_kea({"config-get": requests.ConnectionError("Kea is unreachable")}) as kea:
+            response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands(), ["config-get", "config-get"])
+        self.assertEqual(
+            [(message.level, str(message)) for message in get_messages(response.wsgi_request)],
+            [
+                (ERROR, f"DHCPv{version}: {line}")
+                for version in (4, 6)
+                for line in (HEADLINES["configuration"], "Kea configuration facts are unavailable.")
+            ],
+        )
 
     def test_unexpected_exception_is_caught_not_leaked(self):
         # A non-contract error (e.g. a DB error) still hits the fallback: logged,

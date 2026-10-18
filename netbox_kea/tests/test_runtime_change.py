@@ -276,10 +276,13 @@ class ApplicationTests(TestCase):
                 responses = operation.responses({"result": 2, "text": f"'{operation.write}' command not supported."})
                 rejection, commands = self._rejection(operation, responses)
                 self.assertEqual(rejection.reason, "kea-rejected")
-                self.assertEqual(rejection.diagnostics, (_HOOK_NOT_LOADED,))
+                self.assertEqual(
+                    rejection.diagnostics,
+                    (f"{_HOOK_NOT_LOADED} Kea replied: '{operation.write}' command not supported.",),
+                )
                 self.assertEqual(commands, [*operation.before, operation.write])
 
-    def test_result_128_on_a_lease_write_shows_the_fixed_guidance(self):
+    def test_result_128_on_a_lease_write_shows_the_guidance_and_kea_reply(self):
         for operation in _LEASE_WRITES:
             with self.subTest(operation.name):
                 outcome, _commands = self._result(operation, {"result": 128, "text": "Connection refused"})
@@ -287,7 +290,10 @@ class ApplicationTests(TestCase):
                 self.assertEqual(
                     outcome.diagnostics,
                     (
-                        "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable.",
+                        (
+                            "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable. "
+                            "Kea replied: Connection refused"
+                        ),
                     ),
                 )
 

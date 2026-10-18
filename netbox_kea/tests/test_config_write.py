@@ -240,7 +240,9 @@ class RejectionReasonTests(TestCase):
         with stub_kea(_add("net-a", _OK, **{"network4-get": unsupported})) as kea:
             rejection = self._rejection(lambda: config_write.add_shared_network(self.server, 4, "net-a"))
         self.assertEqual(rejection.reason, "not-sent")
-        self.assertEqual(rejection.diagnostics, (_HOOK_NOT_LOADED,))
+        self.assertEqual(
+            rejection.diagnostics, (f"{_HOOK_NOT_LOADED} Kea replied: 'network4-get' command not supported.",)
+        )
         self.assertEqual(kea.commands(), ["network4-get"])
 
     def test_a_read_before_the_change_that_names_another_network_is_not_sent(self):
@@ -2760,7 +2762,7 @@ class ReadModifyWriteTests(TestCase):
         with stub_kea(_rmw_responses(4, **{"config-test": unreachable})) as kea:
             rejection = self._rejection(lambda: config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])]))
         self.assertEqual(rejection.reason, "not-sent")
-        self.assertEqual(rejection.diagnostics, (_DAEMON_UNREACHABLE,))
+        self.assertEqual(rejection.diagnostics, (f"{_DAEMON_UNREACHABLE} Kea replied: Connection refused",))
         self.assertEqual(kea.commands(), ["config-get", "config-test"])
 
     def test_an_unsupported_config_test_is_skipped(self):
