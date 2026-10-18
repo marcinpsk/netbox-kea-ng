@@ -1387,6 +1387,83 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
                     self.assertIn("routers", str(post.context["formset"].non_form_errors()))
                     self.assertIn("cannot be renamed", str(post.context["formset"].non_form_errors()))
 
+    def test_a_name_only_shown_option_cannot_rename_its_coded_live_entry(self):
+        seen = [{"name": "routers", "data": "198.18.0.1"}]
+        live = [{"code": 3, "space": "dhcp4", "data": "198.18.0.1"}]
+        for scope in ("server", "subnet"):
+            with self.subTest(scope=scope):
+                with _persist_stub(self._config(scope, seen)):
+                    data = self._submitted(self.client.get(self._url(scope)))
+                data["form-0-name"] = "domain-name-servers"
+                with _persist_stub(self._config(scope, live)) as kea:
+                    post = self.client.post(self._url(scope), data)
+                self.assertNotIn("config-test", kea.commands())
+                self.assertNotIn("config-set", kea.commands())
+                self.assertEqual(post.status_code, 200)
+                self.assertTrue(post.context["formset"].is_bound)
+                self.assertEqual(post.context["formset"].forms[0]["name"].value(), "domain-name-servers")
+                self.assertIn("routers", str(post.context["formset"].non_form_errors()))
+                self.assertIn("cannot be renamed", str(post.context["formset"].non_form_errors()))
+
+    def test_adding_the_matching_name_to_a_coded_option_keeps_its_identity(self):
+        options = [{"code": 3, "data": "198.18.0.1"}]
+        for scope in ("server", "subnet"):
+            with self.subTest(scope=scope), _persist_stub(self._config(scope, options)) as kea:
+                data = self._submitted(self.client.get(self._url(scope)))
+                data["form-0-name"] = "routers"
+                post = self.client.post(self._url(scope), data)
+                self.assertEqual(post.status_code, 302)
+                written = _written_config(kea)["Dhcp4"]
+                if scope == "subnet":
+                    written = written["subnet4"][0]
+                self.assertEqual(written["option-data"], [{"code": 3, "name": "routers", "data": "198.18.0.1"}])
+
+    def test_an_unknown_name_only_option_can_be_renamed(self):
+        options = [{"name": "custom-before", "data": "opaque", "user-context": {"owner": "lab"}}]
+        for scope in ("server", "subnet"):
+            with self.subTest(scope=scope), _persist_stub(self._config(scope, options)) as kea:
+                data = self._submitted(self.client.get(self._url(scope)))
+                data["form-0-name"] = "custom-after"
+                post = self.client.post(self._url(scope), data)
+                self.assertEqual(post.status_code, 302)
+                written = _written_config(kea)["Dhcp4"]
+                if scope == "subnet":
+                    written = written["subnet4"][0]
+                self.assertEqual(
+                    written["option-data"],
+                    [{"name": "custom-after", "data": "opaque", "user-context": {"owner": "lab"}}],
+                )
+
+    def test_clearing_a_name_refuses_when_the_live_entry_no_longer_has_a_code(self):
+        seen = [{"code": 3, "name": "routers", "data": "198.18.0.1"}]
+        live = [{"name": "routers", "data": "198.18.0.1"}]
+        for scope in ("server", "subnet"):
+            with self.subTest(scope=scope):
+                with _persist_stub(self._config(scope, seen)):
+                    data = self._submitted(self.client.get(self._url(scope)))
+                data["form-0-name"] = ""
+                with _persist_stub(self._config(scope, live)) as kea:
+                    post = self.client.post(self._url(scope), data)
+                self.assertNotIn("config-test", kea.commands())
+                self.assertNotIn("config-set", kea.commands())
+                self.assertEqual(post.status_code, 200)
+                self.assertTrue(post.context["formset"].is_bound)
+                self.assertEqual(post.context["formset"].forms[0]["name"].value(), "")
+                self.assertIn("routers", str(post.context["formset"].non_form_errors()))
+
+    def test_a_coded_live_option_can_clear_its_name(self):
+        options = [{"code": 3, "name": "routers", "data": "198.18.0.1"}]
+        for scope in ("server", "subnet"):
+            with self.subTest(scope=scope), _persist_stub(self._config(scope, options)) as kea:
+                data = self._submitted(self.client.get(self._url(scope)))
+                data["form-0-name"] = ""
+                post = self.client.post(self._url(scope), data)
+                self.assertEqual(post.status_code, 302)
+                written = _written_config(kea)["Dhcp4"]
+                if scope == "subnet":
+                    written = written["subnet4"][0]
+                self.assertEqual(written["option-data"], [{"code": 3, "data": "198.18.0.1"}])
+
     def _url(self, scope):
         if scope == "subnet":
             return reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 42])

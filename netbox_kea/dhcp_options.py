@@ -629,14 +629,25 @@ def merge_option_edit(
             raise DHCPOptionConflict(
                 f"DHCP Option '{_option_label(seen, family)}' is missing or ambiguous. Reload the form before saving."
             )
-        if intended is not None and seen.code is not None and intended.name != seen.name and intended.name:
+        index = matches[0]
+        if (
+            intended is not None
+            and (seen.code is not None or parsed[index].code is not None)
+            and intended.name != seen.name
+            and intended.name
+        ):
             named = replace(intended, code=None)
-            if option_identity(named, family, definitions) != option_identity(intended, family, definitions):
+            if option_identity(named, family, definitions) != identity:
                 raise DHCPOptionNameChange(
                     f"DHCP Option '{_option_label(seen, family)}' cannot be renamed. Delete it and add a new option instead."
                 )
-        index = matches[0]
-        replacements[index] = None if intended is None else _written_option(intended, seen, existing[index])
+        replacement = None if intended is None else _written_option(intended, seen, existing[index])
+        if replacement is not None and replacement.get("code") is None and not replacement.get("name"):
+            raise DHCPOptionConflict(
+                f"DHCP Option '{_option_label(seen, family)}' cannot clear its only live identifier. "
+                "Reload the form before saving."
+            )
+        replacements[index] = replacement
     return [
         option for index, entry in enumerate(existing) if (option := replacements.get(index, entry)) is not None
     ] + additions
