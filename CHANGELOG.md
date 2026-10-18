@@ -13,6 +13,203 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.7.0 (2026-10-18)
+
+### Bug Fixes
+
+- Build every Kea failure text with kea_error_message
+  ([`ceedada`](https://github.com/marcinpsk/netbox-kea-ng/commit/ceedada2eea1036cf763ffd7c670bff694c8089e))
+
+- Classify raw TLS reply failures as unknown
+  ([`06ce765`](https://github.com/marcinpsk/netbox-kea-ng/commit/06ce765bf8366ce814f6c3d06ab937a6bbfdf7a3))
+
+- Give unknown for every TLS failure of a command
+  ([`5971e15`](https://github.com/marcinpsk/netbox-kea-ng/commit/5971e155636de255dc7ca96b3f6f2eaa4d0f8e63))
+
+- Name DHCP import failure families and align diagnostic tests
+  ([`3788ffb`](https://github.com/marcinpsk/netbox-kea-ng/commit/3788ffbe8d251746f67162d3215d05fc72ec8416))
+
+- Preserve Kea reply text in unsupported-command and unreachable-daemon errors
+  ([`103e5d2`](https://github.com/marcinpsk/netbox-kea-ng/commit/103e5d2e48d7325c1cac9b0a119484b0dd3bcafe))
+
+- Reject a change that Kea answers with result 2
+  ([`65015fb`](https://github.com/marcinpsk/netbox-kea-ng/commit/65015fb3711b662c2bdd3dc74e0a15fb499722d9))
+
+- Reject a change that never reached Kea's command handler
+  ([`2d309b6`](https://github.com/marcinpsk/netbox-kea-ng/commit/2d309b6a3f338155e2c8b97826a864b4c4a029ef))
+
+- Show a stopped DHCP service and a changed target as warnings
+  ([`6f05907`](https://github.com/marcinpsk/netbox-kea-ng/commit/6f0590742eb9342ff28bfbd300d90c90e5f818f2))
+
+- Stop a loop of changes when the Kea client cannot be built
+  ([`a6e0429`](https://github.com/marcinpsk/netbox-kea-ng/commit/a6e0429c0364a0e04914b198c650c28b1e398753))
+
+- Treat only proof that Kea did not run a command as not sent
+  ([`fe1912d`](https://github.com/marcinpsk/netbox-kea-ng/commit/fe1912d3aae5c0b945974e4c5fdd34afa73573f6))
+
+- **config**: Treat a config-test that cannot reach the daemon as not sent
+  ([`ebc11eb`](https://github.com/marcinpsk/netbox-kea-ng/commit/ebc11ebf373a9552e504f1831998a69d96a4f99c))
+
+- **kea**: Check the reply envelope of a Lease write before its result
+  ([`75e96be`](https://github.com/marcinpsk/netbox-kea-ng/commit/75e96be6219a77c3eeaf592d28eb589f1f853654))
+
+- **kea**: Never follow a redirect for a Kea command
+  ([`d7916c2`](https://github.com/marcinpsk/netbox-kea-ng/commit/d7916c231d7626e20dc3b6f29d7e3f94e12c743f))
+
+- **kea**: Report credentials that requests cannot encode as a request error
+  ([`72cf485`](https://github.com/marcinpsk/netbox-kea-ng/commit/72cf48542c481f7d1ea105b85e3cd0f20283d6c6))
+
+- **kea**: Treat an encode failure after the send as a request error that can have reached Kea
+  ([`b39a726`](https://github.com/marcinpsk/netbox-kea-ng/commit/b39a726193497969b80257778ff4705c0b1c33c3))
+
+- **leases**: Keep the Line and Address columns of the import report narrow
+  ([`b94ef46`](https://github.com/marcinpsk/netbox-kea-ng/commit/b94ef4650f66d7f2e24005435c32d8fd85f4fe50))
+
+- **leases**: List each row of a Lease CSV import under its own status
+  ([`6b88260`](https://github.com/marcinpsk/netbox-kea-ng/commit/6b88260bab3ede2904ecefbd8408d7c5cb2fd826))
+
+- **leases**: Report an applied Lease add when its sync events fail
+  ([`4c50ebf`](https://github.com/marcinpsk/netbox-kea-ng/commit/4c50ebf1fecc1fc68469ca8c0d9290e4c5417b8d))
+
+- **leases**: Send lease_added for an imported row before the next row goes to Kea
+  ([`0811ee2`](https://github.com/marcinpsk/netbox-kea-ng/commit/0811ee2d9f4d81be8d2da3c5177aeb150010ea1b))
+
+- **opengrep**: Limit the reported dispatch error to the IPAM sync after a Runtime Change
+  ([`533a6b4`](https://github.com/marcinpsk/netbox-kea-ng/commit/533a6b4a5c1b86f7d26b638d1875949a618fc931))
+
+- **reservations**: Apply the review findings of the Configuration Change move
+  ([`88c397a`](https://github.com/marcinpsk/netbox-kea-ng/commit/88c397a10e8a626bb9223d29c5c646e7a6cd1313))
+
+- **reservations**: Send Reservation writes as Configuration Changes
+  ([`a927981`](https://github.com/marcinpsk/netbox-kea-ng/commit/a927981432844cdba002430ce9dae3d7513b926f))
+
+- **views**: Run the view read ladders through load_snapshot and load_target
+  ([`f9f34f1`](https://github.com/marcinpsk/netbox-kea-ng/commit/f9f34f11c7b34fc62e6af7a9b8cbd72d2e7fc977))
+
+- **views**: Show the Catalogue Notice when a Reservation load cannot confirm its Subnet
+  ([`997c2fc`](https://github.com/marcinpsk/netbox-kea-ng/commit/997c2fc211758b4e3007f846391eaebfdf1994e9))
+
+### Chores
+
+- **deps**: Bump pydantic from 2.13.5 to 2.14.1
+  ([`f37bb6b`](https://github.com/marcinpsk/netbox-kea-ng/commit/f37bb6b66c98539707894a41360ac604f29f5d02))
+
+- **deps**: Bump the github-actions group with 4 updates
+  ([`e02c953`](https://github.com/marcinpsk/netbox-kea-ng/commit/e02c9536b422d0fc3861f7f745cdf25b6055859e))
+
+- **deps-dev**: Bump markdown-it-py from 4.0.0 to 4.2.0
+  ([`7ea04dd`](https://github.com/marcinpsk/netbox-kea-ng/commit/7ea04ddfe7cd98db351c7ab746fca4c56243f239))
+
+- **deps-dev**: Bump pytest-playwright from 0.9.0 to 0.10.0
+  ([`58ac0eb`](https://github.com/marcinpsk/netbox-kea-ng/commit/58ac0eb18d7a5c830dbab6c4d64992c8ff11c248))
+
+- **deps-dev**: Bump ruff from 0.16.10 to 0.17.0
+  ([`91ecc1c`](https://github.com/marcinpsk/netbox-kea-ng/commit/91ecc1ce5912b8abf48d8f3505c84f64c9bf229c))
+
+- **opengrep**: Refuse a Kea read ladder in a view
+  ([`01179f0`](https://github.com/marcinpsk/netbox-kea-ng/commit/01179f0027583ba885a27011b3c77c3dd06975ef))
+
+- **opengrep**: Refuse a Reservation write primitive outside config_write
+  ([`4d8a900`](https://github.com/marcinpsk/netbox-kea-ng/commit/4d8a9005ad4234fbd5db9e9a19af7befb6143973))
+
+- **opengrep**: Require a raise or messages.error() in a dispatch-error clause
+  ([`2a41aca`](https://github.com/marcinpsk/netbox-kea-ng/commit/2a41aca730b7d8fbbb1f7e1f6d7b37a1f1554e5a))
+
+### Continuous Integration
+
+- **opengrep**: Check migrations for a Runtime Change write
+  ([`362045b`](https://github.com/marcinpsk/netbox-kea-ng/commit/362045bb33b50dbebbb40d156e2d2a646d6c4953))
+
+- **opengrep**: Refuse a Runtime Change write outside runtime_change
+  ([`c959422`](https://github.com/marcinpsk/netbox-kea-ng/commit/c9594227e98b469c81cd3230de8166848cd299d6))
+
+### Documentation
+
+- Clarify that Kea result 2 may indicate a missing hook library
+  ([`d4180ae`](https://github.com/marcinpsk/netbox-kea-ng/commit/d4180ae239fd60cc486482590088e3d088568994))
+
+- Describe failed_load and the credential encoding error
+  ([`7ac6f17`](https://github.com/marcinpsk/netbox-kea-ng/commit/7ac6f17d996e5c7178b7f63ca90fee3d305f88ee))
+
+- Describe load_target and the Kea line of a failed read
+  ([`3c2f0b9`](https://github.com/marcinpsk/netbox-kea-ng/commit/3c2f0b9a2986e0b0430efe271b832965ad890649))
+
+- Describe Reservation writes as Configuration Changes
+  ([`3a5f3b2`](https://github.com/marcinpsk/netbox-kea-ng/commit/3a5f3b2f85580a80984e2f14cb0a903d81d9ddca))
+
+- Record the DHCP Import parity decisions
+  ([`a1bb5ad`](https://github.com/marcinpsk/netbox-kea-ng/commit/a1bb5ad8f633537a57b4f2f707a77e6959cba3ac))
+
+- **adr**: List every failure that means a Configuration Change was not sent
+  ([`943b67e`](https://github.com/marcinpsk/netbox-kea-ng/commit/943b67e499b5d52686789bd7d4af32985e969e3a))
+
+- **design**: Describe the Lease update after the Runtime Change move
+  ([`f77b3c4`](https://github.com/marcinpsk/netbox-kea-ng/commit/f77b3c4280033ddf50f945894c522f7dcf6b24f6))
+
+- **design**: Say that a Lease edit compares the fresh Lease with the shown facts
+  ([`46d3cee`](https://github.com/marcinpsk/netbox-kea-ng/commit/46d3cee8344548d90489ac2f9e3299e2d4daa908))
+
+- **guide**: Say that a delete or an import stops when the client cannot be built
+  ([`591399e`](https://github.com/marcinpsk/netbox-kea-ng/commit/591399ef3bb4b671aff0e6e2c19781f82e76cdb8))
+
+- **signals**: State when a Lease CSV import stops
+  ([`179a3d2`](https://github.com/marcinpsk/netbox-kea-ng/commit/179a3d282f5393bba126bda2776c27d8730fc45c))
+
+### Features
+
+- Send Runtime Changes through runtime_change
+  ([`ef12a50`](https://github.com/marcinpsk/netbox-kea-ng/commit/ef12a507bb4949409b741ece1e13a8aa63633c91))
+
+- Show Kea's own reply text through one formatter
+  ([`cd4b0ac`](https://github.com/marcinpsk/netbox-kea-ng/commit/cd4b0ac90f7666e67a48e5263348656dd85565ca))
+
+### Refactoring
+
+- Give mutate an explicit failure policy
+  ([`f8f98c7`](https://github.com/marcinpsk/netbox-kea-ng/commit/f8f98c737a5ddd6014ce74db4a0bf730e187c164))
+
+- Move the change classifier into change_outcome
+  ([`170fc46`](https://github.com/marcinpsk/netbox-kea-ng/commit/170fc4643f2b7c8f023645ab74602bb0dd24842f))
+
+- **leases**: Take a list of addresses in _add_lease_journal
+  ([`a5bc2c4`](https://github.com/marcinpsk/netbox-kea-ng/commit/a5bc2c4a9ffdfee31b37183c926725cbd48ba4c5))
+
+- **views**: Share the journal and signal helpers of an applied change
+  ([`56db04a`](https://github.com/marcinpsk/netbox-kea-ng/commit/56db04a814b590774304187ea7d90bab5204472e))
+
+### Testing
+
+- Accept the HTTPError that KeaClient.command builds for a redirect
+  ([`1a164b8`](https://github.com/marcinpsk/netbox-kea-ng/commit/1a164b8d12797045a8ac5e1845bfe22f1352ffc6))
+
+- Allow TLS exception types at the client boundary
+  ([`7cd69cb`](https://github.com/marcinpsk/netbox-kea-ng/commit/7cd69cb3a8ac0dae931cae4959b8d1d86076481a))
+
+- Assert the unconfirmed lease delete report
+  ([`d330f9c`](https://github.com/marcinpsk/netbox-kea-ng/commit/d330f9ce8e4a8dc54e97a0052e74aa2a67a35e6e))
+
+- Gate the DHCP integration regression on its real dependency
+  ([`3d678a5`](https://github.com/marcinpsk/netbox-kea-ng/commit/3d678a52e23d2928a9f3ed5148d972aafc88fd0e))
+
+- Keep the broken TLS record ahead of the close in the stub server
+  ([`771f3f4`](https://github.com/marcinpsk/netbox-kea-ng/commit/771f3f4a8928c9bbff9431821ca3251efd2976bc))
+
+- Make the self-signed TLS certificate with cryptography
+  ([`b0894bf`](https://github.com/marcinpsk/netbox-kea-ng/commit/b0894bfcce070dde1cdb8a486d7a4532abb64f15))
+
+- Pin that a Kea command is never retried
+  ([`466012b`](https://github.com/marcinpsk/netbox-kea-ng/commit/466012b40e3aeaeeed7b1eabfff78e781cf87d8e))
+
+- Pin the separate error of a failed side effect after an applied change
+  ([`98721a1`](https://github.com/marcinpsk/netbox-kea-ng/commit/98721a118c681dad72e949321242842cf624b668))
+
+- Refuse TLS versions before 1.2 in the stub TLS server
+  ([`77ac3a7`](https://github.com/marcinpsk/netbox-kea-ng/commit/77ac3a77c4bdb8a87ab728a20eca6dfdad9c73cf))
+
+- **ui**: Expect the CSV import to stop at the row that Kea did not confirm
+  ([`375073a`](https://github.com/marcinpsk/netbox-kea-ng/commit/375073adc3085f67671d309c6cdb3e78bf8cdecc))
+
+
 ## v3.6.2 (2026-10-17)
 
 ### Bug Fixes
