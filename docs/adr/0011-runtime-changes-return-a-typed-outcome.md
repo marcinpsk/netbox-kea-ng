@@ -120,8 +120,9 @@ the mapper.
 
 An operator who sees `unknown` after a Lease write can find the Lease changed with no journal entry.
 
-The view read ladders stay hand-written for now, but they use the new formatter. Moving them onto
-`load_snapshot` is a separate change.
+User-facing view reads go through `load_snapshot()` or `load_target()`, which use the new formatter. The
+OpenGrep rule `kea-view-read-ladder` refuses a hand-written ladder in `views/`; only the named reads that
+degrade silently and log the failure keep their own handler.
 
 ## Rejected alternatives
 

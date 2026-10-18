@@ -4207,20 +4207,26 @@ class TestLeaseDeletePartialFailure(_ViewTestBase):
         has_success = any("Deleted 1" in t for t in msg_texts)
         self.assertTrue(has_success, f"Expected success message despite journal error, got: {msg_texts}")
 
-    def test_all_leases_fail_shows_only_errors(self):
-        """When every lease deletion fails, no success message should appear."""
-        # Every lease4-del returns result 1 → KeaException for each IP.
+    def test_an_unconfirmed_first_delete_stops_without_success(self):
+        """An unconfirmed first delete stops the loop and shows no success message."""
         held, selected = _held4("10.0.0.1", "10.0.0.2")
-        with _lease_stub({**held, "lease4-del": {"result": 1, "text": "not found"}}):
+        with _lease_stub({**held, "lease4-del": {"result": 1, "text": "not found"}}) as kea:
             response = self.client.post(
                 self._url(),
                 {"pk": selected, "_confirm": "1"},
             )
         self.assertEqual(response.status_code, 302)
-        msgs = list(response.wsgi_request._messages)
-        msg_texts = [str(m) for m in msgs]
-        has_success = any("Deleted" in t and "0" not in t for t in msg_texts)
-        self.assertFalse(has_success, f"Should not have success message when all fail, got: {msg_texts}")
+        self.assertEqual(kea.commands().count("lease4-del"), 1)
+        self.assertEqual(
+            [(message.level, str(message)) for message in get_messages(response.wsgi_request)],
+            [
+                (django_messages.WARNING, f"Lease 10.0.0.1: {UNCONFIRMED_RUNTIME} Kea replied: not found"),
+                (
+                    django_messages.WARNING,
+                    "NetBox stopped at lease 10.0.0.1 and did not send the delete of 1 lease(s): 10.0.0.2.",
+                ),
+            ],
+        )
 
 
 class TestFetchOneMacValueError(_ViewTestBase):
