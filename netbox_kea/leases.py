@@ -13,6 +13,7 @@ import ipaddress
 import math
 from collections import Counter
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, NamedTuple, TypeAlias, get_args
 
@@ -537,38 +538,37 @@ class LeaseEdit(_Value):
         )
 
 
-class LeaseChanged(_Value):
-    """Kea confirmed the change or deletion of the Lease that the fresh read before it observed."""
-
-    outcome: Literal["changed"] = "changed"
-    lease: Lease
-
-
 #: Each Lease fact that a fresh read can contradict, in the order of comparison.
 LeaseFact = Literal["identity", "prefix_length", "subnet_id", "binding", "hostname", "valid_lifetime"]
 # The facts that a change compares only when it writes them.
 _WRITTEN_FACTS = frozenset({"hostname", "valid_lifetime"})
 
 
-class LeaseConflict(_Value):
-    """Nothing changed: the fresh Lease contradicts each shown fact in ``fields``."""
-
-    outcome: Literal["conflict"] = "conflict"
-    fields: Annotated[tuple[LeaseFact, ...], Field(min_length=1)]
+# The words of each Lease fact whose name alone does not read well.
+_FACT_NAMES: dict[LeaseFact, str] = {"identity": "kind", "subnet_id": "Subnet", "binding": "client binding"}
 
 
-class LeaseChangeRefused(_Value):
-    """Nothing changed: Kea refused the update because the Lease was deleted or changed after the fresh read."""
+def fact_words(facts: tuple[LeaseFact, ...]) -> str:
+    """Return the Lease facts *facts* as words, such as "client binding and Subnet"."""
+    *rest, last = (_FACT_NAMES.get(fact, fact.replace("_", " ")) for fact in facts)
+    return f"{', '.join(rest)} and {last}" if rest else last
 
-    outcome: Literal["refused"] = "refused"
-    identity: LeaseIdentity
 
+@dataclass(frozen=True)
+class FreshLease:
+    """The Lease that a fresh read before a change observed, and the Kea body that it came from."""
 
-#: The outcome of one Lease change or deletion; only ``LeaseChanged`` changed Kea.
-LeaseChangeResult: TypeAlias = Annotated[
-    LeaseChanged | LeaseConflict | LeaseChangeRefused | LeaseAbsent | LeaseLookupFailed,
-    Field(discriminator="outcome"),
-]
+    lease: Lease
+    body: dict[str, Any] = field(repr=False, compare=False)
+
+    def edited(self, edit: LeaseEdit) -> dict[str, Any]:
+        """Return the ``lease{4,6}-update`` arguments: the fresh body with only the fields of *edit* changed.
+
+        Raises:
+            ValueError: If a written value is not valid.
+
+        """
+        return _edited_arguments(self.body, self.lease, edit)
 
 
 class DHCPv4LeaseRequest(_Value):

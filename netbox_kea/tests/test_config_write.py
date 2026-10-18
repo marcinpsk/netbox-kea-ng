@@ -21,7 +21,8 @@ from django.test import TestCase, TransactionTestCase
 from urllib3.exceptions import ProtocolError
 
 from netbox_kea import config_write, subnet_catalogue
-from netbox_kea.config_write import ConfigChangeOutcome, ConfigChangeRejected, SubnetAddOutcome
+from netbox_kea.change_outcome import ChangeRejected
+from netbox_kea.config_write import ConfigChangeOutcome, SubnetAddOutcome
 from netbox_kea.constants import Family
 from netbox_kea.dhcp_options import DHCPOptionConflict, DHCPOptionNameChange, parse_dhcp_options
 from netbox_kea.kea import (
@@ -33,6 +34,7 @@ from netbox_kea.kea import (
     SubnetFields,
 )
 from netbox_kea.pools import parse_pool
+from netbox_kea.reservations import InSubnetReservationScope, IPv4Reservation, ReservationIdentity
 from netbox_kea.subnet_catalogue import CatalogueUnavailable, SharedNetworkMembership, SubnetIdentityConflict
 
 from .kea_stub import (
@@ -51,6 +53,11 @@ from .kea_stub import (
 from .utils import _make_db_server, with_kea_client_config
 
 _OK = {"result": 0, "text": "ok"}
+_HOOK_NOT_LOADED = (
+    "Kea does not support this command. "
+    "The required hook library may not be loaded, for example host_cmds, lease_cmds or subnet_cmds."
+)
+_DAEMON_UNREACHABLE = "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable."
 _PERSIST = ["config-get", "config-test", "config-write"]
 _CONTROL_AGENT = json.loads((Path(__file__).with_name("kea_recordings") / "control-agent.json").read_text())
 
@@ -168,8 +175,8 @@ class RejectionReasonTests(TestCase):
     def setUp(self):
         self.server = _make_db_server()
 
-    def _rejection(self, change) -> ConfigChangeRejected:
-        with self.assertRaises(ConfigChangeRejected) as raised:
+    def _rejection(self, change) -> ChangeRejected:
+        with self.assertRaises(ChangeRejected) as raised:
             change()
         return raised.exception
 
@@ -209,7 +216,7 @@ class RejectionReasonTests(TestCase):
             (config_write.delete_shared_network, _delete("net-a", refused), "network4-del"),
         ):
             with self.subTest(command):
-                with stub_kea(responses) as kea, self.assertRaises(ConfigChangeRejected) as raised:
+                with stub_kea(responses) as kea, self.assertRaises(ChangeRejected) as raised:
                     operation(self.server, 4, "net-a")
                 self.assertEqual(raised.exception.reason, "not-sent")
                 self.assertEqual(raised.exception.diagnostics, ("Kea could not be reached.",))
@@ -233,7 +240,9 @@ class RejectionReasonTests(TestCase):
         with stub_kea(_add("net-a", _OK, **{"network4-get": unsupported})) as kea:
             rejection = self._rejection(lambda: config_write.add_shared_network(self.server, 4, "net-a"))
         self.assertEqual(rejection.reason, "not-sent")
-        self.assertEqual(rejection.diagnostics, ("Kea replied: 'network4-get' command not supported.",))
+        self.assertEqual(
+            rejection.diagnostics, (f"{_HOOK_NOT_LOADED} Kea replied: 'network4-get' command not supported.",)
+        )
         self.assertEqual(kea.commands(), ["network4-get"])
 
     def test_a_read_before_the_change_that_names_another_network_is_not_sent(self):
@@ -258,6 +267,18 @@ class RejectionReasonTests(TestCase):
         self.assertEqual(rejection.reason, "invalid-client-configuration")
         self.assertEqual(
             rejection.diagnostics, ("A TLS certificate, key or CA file of the Server could not be found.",)
+        )
+
+    def test_credentials_that_cannot_be_encoded_are_an_invalid_client_configuration(self):
+        # No stub: requests encodes the Basic Auth header before it opens a connection, so nothing is sent.
+        self.server.ca_url = "http://127.0.0.1:1/"
+        self.server.ca_username = "kea"
+        self.server.ca_password = "pass\u20ac"
+        rejection = self._rejection(lambda: config_write.add_shared_network(self.server, 4, "net-a"))
+        self.assertEqual(rejection.reason, "invalid-client-configuration")
+        self.assertEqual(
+            rejection.diagnostics,
+            ("NetBox cannot send the user name or password of the Server: it is not Latin-1 text.",),
         )
 
     def test_a_missing_tls_file_on_the_change_is_an_invalid_client_configuration(self):
@@ -339,7 +360,7 @@ class ApplicationTests(TestCase):
         self.server.has_control_agent = False
         recorded = _CONTROL_AGENT["network4-add"]
         with stub_kea(_add("net-a", recorded, after=_network_absent("net-a"))) as kea:
-            with self.assertRaises(ConfigChangeRejected) as raised:
+            with self.assertRaises(ChangeRejected) as raised:
                 config_write.add_shared_network(self.server, 4, "net-a")
         self.assertEqual(raised.exception.reason, "kea-rejected")
         self.assertEqual(kea.commands(), ["network4-get", "network4-add", "network4-get"])
@@ -495,7 +516,7 @@ class SubnetAndPoolChangeTests(TestCase):
                 for name, operation, _command in self._operations(version):
                     with self.subTest(version=version, operation=name, state=state):
                         with stub_kea(_subnet_change(version, state)) as kea:
-                            with self.assertRaises(ConfigChangeRejected) as raised:
+                            with self.assertRaises(ChangeRejected) as raised:
                                 operation()
                         self.assertEqual(raised.exception.reason, "not-sent")
                         self.assertEqual(
@@ -516,7 +537,7 @@ class SubnetAndPoolChangeTests(TestCase):
             for name, operation, _command in self._operations(version):
                 with self.subTest(version=version, operation=name):
                     responses = _subnet_change(version, _subnet(version), **{f"subnet{version}-list": failed})
-                    with stub_kea(responses) as kea, self.assertRaises(ConfigChangeRejected) as raised:
+                    with stub_kea(responses) as kea, self.assertRaises(ChangeRejected) as raised:
                         operation()
                     self.assertEqual(raised.exception.reason, "not-sent")
                     self.assertEqual(
@@ -533,7 +554,7 @@ class SubnetAndPoolChangeTests(TestCase):
             for name, operation, command in self._operations(version):
                 with self.subTest(version=version, operation=name):
                     with stub_kea(_subnet_change(version, _subnet(version), **{command: failure})) as kea:
-                        with self.assertRaises(ConfigChangeRejected) as raised:
+                        with self.assertRaises(ChangeRejected) as raised:
                             operation()
                     self.assertEqual(raised.exception.reason, "kea-rejected")
                     self.assertEqual(raised.exception.diagnostics, ("Kea replied: command failed",))
@@ -620,7 +641,7 @@ class SubnetAndPoolChangeTests(TestCase):
             ):
                 with self.subTest(version=version, operation=name):
                     with stub_kea(_subnet_change(version, _subnet(version))) as kea:
-                        with self.assertRaises(ConfigChangeRejected) as raised:
+                        with self.assertRaises(ChangeRejected) as raised:
                             getattr(config_write, name)(self.server, version, 1, seen, _pool(version, pool))
                     self.assertEqual(raised.exception.reason, "not-sent")
                     self.assertEqual(raised.exception.diagnostics, (diagnostic,))
@@ -671,7 +692,7 @@ class SubnetAndPoolChangeTests(TestCase):
     def test_a_failed_pool_add_whose_subnet_is_gone_is_a_kea_rejection(self):
         failure = {"result": 1, "text": "command failed"}
         with stub_kea(_subnet_change(4, _subnet(4), None, **{"subnet4-delta-add": failure})):
-            with self.assertRaises(ConfigChangeRejected) as raised:
+            with self.assertRaises(ChangeRejected) as raised:
                 config_write.add_pool(self.server, 4, 1, _SEEN[4], _pool(4, _NEW_POOLS[4]))
         self.assertEqual(raised.exception.reason, "kea-rejected")
 
@@ -785,7 +806,7 @@ class SubnetAddTests(TestCase):
         return outcome, kea
 
     def _rejection(self, daemon: SubnetDaemon, *, subnet_id: int | None = None, network: str | None = None):
-        with stub_kea(daemon.responses()) as kea, self.assertRaises(ConfigChangeRejected) as raised:
+        with stub_kea(daemon.responses()) as kea, self.assertRaises(ChangeRejected) as raised:
             config_write.add_subnet(
                 self.server, daemon.family, _NEW[daemon.family], subnet_id, _FIELDS[daemon.family], network
             )
@@ -1433,7 +1454,7 @@ class SubnetEditTests(TestCase):
         return outcome, kea
 
     def _rejection(self, daemon: SubnetDaemon, network: str | None):
-        with stub_kea(daemon.responses()) as kea, self.assertRaises(ConfigChangeRejected) as raised:
+        with stub_kea(daemon.responses()) as kea, self.assertRaises(ChangeRejected) as raised:
             self._call(daemon, network)
         return raised.exception, kea
 
@@ -1545,7 +1566,7 @@ class SubnetEditTests(TestCase):
             ):
                 with self.subTest(version=version, shown=shown, live=live, target=target):
                     daemon = self._daemon(version, live)
-                    with stub_kea(daemon.responses()) as kea, self.assertRaises(ConfigChangeRejected) as raised:
+                    with stub_kea(daemon.responses()) as kea, self.assertRaises(ChangeRejected) as raised:
                         config_write.edit_subnet(
                             self.server,
                             version,
@@ -1638,7 +1659,7 @@ class SubnetEditTests(TestCase):
                 with self.subTest(version=v, field=field):
                     changed = {**_LIVE[v], **change}
                     daemon = self._daemon(v, subnets=[changed])
-                    with stub_kea(daemon.responses()) as kea, self.assertRaises(ConfigChangeRejected) as raised:
+                    with stub_kea(daemon.responses()) as kea, self.assertRaises(ChangeRejected) as raised:
                         config_write.edit_subnet(
                             self.server,
                             v,
@@ -1712,7 +1733,7 @@ class SubnetEditTests(TestCase):
         self.assertNotIn("subnet4-update", kea.commands())
 
     def _saved_rejection(self, daemon: SubnetDaemon, edit: SubnetEdit):
-        with stub_kea(daemon.responses()) as kea, self.assertRaises(ConfigChangeRejected) as raised:
+        with stub_kea(daemon.responses()) as kea, self.assertRaises(ChangeRejected) as raised:
             self._save(daemon.family, edit, _SHOWN[daemon.family])
         return raised.exception, kea
 
@@ -1728,7 +1749,7 @@ class SubnetEditTests(TestCase):
                 with stub_kea(daemon.responses()) as kea:
                     # Both operators saw the same page, and each one changes a different field.
                     outcome = self._save(v, first, shown)
-                    with self.assertRaises(ConfigChangeRejected) as raised:
+                    with self.assertRaises(ChangeRejected) as raised:
                         self._save(v, dataclasses.replace(shown, valid_lifetime=7200), shown)
                 self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
                 self.assertEqual(raised.exception.reason, "not-sent")
@@ -1959,7 +1980,7 @@ class SubnetEditTests(TestCase):
         # Another page caches the Catalogue during the check read after the failed update, before the undo steps.
         daemon.before("subnet4-get", lambda d: None)
         daemon.before("subnet4-get", lambda d: cached.append(subnet_catalogue.display(self.server, 4)))
-        with stub_kea(daemon.responses()), self.assertRaises(ConfigChangeRejected):
+        with stub_kea(daemon.responses()), self.assertRaises(ChangeRejected):
             self._call(daemon, "lab")
         with stub_kea(daemon.responses()) as kea:
             after = subnet_catalogue.display(self.server, 4)
@@ -2199,7 +2220,7 @@ class SubnetEditPoolTests(TestCase):
         """The form cannot show such a Subnet, so a save from any page would drop the Pool."""
         live = self._live(4, [{"pool": _KEPT_POOL[4]}, {"pool": "not a pool", **_POOL_KEYS}])
         daemon = SubnetDaemon(4, [live], networks=("office",), members={})
-        with stub_kea(daemon.responses()) as kea, self.assertRaises(ConfigChangeRejected) as raised:
+        with stub_kea(daemon.responses()) as kea, self.assertRaises(ChangeRejected) as raised:
             config_write.edit_subnet(
                 self.server,
                 4,
@@ -2316,7 +2337,7 @@ class LockTests(TransactionTestCase):
         def run():
             try:
                 self.results[name] = config_write.add_shared_network(server, family, network)
-            except ConfigChangeRejected as rejection:
+            except ChangeRejected as rejection:
                 self.results[name] = rejection
             finally:
                 connection.close()
@@ -2379,6 +2400,59 @@ class LockTests(TransactionTestCase):
             ["network4-get", "network4-add", *_PERSIST, "subnet4-list", "config-get", "subnet4-del", *_PERSIST],
         )
 
+    def test_a_reservation_write_waits_for_another_change_and_reads_its_scope_only_under_the_lock(self):
+        """A Reservation write is a Configuration Change, so it takes the same lock (ADR 0012)."""
+        catalogue = _catalogue_responses_for_subnets(4, [{"id": 20, "subnet": "198.18.0.0/24"}])
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        waiter_result = {}
+
+        def build(subnet, _catalogue):
+            return IPv4Reservation(
+                scope=InSubnetReservationScope(subnet.identity),
+                identity=ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:ff"),
+                addresses=(ipaddress.IPv4Address("198.18.0.20"),),
+            )
+
+        def run_add():
+            try:
+                waiter_result["add"] = config_write.add_reservation(self.same_url, 4, "198.18.0.0/24", build)
+            finally:
+                connection.close()
+
+        responses = {
+            **self._responses(),
+            "subnet4-list": catalogue["subnet4-list"],
+            "config-get": catalogue["config-get"],
+            "reservation-add": _OK,
+            "reservation-get": {"result": 0, "arguments": raw},
+        }
+        with stub_kea(responses) as kea:
+            holder = self._hold()
+            waiter = threading.Thread(target=run_add, name="waiter", daemon=True)
+            waiter.start()
+            self._wait_until_a_lock_waits()
+            self.assertNotIn("subnet4-list", kea.commands())
+            self.release.set()
+            holder.join(timeout=30)
+            waiter.join(timeout=30)
+        outcome = waiter_result["add"]
+        self.assertEqual(
+            (outcome.application, outcome.persistence, outcome.verification), ("applied", "persisted", "verified")
+        )
+        self.assertEqual(
+            kea.commands(),
+            [
+                "network4-get",
+                "network4-add",
+                *_PERSIST,
+                "subnet4-list",
+                "config-get",
+                "reservation-add",
+                *_PERSIST,
+                "reservation-get",
+            ],
+        )
+
     def test_a_second_operation_on_the_same_url_waits_for_the_first(self):
         with stub_kea(self._responses()) as kea:
             holder = self._hold()
@@ -2397,7 +2471,7 @@ class LockTests(TransactionTestCase):
         with stub_kea(self._responses()) as kea, patch.object(config_write, "LOCK_WAIT_SECONDS", 0.5):
             holder = self._hold()
             started = time.monotonic()
-            with self.assertRaises(ConfigChangeRejected) as raised:
+            with self.assertRaises(ChangeRejected) as raised:
                 config_write.add_shared_network(self.same_url, 4, "rejected")
             waited = time.monotonic() - started
             self.release.set()
@@ -2475,7 +2549,7 @@ class LockTests(TransactionTestCase):
                 config_write.add_shared_network(self.holder, 4, "net-a")
             with (
                 stub_kea({**self._responses(), "network4-add": slow(rejected)}),
-                self.assertRaises(ConfigChangeRejected),
+                self.assertRaises(ChangeRejected),
             ):
                 config_write.add_shared_network(self.holder, 4, "net-b")
         held = [line for line in logs.output if "lock for" in line]
@@ -2627,8 +2701,8 @@ class ReadModifyWriteTests(TestCase):
         """The reads before the change: the Subnet scope for a Subnet change, then the config-get of the change."""
         return [f"subnet{version}-list", "config-get", "config-get"] if name == "set_subnet_options" else ["config-get"]
 
-    def _rejection(self, change) -> ConfigChangeRejected:
-        with self.assertRaises(ConfigChangeRejected) as raised:
+    def _rejection(self, change) -> ChangeRejected:
+        with self.assertRaises(ChangeRejected) as raised:
             change()
         return raised.exception
 
@@ -2682,6 +2756,14 @@ class ReadModifyWriteTests(TestCase):
                     self.assertEqual(rejection.reason, "config-test-rejected")
                     self.assertEqual(rejection.diagnostics, ("Kea replied: subnet overlaps",))
                     self.assertEqual(kea.commands(), [*self._reads(version, name), "config-test"])
+
+    def test_a_config_test_that_cannot_reach_the_daemon_is_not_sent(self):
+        unreachable = {"result": 128, "text": "Connection refused"}
+        with stub_kea(_rmw_responses(4, **{"config-test": unreachable})) as kea:
+            rejection = self._rejection(lambda: config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])]))
+        self.assertEqual(rejection.reason, "not-sent")
+        self.assertEqual(rejection.diagnostics, (f"{_DAEMON_UNREACHABLE} Kea replied: Connection refused",))
+        self.assertEqual(kea.commands(), ["config-get", "config-test"])
 
     def test_an_unsupported_config_test_is_skipped(self):
         unsupported = {"result": 2, "text": "'config-test' command not supported."}
@@ -2813,7 +2895,7 @@ class ReadModifyWriteTests(TestCase):
         row = {**_new_row("routers", "10.0.0.1"), "original_option": {"code": "six"}}
         with stub_kea(_rmw_responses(4)) as kea, self.assertRaises(ValueError) as raised:
             config_write.set_server_options(self.server, 4, [row])
-        self.assertNotIsInstance(raised.exception, ConfigChangeRejected)
+        self.assertNotIsInstance(raised.exception, ChangeRejected)
         self.assertEqual(str(raised.exception), "A DHCP Option code must be an integer from 0 through 65535.")
         self.assertEqual(kea.commands(), ["config-get"])
 
@@ -2999,7 +3081,7 @@ class SharedNetworkEditShownValuesTests(TestCase):
     def _rejection(self, version: Family, **change):
         """Return the rejection of the save that _edit makes, and the commands that reached Kea."""
         with stub_kea(_rmw_responses(version, config_get=_with_network(version, **change))) as kea:
-            with self.assertRaises(ConfigChangeRejected) as raised:
+            with self.assertRaises(ChangeRejected) as raised:
                 config_write.edit_shared_network(
                     self.server, version, "net-a", _EDIT[version], shown=_NETWORK_SHOWN[version]
                 )
@@ -3075,7 +3157,7 @@ class SharedNetworkEditShownValuesTests(TestCase):
                 shown = dataclasses.replace(_NETWORK_SHOWN[4], dns_servers=("192.0.2.53",), ntp_servers=())
                 config_get = _with_network(4, **{"option-data": entries})
                 with stub_kea(_rmw_responses(4, config_get=config_get)) as kea:
-                    with self.assertRaises(ConfigChangeRejected) as raised:
+                    with self.assertRaises(ChangeRejected) as raised:
                         config_write.edit_shared_network(
                             self.server, 4, "net-a", dataclasses.replace(shown, description="Lab"), shown=shown
                         )
@@ -3242,7 +3324,7 @@ class ConcurrentReadModifyWriteTests(TransactionTestCase):
             ),
         )
         self.assertEqual(self.results["first"], ConfigChangeOutcome("applied", "persisted"))
-        self.assertIsInstance(self.results["second"], ConfigChangeRejected)
+        self.assertIsInstance(self.results["second"], ChangeRejected)
         self.assertEqual(self.results["second"].reason, "not-sent")
         network = running.running["Dhcp4"]["shared-networks"][0]
         self.assertEqual(network["user-context"], {"comment": "Lab"})

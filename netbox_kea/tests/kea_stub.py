@@ -15,22 +15,35 @@ Patched at the **class** level (``requests.Session.post``) so it also covers the
 
 from __future__ import annotations
 
+import atexit
+import io
 import ipaddress
 import json
+import os
+import shutil
 import socket
+import ssl
+import tempfile
 import threading
 import time
+import warnings
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from functools import cache
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 import requests
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 from requests.adapters import HTTPAdapter
 
 from netbox_kea import branching, server_configuration
@@ -108,6 +121,28 @@ def record_transport(client: KeaClient, reply: list[dict[str, Any]]) -> Recordin
     for prefix in ("http://", "https://"):
         client._session.mount(prefix, adapter)
     return adapter
+
+
+@contextmanager
+def reply_read_failure(error: Exception) -> Iterator[list[requests.PreparedRequest]]:
+    """Return HTTP headers, then fail while the real Session consumes the reply body."""
+    sent: list[requests.PreparedRequest] = []
+
+    class FailedRead(io.BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            raise error
+
+    def send(adapter: HTTPAdapter, request: requests.PreparedRequest, *args: Any, **kwargs: Any) -> requests.Response:
+        sent.append(request)
+        response = requests.Response()
+        response.status_code = 200
+        response.url = request.url or ""
+        response.request = request
+        response.raw = FailedRead()
+        return response
+
+    with patch.object(HTTPAdapter, "send", new=send):
+        yield sent
 
 
 def _is_exc(obj: Any) -> bool:
@@ -465,6 +500,23 @@ def _network_absent(name: str) -> dict[str, Any]:
     return {"result": 3, "text": f"No '{name}' shared network found"}
 
 
+#: A Kea refusal, a transport failure and a malformed reply of one read, with the line that the refusal adds under
+#: the headline of the Notice (a transport failure and a malformed reply add none).
+READ_FAILURES: tuple[tuple[str, Any, str | None], ...] = (
+    ("refusal", {"result": 1, "text": "the host backend is down"}, "Kea replied: the host backend is down"),
+    ("transport", requests.ConnectionError("Kea is unreachable"), None),
+    ("malformed", ["not", "a", "reply"], None),
+)
+
+
+#: The Catalogue diagnostic of each failure of READ_FAILURES on a ``subnet{v}-list`` read.
+SUBNET_LIST_FAILURES: dict[str, str] = {
+    "refusal": "Kea subnet identity facts are unavailable. Kea replied: the host backend is down",
+    "transport": "Kea subnet identity facts are unavailable.",
+    "malformed": "Kea returned a malformed subnet identity response.",
+}
+
+
 def _refused_connection() -> requests.ConnectionError:
     """Return the error that requests raises for a real refused connection.
 
@@ -482,6 +534,126 @@ def _refused_connection() -> requests.ConnectionError:
     finally:
         session.close()
     raise AssertionError(f"A connection to the closed port {port} did not fail.")
+
+
+@contextmanager
+def redirect_to_netrc_host(
+    target: str = "http://redirect.example.invalid/",
+) -> Iterator[list[requests.PreparedRequest]]:
+    """Answer each sent request with HTTP 307 to *target*, whose ``.netrc`` password is not Latin-1 text.
+
+    The request reaches the transport. requests then prepares the redirect also with ``allow_redirects=False``, and
+    it cannot encode the ``.netrc`` credentials of *target*. The yielded list holds each request that was sent.
+    """
+    sent: list[requests.PreparedRequest] = []
+
+    def send(adapter: HTTPAdapter, request: requests.PreparedRequest, *args: Any, **kwargs: Any) -> requests.Response:
+        sent.append(request)
+        response = _raw_http_response(b"", status=307, url=request.url or "")
+        response.headers["Location"] = target
+        response.request = request
+        # requests reads and closes the reply before it prepares the redirect.
+        response.raw = io.BytesIO(b"")
+        return response
+
+    with tempfile.TemporaryDirectory() as directory:
+        netrc = Path(directory) / "netrc"
+        netrc.write_text(f"machine {urlsplit(target).hostname} login kea password pass\u20ac\n", encoding="utf-8")
+        with patch.dict(os.environ, {"NETRC": str(netrc)}), patch.object(HTTPAdapter, "send", new=send):
+            yield sent
+
+
+def _post_error(url: str, *, verify: bool = True) -> requests.RequestException:
+    """Return the error that a real ``requests`` POST to *url* raises. Call it outside ``stub_kea``."""
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        session.post(url, json={}, timeout=5, verify=verify)
+    except requests.RequestException as exc:
+        return exc
+    finally:
+        session.close()
+    raise AssertionError(f"The POST to {url} did not fail.")
+
+
+def _serve_once(handle: Callable[[socket.socket], None]) -> tuple[int, threading.Thread]:
+    """Accept one connection on a free local port in a thread, and run *handle* on it."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    port = listener.getsockname()[1]
+
+    def run() -> None:
+        connection, _address = listener.accept()
+        try:
+            handle(connection)
+        except OSError:
+            pass
+        finally:
+            connection.close()
+            listener.close()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return port, thread
+
+
+@cache
+def _self_signed_certificate() -> tuple[str, str]:
+    """Return the certificate and key file of a self-signed certificate for 127.0.0.1."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    now = datetime.now(tz=timezone.utc)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=5))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    directory = Path(tempfile.mkdtemp(prefix="kea-tls-"))
+    atexit.register(shutil.rmtree, directory, ignore_errors=True)
+    certificate_file, key_file = directory / "cert.pem", directory / "key.pem"
+    certificate_file.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key_file.write_bytes(
+        key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+    )
+    return str(certificate_file), str(key_file)
+
+
+def _tls_server_context() -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(*_self_signed_certificate())
+    return context
+
+
+def _tls_errors() -> dict[str, requests.RequestException]:
+    """Return two real TLS errors that requests raises while it connects. Call it outside ``stub_kea``.
+
+    "verify": the client cannot verify a self-signed certificate. "handshake": the server answers in plain HTTP.
+    """
+
+    def plain_http(connection: socket.socket) -> None:
+        connection.recv(4096)
+        connection.sendall(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+
+    def handshake(connection: socket.socket) -> None:
+        with suppress(ssl.SSLError):
+            _tls_server_context().wrap_socket(connection, server_side=True)
+
+    errors = {}
+    for name, handle, verify in (("handshake", plain_http, False), ("verify", handshake, True)):
+        port, thread = _serve_once(handle)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            errors[name] = _post_error(f"https://127.0.0.1:{port}/", verify=verify)
+        thread.join(timeout=5)
+    return errors
 
 
 def _leases_per_subnet(leases_by_subnet: dict[Any, list[dict[str, Any]]]):

@@ -5,7 +5,6 @@ import logging
 import re
 from typing import Any
 
-import requests
 from django.contrib import messages
 from django.http import HttpResponse, QueryDict
 from django.http.request import HttpRequest
@@ -15,10 +14,10 @@ from netbox.views import generic
 from utilities.htmx import htmx_partial
 from utilities.views import register_model_view
 
-from .. import config_write, forms, server_configuration, subnet_catalogue, tables
+from .. import config_write, forms, runtime_change, server_configuration, subnet_catalogue, tables
 from ..constants import Family
 from ..dhcp_options import AmbiguousFormOption, DHCPOption, form_option_fields
-from ..kea import KeaException, subnet_network
+from ..kea import subnet_network
 from ..models import Server
 from ..pools import Pool, addresses_in_pools, parse_pool
 from ..reservations import InSubnetReservationScope
@@ -33,7 +32,6 @@ from ..subnet_catalogue import (
 from ..utilities import (
     OptionalViewTab,
     export_table,
-    kea_error_hint,
 )
 from ._base import (
     _POOL_RE,
@@ -41,10 +39,10 @@ from ._base import (
     _client_settings_error,
     _enrich_subnet_statistics,
     _KeaChangeMixin,
-    _run_config_change,
+    _run_change,
     _safe_return_url,
 )
-from .notices import notice, show_notices
+from .notices import Notice, load_snapshot, notice, show_notices
 from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
@@ -177,38 +175,47 @@ def _warn_reservations_in_pool(
 
     Warns when the check cannot run.
     """
-    check_failed_message = (
+    not_checked = (
         f"The Reservation overlap check did not run. Pool {pool.range} was not checked against existing Reservations."
     )
     try:
         client = server.get_client(version=catalogue.family)
-        snapshot = client.reservation_snapshot(catalogue.family, catalogue, page_size=200, subnet_id=subnet.subnet_id)
-        if not snapshot.complete:
-            # No warning below would otherwise read as "no overlapping reservation".
-            messages.warning(
-                request,
-                f"Could not read every reservation on this server, so pool {pool.range} was checked "
-                "against an incomplete list.",
-            )
-        addresses = [
-            address
-            for reservation in snapshot.records
-            if isinstance(reservation.scope, InSubnetReservationScope)
-            and reservation.scope.subnet.subnet_id == subnet.subnet_id
-            for address in reservation.addresses
-        ]
-        overlapping = [str(address) for address, _pool in addresses_in_pools(addresses, (pool,))]
-        if overlapping:
-            sample = ", ".join(overlapping[:5])
-            extra = f" (+{len(overlapping) - 5} more)" if len(overlapping) > 5 else ""
-            messages.warning(
-                request,
-                f"Pool {pool.range} overlaps {len(overlapping)} existing reservation(s): {sample}{extra}. "
-                "Kea allows this. Reservations take priority over pool allocation.",
-            )
-    except (KeaException, requests.RequestException, OSError, RuntimeError, ValueError):
-        logger.warning("Could not check Pool and Reservation overlap for subnet %s", subnet.subnet_id, exc_info=True)
-        messages.warning(request, check_failed_message)
+    except ValueError as exc:
+        messages.warning(request, f"{_client_settings_error(server, exc)} {not_checked}")
+        return
+    with client:
+        loaded = load_snapshot(
+            server,
+            "reservation",
+            lambda: client.reservation_snapshot(catalogue.family, catalogue, page_size=200, subnet_id=subnet.subnet_id),
+        )
+    if isinstance(loaded, Notice):
+        # The Pool is added, so the failed advisory read is a warning, not an error.
+        messages.warning(request, f"{not_checked} {loaded.text}")
+        return
+    if not loaded.complete:
+        # No warning below would otherwise read as "no overlapping reservation".
+        messages.warning(
+            request,
+            f"Could not read every reservation on this server, so pool {pool.range} was checked "
+            "against an incomplete list.",
+        )
+    addresses = [
+        address
+        for reservation in loaded.records
+        if isinstance(reservation.scope, InSubnetReservationScope)
+        and reservation.scope.subnet.subnet_id == subnet.subnet_id
+        for address in reservation.addresses
+    ]
+    overlapping = [str(address) for address, _pool in addresses_in_pools(addresses, (pool,))]
+    if overlapping:
+        sample = ", ".join(overlapping[:5])
+        extra = f" (+{len(overlapping) - 5} more)" if len(overlapping) > 5 else ""
+        messages.warning(
+            request,
+            f"Pool {pool.range} overlaps {len(overlapping)} existing reservation(s): {sample}{extra}. "
+            "Kea allows this. Reservations take priority over pool allocation.",
+        )
 
 
 def _unconfirmed_subnet(request: HttpRequest, subnet_id: int, return_url: str) -> HttpResponse:
@@ -279,7 +286,7 @@ class _BasePoolAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
             return self._render(request, server, subnet_id, form)
         pool: Pool = form.cleaned_data["pool"]
         cidr: str = form.cleaned_data["subnet_cidr"]
-        outcome = _run_config_change(
+        outcome = _run_change(
             request,
             # Kea accepts an explicit range for both families, and the Subnets table shows this text.
             f"Pool {pool.range} added to subnet {subnet_id}.",
@@ -356,7 +363,7 @@ class _BasePoolDeleteView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView
         except ValueError:
             messages.error(request, f"Pool {pool} is not a valid Pool of Subnet {cidr}. Nothing was sent to Kea.")
             return redirect(return_url)
-        _run_config_change(
+        _run_change(
             request,
             f"Pool {parsed_pool.range} removed from subnet {subnet_id}.",
             lambda: config_write.delete_pool(server, self.dhcp_version, subnet_id, cidr, parsed_pool),
@@ -500,7 +507,7 @@ class _BaseSubnetAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView)
             return f"Subnet {outcome.subnet_id} ({cidr}) added{joined}."
 
         try:
-            outcome = _run_config_change(
+            outcome = _run_change(
                 request,
                 added,
                 lambda: config_write.add_subnet(
@@ -661,7 +668,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView
             form.add_error("subnet_cidr", f"Enter an IPv{self.dhcp_version} Subnet CIDR.")
             return self._render_post(request, server, subnet_id, form)
         edit, shown = form.to_edit(), form.shown()
-        outcome = _run_config_change(
+        outcome = _run_change(
             request,
             f"Subnet {subnet_id} ({cidr}) updated.",
             lambda: config_write.edit_subnet(
@@ -737,7 +744,7 @@ class _BaseSubnetDeleteView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectVi
             messages.error(request, _NO_SUBNET_CIDR)
             return redirect(return_url)
         cidr: str = form.cleaned_data["subnet_cidr"]
-        _run_config_change(
+        _run_change(
             request,
             f"Subnet {subnet_id} ({cidr}) deleted.",
             lambda: config_write.delete_subnet(server, self.dhcp_version, subnet_id, cidr),
@@ -793,29 +800,11 @@ class _BaseSubnetWipeView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
         return_url = _safe_return_url(request, self._subnets_url(pk))
-        try:
-            client = server.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(server, exc))
-            return redirect(return_url)
-        try:
-            client.lease_wipe(version=self.dhcp_version, subnet_id=subnet_id)
-            messages.success(request, f"All leases in subnet {subnet_id} wiped.")
-        except KeaException as exc:
-            logger.exception("Failed to wipe leases in subnet %s", subnet_id)
-            if exc.unsupported_command:
-                messages.error(
-                    request,
-                    "Failed to wipe leases: ensure the lease_cmds hook is loaded.",
-                )
-            else:
-                messages.error(request, kea_error_hint(exc))
-        except requests.RequestException:
-            logger.exception("Failed to wipe leases in subnet %s (network error)", subnet_id)
-            messages.error(request, "Network error communicating with Kea: see server logs.")
-        except (RuntimeError, ValueError):
-            logger.exception("Failed to wipe leases in subnet %s", subnet_id)
-            messages.error(request, "Failed to wipe leases: see server logs for details.")
+        _run_change(
+            request,
+            f"All leases in subnet {subnet_id} wiped.",
+            lambda: runtime_change.wipe_leases(server, self.dhcp_version, subnet_id),
+        )
         return redirect(return_url)
 
 

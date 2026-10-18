@@ -27,6 +27,7 @@ MALFORMED_ADDRESS4 = "192.0.2.77"
 RELEASED_ADDRESS4 = "192.0.2.2"
 ADDED_ADDRESS4 = "192.0.2.30"
 IN_USE_ADDRESS4 = "192.0.2.31"
+NOT_SENT_ADDRESS4 = "192.0.2.32"
 
 # An address Sync writes the IP address and the MAC address; no grant covers a Prefix.
 _SYNC_USER_PERMISSIONS = [
@@ -327,8 +328,8 @@ def test_an_edit_refuses_a_lease_whose_binding_changed_in_kea(
     page.get_by_role("button", name="Save").click()
 
     expect(page.locator(".toast-body")).to_have_text(
-        f"Lease {ADDRESS4} was not changed: its client binding changed in Kea after the form was shown."
-        " Reload the form and try again."
+        f"Lease {ADDRESS4}: This request changed nothing. Its client binding changed in Kea after the form was"
+        " shown. Reload the form and try again."
     )
     stored = kea.command("lease4-get", 4, arguments={"ip-address": ADDRESS4})[0]["arguments"]
     assert stored["hostname"] == "stale-edit"
@@ -429,9 +430,9 @@ def test_a_delete_refuses_a_lease_whose_binding_changed_in_kea(
 
     confirm.click()
 
-    expect(page.locator(".toast-body", has_text=f"Lease {ADDRESS4} was not deleted")).to_have_text(
-        f"Lease {ADDRESS4} was not deleted: its client binding changed in Kea after the list was shown."
-        " Reload the list and try again."
+    expect(page.locator(".toast-body", has_text=f"Lease {ADDRESS4}: This request changed nothing")).to_have_text(
+        f"Lease {ADDRESS4}: This request changed nothing. Its client binding changed in Kea after the list was"
+        " shown. Reload the list and try again."
     )
     stored = kea.command("lease4-get", 4, arguments={"ip-address": ADDRESS4})[0]["arguments"]
     assert stored["hw-address"] == "08:08:08:08:08:09"
@@ -484,14 +485,16 @@ def test_a_lease_added_in_the_form_is_created_in_kea(
     assert (stored["hw-address"], stored["hostname"]) == ("08:00:00:00:00:30", "form-added")
 
 
-def test_a_csv_import_creates_each_new_lease_and_reports_the_refused_one(
+def test_a_csv_import_stops_at_the_row_that_kea_did_not_confirm(
     page: Page, kea: _DualEndpointKeaClient, plugin_base: str, with_test_server, clear_leases: None
 ) -> None:
+    # Kea answers result 1 for an address that has a lease, and result 1 gives unknown (ADR 0011).
     kea.command("lease4-add", 4, arguments={"ip-address": IN_USE_ADDRESS4, "hw-address": "08:00:00:00:00:31"})
     content = (
         "ip-address,hw-address,hostname\n"
         f"{ADDED_ADDRESS4},08:00:00:00:00:30,csv-added\n"
-        f"{IN_USE_ADDRESS4},08:00:00:00:00:99,csv-refused\n"
+        f"{IN_USE_ADDRESS4},08:00:00:00:00:99,csv-in-use\n"
+        f"{NOT_SENT_ADDRESS4},08:00:00:00:00:32,csv-not-sent\n"
     )
     page.goto(f"{plugin_base}/servers/{with_test_server.id}/leases4/import/")
     page.locator("#id_csv_file").set_input_files(
@@ -500,10 +503,18 @@ def test_a_csv_import_creates_each_new_lease_and_reports_the_refused_one(
     page.get_by_role("button", name="Import").click()
 
     expect(page.locator(".display-6.text-success")).to_have_text("1")
-    expect(page.locator(".display-6.text-danger")).to_have_text("1")
-    expect(page.locator("tr.table-danger > td").first).to_have_text("3")
-    expect(page.locator("tr.table-danger code")).to_have_text(IN_USE_ADDRESS4)
+    expect(page.locator(".display-6.text-warning")).to_have_text("1")
+    expect(page.locator(".display-6.text-danger")).to_have_text("0")
+    expect(page.locator(".display-6.text-secondary")).to_have_text("1")
+    expect(page.get_by_role("alert").filter(has_text="Kea did not confirm one row")).to_contain_text(
+        "Kea did not confirm one row, so NetBox stopped there."
+    )
+    expect(page.locator("tr.table-warning > td").first).to_have_text("3")
+    expect(page.locator("tr.table-warning code")).to_have_text(IN_USE_ADDRESS4)
+    expect(page.locator("tr.table-secondary > td").first).to_have_text("4")
+    expect(page.locator("tr.table-secondary code")).to_have_text(NOT_SENT_ADDRESS4)
     added = kea.command("lease4-get", 4, arguments={"ip-address": ADDED_ADDRESS4})[0]["arguments"]
     assert added["hostname"] == "csv-added"
     kept = kea.command("lease4-get", 4, arguments={"ip-address": IN_USE_ADDRESS4})[0]["arguments"]
     assert kept["hw-address"] == "08:00:00:00:00:31"
+    assert kea.command("lease4-get", 4, arguments={"ip-address": NOT_SENT_ADDRESS4}, check=(3,))[0]["result"] == 3

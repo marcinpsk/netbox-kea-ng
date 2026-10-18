@@ -33,6 +33,7 @@ from .kea import (
     SubnetEdit,
     SubnetFields,
     description_as_shown,
+    kea_error_message,
     shared_network_description,
     subnet_network,
 )
@@ -48,7 +49,6 @@ from .subnet_settings import (
     inherited_reservation_flags,
     setting_key,
 )
-from .utilities import kea_error_hint
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +228,7 @@ def _read_configuration(
             server,
             family,
             "configuration-unavailable",
-            f"Kea configuration facts are unavailable. {kea_error_hint(exc)}",
+            f"Kea configuration facts are unavailable. {kea_error_message(exc)}",
         )
     except MalformedReply:
         logger.warning("Server configuration read failed for DHCPv%s", family, exc_info=True)
@@ -1044,13 +1044,16 @@ class ImportRead:
     configuration: dict[str, Any]
 
 
-def for_import(server: Server, family: int) -> ImportRead | None:
-    """Read live configuration for the DHCP plugin import without the cache; return None when Kea could not be read."""
+def for_import(server: Server, family: int) -> ImportRead | ServerConfigurationSnapshot:
+    """Read live configuration for the DHCP plugin import without the cache.
+
+    Return the unavailable Snapshot when Kea could not be read.
+    """
     validated_family = validate_family(family)
     require_persisted_server(server)
     read = _read_configuration(server, validated_family)
     if isinstance(read, ServerConfigurationSnapshot):
-        return None
+        return read
     configuration, configuration_hash = read
     return ImportRead(_parse_configuration(server, configuration, validated_family, configuration_hash), configuration)
 

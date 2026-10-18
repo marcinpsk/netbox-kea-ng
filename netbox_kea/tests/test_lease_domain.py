@@ -671,10 +671,10 @@ def test_a_creation_compares_only_the_facts_that_the_request_names():
     assert leases.creation_mismatches(request6, v6) == ("binding",)
 
 
-def test_a_conflict_names_at_least_one_known_fact():
-    for fields in ((), ("owner",)):
-        with pytest.raises(ValidationError):
-            leases.LeaseConflict(fields=fields)
+def test_fact_words_name_each_fact_once_in_order():
+    assert leases.fact_words(("binding",)) == "client binding"
+    assert leases.fact_words(("hostname", "valid_lifetime")) == "hostname and valid lifetime"
+    assert leases.fact_words(("identity", "subnet_id", "prefix_length")) == "kind, Subnet and prefix length"
 
 
 def test_a_change_reply_is_applied_only_on_success():

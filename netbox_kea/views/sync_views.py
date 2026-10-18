@@ -3,10 +3,11 @@
 import csv
 import ipaddress
 import logging
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, cast
+from typing import Any, Literal, cast
 
-import requests
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError
@@ -16,7 +17,7 @@ from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
 from django.views import View
 
-from .. import event_scope, forms
+from .. import config_write, event_scope, forms, runtime_change, server_configuration, subnet_catalogue
 from ..constants import Family
 from ..ipam_reconciliation import (
     RESERVATION,
@@ -26,35 +27,52 @@ from ..ipam_reconciliation import (
     reconcile,
     reconcile_permissions,
 )
-from ..kea import KeaClient, KeaException
 from ..leases import (
-    ExactLeaseResult,
-    LeaseFound,
-    LeaseIdentity,
-    LeaseLookupFailed,
+    LeaseAbsent,
+    LeaseRequest,
     is_current,
     parse_selection,
     shown_lease,
 )
 from ..models import Server
 from ..reservation_transfer import (
+    ReservationImportProposal,
     ReservationTransferDiagnostic,
     ReservationTransferError,
     parse_reservation_document,
     resolve_import_proposal,
 )
+from ..reservations import ReservationCapabilities
 from ..signals import lease_added
-from ..subnet_catalogue import CatalogueUnavailable, MutationScope, for_synchronization
+from ..subnet_catalogue import CatalogueUnavailable, for_synchronization
 from ..sync_permissions import sync_gate
 from ..utilities import (
     LeaseCSVError,
-    kea_error_hint,
     parse_lease_csv,
 )
-from ._base import ConditionalLoginRequiredMixin, _client_settings_error, _KeaChangeMixin
-from .leases import _LEASES_TAB, _add_lease_journal, lease_sync_gates
-from .reservation_mutations import _confirmed_side_effects, _identity_from_request, _reservation_target_scope
-from .reservations import _RESERVATIONS_TAB, _live_capabilities, reservation_badge
+from ._base import (
+    ChangeLoop,
+    ConditionalLoginRequiredMixin,
+    OutcomeT,
+    RowT,
+    _client_settings_error,
+    _client_settings_refusal,
+    _journal_applied,
+    _KeaChangeMixin,
+    _persistence_failure,
+    _run_change_loop,
+    _signal_applied,
+)
+from .leases import _LEASES_TAB, _lease_journal_comments, lease_sync_gates
+from .notices import Notice, failed_load, load_target
+from .reservation_mutations import (
+    _VERIFICATION_FAILED,
+    _identity_from_request,
+    _identity_label,
+    _live_target,
+    _record_applied,
+)
+from .reservations import _MUTATION_UNCONFIRMED, _RESERVATIONS_TAB, reservation_badge
 from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
@@ -101,12 +119,11 @@ class _BaseSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
         except ValueError as exc:
             return _row_error(request, _client_settings_error(server, exc))
 
-        observed = self._fetch_live_data(client, identity)
-        if isinstance(observed, LeaseLookupFailed):
-            logger.warning("Kea returned a malformed lease%s for %s", self.dhcp_version, label)
-            return _row_error(request, "Sync error: see server logs for details.")
-        if not isinstance(observed, LeaseFound):
-            return _row_error(request, "Could not fetch live data from Kea.")
+        observed = load_target(server, "lease_target", lambda: client.lease_get(identity))
+        if isinstance(observed, Notice):
+            return _row_error(request, observed.text)
+        if isinstance(observed, LeaseAbsent):
+            return _row_error(request, "The lease is no longer in Kea. Reload the lease list.")
         lease = observed.lease
         # The label holds the kind and the prefix length, so a changed allocation does not match.
         if shown_lease(lease).label != label:
@@ -135,14 +152,6 @@ class _BaseSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
             "netbox_kea/inc/claim_results.html",
             {"claim_result": result},
         )
-
-    def _fetch_live_data(self, client: KeaClient, identity: LeaseIdentity) -> ExactLeaseResult | None:
-        """Read the live Lease with *identity* from Kea, or ``None`` when the read fails."""
-        try:
-            return client.lease_get(identity)
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Failed to fetch live lease%s data for %s", self.dhcp_version, identity.address)
-            return None
 
 
 class ServerLease4SyncView(_BaseSyncView):
@@ -175,23 +184,24 @@ class _BaseReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin,
             return _row_error(request, gate.reason)
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
         identity = _identity_from_request(request, self.dhcp_version)
+        if refusal := _client_settings_refusal(server, self.dhcp_version):
+            return _row_error(request, refusal)
         try:
-            with _reservation_target_scope(server, self.dhcp_version, subnet_id, identity) as (
-                reservation,
-                _client,
-                catalogue,
-            ):
-                from ..ipam_reconciliation import claim
-
-                result = claim(server, self.dhcp_version, [reservation], force=True, catalogue=catalogue)
-        except event_scope.EventDispatchError:
-            raise
+            loaded = load_target(
+                server, "reservation_target", lambda: _live_target(server, self.dhcp_version, subnet_id, identity)
+            )
         except Http404:
             return _row_error(request, "The Reservation or its Subnet is no longer in Kea. Reload the list.")
-        except KeaException as exc:
-            logger.exception("Kea error synchronizing a DHCPv%s Reservation", self.dhcp_version)
-            return _row_error(request, f"Reservation synchronization failed: {kea_error_hint(exc)}")
-        except (requests.RequestException, DatabaseError, RuntimeError, ValidationError, ValueError):
+        if isinstance(loaded, Notice):
+            return _row_error(request, loaded.text)
+        reservation, catalogue = loaded
+        try:
+            from ..ipam_reconciliation import claim
+
+            result = claim(server, self.dhcp_version, [reservation], force=True, catalogue=catalogue)
+        except event_scope.EventDispatchError:
+            raise
+        except (DatabaseError, RuntimeError, ValidationError, ValueError):
             logger.exception("Could not synchronize a DHCPv%s Reservation", self.dhcp_version)
             return _row_error(request, "Reservation synchronization failed. See server logs.")
         # The badge reads the links as the page does, so a reload shows the same state.
@@ -322,12 +332,103 @@ class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Import report, shared by the Reservation document import and the Lease CSV import
+# ─────────────────────────────────────────────────────────────────────────────
+
+ImportStatus = Literal["created", "unconfirmed", "not-applied", "not-sent"]
+
+#: The count label, the heading and the Bootstrap color of each status of an import item, in report order.
+_IMPORT_GROUPS: dict[ImportStatus, tuple[str, str, str]] = {
+    "created": ("Created", "{Many} that Kea created", "success"),
+    "unconfirmed": ("Not confirmed", "{One} that Kea did not confirm", "warning"),
+    "not-applied": ("Not applied", "{Many} that Kea did not apply", "danger"),
+    "not-sent": ("Not sent", "{Many} that NetBox did not send", "secondary"),
+}
+
+
+@dataclass(frozen=True)
+class ImportNoun:
+    """What an import calls one item and its columns: a Lease CSV row, or a Reservation document entry."""
+
+    one: str
+    many: str
+    position: str
+    subject: str
+
+
+_LEASE_ROWS = ImportNoun("row", "rows", "Line", "Address")
+_RESERVATION_ENTRIES = ImportNoun("entry", "entries", "Position", "Identity")
+
+
+@dataclass(frozen=True)
+class ImportGroup:
+    """The items of one status of an import report, with the label, heading and color of the status."""
+
+    status: ImportStatus
+    label: str
+    heading: str
+    color: str
+    rows: list[dict[str, Any]]
+
+    @property
+    def has_messages(self) -> bool:
+        """Return whether the items carry a message: each item that Kea did not create, or a created item with a note."""
+        return self.status != "created" or any(row["message"] for row in self.rows)
+
+
+def _import_report(
+    loop: ChangeLoop[RowT, OutcomeT],
+    total: int,
+    noun: ImportNoun,
+    describe: Callable[[RowT], tuple[str, str]],
+    note: Callable[[OutcomeT], str] = lambda _outcome: "",
+) -> dict[str, Any]:
+    """Return the report of an import loop: each item by status, with its position, its subject and its message.
+
+    *describe* returns the position and the subject of an item, and *note* the message of a created item.
+    """
+
+    def entries(items: Iterable[tuple[RowT, str]]) -> list[dict[str, Any]]:
+        return [
+            {"position": position, "subject": subject, "message": text}
+            for item, text in items
+            for position, subject in (describe(item),)
+        ]
+
+    not_sent = f"NetBox stopped at an earlier {noun.one} and did not send this {noun.one}."
+    rows_by_status: dict[ImportStatus, list[dict[str, Any]]] = {
+        "created": entries((item, note(outcome)) for item, outcome in loop.applied),
+        "unconfirmed": entries([(loop.unknown[0], loop.unknown[1].text)] if loop.unknown else []),
+        "not-applied": entries((item, message.text) for item, message in loop.rejected),
+        "not-sent": entries((item, not_sent) for item in loop.not_sent),
+    }
+    groups = []
+    for status, rows in rows_by_status.items():
+        label, heading, color = _IMPORT_GROUPS[status]
+        heading = heading.format(One=noun.one.capitalize(), Many=noun.many.capitalize())
+        groups.append(ImportGroup(status, label, heading, color, rows))
+    unconfirmed = loop.unknown is not None
+    stopped = loop.stopped_at is not None and not unconfirmed
+    return {"groups": groups, "unconfirmed": unconfirmed, "stopped": stopped, "total": total, "noun": noun}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Bulk Reservation Import (YAML or JSON to Kea)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class _ImportRefusal:
+    """Why the live Server cannot validate a Reservation import: one form error per line."""
+
+    lines: tuple[str, ...]
+
+
 class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
-    """Validate one document, then create typed Reservations until the first failure."""
+    """Validate one document, then create its Reservations, one Configuration Change for each entry (ADR 0012).
+
+    An entry that Kea did not apply or did not confirm stops the import.
+    """
 
     workspace_section = "reservations"
 
@@ -355,22 +456,44 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
             },
         )
 
-    @staticmethod
-    def _diagnostic_result(
-        diagnostics: list[ReservationTransferDiagnostic] | tuple[ReservationTransferDiagnostic, ...],
-    ):
-        return {
-            "created": 0,
-            "failed": 0,
-            "not_attempted": 0,
-            "total": 0,
-            "diagnostics": diagnostics,
-            "failure": None,
-        }
+    def _validate(
+        self, instance: Server, proposals: Sequence[ReservationImportProposal]
+    ) -> list[ReservationTransferDiagnostic] | _ImportRefusal:
+        """Return a diagnostic for each entry whose Subnet or Identity type the live Kea server does not have.
 
-    def _resolve_reservations(self, proposals, capabilities, mutation_scope):
-        diagnostics = []
-        reservations = []
+        Return the refusal of the whole import when a live read cannot confirm the facts or the Server cannot take
+        Reservation changes.
+        """
+        configuration = server_configuration.for_verification(instance, self.dhcp_version)
+        if configuration.unavailable:
+            return _ImportRefusal(failed_load(configuration).lines)
+        capabilities = server_configuration.reservation_capabilities(configuration)
+        if capabilities is None or not capabilities.mutation_available:
+            return _ImportRefusal(
+                ((capabilities.explanation if capabilities is not None else "") or _MUTATION_UNCONFIRMED,)
+            )
+        with subnet_catalogue.mutation(instance, self.dhcp_version) as scope:
+            catalogue = scope.snapshot
+            if catalogue is None:
+                raise TypeError("An entered mutation scope holds its Catalogue.")
+            try:
+                return self._entry_diagnostics(scope, capabilities, proposals)
+            except CatalogueUnavailable:
+                return _ImportRefusal(failed_load(catalogue).lines)
+
+    @staticmethod
+    def _entry_diagnostics(
+        scope: subnet_catalogue.MutationScope,
+        capabilities: ReservationCapabilities,
+        proposals: Sequence[ReservationImportProposal],
+    ) -> list[ReservationTransferDiagnostic]:
+        """Return a diagnostic for each entry whose Identity type or Subnet the live Server does not have.
+
+        Raises:
+            CatalogueUnavailable: If the live Catalogue cannot confirm that a CIDR is absent.
+
+        """
+        diagnostics: list[ReservationTransferDiagnostic] = []
         for index, proposal in enumerate(proposals):
             if proposal.identity.identifier_type not in capabilities.identifiers:
                 diagnostics.append(
@@ -380,9 +503,7 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
                         source_position=f"reservations[{index}].identity.type",
                     )
                 )
-                continue
-            subnet = mutation_scope.find_by_cidr(proposal.subnet_cidr)
-            if subnet is None:
+            elif scope.find_by_cidr(proposal.subnet_cidr) is None:
                 diagnostics.append(
                     ReservationTransferDiagnostic(
                         code="unknown-subnet",
@@ -390,63 +511,10 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
                         source_position=f"reservations[{index}].scope.subnet.cidr",
                     )
                 )
-                continue
-            reservations.append(resolve_import_proposal(proposal, subnet.identity))
-        return reservations, diagnostics
-
-    @staticmethod
-    def _create_reservations(request, instance, client, catalogue, reservations):
-        created = 0
-        failure = None
-        for index, reservation in enumerate(reservations):
-            try:
-                mutation_result = client.reservation_create(reservation, catalogue)
-            except KeaException as exc:
-                logger.exception("Kea rejected Reservation document entry %s", index)
-                failure = {"position": f"reservations[{index}]", "message": kea_error_hint(exc)}
-                break
-            except (requests.RequestException, RuntimeError, ValueError):
-                logger.exception("Reservation document entry %s failed", index)
-                failure = {
-                    "position": f"reservations[{index}]",
-                    "message": "The Reservation could not be created. See server logs.",
-                }
-                break
-            created += 1
-            try:
-                _confirmed_side_effects(request, instance, "created", mutation_result, catalogue)
-            except (ValidationError, ValueError, RuntimeError, requests.RequestException):
-                logger.exception("Side effects failed for created Reservation document entry %s", index)
-                failure = {
-                    "position": f"reservations[{index}]",
-                    "message": "The Reservation was created, but a follow-up action failed. See server logs.",
-                    "applied": True,
-                }
-                break
-        return created, failure
-
-    def _execute_import(self, request, instance, client, proposals):
-        capabilities = _live_capabilities(instance, self.dhcp_version)
-        if capabilities is None or not capabilities.mutation_available:
-            raise RuntimeError("Reservation mutation commands are unavailable.")
-        with MutationScope(instance, self.dhcp_version) as mutation_scope:
-            catalogue = mutation_scope.snapshot
-            if catalogue is None:
-                raise RuntimeError("The Subnet Catalogue is unavailable.")
-            reservations, diagnostics = self._resolve_reservations(proposals, capabilities, mutation_scope)
-            if diagnostics:
-                return 0, None, diagnostics
-            created, failure = self._create_reservations(
-                request,
-                instance,
-                client,
-                catalogue,
-                reservations,
-            )
-        return created, failure, diagnostics
+        return diagnostics
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
-        """Validate the complete document before issuing any Kea mutation."""
+        """Validate the complete document, then send one Configuration Change for each entry until one fails."""
         instance = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
         form = self.form_class(request.POST, request.FILES)
         if not form.is_valid():
@@ -462,34 +530,53 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
             logger.exception("Reservation transfer document parsing failed")
             form.add_error("document", "The document does not use valid syntax for the selected format.")
             return self._render(request, instance, form, None)
-        diagnostics = [*parsed.diagnostics]
-        if diagnostics:
-            return self._render(request, instance, form, self._diagnostic_result(diagnostics))
+        if parsed.diagnostics:
+            return self._render(request, instance, form, {"diagnostics": parsed.diagnostics})
 
-        try:
-            client = instance.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            form.add_error(None, _client_settings_error(instance, exc))
+        if refusal := _client_settings_refusal(instance, self.dhcp_version):
+            form.add_error(None, refusal)
             return self._render(request, instance, form, None)
-        try:
-            created, failure, diagnostics = self._execute_import(request, instance, client, parsed.proposals)
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Could not prepare Reservation document import for server %s", instance.pk)
-            form.add_error(None, "The live Kea server could not validate this import. See server logs.")
+        diagnostics = self._validate(instance, parsed.proposals)
+        if isinstance(diagnostics, _ImportRefusal):
+            for line in diagnostics.lines:
+                form.add_error(None, line)
             return self._render(request, instance, form, None)
         if diagnostics:
-            return self._render(request, instance, form, self._diagnostic_result(diagnostics))
+            return self._render(request, instance, form, {"diagnostics": diagnostics})
 
-        failed = 1 if failure is not None and not failure.get("applied", False) else 0
-        result = {
-            "created": created,
-            "failed": failed,
-            "not_attempted": len(parsed.proposals) - created - failed,
-            "total": len(parsed.proposals),
-            "diagnostics": (),
-            "failure": failure,
-        }
+        def create(entry: tuple[int, ReservationImportProposal]) -> config_write.ReservationChangeOutcome:
+            _index, proposal = entry
+            outcome = config_write.add_reservation(
+                instance,
+                self.dhcp_version,
+                proposal.subnet_cidr,
+                lambda subnet, _catalogue: resolve_import_proposal(proposal, subnet.identity),
+            )
+            # Record each applied entry before the next entry goes to Kea, so a later failure loses no record.
+            if outcome.application == "applied":
+                _record_applied(request, instance, "created", outcome)
+            return outcome
+
+        entries = list(enumerate(parsed.proposals))
+        loop = _run_change_loop(entries, create, stop_on_rejection=True)
+        if any(outcome.persistence == "not-requested" for _entry, outcome in loop.applied):
+            messages.info(
+                request, "Configuration persistence is disabled for this server, so Kea did not save the import."
+            )
+        result = _import_report(
+            loop,
+            len(entries),
+            _RESERVATION_ENTRIES,
+            lambda entry: (f"reservations[{entry[0]}]", _identity_label(entry[1].identity)),
+            _created_note,
+        )
         return self._render(request, instance, self.form_class(), result)
+
+
+def _created_note(outcome: config_write.ReservationChangeOutcome) -> str:
+    """Return the note of a created Reservation: a failed persist step or verification read, else nothing."""
+    notes = (_persistence_failure(outcome), _VERIFICATION_FAILED if outcome.verification == "failed" else None)
+    return " ".join(note for note in notes if note)
 
 
 class ServerReservation4BulkImportView(_BaseBulkReservationImportView):
@@ -515,8 +602,9 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLo
     """Upload a CSV file and create one Lease for each row via ``lease_add``.
 
     **GET**: render the upload form.
-    **POST**: parse each row into a typed creation request → loop :meth:`KeaClient.lease_add` → show summary.
-    A row that is not a valid request rejects the whole file before Kea sees any row.
+    **POST**: parse each row into a typed creation request → one ``runtime_change.add_lease`` per row → show summary.
+    A row that is not a valid request rejects the whole file before Kea sees any row. The import stops at the first
+    row that Kea did not confirm.
     """
 
     workspace_section = "leases"
@@ -572,49 +660,30 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLo
             form.add_error("csv_file", "CSV parsing failed. Check the file format and column headers.")
             return self._render(request, instance, form, None)
 
-        try:
-            client = instance.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            form.add_error(None, _client_settings_error(instance, exc))
-            return self._render(request, instance, form, None)
-        created: list[str] = []
-        error_rows: list[dict[str, Any]] = []
-
-        for line, creation in rows:
-            failed = {"line": line, "address": str(creation.address)}
-            try:
-                client.lease_add(creation)
-            except KeaException as exc:
-                error_rows.append({**failed, "error": kea_error_hint(exc)})
-            except requests.RequestException:
-                logger.exception("Connection error importing lease CSV line %s", line)
-                error_rows.append({**failed, "error": "Connection error: could not reach the Kea server."})
-            except (RuntimeError, ValueError):
-                logger.exception("Data error importing lease CSV line %s", line)
-                error_rows.append({**failed, "error": "Invalid response from Kea: could not parse the server reply."})
-            else:
-                created.append(str(creation.address))
+        def signal_added(
+            creation: LeaseRequest, outcome: runtime_change.RuntimeChangeOutcome
+        ) -> runtime_change.RuntimeChangeOutcome:
+            # Signal each applied row before the next row goes to Kea, so a later failure loses no signal.
+            if outcome.application == "applied":
                 # A bulk import reads nothing back, so no observed Lease goes with the confirmed request.
-                lease_added.send_robust(
-                    sender=None,
+                _signal_applied(
+                    request,
+                    lease_added,
+                    "lease_added",
                     server=instance,
                     creation=creation,
                     lease=None,
                     dhcp_version=self.dhcp_version,
-                    request=request,
                 )
+            return outcome
 
+        loop = _run_change_loop(
+            rows, lambda row: signal_added(row[1], runtime_change.add_lease(instance, self.dhcp_version, row[1]))
+        )
+        created = [str(creation.address) for (_line, creation), _outcome in loop.applied]
         if created:
-            try:
-                _add_lease_journal(instance, request.user, "added", created)
-            except DatabaseError:
-                logger.exception("Failed to record the lease import journal for server %s", instance.pk)
-        result = {
-            "created": len(created),
-            "errors": len(error_rows),
-            "error_rows": error_rows,
-            "total": len(created) + len(error_rows),
-        }
+            _journal_applied(request, instance, _lease_journal_comments("added", created))
+        result = _import_report(loop, len(rows), _LEASE_ROWS, lambda row: (str(row[0]), str(row[1].address)))
         return self._render(request, instance, self.form_class(), result)
 
 

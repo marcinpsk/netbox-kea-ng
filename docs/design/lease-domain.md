@@ -88,16 +88,18 @@ presentation fields in `utilities.format_leases`. Reservation matching validates
 IPAM Reconciliation validates Subnet ID and hostname, isolates invalid rows and protects stale cleanup.
 These consumers currently receive dictionaries and apply different validation policies.
 
-`KeaClient.lease_update` modifies a fresh raw record and sends it back. This preserves unknown fields.
-The replacement keeps that preservation contract without exposing mutable wire dictionaries.
+`runtime_change.edit_lease` reads the Lease again with `KeaClient.lease_get_fresh`, which returns a `FreshLease`:
+the typed Lease and the Kea body that it came from. `FreshLease.edited` changes only the written fields of that body,
+and `KeaClient.lease_update` sends it back. This preserves unknown fields without exposing mutable wire dictionaries
+to the views (ADR 0011).
 
 The lease IPAM phase currently treats IPv6 records as addresses. The existing delegated-prefix phase
 reads Reservations supplied by the DHCP import. Sharing one source between those independent observations
 could let one observation remove the other's ownership links.
 
-Lease edits fetch fresh raw fields but do not compare them with the values shown on GET. Lease IPAM
-reports do not inspect state or lifetime. Export All refuses truncation but has no per-record diagnostic
-policy because the current collection has no completeness field.
+Lease edits read the Lease again and refuse the change when a shown fact or an edited field changed in Kea
+(`lease_edit_conflicts`). Lease IPAM reports do not inspect state or lifetime. Export All refuses truncation
+but has no per-record diagnostic policy because the current collection has no completeness field.
 
 The Lease REST actions currently return UI-enriched dictionaries with `count` and `results` only.
 The Reservation REST actions already return normalized typed records with diagnostics, completeness

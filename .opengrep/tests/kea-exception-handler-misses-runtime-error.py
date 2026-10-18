@@ -8,17 +8,17 @@ from netbox_kea.kea import KeaException
 
 
 def bad_toggle_misses_runtime_error(request, client):
-    # ruleid: kea-exception-handler-misses-runtime-error
+    # ruleid: kea-exception-handler-misses-runtime-error, kea-view-read-ladder
     try:
         client.command("dhcp-enable", 4)
     except KeaException as exc:
-        messages.error(request, kea_error_hint(exc))
+        messages.error(request, kea_error_message(exc))
     except (requests.RequestException, ValueError):
         messages.error(request, "An internal error occurred.")
 
 
 def bad_badge_catches_kea_exception_in_a_tuple(client):
-    # ruleid: kea-exception-handler-misses-runtime-error
+    # ruleid: kea-exception-handler-misses-runtime-error, kea-view-read-ladder
     try:
         client.command("version-get", 4)
         online = True
@@ -28,7 +28,7 @@ def bad_badge_catches_kea_exception_in_a_tuple(client):
 
 
 def bad_kea_exception_after_another_clause(client):
-    # ruleid: kea-exception-handler-misses-runtime-error
+    # ruleid: kea-exception-handler-misses-runtime-error, kea-view-read-ladder
     try:
         client.command("lease4-wipe", 4)
     except ValueError:
@@ -39,16 +39,18 @@ def bad_kea_exception_after_another_clause(client):
 
 def ok_sibling_clause_catches_runtime_error(request, client):
     # ok: kea-exception-handler-misses-runtime-error
+    # ruleid: kea-view-read-ladder
     try:
         client.command("dhcp-enable", 4)
     except KeaException as exc:
-        messages.error(request, kea_error_hint(exc))
+        messages.error(request, kea_error_message(exc))
     except (requests.RequestException, RuntimeError, ValueError):
         messages.error(request, "An internal error occurred.")
 
 
 def ok_runtime_error_clause_comes_first(client):
     # ok: kea-exception-handler-misses-runtime-error
+    # ruleid: kea-view-read-ladder
     try:
         client.command("version-get", 4)
     except RuntimeError as exc:
@@ -59,6 +61,7 @@ def ok_runtime_error_clause_comes_first(client):
 
 def ok_sibling_clause_catches_exception(client):
     # ok: kea-exception-handler-misses-runtime-error
+    # ruleid: kea-view-read-ladder
     try:
         client.command("lease4-add", 4)
     except KeaException:
@@ -69,6 +72,7 @@ def ok_sibling_clause_catches_exception(client):
 
 def ok_bare_except(client):
     # ok: kea-exception-handler-misses-runtime-error
+    # ruleid: kea-view-read-ladder
     try:
         client.command("lease4-add", 4)
     except KeaException:
@@ -79,6 +83,7 @@ def ok_bare_except(client):
 
 def ok_request_exception_with_exception_sibling(client):
     # ok: kea-exception-handler-misses-runtime-error
+    # ruleid: kea-view-read-ladder
     try:
         client.command("lease4-add", 4)
     except requests.RequestException:
@@ -88,7 +93,7 @@ def ok_request_exception_with_exception_sibling(client):
 
 
 def bad_request_exception_alone(client):
-    # ruleid: kea-exception-handler-misses-runtime-error
+    # ruleid: kea-exception-handler-misses-runtime-error, kea-view-read-ladder
     try:
         client.command("lease4-add", 4)
     except requests.RequestException:
@@ -96,9 +101,9 @@ def bad_request_exception_alone(client):
 
 
 def bad_request_exception_without_runtime_error(request, client):
-    # ruleid: kea-exception-handler-misses-runtime-error
+    # ruleid: kea-exception-handler-misses-runtime-error, kea-view-read-ladder
     try:
-        client.lease_add(4, row)
+        client.lease_get(identity)
     except requests.RequestException:
         messages.error(request, "Connection error.")
     except ValueError:
@@ -106,7 +111,7 @@ def bad_request_exception_without_runtime_error(request, client):
 
 
 def bad_request_exception_in_a_tuple(server):
-    # ruleid: kea-exception-handler-misses-runtime-error
+    # ruleid: kea-exception-handler-misses-runtime-error, kea-view-read-ladder
     try:
         server.get_client(version=4).command("version-get", 4)
     except (requests.RequestException, ValueError) as exc:
@@ -114,7 +119,7 @@ def bad_request_exception_in_a_tuple(server):
 
 
 def bad_get_client_catches_request_exception(server):
-    # ruleid: kea-exception-handler-misses-runtime-error
+    # ruleid: kea-exception-handler-misses-runtime-error, kea-view-read-ladder
     try:
         client = server.get_client(version=4)
     except (ValueError, requests.RequestException):
@@ -124,8 +129,9 @@ def bad_get_client_catches_request_exception(server):
 
 def ok_request_exception_with_runtime_error(request, client):
     # ok: kea-exception-handler-misses-runtime-error
+    # ruleid: kea-view-read-ladder
     try:
-        client.lease_wipe(version=4, subnet_id=1)
+        client.subnet_utilization(4)
     except requests.RequestException:
         messages.error(request, "Network error.")
     except (RuntimeError, ValueError):

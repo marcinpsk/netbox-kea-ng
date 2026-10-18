@@ -44,4 +44,4 @@ def ok_hint(request):
     except Exception as exc:
         logger.exception("kea call failed")
         # ok: kea-exception-detail-in-response
-        messages.error(request, kea_error_hint(exc))
+        messages.error(request, kea_error_message(exc))

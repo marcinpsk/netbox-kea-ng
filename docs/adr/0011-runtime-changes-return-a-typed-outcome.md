@@ -83,7 +83,8 @@ live. It raises `ChangeRejected` when the change is not live, as far as NetBox c
   the Server before trying again. When Kea returned a failure result, the message also shows Kea's text, so an
   argument error stays visible.
 - One formatter replaces `kea_error_hint` everywhere, reads included. It gives fixed guidance for result 2 (the
-  hook library is not loaded) and result 128 (the daemon cannot be reached), and otherwise `Kea replied: <text>`.
+  required hook library may not be loaded) and result 128 (the daemon cannot be reached), followed by
+  `Kea replied: <text>` for every result.
   No Python exception text reaches the operator.
 
 ### Side effects
@@ -119,8 +120,9 @@ the mapper.
 
 An operator who sees `unknown` after a Lease write can find the Lease changed with no journal entry.
 
-The view read ladders stay hand-written for now, but they use the new formatter. Moving them onto
-`load_snapshot` is a separate change.
+User-facing view reads go through `load_snapshot()` or `load_target()`, which use the new formatter. The
+OpenGrep rule `kea-view-read-ladder` refuses a hand-written ladder in `views/`; only the named reads that
+degrade silently and log the failure keep their own handler.
 
 ## Rejected alternatives
 

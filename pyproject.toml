@@ -74,6 +74,8 @@ dev = [
   "pre-commit",
   "python-semantic-release",
   "tblib>=3.0.0,<4.0.0",
+  # The self-signed certificate of the TLS tests in netbox_kea/tests/kea_stub.py.
+  "cryptography>=44.0.0,<51.0.0",
 ]
 # The documentation site generator. Zensical needs Python 3.11 or later.
 docs = [
