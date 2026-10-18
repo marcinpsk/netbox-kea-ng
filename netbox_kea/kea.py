@@ -24,13 +24,15 @@ from .constants import Family, IPAddressValue, IPNetworkValue, LeaseState, Persi
 from .decimal_text import parse_decimal
 from .dhcp_options import (
     DHCPOption,
+    DHCPOptionEdit,
     InvalidAddress,
     address_list,
     address_list_data,
     form_managed_entry,
     form_managed_options,
     form_shows,
-    merge_option_form_rows,
+    merge_option_edit,
+    parse_dhcp_option,
     parse_dhcp_options,
 )
 from .leases import (
@@ -896,12 +898,14 @@ class CandidateConfiguration:
         self.arguments = arguments
         self._daemon = daemon
 
-    def set_global_options(self, rows: list[dict[str, Any]]) -> None:
-        """Merge the options form *rows* into the server-global DHCP Options."""
-        self._daemon["option-data"] = merge_option_form_rows(rows, _config_options(self._daemon, self.service))
+    def set_global_options(self, edit: DHCPOptionEdit) -> None:
+        """Merge the typed option *edit* into the server-global DHCP Options."""
+        self._daemon["option-data"] = merge_option_edit(
+            edit, _config_options(self._daemon, self.service), self.family, self._option_definitions()
+        )
 
-    def set_subnet_options(self, subnet_id: int, network: IPNetworkValue, rows: list[dict[str, Any]]) -> None:
-        """Merge the options form *rows* into the Subnet with *subnet_id*, only while that ID names *network*."""
+    def set_subnet_options(self, subnet_id: int, network: IPNetworkValue, edit: DHCPOptionEdit) -> None:
+        """Merge the typed option *edit* into the Subnet with *subnet_id*, only while that ID names *network*."""
         subnet_key = f"subnet{self.family}"
         subnets = list(_config_entries(self._daemon, subnet_key, self.service))
         for shared_network in _config_entries(self._daemon, "shared-networks", self.service):
@@ -917,7 +921,18 @@ class CandidateConfiguration:
             raise MalformedConfiguration(f"config-get returned Subnet {subnet_id} without a valid CIDR.") from exc
         if declared != network:
             raise CandidateTargetMissing
-        matches[0]["option-data"] = merge_option_form_rows(rows, _config_options(matches[0], self.service))
+        matches[0]["option-data"] = merge_option_edit(
+            edit, _config_options(matches[0], self.service), self.family, self._option_definitions()
+        )
+
+    def _option_definitions(self) -> tuple[DHCPOption, ...]:
+        """Read the identity fields of the custom definitions from this live candidate."""
+        try:
+            return tuple(
+                parse_dhcp_option(entry) for entry in _config_entries(self._daemon, "option-def", self.service)
+            )
+        except ValueError as exc:
+            raise MalformedConfiguration("config-get returned an invalid Option Definition.") from exc
 
     def add_option_definition(self, option_def: dict[str, Any]) -> None:
         """Append *option_def* to the Option Definitions."""

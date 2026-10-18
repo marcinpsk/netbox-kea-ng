@@ -21,6 +21,7 @@ from django.db import DatabaseError, OperationalError, connection
 from . import event_scope, server_configuration
 from .change_outcome import Application, ChangeRejected, before_change, build_client, mutate, read_before
 from .constants import Family, IPNetworkValue, Persistence
+from .dhcp_options import DHCPOptionEdit
 from .kea import (
     CandidateConfiguration,
     CandidateTargetMissing,
@@ -685,13 +686,13 @@ def _verified(
 
 
 def set_subnet_options(
-    server: Server, family: Family, subnet_id: int, cidr: str, rows: list[dict[str, Any]]
+    server: Server, family: Family, subnet_id: int, cidr: str, edit: DHCPOptionEdit
 ) -> ConfigChangeOutcome:
-    """Merge the options form *rows* into the Subnet with *subnet_id*, only while that ID names the network *cidr*.
+    """Merge the typed option *edit* into the Subnet with *subnet_id*, only while that ID names the network *cidr*.
 
     Raises:
-        DHCPOptionConflict: If a row names a DHCP Option that is missing or ambiguous, or the rows miss one.
-        DHCPOptionNameChange: If a row renames a coded DHCP Option.
+        DHCPOptionConflict: If the shown snapshot changed or an edited DHCP Option is missing or ambiguous.
+        DHCPOptionNameChange: If the edit renames a coded DHCP Option.
 
     """
     with build_client(server, family) as client, _serialized(client, family):
@@ -700,20 +701,20 @@ def set_subnet_options(
         return _send_candidate(
             client,
             family,
-            lambda candidate: candidate.set_subnet_options(subnet.subnet_id, subnet.network, rows),
+            lambda candidate: candidate.set_subnet_options(subnet.subnet_id, subnet.network, edit),
             missing=subnet_changed(subnet_id, cidr),
         )
 
 
-def set_server_options(server: Server, family: Family, rows: list[dict[str, Any]]) -> ConfigChangeOutcome:
-    """Merge the options form *rows* into the server-global DHCP Options.
+def set_server_options(server: Server, family: Family, edit: DHCPOptionEdit) -> ConfigChangeOutcome:
+    """Merge the typed option *edit* into the server-global DHCP Options.
 
     Raises:
-        DHCPOptionConflict: If a row names a DHCP Option that is missing or ambiguous, or the rows miss one.
-        DHCPOptionNameChange: If a row renames a coded DHCP Option.
+        DHCPOptionConflict: If the shown snapshot changed or an edited DHCP Option is missing or ambiguous.
+        DHCPOptionNameChange: If the edit renames a coded DHCP Option.
 
     """
-    return _read_modify_write(server, family, lambda candidate: candidate.set_global_options(rows), missing=None)
+    return _read_modify_write(server, family, lambda candidate: candidate.set_global_options(edit), missing=None)
 
 
 def add_option_definition(server: Server, family: Family, option_def: dict[str, Any]) -> ConfigChangeOutcome:

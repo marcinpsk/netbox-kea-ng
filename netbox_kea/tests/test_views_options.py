@@ -1253,8 +1253,9 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
                         response = self.client.post(self._url(scope), data)
                     self.assertNotIn("config-test", kea.commands())
                     self.assertNotIn("config-set", kea.commands())
-                    messages = [str(message) for message in django_messages.get_messages(response.wsgi_request)]
-                    self.assertIn("DHCP Options changed or are ambiguous. Reload the form before saving.", messages)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertTrue(response.context["formset"].is_bound)
+                    self.assertIn("ntp-servers", str(response.context["formset"].non_form_errors()))
 
     def test_a_stale_value_in_the_form_is_a_conflict_before_any_write(self):
         seen = [{"code": 6, "data": "198.18.0.53"}, {"code": 42, "data": "198.18.0.123"}]
@@ -1266,11 +1267,12 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
                 data["form-1-data"] = "198.18.0.124"
                 with _persist_stub(self._config(scope, live)) as kea:
                     response = self.client.post(self._url(scope), data)
-                self.assertEqual(response.status_code, 302)
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.context["formset"].is_bound)
+                self.assertEqual(response.context["formset"].forms[1]["data"].value(), "198.18.0.124")
+                self.assertIn("domain-name-servers", str(response.context["formset"].non_form_errors()))
                 self.assertNotIn("config-test", kea.commands())
                 self.assertNotIn("config-set", kea.commands())
-                messages = [str(message) for message in django_messages.get_messages(response.wsgi_request)]
-                self.assertIn("DHCP Options changed or are ambiguous. Reload the form before saving.", messages)
 
     def test_class_specific_options_keep_distinct_values_and_metadata(self):
         options = [
@@ -1301,6 +1303,57 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
                 expected[1]["data"] = "198.18.0.56"
                 self.assertEqual(written["option-data"], expected)
 
+    def test_every_managed_value_change_keeps_the_bound_form_and_names_the_option(self):
+        seen = [
+            {"name": "routers", "data": "198.18.0.1", "always-send": False, "never-send": False, "csv-format": True},
+            {"code": 6, "data": "198.18.0.53"},
+        ]
+        for field, value in (
+            ("data", "198.18.0.2"),
+            ("always-send", True),
+            ("never-send", True),
+            ("csv-format", False),
+        ):
+            live = copy.deepcopy(seen)
+            live[0][field] = value
+            for scope in ("server", "subnet"):
+                with self.subTest(field=field, scope=scope):
+                    with _persist_stub(self._config(scope, seen)):
+                        data = self._submitted(self.client.get(self._url(scope)))
+                    data["form-1-data"] = "198.18.0.54"
+                    with _persist_stub(self._config(scope, live)) as kea:
+                        post = self.client.post(self._url(scope), data)
+                    self.assertEqual(post.status_code, 200)
+                    self.assertTrue(post.context["formset"].is_bound)
+                    self.assertEqual(post.context["formset"].forms[1]["data"].value(), "198.18.0.54")
+                    self.assertIn("routers", str(post.context["formset"].non_form_errors()))
+                    self.assertNotIn("config-test", kea.commands())
+                    self.assertNotIn("config-set", kea.commands())
+
+    def test_an_unrelated_edit_preserves_identical_duplicates_that_the_form_showed(self):
+        options = [
+            {"code": 6, "data": "198.18.0.53"},
+            {"name": "routers", "data": "198.18.0.1"},
+            {"code": 6, "data": "198.18.0.53"},
+        ]
+        for scope in ("server", "subnet"):
+            with self.subTest(scope=scope), _persist_stub(self._config(scope, options)) as kea:
+                data = self._submitted(self.client.get(self._url(scope)))
+                data["form-1-data"] = "198.18.0.2"
+                post = self.client.post(self._url(scope), data)
+                self.assertEqual(post.status_code, 302)
+                written = _written_config(kea)["Dhcp4"]
+                if scope == "subnet":
+                    written = written["subnet4"][0]
+                self.assertEqual(
+                    written["option-data"],
+                    [
+                        {"code": 6, "data": "198.18.0.53"},
+                        {"name": "routers", "data": "198.18.0.2"},
+                        {"code": 6, "data": "198.18.0.53"},
+                    ],
+                )
+
     def test_a_tampered_original_identity_is_a_form_error_before_any_write(self):
         options = [{"code": 6, "space": "dhcp4", "data": "198.18.0.53", "client-classes": ["group-a"]}]
         for classes in ("group-a", [""]):
@@ -1329,10 +1382,10 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
                     post = self.client.post(self._url(scope), data)
                     self.assertNotIn("config-test", kea.commands())
                     self.assertNotIn("config-set", kea.commands())
-                    messages = [str(message) for message in django_messages.get_messages(post.wsgi_request)]
-                    self.assertIn(
-                        "A coded DHCP Option cannot be renamed. Delete it and add a new option instead.", messages
-                    )
+                    self.assertEqual(post.status_code, 200)
+                    self.assertTrue(post.context["formset"].is_bound)
+                    self.assertIn("routers", str(post.context["formset"].non_form_errors()))
+                    self.assertIn("cannot be renamed", str(post.context["formset"].non_form_errors()))
 
     def _url(self, scope):
         if scope == "subnet":
@@ -1385,6 +1438,7 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
                     written = written["subnet4"][0]
                 expected = copy.deepcopy(options)
                 expected[1]["data"] = "198.18.0.2"
+                del expected[1]["csv-format"]
                 self.assertEqual(written["option-data"], expected)
 
     def test_reordered_live_options_keep_their_own_metadata_and_allow_deletion(self):
@@ -1415,8 +1469,9 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
                     post = self.client.post(self._url("server"), data)
                 self.assertNotIn("config-test", kea.commands())
                 self.assertNotIn("config-set", kea.commands())
-                messages = [str(message) for message in django_messages.get_messages(post.wsgi_request)]
-                self.assertIn("DHCP Options changed or are ambiguous. Reload the form before saving.", messages)
+                self.assertEqual(post.status_code, 200)
+                self.assertTrue(post.context["formset"].is_bound)
+                self.assertIn("routers", str(post.context["formset"].non_form_errors()))
         with _persist_stub(self._config("server", options)):
             data = self._submitted(self.client.get(self._url("server")))
         data.update(
