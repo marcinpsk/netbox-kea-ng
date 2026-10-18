@@ -17,7 +17,15 @@ from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
 from django.views import View
 
-from .. import config_write, event_scope, forms, runtime_change, server_configuration, subnet_catalogue
+from .. import (
+    config_write,
+    event_scope,
+    forms,
+    reservation_edit,
+    runtime_change,
+    server_configuration,
+    subnet_catalogue,
+)
 from ..constants import Family
 from ..ipam_reconciliation import (
     RESERVATION,
@@ -40,7 +48,6 @@ from ..reservation_transfer import (
     ReservationTransferDiagnostic,
     ReservationTransferError,
     parse_reservation_document,
-    resolve_import_proposal,
 )
 from ..reservations import ReservationCapabilities
 from ..signals import lease_added
@@ -66,13 +73,13 @@ from ._base import (
 from .leases import _LEASES_TAB, _lease_journal_comments, lease_sync_gates
 from .notices import Notice, failed_load, load_target
 from .reservation_mutations import (
-    _VERIFICATION_FAILED,
-    _identity_from_request,
-    _identity_label,
-    _live_target,
-    _record_applied,
+    RESERVATION_VERIFICATION_FAILED,
+    live_reservation_target,
+    reservation_identity_from_request,
+    reservation_identity_label,
+    show_reservation_side_effects,
 )
-from .reservations import _MUTATION_UNCONFIRMED, _RESERVATIONS_TAB, reservation_badge
+from .reservations import MUTATION_UNCONFIRMED, RESERVATIONS_TAB, reservation_badge
 from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
@@ -183,12 +190,14 @@ class _BaseReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin,
         if not gate.allowed:
             return _row_error(request, gate.reason)
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        identity = _identity_from_request(request, self.dhcp_version)
+        identity = reservation_identity_from_request(request, self.dhcp_version)
         if refusal := _client_settings_refusal(server, self.dhcp_version):
             return _row_error(request, refusal)
         try:
             loaded = load_target(
-                server, "reservation_target", lambda: _live_target(server, self.dhcp_version, subnet_id, identity)
+                server,
+                "reservation_target",
+                lambda: live_reservation_target(server, self.dhcp_version, subnet_id, identity),
             )
         except Http404:
             return _row_error(request, "The Reservation or its Subnet is no longer in Kea. Reload the list.")
@@ -452,7 +461,7 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
                 "dhcp_version": self.dhcp_version,
                 "return_url": reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[instance.pk]),
                 "result": result,
-                "tab": _RESERVATIONS_TAB,
+                "tab": RESERVATIONS_TAB,
             },
         )
 
@@ -470,7 +479,7 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
         capabilities = server_configuration.reservation_capabilities(configuration)
         if capabilities is None or not capabilities.mutation_available:
             return _ImportRefusal(
-                ((capabilities.explanation if capabilities is not None else "") or _MUTATION_UNCONFIRMED,)
+                ((capabilities.explanation if capabilities is not None else "") or MUTATION_UNCONFIRMED,)
             )
         with subnet_catalogue.mutation(instance, self.dhcp_version) as scope:
             catalogue = scope.snapshot
@@ -546,19 +555,16 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
 
         def create(entry: tuple[int, ReservationImportProposal]) -> config_write.ReservationChangeOutcome:
             _index, proposal = entry
-            outcome = config_write.add_reservation(
-                instance,
-                self.dhcp_version,
-                proposal.subnet_cidr,
-                lambda subnet, _catalogue: resolve_import_proposal(proposal, subnet.identity),
-            )
-            # Record each applied entry before the next entry goes to Kea, so a later failure loses no record.
-            if outcome.application == "applied":
-                _record_applied(request, instance, "created", outcome)
-            return outcome
+            return reservation_edit.save_import(instance, proposal)
+
+        def after_applied(
+            _entry: tuple[int, ReservationImportProposal], outcome: config_write.ReservationChangeOutcome
+        ) -> None:
+            facts = reservation_edit.after_apply(instance, outcome, request.user, request=request)
+            show_reservation_side_effects(request, facts)
 
         entries = list(enumerate(parsed.proposals))
-        loop = _run_change_loop(entries, create, stop_on_rejection=True)
+        loop = _run_change_loop(entries, create, stop_on_rejection=True, after_applied=after_applied)
         if any(outcome.persistence == "not-requested" for _entry, outcome in loop.applied):
             messages.info(
                 request, "Configuration persistence is disabled for this server, so Kea did not save the import."
@@ -567,7 +573,7 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
             loop,
             len(entries),
             _RESERVATION_ENTRIES,
-            lambda entry: (f"reservations[{entry[0]}]", _identity_label(entry[1].identity)),
+            lambda entry: (f"reservations[{entry[0]}]", reservation_identity_label(entry[1].identity)),
             _created_note,
         )
         return self._render(request, instance, self.form_class(), result)
@@ -575,7 +581,10 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
 
 def _created_note(outcome: config_write.ReservationChangeOutcome) -> str:
     """Return the note of a created Reservation: a failed persist step or verification read, else nothing."""
-    notes = (_persistence_failure(outcome), _VERIFICATION_FAILED if outcome.verification == "failed" else None)
+    notes = (
+        _persistence_failure(outcome),
+        RESERVATION_VERIFICATION_FAILED if outcome.verification == "failed" else None,
+    )
     return " ".join(note for note in notes if note)
 
 

@@ -125,7 +125,8 @@ warning, and one domain function computes it for both the Pool and the Reservati
 - The persist step also runs after an `unknown` application. `config-write` saves what Kea runs at that
   moment, so the disk copy then matches memory whether the change applied or not. The exception is a lost
   request that reaches Kea after the persist step (see Serialization).
-- Reservation mutations call the same step. `ReservationMutationResult.persistence` uses the shared type.
+- Reservation mutations call the same step. `ReservationChangeOutcome.persistence` uses the shared type, as
+  [ADR 0012](0012-reservation-writes-are-configuration-changes.md) specifies.
 
 ### Multi-step changes
 
