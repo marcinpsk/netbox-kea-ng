@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum, auto
@@ -14,7 +14,15 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 from typing_extensions import assert_never
 
 from .constants import Family, IPAddressValue
-from .dhcp_options import DHCPOption, parse_dhcp_options
+from .dhcp_options import (
+    DHCPOption,
+    DHCPOptionEdit,
+    OptionDefinition,
+    merge_option_edit,
+    option_data,
+    option_matches_intent,
+    parse_dhcp_options,
+)
 from .identifiers import normalize_hex
 from .leases import DHCPv4AddressLease, DHCPv6PrefixLease, Lease, LeaseSnapshot
 
@@ -769,7 +777,7 @@ class ReservationChange:
     addresses: FieldChange[tuple[IPAddressValue, ...]] = UNCHANGED
     delegated_prefixes: FieldChange[tuple[ipaddress.IPv6Network, ...]] = UNCHANGED
     hostname: FieldChange[str] = UNCHANGED
-    options: FieldChange[tuple[DHCPOption, ...]] = UNCHANGED
+    options: DHCPOptionEdit | None = None
 
 
 @dataclass(frozen=True)
@@ -924,23 +932,6 @@ def _validate_reservation_value(reservation: Reservation) -> None:
         raise ValueError("Reservation options must be DHCPOption values.")
 
 
-def _option_data(option: DHCPOption) -> dict[str, Any]:
-    data: dict[str, Any] = {"data": option.data}
-    if option.code is not None:
-        data["code"] = option.code
-    if option.name is not None:
-        data["name"] = option.name
-    if option.space is not None:
-        data["space"] = option.space
-    if option.csv_format is not None:
-        data["csv-format"] = option.csv_format
-    if option.always_send is not None:
-        data["always-send"] = option.always_send
-    if option.never_send is not None:
-        data["never-send"] = option.never_send
-    return data
-
-
 def _reservation_to_raw(reservation: Reservation) -> dict[str, Any]:
     """Serialize managed Reservation facts for the private Kea adapter."""
     subnet_id = 0 if isinstance(reservation.scope, GlobalReservationScope) else reservation.scope.subnet.subnet_id
@@ -957,21 +948,15 @@ def _reservation_to_raw(reservation: Reservation) -> dict[str, Any]:
     if reservation.hostname:
         raw["hostname"] = reservation.hostname
     if reservation.options:
-        raw["option-data"] = [_option_data(option) for option in reservation.options]
+        raw["option-data"] = [option_data(option) for option in reservation.options]
     return raw
 
 
-def _option_matches_intent(observed: DHCPOption, intended: DHCPOption) -> bool:
-    """Say whether one observed Option carries every Option fact the caller submitted."""
-    if observed.data != intended.data:
-        return False
-    return all(
-        getattr(intended, field) is None or getattr(observed, field) == getattr(intended, field)
-        for field in ("code", "name", "space", "csv_format", "always_send", "never_send")
-    )
-
-
-def reservation_matches_intent(observed: Reservation, intended: Reservation) -> bool:
+def reservation_matches_intent(
+    observed: Reservation,
+    intended: Reservation,
+    definitions: Sequence[OptionDefinition] = (),
+) -> bool:
     """Say whether one refetched Reservation carries every fact the caller submitted.
 
     Kea resolves an Option submitted by name alone against its own definitions and
@@ -983,14 +968,16 @@ def reservation_matches_intent(observed: Reservation, intended: Reservation) -> 
     if len(observed.options) != len(intended.options):
         return False
     return all(
-        _option_matches_intent(observed_option, intended_option)
+        option_matches_intent(observed_option, intended_option, intended.family, definitions)
         for observed_option, intended_option in zip(observed.options, intended.options, strict=True)
     )
 
 
 def reservation_fingerprint(reservation: Reservation) -> str:
     """Return a stable fingerprint of managed facts only."""
-    encoded = json.dumps(_reservation_to_raw(reservation), sort_keys=True, separators=(",", ":")).encode()
+    encoded = json.dumps(
+        _reservation_to_raw(replace(reservation, options=())), sort_keys=True, separators=(",", ":")
+    ).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -1007,7 +994,11 @@ def apply_reservation_change(reservation: Reservation, change: ReservationChange
     addresses = _change_value(change.addresses, reservation.addresses, ())
     prefixes = _change_value(change.delegated_prefixes, reservation.delegated_prefixes, ())
     hostname = _change_value(change.hostname, reservation.hostname, "")
-    options = _change_value(change.options, reservation.options, ())
+    options = reservation.options
+    if change.options is not None:
+        options = parse_dhcp_options(
+            merge_option_edit(change.options, [option_data(option) for option in options], reservation.family)
+        )
     # One ReservationChange serves both families, so narrow before replace(). Each cast
     # reaches __post_init__, which rejects a value the other family cannot hold.
     if isinstance(reservation, IPv4Reservation):

@@ -1679,10 +1679,8 @@ class ConfigurationOptionsForm(SubnetOptionsForm):
 SubnetOptionsFormSet = forms.formset_factory(ConfigurationOptionsForm, extra=1, can_delete=True)
 
 
-class ReservationOptionsForm(SubnetOptionsForm):
-    """One Reservation option row with its stable source position."""
-
-    original_index = forms.IntegerField(required=False, min_value=0, widget=forms.HiddenInput)
+class ReservationOptionsForm(ConfigurationOptionsForm):
+    """One Reservation option row with its complete shown DHCP Option."""
 
 
 ReservationOptionsFormSet = forms.formset_factory(ReservationOptionsForm, extra=1, can_delete=True)

@@ -62,8 +62,12 @@ state, persisted state, and verified state. [ADR 0012](0012-reservation-writes-a
 with a Configuration Change Outcome. Existing reservation signals use one typed before-and-after payload.
 
 The module provides one shared immutable DHCP Option value and parser for Reservations, the Subnet Catalogue, and
-the DHCP plugin adapter. Unknown reservation fields stay private and are preserved during read-modify-write. They do
-not become an untyped public extras map.
+the DHCP plugin adapter. Unknown reservation fields stay private and are preserved during read-modify-write.
+They do not become an untyped public extras map.
+Reservation DHCP Options use the shared identity, shown snapshot and typed merge in
+[ADR 0014](0014-one-dhcp-option-identity-and-merge-for-every-scope.md).
+The signed edit token carries the complete shown option snapshot. The locked fingerprint covers the other managed
+facts. Only the shared option merge checks option freshness, using the definitions from the same live Catalogue read.
 
 UI and REST reads use bounded queries. REST accepts exactly one selector: bounded page, exact identity, scoped
 address discovery, or hostname. It returns normalized records, diagnostics, completeness, and an opaque next cursor.

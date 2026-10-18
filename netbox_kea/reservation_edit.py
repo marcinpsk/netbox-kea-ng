@@ -13,7 +13,17 @@ from django.core import signing
 from . import config_write
 from .config_write import ReservationChangeOutcome
 from .constants import Family, IPAddressValue
-from .dhcp_options import DHCPOption
+from .dhcp_options import (
+    DHCPOption,
+    DHCPOptionChange,
+    DHCPOptionConflict,
+    DHCPOptionEdit,
+    DHCPOptionNameChange,
+    check_option_snapshot,
+    merge_option_edit,
+    option_data,
+    parse_dhcp_options,
+)
 from .pools import Pool, addresses_in_pools
 from .published_name import published_name, stored_hostname
 from .reservations import (
@@ -44,6 +54,7 @@ class EditToken:
 
     fingerprint: str
     qualifying_suffix: str | None
+    options: tuple[DHCPOption, ...]
 
 
 def check_token(token: str, family: Family, subnet_id: int, identity: ReservationIdentity) -> EditToken:
@@ -69,18 +80,22 @@ def check_token(token: str, family: Family, subnet_id: int, identity: Reservatio
     suffix = payload.get("qualifying_suffix")
     if not isinstance(fingerprint, str) or not fingerprint or not isinstance(suffix, str | None):
         raise ReservationConflict("The edit fingerprint is invalid.")
-    return EditToken(fingerprint, suffix)
+    try:
+        options = parse_dhcp_options(payload.get("options"))
+    except ValueError as exc:
+        raise ReservationConflict("The edit fingerprint has invalid DHCP Options.") from exc
+    return EditToken(fingerprint, suffix, options)
 
 
 @dataclass(frozen=True)
 class OptionRow:
-    """The parsed visible values and source position of one Reservation option row."""
+    """The parsed visible values and shown DHCP Option of one Reservation row."""
 
     name: str
     data: str
     always_send: bool = False
     delete: bool = False
-    original_index: int | None = None
+    original_option: DHCPOption | None = None
 
 
 @dataclass(frozen=True)
@@ -141,83 +156,24 @@ def _in_subnet_scope(reservation: Reservation) -> InSubnetReservationScope:
     return reservation.scope
 
 
-def _options_from_rows(
-    rows: tuple[OptionRow, ...],
-    current: tuple[DHCPOption, ...] = (),
-) -> tuple[DHCPOption, ...]:
-    """Apply visible form changes while preserving unexposed option facts."""
-    options: list[DHCPOption] = []
-    remaining = list(enumerate(current))
+def _option_edit(rows: tuple[OptionRow, ...], snapshot: tuple[DHCPOption, ...]) -> DHCPOptionEdit:
+    """Translate parsed rows without using their position to identify an assignment."""
+    changes: list[DHCPOptionChange] = []
     for row in rows:
-        original_index = row.original_index
-        existing: DHCPOption | None
-        if original_index is not None:
-            matching_position = next(
-                (
-                    position
-                    for position, (current_index, _option) in enumerate(remaining)
-                    if original_index == current_index
-                ),
-                None,
-            )
-            if matching_position is None:
-                raise ValueError("The Reservation option source does not match the current Reservation.")
-            _, existing = remaining.pop(matching_position)
-            if row.delete:
-                continue
+        seen = row.original_option
+        if row.delete:
+            intended = None
+        elif seen is None:
             if not row.name:
                 continue
-            displayed_name = existing.name or (str(existing.code) if existing.code is not None else "")
-            if row.name != displayed_name:
-                existing = None
+            intended = DHCPOption(None, row.name, None, row.data, None, True if row.always_send else None, None)
         else:
-            if not row.name or row.delete:
-                continue
-            matching_positions = [
-                position
-                for position, (_current_index, option) in enumerate(remaining)
-                if row.name == (option.name or (str(option.code) if option.code is not None else ""))
-            ]
-            if len(matching_positions) > 1:
-                raise ValueError("The Reservation option name is ambiguous without its source position.")
-            existing = remaining.pop(matching_positions[0])[1] if matching_positions else None
-        submitted_always_send = bool(row.always_send)
-        if existing is not None:
-            always_send = (
-                existing.always_send if submitted_always_send == bool(existing.always_send) else submitted_always_send
-            )
-            options.append(
-                replace(
-                    existing,
-                    data=row.data,
-                    always_send=always_send,
-                )
-            )
-            continue
-        options.append(
-            DHCPOption(
-                code=None,
-                name=row.name,
-                space=None,
-                data=row.data,
-                csv_format=None,
-                always_send=True if submitted_always_send else None,
-                never_send=None,
-            )
-        )
-    return tuple(options)
-
-
-def _options_initial(reservation: Reservation) -> list[dict[str, Any]]:
-    return [
-        {
-            "original_index": index,
-            "name": option.name or (str(option.code) if option.code is not None else ""),
-            "data": option.data,
-            "always_send": bool(option.always_send),
-        }
-        for index, option in enumerate(reservation.options)
-    ]
+            intended = replace(seen, name=row.name or None, data=row.data)
+            if bool(seen.always_send) != row.always_send:
+                intended = replace(intended, always_send=row.always_send)
+        if seen != intended:
+            changes.append(DHCPOptionChange(seen, intended))
+    return DHCPOptionEdit(snapshot, tuple(changes))
 
 
 def _signed_fingerprint(reservation: Reservation, suffix: str | None) -> str:
@@ -229,6 +185,7 @@ def _signed_fingerprint(reservation: Reservation, suffix: str | None) -> str:
             "identifier_type": reservation.identity.identifier_type,
             "identifier": reservation.identity.value,
             "fingerprint": reservation_fingerprint(reservation),
+            "options": [option_data(option) for option in reservation.options],
             # The form shows the published name under this suffix.
             "qualifying_suffix": suffix,
         },
@@ -338,7 +295,7 @@ def form_state(reservation: Reservation, catalogue: CatalogueSnapshot) -> FormSt
     else:
         initial["ip_addresses"] = ",".join(str(address) for address in reservation.addresses)
         initial["prefixes"] = ",".join(str(prefix) for prefix in reservation.delegated_prefixes)
-    return FormState(initial, tuple(_options_initial(reservation)))
+    return FormState(initial, tuple(option.form_initial() for option in reservation.options))
 
 
 def build_add(
@@ -350,7 +307,11 @@ def build_add(
 ) -> Reservation:
     """Build the typed Reservation in the Subnet and Catalogue verified under the change lock."""
     scope = InSubnetReservationScope(subnet.identity)
-    options = _options_from_rows(values.option_rows)
+    edit = _option_edit(values.option_rows, ())
+    try:
+        options = parse_dhcp_options(merge_option_edit(edit, [], family, catalogue.option_definitions))
+    except (DHCPOptionConflict, DHCPOptionNameChange) as exc:
+        raise EditConflict(exc.message) from exc
     hostname = _stored_for(catalogue, subnet, values.hostname, values.addresses)
     if family == 4:
         return IPv4Reservation(
@@ -377,13 +338,22 @@ def build_edit(
     shown: EditToken,
 ) -> ReservationChange:
     """Build explicit managed changes from the submitted values and live facts under the lock."""
-    options = _options_from_rows(values.option_rows, current.options)
+    try:
+        check_option_snapshot(
+            shown.options,
+            tuple(row.original_option for row in values.option_rows if row.original_option is not None),
+            current.family,
+            catalogue.option_definitions,
+        )
+    except DHCPOptionConflict as exc:
+        raise EditConflict(exc.message) from exc
+    options = _option_edit(values.option_rows, shown.options)
     prefixes = current.delegated_prefixes if current.family == 4 else values.delegated_prefixes
     return ReservationChange(
         addresses=_change(current.addresses, values.addresses, ()),
         delegated_prefixes=_change(current.delegated_prefixes, prefixes, ()),
         hostname=_hostname_change(current, values.hostname, values.addresses, shown.qualifying_suffix, catalogue),
-        options=_change(current.options, options, ()),
+        options=options,
     )
 
 

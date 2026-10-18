@@ -9,9 +9,16 @@ from unittest.mock import patch
 import requests
 from django.test import TestCase
 
-from netbox_kea import reservation_edit, subnet_catalogue
+from netbox_kea import config_write, reservation_edit, subnet_catalogue
 from netbox_kea.change_outcome import ChangeRejected
-from netbox_kea.reservations import InSubnetReservationScope, ReservationConflict, ReservationIdentity
+from netbox_kea.dhcp_options import DHCPOptionChange, DHCPOptionEdit, parse_dhcp_option
+from netbox_kea.reservations import (
+    InSubnetReservationScope,
+    ReservationChange,
+    ReservationConflict,
+    ReservationIdentity,
+    reservation_fingerprint,
+)
 
 from .kea_stub import _catalogue_responses_for_subnets, _res_get, queued, stub_kea
 from .utils import _make_db_server, with_kea_client_config
@@ -328,7 +335,7 @@ class ReservationEditTests(TestCase):
         self.assertEqual(raised.exception.field, "hostname")
         self.assertNotIn("reservation-add", kea.commands())
 
-    def test_option_rows_keep_their_existing_private_replacement_rules(self):
+    def test_option_rows_keep_live_order_classes_and_unknown_fields(self):
         first = {
             "code": 222,
             "space": "vendor-lab",
@@ -340,19 +347,22 @@ class ReservationEditTests(TestCase):
         second = {"name": "custom", "space": "vendor-other", "data": "other", "always-send": True}
         raw = {**_raw(), "option-data": [first, second], "user-context": {"owner": "lab"}}
         current, state = self._shown(raw=raw)
-        self.assertEqual([row["original_index"] for row in state.options_initial], [0, 1])
+        self.assertEqual([row["original_option"] for row in state.options_initial], [first, second])
         values = reservation_edit.SubmittedValues(
             current.addresses,
             hostname=state.initial["hostname"],
             option_rows=(
-                reservation_edit.OptionRow("custom", "other", True, original_index=1),
-                reservation_edit.OptionRow("222", "new", original_index=0),
+                reservation_edit.OptionRow("custom", "other", True, original_option=current.options[1]),
+                reservation_edit.OptionRow("", "new", original_option=current.options[0]),
             ),
         )
         with stub_kea(_responses(raw=raw)) as kea:
             reservation_edit.save_edit(self.server, 4, 20, _IDENTITY, state.initial["managed_fingerprint"], values)
         sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
-        self.assertEqual(sent["option-data"], [second, {**first, "data": "new"}])
+        self.assertEqual(
+            sent["option-data"],
+            [{key: value for key, value in {**first, "data": "new"}.items() if key != "csv-format"}, second],
+        )
         self.assertEqual(sent["user-context"], {"owner": "lab"})
 
     def test_add_stores_the_name_that_publishes_the_submitted_value(self):
@@ -374,15 +384,15 @@ class ReservationEditTests(TestCase):
 
     def test_renamed_and_deleted_option_rows_do_not_reuse_old_metadata(self):
         first = {"name": "custom", "space": "vendor-lab", "data": "old", "csv-format": False, "never-send": True}
+        raw = {**_raw(), "option-data": [first]}
+        current, state = self._shown(raw=raw)
         for rows in (
-            (reservation_edit.OptionRow("renamed", "new", original_index=0),),
+            (reservation_edit.OptionRow("renamed", "new", original_option=current.options[0]),),
             (
-                reservation_edit.OptionRow("custom", "old", delete=True, original_index=0),
+                reservation_edit.OptionRow("custom", "old", delete=True, original_option=current.options[0]),
                 reservation_edit.OptionRow("custom", "new"),
             ),
         ):
-            raw = {**_raw(), "option-data": [first]}
-            current, state = self._shown(raw=raw)
             with self.subTest(rows=rows), stub_kea(_responses(raw=raw)) as kea:
                 reservation_edit.save_edit(
                     self.server,
@@ -396,10 +406,14 @@ class ReservationEditTests(TestCase):
                 )
             self.assertEqual(
                 kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
-                [{"name": rows[-1].name, "data": "new"}],
+                (
+                    [{"name": "renamed", "space": "vendor-lab", "data": "new", "never-send": True}]
+                    if len(rows) == 1
+                    else [{"name": "custom", "data": "new"}]
+                ),
             )
 
-    def test_duplicate_option_names_keep_their_source_positions_and_spaces(self):
+    def test_duplicate_option_names_in_different_spaces_keep_live_order(self):
         options = [
             {"name": "custom", "space": "vendor-a", "data": "one", "never-send": True},
             {"name": "custom", "space": "vendor-b", "data": "two", "csv-format": False},
@@ -417,11 +431,263 @@ class ReservationEditTests(TestCase):
                     current.addresses,
                     hostname=state.initial["hostname"],
                     option_rows=(
-                        reservation_edit.OptionRow("custom", "two", original_index=1),
-                        reservation_edit.OptionRow("custom", "one", original_index=0),
+                        reservation_edit.OptionRow("custom", "two", original_option=current.options[1]),
+                        reservation_edit.OptionRow("custom", "one", original_option=current.options[0]),
                     ),
                 ),
             )
-        self.assertEqual(
-            kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"], [options[1], options[0]]
+        self.assertEqual(kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"], options)
+
+    def test_a_concurrently_added_option_is_a_named_reservation_conflict(self):
+        raw = {**_raw(), "option-data": [{"name": "routers", "data": "198.18.0.1"}]}
+        current, state = self._shown(raw=raw)
+        live = {**raw, "option-data": [*raw["option-data"], {"code": 42, "data": "198.18.0.123"}]}
+        values = reservation_edit.SubmittedValues(
+            current.addresses,
+            hostname=state.initial["hostname"],
+            option_rows=(reservation_edit.OptionRow("routers", "198.18.0.2", original_option=current.options[0]),),
         )
+        with stub_kea(_responses(raw=live)) as kea:
+            with self.assertRaisesRegex(ReservationConflict, "ntp-servers"):
+                reservation_edit.save_edit(self.server, 4, 20, _IDENTITY, state.initial["managed_fingerprint"], values)
+            self.assertNotIn("reservation-update", kea.commands())
+
+    def test_a_malformed_option_intent_is_a_named_reservation_conflict(self):
+        raw = {**_raw(), "option-data": [{"name": "routers", "data": "198.18.0.1"}]}
+        current, state = self._shown(raw=raw)
+        values = reservation_edit.SubmittedValues(
+            current.addresses,
+            hostname=state.initial["hostname"],
+            option_rows=(
+                reservation_edit.OptionRow(
+                    "routers", "198.18.0.2", original_option=parse_dhcp_option({"name": "routers", "data": "not-shown"})
+                ),
+            ),
+        )
+        with stub_kea(_responses(raw=raw)) as kea:
+            with self.assertRaisesRegex(ReservationConflict, "routers"):
+                reservation_edit.save_edit(self.server, 4, 20, _IDENTITY, state.initial["managed_fingerprint"], values)
+            self.assertNotIn("reservation-update", kea.commands())
+
+    def test_an_option_without_space_does_not_take_foreign_space_metadata(self):
+        foreign = {"name": "routers", "space": "vendor-lab", "data": "opaque", "user-context": {"owner": "vendor"}}
+        raw = {**_raw(), "option-data": [foreign]}
+        current, _state = self._shown(raw=raw)
+        added = parse_dhcp_option({"name": "routers", "data": "198.18.0.1"})
+        change = ReservationChange(options=DHCPOptionEdit(current.options, (DHCPOptionChange(None, added),)))
+        with stub_kea(_responses(raw=raw)) as kea:
+            config_write.edit_reservation(
+                self.server, 4, 20, _IDENTITY, reservation_fingerprint(current), lambda _live, _catalogue: change
+            )
+        self.assertEqual(
+            kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
+            [foreign, {"name": "routers", "data": "198.18.0.1"}],
+        )
+
+    def test_incomplete_option_definitions_refuse_changed_options_but_keep_other_edits(self):
+        raw = {**_raw(hostname=""), "option-data": [{"name": "custom", "data": "old"}]}
+        current, state = self._shown(raw=raw)
+        rows = (reservation_edit.OptionRow("custom", "new", original_option=current.options[0]),)
+        malformed = _responses(raw=raw)["config-get"]
+        malformed["arguments"]["Dhcp4"]["option-def"] = [{"name": "custom", "code": "invalid"}]
+        for configuration in (malformed, requests.ConnectionError("offline")):
+            responses = {**_responses(raw=raw), "config-get": configuration}
+            with self.subTest(configuration=type(configuration).__name__), stub_kea(responses) as kea:
+                with self.assertRaisesRegex(ReservationConflict, "custom.*definitions.*unavailable"):
+                    reservation_edit.save_edit(
+                        self.server,
+                        4,
+                        20,
+                        _IDENTITY,
+                        state.initial["managed_fingerprint"],
+                        reservation_edit.SubmittedValues(current.addresses, option_rows=rows),
+                    )
+                self.assertNotIn("reservation-update", kea.commands())
+            unchanged = replace(rows[0], data="old")
+            with stub_kea(responses) as kea:
+                outcome = reservation_edit.save_edit(
+                    self.server,
+                    4,
+                    20,
+                    _IDENTITY,
+                    state.initial["managed_fingerprint"],
+                    reservation_edit.SubmittedValues((ip_address("198.18.0.21"),), option_rows=(unchanged,)),
+                )
+            sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+            self.assertEqual(sent["option-data"], raw["option-data"])
+            self.assertEqual(sent["ip-address"], "198.18.0.21")
+            self.assertEqual(outcome.application, "applied")
+
+    def test_changed_assignments_keep_classes_metadata_and_live_order_beside_untouched_duplicates(self):
+        for family, name, code, data in ((4, "routers", 3, "198.18.0.1"), (6, "dns-servers", 23, "2001:db8::53")):
+            classed = {"name": name, "data": data, "client-classes": ["voip"]}
+            duplicate = {"name": "untouched", "data": "  padded  ", "csv-format": False}
+            target = {"code": code, "space": f"dhcp{family}", "data": data, "never-send": True, "csv-format": True}
+            class_target = {
+                "name": "custom",
+                "data": "old",
+                "client-classes": ["lab"],
+                "user-context": {"owner": "external"},
+                "csv-format": False,
+            }
+            foreign = {"name": name, "space": "vendor-lab", "data": "foreign"}
+            options = [classed, duplicate, target, class_target, foreign, duplicate]
+            raw = {**_raw(family), "option-data": options}
+            current, state = self._shown(family, raw=raw)
+            rows = [
+                reservation_edit.OptionRow(
+                    option.name or "", option.data, bool(option.always_send), original_option=option
+                )
+                for option in current.options
+            ]
+            rows[2] = replace(rows[2], data="new")
+            rows[3] = replace(rows[3], data="changed")
+            values = reservation_edit.SubmittedValues(
+                current.addresses,
+                hostname=state.initial["hostname"],
+                option_rows=(*reversed(rows), reservation_edit.OptionRow("added", "last")),
+            )
+            with self.subTest(family=family), stub_kea(_responses(family, raw=raw)) as kea:
+                reservation_edit.save_edit(
+                    self.server, family, 20, _IDENTITY, state.initial["managed_fingerprint"], values
+                )
+            self.assertEqual(
+                kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
+                [
+                    classed,
+                    duplicate,
+                    {"code": code, "space": f"dhcp{family}", "data": "new", "never-send": True},
+                    {key: value for key, value in {**class_target, "data": "changed"}.items() if key != "csv-format"},
+                    foreign,
+                    duplicate,
+                    {"name": "added", "data": "last"},
+                ],
+            )
+
+    def test_name_code_and_custom_aliases_use_the_same_live_definitions_for_edit_and_verification(self):
+        for family, name, code in (
+            (4, "routers", 3),
+            (6, "dns-servers", 23),
+            (4, "unknown", None),
+            (6, "unknown", None),
+        ):
+            shown_options = [
+                {"name": name, "data": "old"},
+                {"name": "custom", "space": "vendor-lab", "data": "old", "client-classes": ["one", "two"]},
+            ]
+            raw = {**_raw(family), "option-data": shown_options}
+            current, state = self._shown(family, raw=raw)
+            live_options = [
+                {**({"code": code} if code is not None else {"name": name}), "space": f"dhcp{family}", "data": "old"},
+                {
+                    "code": 222,
+                    "space": "vendor-lab",
+                    "data": "old",
+                    "client-classes": ["two", "one"],
+                    "user-context": {"owner": "live"},
+                },
+            ]
+            responses = _responses(family, raw={**raw, "option-data": live_options})
+            responses["config-get"]["arguments"][f"Dhcp{family}"]["option-def"] = [
+                {"code": 222, "name": "custom", "space": "vendor-lab", "type": "string"}
+            ]
+            observed = {**raw, "option-data": [{**option, "data": "new"} for option in shown_options]}
+            responses["reservation-get"] = queued(_res_get({**raw, "option-data": live_options}), _res_get(observed))
+            values = reservation_edit.SubmittedValues(
+                current.addresses,
+                hostname=state.initial["hostname"],
+                option_rows=tuple(
+                    reservation_edit.OptionRow(option.name, "new", original_option=option) for option in current.options
+                ),
+            )
+            with self.subTest(family=family), stub_kea(responses) as kea:
+                outcome = reservation_edit.save_edit(
+                    self.server, family, 20, _IDENTITY, state.initial["managed_fingerprint"], values
+                )
+            self.assertEqual(
+                kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
+                [{**option, "data": "new"} for option in live_options],
+            )
+            self.assertEqual(outcome.verification, "verified")
+            self.assertEqual(
+                kea.commands(),
+                [
+                    f"subnet{family}-list",
+                    "config-get",
+                    "reservation-get",
+                    "reservation-update",
+                    "config-get",
+                    "config-test",
+                    "config-write",
+                    "reservation-get",
+                ],
+            )
+
+    def test_each_changed_or_removed_snapshot_value_names_its_option(self):
+        option = {
+            "name": "routers",
+            "data": "198.18.0.1",
+            "always-send": False,
+            "never-send": False,
+            "csv-format": True,
+        }
+        raw = {**_raw(), "option-data": [option]}
+        current, state = self._shown(raw=raw)
+        values = reservation_edit.SubmittedValues(
+            current.addresses,
+            hostname=state.initial["hostname"],
+            option_rows=(reservation_edit.OptionRow("routers", "198.18.0.2", original_option=current.options[0]),),
+        )
+        for changed in (
+            None,
+            {"data": "198.18.0.3"},
+            {"always-send": True},
+            {"never-send": True},
+            {"csv-format": False},
+        ):
+            live = {**raw, "option-data": [] if changed is None else [{**option, **changed}]}
+            with self.subTest(changed=changed), stub_kea(_responses(raw=live)) as kea:
+                with self.assertRaisesRegex(ReservationConflict, "routers"):
+                    reservation_edit.save_edit(
+                        self.server, 4, 20, _IDENTITY, state.initial["managed_fingerprint"], values
+                    )
+                self.assertNotIn("reservation-update", kea.commands())
+                self.assertNotIn("config-test", kea.commands())
+
+    def test_targeted_duplicates_and_coded_renames_are_named_conflicts(self):
+        for options, name in (
+            ([{"name": "routers", "data": "old"}] * 2, "routers"),
+            ([{"name": "routers", "code": 3, "data": "old"}], "domain-name-servers"),
+        ):
+            raw = {**_raw(), "option-data": options}
+            current, state = self._shown(raw=raw)
+            rows = tuple(
+                reservation_edit.OptionRow(
+                    name if index == 0 else option.name, "new" if index == 0 else option.data, original_option=option
+                )
+                for index, option in enumerate(current.options)
+            )
+            with self.subTest(options=options), stub_kea(_responses(raw=raw)) as kea:
+                with self.assertRaisesRegex(ReservationConflict, "routers"):
+                    reservation_edit.save_edit(
+                        self.server,
+                        4,
+                        20,
+                        _IDENTITY,
+                        state.initial["managed_fingerprint"],
+                        reservation_edit.SubmittedValues(
+                            current.addresses, hostname=state.initial["hostname"], option_rows=rows
+                        ),
+                    )
+                self.assertNotIn("reservation-update", kea.commands())
+
+    def test_a_malformed_typed_option_change_keeps_its_named_conflict_at_config_write(self):
+        raw = {**_raw(), "option-data": [{"name": "routers", "data": "old"}]}
+        current, _state = self._shown(raw=raw)
+        change = ReservationChange(options=DHCPOptionEdit(current.options, (DHCPOptionChange(None, None),)))
+        with stub_kea(_responses(raw=raw)) as kea:
+            with self.assertRaisesRegex(ReservationConflict, "routers.*intent"):
+                config_write.edit_reservation(
+                    self.server, 4, 20, _IDENTITY, reservation_fingerprint(current), lambda _current, _catalogue: change
+                )
+            self.assertNotIn("reservation-update", kea.commands())

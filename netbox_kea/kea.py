@@ -23,14 +23,14 @@ from . import constants
 from .constants import Family, IPAddressValue, IPNetworkValue, LeaseState, Persistence
 from .decimal_text import parse_decimal
 from .dhcp_options import (
-    DHCPOption,
     DHCPOptionEdit,
+    OptionDefinition,
     address_list_data,
     form_managed_options,
     form_option_edit,
     merge_option_edit,
-    parse_dhcp_option,
     parse_dhcp_options,
+    parse_option_definition,
 )
 from .leases import (
     ALL_LEASES,
@@ -66,14 +66,15 @@ from .reservations import (
     InSubnetReservationScope,
     MalformedReservation,
     Reservation,
+    ReservationChange,
     ReservationDiagnostic,
     ReservationIdentity,
     ReservationScope,
     ReservationSnapshot,
     _exact_reservation,
-    _option_data,
     _parse_reservation_page,
     _reservation_to_raw,
+    apply_reservation_change,
     reservation_identifier_types,
 )
 from .subnet_settings import setting_key
@@ -209,7 +210,6 @@ NETWORK_DEL: ByFamily = {4: KeaCommand.NETWORK4_DEL, 6: KeaCommand.NETWORK6_DEL}
 NETWORK_SUBNET_ADD: ByFamily = {4: KeaCommand.NETWORK4_SUBNET_ADD, 6: KeaCommand.NETWORK6_SUBNET_ADD}
 NETWORK_SUBNET_DEL: ByFamily = {4: KeaCommand.NETWORK4_SUBNET_DEL, 6: KeaCommand.NETWORK6_SUBNET_DEL}
 
-_MANAGED_OPTION_KEYS = frozenset({"code", "name", "space", "data", "csv-format", "always-send", "never-send"})
 
 # One exhausted host backend can legitimately answer with an empty page before the
 # cursor moves to the next source index, so allow a few before giving up.
@@ -257,38 +257,6 @@ def _reservation_scope_subnet_id(scope: ReservationScope) -> int:
     raise ValueError("Unsupported Reservation Scope.")
 
 
-def _take_matching_raw_option(
-    remaining: list[tuple[DHCPOption, dict[str, Any]]], intended_option: DHCPOption
-) -> dict[str, Any] | None:
-    """Remove and return the raw Option that *intended_option* targets.
-
-    An exact space match wins. Kea may omit the space, and such an Option matches any
-    space, so it is claimed only once no exact match is left: taking it first lets the
-    Option listed earliest absorb an intent that belongs to another space.
-    """
-    for exact_space in (True, False):
-        for index, (current_option, _raw_option) in enumerate(remaining):
-            if current_option.matches_intent(intended_option, exact_space=exact_space):
-                return remaining.pop(index)[1]
-    return None
-
-
-def _merge_reservation_options(
-    raw_options: list[dict[str, Any]],
-    current_options: tuple[DHCPOption, ...],
-    intended_options: tuple[DHCPOption, ...],
-) -> list[dict[str, Any]]:
-    """Overlay managed option facts while preserving matching Kea extension fields."""
-    remaining = list(zip(current_options, raw_options, strict=True))
-    merged_options: list[dict[str, Any]] = []
-    for intended_option in intended_options:
-        raw_option = _take_matching_raw_option(remaining, intended_option)
-        merged_option = {key: value for key, value in (raw_option or {}).items() if key not in _MANAGED_OPTION_KEYS}
-        merged_option.update(_option_data(intended_option))
-        merged_options.append(merged_option)
-    return merged_options
-
-
 # The keys of a raw Reservation that NetBox manages. An update replaces them and keeps every other key.
 _MANAGED_RESERVATION_KEYS = frozenset(
     {
@@ -315,27 +283,26 @@ class FreshReservation:
     reservation: Reservation
     raw: dict[str, Any] = dataclasses.field(repr=False, compare=False)
 
-    def updated(self, intended: Reservation) -> dict[str, Any]:
-        """Return the ``reservation-update`` record: *intended* over the raw record, with each unmanaged key kept.
-
-        Raises:
-            ValueError: If *intended* has another Scope or Identity.
-            MalformedReservation: If the raw record holds DHCP Options that are not valid.
-
-        """
-        if intended.scope != self.reservation.scope or intended.identity != self.reservation.identity:
-            raise ValueError("An update cannot change the Scope or the Identity of a Reservation.")
+    def updated(
+        self,
+        change: ReservationChange,
+        definitions: Sequence[OptionDefinition] = (),
+    ) -> tuple[Reservation, dict[str, Any]]:
+        """Merge one typed option edit and the other changed facts onto the fresh raw record."""
         raw_options = self.raw.get("option-data", [])
         if not isinstance(raw_options, list) or any(not isinstance(option, dict) for option in raw_options):
             raise MalformedReservation("invalid-options", "The Reservation contains invalid DHCP Options.")
+        options = raw_options
+        if change.options is not None:
+            options = merge_option_edit(change.options, raw_options, self.reservation.family, definitions)
+        intended = apply_reservation_change(self.reservation, dataclasses.replace(change, options=None))
+        intended = dataclasses.replace(intended, options=parse_dhcp_options(options))
         serialized = _reservation_to_raw(intended)
-        if intended.options:
-            serialized["option-data"] = _merge_reservation_options(
-                raw_options, self.reservation.options, intended.options
-            )
+        if options or (not raw_options and "option-data" in self.raw):
+            serialized["option-data"] = options
         merged = {key: value for key, value in self.raw.items() if key not in _MANAGED_RESERVATION_KEYS}
         merged.update(serialized)
-        return merged
+        return intended, merged
 
 
 class KeaResponse(TypedDict):
@@ -883,11 +850,12 @@ class CandidateConfiguration:
             edit, _config_options(matches[0], self.service), self.family, self._option_definitions()
         )
 
-    def _option_definitions(self) -> tuple[DHCPOption, ...]:
+    def _option_definitions(self) -> tuple[OptionDefinition, ...]:
         """Read the identity fields of the custom definitions from this live candidate."""
         try:
             return tuple(
-                parse_dhcp_option(entry) for entry in _config_entries(self._daemon, "option-def", self.service)
+                parse_option_definition(entry, self.family)
+                for entry in _config_entries(self._daemon, "option-def", self.service)
             )
         except ValueError as exc:
             raise MalformedConfiguration("config-get returned an invalid Option Definition.") from exc

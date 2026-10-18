@@ -155,6 +155,8 @@ class CatalogueSnapshot:
     # The global DDNS qualifying suffix. None: the configuration does not show it.
     global_qualifying_suffix: str | None
     subnet_cmds_available: bool = True
+    option_definitions: tuple[server_configuration.OptionDefinition, ...] = ()
+    option_definitions_complete: bool = False
 
     def _display_subnets(self) -> tuple[VerifiedSubnet | ConfiguredSubnet, ...]:
         return (*self.subnets, *self.configured_subnets)
@@ -331,6 +333,8 @@ class _ConfigurationObservation:
     available: bool
     complete: bool
     global_qualifying_suffix: str | None
+    option_definitions: tuple[server_configuration.OptionDefinition, ...] = ()
+    option_definitions_complete: bool = False
     configuration_hash: str | None = None
     quarantined_ids: frozenset[int] = frozenset()
     quarantined_networks: frozenset[IPNetworkValue] = frozenset()
@@ -531,6 +535,8 @@ def _configuration_observation(snapshot: server_configuration.ServerConfiguratio
         quarantined_ids=frozenset(ids),
         quarantined_networks=frozenset(networks),
         global_qualifying_suffix=snapshot.ddns_qualifying_suffix,
+        option_definitions=snapshot.option_definitions,
+        option_definitions_complete=snapshot.option_definitions_complete,
     )
 
 
@@ -794,6 +800,8 @@ def _reconcile(
         consistent=consistent,
         configuration_hash=configuration.configuration_hash,
         global_qualifying_suffix=configuration.global_qualifying_suffix,
+        option_definitions=configuration.option_definitions,
+        option_definitions_complete=configuration.option_definitions_complete,
         subnet_cmds_available=identity.subnet_cmds_available,
     )
 
