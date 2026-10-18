@@ -18,7 +18,6 @@ from django.urls import reverse
 from django.views import View
 
 from .. import (
-    config_write,
     event_scope,
     forms,
     reservation_edit,
@@ -73,6 +72,7 @@ from ._base import (
 from .leases import _LEASES_TAB, _lease_journal_comments, lease_sync_gates
 from .notices import Notice, failed_load, load_target
 from .reservation_mutations import (
+    RESERVATION_CLAIM_EVENTS_FAILED,
     RESERVATION_VERIFICATION_FAILED,
     live_reservation_target,
     reservation_identity_from_request,
@@ -390,7 +390,7 @@ def _import_report(
     total: int,
     noun: ImportNoun,
     describe: Callable[[RowT], tuple[str, str]],
-    note: Callable[[OutcomeT], str] = lambda _outcome: "",
+    note: Callable[[RowT, OutcomeT], str] = lambda _item, _outcome: "",
 ) -> dict[str, Any]:
     """Return the report of an import loop: each item by status, with its position, its subject and its message.
 
@@ -406,7 +406,7 @@ def _import_report(
 
     not_sent = f"NetBox stopped at an earlier {noun.one} and did not send this {noun.one}."
     rows_by_status: dict[ImportStatus, list[dict[str, Any]]] = {
-        "created": entries((item, note(outcome)) for item, outcome in loop.applied),
+        "created": entries((item, note(item, outcome)) for item, outcome in loop.applied),
         "unconfirmed": entries([(loop.unknown[0], loop.unknown[1].text)] if loop.unknown else []),
         "not-applied": entries((item, message.text) for item, message in loop.rejected),
         "not-sent": entries((item, not_sent) for item in loop.not_sent),
@@ -542,6 +542,14 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
         if parsed.diagnostics:
             return self._render(request, instance, form, {"diagnostics": parsed.diagnostics})
 
+        try:
+            import_context = reservation_edit.prepare_import(
+                instance, request.user, sync_to_netbox=form.cleaned_data["sync_to_netbox"]
+            )
+        except reservation_edit.ImportSyncRefused as exc:
+            form.add_error("sync_to_netbox", exc.message)
+            return self._render(request, instance, form, None)
+
         if refusal := _client_settings_refusal(instance, self.dhcp_version):
             form.add_error(None, refusal)
             return self._render(request, instance, form, None)
@@ -553,15 +561,18 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
         if diagnostics:
             return self._render(request, instance, form, {"diagnostics": diagnostics})
 
-        def create(entry: tuple[int, ReservationImportProposal]) -> config_write.ReservationChangeOutcome:
+        after_facts: dict[int, reservation_edit.AfterApplyFacts] = {}
+
+        def create(entry: tuple[int, ReservationImportProposal]) -> reservation_edit.AddOutcome:
             _index, proposal = entry
             return reservation_edit.save_import(instance, proposal)
 
-        def after_applied(
-            _entry: tuple[int, ReservationImportProposal], outcome: config_write.ReservationChangeOutcome
-        ) -> None:
-            facts = reservation_edit.after_apply(instance, outcome, request.user, request=request)
-            show_reservation_side_effects(request, facts)
+        def after_applied(entry: tuple[int, ReservationImportProposal], outcome: reservation_edit.AddOutcome) -> None:
+            facts = reservation_edit.after_apply(
+                instance, outcome, request.user, request=request, import_context=import_context
+            )
+            after_facts[entry[0]] = facts
+            show_reservation_side_effects(request, facts, show_claim=False)
 
         entries = list(enumerate(parsed.proposals))
         loop = _run_change_loop(entries, create, stop_on_rejection=True, after_applied=after_applied)
@@ -569,22 +580,48 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
             messages.info(
                 request, "Configuration persistence is disabled for this server, so Kea did not save the import."
             )
+        summary = reservation_edit.pool_overlap_summary(tuple(outcome for _entry, outcome in loop.applied))
+        if summary.identities:
+            identities = ", ".join(reservation_identity_label(identity) for identity in summary.identities)
+            remainder = f", and {summary.remaining} more" if summary.remaining else ""
+            messages.warning(request, f"Reservations with an address in an allocation Pool: {identities}{remainder}.")
         result = _import_report(
             loop,
             len(entries),
             _RESERVATION_ENTRIES,
             lambda entry: (f"reservations[{entry[0]}]", reservation_identity_label(entry[1].identity)),
-            _created_note,
+            lambda entry, outcome: _created_note(outcome, after_facts[entry[0]]),
         )
         return self._render(request, instance, self.form_class(), result)
 
 
-def _created_note(outcome: config_write.ReservationChangeOutcome) -> str:
-    """Return the note of a created Reservation: a failed persist step or verification read, else nothing."""
-    notes = (
+def _created_note(outcome: reservation_edit.AddOutcome, facts: reservation_edit.AfterApplyFacts) -> str:
+    """Name persistence, verification, pool-check and claim failures for this created entry."""
+    notes = [
         _persistence_failure(outcome),
         RESERVATION_VERIFICATION_FAILED if outcome.verification == "failed" else None,
+    ]
+    notes.extend(
+        f"NetBox could not check allocation Pools for Subnet {warning.subnet_cidr}."
+        for warning in outcome.warnings
+        if isinstance(warning, reservation_edit.PoolCheckUnavailable)
     )
+    claim = facts.claim
+    if isinstance(claim, reservation_edit.ClaimFailure):
+        notes.append(
+            RESERVATION_CLAIM_EVENTS_FAILED
+            if claim.reason == "events-failed"
+            else "NetBox IPAM synchronization failed; see server logs."
+        )
+    elif isinstance(claim, reservation_edit.ClaimSkipped):
+        if claim.reason == "nothing-to-sync":
+            notes.append("Nothing to sync to NetBox because this Reservation reserves no IP address.")
+        elif claim.reason == "permission":
+            notes.append(claim.explanation)
+    else:
+        failed = [address for address, row in claim.addresses.items() if not row.synchronized]
+        if failed:
+            notes.append(f"NetBox IPAM synchronization failed for: {', '.join(failed)}.")
     return " ".join(note for note in notes if note)
 
 
