@@ -1354,6 +1354,32 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
                     ],
                 )
 
+    def test_untouched_padded_data_keeps_its_value_encoding_and_duplicates(self):
+        padded = {
+            "code": 6,
+            "data": " 198.18.0.53 ",
+            "csv-format": True,
+            "never-send": False,
+            "user-context": {"owner": "lab"},
+        }
+        for duplicate in (False, True):
+            options = [padded, {"name": "routers", "data": "198.18.0.1"}]
+            if duplicate:
+                options.append(padded)
+            for scope in ("server", "subnet"):
+                with self.subTest(scope=scope, duplicate=duplicate), _persist_stub(self._config(scope, options)) as kea:
+                    data = self._submitted(self.client.get(self._url(scope)))
+                    data["form-1-data"] = "198.18.0.2"
+                    post = self.client.post(self._url(scope), data)
+                    self.assertEqual(post.status_code, 302)
+                    written = _written_config(kea)["Dhcp4"]
+                    if scope == "subnet":
+                        written = written["subnet4"][0]
+                    expected = [padded, {"name": "routers", "data": "198.18.0.2"}]
+                    if duplicate:
+                        expected.append(padded)
+                    self.assertEqual(written["option-data"], expected)
+
     def test_a_tampered_original_identity_is_a_form_error_before_any_write(self):
         options = [{"code": 6, "space": "dhcp4", "data": "198.18.0.53", "client-classes": ["group-a"]}]
         for classes in ("group-a", [""]):

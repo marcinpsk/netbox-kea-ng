@@ -1653,6 +1653,7 @@ class ConfigurationOptionsForm(SubnetOptionsForm):
         super().__init__(*args, **kwargs)
         self.fields["name"].required = False
         self.fields["data"].required = False
+        cast(forms.CharField, self.fields["data"]).strip = False
 
     def clean_original_option(self):
         """Validate the original identity with the shared DHCP Option parser."""
