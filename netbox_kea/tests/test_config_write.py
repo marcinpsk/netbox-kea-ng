@@ -1386,8 +1386,8 @@ _UPDATED = {
         "subnet": "10.0.20.0/24",
         "pools": [{"pool": "10.0.20.100-10.0.20.110"}],
         "option-data": [
-            {"name": "domain-name", "data": "example.org"},
             {"name": "routers", "data": "10.0.20.254"},
+            {"name": "domain-name", "data": "example.org"},
             {"name": "domain-name-servers", "data": "192.0.2.53"},
         ],
         "relay": {"ip-addresses": ["198.51.100.1"]},
@@ -1399,8 +1399,8 @@ _UPDATED = {
         "subnet": "2001:db8:20::/64",
         "pools": [{"pool": "2001:db8:20::200-2001:db8:20::2ff"}],
         "option-data": [
-            {"name": "domain-search", "data": "example.org"},
             {"name": "dns-servers", "data": "2001:db8::54"},
+            {"name": "domain-search", "data": "example.org"},
             {"name": "sntp-servers", "data": "2001:db8::123"},
         ],
         "valid-lifetime": 3600,
@@ -3228,6 +3228,245 @@ def _with_network(version: int, **fields) -> dict:
         **fields,
     }
     return _running(version, **{"shared-networks": [network]})
+
+
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
+class FormManagedOptionEditTests(TestCase):
+    """Fixed form fields change only their selected DHCP Option through real Configuration Changes."""
+
+    _FIELDS = (
+        (4, "gateway", 3, "routers", "198.18.0.1", "198.18.0.2"),
+        (4, "dns_servers", 6, "domain-name-servers", "198.18.0.53", "198.18.0.54"),
+        (4, "ntp_servers", 42, "ntp-servers", "198.18.0.123", "198.18.0.124"),
+        (6, "dns_servers", 23, "dns-servers", "2001:db8::53", "2001:db8::54"),
+        (6, "ntp_servers", 31, "sntp-servers", "2001:db8::123", "2001:db8::124"),
+    )
+
+    def setUp(self):
+        self.server = _make_db_server()
+
+    def _sent(self, family, scope, options, *, shown, edited):
+        """Send a field edit with explicit shown values, and return the option list that reached Kea."""
+        if scope == "subnet":
+            cidr = {4: "198.18.0.0/24", 6: "2001:db8::/64"}[family]
+            subnet = {"id": 20, "subnet": cidr, "pools": [], "option-data": options}
+            daemon = SubnetDaemon(family, [subnet])
+            fields = SubnetFields(
+                (), shown.get("gateway", ""), shown.get("dns_servers", ()), shown.get("ntp_servers", ()), ""
+            )
+            before = SubnetEdit(fields, None, None, None, None, None)
+            after = dataclasses.replace(before, fields=dataclasses.replace(fields, **edited))
+            with stub_kea(daemon.responses()) as kea:
+                outcome = config_write.edit_subnet(
+                    self.server, family, 20, cidr, after, shown=before, original_network=None, shared_network=None
+                )
+            self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+            return kea.bodies(f"subnet{family}-update")[0]["arguments"][f"subnet{family}"][0]["option-data"]
+        network = {"name": "net-a", f"subnet{family}": [], "option-data": options}
+        running = _running(family, **{"shared-networks": [network]})
+        before = SharedNetworkEdit("", "", (), shown.get("dns_servers", ()), shown.get("ntp_servers", ()))
+        after = dataclasses.replace(before, **edited)
+        with stub_kea(_rmw_responses(family, config_get=running)) as kea:
+            outcome = config_write.edit_shared_network(self.server, family, "net-a", after, shown=before)
+        self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+        return kea.bodies("config-set")[0]["arguments"][f"Dhcp{family}"]["shared-networks"][0]["option-data"]
+
+    def test_a_fixed_dns_edit_keeps_the_selected_entry_in_its_live_position(self):
+        for family, code, old, new in ((4, 6, "198.18.0.53", "198.18.0.54"), (6, 23, "2001:db8::53", "2001:db8::54")):
+            options = [
+                {"code": code, "data": old, "always-send": True, "user-context": {"owner": "lab"}},
+                {"name": "custom", "data": "keep"},
+            ]
+            for scope in ("subnet", "shared-network"):
+                with self.subTest(family=family, scope=scope):
+                    sent = self._sent(
+                        family, scope, options, shown={"dns_servers": (old,)}, edited={"dns_servers": (new,)}
+                    )
+                    self.assertEqual(
+                        sent,
+                        [
+                            {"code": code, "data": new, "always-send": True, "user-context": {"owner": "lab"}},
+                            {"name": "custom", "data": "keep"},
+                        ],
+                    )
+
+    def test_each_fixed_field_edits_only_its_default_space_unclassed_entry(self):
+        for family, field, code, name, old, new in self._FIELDS:
+            classed = {"name": name, "data": old, "client-classes": ["voip"], "csv-format": True}
+            foreign = {"name": name, "space": "vendor-lab", "data": "opaque", "csv-format": False}
+            duplicate = {"name": "custom", "space": "vendor-lab", "data": "keep"}
+            target = {
+                "code": code,
+                "space": f"dhcp{family}",
+                "data": old,
+                "csv-format": True,
+                "always-send": True,
+                "never-send": False,
+                "user-context": {"owner": "lab"},
+            }
+            options = [classed, target, foreign, duplicate, duplicate]
+            for scope in ("subnet",) if field == "gateway" else ("subnet", "shared-network"):
+                with self.subTest(family=family, field=field, scope=scope):
+                    sent = self._sent(
+                        family,
+                        scope,
+                        options,
+                        shown={field: old if field == "gateway" else (old,)},
+                        edited={field: new if field == "gateway" else (new,)},
+                    )
+                    self.assertEqual(
+                        sent,
+                        [
+                            classed,
+                            {
+                                "code": code,
+                                "space": f"dhcp{family}",
+                                "data": new,
+                                "always-send": True,
+                                "never-send": False,
+                                "user-context": {"owner": "lab"},
+                            },
+                            foreign,
+                            duplicate,
+                            duplicate,
+                        ],
+                    )
+
+    def test_simultaneous_fixed_field_changes_keep_each_live_position(self):
+        for family in (4, 6):
+            dns_code, ntp_code = (6, 42) if family == 4 else (23, 31)
+            old_dns, new_dns = ("198.18.0.53", "198.18.0.54") if family == 4 else ("2001:db8::53", "2001:db8::54")
+            old_ntp, new_ntp = ("198.18.0.123", "198.18.0.124") if family == 4 else ("2001:db8::123", "2001:db8::124")
+            for scope in ("subnet", "shared-network"):
+                marker = {"name": "custom", "data": "keep"}
+                options = [
+                    {"code": ntp_code, "data": old_ntp, "csv-format": True},
+                    marker,
+                    {"code": dns_code, "data": old_dns, "always-send": True},
+                ]
+                shown = {"dns_servers": (old_dns,), "ntp_servers": (old_ntp,)}
+                edited = {"dns_servers": (new_dns,), "ntp_servers": (new_ntp,)}
+                expected = [
+                    {"code": ntp_code, "data": new_ntp},
+                    marker,
+                    {"code": dns_code, "data": new_dns, "always-send": True},
+                ]
+                if family == 4 and scope == "subnet":
+                    options.append({"code": 3, "data": "198.18.0.1", "never-send": False})
+                    shown["gateway"] = "198.18.0.1"
+                    edited["gateway"] = "198.18.0.2"
+                    expected.append({"code": 3, "data": "198.18.0.2", "never-send": False})
+                with self.subTest(family=family, scope=scope):
+                    self.assertEqual(self._sent(family, scope, options, shown=shown, edited=edited), expected)
+
+    def test_clearing_each_fixed_field_deletes_only_its_selected_entry(self):
+        for family, field, code, name, old, _new in self._FIELDS:
+            classed = {"code": code, "data": old, "client-classes": ["voip"]}
+            foreign = {"name": name, "space": "vendor-lab", "data": "keep"}
+            target = {"name": name, "data": old, "never-send": True}
+            for scope in ("subnet",) if field == "gateway" else ("subnet", "shared-network"):
+                with self.subTest(family=family, field=field, scope=scope):
+                    sent = self._sent(
+                        family,
+                        scope,
+                        [classed, target, foreign],
+                        shown={field: old if field == "gateway" else (old,)},
+                        edited={field: "" if field == "gateway" else ()},
+                    )
+                    self.assertEqual(sent, [classed, foreign])
+
+    def test_empty_absent_fixed_fields_keep_classed_and_foreign_space_entries(self):
+        for family, _field, code, name, old, _new in self._FIELDS:
+            options = [
+                {"name": name, "data": old, "client-classes": ["voip"]},
+                {"code": code, "space": "vendor-lab", "data": "keep"},
+            ]
+            for scope in ("subnet", "shared-network"):
+                with self.subTest(family=family, option=name, scope=scope):
+                    self.assertEqual(self._sent(family, scope, options, shown={}, edited={}), options)
+
+    def test_all_new_fixed_options_append_after_the_existing_entries(self):
+        held = {"name": "custom", "data": "keep", "user-context": {"owner": "lab"}}
+        for family in (4, 6):
+            dns = "198.18.0.53" if family == 4 else "2001:db8::53"
+            ntp = "198.18.0.123" if family == 4 else "2001:db8::123"
+            for scope in ("subnet", "shared-network"):
+                edited = {"dns_servers": (dns,), "ntp_servers": (ntp,)}
+                expected = [held]
+                if scope == "subnet":
+                    edited["gateway"] = "198.18.0.1"
+                    if family == 4:
+                        expected.append({"name": "routers", "data": "198.18.0.1"})
+                expected.extend(
+                    [
+                        {"name": "domain-name-servers" if family == 4 else "dns-servers", "data": dns},
+                        {"name": "ntp-servers" if family == 4 else "sntp-servers", "data": ntp},
+                    ]
+                )
+                with self.subTest(family=family, scope=scope):
+                    self.assertEqual(self._sent(family, scope, [held], shown={}, edited=edited), expected)
+
+    def test_empty_fields_keep_unshowable_and_empty_entries_in_their_positions(self):
+        for family, field, code, _name, _old, _new in self._FIELDS:
+            entries = [
+                {"code": code, "data": "C6120035", "csv-format": False},
+                {"code": code, "never-send": True},
+                {"code": code, "data": "", "never-send": True},
+            ]
+            if field == "gateway":
+                entries.append({"code": code, "data": "198.18.0.1, 198.18.0.2", "csv-format": True})
+            for entry in entries:
+                for scope in ("subnet",) if field == "gateway" else ("subnet", "shared-network"):
+                    with self.subTest(family=family, field=field, scope=scope, entry=entry):
+                        marker = {"name": "custom", "data": "keep"}
+                        self.assertEqual(
+                            self._sent(family, scope, [entry, marker], shown={}, edited={}), [entry, marker]
+                        )
+
+    def test_semantically_unchanged_addresses_keep_raw_text_and_encoding(self):
+        cases = (
+            (4, "dns_servers", 6, " 198.18.0.53,198.18.0.54, ", ("198.18.0.53", "198.18.0.54")),
+            (6, "dns_servers", 23, " 2001:0DB8:0:0::53 ,2001:db8::0054, ", ("2001:db8::53", "2001:db8::54")),
+            (4, "ntp_servers", 42, " 198.18.0.123, ", ("198.18.0.123",)),
+            (6, "ntp_servers", 31, "2001:0DB8:0:0::0123,", ("2001:db8::123",)),
+            (4, "gateway", 3, " 198.18.0.1 ", "198.18.0.1"),
+        )
+        for family, field, code, data, canonical in cases:
+            held = {"code": code, "data": data, "csv-format": True, "never-send": False}
+            marker = {"name": "custom", "data": "keep"}
+            for scope in ("subnet",) if field == "gateway" else ("subnet", "shared-network"):
+                with self.subTest(family=family, field=field, scope=scope):
+                    self.assertEqual(
+                        self._sent(family, scope, [held, marker], shown={field: canonical}, edited={field: canonical}),
+                        [held, marker],
+                    )
+
+    def test_replacing_unshowable_data_clears_encoding_and_keeps_other_keys(self):
+        for family, field, code, _name, _old, new in self._FIELDS:
+            held = {
+                "code": code,
+                "data": "C6120035",
+                "csv-format": False,
+                "never-send": True,
+                "always-send": False,
+                "user-context": {"owner": "lab"},
+            }
+            for scope in ("subnet",) if field == "gateway" else ("subnet", "shared-network"):
+                with self.subTest(family=family, field=field, scope=scope):
+                    self.assertEqual(
+                        self._sent(
+                            family, scope, [held], shown={}, edited={field: new if field == "gateway" else (new,)}
+                        ),
+                        [
+                            {
+                                "code": code,
+                                "data": new,
+                                "never-send": True,
+                                "always-send": False,
+                                "user-context": {"owner": "lab"},
+                            }
+                        ],
+                    )
 
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)

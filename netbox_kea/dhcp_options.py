@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -406,9 +406,7 @@ def _fitting_entries(options: Sequence[DHCPOption], version: int, managed: FormM
     return [
         index
         for index, option in enumerate(options)
-        if _in_default_space(option, version)
-        and not option.client_classes
-        and (option.code == managed.code if option.code is not None else option.name == managed.name)
+        if option_identity(option, version) == DHCPOptionIdentity(f"dhcp{version}", managed.code, frozenset())
     ]
 
 
@@ -553,6 +551,42 @@ class DHCPOptionEdit:
 
     snapshot: tuple[DHCPOption, ...]
     changes: tuple[DHCPOptionChange, ...]
+
+
+def form_option_edit(options: Sequence[DHCPOption], family: int, fields: Mapping[str, str]) -> DHCPOptionEdit:
+    """Translate fixed form fields into one edit of their default-space, unclassed assignments.
+
+    Empty fields keep entries whose data the form cannot show. Unchanged address lists keep their live text and
+    encoding, because the form shows canonical addresses.
+
+    Raises:
+        AmbiguousFormOption: If more than one entry fits a field.
+
+    """
+    changes: list[DHCPOptionChange] = []
+    managed = form_managed_options(family)
+    for field, data in fields.items():
+        index = form_managed_entry(options, family, field)
+        if index is None:
+            if data:
+                intended = parse_dhcp_option({"name": managed[field].name, "data": data})
+                changes.append(DHCPOptionChange(None, intended))
+            continue
+        seen = options[index]
+        if not data:
+            if seen.data and form_shows(seen, field):
+                changes.append(DHCPOptionChange(seen, None))
+        elif seen.csv_format is False or not _same_addresses(data, seen.data):
+            changes.append(DHCPOptionChange(seen, replace(seen, data=data, csv_format=None)))
+    return DHCPOptionEdit(tuple(options), tuple(changes))
+
+
+def _same_addresses(data: str, old_data: str) -> bool:
+    """Return whether both strings hold the same ordered address list."""
+    try:
+        return address_list(data) == address_list(old_data)
+    except InvalidAddress:
+        return False
 
 
 def _managed_value(option: DHCPOption) -> tuple[str, bool | None, bool | None, bool | None]:
