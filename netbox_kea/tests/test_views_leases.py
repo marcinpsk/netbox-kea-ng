@@ -29,14 +29,19 @@ import ipaddress
 import json
 import re
 import time
+from contextlib import contextmanager
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
+from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
+from django.db.models.signals import post_save
+from django.test import SimpleTestCase
 from django.urls import reverse
 from django.utils.html import escape
+from extras.models import JournalEntry
 from ipam.models import IPAddress as NbIP
 
 from netbox_kea import constants
@@ -45,15 +50,17 @@ from netbox_kea.models import Server
 from netbox_kea.signals import lease_added
 from netbox_kea.utilities import parse_lease_csv
 from netbox_kea.views.leases import fetch
-from netbox_kea.views.notices import HEADLINES, Notice
+from netbox_kea.views.notices import HEADLINES, Notice, NoticeKind
 
 from .kea_stub import (
+    READ_FAILURES,
     LeaseDaemon,
     _catalogue_responses,
     _catalogue_responses_for_subnets,
     _http_response,
     _leases_per_subnet,
     _raw_http_response,
+    _refused_connection,
     _subnet_list,
     _subnet_stats,
     complete_lease,
@@ -67,6 +74,8 @@ from .kea_stub import (
     typed_lease,
 )
 from .utils import (
+    INVALID_SERVER_SETTINGS,
+    UNCONFIRMED_RUNTIME,
     _make_db_server,
     _ViewTestBase,
     active_tabs,
@@ -93,10 +102,44 @@ def _assert_rendered_error_template(test, response):
 def _assert_lease_read_failed(test, response):
     """Assert the partial keeps the form and shows the unavailable Lease Notice in place of the table."""
     test.assertEqual(response.status_code, 200)
-    test.assertContains(response, f'<div class="alert alert-danger" role="alert">{HEADLINES["lease"]}</div>', html=True)
+    alert = BeautifulSoup(response.content, "html.parser").select_one(".alert-danger strong")
+    test.assertEqual(alert.get_text() if alert else None, HEADLINES["lease"])
     test.assertContains(response, 'id="lease-search-btn"')
     test.assertNotContains(response, 'id="lease-delete-form"')
     _assert_no_error_template(test, response)
+
+
+_IMPORT_NOT_SENT = "NetBox stopped at an earlier row and did not send this row."
+
+
+@contextmanager
+def _failing_journal(error: Exception):
+    """Make each JournalEntry save raise *error*, as a save signal of another plugin can."""
+
+    def fail(sender, **kwargs):
+        raise error
+
+    post_save.connect(fail, sender=JournalEntry)
+    try:
+        yield
+    finally:
+        post_save.disconnect(fail, sender=JournalEntry)
+
+
+def _import_counts(response) -> dict[str, int]:
+    """Return the number of rows of each status of a Lease CSV import report."""
+    return {group.status: len(group.rows) for group in response.context["result"]["groups"]}
+
+
+def _import_report(response) -> dict[str, tuple[str, list[tuple[str, ...]]]]:
+    """Return the heading and the table rows of each rendered section of a Lease CSV import report."""
+    page = BeautifulSoup(response.content, "html.parser")
+    report = {}
+    for section in page.select("section[data-import-status]"):
+        heading = section.find("h6")
+        rows = [tuple(cell.get_text(strip=True) for cell in row.select("td")) for row in section.select("tbody tr")]
+        report[str(section["data-import-status"])] = (heading.get_text(strip=True) if heading else "", rows)
+    return report
 
 
 def _lease_lines(response) -> list[str]:
@@ -110,6 +153,15 @@ def _assert_no_error_template(test, response):
     """Assert the HTMX handler rendered no part of exception_htmx.html."""
     test.assertNotRegex(response.content.decode(), _ERROR_TEMPLATE)
     test.assertNotContains(response, "An internal error occurred. Reference ID:")
+
+
+def _shown_messages(response) -> list[str]:
+    return [str(message) for message in get_messages(response.wsgi_request)]
+
+
+def _notice_lines(kind: NoticeKind, line: str | None) -> list[str]:
+    """Return the lines of the unavailable Notice of *kind*: the headline, then Kea's answer to a refusal."""
+    return [HEADLINES[kind], *([line] if line else [])]
 
 
 def _held4(*addresses: str) -> tuple[dict, list[str]]:
@@ -693,6 +745,16 @@ class TestLeaseExport(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
 
+    def test_a_failed_read_shows_the_lease_notice(self):
+        """A Kea refusal, a transport failure and a malformed reply show the shared headline and Kea's answer."""
+        for name, reply, line in READ_FAILURES:
+            with self.subTest(name):
+                self._fresh_client()
+                with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get": reply}):
+                    response = self.client.get(self._url(), {"export": "all", "by": "ip", "q": "10.0.0.5"})
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(_shown_messages(response), _notice_lines("lease", line))
+
     def test_export_with_invalid_form_redirects(self):
         """?export=all with missing q/by must redirect (not crash)."""
         # No 'q' or 'by' — form is invalid
@@ -793,8 +855,8 @@ class TestLeaseDeleteFullFlow(_ViewTestBase):
         self.assertIn("lease4-del", kea.commands())
         self.assertEqual(kea.bodies("lease4-del")[0]["arguments"], {"ip-address": "10.0.0.1"})
 
-    def test_post_confirmed_kea_error_redirects_with_error_message(self):
-        """When Kea returns an error during deletion, must redirect (not 500) and show error."""
+    def test_post_confirmed_kea_error_redirects_with_the_unconfirmed_message(self):
+        """A failure result on lease4-del can follow a deleted Lease, so it is unconfirmed (ADR 0011), not a 500."""
         record = lease_record("10.0.0.5", subnet_id=1)
         # result=1 makes the real KeaClient.command() raise KeaException (delete uses check=(0,3)).
         responses = {**LeaseDaemon(4, record).responses(), "lease4-del": {"result": 1, "text": "lease not found"}}
@@ -805,11 +867,32 @@ class TestLeaseDeleteFullFlow(_ViewTestBase):
             )
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
-        self.assertIn("Error deleting lease 10.0.0.5", str(next(iter(get_messages(response.wsgi_request)))))
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)],
+            [f"Lease 10.0.0.5: {UNCONFIRMED_RUNTIME} Kea replied: lease not found"],
+        )
+
+    def test_a_client_that_cannot_be_built_stops_the_delete_with_one_error(self):
+        """Every row would fail the same way, so the loop stops at the first one and lists the rest as not sent."""
+        save_key_without_certificate(self.server)
+        tokens = [shown_token(lease_record(address, subnet_id=1)) for address in ("10.0.0.1", "10.0.0.2", "10.0.0.3")]
+        with _lease_stub({}) as kea:
+            response = self.client.post(self._url(), {"pk": tokens, "_confirm": "1"})
+        self.assertEqual(kea.commands(), [])
+        self.assertEqual(
+            [(message.level, str(message)) for message in get_messages(response.wsgi_request)],
+            [
+                (django_messages.ERROR, f"Lease 10.0.0.1: {INVALID_SERVER_SETTINGS}"),
+                (
+                    django_messages.WARNING,
+                    "NetBox stopped at lease 10.0.0.1 and did not send the delete of 2 lease(s): 10.0.0.2, 10.0.0.3.",
+                ),
+            ],
+        )
 
     def test_post_confirmed_with_a_client_that_cannot_be_built_is_a_settings_error(self):
         """A key without a certificate is a Server setting error, not a connection failure; nothing is deleted."""
-        expected = save_key_without_certificate(self.server)
+        save_key_without_certificate(self.server)
         record = lease_record("10.0.0.1", subnet_id=1)
         with _lease_stub({}) as kea:
             response = self.client.post(self._url(), {"pk": [shown_token(record)], "_confirm": "1"})
@@ -817,7 +900,7 @@ class TestLeaseDeleteFullFlow(_ViewTestBase):
         self.assertEqual(kea.commands(), [])
         self.assertEqual(
             [str(message) for message in get_messages(response.wsgi_request)],
-            [expected],
+            [f"Lease 10.0.0.1: {INVALID_SERVER_SETTINGS}"],
         )
 
     def test_forbidden_user_gets_403(self):
@@ -1299,6 +1382,16 @@ class TestLeaseExportAll(_ViewTestBase):
 
     def _url6(self):
         return reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+
+    def test_a_failed_read_shows_the_lease_notice(self):
+        """A Kea refusal, a transport failure and a malformed reply show the shared headline and Kea's answer."""
+        for name, reply, line in READ_FAILURES:
+            with self.subTest(name):
+                self._fresh_client()
+                with _lease_stub({"lease4-get-page": reply}):
+                    response = self.client.get(self._url4(), {"export_all": "1"})
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(_shown_messages(response), _notice_lines("lease", line))
 
     def test_export_all_returns_csv(self):
         """?export_all=1 must return text/csv."""
@@ -2246,6 +2339,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
             }
             for name, readback in cases.items():
                 with self.subTest(family=family, readback=name):
+                    self._fresh_client()
                     data = {
                         "ip_address": address,
                         "hw_address": "aa:bb:cc:dd:ee:ff",
@@ -2266,8 +2360,13 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
                     self.assertEqual(kea.commands().count(f"lease{family}-add"), 1)
                     self.assertEqual(kea.commands().count(f"lease{family}-get"), 1)
                     messages = [str(message) for message in get_messages(response.wsgi_request)]
-                    self.assertTrue(any("created." in message for message in messages))
-                    self.assertTrue(any("sync failed" in message for message in messages))
+                    self.assertEqual(
+                        messages,
+                        [
+                            f"Lease for {address} created.",
+                            "Lease created but NetBox IPAM sync failed; see server logs.",
+                        ],
+                    )
                     self.assertFalse(NbIP.objects.exists())
                     self.assertFalse(IPAMOwnershipLink.objects.exists())
 
@@ -2471,7 +2570,7 @@ class TestBulkLeaseImportView(_ViewTestBase):
         in_use = {"result": 1, "text": "lease for address 10.0.0.11 already exists"}
         with _lease_stub({"lease4-add": queued({"result": 0}, in_use)}):
             response = self.client.post(self._url(version=4), self._post(csv_bytes=self._csv4(rows)))
-        self.assertEqual(response.context["result"]["created"], 1)
+        self.assertEqual(_import_counts(response)["created"], 1)
         journal = JournalEntry.objects.get(assigned_object_id=self.server.pk)
         self.assertEqual(journal.comments, "Lease added: 10.0.0.10")
         self.assertEqual(journal.created_by, self.user)
@@ -2483,11 +2582,15 @@ class TestBulkLeaseImportView(_ViewTestBase):
         with (
             _lease_stub({"lease4-add": {"result": 0}}),
             patch("extras.models.JournalEntry.objects.create", autospec=True, side_effect=OperationalError("db gone")),
-            self.assertLogs("netbox_kea.views.sync_views", level="ERROR"),
+            self.assertLogs("netbox_kea.views", level="ERROR"),
         ):
             response = self.client.post(self._url(version=4), self._post(version=4))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["result"]["created"], 1)
+        self.assertEqual(_import_counts(response)["created"], 1)
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)],
+            ["Kea applied the change, but NetBox could not write the journal entry; see server logs."],
+        )
 
     def test_post_with_no_created_lease_writes_no_journal_entry(self):
         from extras.models import JournalEntry
@@ -2535,21 +2638,32 @@ class TestBulkLeaseImportView(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands().count("lease4-add"), 3)
 
-    def test_post_partial_failure_shows_error_count(self):
-        """If some rows fail, result context shows correct created/error counts."""
+    def test_a_failure_result_is_unconfirmed_and_stops_the_import(self):
+        """A failure result can follow a stored Lease, so the row is unconfirmed and the rows after it are not sent."""
         csv_bytes = self._csv4(
             rows=[
                 "10.0.0.10,aa:bb:cc:dd:ee:01,1,3600,h1\n",
                 "10.0.0.11,aa:bb:cc:dd:ee:02,1,3600,h2\n",
+                "10.0.0.12,aa:bb:cc:dd:ee:03,1,3600,h3\n",
             ]
         )
-        # Row 1 succeeds (result 0), row 2 fails (result 1 → real client raises KeaException).
-        with _lease_stub({"lease4-add": queued({"result": 0}, {"result": 1, "text": "bad"})}):
+        with _lease_stub({"lease4-add": queued({"result": 0}, {"result": 1, "text": "bad"})}) as kea:
             response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
         self.assertEqual(response.status_code, 200)
-        result = response.context["result"]
-        self.assertEqual(result["created"], 1)
-        self.assertEqual(result["errors"], 1)
+        self.assertEqual(kea.commands(), ["lease4-add", "lease4-add"])
+        self.assertEqual(_import_counts(response), {"created": 1, "unconfirmed": 1, "not-applied": 0, "not-sent": 1})
+        self.assertEqual(
+            _import_report(response),
+            {
+                "created": ("Rows that Kea created", [("2", "10.0.0.10")]),
+                "unconfirmed": (
+                    "Row that Kea did not confirm",
+                    [("3", "10.0.0.11", f"{UNCONFIRMED_RUNTIME} Kea replied: bad")],
+                ),
+                "not-sent": ("Rows that NetBox did not send", [("4", "10.0.0.12", _IMPORT_NOT_SENT)]),
+            },
+        )
+        self.assertContains(response, "Kea did not confirm one row, so NetBox stopped there.")
 
     def test_each_created_row_sends_lease_added_without_a_read_back(self) -> None:
         received: list[dict] = []
@@ -2566,11 +2680,12 @@ class TestBulkLeaseImportView(_ViewTestBase):
                 "10.0.0.12,aa:bb:cc:dd:ee:03,1,3600,h3\n",
             ]
         )
-        refused = {"result": 1, "text": "address in use"}
+        # A connection that Kea refused is a rejection, which does not stop the import.
+        refused = _refused_connection()
         with _lease_stub({"lease4-add": queued({"result": 0}, refused, {"result": 0})}) as kea:
             response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
 
-        self.assertEqual(response.context["result"]["created"], 2)
+        self.assertEqual(_import_counts(response)["created"], 2)
         self.assertNotIn("lease4-get", kea.commands())
         self.assertEqual(
             [(str(call["creation"].address), call["lease"], call["dhcp_version"]) for call in received],
@@ -2578,6 +2693,23 @@ class TestBulkLeaseImportView(_ViewTestBase):
         )
         self.assertEqual({call["server"] for call in received}, {self.server})
         self.assertEqual({call["creation"].hostname for call in received}, {"h1", "h3"})
+
+    def test_each_created_row_sends_lease_added_before_the_next_row_goes_to_kea(self) -> None:
+        sent_before_signal: list[int] = []
+        csv_bytes = self._csv4(
+            rows=["10.0.0.10,aa:bb:cc:dd:ee:01,1,3600,h1\n", "10.0.0.11,aa:bb:cc:dd:ee:02,1,3600,h2\n"]
+        )
+        with _lease_stub(LeaseDaemon(4).responses()) as kea:
+
+            def receive(sender, **kwargs):
+                sent_before_signal.append(kea.commands().count("lease4-add"))
+
+            lease_added.connect(receive)
+            self.addCleanup(lease_added.disconnect, receive)
+            response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
+
+        self.assertEqual(_import_counts(response)["created"], 2)
+        self.assertEqual(sent_before_signal, [1, 2])
 
     def test_an_empty_kea_reply_creates_no_row_and_sends_no_signal(self) -> None:
         received: list[dict] = []
@@ -2590,12 +2722,12 @@ class TestBulkLeaseImportView(_ViewTestBase):
         with _lease_stub({"lease4-add": []}):
             response = self.client.post(self._url(version=4), self._post(version=4))
 
-        result = response.context["result"]
-        self.assertEqual((result["created"], result["errors"]), (0, 1))
+        counts = _import_counts(response)
+        self.assertEqual((counts["created"], counts["unconfirmed"]), (0, 1))
         self.assertEqual(received, [])
 
-    def test_a_kea_failure_names_the_file_line_after_comment_and_blank_lines(self):
-        """A Kea failure names the physical line of its row, so comment and blank lines count."""
+    def test_a_rejected_row_names_the_file_line_after_comment_and_blank_lines(self):
+        """A rejected row names the physical line of its row, so comment and blank lines count."""
         csv_bytes = self._csv4(
             rows=[
                 "# first lease\n",
@@ -2604,14 +2736,42 @@ class TestBulkLeaseImportView(_ViewTestBase):
                 "10.0.0.11,aa:bb:cc:dd:ee:02,1,3600,h2\n",
             ]
         )
-        with _lease_stub({"lease4-add": queued({"result": 0}, {"result": 1, "text": "address in use"})}):
+        with _lease_stub({"lease4-add": queued({"result": 0}, _refused_connection())}):
             response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
-            [(item["line"], item["address"]) for item in response.context["result"]["error_rows"]], [(5, "10.0.0.11")]
+            _import_report(response),
+            {
+                "created": ("Rows that Kea created", [("3", "10.0.0.10")]),
+                "not-applied": (
+                    "Rows that Kea did not apply",
+                    [("5", "10.0.0.11", "The change was not sent to Kea. Kea could not be reached.")],
+                ),
+            },
         )
-        self.assertContains(response, "<th>Line</th>", html=True)
-        self.assertContains(response, "<td>5</td>", html=True)
+
+    def test_the_line_and_address_columns_stay_narrow_so_the_message_takes_the_width(self):
+        csv_bytes = self._csv4(
+            rows=["10.0.0.10,aa:bb:cc:dd:ee:01,1,3600,h1\n", "10.0.0.11,aa:bb:cc:dd:ee:02,1,3600,h2\n"]
+        )
+        with _lease_stub({"lease4-add": queued({"result": 0}, _refused_connection())}):
+            response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
+        page = BeautifulSoup(response.content, "html.parser")
+        for status, narrow_columns in (("created", ["Line"]), ("not-applied", ["Line", "Address"])):
+            with self.subTest(status):
+                section = page.select_one(f'section[data-import-status="{status}"]')
+                self.assertIsNotNone(section)
+                narrow = [
+                    th.get_text(strip=True)
+                    for th in section.select("th")
+                    if "text-nowrap" in (th.get("class") or []) and "width: 1%" in th.get("style", "")
+                ]
+                self.assertEqual(narrow, narrow_columns)
+                for row in section.select("tbody tr"):
+                    cells = row.select("td")
+                    self.assertTrue(
+                        all("text-nowrap" in cell.get("class", []) for cell in cells[: len(narrow_columns)])
+                    )
 
     def test_post_empty_csv_shows_form_error(self):
         """Uploading a CSV with only a header (no data rows) returns 200 with empty result."""
@@ -2621,9 +2781,8 @@ class TestBulkLeaseImportView(_ViewTestBase):
             response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
-        result = response.context.get("result")
-        if result is not None:
-            self.assertEqual(result["created"], 0)
+        if response.context.get("result") is not None:
+            self.assertEqual(_import_counts(response)["created"], 0)
 
     def test_get_requires_login(self):
         """Unauthenticated GET redirects to login."""
@@ -2693,29 +2852,23 @@ class TestLeaseJournalEntries(_ViewTestBase):
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# _add_lease_journal error handling
+# _lease_journal_comments
 # ---------------------------------------------------------------------------
 
 
-class TestJournalHelperEdgeCases(_ViewTestBase):
-    """Unit tests for _add_lease_journal."""
+class TestJournalHelperEdgeCases(SimpleTestCase):
+    """The journal text of a Lease change."""
 
     def test_lease_journal_multiple_ips(self):
-        """_add_lease_journal with a list of IP addresses uses the 'N lease(s)' branch."""
-        from netbox_kea.views.leases import _add_lease_journal
+        """A list of IP addresses uses the 'N lease(s)' form."""
+        from netbox_kea.views.leases import _lease_journal_comments
 
-        with patch("extras.models.JournalEntry.objects.create", autospec=True) as mock_create:
-            mock_create.return_value = None
-            _add_lease_journal(
-                self.server,
-                self.user,
-                "deleted",
-                ip_addresses=["10.0.0.1", "10.0.0.2"],
-                hw_address="aa:bb:cc:dd:ee:ff",
-                hostname="host1",
-            )
-            call_kwargs = mock_create.call_args[1]
-            self.assertIn("2 lease(s)", call_kwargs["comments"])
+        comments = _lease_journal_comments(
+            "deleted", ["10.0.0.1", "10.0.0.2"], hw_address="aa:bb:cc:dd:ee:ff", hostname="host1"
+        )
+        self.assertEqual(
+            comments, "2 lease(s) deleted: 10.0.0.1, 10.0.0.2; hw-address: aa:bb:cc:dd:ee:ff; hostname: host1"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2759,6 +2912,34 @@ class TestLeaseEditGet(_ViewTestBase):
         with _lease_stub({"lease4-get": {"result": 1, "text": "err"}}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
+
+    def test_a_failed_read_shows_the_lease_target_notice(self):
+        """A Kea refusal, a transport failure and a malformed reply show the shared headline and Kea's answer."""
+        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        for name, reply, line in READ_FAILURES:
+            with self.subTest(name):
+                self._fresh_client()
+                with _lease_stub({"lease4-get": reply}):
+                    response = self.client.get(url)
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(_shown_messages(response), _notice_lines("lease_target", line))
+
+    def test_a_lease_that_cannot_be_read_shows_the_lease_target_notice_and_its_reason(self):
+        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        with _lease_stub({"lease4-get": {"result": 0, "arguments": {"hw-address": "aa:bb:cc:dd:ee:ff"}}}):
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(_shown_messages(response), [HEADLINES["lease_target"], "A required lease field is missing."])
+
+    def test_a_selection_that_is_not_a_lease_names_the_selection_and_reads_nothing(self):
+        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "not-an-address"])
+        with _lease_stub({}) as kea:
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands(), [])
+        self.assertEqual(
+            _shown_messages(response), ["not-an-address is not a DHCPv4 lease address or delegated prefix."]
+        )
 
     def test_get_lease_not_found_redirects(self):
         """result=3 (not found) in lease4 GET redirects to leases page."""
@@ -2824,11 +3005,10 @@ class TestLeaseEditPostInvalidForm(_ViewTestBase):
 
 
 class TestLeaseAddGenericException(_ViewTestBase):
-    """A transport error on lease add re-renders the form."""
+    """A transport error after the send of a lease add is unconfirmed, and its text stays out of the page."""
 
-    def test_generic_exception_rerenders_form(self):
+    def test_a_lost_reply_is_unconfirmed(self):
         url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
-        # A transport error from lease4-add must re-render the form with an error message.
         with _lease_stub({"lease4-add": requests.RequestException("unexpected crash")}):
             response = self.client.post(
                 url,
@@ -2840,9 +3020,11 @@ class TestLeaseAddGenericException(_ViewTestBase):
                     "valid_lft": "3600",
                 },
             )
-        self.assertEqual(response.status_code, 200)
-        msgs = [m.message for m in response.context["messages"]]
-        self.assertTrue(any("Failed to create lease" in m or "internal" in m.lower() for m in msgs))
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)],
+            [f"Lease 10.0.0.99: {UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable."],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3009,22 +3191,32 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         self.assertNotContains(response, "internal detail")
         self.assertContains(response, "CSV parsing failed. Check the file format and column headers.")
 
-    def test_a_client_that_cannot_be_built_is_reported_on_the_form(self):
-        """A key without a certificate makes get_client() raise ValueError; the form names the Server setting."""
+    def test_a_client_that_cannot_be_built_stops_the_import_at_the_first_row(self):
+        """A key without a certificate fails every row the same way, so the import reports it once."""
         import io
 
-        expected = save_key_without_certificate(self.server)
-        csv_file = io.BytesIO(b"ip-address,hw-address\n10.0.0.1,aa:bb:cc:00:00:01")
+        save_key_without_certificate(self.server)
+        csv_file = io.BytesIO(
+            b"ip-address,hw-address\n10.0.0.1,aa:bb:cc:00:00:01\n10.0.0.2,aa:bb:cc:00:00:02\n10.0.0.3,aa:bb:cc:00:00:03"
+        )
         csv_file.name = "leases.csv"
         with _lease_stub({}) as kea:
             response = self.client.post(self._url(), {"csv_file": csv_file})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
-        self.assertContains(response, escape(expected))
-        self.assertNotContains(response, "Failed to connect")
+        self.assertEqual(
+            _import_report(response),
+            {
+                "not-applied": ("Rows that Kea did not apply", [("2", "10.0.0.1", INVALID_SERVER_SETTINGS)]),
+                "not-sent": (
+                    "Rows that NetBox did not send",
+                    [("3", "10.0.0.2", _IMPORT_NOT_SENT), ("4", "10.0.0.3", _IMPORT_NOT_SENT)],
+                ),
+            },
+        )
 
-    def test_a_malformed_reply_body_is_an_invalid_response_row_error(self):
-        """A lease4-add body that is not a JSON list is a malformed reply; the log names the line, not its MAC."""
+    def test_a_malformed_reply_body_is_an_unconfirmed_row(self):
+        """A lease4-add body that is not a JSON list is a malformed reply; the log does not name its MAC."""
         import io
 
         for name, reply in (
@@ -3034,18 +3226,23 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
             with self.subTest(name):
                 csv_file = io.BytesIO(b"ip-address,hw-address\n10.0.0.1,aa:bb:cc:00:00:01")
                 csv_file.name = "leases.csv"
-                with _lease_stub({"lease4-add": reply}), self.assertLogs("netbox_kea.views.sync_views") as logs:
+                with _lease_stub({"lease4-add": reply}), self.assertLogs("netbox_kea.change_outcome") as logs:
                     response = self.client.post(self._url(), {"csv_file": csv_file})
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(
-                    response.context["result"]["error_rows"],
-                    [
-                        {
-                            "line": 2,
-                            "address": "10.0.0.1",
-                            "error": "Invalid response from Kea: could not parse the server reply.",
-                        }
-                    ],
+                    _import_report(response),
+                    {
+                        "unconfirmed": (
+                            "Row that Kea did not confirm",
+                            [
+                                (
+                                    "2",
+                                    "10.0.0.1",
+                                    f"{UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable.",
+                                )
+                            ],
+                        )
+                    },
                 )
                 self.assertNotIn("aa:bb:cc:00:00:01", "\n".join(logs.output))
 
@@ -3211,7 +3408,7 @@ class TestFetchOneEmptyLease(_ViewTestBase):
 
 
 class TestLeasePartialDelete(_ViewTestBase):
-    """Bulk delete continues past individual KeaExceptions."""
+    """A bulk delete sends one Runtime Change per Lease: a rejected row does not stop it, an unknown row does."""
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
@@ -3219,67 +3416,66 @@ class TestLeasePartialDelete(_ViewTestBase):
     # A followed redirect lands on the leases page, which fetches the subnet quick-select.
     _SUBNETS4 = _subnet_list(4, [])
 
-    def test_continues_after_first_delete_error(self):
-        """When the first IP fails, the second IP is still deleted."""
-        # First lease4-del fails (result 1 → KeaException), second succeeds.
-        held, selected = _held4("10.0.0.1", "10.0.0.2")
-        with _lease_stub(
-            {
-                **held,
-                "lease4-del": queued({"result": 1, "text": "not found"}, {"result": 0}),
-                "subnet4-list": self._SUBNETS4,
-            }
-        ) as kea:
-            response = self.client.post(
-                self._url(),
-                {"_confirm": "1", "pk": selected},
-                follow=True,
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(kea.commands().count("lease4-del"), 2)
+    def _messages(self, responses: dict) -> tuple[list[tuple[int, str]], list[str]]:
+        held, selected = _held4("10.0.0.1", "10.0.0.2", "10.0.0.3")
+        with _lease_stub({**held, **responses, "subnet4-list": self._SUBNETS4}) as kea:
+            response = self.client.post(self._url(), {"_confirm": "1", "pk": selected})
+        self.assertEqual(response.status_code, 302)
+        return [(message.level, str(message)) for message in get_messages(response.wsgi_request)], kea.commands()
 
-    def test_continues_after_a_malformed_delete_reply(self):
-        """A reply entry without a result fails that IP only, so the next IP is still deleted."""
-        held, selected = _held4("10.0.0.1", "10.0.0.2")
-        with _lease_stub({**held, "lease4-del": queued(["ok"], {"result": 0}), "subnet4-list": self._SUBNETS4}) as kea:
-            response = self.client.post(
-                self._url(),
-                {"_confirm": "1", "pk": selected},
-                follow=True,
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(kea.commands().count("lease4-del"), 2)
-        self.assertContains(response, "Error deleting lease 10.0.0.1: see server logs for details.")
+    def test_a_failure_result_stops_the_loop_and_writes_no_journal_entry_for_it(self):
+        """A failure result can follow a deleted Lease (ADR 0011), so NetBox stops and lists what it did not send."""
+        from extras.models import JournalEntry
+
+        shown, commands = self._messages(
+            {"lease4-del": queued({"result": 0}, {"result": 1, "text": "lease database write failed"})}
+        )
+
+        self.assertEqual(commands.count("lease4-del"), 2)
+        self.assertEqual(
+            shown,
+            [
+                (django_messages.SUCCESS, "Deleted 1 DHCPv4 lease(s): 10.0.0.1."),
+                (
+                    django_messages.WARNING,
+                    f"Lease 10.0.0.2: {UNCONFIRMED_RUNTIME} Kea replied: lease database write failed",
+                ),
+                (
+                    django_messages.WARNING,
+                    "NetBox stopped at lease 10.0.0.2 and did not send the delete of 1 lease(s): 10.0.0.3.",
+                ),
+            ],
+        )
+        (journal,) = JournalEntry.objects.filter(assigned_object_id=self.server.pk)
+        self.assertEqual(journal.comments, "Lease deleted: 10.0.0.1")
+
+    def test_a_malformed_reply_stops_the_loop(self):
+        shown, commands = self._messages({"lease4-del": queued(["ok"], {"result": 0})})
+        self.assertEqual(commands.count("lease4-del"), 1)
+        self.assertEqual(
+            [text for _level, text in shown],
+            [
+                f"Lease 10.0.0.1: {UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable.",
+                "NetBox stopped at lease 10.0.0.1 and did not send the delete of 2 lease(s): 10.0.0.2, 10.0.0.3.",
+            ],
+        )
+
+    def test_a_rejected_row_does_not_stop_the_loop(self):
+        refused = _refused_connection()
+        shown, commands = self._messages({"lease4-del": queued(refused, {"result": 0})})
+        self.assertEqual(commands.count("lease4-del"), 3)
+        self.assertEqual(
+            shown,
+            [
+                (django_messages.ERROR, "Lease 10.0.0.1: The change was not sent to Kea. Kea could not be reached."),
+                (django_messages.SUCCESS, "Deleted 2 DHCPv4 lease(s): 10.0.0.2, 10.0.0.3."),
+            ],
+        )
 
     def test_success_message_shows_count_of_deleted(self):
         """Success message reflects only the successfully deleted count."""
-        held, selected = _held4("10.0.0.1", "10.0.0.2")
-        with _lease_stub({**held, "lease4-del": {"result": 0}, "subnet4-list": self._SUBNETS4}):
-            response = self.client.post(
-                self._url(),
-                {"_confirm": "1", "pk": selected},
-                follow=True,
-            )
-        msgs = [str(m) for m in response.context["messages"]]
-        self.assertTrue(any("2" in m and "deleted" in m.lower() for m in msgs))
-
-    def test_partial_failure_shows_warning(self):
-        """When some IPs fail, a warning message about partial failure is shown."""
-        held, selected = _held4("10.0.0.1", "10.0.0.2")
-        with _lease_stub(
-            {
-                **held,
-                "lease4-del": queued({"result": 1, "text": "not found"}, {"result": 0}),
-                "subnet4-list": self._SUBNETS4,
-            }
-        ):
-            response = self.client.post(
-                self._url(),
-                {"_confirm": "1", "pk": selected},
-                follow=True,
-            )
-        msgs = [str(m) for m in response.context["messages"]]
-        self.assertTrue(any("failed" in m.lower() or "error" in m.lower() for m in msgs))
+        shown, _commands = self._messages({"lease4-del": {"result": 0}})
+        self.assertEqual(shown, [(django_messages.SUCCESS, "Deleted 3 DHCPv4 lease(s): 10.0.0.1, 10.0.0.2, 10.0.0.3.")])
 
 
 # ---------------------------------------------------------------------------
@@ -3368,47 +3564,37 @@ class TestHtmxHandlerExceptNarrowing(_ViewTestBase):
 
 
 class TestLeaseDeleteLoopTransportErrors(_ViewTestBase):
-    """Bulk delete loop must continue when RequestException/ValueError raised for one IP."""
+    """A transport error after the send of one delete stops the loop; the error text never reaches the page."""
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
 
-    _SUBNETS4 = _subnet_list(4, [])
+    def test_a_lost_or_unreadable_reply_stops_the_loop(self):
+        for name, failure in (
+            ("reset", requests.ConnectionError("down")),
+            ("value error", ValueError("bad JSON")),
+        ):
+            self._fresh_client()
 
-    def test_request_exception_continues_loop(self):
-        import requests as _requests
+            def del_resp(body, failure=failure):
+                if body["arguments"]["ip-address"] == "10.0.0.1":
+                    return failure
+                return {"result": 0}
 
-        # First IP's delete raises a transport error; the loop must still delete the second.
-        def del_resp(body):
-            if body["arguments"]["ip-address"] == "10.0.0.1":
-                return _requests.ConnectionError("down")
-            return {"result": 0}
-
-        held, selected = _held4("10.0.0.1", "10.0.0.2")
-        with _lease_stub({**held, "lease4-del": del_resp, "subnet4-list": self._SUBNETS4}) as kea:
-            response = self.client.post(
-                self._url(),
-                {"pk": selected, "_confirm": "1"},
-                follow=True,
+            held, selected = _held4("10.0.0.1", "10.0.0.2")
+            with self.subTest(name), _lease_stub({**held, "lease4-del": del_resp}) as kea:
+                response = self.client.post(self._url(), {"pk": selected, "_confirm": "1"})
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(kea.commands().count("lease4-del"), 1)
+            shown = [str(message) for message in get_messages(response.wsgi_request)]
+            self.assertEqual(
+                shown,
+                [
+                    f"Lease 10.0.0.1: {UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable.",
+                    "NetBox stopped at lease 10.0.0.1 and did not send the delete of 1 lease(s): 10.0.0.2.",
+                ],
             )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(kea.commands().count("lease4-del"), 2)
-
-    def test_value_error_continues_loop(self):
-        def del_resp(body):
-            if body["arguments"]["ip-address"] == "10.0.0.1":
-                return ValueError("bad JSON")
-            return {"result": 0}
-
-        held, selected = _held4("10.0.0.1", "10.0.0.2")
-        with _lease_stub({**held, "lease4-del": del_resp, "subnet4-list": self._SUBNETS4}) as kea:
-            response = self.client.post(
-                self._url(),
-                {"pk": selected, "_confirm": "1"},
-                follow=True,
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(kea.commands().count("lease4-del"), 2)
+            self.assertNotIn("bad JSON", " ".join(shown))
 
 
 class TestLeaseExportTransportErrors(_ViewTestBase):
@@ -3429,14 +3615,6 @@ class TestLeaseExportTransportErrors(_ViewTestBase):
             )
         self.assertIn(response.status_code, [200, 302])
 
-    def test_value_error_redirects_with_error(self):
-        with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get-all": ValueError("bad JSON")}):
-            response = self.client.get(
-                self._url(),
-                {"export": "1", "by": "subnet_id", "q": "1"},
-            )
-        self.assertIn(response.status_code, [200, 302])
-
 
 # ---------------------------------------------------------------------------
 # F3: Single-lease GET — transport errors
@@ -3450,14 +3628,6 @@ class TestSingleLeaseGetTransportErrors(_ViewTestBase):
         """requests.RequestException from lease-get must redirect with error message."""
         url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
         with _lease_stub({"lease4-get": requests.ConnectionError("down")}):
-            response = self.client.get(url)
-        self.assertEqual(response.status_code, 302)
-        self.assertIn(str(self.server.pk), response.url)
-
-    def test_value_error_redirects(self):
-        """ValueError from lease-get must redirect with error message."""
-        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
-        with _lease_stub({"lease4-get": ValueError("bad JSON")}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self.assertIn(str(self.server.pk), response.url)
@@ -3482,21 +3652,28 @@ class TestLeaseEditPostTransportErrors(_ViewTestBase):
         self.assertIn(str(self.server.pk), response["Location"])
         return [str(message) for message in get_messages(response.wsgi_request)]
 
-    def test_request_exception_redirects(self):
-        """requests.RequestException from lease_update must redirect."""
-        # lease_update's first command is lease{v}-get; raising there surfaces the transport error.
-        messages = self._post({"lease4-get": requests.ConnectionError("down")})
-        self.assertEqual(messages, ["Failed to update lease: see server logs for details."])
+    def test_a_failed_read_before_the_update_is_not_sent(self):
+        """The fresh read of the shown Lease comes before the update, so its failure means nothing was sent."""
+        for failure in (requests.ConnectionError("down"), ValueError("bad value")):
+            with self.subTest(type(failure).__name__):
+                self._fresh_client()
+                messages = self._post({"lease4-get": failure})
+                self.assertEqual(
+                    messages,
+                    [
+                        (
+                            "Lease 10.0.0.1: The change was not sent to Kea."
+                            " Kea did not return a usable reply to the read before the change."
+                        )
+                    ],
+                )
 
-    def test_value_error_redirects(self):
-        """ValueError from lease_update must redirect."""
-        messages = self._post({"lease4-get": ValueError("bad value")})
-        self.assertEqual(messages, ["Failed to update lease: see server logs for details."])
-
-    def test_malformed_reply_redirects(self):
-        """A reply entry without a result from lease_update must redirect (no 500)."""
+    def test_a_malformed_reply_to_the_update_is_unconfirmed(self):
+        """A reply entry without a result from lease4-update can follow an applied update (no 500)."""
         messages = self._post({**LeaseDaemon(4, self._RECORD).responses(), "lease4-update": ["ok"]})
-        self.assertEqual(messages, ["Failed to update lease: see server logs for details."])
+        self.assertEqual(
+            messages, [f"Lease 10.0.0.1: {UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable."]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3505,58 +3682,62 @@ class TestLeaseEditPostTransportErrors(_ViewTestBase):
 
 
 class TestLeaseAddValueError(_ViewTestBase):
-    """Lease add POST must handle ValueError gracefully."""
+    """An unreadable reply to a Lease add is unconfirmed, never an HTTP 500, and writes no journal entry."""
 
-    def test_value_error_rerenders_form(self):
-        """ValueError from lease_add must not propagate as 500."""
-        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
-        with _lease_stub({"lease4-add": ValueError("bad value")}):
-            response = self.client.post(url, {"ip_address": "10.0.0.99", "hw_address": "aa:bb:cc:00:00:99"})
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Failed to create lease: invalid response from Kea.")
+    def test_an_unreadable_reply_is_unconfirmed(self):
+        from extras.models import JournalEntry
 
-    def test_malformed_reply_rerenders_form(self):
-        """A reply entry without a result from lease_add must re-render the form (no 500)."""
         url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
-        with _lease_stub({"lease4-add": ["ok"]}):
-            response = self.client.post(url, {"ip_address": "10.0.0.99", "hw_address": "aa:bb:cc:00:00:99"})
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "Failed to create lease: invalid response from Kea.")
+        for name, reply in (("value error", ValueError("bad value")), ("malformed", ["ok"])):
+            self._fresh_client()
+            with self.subTest(name), _lease_stub({"lease4-add": reply}) as kea:
+                response = self.client.post(url, {"ip_address": "10.0.0.99", "hw_address": "aa:bb:cc:00:00:99"})
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(kea.commands(), ["lease4-add"])
+            self.assertEqual(
+                [str(message) for message in get_messages(response.wsgi_request)],
+                [f"Lease 10.0.0.99: {UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable."],
+            )
+        self.assertFalse(JournalEntry.objects.filter(assigned_object_id=self.server.pk).exists())
 
 
 # ---------------------------------------------------------------------------
-# F9: _add_lease_journal bare except narrowing
+# F9: the journal entry of an applied Lease change catches database and validation errors only
 # ---------------------------------------------------------------------------
 
 
 class TestLeaseJournalExceptionNarrowing(_ViewTestBase):
-    """_add_lease_journal except must only catch DB errors, not all exceptions."""
+    """A database error of the journal entry after an applied Lease add does not fail the request."""
 
-    @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
-    def test_database_error_does_not_fail_request(self, mock_journal):
-        """DatabaseError from _add_lease_journal must be caught; the lease is still reported created."""
+    def _post_with_failing_journal(self, error: Exception, address: str, hw_address: str):
+        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+        with _failing_journal(error), _lease_stub(LeaseDaemon(4).responses()):
+            return self.client.post(url, {"ip_address": address, "hw_address": hw_address})
+
+    def test_database_error_does_not_fail_request(self):
         from django.db import DatabaseError
 
-        mock_journal.side_effect = DatabaseError("DB error")
-        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
-        with _lease_stub(LeaseDaemon(4).responses()):
-            response = self.client.post(url, {"ip_address": "10.0.0.55", "hw_address": "aa:bb:cc:00:00:55"})
+        response = self._post_with_failing_journal(DatabaseError("DB error"), "10.0.0.55", "aa:bb:cc:00:00:55")
         self.assertEqual(response.status_code, 302)
-        mock_journal.assert_called_once()
-        self.assertIn("Lease for 10.0.0.55 created.", [str(m) for m in get_messages(response.wsgi_request)])
+        shown = [str(m) for m in get_messages(response.wsgi_request)]
+        self.assertIn("Lease for 10.0.0.55 created.", shown)
+        self.assertIn("Kea applied the change, but NetBox could not write the journal entry; see server logs.", shown)
 
-    @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
-    def test_operational_error_does_not_fail_request(self, mock_journal):
-        """OperationalError from _add_lease_journal must be caught; the lease is still reported created."""
+    def test_operational_error_does_not_fail_request(self):
         from django.db import OperationalError
 
-        mock_journal.side_effect = OperationalError("DB lock")
-        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
-        with _lease_stub(LeaseDaemon(4).responses()):
-            response = self.client.post(url, {"ip_address": "10.0.0.56", "hw_address": "aa:bb:cc:00:00:56"})
+        response = self._post_with_failing_journal(OperationalError("DB lock"), "10.0.0.56", "aa:bb:cc:00:00:56")
         self.assertEqual(response.status_code, 302)
-        mock_journal.assert_called_once()
         self.assertIn("Lease for 10.0.0.56 created.", [str(m) for m in get_messages(response.wsgi_request)])
+
+    def test_validation_error_does_not_fail_request(self):
+        from django.core.exceptions import ValidationError
+
+        response = self._post_with_failing_journal(ValidationError("refused"), "10.0.0.57", "aa:bb:cc:00:00:57")
+        self.assertEqual(response.status_code, 302)
+        shown = [str(m) for m in get_messages(response.wsgi_request)]
+        self.assertIn("Lease for 10.0.0.57 created.", shown)
+        self.assertIn("Kea applied the change, but NetBox could not write the journal entry; see server logs.", shown)
 
 
 # ---------------------------------------------------------------------------
@@ -3684,39 +3865,28 @@ class TestLeaseAddPostErrors(_ViewTestBase):
     def _valid_form(self):
         return {"ip_address": "10.0.0.1", "subnet_id": "1", "hw_address": "aa:bb:cc:00:00:01", "valid_lft": "3600"}
 
-    def test_kea_exception_rerenders_form(self):
-        """KeaException from lease_add re-renders form with error."""
-        # result=1 on lease4-add makes the real client raise KeaException.
-        with _lease_stub({"lease4-add": {"result": 1, "text": "dup"}}):
-            response = self.client.post(self._url(), self._valid_form())
-        self.assertEqual(response.status_code, 200)
+    def test_a_failure_result_is_unconfirmed_with_kea_text(self):
+        """A SQL backend can store the Lease and still answer a failure result, so Kea's text goes with a check."""
+        for reply in ({"result": 1, "text": "dup"}, {"result": 4, "text": "IPv4 lease already exists."}):
+            self._fresh_client()
+            with self.subTest(result=reply["result"]), _lease_stub({"lease4-add": reply}):
+                response = self.client.post(self._url(), self._valid_form())
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(
+                [str(message) for message in get_messages(response.wsgi_request)],
+                [f"Lease 10.0.0.1: {UNCONFIRMED_RUNTIME} Kea replied: {reply['text']}"],
+            )
 
-    def test_a_conflict_shows_a_readable_message(self):
-        """Kea's lease_cmds answers result 4 (CONTROL_RESULT_CONFLICT) when the lease already exists."""
-        with _lease_stub({"lease4-add": {"result": 4, "text": "IPv4 lease already exists."}}):
+    def test_a_refused_connection_rerenders_the_form(self):
+        """Nothing reached Kea, so the operator can correct the form and send it again."""
+        refused = _refused_connection()
+        with _lease_stub({"lease4-add": refused}):
             response = self.client.post(self._url(), self._valid_form())
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             [str(message) for message in get_messages(response.wsgi_request)],
-            [
-                (
-                    "The change conflicts with the current state of the Kea server: for example, the lease already"
-                    " exists, or another request changed it at the same time. Check the current state and try again."
-                )
-            ],
+            ["Lease 10.0.0.1: The change was not sent to Kea. Kea could not be reached."],
         )
-
-    def test_request_exception_rerenders_form(self):
-        """RequestException from lease_add re-renders form with error."""
-        with _lease_stub({"lease4-add": requests.ConnectionError("down")}):
-            response = self.client.post(self._url(), self._valid_form())
-        self.assertEqual(response.status_code, 200)
-
-    def test_value_error_rerenders_form(self):
-        """ValueError from lease_add re-renders form with error."""
-        with _lease_stub({"lease4-add": ValueError("bad JSON")}):
-            response = self.client.post(self._url(), self._valid_form())
-        self.assertEqual(response.status_code, 200)
 
 
 # ---------------------------------------------------------------------------
@@ -3733,14 +3903,15 @@ class TestLeaseAddSideEffectErrors(_ViewTestBase):
     def _valid_form(self):
         return {"ip_address": "10.0.0.1", "subnet_id": "1", "hw_address": "aa:bb:cc:00:00:01", "valid_lft": "3600"}
 
-    @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
-    def test_journal_db_error_still_succeeds(self, mock_journal):
+    def test_journal_db_error_still_succeeds(self):
         """DatabaseError in journal entry creation still redirects successfully."""
         from django.db import DatabaseError
 
-        mock_journal.side_effect = DatabaseError("DB error")
         subnets = _subnet_list(4, [])
-        with _lease_stub({**LeaseDaemon(4).responses(), "subnet4-list": subnets}):
+        with (
+            _failing_journal(DatabaseError("DB error")),
+            _lease_stub({**LeaseDaemon(4).responses(), "subnet4-list": subnets}),
+        ):
             response = self.client.post(self._url(), self._valid_form(), follow=True)
         self.assertEqual(response.status_code, 200)
 
@@ -3926,6 +4097,13 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
             [f"leases[{index}] (record): Kea returned a lease that is not an object." for index in range(3)],
         )
 
+    def test_a_refused_search_shows_keas_answer_under_the_headline(self):
+        with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get-by-hw-address": READ_FAILURES[0][1]}):
+            response = self._htmx_get(self._url(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
+        _assert_lease_read_failed(self, response)
+        alert = BeautifulSoup(response.content, "html.parser").select_one(".alert-danger")
+        self.assertEqual([item.get_text() for item in alert.select("li")], [READ_FAILURES[0][2]])
+
     def test_multiple_result_none_arguments_renders_error(self):
         """Multiple-result with None arguments must trigger RuntimeError."""
         resp = {"result": 0, "arguments": None}
@@ -4003,31 +4181,9 @@ class TestLeaseDeletePartialFailure(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
 
-    def test_partial_failure_shows_mixed_messages(self):
-        """Some leases succeed, others fail with KeaException → mixed messages."""
-        # First lease4-del succeeds (result 0), second fails (result 1 → KeaException).
-        held, selected = _held4("10.0.0.1", "10.0.0.2")
-        with _lease_stub({**held, "lease4-del": queued({"result": 0}, {"result": 1, "text": "lease not found"})}):
-            response = self.client.post(
-                self._url(),
-                {"pk": selected, "_confirm": "1"},
-            )
-        self.assertEqual(response.status_code, 302)
-        # Follow redirect to check messages
-        msgs = list(response.wsgi_request._messages)
-        msg_texts = [str(m) for m in msgs]
-        # Should have success message for 1 lease + error for 1 + warning about failures
-        has_success = any("Deleted 1" in t for t in msg_texts)
-        has_error = any("Error deleting" in t for t in msg_texts)
-        has_warning = any("Failed to delete" in t for t in msg_texts)
-        self.assertTrue(has_success, f"Expected success message, got: {msg_texts}")
-        self.assertTrue(has_error, f"Expected error message, got: {msg_texts}")
-        self.assertTrue(has_warning, f"Expected warning message, got: {msg_texts}")
+    def test_a_lost_reply_after_an_applied_row_reports_both(self):
+        """The applied row is reported and journaled; the unconfirmed row is reported without its error text."""
 
-    def test_partial_failure_request_exception(self):
-        """RequestException on some leases must show per-lease error messages."""
-
-        # First lease4-del succeeds; the second raises a transport error.
         def del_resp(body):
             if body["arguments"]["ip-address"] == "10.0.0.2":
                 return requests.RequestException("timeout")
@@ -4035,24 +4191,22 @@ class TestLeaseDeletePartialFailure(_ViewTestBase):
 
         held, selected = _held4("10.0.0.1", "10.0.0.2")
         with _lease_stub({**held, "lease4-del": del_resp}):
-            response = self.client.post(
-                self._url(),
-                {"pk": selected, "_confirm": "1"},
-            )
+            response = self.client.post(self._url(), {"pk": selected, "_confirm": "1"})
         self.assertEqual(response.status_code, 302)
-        msgs = list(response.wsgi_request._messages)
-        msg_texts = [str(m) for m in msgs]
-        has_error = any("see server logs" in t for t in msg_texts)
-        self.assertTrue(has_error, f"Expected transport error message, got: {msg_texts}")
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)],
+            [
+                "Deleted 1 DHCPv4 lease(s): 10.0.0.1.",
+                f"Lease 10.0.0.2: {UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable.",
+            ],
+        )
 
-    @patch("netbox_kea.views.leases._add_lease_journal", autospec=True)
-    def test_journal_database_error_still_completes(self, mock_journal):
+    def test_journal_database_error_still_completes(self):
         """DatabaseError from journal creation must not prevent deletion from completing."""
         from django.db import DatabaseError
 
-        mock_journal.side_effect = DatabaseError("table locked")
         held, selected = _held4("10.0.0.1")
-        with _lease_stub({**held, "lease4-del": {"result": 0}}):
+        with _failing_journal(DatabaseError("table locked")), _lease_stub({**held, "lease4-del": {"result": 0}}):
             response = self.client.post(
                 self._url(),
                 {"pk": selected, "_confirm": "1"},
@@ -4064,20 +4218,26 @@ class TestLeaseDeletePartialFailure(_ViewTestBase):
         has_success = any("Deleted 1" in t for t in msg_texts)
         self.assertTrue(has_success, f"Expected success message despite journal error, got: {msg_texts}")
 
-    def test_all_leases_fail_shows_only_errors(self):
-        """When every lease deletion fails, no success message should appear."""
-        # Every lease4-del returns result 1 → KeaException for each IP.
+    def test_an_unconfirmed_first_delete_stops_without_success(self):
+        """An unconfirmed first delete stops the loop and shows no success message."""
         held, selected = _held4("10.0.0.1", "10.0.0.2")
-        with _lease_stub({**held, "lease4-del": {"result": 1, "text": "not found"}}):
+        with _lease_stub({**held, "lease4-del": {"result": 1, "text": "not found"}}) as kea:
             response = self.client.post(
                 self._url(),
                 {"pk": selected, "_confirm": "1"},
             )
         self.assertEqual(response.status_code, 302)
-        msgs = list(response.wsgi_request._messages)
-        msg_texts = [str(m) for m in msgs]
-        has_success = any("Deleted" in t and "0" not in t for t in msg_texts)
-        self.assertFalse(has_success, f"Should not have success message when all fail, got: {msg_texts}")
+        self.assertEqual(kea.commands().count("lease4-del"), 1)
+        self.assertEqual(
+            [(message.level, str(message)) for message in get_messages(response.wsgi_request)],
+            [
+                (django_messages.WARNING, f"Lease 10.0.0.1: {UNCONFIRMED_RUNTIME} Kea replied: not found"),
+                (
+                    django_messages.WARNING,
+                    "NetBox stopped at lease 10.0.0.1 and did not send the delete of 1 lease(s): 10.0.0.2.",
+                ),
+            ],
+        )
 
 
 class TestFetchOneMacValueError(_ViewTestBase):

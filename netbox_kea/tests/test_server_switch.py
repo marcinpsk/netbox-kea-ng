@@ -41,7 +41,7 @@ class TestServerSwitch(_ViewTestBase):
                     **headers,
                 },
             )
-        self.assertContains(response, "Failed to query server")
+        self.assertContains(response, "Failed to load Leases from Kea.")
         self.assertIn("HX-Replace-Url", response.headers)
         self.assertNotIn("HX-Push-Url", response.headers)
 

@@ -2,13 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 import ipaddress
 import logging
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any, Literal
 from urllib.parse import urlencode
 
-import requests
 from django.contrib import messages
 from django.core import signing
 from django.core.exceptions import BadRequest, ValidationError
@@ -19,11 +16,11 @@ from django.urls import reverse
 from django.views import View
 from netbox.views import generic
 
-from .. import forms, subnet_catalogue
+from .. import config_write, event_scope, forms, subnet_catalogue
+from ..config_write import ReservationChangeOutcome
 from ..constants import Family, IPAddressValue
 from ..dhcp_options import DHCPOption
 from ..ipam_reconciliation import RESERVATION, claim, claim_permissions
-from ..kea import KeaClient, KeaException
 from ..models import Server
 from ..pools import addresses_in_pools
 from ..published_name import published_name, stored_hostname
@@ -38,18 +35,23 @@ from ..reservations import (
     ReservationChange,
     ReservationConflict,
     ReservationIdentity,
-    ReservationMutationResult,
     SetValue,
     Unchanged,
     reservation_fingerprint,
     reservation_identifier_types,
 )
 from ..signals import reservation_created, reservation_deleted, reservation_updated
-from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, MutationScope, SubnetIdentity, VerifiedSubnet
+from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, SubnetIdentity, VerifiedSubnet
 from ..sync_permissions import sync_gate
-from ..utilities import kea_error_hint
-from ._base import _client_settings_error, _KeaChangeMixin, _safe_return_url
-from .notices import notice, show_notices
+from ._base import (
+    _client_settings_refusal,
+    _journal_applied,
+    _KeaChangeMixin,
+    _run_change,
+    _safe_return_url,
+    _signal_applied,
+)
+from .notices import Notice, failed_load, load_target, notice, show_notices
 from .reservations import (
     _RESERVATIONS_TAB,
     _build_reservation_options_formset,
@@ -61,6 +63,16 @@ from .workspace import ServerFamilyMixin
 logger = logging.getLogger(__name__)
 
 _FINGERPRINT_SALT = "netbox_kea.reservation-managed-facts"
+
+_VERIFICATION_FAILED = "Kea applied the change, but NetBox Kea could not verify the final Reservation."
+
+ReservationAction = Literal["created", "updated", "deleted"]
+
+_SIGNALS = {
+    "created": (reservation_created, "reservation_created"),
+    "updated": (reservation_updated, "reservation_updated"),
+    "deleted": (reservation_deleted, "reservation_deleted"),
+}
 
 
 def _warn_addresses_in_pools(
@@ -247,7 +259,7 @@ def _hostname_change(
                 "A Pool of the Subnet sets the DDNS qualifying suffix, so the published name depends on the address."
                 " Save an address first, then change the hostname."
             )
-    # The token holds no suffix when the form showed no hostname; reservation_change() refuses a changed Reservation.
+    # The token holds no suffix when the form showed no hostname; edit_reservation() refuses a changed Reservation.
     if current.hostname and shown_suffix is not None and shown_suffix != _shown_suffix(current, catalogue):
         raise ReservationConflict("The DDNS qualifying suffix of the Subnet changed after the edit form was opened.")
     suffix = _entered_suffix(catalogue, _in_subnet_scope(current).subnet, addresses)
@@ -302,125 +314,156 @@ def _identity_from_request(request: HttpRequest, version: Family) -> Reservation
         raise BadRequest(f"Invalid DHCPv{version} Reservation Identity.") from exc
 
 
-def _read_reservation_target(
+def _identity_label(identity: ReservationIdentity) -> str:
+    """Return how a message names the Reservation with *identity*."""
+    return f"{identity.identifier_type} {identity.value}"
+
+
+def _exact_reservation(
     server: Server,
     version: Family,
     subnet: VerifiedSubnet | None,
     catalogue: CatalogueSnapshot,
     identity: ReservationIdentity,
-) -> tuple[Reservation, KeaClient, CatalogueSnapshot]:
+) -> Reservation:
     """Read one exact Reservation within a verified Subnet."""
     if subnet is None:
         raise Http404("Reservation Subnet not found.")
     scope = InSubnetReservationScope(subnet.identity)
-    client = server.get_client(version=version)
-    reservation = client.reservation_by_identity(version, catalogue, scope, identity)
+    with server.get_client(version=version) as client:
+        reservation = client.reservation_by_identity(version, catalogue, scope, identity)
     if reservation is None:
         raise Http404("Reservation not found.")
-    return reservation, client, catalogue
-
-
-@contextmanager
-def _reservation_target_scope(
-    server: Server,
-    version: Family,
-    subnet_id: int,
-    identity: ReservationIdentity,
-) -> Iterator[tuple[Reservation, KeaClient, CatalogueSnapshot]]:
-    """Keep one Reservation target and its Catalogue Snapshot live through mutation."""
-    with MutationScope(server, version) as mutation_scope:
-        subnet = mutation_scope.find_by_id(subnet_id)
-        catalogue = mutation_scope.snapshot
-        if catalogue is None:
-            raise RuntimeError("The Subnet Catalogue is unavailable.")
-        yield _read_reservation_target(server, version, subnet, catalogue, identity)
-
-
-def _load_target(
-    server: Server,
-    version: Family,
-    subnet_id: int,
-    identity: ReservationIdentity,
-) -> Reservation:
-    """Return one live Reservation without invalidating the display snapshots."""
-    observation = subnet_catalogue.read_identity(server, version)
-    subnet = observation.find_by_id(subnet_id)
-    reservation, _client, _catalogue = _read_reservation_target(server, version, subnet, observation.snapshot, identity)
     return reservation
 
 
-def _journal_mutation(
+def _live_target(
+    server: Server, version: Family, subnet_id: int, identity: ReservationIdentity
+) -> tuple[Reservation, CatalogueSnapshot] | Notice:
+    """Return one live Reservation and the Catalogue with configuration facts in which its Subnet is verified.
+
+    Return the Catalogue Notice when the live Catalogue cannot confirm the Subnet.
+    """
+    with subnet_catalogue.mutation(server, version) as scope:
+        catalogue = scope.snapshot
+        if catalogue is None:
+            raise TypeError("An entered mutation scope holds its Catalogue.")
+        try:
+            subnet = scope.find_by_id(subnet_id)
+        except CatalogueUnavailable:
+            return failed_load(catalogue)
+    return _exact_reservation(server, version, subnet, catalogue, identity), catalogue
+
+
+def _read_reservation_target(
     server: Server,
-    user: Any,
-    action: str,
-    reservation: Reservation,
-) -> None:
+    version: Family,
+    subnet_id: int,
+    identity: ReservationIdentity,
+) -> Reservation | Notice:
+    """Return one live Reservation without invalidating the display snapshots.
+
+    Return the Catalogue Notice when the ``subnet{v}-list`` read cannot confirm the Subnet.
+    """
+    observation = subnet_catalogue.read_identity(server, version)
     try:
-        from extras.models import JournalEntry
-
-        addresses = ", ".join(str(address) for address in reservation.addresses) or "no address"
-        JournalEntry.objects.create(
-            assigned_object=server,
-            created_by=user,
-            kind="info",
-            comments=(
-                f"Reservation {action}: {reservation.identity.identifier_type} "
-                f"{reservation.identity.value}; {addresses}"
-            ),
-        )
-    except (ImportError, DatabaseError, ValidationError):
-        logger.exception("Could not record the confirmed Reservation mutation in the journal")
+        subnet = observation.find_by_id(subnet_id)
+    except CatalogueUnavailable:
+        return failed_load(observation.snapshot)
+    return _exact_reservation(server, version, subnet, observation.snapshot, identity)
 
 
-def _confirmed_side_effects(
+def _target_or_redirect(
     request: HttpRequest,
     server: Server,
-    action: Literal["created", "updated", "deleted"],
-    result: ReservationMutationResult,
-    catalogue: CatalogueSnapshot,
+    version: Family,
+    subnet_id: int,
+    identity: ReservationIdentity,
+    return_url: str,
+    *shown: Notice | None,
+) -> Reservation | HttpResponse:
+    """Load the Reservation to change, or show the Notice of the failed load with *shown* and redirect."""
+    loaded = load_target(
+        server, "reservation_target", lambda: _read_reservation_target(server, version, subnet_id, identity)
+    )
+    if isinstance(loaded, Notice):
+        show_notices(request, loaded, *shown)
+        return redirect(return_url)
+    return loaded
+
+
+def _record_applied(
+    request: HttpRequest, server: Server, action: ReservationAction, outcome: ReservationChangeOutcome
+) -> None:
+    """Write the journal entry and send the signal of a Reservation change that Kea applied."""
+    reservation = outcome.intended or outcome.previous
+    if reservation is None:
+        raise ValueError("An applied Reservation change needs the Reservation before or after it.")
+    addresses = ", ".join(str(address) for address in reservation.addresses) or "no address"
+    _journal_applied(request, server, f"Reservation {action}: {_identity_label(reservation.identity)}; {addresses}")
+    signal, name = _SIGNALS[action]
+    _signal_applied(
+        request,
+        signal,
+        name,
+        server=server,
+        before=outcome.previous,
+        after=outcome.intended,
+        dhcp_version=reservation.family,
+    )
+
+
+def _after_applied(
+    request: HttpRequest,
+    server: Server,
+    action: ReservationAction,
+    outcome: ReservationChangeOutcome,
+    *,
     sync_to_netbox: bool = False,
 ) -> None:
-    reservation = result.intended or result.previous
-    if reservation is None:
-        raise RuntimeError("A confirmed Reservation mutation requires a before or after record.")
-    _journal_mutation(server, request.user, action, reservation)
-    signal = {
-        "created": reservation_created,
-        "updated": reservation_updated,
-        "deleted": reservation_deleted,
-    }[action]
-    signal.send_robust(
-        sender=None,
-        server=server,
-        before=result.previous,
-        after=result.intended,
-        dhcp_version=reservation.family,
-        request=request,
-    )
-    if result.persistence == "failed":
-        messages.warning(
-            request,
-            " ".join(("Kea applied the change, but could not persist it to disk.", *result.persistence_diagnostics)),
-        )
-    elif result.persistence == "not-requested":
+    """Run the side effects of a Reservation change that Kea applied. A failed side effect shows a separate error."""
+    _record_applied(request, server, action, outcome)
+    if outcome.persistence == "not-requested":
         messages.info(request, "Kea applied the change. Configuration persistence is disabled for this server.")
-    if sync_to_netbox and result.intended is not None and not result.intended.addresses:
+    if sync_to_netbox and outcome.intended is not None:
+        _sync_to_netbox(request, server, action, outcome.intended, outcome.catalogue)
+    if outcome.verification == "failed":
+        messages.warning(request, _VERIFICATION_FAILED)
+
+
+def _sync_to_netbox(
+    request: HttpRequest,
+    server: Server,
+    action: ReservationAction,
+    reservation: Reservation,
+    catalogue: CatalogueSnapshot,
+) -> None:
+    """Claim the addresses of an applied Reservation in NetBox IPAM, when the manual Sync rule allows it."""
+    if not reservation.addresses:
         messages.info(request, f"Reservation {action}. Nothing to sync to NetBox because it reserves no IP address.")
-    elif sync_to_netbox and result.intended is not None:
-        gate = sync_gate(request.user, claim_permissions(RESERVATION))
-        if not gate.allowed:
-            logger.warning("User %r requested a Reservation IPAM sync that the manual Sync rule refuses", request.user)
-            messages.warning(request, f"Reservation {action}, but it was not synced to NetBox. {gate.reason}")
-        else:
-            try:
-                outcome = claim(server, reservation.family, [result.intended], force=True, catalogue=catalogue)
-                if any(not address.synchronized for address in outcome.addresses.values()):
-                    messages.warning(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
-            except (DatabaseError, ValidationError, ValueError):
-                logger.exception("Could not synchronize a confirmed Reservation mutation to NetBox IPAM")
-                messages.warning(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
-    if result.verification == "failed":
-        messages.warning(request, "Kea applied the change, but NetBox Kea could not verify the final Reservation.")
+        return
+    gate = sync_gate(request.user, claim_permissions(RESERVATION))
+    if not gate.allowed:
+        logger.warning("User %r requested a Reservation IPAM sync that the manual Sync rule refuses", request.user)
+        messages.warning(request, f"Reservation {action}, but it was not synced to NetBox. {gate.reason}")
+        return
+    try:
+        outcome = claim(server, reservation.family, [reservation], force=True, catalogue=catalogue)
+    except event_scope.EventDispatchError:
+        # The sync committed after Kea applied the Reservation, so the failed dispatch must not end the request.
+        logger.exception("The events of the NetBox IPAM sync of a Reservation could not be dispatched")
+        messages.error(
+            request,
+            f"Reservation {action}, and NetBox IPAM sync saved it, but NetBox could not dispatch the events of the"
+            " sync; see server logs.",
+        )
+        return
+    except (DatabaseError, ValidationError, ValueError, RuntimeError):
+        logger.exception("Could not synchronize an applied Reservation change to NetBox IPAM")
+        messages.error(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
+        return
+    if any(not address.synchronized for address in outcome.addresses.values()):
+        messages.warning(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
 
 
 def _change(current: Any, submitted: Any, empty: Any):
@@ -515,10 +558,8 @@ class _ReservationMutationView(_KeaChangeMixin, ServerFamilyMixin, generic.Objec
 
     def _mutation_capabilities(self, request: HttpRequest, server: Server) -> ReservationCapabilities | HttpResponse:
         """Return the live confirmed mutation capabilities, or the response that refuses the mutation."""
-        try:
-            server.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(server, exc))
+        if refusal := _client_settings_refusal(server, self.dhcp_version):
+            messages.error(request, refusal)
             return redirect(self._return_url(server))
         capabilities = _live_capabilities(server, self.dhcp_version)
         if capabilities is None or not capabilities.mutation_available:
@@ -573,11 +614,9 @@ class _ReservationAddView(_ReservationMutationView):
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        try:
-            server.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(server, exc))
-            capabilities = None
+        capabilities = None
+        if refusal := _client_settings_refusal(server, self.dhcp_version):
+            messages.error(request, refusal)
         else:
             capabilities = _display_capabilities(server, self.dhcp_version)
         snapshot = subnet_catalogue.display(server, self.dhcp_version)
@@ -607,28 +646,39 @@ class _ReservationAddView(_ReservationMutationView):
         form = self._form(server, capabilities, data=request.POST)
         options_formset, options_valid = _build_reservation_options_formset(request.POST)
         if form.is_valid() and options_valid:
+            cleaned_data = form.cleaned_data
             try:
-                result, catalogue = self._create(
-                    request, server, form.cleaned_data, _options_from_formset(options_formset)
-                )
-                _confirmed_side_effects(
+                identity = ReservationIdentity(cleaned_data["identifier_type"], cleaned_data["identifier"])
+                options = _options_from_formset(options_formset)
+                outcome = _run_change(
                     request,
-                    server,
-                    "created",
-                    result,
-                    catalogue,
-                    sync_to_netbox=bool(form.cleaned_data.get("sync_to_netbox")),
+                    "Reservation created.",
+                    lambda: config_write.add_reservation(
+                        server,
+                        self.dhcp_version,
+                        cleaned_data["subnet_cidr"],
+                        lambda subnet, catalogue: self._build(
+                            request, cleaned_data, identity, options, subnet, catalogue
+                        ),
+                    ),
+                    subject=f"Reservation {_identity_label(identity)}",
                 )
-                messages.success(request, "Reservation created.")
-                return redirect(self._return_url(server))
             except _UnknownSuffix as exc:
                 form.add_error("hostname", str(exc))
-            except KeaException as exc:
-                logger.exception("Kea rejected a DHCPv%s Reservation create", self.dhcp_version)
-                messages.error(request, kea_error_hint(exc))
-            except (requests.RequestException, RuntimeError, ValueError):
-                logger.exception("Could not create a DHCPv%s Reservation", self.dhcp_version)
+            except ValueError:
+                logger.exception("Could not build a DHCPv%s Reservation from the form", self.dhcp_version)
                 messages.error(request, "The Reservation could not be created. See server logs.")
+            else:
+                if outcome is not None:
+                    if outcome.application == "applied":
+                        _after_applied(
+                            request,
+                            server,
+                            "created",
+                            outcome,
+                            sync_to_netbox=bool(cleaned_data.get("sync_to_netbox")),
+                        )
+                    return redirect(self._return_url(server))
         snapshot = subnet_catalogue.display(server, self.dhcp_version)
         show_notices(request, notice(snapshot))
         form.offer_subnets(snapshot.subnet_choices)
@@ -641,55 +691,47 @@ class _ReservationAddView(_ReservationMutationView):
             subnet_cmds_available=snapshot.subnet_cmds_available,
         )
 
-    def _create(
+    def _build(
         self,
         request: HttpRequest,
-        server: Server,
         cleaned_data: dict[str, Any],
+        identity: ReservationIdentity,
         options: tuple[DHCPOption, ...],
-    ) -> tuple[ReservationMutationResult, CatalogueSnapshot]:
-        """Create the Reservation. Return the result and the catalogue that verified its Subnet."""
-        with MutationScope(server, self.dhcp_version) as mutation_scope:
-            subnet = mutation_scope.find_by_cidr(cleaned_data["subnet_cidr"])
-            if subnet is None:
-                raise ValueError("The submitted Subnet is not present in the live Subnet Catalogue.")
-            catalogue = mutation_scope.snapshot
-            if catalogue is None:
-                raise RuntimeError("The Subnet Catalogue is unavailable.")
-            scope = InSubnetReservationScope(subnet.identity)
-            identity = ReservationIdentity(cleaned_data["identifier_type"], cleaned_data["identifier"])
-            hostname = cleaned_data.get("hostname", "")
-            if self.dhcp_version == 4:
-                ipv4_addresses = (
-                    (ipaddress.IPv4Address(cleaned_data["ip_address"]),) if cleaned_data.get("ip_address") else ()
-                )
-                reservation: Reservation = IPv4Reservation(
-                    scope=scope,
-                    identity=identity,
-                    addresses=ipv4_addresses,
-                    hostname=_stored_for(catalogue, subnet, hostname, ipv4_addresses),
-                    options=options,
-                )
-            else:
-                ipv6_addresses = tuple(
-                    ipaddress.IPv6Address(value)
-                    for value in (cleaned_data.get("ip_addresses") or "").split(",")
-                    if value
-                )
-                ipv6_prefixes = tuple(
-                    ipaddress.IPv6Network(value) for value in (cleaned_data.get("prefixes") or "").split(",") if value
-                )
-                reservation = IPv6Reservation(
-                    scope=scope,
-                    identity=identity,
-                    addresses=ipv6_addresses,
-                    delegated_prefixes=ipv6_prefixes,
-                    hostname=_stored_for(catalogue, subnet, hostname, ipv6_addresses),
-                    options=options,
-                )
-            _warn_addresses_in_pools(request, subnet, reservation.addresses)
-            client = server.get_client(version=self.dhcp_version)
-            return client.reservation_create(reservation, catalogue), catalogue
+        subnet: VerifiedSubnet,
+        catalogue: CatalogueSnapshot,
+    ) -> Reservation:
+        """Return the Reservation of the form in the *subnet* that the scope read under the lock verified."""
+        scope = InSubnetReservationScope(subnet.identity)
+        hostname = cleaned_data.get("hostname", "")
+        reservation: Reservation
+        if self.dhcp_version == 4:
+            ipv4_addresses = (
+                (ipaddress.IPv4Address(cleaned_data["ip_address"]),) if cleaned_data.get("ip_address") else ()
+            )
+            reservation = IPv4Reservation(
+                scope=scope,
+                identity=identity,
+                addresses=ipv4_addresses,
+                hostname=_stored_for(catalogue, subnet, hostname, ipv4_addresses),
+                options=options,
+            )
+        else:
+            ipv6_addresses = tuple(
+                ipaddress.IPv6Address(value) for value in (cleaned_data.get("ip_addresses") or "").split(",") if value
+            )
+            ipv6_prefixes = tuple(
+                ipaddress.IPv6Network(value) for value in (cleaned_data.get("prefixes") or "").split(",") if value
+            )
+            reservation = IPv6Reservation(
+                scope=scope,
+                identity=identity,
+                addresses=ipv6_addresses,
+                delegated_prefixes=ipv6_prefixes,
+                hostname=_stored_for(catalogue, subnet, hostname, ipv6_addresses),
+                options=options,
+            )
+        _warn_addresses_in_pools(request, subnet, reservation.addresses)
+        return reservation
 
 
 class _ReservationEditView(_ReservationMutationView):
@@ -712,21 +754,18 @@ class _ReservationEditView(_ReservationMutationView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        try:
-            server.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(server, exc))
+        if refusal := _client_settings_refusal(server, self.dhcp_version):
+            messages.error(request, refusal)
             return redirect(self._return_url(server))
         identity = _identity_from_request(request, self.dhcp_version)
         catalogue = subnet_catalogue.display(server, self.dhcp_version)
+        reservation = _target_or_redirect(
+            request, server, self.dhcp_version, subnet_id, identity, self._return_url(server), notice(catalogue)
+        )
+        if isinstance(reservation, HttpResponse):
+            return reservation
         show_notices(request, notice(catalogue))
-        try:
-            reservation = _load_target(server, self.dhcp_version, subnet_id, identity)
-            suffix = _shown_suffix(reservation, catalogue)
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Could not load the Reservation edit target")
-            messages.error(request, "The Reservation could not be loaded. See server logs.")
-            return redirect(self._return_url(server))
+        suffix = _shown_suffix(reservation, catalogue)
         capabilities = _display_capabilities(server, self.dhcp_version)
         form = self._form_for(server, reservation, suffix, capabilities)
         form.offer_subnets(catalogue.subnet_choices)
@@ -745,59 +784,54 @@ class _ReservationEditView(_ReservationMutationView):
         capabilities = self._mutation_capabilities(request, server)
         if isinstance(capabilities, HttpResponse):
             return capabilities
-        try:
-            with _reservation_target_scope(server, self.dhcp_version, subnet_id, identity) as (
-                current,
-                client,
-                catalogue,
-            ):
-                form = self._form(
-                    server,
-                    capabilities,
-                    data=request.POST,
-                    initial=self._initial(current, _shown_suffix(current, catalogue)),
+        catalogue = subnet_catalogue.display(server, self.dhcp_version)
+        # The disabled fields take their values from the initial data. The fingerprint check under the lock guards
+        # the write.
+        current = _target_or_redirect(request, server, self.dhcp_version, subnet_id, identity, return_url)
+        if isinstance(current, HttpResponse):
+            return current
+        suffix = _shown_suffix(current, catalogue)
+        form = self._form(server, capabilities, data=request.POST, initial=self._initial(current, suffix))
+        form.offer_subnets(catalogue.subnet_choices)
+        for field in ("subnet_cidr", "identifier_type", "identifier"):
+            form.fields[field].disabled = True
+        options_formset, options_valid = _build_reservation_options_formset(request.POST)
+        if form.is_valid() and options_valid:
+            cleaned_data = form.cleaned_data
+            try:
+                payload = _payload_from_post(cleaned_data["managed_fingerprint"], current)
+
+                def build(live: Reservation, live_catalogue: CatalogueSnapshot) -> ReservationChange:
+                    options = _options_from_formset(options_formset, live.options)
+                    return self._change(live, cleaned_data, options, payload["qualifying_suffix"], live_catalogue)
+
+                outcome = _run_change(
+                    request,
+                    "Reservation updated.",
+                    lambda: config_write.edit_reservation(
+                        server, self.dhcp_version, subnet_id, identity, payload["fingerprint"], build
+                    ),
+                    subject=f"Reservation {_identity_label(identity)}",
                 )
-                form.offer_subnets(catalogue.subnet_choices)
-                for field in ("subnet_cidr", "identifier_type", "identifier"):
-                    form.fields[field].disabled = True
-                options_formset, options_valid = _build_reservation_options_formset(request.POST)
-                if form.is_valid() and options_valid:
-                    try:
-                        payload = _payload_from_post(form.cleaned_data["managed_fingerprint"], current)
-                        change = self._change(
-                            current,
-                            form.cleaned_data,
-                            _options_from_formset(options_formset, current.options),
-                            payload["qualifying_suffix"],
-                            catalogue,
-                        )
-                        result = client.reservation_change(current, payload["fingerprint"], change, catalogue)
-                        _confirmed_side_effects(
+            except ReservationConflict as exc:
+                form.add_error(None, f"{exc} Reload the form and try again.")
+            except _UnknownSuffix as exc:
+                form.add_error("hostname", str(exc))
+            except ValueError:
+                logger.exception("Could not build the Reservation update from the form")
+                messages.error(request, "The Reservation could not be updated. See server logs.")
+            else:
+                if outcome is not None:
+                    if outcome.application == "applied":
+                        _after_applied(
                             request,
                             server,
                             "updated",
-                            result,
-                            catalogue,
-                            sync_to_netbox=bool(form.cleaned_data.get("sync_to_netbox")),
+                            outcome,
+                            sync_to_netbox=bool(cleaned_data.get("sync_to_netbox")),
                         )
-                        messages.success(request, "Reservation updated.")
-                        return redirect(return_url)
-                    except ReservationConflict as exc:
-                        form.add_error(None, f"{exc} Reload the form before you try again.")
-                    except _UnknownSuffix as exc:
-                        form.add_error("hostname", str(exc))
-                    except KeaException as exc:
-                        logger.exception("Kea rejected a Reservation update")
-                        messages.error(request, kea_error_hint(exc))
-                    except (requests.RequestException, RuntimeError, ValueError):
-                        logger.exception("Could not update the Reservation")
-                        messages.error(request, "The Reservation could not be updated. See server logs.")
-        except Http404:
-            raise
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Could not reload the Reservation edit target")
-            messages.error(request, "The Reservation could not be reloaded. Edit stopped.")
-            return redirect(return_url)
+                    return redirect(return_url)
+        show_notices(request, notice(catalogue))
         return self._render(request, server, form, options_formset, capabilities)
 
     def _initial(self, reservation: Reservation, suffix: str | None) -> dict[str, Any]:
@@ -863,20 +897,15 @@ class _ReservationDeleteView(_ReservationMutationView):
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        try:
-            server.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(server, exc))
+        if refusal := _client_settings_refusal(server, self.dhcp_version):
+            messages.error(request, refusal)
             return redirect(self._return_url(server))
         identity = _identity_from_request(request, self.dhcp_version)
-        try:
-            reservation = _load_target(server, self.dhcp_version, subnet_id, identity)
-        except Http404:
-            raise
-        except (KeaException, requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Could not load the Reservation delete target")
-            messages.error(request, "The Reservation could not be loaded. See server logs.")
-            return redirect(self._return_url(server))
+        reservation = _target_or_redirect(
+            request, server, self.dhcp_version, subnet_id, identity, self._return_url(server)
+        )
+        if isinstance(reservation, HttpResponse):
+            return reservation
         return render(
             request,
             self.template_name,
@@ -897,23 +926,14 @@ class _ReservationDeleteView(_ReservationMutationView):
         capabilities = self._mutation_capabilities(request, server)
         if isinstance(capabilities, HttpResponse):
             return capabilities
-        try:
-            with _reservation_target_scope(server, self.dhcp_version, subnet_id, identity) as (
-                reservation,
-                client,
-                catalogue,
-            ):
-                result = client.reservation_delete(reservation, catalogue)
-                _confirmed_side_effects(request, server, "deleted", result, catalogue)
-                messages.success(request, "Reservation deleted.")
-        except ReservationConflict:
-            messages.error(request, "The Reservation changed or no longer exists.")
-        except KeaException as exc:
-            logger.exception("Kea rejected a Reservation delete")
-            messages.error(request, kea_error_hint(exc))
-        except (requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Could not delete the Reservation")
-            messages.error(request, "The Reservation could not be deleted. See server logs.")
+        outcome = _run_change(
+            request,
+            "Reservation deleted.",
+            lambda: config_write.delete_reservation(server, self.dhcp_version, subnet_id, identity),
+            subject=f"Reservation {_identity_label(identity)}",
+        )
+        if outcome is not None and outcome.application == "applied":
+            _after_applied(request, server, "deleted", outcome)
         return redirect(return_url)
 
 

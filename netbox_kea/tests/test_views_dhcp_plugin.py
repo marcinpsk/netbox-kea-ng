@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlsplit
 import requests
 from bs4 import BeautifulSoup
 from django.apps import apps
-from django.contrib.messages import get_messages
+from django.contrib.messages import ERROR, get_messages
 from django.db import connection
 from django.test import SimpleTestCase, TestCase
 from django.test.utils import CaptureQueriesContext
@@ -25,11 +25,11 @@ from django.urls import reverse
 from django.utils import timezone
 
 from netbox_kea.integrations import dhcp_plugin
-from netbox_kea.kea import KeaException
 from netbox_kea.models import DhcpIntegrationConfig, Server
 from netbox_kea.views import dhcp_plugin_sync as dps
+from netbox_kea.views.notices import HEADLINES, Notice
 
-from .kea_stub import _res_page, _subnet_list, stub_kea
+from .kea_stub import READ_FAILURES, _res_page, _subnet_list, stub_kea
 from .utils import _make_db_server, with_dhcp_integration_config
 
 DHCP_PLUGIN = "netbox_dhcp"
@@ -239,6 +239,22 @@ class SyncNowEndToEndTest(TestCase):
         )
         self.url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk])
 
+    def test_failed_configuration_reads_name_each_family(self):
+        self.server.dhcp6 = True
+        self.server.save()
+        with stub_kea({"config-get": requests.ConnectionError("Kea is unreachable")}) as kea:
+            response = self.client.post(self.url)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands(), ["config-get", "config-get"])
+        self.assertEqual(
+            [(message.level, str(message)) for message in get_messages(response.wsgi_request)],
+            [
+                (ERROR, f"DHCPv{version}: {line}")
+                for version in (4, 6)
+                for line in (HEADLINES["configuration"], "Kea configuration facts are unavailable.")
+            ],
+        )
+
     def test_post_imports_and_reports(self):
         conf = {
             4: {
@@ -372,8 +388,9 @@ class FetchConfigIntentTest(TestCase):
                 self.assertLogs("netbox_kea.views.dhcp_plugin_sync", level="WARNING") as cm,
             ):
                 result = dps._fetch_config_intent(self.server, 4)
-            # A malformed reply is a logged read failure, not a silent "no config".
-            self.assertIsNone(result)
+            # A malformed reply is a logged read failure with the configuration Notice, not a silent "no config".
+            self.assertIsInstance(result, Notice)
+            self.assertTrue(result.unavailable)
             self.assertTrue(any("config-get failed" in line for line in cm.output))
 
     def test_the_read_logs_why_a_reply_has_no_configuration(self):
@@ -386,7 +403,7 @@ class FetchConfigIntentTest(TestCase):
                 stub_kea({"config-get": reply}),
                 self.assertLogs("netbox_kea.server_configuration", level="WARNING") as cm,
             ):
-                self.assertIsNone(dps._fetch_config_intent(self.server, 4))
+                self.assertIsInstance(dps._fetch_config_intent(self.server, 4), Notice)
             self.assertTrue(any(reason in line for line in cm.output), cm.output)
 
 
@@ -437,19 +454,31 @@ class SyncNowErrorHandlingTest(TestCase):
         self.server = _make_db_server(sync_dhcp_plugin_enabled=True, dhcp4=True, dhcp6=False)
         self.url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk])
 
-    def test_kea_exception_routes_through_specific_handler(self):
-        # A KeaException is handled by the dedicated contract branch, logged
-        # distinctly, and shown as a generic error.
-        with (
-            patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True),
-            patch.object(
-                dps, "run_dhcp_plugin_import", side_effect=KeaException({"result": 1, "text": "boom"}), autospec=True
+    def test_a_failed_configuration_read_shows_the_configuration_notice(self):
+        # Each failure keeps Kea's answer in the diagnostic line; a malformed reply has its own line.
+        cases = (
+            *(
+                (name, reply, f"Kea configuration facts are unavailable. {line}")
+                for name, reply, line in READ_FAILURES
+                if line
             ),
-        ):
-            with self.assertLogs("netbox_kea.views.dhcp_plugin_sync", level="ERROR") as cm:
-                resp = self.client.post(self.url, follow=True)
-        self.assertContains(resp, "An internal error occurred")
-        self.assertTrue(any("Kea read/validation" in line for line in cm.output))
+            ("transport", requests.ConnectionError("Kea is unreachable"), "Kea configuration facts are unavailable."),
+            ("malformed", ["not", "a", "reply"], "Kea returned a malformed configuration response."),
+        )
+        for name, reply, line in cases:
+            with (
+                self.subTest(name),
+                patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True),
+                stub_kea({"config-get": reply}) as kea,
+            ):
+                self.client.cookies.pop("messages", None)
+                response = self.client.post(self.url)
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(kea.commands(), ["config-get"])
+            self.assertEqual(
+                [str(message) for message in get_messages(response.wsgi_request)],
+                [f"DHCPv4: {HEADLINES['configuration']}", f"DHCPv4: {line}"],
+            )
 
     def test_unexpected_exception_is_caught_not_leaked(self):
         # A non-contract error (e.g. a DB error) still hits the fallback: logged,

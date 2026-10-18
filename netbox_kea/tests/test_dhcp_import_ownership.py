@@ -29,6 +29,7 @@ from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.models import IPAMOwnershipLink, next_confirmation_number
 from netbox_kea.pools import parse_pool
 from netbox_kea.views.dhcp_plugin_sync import _summary_problems, run_dhcp_plugin_import
+from netbox_kea.views.notices import Notice
 
 from .kea_stub import observed_configuration, stub_kea
 from .test_integration_dhcp_plugin import _reservation_snapshot
@@ -191,8 +192,11 @@ class ImportOwnershipTest(TestCase):
                 responses["config-get"] = config_get
                 with stub_kea(responses):
                     results = run_dhcp_plugin_import(self.server)
-                self.assertEqual([family for family, _summary in results], [6])
-                self.assertEqual(results[0][1].errors, 0)
+                # The unread DHCPv4 configuration is a Notice; only DHCPv6 is imported.
+                self.assertEqual(
+                    [(family, isinstance(item, Notice)) for family, item in results], [(4, True), (6, False)]
+                )
+                self.assertEqual(results[1][1].errors, 0)
                 self.assertTrue(
                     IPAMOwnershipLink.objects.filter(server=self.server, family=6, source="subnet").exists()
                 )

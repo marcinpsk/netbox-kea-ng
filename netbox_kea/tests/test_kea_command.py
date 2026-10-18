@@ -267,7 +267,14 @@ def test_the_runtime_package_has_one_http_send_in_kea_client_command():
                 requests_calls.append(f"{rel}::{scope}: requests.{func.attr}")
 
     assert sends == ["kea.py::KeaClient.command"]
-    assert requests_calls == ["kea.py::KeaClient.__init__: requests.Session"]
+    # command() prepares a Request before the send to check its encoding, and turns an encode failure after the send
+    # and a redirect answer into request errors. None of them sends anything.
+    assert requests_calls == [
+        "kea.py::KeaClient.__init__: requests.Session",
+        "kea.py::KeaClient.command: requests.Request",
+        "kea.py::KeaClient.command: requests.RequestException",
+        "kea.py::KeaClient.command: requests.HTTPError",
+    ]
 
 
 def test_the_runtime_package_imports_no_other_http_client():
@@ -285,7 +292,8 @@ def test_the_runtime_package_imports_no_other_http_client():
         if any(name == module or name.startswith(f"{module}.") for module in _OTHER_HTTP_MODULES)
     ]
 
-    assert imported == ["config_write.py: urllib3.exceptions"]
+    # The classifier and the client boundary use urllib3's exception types.
+    assert imported == ["change_outcome.py: urllib3.exceptions", "kea.py: urllib3.exceptions"]
 
 
 def _kea_client_builds(modules: list[tuple[str, ast.Module]]) -> dict[str, str]:

@@ -3,10 +3,12 @@
 # SPDX-FileCopyrightText: 2026 Andrew Backeby <andrew@backeby.eu>
 # SPDX-License-Identifier: Apache-2.0
 import base64
+import dataclasses
 import ipaddress
 import itertools
 import json
 import logging
+import ssl
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -15,6 +17,7 @@ from typing import Any, Literal, NamedTuple, Protocol, TypedDict, cast
 
 import requests
 from requests.models import HTTPBasicAuth
+from urllib3.exceptions import SSLError as Urllib3SSLError
 
 from . import constants
 from .constants import Family, IPAddressValue, IPNetworkValue, LeaseState, Persistence
@@ -33,15 +36,11 @@ from .dhcp_options import (
 from .leases import (
     ALL_LEASES,
     ExactLeaseResult,
+    FreshLease,
     Lease,
     LeaseAbsent,
-    LeaseChanged,
-    LeaseChangeRefused,
-    LeaseChangeResult,
-    LeaseConflict,
     LeaseCoverage,
     LeaseDiagnostic,
-    LeaseEdit,
     LeaseFound,
     LeaseIdentity,
     LeaseLookupFailed,
@@ -49,12 +48,9 @@ from .leases import (
     LeaseRead,
     LeaseRequest,
     LeaseSnapshot,
-    ShownLease,
     _creation_arguments,
-    _edited_arguments,
     allocation_identities,
     confirm_lease_creation,
-    lease_edit_conflicts,
     lookup_arguments,
     read_exact_lease,
     read_lease_change,
@@ -71,21 +67,15 @@ from .reservations import (
     InSubnetReservationScope,
     MalformedReservation,
     Reservation,
-    ReservationChange,
-    ReservationConflict,
     ReservationDiagnostic,
     ReservationIdentity,
-    ReservationMutationResult,
     ReservationScope,
     ReservationSnapshot,
     _exact_reservation,
     _option_data,
     _parse_reservation_page,
     _reservation_to_raw,
-    apply_reservation_change,
-    reservation_fingerprint,
     reservation_identifier_types,
-    reservation_matches_intent,
 )
 from .subnet_settings import setting_key
 
@@ -298,6 +288,55 @@ def _merge_reservation_options(
         merged_option.update(_option_data(intended_option))
         merged_options.append(merged_option)
     return merged_options
+
+
+# The keys of a raw Reservation that NetBox manages. An update replaces them and keeps every other key.
+_MANAGED_RESERVATION_KEYS = frozenset(
+    {
+        "subnet-id",
+        "hw-address",
+        "duid",
+        "circuit-id",
+        "client-id",
+        "flex-id",
+        "remote-id",
+        "ip-address",
+        "ip-addresses",
+        "prefixes",
+        "hostname",
+        "option-data",
+    }
+)
+
+
+@dataclass(frozen=True)
+class FreshReservation:
+    """The Reservation that a fresh read before a change observed, and the raw record that it came from."""
+
+    reservation: Reservation
+    raw: dict[str, Any] = dataclasses.field(repr=False, compare=False)
+
+    def updated(self, intended: Reservation) -> dict[str, Any]:
+        """Return the ``reservation-update`` record: *intended* over the raw record, with each unmanaged key kept.
+
+        Raises:
+            ValueError: If *intended* has another Scope or Identity.
+            MalformedReservation: If the raw record holds DHCP Options that are not valid.
+
+        """
+        if intended.scope != self.reservation.scope or intended.identity != self.reservation.identity:
+            raise ValueError("An update cannot change the Scope or the Identity of a Reservation.")
+        raw_options = self.raw.get("option-data", [])
+        if not isinstance(raw_options, list) or any(not isinstance(option, dict) for option in raw_options):
+            raise MalformedReservation("invalid-options", "The Reservation contains invalid DHCP Options.")
+        serialized = _reservation_to_raw(intended)
+        if intended.options:
+            serialized["option-data"] = _merge_reservation_options(
+                raw_options, self.reservation.options, intended.options
+            )
+        merged = {key: value for key, value in self.raw.items() if key not in _MANAGED_RESERVATION_KEYS}
+        merged.update(serialized)
+        return merged
 
 
 class KeaResponse(TypedDict):
@@ -1025,7 +1064,9 @@ class KeaClient:
             ValueError: If *target* is not 4, 6 or None.
             BranchActive: If *command* is a write and the write guard refuses it, for example in a branch.
             KeaTLSFileError: If requests cannot find a TLS file of the client. It is a ``RequestException``.
-            requests.HTTPError: If the HTTP response status is not 2xx.
+            KeaRequestEncodingError: If requests cannot encode the Basic Auth credentials before the send. It is a
+                ``RequestException``. An encode failure after the send is a plain ``RequestException``.
+            requests.HTTPError: If the HTTP response status is a redirect or not 2xx.
             MalformedReply: If the reply body is not JSON or not a list, is empty, or has a malformed entry.
             KeaException: If any response result code is not in *check*.
 
@@ -1044,18 +1085,31 @@ class KeaClient:
         if arguments is not None:
             body["arguments"] = arguments
 
-        if command.is_write:
-            self._notify_write(command, target, "before", configuration=False)
         try:
-            resp = self._session.post(self.url, json=body, timeout=self.timeout, verify=self.verify, cert=self.cert)
+            # post() prepares the same request again; only a failure here proves that nothing was sent.
+            self._session.prepare_request(requests.Request("POST", self.url, json=body))
+        except UnicodeEncodeError as exc:
+            raise KeaRequestEncodingError("The user name or password of the client is not Latin-1 text.") from exc
+        self._notify_write(command, target, "before", configuration=False)
+        try:
+            # A redirect target cannot tell what the first request did, so NetBox never follows one (ADR 0011).
+            resp = self._session.post(
+                self.url, json=body, timeout=self.timeout, verify=self.verify, cert=self.cert, allow_redirects=False
+            )
         except requests.RequestException:
             raise
+        except (ssl.SSLError, Urllib3SSLError) as exc:
+            raise requests.exceptions.SSLError("The TLS connection to Kea failed.") from exc
         except OSError as exc:
             raise KeaTLSFileError("A TLS CA, certificate or key file of the client could not be found.") from exc
+        except UnicodeEncodeError as exc:
+            # requests prepares the next request of a redirect reply after the send, also without following it.
+            raise requests.RequestException("requests could not handle the reply after it sent the request.") from exc
         finally:
             # Kea can apply a write whose reply is lost, so a display read during the send must not stay cached.
-            if command.is_write:
-                self._notify_write(command, target, "after", configuration=False)
+            self._notify_write(command, target, "after", configuration=False)
+        if 300 <= resp.status_code < 400:
+            raise requests.HTTPError(f"Kea answered with a redirect (HTTP {resp.status_code}).", response=resp)
         resp.raise_for_status()
         try:
             resp_json = resp.json()
@@ -1076,13 +1130,17 @@ class KeaClient:
         self, command: KeaCommand, target: Family | None, when: Literal["before", "after"], *, configuration: bool
     ) -> None:
         """Tell the owner about a write command without interrupting it."""
+        if not command.is_write:
+            return
         try:
             self.on_write(target, configuration=configuration)
         except Exception:
             logger.exception("The display cache rotation %s Kea command %s failed", when, command.value)
 
-    def _config_mutation_command(self, command: KeaCommand, family: Family, arguments: dict[str, Any]) -> None:
-        """Send one live configuration mutation between configuration notifications, and require one success reply."""
+    def _config_mutation_command(
+        self, command: KeaCommand, family: Family, arguments: dict[str, Any], ok_codes: Sequence[int] = (0,)
+    ) -> KeaResponse:
+        """Send one live configuration mutation between configuration notifications, and return its one reply."""
         self._refuse(command)
         self._notify_write(command, family, "before", configuration=True)
         try:
@@ -1090,7 +1148,7 @@ class KeaClient:
         finally:
             # Kea can apply a change whose reply is lost, so a read during the request must not stay cached.
             self._notify_write(command, family, "after", configuration=True)
-        _one_reply(command, family, response)
+        return _one_reply(command, family, response, ok_codes)
 
     def close(self) -> None:
         """Close the underlying requests.Session and release connection resources."""
@@ -1219,6 +1277,25 @@ class KeaClient:
         identity: ReservationIdentity,
     ) -> Reservation | None:
         """Return one exact typed Reservation Identity target."""
+        fresh = self.reservation_get_fresh(version, catalogue, scope, identity)
+        return None if fresh is None else fresh.reservation
+
+    def reservation_get_fresh(
+        self,
+        version: Family,
+        catalogue,
+        scope: ReservationScope,
+        identity: ReservationIdentity,
+    ) -> FreshReservation | None:
+        """Read one exact Reservation, with the raw record that an update starts from. None: Kea does not hold it.
+
+        Raises:
+            ValueError: If *version* or the identifier type is not valid.
+            KeaException: If Kea returns a failure result other than "not found".
+            MalformedReservation: If Kea returns a record that does not match *scope* and *identity*.
+            RuntimeError: If the reply is malformed.
+
+        """
         if version not in (4, 6):
             raise ValueError(f"version must be 4 or 6, got {version!r}")
         if identity.identifier_type not in reservation_identifier_types(version):
@@ -1232,7 +1309,7 @@ class KeaClient:
                 "target-mismatch",
                 "Kea returned a Reservation that does not match the exact target.",
             )
-        return reservation
+        return FreshReservation(reservation, raw)
 
     def _reservation_raw_by_identity(
         self,
@@ -1418,136 +1495,46 @@ class KeaClient:
             read_started=started,
         )
 
-    def _reservation_mutation_command(self, command: KeaCommand, version: Family, arguments: dict[str, Any]) -> None:
-        """Apply one Reservation command and require one success reply."""
-        _one_reply(command, version, self.command(command, version, arguments=arguments, check=None))
+    def reservation_add(self, reservation: Reservation) -> None:
+        """Send one ``reservation-add`` of the In-Subnet *reservation*. It does not persist.
 
-    def _verify_reservation(
-        self,
-        intended: Reservation | None,
-        target: Reservation,
-        catalogue,
-    ) -> Literal["verified", "failed"]:
-        """Refetch one mutation target and compare its managed typed facts."""
-        try:
-            observed = self.reservation_by_identity(
-                target.family,
-                catalogue,
-                target.scope,
-                target.identity,
-            )
-        except (KeaException, MalformedReservation, requests.RequestException, RuntimeError, ValueError):
-            logger.warning("Could not verify a confirmed Reservation mutation", exc_info=True)
-            return "failed"
-        if observed is None or intended is None:
-            return "verified" if observed is intended else "failed"
-        return "verified" if reservation_matches_intent(observed, intended) else "failed"
+        Raises:
+            ValueError: If *reservation* is a Global Reservation.
+            KeaException: If Kea returns a failure result.
+            MalformedReply: If the reply does not hold exactly one result.
 
-    def reservation_create(self, reservation: Reservation, catalogue) -> ReservationMutationResult:
-        """Create one typed In-Subnet Reservation and verify the result."""
+        """
         if isinstance(reservation.scope, GlobalReservationScope):
             raise ValueError("Creating Global Reservations is not supported.")
-        raw = _reservation_to_raw(reservation)
-        self._reservation_mutation_command(
-            KeaCommand.RESERVATION_ADD,
-            reservation.family,
-            {"reservation": raw},
-        )
-        persisted = self.persist(reservation.family)
-        return ReservationMutationResult(
-            previous=None,
-            intended=reservation,
-            application="applied",
-            persistence=persisted.persistence,
-            persistence_diagnostics=persisted.diagnostics,
-            verification=self._verify_reservation(reservation, reservation, catalogue),
-        )
+        arguments = {"reservation": _reservation_to_raw(reservation)}
+        self._config_mutation_command(KeaCommand.RESERVATION_ADD, reservation.family, arguments)
 
-    def reservation_change(
-        self,
-        target: Reservation,
-        expected_fingerprint: str,
-        change: ReservationChange,
-        catalogue,
-    ) -> ReservationMutationResult:
-        """Update mutable managed facts and preserve the latest unknown Kea fields."""
-        if isinstance(target.scope, GlobalReservationScope):
-            raise ValueError("Updating Global Reservations is not supported.")
-        raw = self._reservation_raw_by_identity(target.family, target.scope, target.identity)
-        if raw is None:
-            raise ReservationConflict("The Reservation no longer exists.")
-        current = _exact_reservation(raw, target.family, catalogue)
-        if current.scope != target.scope or current.identity != target.identity:
-            raise MalformedReservation("target-mismatch", "Kea returned a different Reservation target.")
-        if reservation_fingerprint(current) != expected_fingerprint:
-            raise ReservationConflict("The Reservation changed after the edit form was opened.")
-        intended = apply_reservation_change(current, change)
-        raw_options = raw.get("option-data", [])
-        if not isinstance(raw_options, list) or any(not isinstance(option, dict) for option in raw_options):
-            raise MalformedReservation("invalid-options", "The Reservation contains invalid DHCP Options.")
-        serialized = _reservation_to_raw(intended)
-        if intended.options:
-            serialized["option-data"] = _merge_reservation_options(raw_options, current.options, intended.options)
-        merged = dict(raw)
-        for key in (
-            "subnet-id",
-            "hw-address",
-            "duid",
-            "circuit-id",
-            "client-id",
-            "flex-id",
-            "remote-id",
-            "ip-address",
-            "ip-addresses",
-            "prefixes",
-            "hostname",
-            "option-data",
-        ):
-            merged.pop(key, None)
-        merged.update(serialized)
-        self._reservation_mutation_command(
-            KeaCommand.RESERVATION_UPDATE,
-            target.family,
-            {"reservation": merged},
-        )
-        persisted = self.persist(target.family)
-        return ReservationMutationResult(
-            previous=current,
-            intended=intended,
-            application="applied",
-            persistence=persisted.persistence,
-            persistence_diagnostics=persisted.diagnostics,
-            verification=self._verify_reservation(intended, target, catalogue),
-        )
+    def reservation_update(self, family: Family, record: dict[str, Any]) -> None:
+        """Send one ``reservation-update`` of *record*, as ``FreshReservation.updated`` built it. It does not persist.
 
-    def reservation_delete(self, target: Reservation, catalogue) -> ReservationMutationResult:
-        """Delete one typed In-Subnet Reservation by Scope and Identity."""
-        if isinstance(target.scope, GlobalReservationScope):
-            raise ValueError("Deleting Global Reservations is not supported.")
-        raw = self._reservation_raw_by_identity(target.family, target.scope, target.identity)
-        if raw is None:
-            raise ReservationConflict("The Reservation no longer exists.")
-        current = _exact_reservation(raw, target.family, catalogue)
-        if current.scope != target.scope or current.identity != target.identity:
-            raise MalformedReservation("target-mismatch", "Kea returned a different Reservation target.")
-        self._reservation_mutation_command(
-            KeaCommand.RESERVATION_DEL,
-            target.family,
-            {
-                "subnet-id": target.scope.subnet.subnet_id,
-                "identifier-type": target.identity.identifier_type,
-                "identifier": target.identity.value,
-            },
-        )
-        persisted = self.persist(target.family)
-        return ReservationMutationResult(
-            previous=current,
-            intended=None,
-            application="applied",
-            persistence=persisted.persistence,
-            persistence_diagnostics=persisted.diagnostics,
-            verification=self._verify_reservation(None, target, catalogue),
-        )
+        Raises:
+            KeaException: If Kea returns a failure result.
+            MalformedReply: If the reply does not hold exactly one result.
+
+        """
+        self._config_mutation_command(KeaCommand.RESERVATION_UPDATE, family, {"reservation": record})
+
+    def reservation_del(self, family: Family, scope: InSubnetReservationScope, identity: ReservationIdentity) -> bool:
+        """Send one ``reservation-del`` of the Reservation with *identity* in *scope*. It does not persist.
+
+        Returns False when no host data source holds the Reservation (result 3).
+
+        Raises:
+            KeaException: If Kea returns another failure result.
+            MalformedReply: If the reply does not hold exactly one result.
+
+        """
+        arguments = {
+            "subnet-id": scope.subnet.subnet_id,
+            "identifier-type": identity.identifier_type,
+            "identifier": identity.value,
+        }
+        return self._config_mutation_command(KeaCommand.RESERVATION_DEL, family, arguments, (0, 3))["result"] == 0
 
     def subnet_add(self, version: Family, subnet_id: int, cidr: str, fields: SubnetFields) -> None:
         """Send one ``subnet{v}-add`` for the Subnet *cidr* with *subnet_id*. It does not persist.
@@ -1715,11 +1702,12 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea refuses the Lease, for example because the address is in use.
+            MalformedReply: If the reply does not hold exactly one result.
             MalformedLeaseResponse: If the reply confirms no creation.
 
         """
-        response = self.command(LEASE_ADD[request.family], request.family, arguments=_creation_arguments(request))
-        confirm_lease_creation(response)
+        family = request.family
+        confirm_lease_creation([self._one_command(LEASE_ADD[family], family, _creation_arguments(request))])
 
     def lease_get(self, identity: LeaseIdentity) -> ExactLeaseResult:
         """Read the one Lease with *identity*: found, confirmed absent, or a failed observation.
@@ -1734,69 +1722,46 @@ class KeaClient:
         )
         return read_exact_lease(response, identity)
 
-    def _checked_lease(
-        self, shown: ShownLease, edit: LeaseEdit
-    ) -> tuple[Lease, dict[str, Any]] | LeaseConflict | LeaseAbsent | LeaseLookupFailed:
-        """Read the shown Lease again; return it with its raw body, or the reason to send no change."""
-        family = shown.identity.family
-        response = self.command(LEASE_GET[family], family, arguments=lookup_arguments(shown.identity), check=(0, 3))
-        result = read_exact_lease(response, shown.identity)
-        if not isinstance(result, LeaseFound):
-            return result
-        conflicts = lease_edit_conflicts(shown, result.lease, edit)
-        if conflicts:
-            return LeaseConflict(fields=conflicts)
-        # read_exact_lease found one record object in this reply.
-        return result.lease, cast("dict[str, Any]", response[0]["arguments"])
-
-    def lease_update(self, shown: ShownLease, edit: LeaseEdit) -> LeaseChangeResult:
-        """Write the fields of *edit* to the shown Lease, after a fresh read agrees with the shown facts.
-
-        The update sends the fresh Kea body with only the written fields changed, so renewal fields and
-        extension values stay as Kea holds them. The check is not atomic: another writer can change the
-        Lease between the read and the update. A Lease that is gone is never created again.
-
-        Raises:
-            ValueError: If *edit* writes no field.
-            KeaException: If Kea returns an unexpected result.
-            MalformedLeaseResponse: If a reply envelope is unusable.
-
-        """
-        if not edit.written:
-            raise ValueError("A Lease edit must write at least one field.")
-        checked = self._checked_lease(shown, edit)
-        if not isinstance(checked, tuple):
-            return checked
-        fresh, raw = checked
-        response = self.command(
-            LEASE_UPDATE[fresh.family], fresh.family, arguments=_edited_arguments(raw, fresh, edit), check=(0, 4)
-        )
-        if read_lease_change(response, refused=4):
-            return LeaseChanged(lease=fresh)
-        return LeaseChangeRefused(identity=fresh.identity)
-
-    def lease_delete(self, shown: ShownLease) -> LeaseChangeResult:
-        """Delete the shown Lease, after a fresh read agrees with its binding, Subnet and kind.
-
-        The check is not atomic: another writer can change the Lease between the read and the deletion.
+    def lease_get_fresh(self, identity: LeaseIdentity) -> FreshLease | LeaseAbsent | LeaseLookupFailed:
+        """Read the one Lease with *identity* before a change, with the Kea body that an update sends back.
 
         Raises:
             KeaException: If Kea returns a result other than success or not found.
-            MalformedLeaseResponse: If a reply envelope is unusable.
+            MalformedLeaseResponse: If the reply envelope is unusable.
 
         """
-        checked = self._checked_lease(shown, LeaseEdit())
-        if not isinstance(checked, tuple):
-            return checked
-        fresh, _raw = checked
         response = self.command(
-            LEASE_DEL[fresh.family], fresh.family, arguments=lookup_arguments(fresh.identity), check=(0, 3)
+            LEASE_GET[identity.family], identity.family, arguments=lookup_arguments(identity), check=(0, 3)
         )
-        return (
-            LeaseChanged(lease=fresh)
-            if read_lease_change(response, refused=3)
-            else LeaseAbsent(identity=fresh.identity)
-        )
+        result = read_exact_lease(response, identity)
+        if not isinstance(result, LeaseFound):
+            return result
+        # read_exact_lease found one record object in this reply.
+        return FreshLease(result.lease, cast("dict[str, Any]", response[0]["arguments"]))
+
+    def lease_update(self, family: Family, body: dict[str, Any]) -> bool:
+        """Send one ``lease{v}-update`` of *body*, as ``FreshLease.edited`` built it. A Lease is never created.
+
+        Returns False when Kea answers that the Lease was deleted or changed after the read (result 4).
+
+        Raises:
+            KeaException: If Kea returns another failure result.
+            MalformedReply: If the reply does not hold exactly one result.
+
+        """
+        return read_lease_change([self._one_command(LEASE_UPDATE[family], family, body, (0, 4))], refused=4)
+
+    def lease_delete(self, identity: LeaseIdentity) -> bool:
+        """Send one ``lease{v}-del`` of the Lease with *identity*. Returns False when Kea holds no such Lease (result 3).
+
+        Raises:
+            KeaException: If Kea returns another failure result.
+            MalformedReply: If the reply does not hold exactly one result.
+
+        """
+        family = identity.family
+        reply = self._one_command(LEASE_DEL[family], family, lookup_arguments(identity), (0, 3))
+        return read_lease_change([reply], refused=3)
 
     def lease_search(
         self,
@@ -2310,10 +2275,31 @@ class KeaException(Exception):
         return self.response.get("result") == 2
 
     @property
+    def daemon_unreachable(self) -> bool:
+        """Return whether Kea answered result 128: the Control Agent could not reach the daemon."""
+        return self.response.get("result") == 128
+
+    @property
     def reply_text(self) -> str:
         """Return the text of Kea's failure reply, or its result code when the reply has no text."""
         text = self.response.get("text")
         return text if isinstance(text, str) and text else f"result {self.response.get('result')}"
+
+
+def kea_error_message(exc: "KeaException") -> str:
+    """Return Kea's failure reply with operator guidance for result 2 and 128."""
+    if exc.unsupported_command:
+        return (
+            "Kea does not support this command. "
+            "The required hook library may not be loaded, for example host_cmds, lease_cmds or subnet_cmds. "
+            f"Kea replied: {exc.reply_text}"
+        )
+    if exc.daemon_unreachable:
+        return (
+            "Cannot reach the Kea daemon. Check that the service is running and the server URL is reachable. "
+            f"Kea replied: {exc.reply_text}"
+        )
+    return f"Kea replied: {exc.reply_text}"
 
 
 class KeaTLSFileError(requests.exceptions.RequestException):
@@ -2321,6 +2307,14 @@ class KeaTLSFileError(requests.exceptions.RequestException):
 
     requests raises a plain ``OSError`` for this case. ``KeaClient.command`` raises this subclass of
     ``RequestException`` instead, so each handler of request errors also handles it. The ``OSError`` is the cause.
+    """
+
+
+class KeaRequestEncodingError(requests.exceptions.RequestException):
+    """Raised when requests cannot encode the Basic Auth credentials of the client as Latin-1. Nothing was sent.
+
+    requests raises a ``UnicodeEncodeError`` (a ``ValueError``) while it prepares the request. ``KeaClient.command``
+    raises this subclass of ``RequestException`` instead, so each handler of request errors also handles it.
     """
 
 

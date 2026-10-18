@@ -1,26 +1,17 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-import logging
 from typing import Any
 
-import requests
-from django.contrib import messages
 from django.http import HttpResponse
 from django.http.request import HttpRequest
 from django.shortcuts import redirect, render
 from netbox.views import generic
 
-from .. import forms
+from .. import forms, runtime_change
 from ..constants import Family
-from ..kea import KeaException
 from ..models import Server
-from ..utilities import (
-    kea_error_hint,
-)
-from ._base import _client_settings_error, _KeaChangeMixin
+from ._base import _KeaChangeMixin, _run_change
 from .workspace import ServerFamilyMixin, server_family_url
-
-logger = logging.getLogger(__name__)
 
 
 class _BaseServerDHCPEnableView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
@@ -37,19 +28,11 @@ class _BaseServerDHCPEnableView(_KeaChangeMixin, ServerFamilyMixin, generic.Obje
 
     def post(self, request: HttpRequest, pk: int, **kwargs: Any) -> HttpResponse:
         instance = self.get_object(pk=pk)
-        try:
-            client = instance.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(instance, exc))
-            return redirect(server_family_url(request, instance, self, "server"))
-        try:
-            client.dhcp_enable(self.dhcp_version)
-            messages.success(request, f"DHCPv{self.dhcp_version} service re-enabled on {instance}.")
-        except KeaException as exc:
-            messages.error(request, f"Failed to enable DHCPv{self.dhcp_version}: {kea_error_hint(exc)}")
-        except (requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Unexpected error enabling DHCPv%s on server %s", self.dhcp_version, pk)
-            messages.error(request, "An internal error occurred.")
+        _run_change(
+            request,
+            f"DHCPv{self.dhcp_version} service re-enabled on {instance}.",
+            lambda: runtime_change.enable_dhcp(instance, self.dhcp_version),
+        )
         return redirect(server_family_url(request, instance, self, "server"))
 
 
@@ -88,25 +71,13 @@ class _BaseServerDHCPDisableView(_KeaChangeMixin, ServerFamilyMixin, generic.Obj
                 self.get_extra_context(request, instance) | {"object": instance},
             )
         max_period = form.cleaned_data.get("max_period")
-        try:
-            client = instance.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(instance, exc))
-            return redirect(server_family_url(request, instance, self, "server"))
-        try:
-            client.dhcp_disable(self.dhcp_version, max_period=max_period)
-            if max_period:
-                messages.warning(
-                    request,
-                    f"DHCPv{self.dhcp_version} disabled on {instance} for up to {max_period}s.",
-                )
-            else:
-                messages.warning(request, f"DHCPv{self.dhcp_version} disabled on {instance}.")
-        except KeaException as exc:
-            messages.error(request, f"Failed to disable DHCPv{self.dhcp_version}: {kea_error_hint(exc)}")
-        except (requests.RequestException, RuntimeError, ValueError):
-            logger.exception("Unexpected error disabling DHCPv%s on server %s", self.dhcp_version, pk)
-            messages.error(request, "An internal error occurred.")
+        period = f" for up to {max_period}s" if max_period else ""
+        _run_change(
+            request,
+            f"DHCPv{self.dhcp_version} disabled on {instance}{period}.",
+            lambda: runtime_change.disable_dhcp(instance, self.dhcp_version, max_period),
+            applied_warning=True,
+        )
         return redirect(server_family_url(request, instance, self, "server"))
 
 

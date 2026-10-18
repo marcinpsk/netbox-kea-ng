@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
+import logging
 from collections.abc import Callable
 from typing import Any, cast
 from urllib.parse import urlencode as _urlencode
@@ -25,13 +26,15 @@ from ._base import (
     ConditionalLoginRequiredMixin,
     LazyClient,
     _KeaChangeMixin,
-    _run_config_change,
+    _run_change,
     _safe_return_url,
     daemon_version,
 )
 from .notices import notice, show_notices
 from .subnets import _NO_SUBNET_CIDR, _SUBNETS_TAB, _displayed_subnet
 from .workspace import ServerFamilyMixin
+
+logger = logging.getLogger(__name__)
 
 # One Config tab for both sections and both families; ServerOptionDef4View owns it.
 _CONFIG_TAB = OptionalViewTab(label="Config", weight=1050, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
@@ -56,7 +59,7 @@ def config_nav_context(server_pk: int, section: str, dhcp_version: Family) -> di
 def _run_option_change(request: HttpRequest, confirmed: str, change: Callable[[], ConfigChangeOutcome]) -> None:
     """Run a DHCP Option change. A stale or renamed option row is a form error, not a Configuration Change result."""
     try:
-        _run_config_change(request, confirmed, change)
+        _run_change(request, confirmed, change)
     except DHCPOptionConflict:
         messages.error(request, "DHCP Options changed or are ambiguous. Reload the form before saving.")
     except DHCPOptionNameChange:
@@ -312,6 +315,22 @@ class IPAddressKeaReservationsView(ConditionalLoginRequiredMixin, View):
         )
 
 
+def _daemon_online(server: Server, version: Family) -> bool:
+    """Return whether the DHCP daemon of *version* answers ``version-get``. A failed read is logged and is offline."""
+    try:
+        with LazyClient(server, version) as client:
+            daemon_version(client)
+    except (KeaException, requests.RequestException, OSError, RuntimeError, ValueError) as exc:
+        logger.warning(
+            "The DHCPv%s daemon of server %s did not answer the status badge read (%s)",
+            version,
+            server.pk,
+            type(exc).__name__,
+        )
+        return False
+    return True
+
+
 class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):
     """HTMX endpoint: lightweight status fragment for one server.
 
@@ -328,18 +347,10 @@ class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):
         """Return status badge fragment for server *pk*."""
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
 
-        statuses: list[dict] = []
         families: tuple[tuple[Family, bool], ...] = ((4, server.dhcp4), (6, server.dhcp6))
-        for version, enabled in families:
-            if not enabled:
-                continue
-            try:
-                with LazyClient(server, version) as client:
-                    daemon_version(client)
-                online = True
-            except (KeaException, requests.RequestException, OSError, RuntimeError, ValueError):
-                online = False
-            statuses.append({"version": version, "online": online})
+        statuses = [
+            {"version": version, "online": _daemon_online(server, version)} for version, enabled in families if enabled
+        ]
 
         return render(
             request,
@@ -473,7 +484,7 @@ class BaseServerOptionDefAddView(_KeaChangeMixin, ServerFamilyMixin, Conditional
         }
         if form.cleaned_data.get("array"):
             option_def["array"] = True
-        _run_config_change(
+        _run_change(
             request,
             f"Option definition '{option_def['name']}' (code {option_def['code']}) added.",
             lambda: config_write.add_option_definition(server, self.dhcp_version, option_def),
@@ -528,7 +539,7 @@ class BaseServerOptionDefDeleteView(_KeaChangeMixin, ServerFamilyMixin, Conditio
     def post(self, request: HttpRequest, pk: int, code: int, space: str) -> HttpResponse:
         """Delete the option definition."""
         server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
-        _run_config_change(
+        _run_change(
             request,
             f"Option definition code={code} space={space} deleted.",
             lambda: config_write.delete_option_definition(server, self.dhcp_version, code, space),

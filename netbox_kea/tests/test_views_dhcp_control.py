@@ -12,20 +12,29 @@ are asserted:
 * disable → ``dhcp-disable`` (``service=["dhcp{v}"]``; ``{"max-period": N}`` only
   when a period is supplied — omitted otherwise)
 
-Error paths run through the real client: a ``{"result": 1}`` response becomes a
-real ``KeaException`` and a boundary ``requests.RequestException`` a transport
-error; the view flashes a generic message and must not leak the raw Kea text. The
-error tests follow the redirect onto the status tab, which itself issues
-``status-get``/``version-get``/``config-get`` — registered benign so the landing
-page renders.
+Error paths run through the real client and ``runtime_change`` (ADR 0011): a ``{"result": 1}`` response is a
+rejection that shows Kea's text, and a lost or malformed reply is unconfirmed. No Python exception text reaches
+the page. The tests that follow the redirect land on the status tab, which itself issues
+``status-get``/``version-get``/``config-get``, registered benign so the landing page renders.
 """
+
+import json
+import ssl
 
 import requests
 from django.contrib import messages as django_messages
 from django.urls import reverse
+from urllib3.exceptions import SSLError as Urllib3SSLError
 
-from .kea_stub import stub_kea
-from .utils import _make_db_server, _ViewTestBase, active_tabs
+from .kea_stub import reply_read_failure, stub_kea
+from .utils import UNCONFIRMED_RUNTIME, _make_db_server, _ViewTestBase, active_tabs
+
+_UNCONFIRMED = "Kea did not confirm the change. Check the Server before you try again."
+_FORWARD_FAILURE = {"result": 1, "text": "unable to forward command to the dhcp4 service: Connection refused"}
+
+
+def _messages(response) -> list[str]:
+    return [str(message) for message in django_messages.get_messages(response.wsgi_request)]
 
 
 def _config_get_empty(body):
@@ -71,31 +80,54 @@ class TestServerDHCP4EnableView(_ViewTestBase):
         self._assert_no_none_pk_redirect(response)
         self.assertEqual(kea.bodies("dhcp-enable")[0]["service"], ["dhcp4"])
 
-    def test_post_on_kea_exception_shows_error_and_redirects(self):
-        """POST with KeaException must flash a generic error; raw Kea text must not be leaked."""
-        secret = "kea_secret_internal_url=https://kea.internal:8080/api/"
-        with _control_stub(**{"dhcp-enable": {"result": 1, "text": secret}}):
-            response = self.client.post(self._url(), follow=True)
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("kea_secret_internal_url", response.content.decode())
-        self.assertIn("Failed to enable DHCPv4:", response.content.decode())
+    def test_post_on_kea_exception_shows_the_rejection_with_kea_text(self):
+        """A failure result changed nothing in Kea memory: a rejection with Kea's own text, and no read after it."""
+        with _control_stub(**{"dhcp-enable": {"result": 1, "text": "the service is busy"}}) as kea:
+            response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(_messages(response), ["Kea rejected the change. Kea replied: the service is busy"])
+        self.assertEqual(kea.commands(), ["dhcp-enable"])
 
-    def test_post_on_unexpected_exception_shows_error_and_redirects(self):
-        """POST with transport exception must not leak the raw exception text."""
+    def test_post_on_a_lost_reply_is_unconfirmed_without_exception_text(self):
+        """A reply that was lost after the send can follow an applied change, so the message asks for a check."""
         marker = "kea_secret_transport_marker=https://kea.internal/"
-        with _control_stub(**{"dhcp-enable": requests.RequestException(marker)}):
-            response = self.client.post(self._url(), follow=True)
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("kea_secret_transport_marker", response.content.decode())
-        self.assertIn("An internal error occurred.", response.content.decode())
+        for name, reply in (
+            ("lost", requests.RequestException(marker)),
+            ("malformed", ["kea_secret_reply_marker"]),
+            ("forward failure", _FORWARD_FAILURE),
+        ):
+            self._fresh_client()
+            with self.subTest(name), _control_stub(**{"dhcp-enable": reply}):
+                response = self.client.post(self._url(), follow=True)
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn("kea_secret", response.content.decode())
+            (message,) = _messages(response)
+            self.assertTrue(message.startswith(_UNCONFIRMED), message)
 
-    def test_post_on_malformed_reply_shows_error_and_redirects(self):
-        """A reply entry without a result must flash the generic error, not return 500."""
-        with _control_stub(**{"dhcp-enable": ["kea_secret_reply_marker"]}):
-            response = self.client.post(self._url(), follow=True)
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("kea_secret_reply_marker", response.content.decode())
-        self.assertIn("An internal error occurred.", response.content.decode())
+    def test_a_raw_tls_failure_while_reading_the_reply_is_unconfirmed(self):
+        failures = (
+            ssl.SSLError("unreadable TLS record"),
+            ssl.SSLCertVerificationError("certificate verification failed"),
+            Urllib3SSLError("unreadable TLS record"),
+        )
+        for failure in failures:
+            self._fresh_client()
+            with self.subTest(error=type(failure).__name__):
+                with reply_read_failure(failure) as sent:
+                    response = self.client.post(self._url())
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(len(sent), 1)
+                self.assertEqual(json.loads(sent[0].body), {"command": "dhcp-enable", "service": ["dhcp4"]})
+                diagnostic = (
+                    "The TLS connection to Kea failed: NetBox could not verify the certificate of Kea."
+                    " Check the TLS settings of the Server."
+                    if isinstance(failure, ssl.SSLCertVerificationError)
+                    else "The TLS connection to Kea failed. Check the TLS settings of the Server."
+                )
+                self.assertEqual(
+                    [(message.level, str(message)) for message in django_messages.get_messages(response.wsgi_request)],
+                    [(django_messages.WARNING, f"{UNCONFIRMED_RUNTIME} {diagnostic}")],
+                )
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""
@@ -121,7 +153,13 @@ class TestServerDHCPEnableMissingTLSFile(_ViewTestBase):
         response = self.client.post(reverse("plugins:netbox_kea:server_dhcp4_enable", args=[server.pk]))
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
-            [str(m) for m in django_messages.get_messages(response.wsgi_request)], ["An internal error occurred."]
+            _messages(response),
+            [
+                (
+                    "The change was not sent to Kea, because the Server settings are not valid. "
+                    "A TLS certificate, key or CA file of the Server could not be found."
+                )
+            ],
         )
 
 
@@ -185,6 +223,17 @@ class TestServerDHCP4DisableView(_ViewTestBase):
         self.assertEqual(body["service"], ["dhcp4"])
         self.assertEqual(body["arguments"], {"max-period": 300})
 
+    def test_an_applied_disable_is_a_warning_because_the_service_is_down(self):
+        for data, text in (
+            ({"confirm": "1"}, f"DHCPv4 disabled on {self.server}."),
+            ({"confirm": "1", "max_period": "300"}, f"DHCPv4 disabled on {self.server} for up to 300s."),
+        ):
+            self._fresh_client()
+            with self.subTest(data=data), _control_stub():
+                response = self.client.post(self._url(), data)
+            levels = [(message.level, str(message)) for message in django_messages.get_messages(response.wsgi_request)]
+            self.assertEqual(levels, [(django_messages.WARNING, text)])
+
     def test_post_with_invalid_max_period_rerenders_form(self):
         """POST with non-integer max_period must re-render the form (no Kea call)."""
         with stub_kea({}) as kea:
@@ -192,31 +241,29 @@ class TestServerDHCP4DisableView(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("dhcp-disable", kea.commands())
 
-    def test_post_on_kea_exception_shows_error_and_redirects(self):
-        """POST with KeaException must flash a generic error; raw Kea text must not be leaked."""
-        secret = "kea_secret_internal_url=https://kea.internal:8080/api/"
-        with _control_stub(**{"dhcp-disable": {"result": 1, "text": secret}}):
-            response = self.client.post(self._url(), {"confirm": "1"}, follow=True)
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("kea_secret_internal_url", response.content.decode())
-        self.assertIn("Failed to disable DHCPv4:", response.content.decode())
+    def test_post_on_kea_exception_shows_the_rejection_with_kea_text(self):
+        """A failure result changed nothing in Kea memory: a rejection with Kea's own text, and no read after it."""
+        with _control_stub(**{"dhcp-disable": {"result": 1, "text": "the service is busy"}}) as kea:
+            response = self.client.post(self._url(), {"confirm": "1"})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(_messages(response), ["Kea rejected the change. Kea replied: the service is busy"])
+        self.assertEqual(kea.commands(), ["dhcp-disable"])
 
-    def test_post_on_unexpected_exception_shows_error_and_redirects(self):
-        """POST with transport exception must not leak the raw exception text."""
+    def test_post_on_a_lost_reply_is_unconfirmed_without_exception_text(self):
+        """A reply that was lost after the send can follow an applied change, so the message asks for a check."""
         marker = "kea_secret_transport_marker=https://kea.internal/"
-        with _control_stub(**{"dhcp-disable": requests.RequestException(marker)}):
-            response = self.client.post(self._url(), {"confirm": "1"}, follow=True)
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("kea_secret_transport_marker", response.content.decode())
-        self.assertIn("An internal error occurred.", response.content.decode())
-
-    def test_post_on_malformed_reply_shows_error_and_redirects(self):
-        """A reply entry without a result must flash the generic error, not return 500."""
-        with _control_stub(**{"dhcp-disable": ["kea_secret_reply_marker"]}):
-            response = self.client.post(self._url(), {"confirm": "1"}, follow=True)
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("kea_secret_reply_marker", response.content.decode())
-        self.assertIn("An internal error occurred.", response.content.decode())
+        for name, reply in (
+            ("lost", requests.RequestException(marker)),
+            ("malformed", ["kea_secret_reply_marker"]),
+            ("forward failure", _FORWARD_FAILURE),
+        ):
+            self._fresh_client()
+            with self.subTest(name), _control_stub(**{"dhcp-disable": reply}):
+                response = self.client.post(self._url(), {"confirm": "1"}, follow=True)
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn("kea_secret", response.content.decode())
+            (message,) = _messages(response)
+            self.assertTrue(message.startswith(_UNCONFIRMED), message)
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""

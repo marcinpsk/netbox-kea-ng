@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""Every Server page that reads a Snapshot shows the error headline of each kind it reads when Kea fails.
+"""Every Server page that reads a Snapshot or loads one record shows the error headline of each kind it reads.
 
 The sweep walks the URL resolver, so a new Server page fails until someone names its Snapshot kinds or exempts it.
 """
@@ -13,7 +13,7 @@ from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
 from django.urls import URLPattern, URLResolver, get_resolver, reverse
 
-from netbox_kea.views.notices import HEADLINES, SnapshotKind
+from netbox_kea.views.notices import HEADLINES, NoticeKind
 
 from .kea_stub import stub_kea
 from .kea_wire_discipline import WIRE_COMMANDS
@@ -53,8 +53,6 @@ _EXEMPT = {
     "server_lease6_add": "A form that reads no Snapshot.",
     "server_lease4_bulk_import": "An upload form that reads no Kea data.",
     "server_lease6_bulk_import": "An upload form that reads no Kea data.",
-    "server_lease4_edit": "It reads one Lease exactly, not a Snapshot, and shows its own error.",
-    "server_lease6_edit": "It reads one Lease exactly, not a Snapshot, and shows its own error.",
     "server_leases4_delete": "A GET redirects; the delete is a POST.",
     "server_leases6_delete": "A GET redirects; the delete is a POST.",
     "server_option_def4_add": "A form that reads no Kea data.",
@@ -63,8 +61,6 @@ _EXEMPT = {
     "server_option_def6_delete": "A confirmation page that reads no Kea data.",
     "server_reservation4_bulk_import": "An upload form that reads no Kea data.",
     "server_reservation6_bulk_import": "An upload form that reads no Kea data.",
-    "server_reservation4_delete": "It confirms the Subnet identity and reads one Reservation exactly; no Snapshot.",
-    "server_reservation6_delete": "It confirms the Subnet identity and reads one Reservation exactly; no Snapshot.",
     "server_reservation4_published_name": "An htmx preview that shows no suffix when the Catalogue cannot.",
     "server_reservation6_published_name": "An htmx preview that shows no suffix when the Catalogue cannot.",
     "server_shared_network4_add": "A form that reads no Kea data.",
@@ -73,8 +69,8 @@ _EXEMPT = {
     "server_shared_network6_delete": "A confirmation page that reads no Kea data.",
 }
 
-#: The Snapshot kinds whose error headline each page must show, by route name without its family.
-_EXPECTED: dict[str, frozenset[SnapshotKind]] = {
+#: The kinds whose error headline each page must show, by route name without its family.
+_EXPECTED: dict[str, frozenset[NoticeKind]] = {
     "combined_subnets": frozenset({"catalogue"}),
     "combined_shared_networks": frozenset({"configuration"}),
     "combined_reservations": frozenset({"reservation"}),
@@ -94,6 +90,8 @@ _EXPECTED: dict[str, frozenset[SnapshotKind]] = {
     "server_leases": frozenset({"catalogue"}),
     "server_reservation_add": frozenset({"catalogue"}),
     "server_reservation_edit": frozenset({"catalogue"}),
+    "server_reservation_delete": frozenset({"catalogue"}),
+    "server_lease_edit": frozenset({"lease_target"}),
     "server_reservations": frozenset({"reservation"}),
 }
 
@@ -101,10 +99,12 @@ _EXPECTED: dict[str, frozenset[SnapshotKind]] = {
 _QUERIES = {
     "server_reservation4_edit": {"identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"},
     "server_reservation6_edit": {"identifier_type": "duid", "identifier": "00:01:02:03"},
+    "server_reservation4_delete": {"identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"},
+    "server_reservation6_delete": {"identifier_type": "duid", "identifier": "00:01:02:03"},
 }
 
 #: The htmx partial request of a page, and the Snapshot kinds whose error headline it must show inline.
-_HTMX_SEARCHES: dict[str, tuple[dict[str, str], frozenset[SnapshotKind]]] = {
+_HTMX_SEARCHES: dict[str, tuple[dict[str, str], frozenset[NoticeKind]]] = {
     "server_leases4": ({"by": "hw", "q": "aa:bb:cc:dd:ee:ff"}, frozenset({"catalogue", "lease"})),
     "server_leases6": ({"by": "duid", "q": "00:01:02:03:04:05"}, frozenset({"catalogue", "lease"})),
     "server_subnets4": ({}, frozenset({"catalogue"})),
@@ -112,8 +112,22 @@ _HTMX_SEARCHES: dict[str, tuple[dict[str, str], frozenset[SnapshotKind]]] = {
 }
 
 _ARGUMENTS = {
-    4: {"subnet_id": 1, "pool": "198.18.0.10-198.18.0.20", "network_name": "net", "code": 222, "space": "dhcp4"},
-    6: {"subnet_id": 1, "pool": "2001:db8::10-2001:db8::20", "network_name": "net", "code": 222, "space": "dhcp6"},
+    4: {
+        "subnet_id": 1,
+        "pool": "198.18.0.10-198.18.0.20",
+        "network_name": "net",
+        "code": 222,
+        "space": "dhcp4",
+        "ip_address": "198.18.0.10",
+    },
+    6: {
+        "subnet_id": 1,
+        "pool": "2001:db8::10-2001:db8::20",
+        "network_name": "net",
+        "code": 222,
+        "space": "dhcp6",
+        "ip_address": "2001:db8::10",
+    },
 }
 _FAMILY = re.compile(r"(?<=[a-z])([46])(?=_|$)")
 
@@ -134,7 +148,7 @@ def _server_routes(resolver: URLResolver | None = None, namespace: str = "", par
                 yield f"{namespace}{entry.name}".removeprefix(_NAMESPACE), found
 
 
-def _shown_error_kinds(response) -> set[SnapshotKind]:
+def _shown_error_kinds(response) -> set[NoticeKind]:
     """Return each Snapshot kind whose headline the page shows at the error level, as a message or an inline alert."""
     shown = {str(m) for m in get_messages(response.wsgi_request) if m.level == django_messages.ERROR}
     page = response.content.decode() if response.status_code == 200 else ""

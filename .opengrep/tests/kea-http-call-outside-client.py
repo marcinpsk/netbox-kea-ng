@@ -39,6 +39,7 @@ def good_client(server, family):
 
 
 def good_exception_handler(server, family):
+    # ruleid: kea-view-read-ladder
     try:
         return server.get_client(version=family).command(KeaCommand.VERSION_GET, family)
     # ok: kea-http-call-outside-client

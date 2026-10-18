@@ -60,9 +60,9 @@ configuration, the request was never sent, or the client configuration is invali
 
 ### Application
 
-- Only connect-phase failures mean that the request was never sent: `requests.ConnectTimeout`, and a
-  `requests.ConnectionError` caused by urllib3 `NewConnectionError`. The session sends one POST and does not
-  retry.
+- Only these failures mean that the request was never sent: a connect-phase failure (`requests.ConnectTimeout`,
+  and a `requests.ConnectionError` caused by urllib3 `NewConnectionError`), an invalid URL, and an HTTP 401
+  answer, because Kea did not run the command. The session sends one POST and does not retry.
 - A read timeout, a reset during the reply, or a malformed reply to a command that can change the configuration
   gives `unknown`. The same failure on a read, or on the `config-test` of a candidate configuration, comes before
   any such command. It is a rejection because the change was never sent.

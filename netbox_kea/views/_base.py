@@ -2,27 +2,33 @@
 # SPDX-License-Identifier: Apache-2.0
 import logging
 import re
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 from urllib.parse import parse_qsl, unquote, urlparse, urlsplit
 from urllib.parse import urlencode as _urlencode
 
 import requests
 from django.contrib import messages
 from django.contrib.auth.models import PermissionsMixin
+from django.core.exceptions import ValidationError
+from django.db import DatabaseError
+from django.dispatch import Signal
 from django.http import Http404, HttpResponse, HttpResponseForbidden
 from django.http.request import HttpRequest
 from django.urls import Resolver404, get_script_prefix, resolve, reverse
 from django.utils.http import url_has_allowed_host_and_scheme
+from extras.models import JournalEntry
 from netbox.tables import BaseTable
 
 from .. import display_cache
-from ..config_write import ConfigChangeOutcome, ConfigChangeRejected, RejectionReason
+from ..change_outcome import ChangeRejected, RejectionReason
+from ..config_write import ConfigChangeOutcome, ReservationChangeOutcome
 from ..constants import Family
 from ..dhcp_options import shown_options
 from ..kea import DaemonStatus, DaemonVersion, KeaClient, KeaCommand, KeaException, SubnetUtilization, close_quietly
 from ..models import Server
+from ..runtime_change import RuntimeChangeOutcome
 from ..server_configuration import SharedNetwork
 from ..subnet_catalogue import ConfiguredSubnet, VerifiedSubnet
 
@@ -39,18 +45,23 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseTable)
-OutcomeT = TypeVar("OutcomeT", bound=ConfigChangeOutcome)
+OutcomeT = TypeVar("OutcomeT", bound=ConfigChangeOutcome | RuntimeChangeOutcome)
+RowT = TypeVar("RowT")
 
 # Allowed characters in a pool range/CIDR string (digits, dots, colons, letters a-f, slash, hyphen).
 # Protects the <path:pool> URL parameter from injection before it reaches the Kea API.
 _POOL_RE = re.compile(r"^[0-9a-fA-F.:/-]{3,100}$")
 
 _UNCONFIRMED = "Kea did not confirm the change. Check the server configuration before retrying."
+_RECORDED_NOTHING = "NetBox recorded nothing for this change."
+_UNCONFIRMED_RUNTIME = f"Kea did not confirm the change. Check the Server before you try again. {_RECORDED_NOTHING}"
+_NOT_SAVED = "It is live, but it may not survive a Kea restart, because Kea did not save it to disk."
 _REJECTED: dict[RejectionReason, str] = {
     "kea-rejected": "Kea rejected the change.",
     "config-test-rejected": "Kea's config-test rejected the change, so it was not applied.",
     "not-sent": "The change was not sent to Kea.",
     "invalid-client-configuration": "The change was not sent to Kea, because the Server settings are not valid.",
+    "target-changed": "This request changed nothing.",
 }
 
 
@@ -115,6 +126,18 @@ def _client_settings_error(server: Server, exc: ValueError) -> str:
     return f"The Kea client settings of Server {server.name} are invalid. Check the client certificate and key."
 
 
+def _client_settings_refusal(server: Server, version: Family) -> str:
+    """Return the client settings error of *server*, or an empty string when its Kea client can be built.
+
+    It builds the client and closes it again, so it sends nothing.
+    """
+    try:
+        server.get_client(version=version).close()
+    except ValueError as exc:
+        return _client_settings_error(server, exc)
+    return ""
+
+
 class _KeaChangeMixin:
     """Mixin that gates a view behind ``netbox_kea.change_server``.
 
@@ -139,32 +162,140 @@ class _KeaChangeMixin:
         return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
 
 
-def _run_config_change(
-    request: HttpRequest, confirmed: str | Callable[[OutcomeT], str], change: Callable[[], OutcomeT]
+def _run_change(
+    request: HttpRequest,
+    confirmed: str | Callable[[OutcomeT], str],
+    change: Callable[[], OutcomeT],
+    *,
+    subject: str = "",
+    applied_warning: bool = False,
 ) -> OutcomeT | None:
-    """Run one Configuration Change, show one message for its outcome or its rejection, and return the outcome.
+    """Run one change, show one message for its outcome or its rejection, and return the outcome.
 
     *confirmed* is the message for a change that Kea applied, such as "Shared network 'x' created.", or a function
-    that builds it from the outcome. Returns None after a rejection.
+    that builds it from the outcome. *applied_warning* shows it as a warning, for a change that stops a service.
+    *subject*, such as "Lease 192.0.2.10", starts any other message. Returns None after a rejection.
     """
     try:
         outcome = change()
-    except ConfigChangeRejected as rejection:
-        messages.error(request, " ".join((_REJECTED[rejection.reason], *rejection.diagnostics)))
+    except ChangeRejected as rejection:
+        _rejection_message(rejection).show(request, subject)
         return None
     if outcome.application == "unknown":
-        # Never claim the change is live: the disk warning names the running configuration only.
-        not_saved = ("Kea also could not save its running configuration to disk.",)
-        parts = (_UNCONFIRMED, *(not_saved if outcome.persistence == "failed" else ()), *outcome.diagnostics)
-        messages.warning(request, " ".join(parts))
+        _unconfirmed_message(outcome).show(request, subject)
         return outcome
     text = confirmed if isinstance(confirmed, str) else confirmed(outcome)
-    if outcome.persistence == "failed":
-        restart = "It is live, but it may not survive a Kea restart, because Kea did not save it to disk."
-        messages.warning(request, " ".join((text, restart, *outcome.diagnostics)))
+    not_saved = _persistence_failure(outcome)
+    if not_saved is not None:
+        messages.warning(request, f"{text} {not_saved}")
+    elif applied_warning:
+        messages.warning(request, text)
     else:
         messages.success(request, text)
     return outcome
+
+
+@dataclass(frozen=True)
+class ChangeMessage:
+    """The message of a change that Kea did not apply or did not confirm. *warning* False shows it as an error."""
+
+    text: str
+    warning: bool
+
+    def show(self, request: HttpRequest, subject: str = "") -> None:
+        """Queue the message, after *subject* when one is given."""
+        show = messages.warning if self.warning else messages.error
+        show(request, _about(subject, self.text))
+
+
+@dataclass
+class ChangeLoop(Generic[RowT, OutcomeT]):
+    """The rows of a loop of changes, by what Kea did with them, each with its outcome or its message."""
+
+    applied: list[tuple[RowT, OutcomeT]] = field(default_factory=list)
+    rejected: list[tuple[RowT, ChangeMessage]] = field(default_factory=list)
+    unknown: tuple[RowT, ChangeMessage] | None = None
+    #: The row where the loop stopped: the unknown row, a rejected row that stops the loop, or a row whose client
+    #: could not be built.
+    stopped_at: RowT | None = None
+    #: The rows after *stopped_at*, which the loop did not send.
+    not_sent: list[RowT] = field(default_factory=list)
+
+
+def _run_change_loop(
+    rows: Sequence[RowT], change: Callable[[RowT], OutcomeT], *, stop_on_rejection: bool = False
+) -> ChangeLoop[RowT, OutcomeT]:
+    """Send one change for each of *rows*. A rejected row does not stop the loop, unless *stop_on_rejection* is true.
+
+    The loop stops at the first unknown row, and at the first row whose client could not be built, because every
+    later row would fail the same way.
+    """
+    loop: ChangeLoop[RowT, OutcomeT] = ChangeLoop()
+    for index, row in enumerate(rows):
+        try:
+            outcome = change(row)
+        except ChangeRejected as rejection:
+            loop.rejected.append((row, _rejection_message(rejection)))
+            if not stop_on_rejection and rejection.reason != "invalid-client-configuration":
+                continue
+        else:
+            if outcome.application == "applied":
+                loop.applied.append((row, outcome))
+                continue
+            loop.unknown = (row, _unconfirmed_message(outcome))
+        loop.stopped_at = row
+        loop.not_sent = list(rows[index + 1 :])
+        break
+    return loop
+
+
+def _rejection_message(rejection: ChangeRejected) -> ChangeMessage:
+    # Another writer changed the target, so nothing is wrong with the request or the Server.
+    text = " ".join((_REJECTED[rejection.reason], *rejection.diagnostics))
+    return ChangeMessage(text, warning=rejection.reason == "target-changed")
+
+
+def _unconfirmed_message(outcome: ConfigChangeOutcome | RuntimeChangeOutcome) -> ChangeMessage:
+    if isinstance(outcome, RuntimeChangeOutcome):
+        return ChangeMessage(" ".join((_UNCONFIRMED_RUNTIME, *outcome.diagnostics)), warning=True)
+    # Never claim the change is live: the disk warning names the running configuration only.
+    not_saved = ("Kea also could not save its running configuration to disk.",)
+    recorded = (_RECORDED_NOTHING,) if isinstance(outcome, ReservationChangeOutcome) else ()
+    parts = (_UNCONFIRMED, *recorded, *(not_saved if outcome.persistence == "failed" else ()), *outcome.diagnostics)
+    return ChangeMessage(" ".join(parts), warning=True)
+
+
+def _persistence_failure(outcome: ConfigChangeOutcome | RuntimeChangeOutcome) -> str | None:
+    """Return the warning for an applied change that Kea did not save to disk, or None when nothing failed."""
+    if isinstance(outcome, ConfigChangeOutcome) and outcome.persistence == "failed":
+        return " ".join((_NOT_SAVED, *outcome.diagnostics))
+    return None
+
+
+def _journal_applied(request: HttpRequest, server: Server, comments: str) -> None:
+    """Write the journal entry of an applied change. A failure shows a separate error and keeps the change."""
+    try:
+        JournalEntry.objects.create(assigned_object=server, created_by=request.user, kind="info", comments=comments)
+    except (DatabaseError, ValidationError):
+        logger.exception("Could not write the journal entry of an applied change to Server %s", server.pk)
+        messages.error(
+            request, "Kea applied the change, but NetBox could not write the journal entry; see server logs."
+        )
+
+
+def _signal_applied(request: HttpRequest, signal: Signal, name: str, **kwargs: Any) -> None:
+    """Send *signal* after an applied change. A receiver that fails shows a separate error."""
+    # send_robust() returns the error of each receiver instead of raising it.
+    responses = signal.send_robust(sender=None, request=request, **kwargs)
+    errors = [response for _receiver, response in responses if isinstance(response, Exception)]
+    for error in errors:
+        logger.error("A receiver of the %s signal failed", name, exc_info=error)
+    if errors:
+        messages.error(request, f"Kea applied the change, but a receiver of the {name} signal failed; see server logs.")
+
+
+def _about(subject: str, text: str) -> str:
+    return f"{subject}: {text}" if subject else text
 
 
 def _catalogue_subnet_row(

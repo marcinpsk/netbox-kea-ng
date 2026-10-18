@@ -37,6 +37,7 @@ from ..dhcp_options import ShownOption
 from ..views.notices import HEADLINES
 from ..views.subnets import _NO_SUBNET_CIDR
 from .kea_stub import (
+    READ_FAILURES,
     Applied,
     SubnetDaemon,
     _catalogue_responses_for_subnets,
@@ -47,7 +48,14 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _make_db_server, _page_data, _ViewTestBase, save_key_without_certificate
+from .utils import (
+    INVALID_SERVER_SETTINGS,
+    UNCONFIRMED_RUNTIME,
+    _make_db_server,
+    _page_data,
+    _ViewTestBase,
+    save_key_without_certificate,
+)
 
 # Shared stub responses for the subnet list/table views, which issue config-get
 # (subnets + shared-networks) then stat-lease{v}-get (utilisation; degrades if the
@@ -558,12 +566,12 @@ class TestServerSubnet4WipeView(_ViewTestBase):
 
     def test_post_with_a_client_that_cannot_be_built_is_a_settings_error(self):
         """A key without a certificate is a Server setting error, not a connection failure; nothing is wiped."""
-        expected = save_key_without_certificate(self.server)
+        save_key_without_certificate(self.server)
         with stub_kea({}) as kea:
             response = self.client.post(self._url(subnet_id=10))
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands(), [])
-        self.assertEqual([str(message) for message in get_messages(response.wsgi_request)], [expected])
+        self.assertEqual([str(message) for message in get_messages(response.wsgi_request)], [INVALID_SERVER_SETTINGS])
 
     def test_post_on_a_subnet_without_leases_reports_success(self):
         """Kea 3.2.0 answers result 3 when there is no lease to delete; the Subnet is still empty."""
@@ -574,31 +582,29 @@ class TestServerSubnet4WipeView(_ViewTestBase):
         self.assertIn((django_messages.SUCCESS, "All leases in subnet 10 wiped."), shown)
         self.assertNotIn(django_messages.ERROR, [level for level, _text in shown])
 
-    def test_post_on_kea_exception_shows_error_message(self):
-        """POST that causes a KeaException must flash an error and redirect (no 500)."""
-        with stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": {"result": 1, "text": "hook not loaded"}}):
+    def test_post_on_a_failure_result_is_unconfirmed_with_kea_text(self):
+        """The backend deletes the Leases one at a time, so a failure result can follow deleted Leases (ADR 0011)."""
+        with stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": {"result": 1, "text": "could not write the lease file"}}):
             response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
-
-    def test_post_on_unexpected_exception_shows_error_message(self):
-        """POST that raises an unexpected exception must redirect (no 500)."""
-        with stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": ValueError("unexpected")}):
-            response = self.client.post(self._url())
-        self.assertEqual(response.status_code, 302)
-        self._assert_no_none_pk_redirect(response)
-
-    def test_post_on_malformed_reply_shows_error_message(self):
-        """A reply entry without a result must redirect with an error (no 500)."""
-        from django.contrib.messages import get_messages
-
-        with stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": ["ok"]}):
-            response = self.client.post(self._url())
-        self.assertEqual(response.status_code, 302)
         self.assertEqual(
             [str(message) for message in get_messages(response.wsgi_request)],
-            ["Failed to wipe leases: see server logs for details."],
+            [f"{UNCONFIRMED_RUNTIME} Kea replied: could not write the lease file"],
         )
+
+    def test_post_on_a_lost_or_malformed_reply_is_unconfirmed(self):
+        """A lost or malformed reply asks the operator to check the Server, never an HTTP 500."""
+        for name, reply in (("lost", requests.ReadTimeout("read timed out")), ("malformed", ["ok"])):
+            self._fresh_client()
+            with self.subTest(name), stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": reply}) as kea:
+                response = self.client.post(self._url())
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(
+                [str(message) for message in get_messages(response.wsgi_request)],
+                [f"{UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable."],
+            )
+            self.assertEqual(kea.commands(), ["lease4-wipe"])
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""
@@ -1686,12 +1692,6 @@ def _incomplete_networks(*members: dict) -> dict:
     return {"result": 0, "arguments": {"Dhcp4": {"subnet4": [], "shared-networks": networks}}}
 
 
-_INVALID_SERVER_SETTINGS = (
-    "The change was not sent to Kea, because the Server settings are not valid. "
-    "NetBox could not build a Kea client from the Server connection settings."
-)
-
-
 class TestSubnetAddExceptionPaths(_ViewTestBase):
     """_BaseSubnetAddView GET/POST paths around the change."""
 
@@ -1731,7 +1731,7 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
         with stub_kea(SubnetDaemon(4).responses()) as kea:
             response = self.client.post(url, _SUBNET_ADD_POST)
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, _INVALID_SERVER_SETTINGS)
+        self.assertContains(response, INVALID_SERVER_SETTINGS)
         self.assertEqual(kea.commands(), [])
 
 
@@ -2700,7 +2700,7 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
                 bad_url = url.replace(f"/servers/{self.server.pk}/", f"/servers/{bad.pk}/")
                 messages, kea = self._post(bad_url, data, _change_responses(_subnet_1()))
                 self.assertEqual(kea.commands(), [])
-                self.assertEqual(messages, [(django_messages.ERROR, _INVALID_SERVER_SETTINGS)])
+                self.assertEqual(messages, [(django_messages.ERROR, INVALID_SERVER_SETTINGS)])
 
     def test_a_pool_delete_whose_pool_is_outside_the_cidr_sends_nothing(self):
         url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 1, "10.0.1.10-10.0.1.20"])
@@ -3244,12 +3244,13 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
             ),
             (edit_url, {**_shown(), "subnet_cidr": "198.18.0.0/24", "shared_network": ""}, "subnet4-update"),
         ):
+            self._fresh_client()
             with self.subTest(operation=command), stub_kea(responses) as kea:
                 response = self.client.post(url, data)
                 self.assertEqual(response.status_code, 302)
                 self.assertIn(command, kea.commands())
                 messages = list(get_messages(response.wsgi_request))
-                self.assertTrue(any(message.level == django_messages.SUCCESS for message in messages))
+                self.assertEqual(sum(message.level == django_messages.SUCCESS for message in messages), 1)
 
     def test_missing_shared_network_subnet_id_hides_inherited_hints(self):
         self._assert_unreadable_shared_networks_hide_hints(
@@ -3497,16 +3498,16 @@ class TestPoolAddPostErrors(_ViewTestBase):
         malformed_probe = {"result": 0, "arguments": {"hosts": None, "next": {"from": 0, "source-index": 0}}}
 
         with self._pool_add_stub(**{"reservation-get-page": malformed_probe}) as kea:
-            with self.assertLogs("netbox_kea.views.subnets", level="WARNING") as logs:
+            with self.assertLogs("netbox_kea.views.notices", level="WARNING") as logs:
                 response = self.client.post(
                     self._url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.10-10.0.0.20"}, follow=True
                 )
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("subnet4-delta-add", kea.commands())
-        overlap_records = [record for record in logs.records if "overlap" in record.getMessage()]
-        self.assertTrue(overlap_records)
-        self.assertIsNotNone(overlap_records[0].exc_info)
+        read_records = [record for record in logs.records if "Failed to read reservation" in record.getMessage()]
+        self.assertTrue(read_records, logs.output)
+        self.assertIsNotNone(read_records[0].exc_info)
 
 
 # Every command that changes Kea state on the Pool add path.
@@ -3986,7 +3987,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         with stub_kea({}) as kea:
             response = self.client.post(url, {**_shown(), "subnet_cidr": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, _INVALID_SERVER_SETTINGS)
+        self.assertContains(response, INVALID_SERVER_SETTINGS)
         self.assertEqual(kea.commands(), [])
 
     # ── 6. Pool add with reservation overlap warning ────
@@ -3994,32 +3995,22 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
     def _pool_add_url(self):
         return reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 42])
 
-    def test_pool_add_reservation_lookup_failure_warns_that_the_check_did_not_run(self):
-        """A Kea contract error must tell the operator that no overlap check ran."""
-        with self.assertLogs("netbox_kea.views.subnets", level="WARNING") as logs:
-            with self._pool_add_stub(**{"reservation-get-page": {"result": 2, "text": "host_cmds not loaded"}}):
+    def test_pool_add_reservation_lookup_failure_is_one_warning_after_the_success(self):
+        """The Pool is added, so the failed advisory read is one warning: no check ran, with the Notice text."""
+        not_checked = (
+            "The Reservation overlap check did not run. "
+            "Pool 10.0.0.100-10.0.0.200 was not checked against existing Reservations."
+        )
+        for name, reply, line in READ_FAILURES:
+            with self.subTest(name), self._pool_add_stub(**{"reservation-get-page": reply}):
+                self._fresh_client()
                 response = self.client.post(
-                    self._pool_add_url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"}, follow=True
+                    self._pool_add_url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"}
                 )
-        self.assertEqual(response.status_code, 200)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.SUCCESS for m in msgs))
-        self.assertTrue(any("overlap check did not run" in m.message.lower() for m in msgs))
-        overlap_records = [record for record in logs.records if "overlap" in record.getMessage()]
-        self.assertTrue(overlap_records, logs.output)
-        self.assertEqual(overlap_records[0].levelname, "WARNING", logs.output)
-        self.assertIsNotNone(overlap_records[0].exc_info)
-
-    def test_pool_add_reservation_lookup_request_exception_warns_that_the_check_did_not_run(self):
-        """A transport error must tell the operator that no overlap check ran."""
-        with self._pool_add_stub(**{"reservation-get-page": requests.RequestException("timeout")}):
-            response = self.client.post(
-                self._pool_add_url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"}, follow=True
-            )
-        self.assertEqual(response.status_code, 200)
-        msgs = list(response.context["messages"])
-        self.assertTrue(any(m.level == django_messages.SUCCESS for m in msgs))
-        self.assertTrue(any("overlap check did not run" in m.message.lower() for m in msgs))
+            shown = [(message.level, str(message)) for message in get_messages(response.wsgi_request)]
+            self.assertEqual(shown[0][0], django_messages.SUCCESS)
+            notice_text = " ".join([HEADLINES["reservation"], *([line] if line else [])])
+            self.assertEqual(shown[1:], [(django_messages.WARNING, f"{not_checked} {notice_text}")])
 
     def test_pool_add_client_creation_failure_shows_an_error(self):
         """A real get_client() failure (cert without key → ValueError) leaves no Subnet to add the Pool to."""
