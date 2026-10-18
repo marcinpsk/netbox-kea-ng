@@ -3244,12 +3244,13 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
             ),
             (edit_url, {**_shown(), "subnet_cidr": "198.18.0.0/24", "shared_network": ""}, "subnet4-update"),
         ):
+            self._fresh_client()
             with self.subTest(operation=command), stub_kea(responses) as kea:
                 response = self.client.post(url, data)
                 self.assertEqual(response.status_code, 302)
                 self.assertIn(command, kea.commands())
                 messages = list(get_messages(response.wsgi_request))
-                self.assertTrue(any(message.level == django_messages.SUCCESS for message in messages))
+                self.assertEqual(sum(message.level == django_messages.SUCCESS for message in messages), 1)
 
     def test_missing_shared_network_subnet_id_hides_inherited_hints(self):
         self._assert_unreadable_shared_networks_hide_hints(

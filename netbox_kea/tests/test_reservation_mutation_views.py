@@ -433,6 +433,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
         for malformed in ({"pool": "invalid"}, "not-a-pool", {"pool": 7}, {"pool": "198.18.0.30-198.18.0.10"}):
             with self.subTest(malformed=malformed):
+                self._fresh_client()
                 pools = [malformed, {"pool": "198.18.0.10-198.18.0.30"}]
                 responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"], pools=pools)
                 raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
@@ -449,12 +450,18 @@ class TestReservationMutationViews(_ViewTestBase):
                     )
 
                 self.assertEqual(response.status_code, 302)
-                self.assertTrue(
-                    any(
-                        message.level == messages.WARNING
-                        and "198.18.0.20 is within existing pool 198.18.0.10-198.18.0.30" in str(message)
+                self.assertEqual(
+                    [
+                        str(message)
                         for message in get_messages(response.wsgi_request)
-                    )
+                        if message.level == messages.WARNING
+                    ],
+                    [
+                        (
+                            "IP 198.18.0.20 is within existing pool 198.18.0.10-198.18.0.30. "
+                            "Kea allows this. Reservations take priority over pool allocation."
+                        )
+                    ],
                 )
 
     def test_a_journal_validation_error_does_not_lose_the_applied_creation(self):

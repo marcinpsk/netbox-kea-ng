@@ -8,6 +8,7 @@ import ipaddress
 import itertools
 import json
 import logging
+import ssl
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -16,6 +17,7 @@ from typing import Any, Literal, NamedTuple, Protocol, TypedDict, cast
 
 import requests
 from requests.models import HTTPBasicAuth
+from urllib3.exceptions import SSLError as Urllib3SSLError
 
 from . import constants
 from .constants import Family, IPAddressValue, IPNetworkValue, LeaseState, Persistence
@@ -1088,8 +1090,7 @@ class KeaClient:
             self._session.prepare_request(requests.Request("POST", self.url, json=body))
         except UnicodeEncodeError as exc:
             raise KeaRequestEncodingError("The user name or password of the client is not Latin-1 text.") from exc
-        if command.is_write:
-            self._notify_write(command, target, "before", configuration=False)
+        self._notify_write(command, target, "before", configuration=False)
         try:
             # A redirect target cannot tell what the first request did, so NetBox never follows one (ADR 0011).
             resp = self._session.post(
@@ -1097,6 +1098,8 @@ class KeaClient:
             )
         except requests.RequestException:
             raise
+        except (ssl.SSLError, Urllib3SSLError) as exc:
+            raise requests.exceptions.SSLError("The TLS connection to Kea failed.") from exc
         except OSError as exc:
             raise KeaTLSFileError("A TLS CA, certificate or key file of the client could not be found.") from exc
         except UnicodeEncodeError as exc:
@@ -1104,8 +1107,7 @@ class KeaClient:
             raise requests.RequestException("requests could not handle the reply after it sent the request.") from exc
         finally:
             # Kea can apply a write whose reply is lost, so a display read during the send must not stay cached.
-            if command.is_write:
-                self._notify_write(command, target, "after", configuration=False)
+            self._notify_write(command, target, "after", configuration=False)
         if 300 <= resp.status_code < 400:
             raise requests.HTTPError(f"Kea answered with a redirect (HTTP {resp.status_code}).", response=resp)
         resp.raise_for_status()
@@ -1128,6 +1130,8 @@ class KeaClient:
         self, command: KeaCommand, target: Family | None, when: Literal["before", "after"], *, configuration: bool
     ) -> None:
         """Tell the owner about a write command without interrupting it."""
+        if not command.is_write:
+            return
         try:
             self.on_write(target, configuration=configuration)
         except Exception:

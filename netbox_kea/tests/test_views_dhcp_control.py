@@ -18,12 +18,16 @@ the page. The tests that follow the redirect land on the status tab, which itsel
 ``status-get``/``version-get``/``config-get``, registered benign so the landing page renders.
 """
 
+import json
+import ssl
+
 import requests
 from django.contrib import messages as django_messages
 from django.urls import reverse
+from urllib3.exceptions import SSLError as Urllib3SSLError
 
-from .kea_stub import stub_kea
-from .utils import _make_db_server, _ViewTestBase, active_tabs
+from .kea_stub import reply_read_failure, stub_kea
+from .utils import UNCONFIRMED_RUNTIME, _make_db_server, _ViewTestBase, active_tabs
 
 _UNCONFIRMED = "Kea did not confirm the change. Check the Server before you try again."
 _FORWARD_FAILURE = {"result": 1, "text": "unable to forward command to the dhcp4 service: Connection refused"}
@@ -99,6 +103,31 @@ class TestServerDHCP4EnableView(_ViewTestBase):
             self.assertNotIn("kea_secret", response.content.decode())
             (message,) = _messages(response)
             self.assertTrue(message.startswith(_UNCONFIRMED), message)
+
+    def test_a_raw_tls_failure_while_reading_the_reply_is_unconfirmed(self):
+        failures = (
+            ssl.SSLError("unreadable TLS record"),
+            ssl.SSLCertVerificationError("certificate verification failed"),
+            Urllib3SSLError("unreadable TLS record"),
+        )
+        for failure in failures:
+            self._fresh_client()
+            with self.subTest(error=type(failure).__name__):
+                with reply_read_failure(failure) as sent:
+                    response = self.client.post(self._url())
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(len(sent), 1)
+                self.assertEqual(json.loads(sent[0].body), {"command": "dhcp-enable", "service": ["dhcp4"]})
+                diagnostic = (
+                    "The TLS connection to Kea failed: NetBox could not verify the certificate of Kea."
+                    " Check the TLS settings of the Server."
+                    if isinstance(failure, ssl.SSLCertVerificationError)
+                    else "The TLS connection to Kea failed. Check the TLS settings of the Server."
+                )
+                self.assertEqual(
+                    [(message.level, str(message)) for message in django_messages.get_messages(response.wsgi_request)],
+                    [(django_messages.WARNING, f"{UNCONFIRMED_RUNTIME} {diagnostic}")],
+                )
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""

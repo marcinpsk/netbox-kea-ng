@@ -2339,6 +2339,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
             }
             for name, readback in cases.items():
                 with self.subTest(family=family, readback=name):
+                    self._fresh_client()
                     data = {
                         "ip_address": address,
                         "hw_address": "aa:bb:cc:dd:ee:ff",
@@ -2359,8 +2360,13 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
                     self.assertEqual(kea.commands().count(f"lease{family}-add"), 1)
                     self.assertEqual(kea.commands().count(f"lease{family}-get"), 1)
                     messages = [str(message) for message in get_messages(response.wsgi_request)]
-                    self.assertTrue(any("created." in message for message in messages))
-                    self.assertTrue(any("sync failed" in message for message in messages))
+                    self.assertEqual(
+                        messages,
+                        [
+                            f"Lease for {address} created.",
+                            "Lease created but NetBox IPAM sync failed; see server logs.",
+                        ],
+                    )
                     self.assertFalse(NbIP.objects.exists())
                     self.assertFalse(IPAMOwnershipLink.objects.exists())
 
@@ -3568,6 +3574,7 @@ class TestLeaseDeleteLoopTransportErrors(_ViewTestBase):
             ("reset", requests.ConnectionError("down")),
             ("value error", ValueError("bad JSON")),
         ):
+            self._fresh_client()
 
             def del_resp(body, failure=failure):
                 if body["arguments"]["ip-address"] == "10.0.0.1":
@@ -3581,7 +3588,11 @@ class TestLeaseDeleteLoopTransportErrors(_ViewTestBase):
             self.assertEqual(kea.commands().count("lease4-del"), 1)
             shown = [str(message) for message in get_messages(response.wsgi_request)]
             self.assertEqual(
-                shown[0], f"Lease 10.0.0.1: {UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable."
+                shown,
+                [
+                    f"Lease 10.0.0.1: {UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable.",
+                    "NetBox stopped at lease 10.0.0.1 and did not send the delete of 1 lease(s): 10.0.0.2.",
+                ],
             )
             self.assertNotIn("bad JSON", " ".join(shown))
 

@@ -123,6 +123,28 @@ def record_transport(client: KeaClient, reply: list[dict[str, Any]]) -> Recordin
     return adapter
 
 
+@contextmanager
+def reply_read_failure(error: Exception) -> Iterator[list[requests.PreparedRequest]]:
+    """Return HTTP headers, then fail while the real Session consumes the reply body."""
+    sent: list[requests.PreparedRequest] = []
+
+    class FailedRead(io.BytesIO):
+        def read(self, size: int | None = -1) -> bytes:
+            raise error
+
+    def send(adapter: HTTPAdapter, request: requests.PreparedRequest, *args: Any, **kwargs: Any) -> requests.Response:
+        sent.append(request)
+        response = requests.Response()
+        response.status_code = 200
+        response.url = request.url or ""
+        response.request = request
+        response.raw = FailedRead()
+        return response
+
+    with patch.object(HTTPAdapter, "send", new=send):
+        yield sent
+
+
 def _is_exc(obj: Any) -> bool:
     """True if *obj* is an exception instance or an exception class."""
     return isinstance(obj, BaseException) or (isinstance(obj, type) and issubclass(obj, BaseException))
