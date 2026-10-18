@@ -5,12 +5,16 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from django.core import signing
+from django.core.exceptions import ValidationError
+from django.db import DatabaseError
+from extras.models import JournalEntry
 
-from . import config_write
+from . import config_write, event_scope
 from .config_write import ReservationChangeOutcome
 from .constants import Family, IPAddressValue
 from .dhcp_options import (
@@ -24,8 +28,10 @@ from .dhcp_options import (
     option_data,
     parse_dhcp_options,
 )
+from .ipam_reconciliation import RESERVATION, ClaimResult, claim, claim_permissions
 from .pools import Pool, addresses_in_pools
 from .published_name import published_name, stored_hostname
+from .reservation_transfer import ReservationImportProposal, resolve_import_proposal
 from .reservations import (
     ClearValue,
     FieldChange,
@@ -40,10 +46,14 @@ from .reservations import (
     Unchanged,
     reservation_fingerprint,
 )
+from .signals import reservation_created, reservation_deleted, reservation_updated
 from .subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, SubnetIdentity, VerifiedSubnet
+from .sync_permissions import sync_gate
 
 if TYPE_CHECKING:
     from .models import Server
+
+logger = logging.getLogger(__name__)
 
 _FINGERPRINT_SALT = "netbox_kea.reservation-managed-facts"
 
@@ -410,3 +420,130 @@ def save_add(
         catalogue=outcome.catalogue,
         warnings=tuple(warnings),
     )
+
+
+ReservationAction = Literal["created", "updated", "deleted"]
+SideEffectStatus = Literal["succeeded", "failed", "events-failed", "not-applied"]
+
+
+@dataclass(frozen=True)
+class ClaimSkipped:
+    """The reason an after-apply operation did not request an IPAM claim."""
+
+    reason: Literal["not-applied", "not-requested", "nothing-to-sync", "permission"]
+    explanation: str = ""
+
+
+@dataclass(frozen=True)
+class ClaimFailure:
+    """A failed claim, or failed event dispatch after the claim committed."""
+
+    reason: Literal["failed", "events-failed"]
+
+
+@dataclass(frozen=True)
+class AfterApplyFacts:
+    """The independent journal, signal and IPAM claim facts after one Reservation change."""
+
+    action: ReservationAction | None
+    journal: SideEffectStatus
+    signal: SideEffectStatus
+    claim: ClaimResult | ClaimSkipped | ClaimFailure
+
+
+def save_import(server: Server, proposal: ReservationImportProposal) -> ReservationChangeOutcome:
+    """Create one transfer proposal with its stored hostname in the live verified Subnet."""
+    return config_write.add_reservation(
+        server,
+        proposal.family,
+        proposal.subnet_cidr,
+        lambda subnet, _catalogue: resolve_import_proposal(proposal, subnet.identity),
+    )
+
+
+def _journal_after_apply(
+    server: Server, user: Any, action: ReservationAction, reservation: Reservation
+) -> SideEffectStatus:
+    addresses = ", ".join(str(address) for address in reservation.addresses) or "no address"
+    identity = reservation.identity
+    try:
+        with event_scope.atomic():
+            JournalEntry.objects.create(
+                assigned_object=server,
+                created_by=user,
+                kind="info",
+                comments=f"Reservation {action}: {identity.identifier_type} {identity.value}; {addresses}",
+            )
+    except event_scope.EventDispatchError:
+        logger.exception("The journal entry committed but its events could not be dispatched")
+        return "events-failed"
+    except (DatabaseError, ValidationError, RuntimeError):
+        logger.exception("Could not write the journal entry of an applied change to Server %s", server.pk)
+        return "failed"
+    return "succeeded"
+
+
+def _signal_after_apply(
+    server: Server, outcome: ReservationChangeOutcome, action: ReservationAction, reservation: Reservation, request: Any
+) -> SideEffectStatus:
+    signal = {"created": reservation_created, "updated": reservation_updated, "deleted": reservation_deleted}[action]
+    try:
+        responses = signal.send_robust(
+            sender=None,
+            server=server,
+            before=outcome.previous,
+            after=outcome.intended,
+            dhcp_version=reservation.family,
+            request=request,
+        )
+    except event_scope.EventDispatchError:
+        logger.exception("The Reservation signal committed but its events could not be dispatched")
+        return "events-failed"
+    except (DatabaseError, ValidationError, ValueError, RuntimeError):
+        logger.exception("Could not send the Reservation %s signal", action)
+        return "failed"
+    errors = [response for _receiver, response in responses if isinstance(response, Exception)]
+    for error in errors:
+        logger.error("A receiver of the reservation_%s signal failed", action, exc_info=error)
+    if any(isinstance(error, event_scope.EventDispatchError) for error in errors):
+        return "events-failed"
+    return "failed" if errors else "succeeded"
+
+
+def _claim_after_apply(
+    server: Server, outcome: ReservationChangeOutcome, user: Any, requested: bool
+) -> ClaimResult | ClaimSkipped | ClaimFailure:
+    if not requested:
+        return ClaimSkipped("not-requested")
+    reservation = outcome.intended
+    if reservation is None or not reservation.addresses:
+        return ClaimSkipped("nothing-to-sync")
+    try:
+        gate = sync_gate(user, claim_permissions(RESERVATION))
+        if not gate.allowed:
+            logger.warning("User %r requested a Reservation IPAM sync that the manual Sync rule refuses", user)
+            return ClaimSkipped("permission", gate.reason)
+        return claim(server, reservation.family, [reservation], force=True, catalogue=outcome.catalogue)
+    except event_scope.EventDispatchError:
+        logger.exception("The events of the NetBox IPAM sync of a Reservation could not be dispatched")
+        return ClaimFailure("events-failed")
+    except (DatabaseError, ValidationError, ValueError, RuntimeError):
+        logger.exception("Could not synchronize an applied Reservation change to NetBox IPAM")
+        return ClaimFailure("failed")
+
+
+def after_apply(
+    server: Server, outcome: ReservationChangeOutcome, user: Any, *, sync_to_netbox: bool = False, request: Any = None
+) -> AfterApplyFacts:
+    """Run independent side effects only after Kea applied the change, outside its classification."""
+    if outcome.application != "applied":
+        return AfterApplyFacts(None, "not-applied", "not-applied", ClaimSkipped("not-applied"))
+    reservation = outcome.intended or outcome.previous
+    if reservation is None:
+        raise ValueError("An applied Reservation change needs the Reservation before or after it.")
+    action: ReservationAction = (
+        "deleted" if outcome.intended is None else "created" if outcome.previous is None else "updated"
+    )
+    journal = _journal_after_apply(server, user, action, reservation)
+    signal = _signal_after_apply(server, outcome, action, reservation, request)
+    return AfterApplyFacts(action, journal, signal, _claim_after_apply(server, outcome, user, sync_to_netbox))

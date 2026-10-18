@@ -20,7 +20,7 @@ of [ADR 0005](0005-configuration-changes-return-a-typed-outcome.md). It still si
   one daemon run one at a time, and for Reservations that is false.
 - `ReservationMutationResult` has `application="applied"` only. A lost reply raises, and the view says that the
   Reservation could not be created, updated or deleted.
-- One `try` in each view covers the live read, the Kea write and `_confirmed_side_effects`. `claim()` can raise
+- One `try` in each view covers the live read, the Kea write and the after-apply work. `claim()` can raise
   `EventDispatchError`, a `RuntimeError`, so the view reports a failure after Kea applied the change and NetBox
   committed it.
 
@@ -47,11 +47,17 @@ A Reservation add, edit or delete is a Configuration Change.
 - `KeaClient` keeps the Reservation commands, cursors and raw record handling of ADR 0002 and ADR 0004.
   `config_write` owns sequencing, the lock, the classification and the outcome.
 - The views present the outcome through `_run_change` ([ADR 0011](0011-runtime-changes-return-a-typed-outcome.md)).
-  The journal entry, the signals and `claim()` run only after `applied`, outside the call that classifies the
-  change. When one of them fails, for example `claim()` with `EventDispatchError`, the view still reports the
-  Reservation as applied and shows the side-effect failure as a separate error, as ADR 0011 says.
-- The bulk Reservation import runs one Configuration Change per entry. An `unknown` entry or a rejected entry
-  stops the import, and the report states the applied entries.
+  `reservation_edit.after_apply()` writes the journal entry, sends the robust Reservation signal and optionally
+  calls `claim()`. It runs only after `applied`, outside the call that classifies the change. It returns typed
+  facts for each independent step. A journal savepoint rolls back a failed insert or save receiver without
+  preventing the signal and claim. A committed journal or claim whose event dispatch fails has a separate fact
+  from a write failure. A refused permission check, an unrequested claim and a Reservation with no address each
+  have their own skip reason. Views map these facts to messages. A failure still reports the Reservation as
+  applied and shows the after-apply error separately, as ADR 0011 says.
+- The bulk Reservation import calls the public `reservation_edit.save_import()` for each entry. After each
+  applied change returns, `_run_change_loop` invokes `reservation_edit.after_apply()` outside its classification
+  callback and before the next entry. An `unknown` entry or a rejected entry stops the import, and the report
+  states the applied entries. An earlier entry keeps its journal and signal when a later entry is refused.
 - Global Reservations stay read-only, as in ADR 0002.
 
 ## Consequences
