@@ -2,12 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 import ipaddress
 import logging
-from dataclasses import replace
 from typing import Any, Literal
 from urllib.parse import urlencode
 
 from django.contrib import messages
-from django.core import signing
 from django.core.exceptions import BadRequest, ValidationError
 from django.db import DatabaseError
 from django.http import Http404, HttpRequest, HttpResponse
@@ -16,32 +14,22 @@ from django.urls import reverse
 from django.views import View
 from netbox.views import generic
 
-from .. import config_write, event_scope, forms, subnet_catalogue
+from .. import config_write, event_scope, forms, reservation_edit, subnet_catalogue
 from ..config_write import ReservationChangeOutcome
 from ..constants import Family, IPAddressValue
-from ..dhcp_options import DHCPOption
 from ..ipam_reconciliation import RESERVATION, claim, claim_permissions
 from ..models import Server
-from ..pools import addresses_in_pools
 from ..published_name import published_name, stored_hostname
 from ..reservations import (
-    ClearValue,
-    FieldChange,
     InSubnetReservationScope,
-    IPv4Reservation,
-    IPv6Reservation,
     Reservation,
     ReservationCapabilities,
-    ReservationChange,
     ReservationConflict,
     ReservationIdentity,
-    SetValue,
-    Unchanged,
-    reservation_fingerprint,
     reservation_identifier_types,
 )
 from ..signals import reservation_created, reservation_deleted, reservation_updated
-from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, SubnetIdentity, VerifiedSubnet
+from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, VerifiedSubnet
 from ..sync_permissions import sync_gate
 from ._base import (
     _client_settings_refusal,
@@ -62,8 +50,6 @@ from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
 
-_FINGERPRINT_SALT = "netbox_kea.reservation-managed-facts"
-
 _VERIFICATION_FAILED = "Kea applied the change, but NetBox Kea could not verify the final Reservation."
 
 ReservationAction = Literal["created", "updated", "deleted"]
@@ -75,228 +61,49 @@ _SIGNALS = {
 }
 
 
-def _warn_addresses_in_pools(
-    request: HttpRequest,
-    subnet: VerifiedSubnet,
-    addresses: tuple[IPAddressValue, ...],
+def _warn_pool_facts(
+    request: HttpRequest, facts: tuple[reservation_edit.PoolOverlap | reservation_edit.PoolCheckUnavailable, ...]
 ) -> None:
-    """Add a non-blocking warning for each address in *addresses* that falls within a pool of *subnet*."""
-    if not addresses:
-        return
-    if subnet.configuration is None:
-        messages.warning(
-            request,
-            f"The pool overlap check did not run. The configuration of Subnet {subnet.cidr} is unavailable, "
-            "so this Reservation was not checked against its pools.",
-        )
-        return
-    for address, pool in addresses_in_pools(addresses, subnet.configuration.pools):
-        messages.warning(
-            request,
-            f"IP {address} is within existing pool {pool.range}. "
-            "Kea allows this. Reservations take priority over pool allocation.",
-        )
-
-
-def _in_subnet_scope(reservation: Reservation) -> InSubnetReservationScope:
-    """Return the verified Subnet scope required by mutation routes."""
-    if not isinstance(reservation.scope, InSubnetReservationScope):
-        raise RuntimeError("Reservation mutation requires an In-Subnet Reservation.")
-    return reservation.scope
-
-
-def _options_from_formset(
-    options_formset: Any,
-    current: tuple[DHCPOption, ...] = (),
-) -> tuple[DHCPOption, ...]:
-    """Apply visible form changes while preserving unexposed option facts."""
-    options: list[DHCPOption] = []
-    remaining = list(enumerate(current))
-    for row in getattr(options_formset, "cleaned_data", []) or []:
-        if not row:
-            continue
-        original_index = row.get("original_index")
-        existing: DHCPOption | None
-        if original_index is not None:
-            matching_position = next(
-                (
-                    position
-                    for position, (current_index, _option) in enumerate(remaining)
-                    if original_index == current_index
-                ),
-                None,
+    """Present the non-blocking pool check facts of a Reservation add."""
+    for fact in facts:
+        if isinstance(fact, reservation_edit.PoolCheckUnavailable):
+            messages.warning(
+                request,
+                f"The pool overlap check did not run. The configuration of Subnet {fact.subnet_cidr} is unavailable, "
+                "so this Reservation was not checked against its pools.",
             )
-            if matching_position is None:
-                raise ValueError("The Reservation option source does not match the current Reservation.")
-            _, existing = remaining.pop(matching_position)
-            if row.get("DELETE"):
-                continue
-            if not row.get("name"):
-                continue
-            displayed_name = existing.name or (str(existing.code) if existing.code is not None else "")
-            if row["name"] != displayed_name:
-                existing = None
         else:
-            if not row.get("name") or row.get("DELETE"):
-                continue
-            matching_positions = [
-                position
-                for position, (_current_index, option) in enumerate(remaining)
-                if row["name"] == (option.name or (str(option.code) if option.code is not None else ""))
-            ]
-            if len(matching_positions) > 1:
-                raise ValueError("The Reservation option name is ambiguous without its source position.")
-            existing = remaining.pop(matching_positions[0])[1] if matching_positions else None
-        submitted_always_send = bool(row.get("always_send"))
-        if existing is not None:
-            always_send = (
-                existing.always_send if submitted_always_send == bool(existing.always_send) else submitted_always_send
+            messages.warning(
+                request,
+                f"IP {fact.address} is within existing pool {fact.pool.range}. "
+                "Kea allows this. Reservations take priority over pool allocation.",
             )
-            options.append(
-                replace(
-                    existing,
-                    data=row["data"],
-                    always_send=always_send,
-                )
-            )
-            continue
-        options.append(
-            DHCPOption(
-                code=None,
-                name=row["name"],
-                space=None,
-                data=row["data"],
-                csv_format=None,
-                always_send=True if submitted_always_send else None,
-                never_send=None,
-            )
+
+
+def _submitted_values(
+    family: Family, cleaned_data: dict[str, Any], options_formset: Any
+) -> reservation_edit.SubmittedValues:
+    """Parse cleaned form strings and rows into the typed values of the edit module."""
+    addresses: tuple[IPAddressValue, ...]
+    if family == 4:
+        addresses = (ipaddress.IPv4Address(cleaned_data["ip_address"]),) if cleaned_data.get("ip_address") else ()
+    else:
+        addresses = tuple(
+            ipaddress.IPv6Address(value) for value in (cleaned_data.get("ip_addresses") or "").split(",") if value
         )
-    return tuple(options)
-
-
-def _options_initial(reservation: Reservation) -> list[dict[str, Any]]:
-    return [
-        {
-            "original_index": index,
-            "name": option.name or (str(option.code) if option.code is not None else ""),
-            "data": option.data,
-            "always_send": bool(option.always_send),
-        }
-        for index, option in enumerate(reservation.options)
-    ]
-
-
-def _signed_fingerprint(reservation: Reservation, suffix: str | None) -> str:
-    scope = _in_subnet_scope(reservation)
-    return signing.dumps(
-        {
-            "family": reservation.family,
-            "subnet_id": scope.subnet.subnet_id,
-            "identifier_type": reservation.identity.identifier_type,
-            "identifier": reservation.identity.value,
-            "fingerprint": reservation_fingerprint(reservation),
-            # The form shows the published name under this suffix.
-            "qualifying_suffix": suffix,
-        },
-        salt=_FINGERPRINT_SALT,
-        compress=True,
+    prefixes = tuple(ipaddress.IPv6Network(value) for value in (cleaned_data.get("prefixes") or "").split(",") if value)
+    rows = tuple(
+        reservation_edit.OptionRow(
+            name=row.get("name", ""),
+            data=row.get("data", ""),
+            always_send=bool(row.get("always_send")),
+            delete=bool(row.get("DELETE")),
+            original_index=row.get("original_index"),
+        )
+        for row in (getattr(options_formset, "cleaned_data", []) or [])
+        if row
     )
-
-
-def _first_address(addresses: tuple[IPAddressValue, ...]) -> IPAddressValue | None:
-    """Return the address that selects the Pool suffix: the first one, as for a synchronized Reservation."""
-    return addresses[0] if addresses else None
-
-
-def _shown_suffix(reservation: Reservation, catalogue: CatalogueSnapshot) -> str | None:
-    """Return the suffix under which the edit form shows the hostname of *reservation*.
-
-    None without a hostname, when the published name depends on the leased address, and when the suffix is unknown:
-    the form then shows the stored hostname.
-    """
-    if not reservation.hostname:
-        return None
-    subnet = _in_subnet_scope(reservation).subnet
-    if not reservation.addresses and catalogue.has_pool_qualifying_suffix(subnet):
-        return None
-    try:
-        return catalogue.subnet_qualifying_suffix(subnet, _first_address(reservation.addresses))
-    except CatalogueUnavailable:
-        return None
-
-
-class _UnknownSuffix(Exception):
-    """The DDNS qualifying suffix at the submitted addresses is unknown, so no stored form of the entered name is."""
-
-
-def _entered_suffix(catalogue: CatalogueSnapshot, subnet: SubnetIdentity, addresses: tuple[IPAddressValue, ...]) -> str:
-    """Return the qualifying suffix of an entered hostname at the submitted *addresses*."""
-    try:
-        return catalogue.subnet_qualifying_suffix(subnet, _first_address(addresses))
-    except CatalogueUnavailable as exc:
-        raise _UnknownSuffix(str(exc)) from exc
-
-
-def _hostname_change(
-    current: Reservation,
-    entered: str,
-    addresses: tuple[IPAddressValue, ...],
-    shown_suffix: str | None,
-    catalogue: CatalogueSnapshot,
-) -> FieldChange[str]:
-    """Return the hostname change that makes Kea publish the *entered* name at the submitted *addresses*.
-
-    A name that publishes the same name as the current hostname leaves the stored hostname unchanged.
-    """
-    if not current.hostname and not entered:
-        return Unchanged()
-    if current.hostname and shown_suffix is None and _shown_suffix(current, catalogue) is None:
-        if entered == current.hostname:
-            return Unchanged()
-        # With an unknown suffix, _entered_suffix() below refuses the changed name on the hostname field.
-        if not current.addresses and catalogue.has_pool_qualifying_suffix(_in_subnet_scope(current).subnet):
-            raise ReservationConflict(
-                "A Pool of the Subnet sets the DDNS qualifying suffix, so the published name depends on the address."
-                " Save an address first, then change the hostname."
-            )
-    # The token holds no suffix when the form showed no hostname; edit_reservation() refuses a changed Reservation.
-    if current.hostname and shown_suffix is not None and shown_suffix != _shown_suffix(current, catalogue):
-        raise ReservationConflict("The DDNS qualifying suffix of the Subnet changed after the edit form was opened.")
-    suffix = _entered_suffix(catalogue, _in_subnet_scope(current).subnet, addresses)
-    stored = stored_hostname(entered, suffix)
-    if published_name(stored, suffix) == published_name(current.hostname, suffix):
-        return Unchanged()
-    return _change(current.hostname, stored, "")
-
-
-def _stored_for(
-    catalogue: CatalogueSnapshot, subnet: VerifiedSubnet, name: str, addresses: tuple[IPAddressValue, ...]
-) -> str:
-    """Return the hostname to store so that Kea publishes *name* at *addresses* in *subnet*."""
-    if not name:
-        return ""
-    return stored_hostname(name, _entered_suffix(catalogue, subnet.identity, addresses))
-
-
-def _payload_from_post(token: str, reservation: Reservation) -> dict[str, Any]:
-    try:
-        payload = signing.loads(token, salt=_FINGERPRINT_SALT, max_age=86_400)
-    except signing.BadSignature as exc:
-        raise ReservationConflict("The edit fingerprint is invalid or expired.") from exc
-    scope = _in_subnet_scope(reservation)
-    target = {
-        "family": reservation.family,
-        "subnet_id": scope.subnet.subnet_id,
-        "identifier_type": reservation.identity.identifier_type,
-        "identifier": reservation.identity.value,
-    }
-    if not isinstance(payload, dict) or any(payload.get(key) != value for key, value in target.items()):
-        raise ReservationConflict("The edit fingerprint does not match this Reservation.")
-    fingerprint = payload.get("fingerprint")
-    suffix = payload.get("qualifying_suffix")
-    if not isinstance(fingerprint, str) or not fingerprint or not isinstance(suffix, str | None):
-        raise ReservationConflict("The edit fingerprint is invalid.")
-    return payload
+    return reservation_edit.SubmittedValues(addresses, prefixes, cleaned_data.get("hostname", ""), rows)
 
 
 def _identity_from_request(request: HttpRequest, version: Family) -> ReservationIdentity:
@@ -464,14 +271,6 @@ def _sync_to_netbox(
         return
     if any(not address.synchronized for address in outcome.addresses.values()):
         messages.warning(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
-
-
-def _change(current: Any, submitted: Any, empty: Any):
-    if submitted == current:
-        return Unchanged()
-    if submitted == empty:
-        return ClearValue()
-    return SetValue(submitted)
 
 
 def _entered_address(value: str, family: Family) -> IPAddressValue | None:
@@ -649,27 +448,23 @@ class _ReservationAddView(_ReservationMutationView):
             cleaned_data = form.cleaned_data
             try:
                 identity = ReservationIdentity(cleaned_data["identifier_type"], cleaned_data["identifier"])
-                options = _options_from_formset(options_formset)
+                values = _submitted_values(self.dhcp_version, cleaned_data, options_formset)
                 outcome = _run_change(
                     request,
                     "Reservation created.",
-                    lambda: config_write.add_reservation(
-                        server,
-                        self.dhcp_version,
-                        cleaned_data["subnet_cidr"],
-                        lambda subnet, catalogue: self._build(
-                            request, cleaned_data, identity, options, subnet, catalogue
-                        ),
+                    lambda: reservation_edit.save_add(
+                        server, self.dhcp_version, cleaned_data["subnet_cidr"], identity, values
                     ),
                     subject=f"Reservation {_identity_label(identity)}",
                 )
-            except _UnknownSuffix as exc:
-                form.add_error("hostname", str(exc))
+            except reservation_edit.EditConflict as exc:
+                form.add_error(exc.field, exc.message)
             except ValueError:
                 logger.exception("Could not build a DHCPv%s Reservation from the form", self.dhcp_version)
                 messages.error(request, "The Reservation could not be created. See server logs.")
             else:
                 if outcome is not None:
+                    _warn_pool_facts(request, outcome.warnings)
                     if outcome.application == "applied":
                         _after_applied(
                             request,
@@ -690,48 +485,6 @@ class _ReservationAddView(_ReservationMutationView):
             capabilities,
             subnet_cmds_available=snapshot.subnet_cmds_available,
         )
-
-    def _build(
-        self,
-        request: HttpRequest,
-        cleaned_data: dict[str, Any],
-        identity: ReservationIdentity,
-        options: tuple[DHCPOption, ...],
-        subnet: VerifiedSubnet,
-        catalogue: CatalogueSnapshot,
-    ) -> Reservation:
-        """Return the Reservation of the form in the *subnet* that the scope read under the lock verified."""
-        scope = InSubnetReservationScope(subnet.identity)
-        hostname = cleaned_data.get("hostname", "")
-        reservation: Reservation
-        if self.dhcp_version == 4:
-            ipv4_addresses = (
-                (ipaddress.IPv4Address(cleaned_data["ip_address"]),) if cleaned_data.get("ip_address") else ()
-            )
-            reservation = IPv4Reservation(
-                scope=scope,
-                identity=identity,
-                addresses=ipv4_addresses,
-                hostname=_stored_for(catalogue, subnet, hostname, ipv4_addresses),
-                options=options,
-            )
-        else:
-            ipv6_addresses = tuple(
-                ipaddress.IPv6Address(value) for value in (cleaned_data.get("ip_addresses") or "").split(",") if value
-            )
-            ipv6_prefixes = tuple(
-                ipaddress.IPv6Network(value) for value in (cleaned_data.get("prefixes") or "").split(",") if value
-            )
-            reservation = IPv6Reservation(
-                scope=scope,
-                identity=identity,
-                addresses=ipv6_addresses,
-                delegated_prefixes=ipv6_prefixes,
-                hostname=_stored_for(catalogue, subnet, hostname, ipv6_addresses),
-                options=options,
-            )
-        _warn_addresses_in_pools(request, subnet, reservation.addresses)
-        return reservation
 
 
 class _ReservationEditView(_ReservationMutationView):
@@ -765,15 +518,15 @@ class _ReservationEditView(_ReservationMutationView):
         if isinstance(reservation, HttpResponse):
             return reservation
         show_notices(request, notice(catalogue))
-        suffix = _shown_suffix(reservation, catalogue)
+        state = reservation_edit.form_state(reservation, catalogue)
         capabilities = _display_capabilities(server, self.dhcp_version)
-        form = self._form_for(server, reservation, suffix, capabilities)
+        form = self._form_for(server, state, capabilities)
         form.offer_subnets(catalogue.subnet_choices)
         return self._render(
             request,
             server,
             form,
-            forms.ReservationOptionsFormSet(initial=_options_initial(reservation), prefix="options"),
+            forms.ReservationOptionsFormSet(initial=state.options_initial, prefix="options"),
             capabilities,
         )
 
@@ -781,6 +534,17 @@ class _ReservationEditView(_ReservationMutationView):
         server = self.get_object(pk=pk)
         identity = _identity_from_request(request, self.dhcp_version)
         return_url = self._return_url(server)
+        try:
+            reservation_edit.check_token(
+                request.POST.get("managed_fingerprint", ""), self.dhcp_version, subnet_id, identity
+            )
+        except ReservationConflict as exc:
+            form = self._form(
+                server, None, data=request.POST, initial={"subnet_cidr": request.POST.get("subnet_cidr", "")}
+            )
+            form.add_error(None, f"{exc} Reload the form and try again.")
+            options_formset, _valid = _build_reservation_options_formset(request.POST)
+            return self._render(request, server, form, options_formset, None)
         capabilities = self._mutation_capabilities(request, server)
         if isinstance(capabilities, HttpResponse):
             return capabilities
@@ -790,8 +554,8 @@ class _ReservationEditView(_ReservationMutationView):
         current = _target_or_redirect(request, server, self.dhcp_version, subnet_id, identity, return_url)
         if isinstance(current, HttpResponse):
             return current
-        suffix = _shown_suffix(current, catalogue)
-        form = self._form(server, capabilities, data=request.POST, initial=self._initial(current, suffix))
+        state = reservation_edit.form_state(current, catalogue)
+        form = self._form(server, capabilities, data=request.POST, initial=state.initial)
         form.offer_subnets(catalogue.subnet_choices)
         for field in ("subnet_cidr", "identifier_type", "identifier"):
             form.fields[field].disabled = True
@@ -799,24 +563,26 @@ class _ReservationEditView(_ReservationMutationView):
         if form.is_valid() and options_valid:
             cleaned_data = form.cleaned_data
             try:
-                payload = _payload_from_post(cleaned_data["managed_fingerprint"], current)
-
-                def build(live: Reservation, live_catalogue: CatalogueSnapshot) -> ReservationChange:
-                    options = _options_from_formset(options_formset, live.options)
-                    return self._change(live, cleaned_data, options, payload["qualifying_suffix"], live_catalogue)
-
+                values = _submitted_values(self.dhcp_version, cleaned_data, options_formset)
                 outcome = _run_change(
                     request,
                     "Reservation updated.",
-                    lambda: config_write.edit_reservation(
-                        server, self.dhcp_version, subnet_id, identity, payload["fingerprint"], build
+                    lambda: reservation_edit.save_edit(
+                        server, self.dhcp_version, subnet_id, identity, cleaned_data["managed_fingerprint"], values
                     ),
                     subject=f"Reservation {_identity_label(identity)}",
                 )
+            except reservation_edit.EditConflict as exc:
+                if exc.live_state is not None:
+                    data = form.data.copy()
+                    data["managed_fingerprint"] = exc.live_state.initial["managed_fingerprint"]
+                    form = self._form(server, capabilities, data=data, initial=exc.live_state.initial)
+                    for field in ("subnet_cidr", "identifier_type", "identifier"):
+                        form.fields[field].disabled = True
+                    form.offer_subnets(catalogue.subnet_choices)
+                form.add_error(exc.field, exc.message)
             except ReservationConflict as exc:
                 form.add_error(None, f"{exc} Reload the form and try again.")
-            except _UnknownSuffix as exc:
-                form.add_error("hostname", str(exc))
             except ValueError:
                 logger.exception("Could not build the Reservation update from the form")
                 messages.error(request, "The Reservation could not be updated. See server logs.")
@@ -834,61 +600,16 @@ class _ReservationEditView(_ReservationMutationView):
         show_notices(request, notice(catalogue))
         return self._render(request, server, form, options_formset, capabilities)
 
-    def _initial(self, reservation: Reservation, suffix: str | None) -> dict[str, Any]:
-        scope = _in_subnet_scope(reservation)
-        initial = {
-            "subnet_cidr": scope.subnet.cidr,
-            "identifier_type": reservation.identity.identifier_type,
-            "identifier": reservation.identity.value,
-            # Without a suffix the form shows the stored hostname.
-            "hostname": reservation.hostname if suffix is None else published_name(reservation.hostname, suffix),
-            "managed_fingerprint": _signed_fingerprint(reservation, suffix),
-        }
-        if reservation.family == 4:
-            initial["ip_address"] = str(reservation.addresses[0]) if reservation.addresses else ""
-        else:
-            initial["ip_addresses"] = ",".join(str(address) for address in reservation.addresses)
-            initial["prefixes"] = ",".join(str(prefix) for prefix in reservation.delegated_prefixes)
-        return initial
-
     def _form_for(
         self,
         server: Server,
-        reservation: Reservation,
-        suffix: str | None,
+        state: reservation_edit.FormState,
         capabilities: ReservationCapabilities | None,
     ):
-        form = self._form(server, capabilities, initial=self._initial(reservation, suffix))
+        form = self._form(server, capabilities, initial=state.initial)
         for field in ("subnet_cidr", "identifier_type", "identifier"):
             form.fields[field].disabled = True
         return form
-
-    def _change(
-        self,
-        current: Reservation,
-        cleaned_data: dict[str, Any],
-        options: tuple[DHCPOption, ...],
-        shown_suffix: str | None,
-        catalogue: CatalogueSnapshot,
-    ) -> ReservationChange:
-        addresses: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]
-        prefixes: tuple[ipaddress.IPv6Network, ...]
-        if current.family == 4:
-            addresses = (ipaddress.IPv4Address(cleaned_data["ip_address"]),) if cleaned_data.get("ip_address") else ()
-            prefixes = current.delegated_prefixes
-        else:
-            addresses = tuple(
-                ipaddress.IPv6Address(value) for value in (cleaned_data.get("ip_addresses") or "").split(",") if value
-            )
-            prefixes = tuple(
-                ipaddress.IPv6Network(value) for value in (cleaned_data.get("prefixes") or "").split(",") if value
-            )
-        return ReservationChange(
-            addresses=_change(current.addresses, addresses, ()),
-            delegated_prefixes=_change(current.delegated_prefixes, prefixes, ()),
-            hostname=_hostname_change(current, cleaned_data.get("hostname", ""), addresses, shown_suffix, catalogue),
-            options=_change(current.options, options, ()),
-        )
 
 
 class _ReservationDeleteView(_ReservationMutationView):

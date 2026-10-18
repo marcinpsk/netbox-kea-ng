@@ -213,6 +213,7 @@ URL request
       sync_views.py     (per-server IPAM sync UI)
       sync_jobs.py      (jobs tab, periodic sync management)
       settings_page.py  (Settings page: one section per settings singleton; ADR 0010)
+  → reservation_edit.py (Reservation add/edit form state, signed tokens, Published Name rules and typed builders)
   → config_write.py     (Configuration Changes, Reservation writes included: typed outcome, advisory lock, persist step)
   → change_outcome.py   (ChangeRejected and the Application classifier that every change shares; ADR 0011)
   → runtime_change.py   (Runtime Changes: Lease add/edit/delete/wipe, DHCP enable/disable; ADR 0011)
@@ -431,10 +432,11 @@ sends nothing unless its `MutationScope` returns a Verified Subnet with both.
 Reservation add, edit and delete are Configuration Changes too (ADR 0012): `add_reservation`, `edit_reservation`
 and `delete_reservation` hold the lock from the `MutationScope` read to the end of the persist step and return a
 `ReservationChangeOutcome` (the previous and intended Reservation, the verification state and the Catalogue of the
-scope read, which `claim()` takes). The view passes a builder callback that turns the form into the Reservation, or
-into the `ReservationChange` of the Reservation that the read under the lock returned; an error of the builder
-(`_UnknownSuffix`, `ReservationConflict`, a `ValueError`) propagates unchanged: the view shows the first two as form
-errors and a `ValueError` as a page error.
+scope read, which `claim()` takes). The add and edit views call `reservation_edit`, which owns the form state,
+token checks, Published Name rules and typed builders. It checks the token before any Kea read; `config_write`
+checks the managed-fact fingerprint under the lock. The builders use the live facts and Catalogue that
+`config_write` supplies. A Reservation conflict becomes a form error. An unknown suffix becomes a hostname error.
+A `ValueError` becomes a page error. The view presents the pool-overlap warning facts.
 A Subnet or a Reservation that is gone, a changed fingerprint and result 3 on `reservation-del` are
 `target-changed`; result 2 is a rejection; any other failure result, result 5, a forward failure or a lost reply is
 `unknown`, with no read after it. The persist step runs after `applied` and `unknown`, and the verification read only
