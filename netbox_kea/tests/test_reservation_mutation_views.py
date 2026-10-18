@@ -1073,7 +1073,10 @@ class TestReservationMutationViews(_ViewTestBase):
                     "options-INITIAL_FORMS": "1",
                     "options-MIN_NUM_FORMS": "0",
                     "options-MAX_NUM_FORMS": "1000",
-                    "options-0-name": "224",
+                    "options-0-name": "",
+                    "options-0-original_option": json.dumps(
+                        form_page.context["options_formset"].initial[0]["original_option"]
+                    ),
                     "options-0-data": "opaque-value",
                     "options-1-name": "",
                     "options-1-data": "",
@@ -1249,6 +1252,76 @@ class TestReservationMutationViews(_ViewTestBase):
 
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("reservation-del", kea.commands())
+
+    def test_edit_keeps_padded_duplicates_and_shows_named_option_conflicts(self):
+        for family, cidr, name in ((4, "198.18.0.0/24", "routers"), (6, "2001:db8::/64", "dns-servers")):
+            display_cache.rotate_configuration(self.server, family)
+            responses = _mutation_responses(family, 20, cidr, ["hw-address"])
+            duplicate = {
+                "name": "untouched",
+                "data": "  padded  ",
+                "csv-format": False,
+                "user-context": {"owner": "external"},
+            }
+            current = {
+                "subnet-id": 20,
+                "hw-address": "aa:bb:cc:dd:ee:ff",
+                "option-data": [duplicate, {"name": name, "data": "old"}, duplicate],
+            }
+            url = (
+                reverse(f"plugins:netbox_kea:server_reservation{family}_edit", args=[self.server.pk, 20])
+                + "?"
+                + _identity_query()
+            )
+            with stub_kea({**responses, "reservation-get": _res_get(current)}):
+                page = self.client.get(url)
+            data = {
+                "subnet_cidr": cidr,
+                "identifier_type": "hw-address",
+                "identifier": "aa:bb:cc:dd:ee:ff",
+                "managed_fingerprint": page.context["form"].initial["managed_fingerprint"],
+                "options-TOTAL_FORMS": "3",
+                "options-INITIAL_FORMS": "3",
+                "options-MIN_NUM_FORMS": "0",
+                "options-MAX_NUM_FORMS": "1000",
+            }
+            for index, row in enumerate(page.context["options_formset"].initial):
+                data.update(
+                    {
+                        f"options-{index}-name": row["name"],
+                        f"options-{index}-data": "new" if index == 1 else row["data"],
+                        f"options-{index}-original_option": json.dumps(row["original_option"]),
+                    }
+                )
+            with (
+                self.subTest(family=family),
+                stub_kea(
+                    {**responses, "reservation-get": _res_get(current), "reservation-update": {"result": 0}}
+                ) as kea,
+            ):
+                result = self.client.post(url, data)
+            self.assertEqual(result.status_code, 302)
+            self.assertEqual(
+                kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
+                [duplicate, {"name": name, "data": "new"}, duplicate],
+            )
+            added = {**current, "option-data": [*current["option-data"], {"name": "concurrent", "data": "added"}]}
+            with stub_kea({**responses, "reservation-get": _res_get(added)}) as kea:
+                conflict = self.client.post(url, data)
+            self.assertContains(conflict, "DHCP Option &#x27;concurrent&#x27; changed in Kea", html=False)
+            self.assertTrue(conflict.context["form"].is_bound)
+            self.assertNotIn("reservation-update", kea.commands())
+            self.assertNotIn("config-test", kea.commands())
+            for original in ("not-json", json.dumps({"data": "missing identity"})):
+                malformed = {**data, "options-1-original_option": original}
+                with (
+                    self.subTest(family=family, original=original),
+                    stub_kea({**responses, "reservation-get": _res_get(current)}) as kea,
+                ):
+                    refused = self.client.post(url, malformed)
+                self.assertEqual(refused.status_code, 200)
+                self.assertIn(f"DHCP Option '{name}':", BeautifulSoup(refused.content, "html.parser").get_text())
+                self.assertNotIn("reservation-update", kea.commands())
 
 
 class TestReservationDocumentImport(_ViewTestBase):

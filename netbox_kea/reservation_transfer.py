@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import ipaddress
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
 import yaml
 
 from .constants import Family, IPAddressValue
-from .dhcp_options import DHCPOption, parse_dhcp_option
+from .dhcp_options import (
+    DHCPOption,
+    DHCPOptionConflict,
+    DHCPOptionIdentity,
+    option_identity,
+    parse_dhcp_option,
+    parse_option_client_classes,
+)
 from .reservations import (
     IdentifierType,
     InSubnetReservationScope,
@@ -75,6 +82,12 @@ def resolve_import_proposal(proposal: ReservationImportProposal, subnet: SubnetI
     """Bind a validated proposal to one live-verified Subnet Identity."""
     if str(subnet.network) != proposal.subnet_cidr or subnet.network.version != proposal.family:
         raise ValueError("The live Subnet Identity does not match the import proposal.")
+    seen: set[DHCPOptionIdentity] = set()
+    for option in proposal.options:
+        identity = option_identity(option, proposal.family)
+        if identity in seen:
+            raise DHCPOptionConflict(f"DHCP Option '{option.name or option.code}' is duplicated.")
+        seen.add(identity)
     scope = InSubnetReservationScope(subnet)
     if proposal.family == 4:
         return IPv4Reservation(
@@ -369,12 +382,13 @@ def _parse_options(
     value: Any,
     position: str,
     diagnostics: list[ReservationTransferDiagnostic],
+    family: Family | None,
 ) -> tuple[DHCPOption, ...] | None:
     if not isinstance(value, list):
         diagnostics.append(_diagnostic("invalid-options", "Options must be a list.", position))
         return None
     parsed: list[DHCPOption] = []
-    seen: set[tuple[str | None, int | str | None]] = set()
+    seen: set[DHCPOptionIdentity] = set()
     for index, entry in enumerate(value):
         option_position = f"{position}[{index}]"
         raw = entry
@@ -391,13 +405,18 @@ def _parse_options(
             }
         try:
             option = parse_dhcp_option(raw)
+            if isinstance(entry, dict):
+                # The field remains unsupported. Its class set still distinguishes identity diagnostics.
+                option = replace(option, client_classes=parse_option_client_classes(entry.get("client_classes", [])))
         except ValueError:
             diagnostics.append(_diagnostic("invalid-option", "The DHCP Option is invalid.", option_position))
             continue
-        if option.match_key in seen:
+        identity = option_identity(option, family) if family is not None else None
+        if identity in seen:
             diagnostics.append(_diagnostic("duplicate-option", "The DHCP Option is duplicated.", option_position))
         else:
-            seen.add(option.match_key)
+            if identity is not None:
+                seen.add(identity)
             parsed.append(option)
     return tuple(parsed)
 
@@ -430,7 +449,7 @@ def _parse_record(
     if not isinstance(hostname, str):
         diagnostics.append(_diagnostic("invalid-hostname", "Hostname must be a string.", f"{base}.hostname"))
         hostname = None
-    options = _parse_options(raw.get("options"), f"{base}.options", diagnostics)
+    options = _parse_options(raw.get("options"), f"{base}.options", diagnostics, family)
     duplicate_key = (
         (family, subnet_cidr, identity.identifier_type, identity.value)
         if family is not None and subnet_cidr is not None and identity is not None

@@ -14,12 +14,13 @@ from django.test import TestCase
 from netbox_kea import config_write
 from netbox_kea.change_outcome import ChangeRejected
 from netbox_kea.config_write import SUBNET_LIST_UNCONFIRMED
-from netbox_kea.dhcp_options import DHCPOption
+from netbox_kea.dhcp_options import DHCPOption, DHCPOptionChange, DHCPOptionEdit
 from netbox_kea.reservations import (
     ClearValue,
     InSubnetReservationScope,
     IPv4Reservation,
     ReservationChange,
+    ReservationConflict,
     ReservationIdentity,
     SetValue,
     reservation_fingerprint,
@@ -277,7 +278,11 @@ class ReservationEditTests(TestCase):
             "client-classes": ["external-class"],
         }
         change = ReservationChange(
-            addresses=SetValue((ip_address("198.18.0.21"),)), hostname=ClearValue(), options=ClearValue()
+            addresses=SetValue((ip_address("198.18.0.21"),)),
+            hostname=ClearValue(),
+            options=DHCPOptionEdit(
+                _shown().options, tuple(DHCPOptionChange(option, None) for option in _shown().options)
+            ),
         )
         seen = []
 
@@ -301,7 +306,7 @@ class ReservationEditTests(TestCase):
 
     def test_a_name_only_option_change_keeps_the_unknown_option_fields(self):
         current = {**_RAW, "option-data": [{**_OPTION, "user-context": {"owner": "external-system"}}]}
-        change = ReservationChange(options=SetValue(_by_name(_verified(), None).options))
+        change = ReservationChange(options=DHCPOptionEdit(_shown().options, ()))
         responses = _responses(**{"reservation-get": _res_get(current), "reservation-update": _OK})
         with stub_kea(responses) as kea:
             outcome = self._edit(change)
@@ -309,7 +314,7 @@ class ReservationEditTests(TestCase):
         self.assertEqual(sent["user-context"], {"owner": "external-system"})
         self.assertEqual(outcome.verification, "verified")
 
-    def test_an_option_in_its_own_space_matches_before_a_space_less_one(self):
+    def test_default_space_aliases_cannot_target_one_duplicate(self):
         """Kea may omit `space`, and a space-less Option must not absorb another space's intent."""
         space_less = {key: value for key, value in _OPTION.items() if key != "space"}
         space_less["user-context"] = {"owner": "space-less"}
@@ -321,10 +326,11 @@ class ReservationEditTests(TestCase):
         )
         shown = _reservation(_verified(), options=options)
         responses = _responses(**{"reservation-get": _res_get(current), "reservation-update": _OK})
-        with stub_kea(responses) as kea:
-            self._edit(ReservationChange(options=SetValue((options[1],))), shown=shown)
-        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"]
-        self.assertEqual([option["user-context"] for option in sent], [{"owner": "dhcp4"}])
+        with stub_kea(responses) as kea, self.assertRaisesRegex(ReservationConflict, "domain-name-servers"):
+            self._edit(
+                ReservationChange(options=DHCPOptionEdit(options, (DHCPOptionChange(options[0], None),))), shown=shown
+            )
+        self.assertNotIn("reservation-update", kea.commands())
 
     def test_a_changed_fingerprint_changed_nothing_and_sends_no_update(self):
         changed = {**_RAW, "hostname": "changed.example.invalid"}

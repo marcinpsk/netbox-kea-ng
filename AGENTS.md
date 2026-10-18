@@ -434,8 +434,10 @@ and `delete_reservation` hold the lock from the `MutationScope` read to the end 
 `ReservationChangeOutcome` (the previous and intended Reservation, the verification state and the Catalogue of the
 scope read, which `claim()` takes). The add and edit views call `reservation_edit`, which owns the form state,
 token checks, Published Name rules and typed builders. It checks the token before any Kea read; `config_write`
-checks the managed-fact fingerprint under the lock. The builders use the live facts and Catalogue that
-`config_write` supplies. A Reservation conflict becomes a form error. An unknown suffix becomes a hostname error.
+checks the non-option managed-fact fingerprint under the lock. The signed token carries the complete shown option
+snapshot. Reservation option edits use the shared identity and merge in `dhcp_options`, with the Option Definitions
+from the same live Catalogue read (ADR 0014). The builders use the live facts and Catalogue that `config_write`
+supplies. A Reservation conflict becomes a form error. An unknown suffix becomes a hostname error.
 A `ValueError` becomes a page error. The view presents the pool-overlap warning facts.
 A Subnet or a Reservation that is gone, a changed fingerprint and result 3 on `reservation-del` are
 `target-changed`; result 2 is a rejection; any other failure result, result 5, a forward failure or a lost reply is

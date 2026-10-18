@@ -21,7 +21,7 @@ from django.db import DatabaseError, OperationalError, connection
 from . import event_scope, server_configuration
 from .change_outcome import Application, ChangeRejected, before_change, build_client, mutate, read_before
 from .constants import Family, IPNetworkValue, Persistence
-from .dhcp_options import DHCPOptionEdit
+from .dhcp_options import DHCPOptionConflict, DHCPOptionEdit, DHCPOptionNameChange, OptionDefinition
 from .kea import (
     CandidateConfiguration,
     CandidateTargetMissing,
@@ -41,8 +41,8 @@ from .reservations import (
     InSubnetReservationScope,
     Reservation,
     ReservationChange,
+    ReservationConflict,
     ReservationIdentity,
-    apply_reservation_change,
     reservation_fingerprint,
     reservation_matches_intent,
 )
@@ -574,7 +574,12 @@ def edit_reservation(
                 "target-changed", ("It changed after the edit form was opened. Reload the form and try again.",)
             )
         change = build(fresh.reservation, catalogue)
-        intended, record = before_change(lambda: _updated(fresh, change), _RESERVATION_UPDATE_UNUSABLE)
+        if change.options is not None and change.options.changes and not catalogue.option_definitions_complete:
+            target = change.options.changes[0]
+            option = target.seen or target.intended
+            label = option.name or str(option.code) if option is not None else "new option"
+            raise ReservationConflict(f"DHCP Option '{label}' cannot be edited while its definitions are unavailable.")
+        intended, record = _updated(fresh, change, catalogue.option_definitions)
         application, diagnostics = mutate(
             client, family, lambda: client.reservation_update(family, record), on_failure="unknown"
         )
@@ -633,10 +638,19 @@ def _reservation_now(
     return fresh
 
 
-def _updated(fresh: FreshReservation, change: ReservationChange) -> tuple[Reservation, dict[str, Any]]:
-    """Return the Reservation that *change* makes of *fresh*, and the record that the update sends."""
-    intended = apply_reservation_change(fresh.reservation, change)
-    return intended, fresh.updated(intended)
+def _updated(
+    fresh: FreshReservation,
+    change: ReservationChange,
+    definitions: tuple[OptionDefinition, ...],
+) -> tuple[Reservation, dict[str, Any]]:
+    """Keep named option conflicts distinct from an unusable raw Reservation projection."""
+    try:
+        return fresh.updated(change, definitions)
+    except (DHCPOptionConflict, DHCPOptionNameChange) as exc:
+        raise ReservationConflict(exc.message) from exc
+    except (ValueError, RuntimeError) as exc:
+        logger.warning("Could not prepare a Reservation update", exc_info=True)
+        raise ChangeRejected("not-sent", (_RESERVATION_UPDATE_UNUSABLE,)) from exc
 
 
 def _reservation_outcome(
@@ -682,7 +696,7 @@ def _verified(
         return "failed"
     if observed is None or intended is None:
         return "verified" if observed is None and intended is None else "failed"
-    return "verified" if reservation_matches_intent(observed, intended) else "failed"
+    return "verified" if reservation_matches_intent(observed, intended, catalogue.option_definitions) else "failed"
 
 
 def set_subnet_options(
