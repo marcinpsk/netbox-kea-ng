@@ -49,6 +49,11 @@ logger = logging.getLogger(__name__)
 
 RESERVATION_VERIFICATION_FAILED = "Kea applied the change, but NetBox Kea could not verify the final Reservation."
 
+RESERVATION_CLAIM_EVENTS_FAILED = (
+    "NetBox IPAM sync saved changes, but could not dispatch their events. "
+    "Synchronization may be incomplete; check the addresses before retrying."
+)
+
 
 def _warn_pool_facts(
     request: HttpRequest, facts: tuple[reservation_edit.PoolOverlap | reservation_edit.PoolCheckUnavailable, ...]
@@ -191,7 +196,9 @@ def _target_or_redirect(
     return loaded
 
 
-def show_reservation_side_effects(request: HttpRequest, facts: reservation_edit.AfterApplyFacts) -> None:
+def show_reservation_side_effects(
+    request: HttpRequest, facts: reservation_edit.AfterApplyFacts, *, show_claim: bool = True
+) -> None:
     """Present the independent journal, signal and IPAM claim facts of an applied Reservation change."""
     if facts.journal == "failed":
         messages.error(
@@ -212,6 +219,8 @@ def show_reservation_side_effects(request: HttpRequest, facts: reservation_edit.
             request,
             f"Kea applied the change, but a receiver of the reservation_{facts.action} signal failed; see server logs.",
         )
+    if not show_claim:
+        return
     claim = facts.claim
     if isinstance(claim, reservation_edit.ClaimSkipped):
         if claim.reason == "nothing-to-sync":
@@ -226,7 +235,7 @@ def show_reservation_side_effects(request: HttpRequest, facts: reservation_edit.
         if claim.reason == "events-failed":
             messages.error(
                 request,
-                f"Reservation {facts.action}, and NetBox IPAM sync saved it, but NetBox could not dispatch the events of the sync; see server logs.",
+                f"Reservation {facts.action}. {RESERVATION_CLAIM_EVENTS_FAILED}",
             )
         else:
             messages.error(request, "The Reservation changed, but NetBox IPAM synchronization failed.")

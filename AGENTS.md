@@ -449,9 +449,11 @@ sent through `_config_mutation_command`, so a display read during the write is n
 record handling (`FreshReservation.updated` keeps each Kea field that NetBox does not manage). The OpenGrep rule
 `kea-reservation-write-outside-config-write` refuses a call to these write primitives outside `config_write`. The
 bulk Reservation import calls `reservation_edit.save_import` for each entry through
-`_run_change_loop(..., stop_on_rejection=True)`, so an unknown or a rejected entry stops it. It calls `after_apply`
-after each change returns, outside the change callback, and shows the report that it shares with the Lease CSV import
-(`_import_report` in `views/sync_views.py`, `inc/import_report.html`).
+`_run_change_loop(..., stop_on_rejection=True)`, so an unknown or a rejected entry stops it. The import checks the
+optional IPAM claim permission once before its first write. It calls `after_apply` after each change returns,
+outside the change callback. The shared import report (`_import_report` in `views/sync_views.py`,
+`inc/import_report.html`) keeps claim failures with their entry, and later entries continue. Pool overlap facts
+produce one capped warning by Reservation Identity. Transfer document hostnames are stored values and stay unchanged.
 
 **`runtime_change` owns every Runtime Change** (ADR 0011): Lease add, edit, delete and wipe, and DHCP enable and
 disable. An operation returns a `RuntimeChangeOutcome` (`applied`/`unknown` and diagnostics) or raises
