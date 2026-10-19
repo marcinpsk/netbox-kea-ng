@@ -455,6 +455,9 @@ class SyncNowErrorHandlingTest(TestCase):
         self.url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk])
 
     def test_a_failed_configuration_read_shows_the_configuration_notice(self):
+        # The import reads the installed plugin version before Kea, so the plugin must be installed.
+        if not apps.is_installed(DHCP_PLUGIN):
+            self.skipTest(f"{DHCP_PLUGIN} not installed")
         # Each failure keeps Kea's answer in the diagnostic line; a malformed reply has its own line.
         cases = (
             *(
