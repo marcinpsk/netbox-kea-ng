@@ -24,7 +24,7 @@ from django.utils import timezone
 from netbox_kea import server_configuration
 from netbox_kea.dhcp_options import option_identity, parse_dhcp_option
 from netbox_kea.ipam_reconciliation import ReservationObservation
-from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
+from netbox_kea.mappers.kea_to_dhcp import ServerConfigIntent, parse_dhcp_config
 from netbox_kea.models import next_confirmation_number
 from netbox_kea.reservations import (
     RESERVATION_INVALID_IDENTIFIER,
@@ -749,6 +749,7 @@ class DhcpPluginTuningImportTest(TestCase):
 
         with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": conf}}}):
             intent = _fetch_config_intent(self.server, 4)
+        assert isinstance(intent, ServerConfigIntent)
         self.adapter.import_server_config(self.server, intent)
 
     def test_global_settings_applied_to_dhcp_server(self):
