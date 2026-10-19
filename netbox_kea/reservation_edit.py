@@ -5,17 +5,33 @@
 from __future__ import annotations
 
 import ipaddress
-from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any
+import logging
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, Literal
 
 from django.core import signing
+from django.core.exceptions import ValidationError
+from django.db import DatabaseError
+from extras.models import JournalEntry
 
-from . import config_write
+from . import config_write, event_scope
 from .config_write import ReservationChangeOutcome
 from .constants import Family, IPAddressValue
-from .dhcp_options import DHCPOption
+from .dhcp_options import (
+    DHCPOption,
+    DHCPOptionChange,
+    DHCPOptionConflict,
+    DHCPOptionEdit,
+    DHCPOptionNameChange,
+    check_option_snapshot,
+    merge_option_edit,
+    option_data,
+    parse_dhcp_options,
+)
+from .ipam_reconciliation import RESERVATION, ClaimResult, claim, claim_permissions
 from .pools import Pool, addresses_in_pools
 from .published_name import published_name, stored_hostname
+from .reservation_transfer import ReservationImportProposal, resolve_import_proposal
 from .reservations import (
     ClearValue,
     FieldChange,
@@ -30,10 +46,14 @@ from .reservations import (
     Unchanged,
     reservation_fingerprint,
 )
+from .signals import reservation_created, reservation_deleted, reservation_updated
 from .subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, SubnetIdentity, VerifiedSubnet
+from .sync_permissions import sync_gate
 
 if TYPE_CHECKING:
     from .models import Server
+
+logger = logging.getLogger(__name__)
 
 _FINGERPRINT_SALT = "netbox_kea.reservation-managed-facts"
 
@@ -44,6 +64,7 @@ class EditToken:
 
     fingerprint: str
     qualifying_suffix: str | None
+    options: tuple[DHCPOption, ...]
 
 
 def check_token(token: str, family: Family, subnet_id: int, identity: ReservationIdentity) -> EditToken:
@@ -69,18 +90,22 @@ def check_token(token: str, family: Family, subnet_id: int, identity: Reservatio
     suffix = payload.get("qualifying_suffix")
     if not isinstance(fingerprint, str) or not fingerprint or not isinstance(suffix, str | None):
         raise ReservationConflict("The edit fingerprint is invalid.")
-    return EditToken(fingerprint, suffix)
+    try:
+        options = parse_dhcp_options(payload.get("options"))
+    except ValueError as exc:
+        raise ReservationConflict("The edit fingerprint has invalid DHCP Options.") from exc
+    return EditToken(fingerprint, suffix, options)
 
 
 @dataclass(frozen=True)
 class OptionRow:
-    """The parsed visible values and source position of one Reservation option row."""
+    """The parsed visible values and shown DHCP Option of one Reservation row."""
 
     name: str
     data: str
     always_send: bool = False
     delete: bool = False
-    original_index: int | None = None
+    original_option: DHCPOption | None = None
 
 
 @dataclass(frozen=True)
@@ -141,83 +166,24 @@ def _in_subnet_scope(reservation: Reservation) -> InSubnetReservationScope:
     return reservation.scope
 
 
-def _options_from_rows(
-    rows: tuple[OptionRow, ...],
-    current: tuple[DHCPOption, ...] = (),
-) -> tuple[DHCPOption, ...]:
-    """Apply visible form changes while preserving unexposed option facts."""
-    options: list[DHCPOption] = []
-    remaining = list(enumerate(current))
+def _option_edit(rows: tuple[OptionRow, ...], snapshot: tuple[DHCPOption, ...]) -> DHCPOptionEdit:
+    """Translate parsed rows without using their position to identify an assignment."""
+    changes: list[DHCPOptionChange] = []
     for row in rows:
-        original_index = row.original_index
-        existing: DHCPOption | None
-        if original_index is not None:
-            matching_position = next(
-                (
-                    position
-                    for position, (current_index, _option) in enumerate(remaining)
-                    if original_index == current_index
-                ),
-                None,
-            )
-            if matching_position is None:
-                raise ValueError("The Reservation option source does not match the current Reservation.")
-            _, existing = remaining.pop(matching_position)
-            if row.delete:
-                continue
+        seen = row.original_option
+        if row.delete:
+            intended = None
+        elif seen is None:
             if not row.name:
                 continue
-            displayed_name = existing.name or (str(existing.code) if existing.code is not None else "")
-            if row.name != displayed_name:
-                existing = None
+            intended = DHCPOption(None, row.name, None, row.data, None, True if row.always_send else None, None)
         else:
-            if not row.name or row.delete:
-                continue
-            matching_positions = [
-                position
-                for position, (_current_index, option) in enumerate(remaining)
-                if row.name == (option.name or (str(option.code) if option.code is not None else ""))
-            ]
-            if len(matching_positions) > 1:
-                raise ValueError("The Reservation option name is ambiguous without its source position.")
-            existing = remaining.pop(matching_positions[0])[1] if matching_positions else None
-        submitted_always_send = bool(row.always_send)
-        if existing is not None:
-            always_send = (
-                existing.always_send if submitted_always_send == bool(existing.always_send) else submitted_always_send
-            )
-            options.append(
-                replace(
-                    existing,
-                    data=row.data,
-                    always_send=always_send,
-                )
-            )
-            continue
-        options.append(
-            DHCPOption(
-                code=None,
-                name=row.name,
-                space=None,
-                data=row.data,
-                csv_format=None,
-                always_send=True if submitted_always_send else None,
-                never_send=None,
-            )
-        )
-    return tuple(options)
-
-
-def _options_initial(reservation: Reservation) -> list[dict[str, Any]]:
-    return [
-        {
-            "original_index": index,
-            "name": option.name or (str(option.code) if option.code is not None else ""),
-            "data": option.data,
-            "always_send": bool(option.always_send),
-        }
-        for index, option in enumerate(reservation.options)
-    ]
+            intended = replace(seen, name=row.name or None, data=row.data)
+            if bool(seen.always_send) != row.always_send:
+                intended = replace(intended, always_send=row.always_send)
+        if seen != intended:
+            changes.append(DHCPOptionChange(seen, intended))
+    return DHCPOptionEdit(snapshot, tuple(changes))
 
 
 def _signed_fingerprint(reservation: Reservation, suffix: str | None) -> str:
@@ -229,6 +195,7 @@ def _signed_fingerprint(reservation: Reservation, suffix: str | None) -> str:
             "identifier_type": reservation.identity.identifier_type,
             "identifier": reservation.identity.value,
             "fingerprint": reservation_fingerprint(reservation),
+            "options": [option_data(option) for option in reservation.options],
             # The form shows the published name under this suffix.
             "qualifying_suffix": suffix,
         },
@@ -338,7 +305,7 @@ def form_state(reservation: Reservation, catalogue: CatalogueSnapshot) -> FormSt
     else:
         initial["ip_addresses"] = ",".join(str(address) for address in reservation.addresses)
         initial["prefixes"] = ",".join(str(prefix) for prefix in reservation.delegated_prefixes)
-    return FormState(initial, tuple(_options_initial(reservation)))
+    return FormState(initial, tuple(option.form_initial() for option in reservation.options))
 
 
 def build_add(
@@ -350,7 +317,11 @@ def build_add(
 ) -> Reservation:
     """Build the typed Reservation in the Subnet and Catalogue verified under the change lock."""
     scope = InSubnetReservationScope(subnet.identity)
-    options = _options_from_rows(values.option_rows)
+    edit = _option_edit(values.option_rows, ())
+    try:
+        options = parse_dhcp_options(merge_option_edit(edit, [], family, catalogue.option_definitions))
+    except (DHCPOptionConflict, DHCPOptionNameChange) as exc:
+        raise EditConflict(exc.message) from exc
     hostname = _stored_for(catalogue, subnet, values.hostname, values.addresses)
     if family == 4:
         return IPv4Reservation(
@@ -377,13 +348,22 @@ def build_edit(
     shown: EditToken,
 ) -> ReservationChange:
     """Build explicit managed changes from the submitted values and live facts under the lock."""
-    options = _options_from_rows(values.option_rows, current.options)
+    try:
+        check_option_snapshot(
+            shown.options,
+            tuple(row.original_option for row in values.option_rows if row.original_option is not None),
+            current.family,
+            catalogue.option_definitions,
+        )
+    except DHCPOptionConflict as exc:
+        raise EditConflict(exc.message) from exc
+    options = _option_edit(values.option_rows, shown.options)
     prefixes = current.delegated_prefixes if current.family == 4 else values.delegated_prefixes
     return ReservationChange(
         addresses=_change(current.addresses, values.addresses, ()),
         delegated_prefixes=_change(current.delegated_prefixes, prefixes, ()),
         hostname=_hostname_change(current, values.hostname, values.addresses, shown.qualifying_suffix, catalogue),
-        options=_change(current.options, options, ()),
+        options=options,
     )
 
 
@@ -419,14 +399,7 @@ def save_add(
 
     def build(subnet: VerifiedSubnet, catalogue: CatalogueSnapshot) -> Reservation:
         reservation = build_add(family, identity, values, subnet, catalogue)
-        if reservation.addresses:
-            if subnet.configuration is None:
-                warnings.append(PoolCheckUnavailable(subnet.cidr))
-            else:
-                warnings.extend(
-                    PoolOverlap(address, pool)
-                    for address, pool in addresses_in_pools(reservation.addresses, subnet.configuration.pools)
-                )
+        warnings.extend(_pool_warning_facts(reservation, subnet))
         return reservation
 
     outcome = config_write.add_reservation(server, family, subnet_cidr, build)
@@ -439,4 +412,231 @@ def save_add(
         verification=outcome.verification,
         catalogue=outcome.catalogue,
         warnings=tuple(warnings),
+    )
+
+
+ReservationAction = Literal["created", "updated", "deleted"]
+SideEffectStatus = Literal["succeeded", "failed", "events-failed", "not-applied"]
+
+
+@dataclass(frozen=True)
+class ClaimSkipped:
+    """The reason an after-apply operation did not request an IPAM claim."""
+
+    reason: Literal["not-applied", "not-requested", "nothing-to-sync", "permission"]
+    explanation: str = ""
+
+
+@dataclass(frozen=True)
+class ClaimFailure:
+    """A failed claim, or failed event dispatch after the claim committed."""
+
+    reason: Literal["failed", "events-failed"]
+
+
+@dataclass(frozen=True)
+class AfterApplyFacts:
+    """The independent journal, signal and IPAM claim facts after one Reservation change."""
+
+    action: ReservationAction | None
+    journal: SideEffectStatus
+    signal: SideEffectStatus
+    claim: ClaimResult | ClaimSkipped | ClaimFailure
+
+
+def _pool_warning_facts(
+    reservation: Reservation, subnet: VerifiedSubnet
+) -> tuple[PoolOverlap | PoolCheckUnavailable, ...]:
+    if not reservation.addresses:
+        return ()
+    if subnet.configuration is None:
+        return (PoolCheckUnavailable(subnet.cidr),)
+    return tuple(
+        PoolOverlap(address, pool)
+        for address, pool in addresses_in_pools(reservation.addresses, subnet.configuration.pools)
+    )
+
+
+def save_import(server: Server, proposal: ReservationImportProposal) -> AddOutcome:
+    """Create one transfer proposal with its stored hostname and live pool overlap facts."""
+    warnings: list[PoolOverlap | PoolCheckUnavailable] = []
+
+    def build(subnet: VerifiedSubnet, _catalogue: CatalogueSnapshot) -> Reservation:
+        reservation = resolve_import_proposal(proposal, subnet.identity)
+        warnings.extend(_pool_warning_facts(reservation, subnet))
+        return reservation
+
+    outcome = config_write.add_reservation(server, proposal.family, proposal.subnet_cidr, build)
+    return AddOutcome(
+        outcome.application,
+        outcome.persistence,
+        outcome.diagnostics,
+        previous=outcome.previous,
+        intended=outcome.intended,
+        verification=outcome.verification,
+        catalogue=outcome.catalogue,
+        warnings=tuple(warnings),
+    )
+
+
+@dataclass(frozen=True)
+class PoolOverlapSummary:
+    """The bounded Reservation Identities with an address inside an allocation Pool."""
+
+    identities: tuple[ReservationIdentity, ...]
+    remaining: int
+
+
+def pool_overlap_summary(outcomes: tuple[AddOutcome, ...], *, limit: int = 5) -> PoolOverlapSummary:
+    """Count each applied scoped Reservation once, regardless of its addresses or Pools."""
+    if limit < 1:
+        raise ValueError("A pool overlap summary needs a positive limit.")
+    identities = tuple(
+        {
+            (outcome.intended.family, outcome.intended.scope, outcome.intended.identity): outcome.intended.identity
+            for outcome in outcomes
+            if outcome.application == "applied"
+            and outcome.intended is not None
+            and any(isinstance(fact, PoolOverlap) for fact in outcome.warnings)
+        }.values()
+    )
+    return PoolOverlapSummary(identities[:limit], max(0, len(identities) - limit))
+
+
+def _journal_after_apply(
+    server: Server, user: Any, action: ReservationAction, reservation: Reservation
+) -> SideEffectStatus:
+    addresses = ", ".join(str(address) for address in reservation.addresses) or "no address"
+    identity = reservation.identity
+    try:
+        with event_scope.atomic():
+            JournalEntry.objects.create(
+                assigned_object=server,
+                created_by=user,
+                kind="info",
+                comments=f"Reservation {action}: {identity.identifier_type} {identity.value}; {addresses}",
+            )
+    except event_scope.EventDispatchError:
+        logger.exception("The journal entry committed but its events could not be dispatched")
+        return "events-failed"
+    except (DatabaseError, ValidationError, RuntimeError):
+        logger.exception("Could not write the journal entry of an applied change to Server %s", server.pk)
+        return "failed"
+    return "succeeded"
+
+
+def _signal_after_apply(
+    server: Server, outcome: ReservationChangeOutcome, action: ReservationAction, reservation: Reservation, request: Any
+) -> SideEffectStatus:
+    signal = {"created": reservation_created, "updated": reservation_updated, "deleted": reservation_deleted}[action]
+    try:
+        responses = signal.send_robust(
+            sender=None,
+            server=server,
+            before=outcome.previous,
+            after=outcome.intended,
+            dhcp_version=reservation.family,
+            request=request,
+        )
+    except event_scope.EventDispatchError:
+        logger.exception("The Reservation signal committed but its events could not be dispatched")
+        return "events-failed"
+    except (DatabaseError, ValidationError, ValueError, RuntimeError):
+        logger.exception("Could not send the Reservation %s signal", action)
+        return "failed"
+    errors = [response for _receiver, response in responses if isinstance(response, Exception)]
+    for error in errors:
+        logger.error("A receiver of the reservation_%s signal failed", action, exc_info=error)
+    if any(isinstance(error, event_scope.EventDispatchError) for error in errors):
+        return "events-failed"
+    return "failed" if errors else "succeeded"
+
+
+class ImportSyncRefused(ValueError):
+    """A requested import claim cannot pass the manual Sync permission rule."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
+
+@dataclass(frozen=True)
+class ImportContext:
+    """One import's permission decision, bound to its Server and operator."""
+
+    server: Server
+    user: Any
+    sync_to_netbox: bool = False
+    _server_id: int = field(init=False, repr=False)
+    _user_id: int = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.server.pk is None or self.user.pk is None:
+            raise ValueError("An import needs a saved Server and user.")
+        if self.sync_to_netbox:
+            gate = sync_gate(self.user, claim_permissions(RESERVATION))
+            if not gate.allowed:
+                raise ImportSyncRefused(gate.reason)
+        object.__setattr__(self, "_server_id", self.server.pk)
+        object.__setattr__(self, "_user_id", self.user.pk)
+
+    def check_target(self, server: Server, user: Any) -> None:
+        """Refuse reuse of a permission decision for another Server or operator."""
+        if server.pk != self._server_id or user.pk != self._user_id:
+            raise ValueError("The import permission decision belongs to another Server or user.")
+
+
+def prepare_import(server: Server, user: Any, *, sync_to_netbox: bool = False) -> ImportContext:
+    """Check the optional claim permissions once, before the import sends any entry."""
+    return ImportContext(server, user, sync_to_netbox)
+
+
+def _claim_after_apply(
+    server: Server, outcome: ReservationChangeOutcome, user: Any, requested: bool, context: ImportContext | None
+) -> ClaimResult | ClaimSkipped | ClaimFailure:
+    if not requested:
+        return ClaimSkipped("not-requested")
+    reservation = outcome.intended
+    if reservation is None or not reservation.addresses:
+        return ClaimSkipped("nothing-to-sync")
+    try:
+        if context is None:
+            gate = sync_gate(user, claim_permissions(RESERVATION))
+            if not gate.allowed:
+                logger.warning("User %r requested a Reservation IPAM sync that the manual Sync rule refuses", user)
+                return ClaimSkipped("permission", gate.reason)
+        return claim(server, reservation.family, [reservation], force=True, catalogue=outcome.catalogue)
+    except event_scope.EventDispatchError:
+        logger.exception("The events of the NetBox IPAM sync of a Reservation could not be dispatched")
+        return ClaimFailure("events-failed")
+    except (DatabaseError, ValidationError, ValueError, RuntimeError):
+        logger.exception("Could not synchronize an applied Reservation change to NetBox IPAM")
+        return ClaimFailure("failed")
+
+
+def after_apply(
+    server: Server,
+    outcome: ReservationChangeOutcome,
+    user: Any,
+    *,
+    sync_to_netbox: bool = False,
+    request: Any = None,
+    import_context: ImportContext | None = None,
+) -> AfterApplyFacts:
+    """Run independent side effects only after Kea applied the change, outside its classification."""
+    if outcome.application != "applied":
+        return AfterApplyFacts(None, "not-applied", "not-applied", ClaimSkipped("not-applied"))
+    if import_context is not None:
+        import_context.check_target(server, user)
+        sync_to_netbox = import_context.sync_to_netbox
+    reservation = outcome.intended or outcome.previous
+    if reservation is None:
+        raise ValueError("An applied Reservation change needs the Reservation before or after it.")
+    action: ReservationAction = (
+        "deleted" if outcome.intended is None else "created" if outcome.previous is None else "updated"
+    )
+    journal = _journal_after_apply(server, user, action, reservation)
+    signal = _signal_after_apply(server, outcome, action, reservation, request)
+    return AfterApplyFacts(
+        action, journal, signal, _claim_after_apply(server, outcome, user, sync_to_netbox, import_context)
     )

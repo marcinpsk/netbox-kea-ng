@@ -62,7 +62,7 @@ from django.db.models.signals import post_delete
 from .. import branching, event_scope
 from ..constants import IPNetworkValue
 from ..dhcp_mapping_lifecycle import coordinated_import
-from ..dhcp_options import DHCPOption
+from ..dhcp_options import DHCPOption, option_identity
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import (
     ClientClassIntent,
@@ -364,7 +364,7 @@ def upsert_options(parent_obj, options, family: int, dhcp_server, custom_defs, s
         definition = _resolve_option_definition(opt, family, dhcp_server, custom_defs, summary)
         if definition is None:
             summary.options_skipped += 1
-            summary.warn(f"option {opt.match_key}: no matching definition, skipped")
+            summary.warn(f"option {option_identity(opt, family)}: no matching definition, skipped")
             continue
         try:
             with event_scope.atomic():
@@ -389,7 +389,7 @@ def upsert_options(parent_obj, options, family: int, dhcp_server, custom_defs, s
             raise
         except Exception as exc:  # noqa: BLE001 — one bad option must not abort the import
             summary.options_skipped += 1
-            summary.warn(f"option {opt.match_key}: {exc}")
+            summary.warn(f"option {option_identity(opt, family)}: {exc}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -1567,6 +1567,12 @@ class _BaseBulkReservationImportForm(forms.Form):
         help_text="Upload one UTF-8 YAML or JSON document.",
     )
 
+    sync_to_netbox = forms.BooleanField(
+        required=False,
+        label="Sync to NetBox",
+        help_text="Claim each created Reservation's addresses in NetBox IPAM. Requires manual Sync permissions.",
+    )
+
     def clean(self):
         """Require exactly one document source and decode uploads as UTF-8."""
         cleaned_data = super().clean()
@@ -1679,10 +1685,8 @@ class ConfigurationOptionsForm(SubnetOptionsForm):
 SubnetOptionsFormSet = forms.formset_factory(ConfigurationOptionsForm, extra=1, can_delete=True)
 
 
-class ReservationOptionsForm(SubnetOptionsForm):
-    """One Reservation option row with its stable source position."""
-
-    original_index = forms.IntegerField(required=False, min_value=0, widget=forms.HiddenInput)
+class ReservationOptionsForm(ConfigurationOptionsForm):
+    """One Reservation option row with its complete shown DHCP Option."""
 
 
 ReservationOptionsFormSet = forms.formset_factory(ReservationOptionsForm, extra=1, can_delete=True)

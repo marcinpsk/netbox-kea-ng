@@ -656,9 +656,9 @@ rules:
     message: >-
       Add an "except event_scope.EventDispatchError:" clause before the broad handler of this try.
       The unit committed and its events did not dispatch, so the run must fail ("raise"), not report a
-      failed row. In the IPAM sync after a Runtime Change that Kea applied (_run_lease_sync_to_netbox,
-      _sync_to_netbox), the clause can instead report the failed dispatch as a side-effect error with
-      messages.error() (ADR 0011). Limits: the handler order is not
+      failed row. After an applied change, return an explicit ClaimFailure("events-failed") fact or
+      "events-failed" from a SideEffectStatus-annotated function (ADR 0012). Lease sync after an applied
+      Runtime Change can still report it with messages.error() (ADR 0011). Limits: the handler order is not
       checked; a try with finally and handlers around callers of event_scope.atomic other than claim() and
       reconcile() are not seen.
     metadata:
@@ -845,6 +845,27 @@ rules:
               raise
           finally:
               ...
+      # A committed-event fact must be explicit. A generic failure or an untyped string still fails.
+      - pattern-not-inside: |
+          try:
+              ...
+          except event_scope.EventDispatchError:
+              ...
+              return ClaimFailure("events-failed")
+      - pattern-either:
+          - patterns:
+              - pattern: $CALL(...)
+              - pattern-not-inside: |
+                  def $FUNCTION(...) -> SideEffectStatus:
+                      ...
+          - patterns:
+              - pattern: $CALL(...)
+              - pattern-not-inside: |
+                  try:
+                      ...
+                  except event_scope.EventDispatchError:
+                      ...
+                      return "events-failed"
       - pattern-either:
           - patterns:
               - pattern: $CALL(...)
@@ -873,14 +894,14 @@ rules:
                       ...
                   finally:
                       ...
-          # Only the IPAM sync after an applied Runtime Change can report the failed dispatch.
+          # Only Lease sync after an applied Runtime Change reports the failed dispatch with messages.
           - patterns:
               - pattern-inside: |
                   def $FUNC(...):
                       ...
               - metavariable-regex:
                   metavariable: $FUNC
-                  regex: ^(?!(_run_lease_sync_to_netbox|_sync_to_netbox)$)
+                  regex: ^(?!_run_lease_sync_to_netbox$)
       - pattern-either:
           - pattern: event_scope.atomic(...)
           # Each claim and reconciliation row is an event_scope unit inside the call.

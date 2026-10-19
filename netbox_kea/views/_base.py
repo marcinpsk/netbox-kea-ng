@@ -223,12 +223,16 @@ class ChangeLoop(Generic[RowT, OutcomeT]):
 
 
 def _run_change_loop(
-    rows: Sequence[RowT], change: Callable[[RowT], OutcomeT], *, stop_on_rejection: bool = False
+    rows: Sequence[RowT],
+    change: Callable[[RowT], OutcomeT],
+    *,
+    stop_on_rejection: bool = False,
+    after_applied: Callable[[RowT, OutcomeT], None] | None = None,
 ) -> ChangeLoop[RowT, OutcomeT]:
     """Send one change for each of *rows*. A rejected row does not stop the loop, unless *stop_on_rejection* is true.
 
     The loop stops at the first unknown row, and at the first row whose client could not be built, because every
-    later row would fail the same way.
+    later row would fail the same way. The optional after-applied step runs after classification and before the next row.
     """
     loop: ChangeLoop[RowT, OutcomeT] = ChangeLoop()
     for index, row in enumerate(rows):
@@ -241,6 +245,8 @@ def _run_change_loop(
         else:
             if outcome.application == "applied":
                 loop.applied.append((row, outcome))
+                if after_applied is not None:
+                    after_applied(row, outcome)
                 continue
             loop.unknown = (row, _unconfirmed_message(outcome))
         loop.stopped_at = row

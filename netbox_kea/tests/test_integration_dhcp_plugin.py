@@ -22,6 +22,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from netbox_kea import server_configuration
+from netbox_kea.dhcp_options import option_identity, parse_dhcp_option
 from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.models import next_confirmation_number
@@ -678,6 +679,34 @@ class DhcpPluginOptionImportTest(TestCase):
         self.assertEqual(summary.options_created, 0)
         self.assertEqual(summary.options_skipped, 1, summary.warnings)
         self.assertEqual(summary.subnets_created, 1)  # subnet still imported
+
+    def test_invalid_option_data_is_named_and_does_not_stop_other_option_imports(self):
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        invalid = {
+            "code": 3,
+            "name": "routers",
+            "data": "not-an-address",
+            "csv-format": True,
+            "client-classes": ["voip"],
+        }
+        conf = {
+            "subnet4": [
+                {
+                    "id": 1,
+                    "subnet": "198.18.9.0/24",
+                    "option-data": [invalid, {"code": 6, "data": "198.18.9.53", "csv-format": True}],
+                }
+            ],
+        }
+        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(summary.options_skipped, 1, summary.warnings)
+        self.assertEqual(summary.options_created, 1, summary.warnings)
+        self.assertEqual(summary.subnets_created, 1, summary.warnings)
+        self.assertEqual(list(Option.objects.values_list("data", flat=True)), ["198.18.9.53"])
+        warning = "\n".join(summary.warnings)
+        self.assertIn(str(option_identity(parse_dhcp_option(invalid), 4)), warning)
+        self.assertIn("not a valid IPv4 address", warning)
 
     def test_reimport_updates_option_not_duplicated(self):
         Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")

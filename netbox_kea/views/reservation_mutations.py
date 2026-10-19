@@ -2,22 +2,22 @@
 # SPDX-License-Identifier: Apache-2.0
 import ipaddress
 import logging
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import urlencode
 
 from django.contrib import messages
-from django.core.exceptions import BadRequest, ValidationError
-from django.db import DatabaseError
+from django.core.exceptions import BadRequest
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
 from netbox.views import generic
 
-from .. import config_write, event_scope, forms, reservation_edit, subnet_catalogue
+from .. import config_write, forms, reservation_edit, subnet_catalogue
 from ..config_write import ReservationChangeOutcome
 from ..constants import Family, IPAddressValue
-from ..ipam_reconciliation import RESERVATION, claim, claim_permissions
+from ..dhcp_options import parse_dhcp_option
+from ..ipam_reconciliation import RESERVATION, ClaimResult, claim_permissions
 from ..models import Server
 from ..published_name import published_name, stored_hostname
 from ..reservations import (
@@ -28,20 +28,17 @@ from ..reservations import (
     ReservationIdentity,
     reservation_identifier_types,
 )
-from ..signals import reservation_created, reservation_deleted, reservation_updated
 from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, VerifiedSubnet
 from ..sync_permissions import sync_gate
 from ._base import (
     _client_settings_refusal,
-    _journal_applied,
     _KeaChangeMixin,
     _run_change,
     _safe_return_url,
-    _signal_applied,
 )
 from .notices import Notice, failed_load, load_target, notice, show_notices
 from .reservations import (
-    _RESERVATIONS_TAB,
+    RESERVATIONS_TAB,
     _build_reservation_options_formset,
     _display_capabilities,
     _live_capabilities,
@@ -50,15 +47,12 @@ from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
 
-_VERIFICATION_FAILED = "Kea applied the change, but NetBox Kea could not verify the final Reservation."
+RESERVATION_VERIFICATION_FAILED = "Kea applied the change, but NetBox Kea could not verify the final Reservation."
 
-ReservationAction = Literal["created", "updated", "deleted"]
-
-_SIGNALS = {
-    "created": (reservation_created, "reservation_created"),
-    "updated": (reservation_updated, "reservation_updated"),
-    "deleted": (reservation_deleted, "reservation_deleted"),
-}
+RESERVATION_CLAIM_EVENTS_FAILED = (
+    "NetBox IPAM sync saved changes, but could not dispatch their events. "
+    "Synchronization may be incomplete; check the addresses before retrying."
+)
 
 
 def _warn_pool_facts(
@@ -98,7 +92,9 @@ def _submitted_values(
             data=row.get("data", ""),
             always_send=bool(row.get("always_send")),
             delete=bool(row.get("DELETE")),
-            original_index=row.get("original_index"),
+            original_option=parse_dhcp_option(row["original_option"])
+            if row.get("original_option") is not None
+            else None,
         )
         for row in (getattr(options_formset, "cleaned_data", []) or [])
         if row
@@ -106,7 +102,8 @@ def _submitted_values(
     return reservation_edit.SubmittedValues(addresses, prefixes, cleaned_data.get("hostname", ""), rows)
 
 
-def _identity_from_request(request: HttpRequest, version: Family) -> ReservationIdentity:
+def reservation_identity_from_request(request: HttpRequest, version: Family) -> ReservationIdentity:
+    """Validate the single Reservation Identity that a view query selects."""
     types = request.GET.getlist("identifier_type")
     values = request.GET.getlist("identifier")
     if len(types) != 1 or len(values) != 1:
@@ -121,7 +118,7 @@ def _identity_from_request(request: HttpRequest, version: Family) -> Reservation
         raise BadRequest(f"Invalid DHCPv{version} Reservation Identity.") from exc
 
 
-def _identity_label(identity: ReservationIdentity) -> str:
+def reservation_identity_label(identity: ReservationIdentity) -> str:
     """Return how a message names the Reservation with *identity*."""
     return f"{identity.identifier_type} {identity.value}"
 
@@ -144,7 +141,7 @@ def _exact_reservation(
     return reservation
 
 
-def _live_target(
+def live_reservation_target(
     server: Server, version: Family, subnet_id: int, identity: ReservationIdentity
 ) -> tuple[Reservation, CatalogueSnapshot] | Notice:
     """Return one live Reservation and the Catalogue with configuration facts in which its Subnet is verified.
@@ -199,78 +196,59 @@ def _target_or_redirect(
     return loaded
 
 
-def _record_applied(
-    request: HttpRequest, server: Server, action: ReservationAction, outcome: ReservationChangeOutcome
+def show_reservation_side_effects(
+    request: HttpRequest, facts: reservation_edit.AfterApplyFacts, *, show_claim: bool = True
 ) -> None:
-    """Write the journal entry and send the signal of a Reservation change that Kea applied."""
-    reservation = outcome.intended or outcome.previous
-    if reservation is None:
-        raise ValueError("An applied Reservation change needs the Reservation before or after it.")
-    addresses = ", ".join(str(address) for address in reservation.addresses) or "no address"
-    _journal_applied(request, server, f"Reservation {action}: {_identity_label(reservation.identity)}; {addresses}")
-    signal, name = _SIGNALS[action]
-    _signal_applied(
-        request,
-        signal,
-        name,
-        server=server,
-        before=outcome.previous,
-        after=outcome.intended,
-        dhcp_version=reservation.family,
-    )
-
-
-def _after_applied(
-    request: HttpRequest,
-    server: Server,
-    action: ReservationAction,
-    outcome: ReservationChangeOutcome,
-    *,
-    sync_to_netbox: bool = False,
-) -> None:
-    """Run the side effects of a Reservation change that Kea applied. A failed side effect shows a separate error."""
-    _record_applied(request, server, action, outcome)
-    if outcome.persistence == "not-requested":
-        messages.info(request, "Kea applied the change. Configuration persistence is disabled for this server.")
-    if sync_to_netbox and outcome.intended is not None:
-        _sync_to_netbox(request, server, action, outcome.intended, outcome.catalogue)
-    if outcome.verification == "failed":
-        messages.warning(request, _VERIFICATION_FAILED)
-
-
-def _sync_to_netbox(
-    request: HttpRequest,
-    server: Server,
-    action: ReservationAction,
-    reservation: Reservation,
-    catalogue: CatalogueSnapshot,
-) -> None:
-    """Claim the addresses of an applied Reservation in NetBox IPAM, when the manual Sync rule allows it."""
-    if not reservation.addresses:
-        messages.info(request, f"Reservation {action}. Nothing to sync to NetBox because it reserves no IP address.")
-        return
-    gate = sync_gate(request.user, claim_permissions(RESERVATION))
-    if not gate.allowed:
-        logger.warning("User %r requested a Reservation IPAM sync that the manual Sync rule refuses", request.user)
-        messages.warning(request, f"Reservation {action}, but it was not synced to NetBox. {gate.reason}")
-        return
-    try:
-        outcome = claim(server, reservation.family, [reservation], force=True, catalogue=catalogue)
-    except event_scope.EventDispatchError:
-        # The sync committed after Kea applied the Reservation, so the failed dispatch must not end the request.
-        logger.exception("The events of the NetBox IPAM sync of a Reservation could not be dispatched")
+    """Present the independent journal, signal and IPAM claim facts of an applied Reservation change."""
+    if facts.journal == "failed":
+        messages.error(
+            request, "Kea applied the change, but NetBox could not write the journal entry; see server logs."
+        )
+    if facts.journal == "events-failed":
         messages.error(
             request,
-            f"Reservation {action}, and NetBox IPAM sync saved it, but NetBox could not dispatch the events of the"
-            " sync; see server logs.",
+            "Kea applied the change, and the journal entry was saved, but NetBox could not dispatch its events; see server logs.",
         )
+    if facts.signal == "events-failed":
+        messages.error(
+            request,
+            "Kea applied the change, and the Reservation signal was sent, but NetBox could not dispatch its events; see server logs.",
+        )
+    if facts.signal == "failed":
+        messages.error(
+            request,
+            f"Kea applied the change, but a receiver of the reservation_{facts.action} signal failed; see server logs.",
+        )
+    if not show_claim:
         return
-    except (DatabaseError, ValidationError, ValueError, RuntimeError):
-        logger.exception("Could not synchronize an applied Reservation change to NetBox IPAM")
-        messages.error(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
-        return
-    if any(not address.synchronized for address in outcome.addresses.values()):
+    claim = facts.claim
+    if isinstance(claim, reservation_edit.ClaimSkipped):
+        if claim.reason == "nothing-to-sync":
+            messages.info(
+                request, f"Reservation {facts.action}. Nothing to sync to NetBox because it reserves no IP address."
+            )
+        elif claim.reason == "permission":
+            messages.warning(
+                request, f"Reservation {facts.action}, but it was not synced to NetBox. {claim.explanation}"
+            )
+    elif isinstance(claim, reservation_edit.ClaimFailure):
+        if claim.reason == "events-failed":
+            messages.error(
+                request,
+                f"Reservation {facts.action}. {RESERVATION_CLAIM_EVENTS_FAILED}",
+            )
+        else:
+            messages.error(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
+    elif isinstance(claim, ClaimResult) and any(not address.synchronized for address in claim.addresses.values()):
         messages.warning(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
+
+
+def _show_applied_details(request: HttpRequest, outcome: ReservationChangeOutcome) -> None:
+    """Show persistence-disabled and verification guidance for one applied Reservation change."""
+    if outcome.persistence == "not-requested":
+        messages.info(request, "Kea applied the change. Configuration persistence is disabled for this server.")
+    if outcome.verification == "failed":
+        messages.warning(request, RESERVATION_VERIFICATION_FAILED)
 
 
 def _entered_address(value: str, family: Family) -> IPAddressValue | None:
@@ -334,7 +312,7 @@ class _ReservationPublishedNameView(_KeaChangeMixin, ServerFamilyMixin, View):
 class _ReservationMutationView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     workspace_section = "reservations"
     queryset = Server.objects.all()
-    tab = _RESERVATIONS_TAB
+    tab = RESERVATIONS_TAB
     template_name = "netbox_kea/server_reservation_form.html"
     dhcp_version: Family
     form_class: type[forms.Reservation4Form] | type[forms.Reservation6Form]
@@ -455,7 +433,7 @@ class _ReservationAddView(_ReservationMutationView):
                     lambda: reservation_edit.save_add(
                         server, self.dhcp_version, cleaned_data["subnet_cidr"], identity, values
                     ),
-                    subject=f"Reservation {_identity_label(identity)}",
+                    subject=f"Reservation {reservation_identity_label(identity)}",
                 )
             except reservation_edit.EditConflict as exc:
                 form.add_error(exc.field, exc.message)
@@ -466,13 +444,15 @@ class _ReservationAddView(_ReservationMutationView):
                 if outcome is not None:
                     _warn_pool_facts(request, outcome.warnings)
                     if outcome.application == "applied":
-                        _after_applied(
-                            request,
+                        facts = reservation_edit.after_apply(
                             server,
-                            "created",
                             outcome,
+                            request.user,
+                            request=request,
                             sync_to_netbox=bool(cleaned_data.get("sync_to_netbox")),
                         )
+                        show_reservation_side_effects(request, facts)
+                        _show_applied_details(request, outcome)
                     return redirect(self._return_url(server))
         snapshot = subnet_catalogue.display(server, self.dhcp_version)
         show_notices(request, notice(snapshot))
@@ -510,7 +490,7 @@ class _ReservationEditView(_ReservationMutationView):
         if refusal := _client_settings_refusal(server, self.dhcp_version):
             messages.error(request, refusal)
             return redirect(self._return_url(server))
-        identity = _identity_from_request(request, self.dhcp_version)
+        identity = reservation_identity_from_request(request, self.dhcp_version)
         catalogue = subnet_catalogue.display(server, self.dhcp_version)
         reservation = _target_or_redirect(
             request, server, self.dhcp_version, subnet_id, identity, self._return_url(server), notice(catalogue)
@@ -532,7 +512,7 @@ class _ReservationEditView(_ReservationMutationView):
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        identity = _identity_from_request(request, self.dhcp_version)
+        identity = reservation_identity_from_request(request, self.dhcp_version)
         return_url = self._return_url(server)
         try:
             reservation_edit.check_token(
@@ -570,7 +550,7 @@ class _ReservationEditView(_ReservationMutationView):
                     lambda: reservation_edit.save_edit(
                         server, self.dhcp_version, subnet_id, identity, cleaned_data["managed_fingerprint"], values
                     ),
-                    subject=f"Reservation {_identity_label(identity)}",
+                    subject=f"Reservation {reservation_identity_label(identity)}",
                 )
             except reservation_edit.EditConflict as exc:
                 if exc.live_state is not None:
@@ -589,13 +569,15 @@ class _ReservationEditView(_ReservationMutationView):
             else:
                 if outcome is not None:
                     if outcome.application == "applied":
-                        _after_applied(
-                            request,
+                        facts = reservation_edit.after_apply(
                             server,
-                            "updated",
                             outcome,
+                            request.user,
+                            request=request,
                             sync_to_netbox=bool(cleaned_data.get("sync_to_netbox")),
                         )
+                        show_reservation_side_effects(request, facts)
+                        _show_applied_details(request, outcome)
                     return redirect(return_url)
         show_notices(request, notice(catalogue))
         return self._render(request, server, form, options_formset, capabilities)
@@ -621,7 +603,7 @@ class _ReservationDeleteView(_ReservationMutationView):
         if refusal := _client_settings_refusal(server, self.dhcp_version):
             messages.error(request, refusal)
             return redirect(self._return_url(server))
-        identity = _identity_from_request(request, self.dhcp_version)
+        identity = reservation_identity_from_request(request, self.dhcp_version)
         reservation = _target_or_redirect(
             request, server, self.dhcp_version, subnet_id, identity, self._return_url(server)
         )
@@ -642,7 +624,7 @@ class _ReservationDeleteView(_ReservationMutationView):
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
         server = self.get_object(pk=pk)
-        identity = _identity_from_request(request, self.dhcp_version)
+        identity = reservation_identity_from_request(request, self.dhcp_version)
         return_url = self._return_url(server)
         capabilities = self._mutation_capabilities(request, server)
         if isinstance(capabilities, HttpResponse):
@@ -651,10 +633,12 @@ class _ReservationDeleteView(_ReservationMutationView):
             request,
             "Reservation deleted.",
             lambda: config_write.delete_reservation(server, self.dhcp_version, subnet_id, identity),
-            subject=f"Reservation {_identity_label(identity)}",
+            subject=f"Reservation {reservation_identity_label(identity)}",
         )
         if outcome is not None and outcome.application == "applied":
-            _after_applied(request, server, "deleted", outcome)
+            facts = reservation_edit.after_apply(server, outcome, request.user, request=request)
+            show_reservation_side_effects(request, facts)
+            _show_applied_details(request, outcome)
         return redirect(return_url)
 
 
