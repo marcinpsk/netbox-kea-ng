@@ -1078,6 +1078,9 @@ def _reservation_state(obj, addresses, prefixes) -> tuple:
 def _relation_states(objs) -> dict[int, tuple[set, set]]:
     """Read the IPv6 addresses and Prefixes of every row in two queries, keyed by row."""
     states: dict[int, tuple[set, set]] = {obj.pk: (set(), set()) for obj in objs}
+    if not states:
+        # Without the DHCP plugin no row is imported, and its model does not exist.
+        return states
     rows = _model("HostReservation").objects.filter(pk__in=states)
     for position, relation in enumerate(("ipv6_addresses", "ipv6_prefixes")):
         for pk, related in rows.values_list("pk", relation):
