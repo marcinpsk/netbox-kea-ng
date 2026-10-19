@@ -1578,8 +1578,21 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
                     written = written["subnet4"][0]
                 expected = copy.deepcopy(options)
                 expected[1]["data"] = "198.18.0.2"
-                del expected[1]["csv-format"]
                 self.assertEqual(written["option-data"], expected)
+
+    def test_a_row_edit_keeps_the_live_csv_format_of_the_data_it_shows(self):
+        options = [{"code": 224, "space": "vendor-example", "data": "aabb", "csv-format": False}]
+        for scope in ("server", "subnet"):
+            with self.subTest(scope=scope), _persist_stub(self._config(scope, options)) as kea:
+                data = self._submitted(self.client.get(self._url(scope)))
+                self.assertEqual(data["form-0-data"], "aabb")
+                data["form-0-data"] = "aabc"
+                post = self.client.post(self._url(scope), data)
+                self.assertEqual(post.status_code, 302)
+                written = _written_config(kea)["Dhcp4"]
+                if scope == "subnet":
+                    written = written["subnet4"][0]
+                self.assertEqual(written["option-data"], [{**options[0], "data": "aabc"}])
 
     def test_reordered_live_options_keep_their_own_metadata_and_allow_deletion(self):
         options = [

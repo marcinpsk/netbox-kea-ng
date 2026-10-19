@@ -361,7 +361,7 @@ class ReservationEditTests(TestCase):
         sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
         self.assertEqual(
             sent["option-data"],
-            [{key: value for key, value in {**first, "data": "new"}.items() if key != "csv-format"}, second],
+            [{**first, "data": "new"}, second],
         )
         self.assertEqual(sent["user-context"], {"owner": "lab"})
 
@@ -407,7 +407,7 @@ class ReservationEditTests(TestCase):
             self.assertEqual(
                 kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
                 (
-                    [{"name": "renamed", "space": "vendor-lab", "data": "new", "never-send": True}]
+                    [{"name": "renamed", "space": "vendor-lab", "data": "new", "csv-format": False, "never-send": True}]
                     if len(rows) == 1
                     else [{"name": "custom", "data": "new"}]
                 ),
@@ -556,8 +556,8 @@ class ReservationEditTests(TestCase):
                 [
                     classed,
                     duplicate,
-                    {"code": code, "space": f"dhcp{family}", "data": "new", "never-send": True},
-                    {key: value for key, value in {**class_target, "data": "changed"}.items() if key != "csv-format"},
+                    {**target, "data": "new"},
+                    {**class_target, "data": "changed"},
                     foreign,
                     duplicate,
                     {"name": "added", "data": "last"},

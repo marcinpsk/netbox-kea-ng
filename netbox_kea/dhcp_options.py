@@ -646,8 +646,6 @@ def _written_option(option: DHCPOption, seen: DHCPOption | None, live: dict[str,
             result.pop(key, None)
         else:
             result[key] = list(value) if attribute == "client_classes" else value
-    if seen is not None and option.data != seen.data:
-        result.pop("csv-format", None)
     return result
 
 

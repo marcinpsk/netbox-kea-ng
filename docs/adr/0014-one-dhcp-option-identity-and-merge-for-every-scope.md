@@ -47,9 +47,10 @@ need two options that differ only in their client classes to stay two options.
   - **What is kept.** A live entry keeps its list position and every key that the change does not set, including
     unknown keys such as `user-context`.
   - **New entries** go at the end.
-  - **The one exception:** a replaced value drops `csv-format`, because the form writes the data in its own encoding.
+  - **Encoding.** An option row shows the data as Kea stores it, so a replaced value keeps the live `csv-format`.
 - **The fixed form fields** (gateway, DNS and NTP servers) translate into one edit for the entry of the default space
-  with no client classes. More than one such entry is still ambiguous and is refused.
+  with no client classes. More than one such entry is still ambiguous and is refused. These fields write addresses
+  in their own encoding, so a value that they replace drops `csv-format`.
 
 ## Considered Options
 

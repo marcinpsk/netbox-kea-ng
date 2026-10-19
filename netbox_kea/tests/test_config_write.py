@@ -3083,7 +3083,7 @@ class ReadModifyWriteTests(TestCase):
                         [{**live_identity, "data": "after", "user-context": {"owner": "lab"}}],
                     )
 
-    def test_data_replacement_clears_csv_format_and_keeps_live_metadata(self):
+    def test_data_replacement_keeps_csv_format_and_live_metadata(self):
         for family in (4, 6):
             seen = parse_dhcp_option({"code": 222, "data": "old", "csv-format": False, "never-send": True})
             edit = DHCPOptionEdit((seen,), (DHCPOptionChange(seen, dataclasses.replace(seen, data="new")),))
@@ -3094,7 +3094,7 @@ class ReadModifyWriteTests(TestCase):
                 with self.subTest(family=family, scope=scope):
                     self.assertEqual(
                         self._write_options(family, scope, live, edit),
-                        [{"code": 222, "data": "new", "never-send": True, "user-context": {"owner": "lab"}}],
+                        [{**live[0], "data": "new"}],
                     )
 
     def test_delivery_flag_edit_keeps_encoding_and_does_not_inject_absent_fields(self):
