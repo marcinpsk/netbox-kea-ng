@@ -330,8 +330,10 @@ class CustomDefinitions:
 
 
 def _option_definition_fields(def_intent: OptionDefIntent, family: int, dhcp_server) -> dict:
-    """Return the managed fields of a custom Option Definition. Its name stays as created or as renamed."""
+    """Return the managed fields of a custom Option Definition: all but its name, which stays as created or renamed."""
     return {
+        "space": def_intent.space,
+        "code": def_intent.code,
         "family": family,
         "type": def_intent.type,
         "array": def_intent.array,
@@ -358,7 +360,7 @@ def _write_option_definition(
                 unmapped = OptionDefinition.objects.filter(standard=False, dhcp_server=dhcp_server, space=key.space)
                 obj = _unlinked(unmapped.filter(code=key.code)).first()
             if obj is None:
-                obj = OptionDefinition(name=def_intent.name, space=key.space, code=key.code, standard=False, **fields)
+                obj = OptionDefinition(name=def_intent.name, standard=False, **fields)
                 obj.save()
                 outcome = Outcome.CREATED
             else:
@@ -1045,17 +1047,16 @@ def _upsert_reservation(
             prefixes = {} if obj is None else dict(obj.ipv6_prefixes.values_list("pk", "prefix"))
             before = None if obj is None else _reservation_state(obj, addresses, prefixes)
             if obj is None:
-                obj = HostReservation(
-                    subnet=subnet_obj,
-                    dhcp_server=None if subnet_obj is not None else dhcp_server,
-                    name=_reservation_name(scope_name, reservation),
-                )
+                obj = HostReservation(name=_reservation_name(scope_name, reservation))
             else:
                 obj.snapshot()
                 if linked is None and subnet_obj is None:
                     # Newly adopted: take the family-qualified name so the other family is free
                     # to create its own row under the unique-name constraint.
                     obj.name = _reservation_name(scope_name, reservation)
+            # The Reservation Scope is a managed field: a row that an operator moved returns to it.
+            obj.subnet = subnet_obj
+            obj.dhcp_server = None if subnet_obj is not None else dhcp_server
             # The DHCP row mirrors the stored Kea hostname, not the published name.
             obj.hostname = reservation.hostname or None
             _apply_reservation_identifier(obj, reservation, mac_obj)
@@ -1098,6 +1099,8 @@ def _reservation_state(obj, addresses, prefixes) -> tuple:
     """Return the managed values of a DHCP plugin Reservation, to tell an update from an unchanged row."""
     return (
         obj.name,
+        obj.subnet_id,
+        obj.dhcp_server_id,
         obj.hostname,
         obj.hw_address_id,
         obj.duid,

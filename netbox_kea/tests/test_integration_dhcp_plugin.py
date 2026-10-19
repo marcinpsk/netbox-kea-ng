@@ -1066,7 +1066,7 @@ class DhcpPluginMappingImportTest(TestCase):
     def _rows(self) -> dict:
         """Return the imported row of each kind, by the source columns it must map to."""
         model = partial(apps.get_model, DHCP_PLUGIN)
-        subnet = model("Subnet").objects.get(dhcp_server__name=self.server.name)
+        subnet = model("Subnet").objects.get(dhcp_server__name=self.server.name, prefix__prefix="10.98.0.0/24")
         return {
             ("subnet", 1, None): subnet,
             ("pool", 1, "10.98.0.10-10.98.0.100"): model("Pool").objects.get(subnet=subnet),
@@ -1112,12 +1112,34 @@ class DhcpPluginMappingImportTest(TestCase):
         self.assertEqual({source: row.pk for source, row in self._rows().items()}, rows)
         self.assertEqual(self._assert_one_mapping_each(self._rows()), links)
 
-    def test_a_renamed_row_keeps_its_mapping_and_the_next_import_updates_it(self):
+    def test_a_renamed_and_changed_row_keeps_its_mapping_and_the_next_import_updates_it(self):
+        """Each change takes the row out of its structural match, so only the mapping can find it again."""
+        from ipam.models import IPRange, Prefix
+        from netaddr import IPNetwork
+
         self._import()
         rows = self._rows()
-        for row in rows.values():
+        pool_range = rows[("pool", 1, "10.98.0.10-10.98.0.100")].ip_range_id
+        reservation_subnet = rows[("reservation", 1, "hw-address:aa:bb:cc:dd:ee:98")].subnet_id
+        other_subnet = apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
+            name="operator subnet",
+            prefix=Prefix.objects.create(prefix=IPNetwork("10.98.5.0/24")),
+            dhcp_server=rows[("subnet", 1, None)].dhcp_server,
+        )
+        changed = {
+            ("pool", 1, "10.98.0.10-10.98.0.100"): {
+                "ip_range": IPRange.objects.create(
+                    start_address=IPNetwork("10.98.0.200/24"), end_address=IPNetwork("10.98.0.210/24")
+                )
+            },
+            ("reservation", 1, "hw-address:aa:bb:cc:dd:ee:98"): {"subnet": other_subnet},
+            ("option_definition", None, "dhcp4:222"): {"code": 223},
+        }
+        for source, row in rows.items():
             row.snapshot()
             row.name = f"renamed {row.pk}"
+            for name, value in changed.get(source, {}).items():
+                setattr(row, name, value)
             row.save()
         self.conf["option-def"][0]["type"] = "uint16"
         self.conf["client-classes"][0]["test"] = "option[60].hex == 'phone'"
@@ -1131,17 +1153,82 @@ class DhcpPluginMappingImportTest(TestCase):
         for source, row in current.items():
             with self.subTest(source=source):
                 self.assertEqual(row.name, f"renamed {row.pk}")
-        self.assertEqual(current[("option_definition", None, "dhcp4:222")].type, "uint16")
+        definition = current[("option_definition", None, "dhcp4:222")]
+        self.assertEqual((definition.space, definition.code, definition.type), ("dhcp4", 222, "uint16"))
         self.assertEqual(current[("client_class", None, "voip")].test, "option[60].hex == 'phone'")
-        self.assertEqual(current[("reservation", 1, "hw-address:aa:bb:cc:dd:ee:98")].hostname, "renamed-host")
-        self.assertEqual(
-            list(current[("pool", 1, "10.98.0.10-10.98.0.100")].options.values_list("data", flat=True)), ["6"]
-        )
+        reservation = current[("reservation", 1, "hw-address:aa:bb:cc:dd:ee:98")]
+        self.assertEqual((reservation.subnet_id, reservation.hostname), (reservation_subnet, "renamed-host"))
+        pool = current[("pool", 1, "10.98.0.10-10.98.0.100")]
+        self.assertEqual(pool.ip_range_id, pool_range)
+        self.assertEqual(list(pool.options.values_list("data", flat=True)), ["6"])
         self.assertEqual(
             {(entry.kind, entry.outcome.value) for entry in summary.entries if entry.kind != Kind.OPTION},
-            {(Kind.OPTION_DEFINITION, "updated"), (Kind.CLIENT_CLASS, "updated"), (Kind.RESERVATION, "updated")},
+            {
+                (Kind.OPTION_DEFINITION, "updated"),
+                (Kind.CLIENT_CLASS, "updated"),
+                (Kind.POOL, "updated"),
+                (Kind.RESERVATION, "updated"),
+            },
         )
         self._assert_one_mapping_each(current)
+
+    def test_a_changed_definition_code_is_restored_before_options_bind_to_it(self):
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        self._import()
+        definition = self._rows()[("option_definition", None, "dhcp4:222")]
+        definition.snapshot()
+        definition.code = 223
+        definition.save()
+
+        self._import()
+
+        definition.refresh_from_db()
+        self.assertEqual((definition.space, definition.code), ("dhcp4", 222))
+        self.assertEqual(
+            sorted(Option.objects.filter(definition=definition).values_list("data", flat=True)), ["5", "7"]
+        )
+        self.assertEqual(self._rows()[("option_definition", None, "dhcp4:222")].pk, definition.pk)
+
+    def test_a_moved_in_subnet_reservation_returns_to_its_subnet(self):
+        from netbox_kea.dhcp_mapping_lifecycle import mapped_target
+        from netbox_kea.integrations.dhcp_import_plan import MappingSource
+        from netbox_kea.models import KeaDhcpLink
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        conf = {
+            "subnet4": [
+                {"id": 1, "subnet": "10.96.0.0/24", "reservations": [{"duid": "01:02:03:96"}]},
+                {"id": 2, "subnet": "10.96.1.0/24"},
+            ]
+        }
+        first = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4)
+        )
+        self.assertEqual(first.errors, 0, first.warnings)
+        home, other = (mapped_target(self.server, 4, MappingSource.subnet(subnet_id)) for subnet_id in (1, 2))
+        moved = HostReservation.objects.get(duid="01:02:03:96")
+        moved.snapshot()
+        moved.subnet = other
+        moved.name = "moved by the operator"
+        moved.save()
+
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4)
+        )
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        (restored,) = HostReservation.objects.filter(duid="01:02:03:96")
+        self.assertEqual((restored.pk, restored.subnet_id, restored.dhcp_server_id), (moved.pk, home.pk, None))
+        self.assertEqual(restored.name, "moved by the operator")
+        self.assertEqual(summary.reservations_updated, 1)
+        self.assertEqual(
+            list(
+                KeaDhcpLink.objects.filter(kind="reservation", server=self.server).values_list(
+                    "object_id", "kea_subnet_id"
+                )
+            ),
+            [(moved.pk, 1)],
+        )
 
     def test_an_upgrade_adopts_the_rows_an_earlier_release_imported_without_a_mapping(self):
         from netbox_kea.models import KeaDhcpLink
