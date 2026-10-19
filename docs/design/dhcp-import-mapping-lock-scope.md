@@ -18,7 +18,8 @@ writes while a DHCP import runs.
 
 Astra (GPT-6 high, read-only) ratified r6 on 2026-10-06 for the full design, r1 to r6 as amended.
 This section states the result. The sections after it hold the brief, the two blind designs, the
-divergence table and every round, and they are the evidence for each rule below.
+divergence table and every round, and they are the evidence for each rule below. Since #93, where this
+record names Subnet and HostReservation, read every DHCP Import Mapping target (`target_models()`).
 
 ### Contract
 

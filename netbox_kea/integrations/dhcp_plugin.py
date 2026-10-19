@@ -64,7 +64,7 @@ from django.db.models.signals import post_delete
 
 from .. import event_scope, kea_paths
 from ..constants import IPNetworkValue
-from ..dhcp_mapping_lifecycle import coordinated_import, mapped_target, observe_mapping
+from ..dhcp_mapping_lifecycle import coordinated_import, mapped_target, observe_mapping, target_models
 from ..dhcp_options import DHCPOption, option_identity
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import ClientClassIntent, OptionDefIntent, ServerConfigIntent
@@ -117,8 +117,7 @@ def register_link_cleanup() -> None:
     """Remove mappings in the same database as a deleted supported DHCP target."""
     if not is_available():
         return
-    for name in ("Subnet", "HostReservation"):
-        model = _model(name)
+    for model in target_models():
         post_delete.connect(
             _delete_target_links,
             sender=model,

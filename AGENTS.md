@@ -168,8 +168,8 @@ uv run python scripts/check_docs_media.py site docs/guide/assets
   sends GET, HEAD, OPTIONS, POST, PUT, PATCH and DELETE to every netbox_kea URL in a provisioned
   branch, API action routes included; a new route with a parameter the guard cannot build fails
   by name, so teach `_route_arguments` the object.
-  DHCP Import Mappings follow their imported Subnet or Global Reservation through native
-  squash merge and revert. `dhcp_mapping_lifecycle.py` owns their history and writer boundaries.
+  DHCP Import Mappings follow their imported target (one netbox_dhcp model for each kind in
+  `MAPPING_KINDS`, `models.py`) through native squash merge and revert. `dhcp_mapping_lifecycle.py` owns their history and writer boundaries.
   Before changing mapping writes, target deletion or branch replay, read ADR 0008 and
   `docs/design/dhcp-import-mapping-transactions.md` for the recovery contract and lock order.
   Read `docs/design/dhcp-import-mapping-lock-scope.md` before changing which writes, deletions or

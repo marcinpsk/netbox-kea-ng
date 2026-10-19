@@ -96,44 +96,80 @@ def active_tabs(response) -> list[str]:
 
 
 def linked_dhcp_targets(server):
-    """Create linked Subnets and a Global Reservation with colliding object IDs."""
+    """Create one linked target of each DHCP Import Mapping kind, with object IDs that collide across models.
+
+    The Pool and the In-Subnet Reservation sit in a Subnet that has no mapping, so deleting a linked Subnet
+    reaches no other target.
+    """
     from django.apps import apps
-    from ipam.models import Prefix
+    from ipam.models import IPRange, Prefix
 
     from netbox_kea.models import KeaDhcpLink
 
-    dhcp_server = apps.get_model("netbox_dhcp", "DHCPServer").objects.create(name=server.name)
-    subnet_model = apps.get_model("netbox_dhcp", "Subnet")
-    reservation_model = apps.get_model("netbox_dhcp", "HostReservation")
-    targets = [
-        subnet_model.objects.create(
+    def model(name):
+        return apps.get_model("netbox_dhcp", name)
+
+    dhcp_server = model("DHCPServer").objects.create(name=server.name)
+    subnets = [
+        model("Subnet").objects.create(
             pk=100 + index,
             name=f"linked-subnet-{index}",
             subnet_id=100 + index,
             dhcp_server=dhcp_server,
-            prefix=Prefix.objects.create(prefix=f"198.18.{index}.0/24"),
+            prefix=Prefix.objects.create(prefix=IPNetwork(f"198.18.{index}.0/24")),
         )
-        for index in range(2)
+        for index in range(3)
     ]
-    targets.append(
-        reservation_model.objects.create(
-            pk=100, name="linked-global-reservation", dhcp_server=dhcp_server, duid="00:01:02:03"
-        )
+    ip_range = IPRange.objects.create(
+        start_address=IPNetwork("198.18.2.10/24"), end_address=IPNetwork("198.18.2.20/24")
     )
-    links = [
-        KeaDhcpLink.objects.create(
-            server=server,
-            family=4,
-            sys4_object=target,
-            **(
-                {"kind": "subnet", "kea_subnet_id": index + 1}
-                if isinstance(target, subnet_model)
-                else {"kind": "reservation", "kea_identity": "duid:00:01:02:03"}
+    shared_prefix = Prefix.objects.create(prefix=IPNetwork("198.18.10.0/24"))
+    reservation_model = model("HostReservation")
+    targets = [
+        (subnets[0], {"kind": "subnet", "kea_subnet_id": 1}),
+        (subnets[1], {"kind": "subnet", "kea_subnet_id": 2}),
+        (
+            reservation_model.objects.create(
+                pk=100, name="linked-global-reservation", dhcp_server=dhcp_server, duid="00:01:02:03"
             ),
-        )
-        for index, target in enumerate(targets)
+            {"kind": "reservation", "kea_identity": "duid:00:01:02:03"},
+        ),
+        (
+            model("SharedNetwork").objects.create(
+                pk=100, name="linked-shared-network", dhcp_server=dhcp_server, prefix=shared_prefix
+            ),
+            {"kind": "shared_network", "kea_identity": "office"},
+        ),
+        (
+            model("Pool").objects.create(pk=100, name="linked-pool", subnet=subnets[2], ip_range=ip_range),
+            {"kind": "pool", "kea_subnet_id": 3, "kea_identity": "198.18.2.10-198.18.2.20"},
+        ),
+        (
+            reservation_model.objects.create(pk=101, name="linked-in-subnet-reservation", subnet=subnets[2], duid="04"),
+            {"kind": "reservation", "kea_subnet_id": 3, "kea_identity": "duid:04"},
+        ),
+        (
+            model("ClientClass").objects.create(pk=100, name="linked-client-class", dhcp_server=dhcp_server),
+            {"kind": "client_class", "kea_identity": "voip"},
+        ),
+        (
+            # The DHCP plugin seeds its standard Option Definitions, so this ID is out of their range.
+            model("OptionDefinition").objects.create(
+                pk=1000,
+                name="linked-option-definition",
+                family=4,
+                space="dhcp4",
+                code=222,
+                type="uint8",
+                dhcp_server=dhcp_server,
+            ),
+            {"kind": "option_definition", "kea_identity": "dhcp4:222"},
+        ),
     ]
-    return tuple(zip(targets, links, strict=True))
+    return tuple(
+        (target, KeaDhcpLink.objects.create(server=server, family=4, sys4_object=target, **source))
+        for target, source in targets
+    )
 
 
 _INT_PK_RE = re.compile(r"/servers/(\d+)/")

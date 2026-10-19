@@ -259,10 +259,12 @@ class MappingUnavailable(AbortRequest):
 
 
 def target_models():
-    """Return the supported imported target classes when the DHCP plugin is installed."""
+    """Return the model of each DHCP Import Mapping kind when the DHCP plugin is installed."""
+    from .models import MAPPING_KINDS
+
     if not apps.is_installed("netbox_dhcp"):
         return ()
-    return tuple(apps.get_model("netbox_dhcp", name) for name in ("Subnet", "HostReservation"))
+    return tuple(apps.get_model("netbox_dhcp", name) for name, _ in MAPPING_KINDS.values())
 
 
 @cache

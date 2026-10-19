@@ -836,6 +836,108 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).server_id, server.pk)
         self.assertIsNone(current_request.get())
 
+    def _mapped_kinds(self, family, suffix):
+        """Create one mapped target of each kind; the Pool and the In-Subnet Reservation are in the Subnet."""
+        from ipam.models import IPRange, Prefix
+        from netaddr import IPNetwork
+        from netbox_dhcp.models import (
+            ClientClass,
+            DHCPServer,
+            HostReservation,
+            OptionDefinition,
+            Pool,
+            SharedNetwork,
+            Subnet,
+        )
+
+        from netbox_kea.dhcp_mapping_lifecycle import observe_mapping
+        from netbox_kea.integrations.dhcp_import_report import Kind
+
+        server = _make_db_server(name=f"mapping-{suffix}", ca_url="https://kea.example.invalid")
+        network, shared, start, end = (
+            ("198.18.40.0/24", "198.18.41.0/24", "198.18.40.10", "198.18.40.20")
+            if family == 4
+            else ("2001:db8:40::/64", "2001:db8:41::/64", "2001:db8:40::10", "2001:db8:40::20")
+        )
+        length = network.split("/")[1]
+        with event_tracking(_change_request(self.user)):
+            parent = DHCPServer.objects.create(name=f"mapping-{suffix}")
+            subnet = Subnet.objects.create(
+                name=f"mapping-{suffix}-subnet",
+                prefix=Prefix.objects.create(prefix=IPNetwork(network)),
+                dhcp_server=parent,
+            )
+            ip_range = IPRange.objects.create(
+                start_address=IPNetwork(f"{start}/{length}"), end_address=IPNetwork(f"{end}/{length}")
+            )
+            targets = {
+                MappingSource.named(Kind.SHARED_NETWORK, "office"): SharedNetwork.objects.create(
+                    name=f"mapping-{suffix}-shared",
+                    dhcp_server=parent,
+                    prefix=Prefix.objects.create(prefix=IPNetwork(shared)),
+                ),
+                MappingSource.subnet(40): subnet,
+                MappingSource(Kind.POOL, 40, f"{start}-{end}"): Pool.objects.create(
+                    name=f"mapping-{suffix}-pool", subnet=subnet, ip_range=ip_range
+                ),
+                MappingSource(Kind.RESERVATION, 40, "duid:01:02:40"): HostReservation.objects.create(
+                    name=f"mapping-{suffix}-reservation", subnet=subnet, duid="01:02:40"
+                ),
+                MappingSource.named(Kind.CLIENT_CLASS, "voip"): ClientClass.objects.create(
+                    name=f"mapping-{suffix}-class", dhcp_server=parent
+                ),
+                MappingSource(
+                    Kind.OPTION_DEFINITION, kea_identity=f"dhcp{family}:222"
+                ): OptionDefinition.objects.create(
+                    name=f"mapping-{suffix}-definition",
+                    family=family,
+                    space=f"dhcp{family}",
+                    code=222,
+                    type="uint8",
+                    dhcp_server=parent,
+                ),
+            }
+            mappings = {source: observe_mapping(server, family, target, source) for source, target in targets.items()}
+        request_finished.send(sender=type(self))
+        return targets, mappings
+
+    def test_squash_restores_every_mapped_target_kind(self):
+        from netbox_kea.dhcp_mapping_lifecycle import mapping_identity
+        from netbox_kea.integrations.dhcp_import_report import Kind
+
+        for family in (4, 6):
+            with self.subTest(family=family):
+                targets, mappings = self._mapped_kinds(family, f"every-kind-{family}")
+                branch = _provisioned_branch(self, f"mapping-every-kind-{family}")
+                branch.merge_strategy = "squash"
+                branch.save(provision=False)
+                # The Subnet delete also deletes its Pool and its In-Subnet Reservation.
+                for source, target in targets.items():
+                    if source.kind not in (Kind.POOL, Kind.RESERVATION):
+                        self._delete(branch, target)
+                with activate_branch(branch):
+                    for source, target in targets.items():
+                        self.assertFalse(type(target).objects.filter(pk=target.pk).exists(), source)
+                        self.assertFalse(KeaDhcpLink.objects.filter(pk=mappings[source].pk).exists(), source)
+                for source, target in targets.items():
+                    self.assertTrue(type(target).objects.filter(pk=target.pk).exists(), source)
+                    self.assertTrue(KeaDhcpLink.objects.filter(pk=mappings[source].pk).exists(), source)
+
+                branch.merge(user=self.user)
+                branch.refresh_from_db()
+                self.assertEqual(branch.status, "merged")
+                for source, target in targets.items():
+                    self.assertFalse(type(target).objects.filter(pk=target.pk).exists(), source)
+                    self.assertFalse(KeaDhcpLink.objects.filter(pk=mappings[source].pk).exists(), source)
+
+                branch.revert(user=self.user)
+                branch.refresh_from_db()
+                for source, target in targets.items():
+                    restored = KeaDhcpLink.objects.get(pk=mappings[source].pk)
+                    self.assertEqual(mapping_identity(restored), mapping_identity(mappings[source]), source)
+                    self.assertEqual(restored.created, mappings[source].created, source)
+                    self.assertEqual(type(target).objects.get(pk=target.pk).created, target.created, source)
+
     def test_squash_restores_global_reservations(self):
         for family in (4, 6):
             for queryset in (False, True):
@@ -997,18 +1099,29 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
     def test_native_endpoint_deletion_composes_with_mapped_target_cleanup(self):
         from netbox_dhcp.models import ClientClass
 
-        for kind in ("client-class", "mac-address"):
+        from netbox_kea.dhcp_mapping_lifecycle import observe_mapping
+        from netbox_kea.integrations.dhcp_import_report import Kind
+
+        for kind in ("client-class", "mapped-client-class", "mac-address"):
             with self.subTest(kind=kind):
-                _, _, _, target, link = self._imported(
-                    "subnet" if kind == "client-class" else "reservation", 4, f"endpoint-cleanup-{kind}"
+                server, _, _, target, link = self._imported(
+                    "reservation" if kind == "mac-address" else "subnet", 4, f"endpoint-cleanup-{kind}"
                 )
-                if kind == "client-class":
+                endpoint_link = None
+                if kind == "mac-address":
+                    endpoint = target.hw_address
+                else:
                     endpoint = ClientClass.objects.create(
                         name=f"mapping-cleanup-{kind}", dhcp_server=target.dhcp_server
                     )
                     target.client_classes.add(endpoint)
-                else:
-                    endpoint = target.hw_address
+                if kind == "mapped-client-class":
+                    # The class is a mapped target and an endpoint of the mapped Subnet.
+                    with event_tracking(_change_request(self.user)):
+                        endpoint_link = observe_mapping(
+                            server, 4, endpoint, MappingSource.named(Kind.CLIENT_CLASS, "voip")
+                        )
+                    request_finished.send(sender=type(self))
                 model = type(endpoint)
                 branch = _provisioned_branch(self, f"mapping-endpoint-cleanup-{kind}")
                 branch.merge_strategy = "squash"
@@ -1023,21 +1136,26 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                     request_finished.send(sender=type(self))
                 with activate_branch(branch):
                     local = type(target).objects.get(pk=target.pk)
-                    self.assertFalse(local.client_classes.exists() if kind == "client-class" else local.hw_address_id)
+                    self.assertFalse(local.hw_address_id if kind == "mac-address" else local.client_classes.exists())
                 branch.merge(user=self.user)
                 merged = type(target).objects.get(pk=target.pk)
-                self.assertFalse(merged.client_classes.exists() if kind == "client-class" else merged.hw_address_id)
+                self.assertFalse(merged.hw_address_id if kind == "mac-address" else merged.client_classes.exists())
                 self.assertFalse(model.objects.filter(pk=endpoint.pk).exists())
                 self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+                if endpoint_link is not None:
+                    self.assertFalse(KeaDhcpLink.objects.filter(pk=endpoint_link.pk).exists())
                 branch.revert(user=self.user)
                 restored = type(target).objects.get(pk=target.pk)
-                if kind == "client-class":
-                    self.assertEqual(list(restored.client_classes.values_list("pk", flat=True)), [endpoint.pk])
-                else:
+                if kind == "mac-address":
                     self.assertEqual(restored.hw_address_id, endpoint.pk)
                     self.assertEqual(restored.description, target.description)
+                else:
+                    self.assertEqual(list(restored.client_classes.values_list("pk", flat=True)), [endpoint.pk])
                 self.assertTrue(model.objects.filter(pk=endpoint.pk).exists())
                 self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+                if endpoint_link is not None:
+                    restored_link = KeaDhcpLink.objects.get(pk=endpoint_link.pk)
+                    self.assertEqual((restored_link.object_id, restored_link.kind), (endpoint.pk, "client_class"))
 
     def test_native_endpoint_cleanup_composes_with_mapped_target_deletion(self):
         from netbox_dhcp.models import ClientClass

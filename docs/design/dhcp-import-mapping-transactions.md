@@ -80,6 +80,10 @@ Amendment: `dhcp-import-mapping-lock-scope.md` (ratified r6) changes who takes t
 deletion whose native effect reaches no target or mapping takes no lock and runs under a row fence. A Tag
 write takes no lock; replay reads the Tags it validates `FOR KEY SHARE` instead.
 
+Amendment (#93): the targets are the model of each mapping kind (`target_models()`), not only Subnet and
+HostReservation. Where this record names those two models, read every target. The delete-effect closure
+and the writer and relation adapters derive from that set, so the installed counts below are r4 evidence.
+
 Bounded model adapters delegate the original Subnet, HostReservation and named semantic relation endpoint
 save and save_base methods. The installed named endpoint is Tag. Native target history stores tag names,
 so a scalar tag rename must coordinate as well as a tag relation mutation. Ordinary relations store PKs
