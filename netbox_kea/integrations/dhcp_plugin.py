@@ -56,12 +56,12 @@ if TYPE_CHECKING:
     from ..ipam_reconciliation import ClaimResult, ReservationObservation, SyncReport
     from ..models import DhcpIntegrationConfig, Server
     from ..subnet_catalogue import CatalogueSnapshot
-    from .dhcp_import_plan import FamilyPlan, Planned, PlannedServer, PlannedSubnet
+    from .dhcp_import_plan import FamilyPlan, Planned, PlannedServer, PlannedSubnet, ReservationKey
 
 from django.apps import apps
 from django.db.models.signals import post_delete
 
-from .. import branching, event_scope
+from .. import event_scope
 from ..constants import IPNetworkValue
 from ..dhcp_mapping_lifecycle import coordinated_import
 from ..dhcp_options import DHCPOption, option_identity
@@ -71,6 +71,7 @@ from ..published_name import reservation_published_name
 from ..reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation
 from ..subnet_catalogue import CatalogueUnavailable
 from .dhcp_import_plan import (
+    GlobalReservationKey,
     InSubnetReservationKey,
     OptionDefinitionKey,
     default_space,
@@ -787,28 +788,14 @@ def upsert_pools(subnet_obj, planned: PlannedSubnet, summary: ImportSummary, dhc
         upsert_options(pool_obj, pool_intent.options, intent.family, dhcp_server, custom_defs, summary)
 
 
-def _reservation_link_identity(reservation: Reservation) -> str:
-    """Return the Kea identity a Global Reservation link is keyed on.
-
-    ``KeaDhcpLink.kea_identity`` is sized from ``MAX_IDENTITY_LENGTH``, so every
-    identity the Reservation domain accepts fits.
-    """
-    identity = reservation.identity
-    return f"{identity.identifier_type}:{identity.value}"
-
-
-def _linked_reservation(server, reservation: Reservation):
+def _linked_reservation(server, key: GlobalReservationKey):
     """Return the DHCP-plugin reservation linked to this Kea Global identity, or ``None``."""
     KeaDhcpLink = _link_model()
-    link = KeaDhcpLink.objects.filter(
-        server=server,
-        family=reservation.family,
-        kea_identity=_reservation_link_identity(reservation),
-    ).first()
+    link = KeaDhcpLink.objects.filter(server=server, family=key.family, kea_identity=key.link_identity).first()
     return link.sys4_object if link is not None else None
 
 
-def _link_reservation(server, reservation: Reservation, obj) -> None:
+def _link_reservation(server, key: GlobalReservationKey, obj) -> None:
     """Record the ``(server, family, identity)`` link for one Global Reservation.
 
     Keyed on the Kea identity rather than the row, so a link whose row was deleted is
@@ -816,7 +803,7 @@ def _link_reservation(server, reservation: Reservation, obj) -> None:
     """
     from ..dhcp_mapping_lifecycle import observe_mapping
 
-    observe_mapping(server, reservation.family, obj, reservation_identity=_reservation_link_identity(reservation))
+    observe_mapping(server, key.family, obj, reservation_identity=key.link_identity)
 
 
 def _unlinked(base):
@@ -847,7 +834,16 @@ def _find_reservation(base, reservation: Reservation, mac_obj):
     return None
 
 
-def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_defs, summary, claims, catalogue):
+def _upsert_reservation(
+    planned: Planned[ReservationKey, Reservation],
+    subnet_obj,
+    server,
+    dhcp_server,
+    custom_defs,
+    summary,
+    claims,
+    catalogue,
+):
     """Upsert one typed Reservation while preserving its Global or In-Subnet Scope.
 
     An In-Subnet Reservation matches by identifier inside its Subnet, which already
@@ -860,6 +856,7 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
     ``ipam.IPAddress``/``dcim.MACAddress`` rows the lease/reservation sync owns.
     """
     HostReservation = _model("HostReservation")
+    reservation, key = planned.intent, planned.key
     scope = reservation.scope.subnet.cidr if isinstance(reservation.scope, InSubnetReservationScope) else "global"
 
     if subnet_obj is not None:
@@ -875,7 +872,7 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
             ipv4_ip, ipv6_ips, mac_obj = _reservation_addresses(reservation, claims, catalogue, summary)
             if reservation.identity.identifier_type == "hw-address" and mac_obj is None:
                 raise RuntimeError("The reservation hardware address could not be resolved.")
-            linked = None if subnet_obj is not None else _linked_reservation(server, reservation)
+            linked = _linked_reservation(server, key) if isinstance(key, GlobalReservationKey) else None
             if linked is not None:
                 obj = linked
             elif subnet_obj is not None:
@@ -911,7 +908,7 @@ def _upsert_reservation(reservation, subnet_obj, server, dhcp_server, custom_def
                 *obj.ipv6_prefixes.exclude(prefix__in=[str(prefix) for prefix in reservation.delegated_prefixes])
             )
             if subnet_obj is None:
-                _link_reservation(server, reservation, obj)
+                _link_reservation(server, key, obj)
         if created:
             summary.reservations_created += 1
         else:
@@ -980,7 +977,7 @@ def import_reservation_snapshot(
         else:
             subnet_obj = None
         obj = _upsert_reservation(
-            reservation, subnet_obj, server, dhcp_server, custom_defs, summary, claims, observation.catalogue
+            planned, subnet_obj, server, dhcp_server, custom_defs, summary, claims, observation.catalogue
         )
         if obj is None:
             complete = False
@@ -1102,7 +1099,6 @@ def apply_plan(server, plan: FamilyPlan) -> ImportSummary:
     Idempotent: re-running updates the same rows (subnets via ``KeaDhcpLink``,
     pools/reservations matched structurally) rather than duplicating them.
     """
-    branching.refuse_in_branch("A DHCP-plugin import")
     summary = ImportSummary()
     dhcp_server = upsert_dhcp_server(server)
     custom_defs = {planned.key: planned.intent for planned in plan.option_definitions}

@@ -602,7 +602,7 @@ class TestKeaDhcpLinkIdentity(TestCase):
 
     def test_the_longest_reservation_identity_is_stored(self):
         """Kea accepts a 128-octet Client ID, so the column must hold the identity it forms."""
-        from netbox_kea.integrations.dhcp_plugin import _reservation_link_identity
+        from netbox_kea.integrations.dhcp_import_plan import reservation_key
         from netbox_kea.reservations import GlobalReservationScope, IPv4Reservation, ReservationIdentity
 
         reservation = IPv4Reservation(
@@ -610,7 +610,7 @@ class TestKeaDhcpLinkIdentity(TestCase):
             identity=ReservationIdentity("client-id", "ab" * 128),
             addresses=(),
         )
-        identity = _reservation_link_identity(reservation)
+        identity = reservation_key(reservation).link_identity
         self.assertEqual(len(identity), MAX_IDENTITY_LENGTH)
 
         self._link(kea_identity=identity).save()

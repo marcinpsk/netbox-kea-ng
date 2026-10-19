@@ -60,6 +60,11 @@ class GlobalReservationKey:
     identifier_type: IdentifierType
     value: str
 
+    @property
+    def link_identity(self) -> str:
+        """Return the ``KeaDhcpLink.kea_identity`` of the mapping. Its column fits every identity Kea accepts."""
+        return f"{self.identifier_type}:{self.value}"
+
 
 @dataclass(frozen=True)
 class InSubnetReservationKey:
@@ -134,7 +139,8 @@ def _planned_subnet(subnet: SubnetIntent) -> PlannedSubnet:
     return PlannedSubnet(subnet.kea_subnet_id, subnet, pools)
 
 
-def _reservation_key(reservation: Reservation) -> ReservationKey:
+def reservation_key(reservation: Reservation) -> ReservationKey:
+    """Return the key of a Reservation: its DHCP Import Mapping identity in Global Scope, else its structural key."""
     identity = reservation.identity
     if isinstance(reservation.scope, InSubnetReservationScope):
         return InSubnetReservationKey(reservation.scope.subnet.subnet_id, identity.identifier_type, identity.value)
@@ -145,7 +151,7 @@ def keyed_reservations(observation: ReservationObservation | None) -> tuple[Plan
     """Key each valid record of a Reservation observation. A failed read (``None``) gives no record."""
     if observation is None:
         return ()
-    return tuple(Planned(_reservation_key(record), record) for record in observation.snapshot.records)
+    return tuple(Planned(reservation_key(record), record) for record in observation.snapshot.records)
 
 
 def plan_family(config: ServerConfigIntent, observation: ReservationObservation | None) -> FamilyPlan:
