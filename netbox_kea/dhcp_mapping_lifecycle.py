@@ -40,6 +40,14 @@ class MetadataBusy(AbortRequest):
     """The retry refusal of DHCP mapping coordination: the operation changed nothing and can run again."""
 
 
+class ImportEventsNotDispatched(event_scope.EventDispatchError):
+    """The import of one family committed, and NetBox could not dispatch its events. It keeps the import summary."""
+
+    def __init__(self, summary) -> None:
+        super().__init__("NetBox could not dispatch the events of a committed DHCP-plugin import")
+        self.summary = summary
+
+
 @dataclass(frozen=True)
 class ReplayOperation:
     """The explicit native action that owns a main replay transaction."""
@@ -1234,6 +1242,10 @@ def coordinated_import(original):
                     f"Nothing changed for DHCPv{config.family}. Run the import again."
                 ) from error
             raise
+        except event_scope.EventDispatchError as error:
+            if summary is None:
+                raise
+            raise ImportEventsNotDispatched(summary) from error
         return summary
 
     return importing
