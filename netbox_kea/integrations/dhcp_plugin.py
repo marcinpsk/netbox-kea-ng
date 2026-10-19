@@ -896,7 +896,8 @@ def upsert_pools(subnet_obj, planned: PlannedSubnet, summary: ImportSummary, dhc
 def _unusable_pool(family: int, path: str, key: PoolKey | None, result: RangeClaim | None) -> ImportEntry:
     """Return the entry of a Pool that has no IP Range to attach."""
     if key is None:
-        return not_written(family, Kind.POOL, path, Reason.INVALID_KEA_DATA, "The range is not inside the Subnet.")
+        detail = "The range is not valid or not inside the Subnet."
+        return not_written(family, Kind.POOL, path, Reason.INVALID_KEA_DATA, detail)
     if result is None:
         # The claim leaves out a range that a NetBox IP Range cannot hold.
         return not_written(

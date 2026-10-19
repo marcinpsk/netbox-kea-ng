@@ -451,6 +451,14 @@ class DhcpPluginAdapterTest(TestCase):
                 "pool bad in 10.95.0.0/24: unusable range, skipped",
             ],
         )
+        # One detail covers a range outside the Subnet and text that is not a range.
+        self.assertEqual(
+            {(entry.path, entry.detail) for entry in summary.entries if entry.reason == Reason.INVALID_KEA_DATA},
+            {
+                (f"Dhcp4/subnet4[id=1]/pools[pool={pool}]", "The range is not valid or not inside the Subnet.")
+                for pool in ("10.95.1.10-10.95.1.20", "bad")
+            },
+        )
         self.assertFalse(IPRange.objects.filter(start_address__net_host="10.95.1.10").exists())
         pool = Pool.objects.get()
         self.assertEqual(str(pool.ip_range.start_address), "10.95.0.128/24")
