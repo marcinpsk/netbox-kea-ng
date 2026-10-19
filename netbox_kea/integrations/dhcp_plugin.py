@@ -69,7 +69,7 @@ from ..dhcp_options import DHCPOption, option_identity
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import ClientClassIntent, OptionDefIntent, ServerConfigIntent
 from ..published_name import reservation_published_name
-from ..reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation
+from ..reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, identity_text
 from ..subnet_catalogue import CatalogueUnavailable
 from .dhcp_import_plan import (
     InSubnetReservationKey,
@@ -840,7 +840,7 @@ def _pool_name(subnet_obj, pool_intent) -> str:
 def _reservation_name(scope_name: str, reservation: Reservation) -> str:
     """Build a unique reservation name scoped to its parent's (unique) name."""
     identity = reservation.identity
-    return f"{scope_name} {identity.identifier_type}:{identity.value}"[:255]
+    return f"{scope_name} {identity_text(identity.identifier_type, identity.value)}"[:255]
 
 
 def upsert_subnet(server, dhcp_server, planned: PlannedSubnet, summary: ImportSummary, claims: ClaimResult):

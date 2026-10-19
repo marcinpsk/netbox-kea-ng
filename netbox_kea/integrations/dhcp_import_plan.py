@@ -27,7 +27,7 @@ from ..mappers.kea_to_dhcp import (
     SubnetIntent,
 )
 from ..pools import Pool, parse_pool
-from ..reservations import MAX_IDENTITY_LENGTH, IdentifierType, InSubnetReservationScope, Reservation
+from ..reservations import MAX_IDENTITY_LENGTH, IdentifierType, InSubnetReservationScope, Reservation, identity_text
 from .dhcp_import_report import Kind
 
 if TYPE_CHECKING:
@@ -126,7 +126,7 @@ class GlobalReservationKey:
     @property
     def source(self) -> MappingSource:
         """Return the DHCP Import Mapping source of the Reservation. The family is a column of the mapping."""
-        return MappingSource(Kind.RESERVATION, kea_identity=f"{self.identifier_type}:{self.value}")
+        return MappingSource(Kind.RESERVATION, kea_identity=identity_text(self.identifier_type, self.value))
 
 
 @dataclass(frozen=True)
@@ -141,7 +141,7 @@ class InSubnetReservationKey:
     def source(self) -> MappingSource:
         """Return the DHCP Import Mapping source of the Reservation."""
         return MappingSource(
-            Kind.RESERVATION, kea_subnet_id=self.subnet_id, kea_identity=f"{self.identifier_type}:{self.value}"
+            Kind.RESERVATION, kea_subnet_id=self.subnet_id, kea_identity=identity_text(self.identifier_type, self.value)
         )
 
 

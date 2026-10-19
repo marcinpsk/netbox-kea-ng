@@ -77,8 +77,13 @@ def _max_identifier_length(identifier_type: IdentifierType) -> int:
     return octets[1] * 3 - 1 if octets else _MAX_OPAQUE_IDENTIFIER_LENGTH
 
 
-#: Longest ``identifier-type:value`` string any Reservation Identity can produce.
-MAX_IDENTITY_LENGTH = max(len(name) + 1 + _max_identifier_length(name) for name in _IDENTIFIER_LABELS)
+def identity_text(identifier_type: IdentifierType, value: str) -> str:
+    """Return the ``identifier-type:value`` text of one Reservation identifier."""
+    return f"{identifier_type}:{value}"
+
+
+#: Longest :func:`identity_text` any Reservation Identity can produce.
+MAX_IDENTITY_LENGTH = max(len(identity_text(name, "x" * _max_identifier_length(name))) for name in _IDENTIFIER_LABELS)
 
 
 def reservation_query_mode(parameter_names: Collection[str]) -> ReservationQueryMode:
