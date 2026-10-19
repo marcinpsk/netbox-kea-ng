@@ -22,7 +22,12 @@ from utilities.views import register_model_view
 
 from ..dhcp_mapping_lifecycle import MetadataBusy
 from ..integrations import dhcp_plugin
-from ..integrations.dhcp_import import _fetch_config_intent, enabled_versions, run_dhcp_plugin_import
+from ..integrations.dhcp_import import (
+    UnsupportedPluginVersion,
+    _fetch_config_intent,
+    enabled_versions,
+    run_dhcp_plugin_import,
+)
 from ..mappers.kea_to_dhcp import ServerConfigIntent
 from ..models import Server
 from ..sync_permissions import sync_gate
@@ -210,7 +215,7 @@ class ServerDhcpPluginSyncNowView(View):
 
         try:
             results = run_dhcp_plugin_import(server)
-        except MetadataBusy as error:
+        except (MetadataBusy, UnsupportedPluginVersion) as error:
             messages.error(request, error.message)
             return redirect
         except Exception:
