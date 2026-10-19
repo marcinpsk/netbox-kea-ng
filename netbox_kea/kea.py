@@ -25,12 +25,9 @@ from .decimal_text import parse_decimal
 from .dhcp_options import (
     DHCPOption,
     DHCPOptionEdit,
-    InvalidAddress,
-    address_list,
     address_list_data,
-    form_managed_entry,
     form_managed_options,
-    form_shows,
+    form_option_edit,
     merge_option_edit,
     parse_dhcp_option,
     parse_dhcp_options,
@@ -631,49 +628,6 @@ def subnet_network(value: Any, family: int) -> IPNetworkValue:
     return network
 
 
-def _replace_managed_option(
-    options: list[dict[str, Any]], version: int, field: str, data: str | None
-) -> list[dict[str, Any]]:
-    """Set the entry that the form field *field* manages to *data*, or remove it when *data* is empty.
-
-    The form edits the value only. Delivery flags stay as they are. An entry whose value the form cannot show
-    (empty data, binary-encoded, or a router list for the one gateway) is kept when the field is empty. Form text is
-    CSV, so a new value drops a csv-format flag that described the old encoding.
-
-    Raises:
-        MalformedConfiguration: If an entry is not a valid DHCP Option, or more than one entry fits the field.
-
-    """
-    if data is None:
-        return options
-    try:
-        parsed = parse_dhcp_options(options)
-        index = form_managed_entry(parsed, version, field)
-    except ValueError as exc:
-        raise MalformedConfiguration(str(exc)) from exc
-    kept = [option for position, option in enumerate(options) if position != index]
-    if data:
-        replacement = dict(options[index]) if index is not None else {"name": form_managed_options(version)[field].name}
-        unchanged = replacement.get("csv-format") is not False and _same_addresses(data, replacement.get("data"))
-        if not unchanged:
-            replacement.pop("csv-format", None)
-            replacement["data"] = data
-        return [*kept, replacement]
-    if index is not None and (not parsed[index].data or not form_shows(parsed[index], field)):
-        return [*kept, options[index]]
-    return kept
-
-
-def _same_addresses(data: str, old_data: Any) -> bool:
-    """Return whether *old_data* holds the addresses of *data*, in another text form or the same one."""
-    if not isinstance(old_data, str):
-        return False
-    try:
-        return address_list(data) == address_list(old_data)
-    except InvalidAddress:
-        return False
-
-
 def shared_network_description(network: dict[str, Any]) -> str | None:
     """Return the Shared Network description, which Kea keeps as ``user-context.comment``.
 
@@ -833,12 +787,16 @@ class SubnetDefinition:
         subnet.pop("metadata", None)
         fields = edit.fields
         options = subnet.get("option-data", [])
+        option_fields = {}
         if self.family == 4:
-            options = _replace_managed_option(options, 4, "gateway", fields.gateway)
-        options = _replace_managed_option(options, self.family, "dns_servers", address_list_data(fields.dns_servers))
-        subnet["option-data"] = _replace_managed_option(
-            options, self.family, "ntp_servers", address_list_data(fields.ntp_servers)
-        )
+            option_fields["gateway"] = fields.gateway
+        option_fields["dns_servers"] = address_list_data(fields.dns_servers)
+        option_fields["ntp_servers"] = address_list_data(fields.ntp_servers)
+        try:
+            option_edit = form_option_edit(parse_dhcp_options(options), self.family, option_fields)
+            subnet["option-data"] = merge_option_edit(option_edit, options, self.family)
+        except ValueError as exc:
+            raise MalformedConfiguration(str(exc)) from exc
         suffix_key = setting_key("ddns_qualifying_suffix")
         if fields.ddns_qualifying_suffix:
             subnet[suffix_key] = fields.ddns_qualifying_suffix
@@ -967,10 +925,19 @@ class CandidateConfiguration:
             network["relay"] = {"ip-addresses": list(edit.relay_addresses)}
         else:
             network.pop("relay", None)
-        options = list(_config_entries(network, "option-data", self.service))
-        options = _replace_managed_option(options, self.family, "dns_servers", address_list_data(edit.dns_servers))
-        options = _replace_managed_option(options, self.family, "ntp_servers", address_list_data(edit.ntp_servers))
-        network["option-data"] = options
+        options = _config_options(network, self.service)
+        try:
+            option_edit = form_option_edit(
+                parse_dhcp_options(options),
+                self.family,
+                {
+                    "dns_servers": address_list_data(edit.dns_servers),
+                    "ntp_servers": address_list_data(edit.ntp_servers),
+                },
+            )
+            network["option-data"] = merge_option_edit(option_edit, options, self.family)
+        except ValueError as exc:
+            raise MalformedConfiguration(str(exc)) from exc
 
 
 def _is_subnet_id(value: Any, subnet_id: int) -> bool:
