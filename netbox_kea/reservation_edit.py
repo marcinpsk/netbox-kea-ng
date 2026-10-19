@@ -248,8 +248,16 @@ def _hostname_change(
     if not current.hostname and not entered:
         return Unchanged()
     live_suffix = _shown_suffix(current, catalogue)
-    if current.hostname and shown_suffix is None and live_suffix is None and entered == current.hostname:
-        return Unchanged()
+    # Without a shown suffix, the form showed the stored hostname, not a published name.
+    if current.hostname and shown_suffix is None:
+        if entered == current.hostname:
+            return Unchanged()
+        if live_suffix is not None:
+            raise EditConflict(
+                "The form showed the stored hostname, but the qualifying suffix is now known. "
+                "Check the name and save again.",
+                live_state=form_state(current, catalogue),
+            )
     subnet = _in_subnet_scope(current).subnet
     if not current.addresses and catalogue.has_pool_qualifying_suffix(subnet):
         raise EditConflict(

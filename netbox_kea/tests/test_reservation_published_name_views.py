@@ -255,6 +255,38 @@ class TestReservationEditPublishedName(_PublishedNameViewTest):
             " ".join(response.context["form"].errors["hostname"]),
         )
 
+    def _open_with_unknown_suffix(self, stored: str):
+        unknown = {**_recorded(4), "config-get": _with_subnet_21(4, {"ddns-qualifying-suffix": 5})}
+        with stub_kea({**unknown, "reservation-get": _res_get(_stored(4, 21, stored))}):
+            form_page = self.client.get(self._url(4, 21))
+        self.assertEqual(form_page.context["form"].initial["hostname"], stored)
+        return form_page
+
+    def test_a_stored_hostname_shown_without_a_suffix_stays_unchanged_once_the_suffix_is_known(self):
+        # Kea publishes host.example.net.office.example.org; the form showed only the stored hostname.
+        form_page = self._open_with_unknown_suffix("host.example.net")
+        response, kea = self._save(
+            4, 21, "host.example.net", "host.example.net", form_page=form_page, address="198.51.100.131"
+        )
+        self.assertEqual(response.status_code, 302)
+        update = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+        self.assertEqual(update["ip-address"], "198.51.100.131")
+        self.assertEqual(update["hostname"], "host.example.net")
+
+    def test_a_changed_name_shown_without_a_suffix_refuses_the_save_once_the_suffix_is_known(self):
+        form_page = self._open_with_unknown_suffix("host.example.net")
+        response, kea = self._save(4, 21, "host.example.net", "db.example.net", form_page=form_page)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("reservation-update", kea.commands())
+        self.assertIn(
+            "The form showed the stored hostname, but the qualifying suffix is now known. "
+            "Check the name and save again.",
+            " ".join(response.context["form"].non_field_errors()),
+        )
+        refreshed = response.context["form"]["managed_fingerprint"].value()
+        self.assertNotEqual(refreshed, form_page.context["form"].initial["managed_fingerprint"])
+        self.assertEqual(response.context["form"].initial["hostname"], "host.example.net.office.example.org")
+
 
 class TestPublishedNamePreview(_PublishedNameViewTest):
     """The preview endpoint renders the name that Kea publishes, from the cached Subnet Catalogue."""
