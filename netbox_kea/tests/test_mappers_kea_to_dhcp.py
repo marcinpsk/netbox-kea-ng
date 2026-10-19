@@ -431,3 +431,11 @@ class TestParseDhcpConfigDroppedEntries(SimpleTestCase):
         conf = {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.20"}]}]}
 
         self.assertEqual(parse_dhcp_config(conf, 4).dropped, [])
+
+    def test_a_collection_that_is_not_a_list_is_one_dropped_entry(self):
+        conf = {"option-def": {}, "subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": {}}]}
+
+        self.assertEqual(
+            [(entry.kind, entry.path) for entry in parse_dhcp_config(conf, 4).dropped],
+            [(Kind.OPTION_DEFINITION, "Dhcp4/option-def"), (Kind.POOL, "Dhcp4/subnet4[id=1]/pools")],
+        )

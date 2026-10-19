@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generic, TypeVar
 
+from .. import kea_paths
 from ..constants import Family, validate_family
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import (
@@ -124,16 +125,12 @@ class FamilyPlan:
     dropped: tuple[DroppedEntry, ...]
 
 
-def default_space(family: int) -> str:
-    """Return the Kea and DHCP plugin default option space of a family."""
-    return "dhcp6" if family == 6 else "dhcp4"
-
-
 def _option_definitions(config: ServerConfigIntent) -> tuple[Planned[OptionDefinitionKey, OptionDefIntent], ...]:
     """Key each custom Option Definition. A later definition of the same key replaces an earlier one."""
     index: dict[OptionDefinitionKey, OptionDefIntent] = {}
     for definition in config.option_defs:
-        index[OptionDefinitionKey(definition.space or default_space(config.family), definition.code)] = definition
+        space = definition.space or kea_paths.default_space(config.family)
+        index[OptionDefinitionKey(space, definition.code)] = definition
     return tuple(Planned(key, definition) for key, definition in index.items())
 
 
