@@ -18,7 +18,6 @@ from .dhcp_options import (
     DHCPOption,
     DHCPOptionEdit,
     OptionDefinition,
-    merge_option_edit,
     option_data,
     option_matches_intent,
     parse_dhcp_options,
@@ -994,11 +993,9 @@ def apply_reservation_change(reservation: Reservation, change: ReservationChange
     addresses = _change_value(change.addresses, reservation.addresses, ())
     prefixes = _change_value(change.delegated_prefixes, reservation.delegated_prefixes, ())
     hostname = _change_value(change.hostname, reservation.hostname, "")
-    options = reservation.options
     if change.options is not None:
-        options = parse_dhcp_options(
-            merge_option_edit(change.options, [option_data(option) for option in options], reservation.family)
-        )
+        raise ValueError("Merge DHCP Option edits onto the raw record through FreshReservation.updated.")
+    options = reservation.options
     # One ReservationChange serves both families, so narrow before replace(). Each cast
     # reaches __post_init__, which rejects a value the other family cannot hold.
     if isinstance(reservation, IPv4Reservation):
