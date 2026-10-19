@@ -367,6 +367,13 @@ URL request
 - **`jobs.py`**: `KeaIpamSyncJob` (`@system_job`). Iterates all `Server` objects,
   runs subnet/lease/reservation/prefix/range sync phases, writes a per-server
   summary to the job log.
+- **DHCP Import** (`integrations/`): `dhcp_import.run_dhcp_plugin_import(server, trigger)` reads Kea for every
+  enabled family, plans each family (`dhcp_import_plan.py`) and applies each plan (`dhcp_plugin.apply_plan`). Each Kea
+  fact of a run is an `ImportEntry` (`dhcp_import_report.py`): a kind, a Kea path from `kea_paths.py`, an outcome and,
+  for a fact that was not written, a reason from a closed set. The reason gives the outcome (`REASON_OUTCOME`).
+  `ImportSummary` counts only its entries, and an unchanged row has no entry. `store_run` stores a `DhcpImportRun`
+  with its `DhcpImportEntry` rows, keeps the `RETAINED_RUNS` latest runs of the Server, and logs a database failure
+  instead of raising it. The rows are main-only (ADR 0007) and not change-logged.
 - **Sync interval**: `SyncConfig.interval_minutes` is the only runtime source.
   `KeaIpamSyncJob.enqueue_once()` (rqworker startup) and each periodic `run()` read it.
   Ghost-job healing also runs inside `enqueue_once()`, not `ready()`.
@@ -625,7 +632,7 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Kea wire-discipline gate.** `netbox_kea/tests/kea_wire_discipline.py` checks
   production code for Kea command names, hyphenated payload keys, and family-suffixed
   configuration keys or service names. String templates (f-strings, `.format`, `%`, `+`)
-  count when they can build a wire literal. Wire owners are `kea.py`, `server_configuration.py`,
+  count when they can build a wire literal. Wire owners are `kea.py`, `kea_paths.py`, `server_configuration.py`,
   `subnet_catalogue.py`, `reservations.py`, `dhcp_options.py`, `leases.py`, and `subnet_settings.py`, relative to
   `netbox_kea/`.
   The checker excludes these exact modules, tests, and migrations. The transport stub
