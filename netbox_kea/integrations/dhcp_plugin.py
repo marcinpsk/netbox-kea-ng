@@ -352,6 +352,8 @@ def _option_definition_fields(def_intent: OptionDefIntent, family: int, dhcp_ser
         "record_types": list(def_intent.record_types) or None,
         "encapsulate": def_intent.encapsulate,
         "dhcp_server_id": dhcp_server.pk,
+        # The plugin refuses a definition with both parents.
+        "client_class_id": None,
     }
 
 

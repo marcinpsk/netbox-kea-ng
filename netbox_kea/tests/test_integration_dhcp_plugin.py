@@ -1108,7 +1108,8 @@ class DhcpPluginMappingImportTest(TestCase):
 
         second = self._import()
 
-        self.assertEqual([entry for entry in second.entries if entry.outcome == Outcome.CREATED], [])
+        changed = (Outcome.CREATED, Outcome.UPDATED)
+        self.assertEqual([entry for entry in second.entries if entry.outcome in changed], [])
         self.assertEqual({source: row.pk for source, row in self._rows().items()}, rows)
         self.assertEqual(self._assert_one_mapping_each(self._rows()), links)
 
@@ -1188,6 +1189,24 @@ class DhcpPluginMappingImportTest(TestCase):
             sorted(Option.objects.filter(definition=definition).values_list("data", flat=True)), ["5", "7"]
         )
         self.assertEqual(self._rows()[("option_definition", None, "dhcp4:222")].pk, definition.pk)
+
+    def test_a_definition_moved_to_a_client_class_returns_to_its_dhcp_server(self):
+        self._import()
+        rows = self._rows()
+        definition = rows[("option_definition", None, "dhcp4:222")]
+        dhcp_server_id = definition.dhcp_server_id
+        definition.snapshot()
+        definition.dhcp_server = None
+        definition.client_class = rows[("client_class", None, "voip")]
+        definition.save()
+
+        summary = self._import()
+
+        # summary.errors leaves out a failed definition, so read its entries.
+        self.assertEqual(summary.count(Kind.OPTION_DEFINITION, Reason.WRITE_FAILED), 0, summary.warnings)
+        self.assertEqual(summary.count(Kind.OPTION, Reason.PARENT_NOT_IMPORTED), 0, summary.warnings)
+        definition.refresh_from_db()
+        self.assertEqual((definition.dhcp_server_id, definition.client_class_id), (dhcp_server_id, None))
 
     def test_a_moved_in_subnet_reservation_returns_to_its_subnet(self):
         from netbox_kea.dhcp_mapping_lifecycle import mapped_target
