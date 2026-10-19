@@ -2,8 +2,10 @@
   "config-get": {
     "arguments": {
       "Dhcp6": {
+        "adaptive-lease-time-threshold": 0.8,
         "allocator": "iterative",
         "allow-address-registration": true,
+        "cache-max-age": 20,
         "cache-threshold": 0.25,
         "calculate-tee-times": true,
         "client-classes": [
@@ -15,6 +17,39 @@
             "name": "printers",
             "only-in-additional-list": true,
             "option-data": []
+          },
+          {
+            "max-preferred-lifetime": 750,
+            "max-valid-lifetime": 900,
+            "min-preferred-lifetime": 250,
+            "min-valid-lifetime": 300,
+            "name": "boot",
+            "only-in-additional-list": true,
+            "option-data": [
+              {
+                "always-send": false,
+                "code": 7,
+                "csv-format": true,
+                "data": "20",
+                "name": "preference",
+                "never-send": false,
+                "space": "dhcp6",
+                "user-context": {
+                  "comment": "Class option"
+                }
+              }
+            ],
+            "preferred-lifetime": 500,
+            "test": "option[15].hex == 0x0007",
+            "user-context": {
+              "owner": "provisioning"
+            },
+            "valid-lifetime": 600
+          },
+          {
+            "name": "per-client",
+            "option-data": [],
+            "template-test": "substring(option[1].hex, 0, 3)"
           }
         ],
         "control-sockets": [
@@ -218,7 +253,10 @@
             "name": "sub-one",
             "record-types": "",
             "space": "vendor-sub",
-            "type": "string"
+            "type": "string",
+            "user-context": {
+              "comment": "Vendor sub-option"
+            }
           }
         ],
         "parked-packet-limit": 256,
@@ -229,6 +267,16 @@
           "65"
         ],
         "renew-timer": 1000,
+        "reservations": [
+          {
+            "client-classes": [],
+            "hostname": "global-host",
+            "hw-address": "aa:bb:cc:00:02:01",
+            "ip-addresses": [],
+            "option-data": [],
+            "prefixes": []
+          }
+        ],
         "reservations-global": false,
         "reservations-in-subnet": true,
         "reservations-lookup-first": false,
@@ -248,9 +296,17 @@
         "server-tag": "",
         "shared-networks": [
           {
+            "adaptive-lease-time-threshold": 0.8,
             "allocator": "iterative",
+            "cache-max-age": 20,
             "cache-threshold": 0.25,
             "calculate-tee-times": true,
+            "client-classes": [
+              "voip"
+            ],
+            "evaluate-additional-classes": [
+              "printers"
+            ],
             "max-preferred-lifetime": 3000,
             "max-valid-lifetime": 4000,
             "min-preferred-lifetime": 3000,
@@ -279,7 +335,9 @@
             "valid-lifetime": 4000
           },
           {
+            "adaptive-lease-time-threshold": 0.8,
             "allocator": "iterative",
+            "cache-max-age": 20,
             "cache-threshold": 0.25,
             "calculate-tee-times": true,
             "ddns-qualifying-suffix": "office.example.net",
@@ -314,7 +372,9 @@
             "store-extended-info": false,
             "subnet6": [
               {
+                "adaptive-lease-time-threshold": 0.8,
                 "allocator": "iterative",
+                "cache-max-age": 20,
                 "cache-threshold": 0.25,
                 "calculate-tee-times": true,
                 "id": 20,
@@ -347,10 +407,18 @@
                 "valid-lifetime": 4000
               },
               {
+                "adaptive-lease-time-threshold": 0.8,
                 "allocator": "iterative",
+                "cache-max-age": 20,
                 "cache-threshold": 0.25,
                 "calculate-tee-times": true,
+                "client-classes": [
+                  "voip"
+                ],
                 "ddns-qualifying-suffix": "office.example.org.",
+                "evaluate-additional-classes": [
+                  "printers"
+                ],
                 "id": 21,
                 "max-preferred-lifetime": 3000,
                 "max-valid-lifetime": 4000,
@@ -358,12 +426,37 @@
                 "min-valid-lifetime": 4000,
                 "option-data": [],
                 "pd-allocator": "iterative",
-                "pd-pools": [],
+                "pd-pools": [
+                  {
+                    "client-classes": [
+                      "voip"
+                    ],
+                    "delegated-len": 64,
+                    "evaluate-additional-classes": [
+                      "printers"
+                    ],
+                    "option-data": [],
+                    "prefix": "2001:db8:300::",
+                    "prefix-len": 48,
+                    "user-context": {
+                      "comment": "Second floor delegated prefixes"
+                    }
+                  }
+                ],
                 "pools": [
                   {
+                    "client-classes": [
+                      "voip"
+                    ],
                     "ddns-qualifying-suffix": "pool.example.org",
+                    "evaluate-additional-classes": [
+                      "printers"
+                    ],
                     "option-data": [],
-                    "pool": "2001:db8:3::100/120"
+                    "pool": "2001:db8:3::100/120",
+                    "user-context": {
+                      "comment": "Second floor pool"
+                    }
                   }
                 ],
                 "preferred-lifetime": 3000,
@@ -374,12 +467,46 @@
                   ]
                 },
                 "renew-timer": 1000,
-                "reservations": [],
+                "reservations": [
+                  {
+                    "client-classes": [
+                      "voip"
+                    ],
+                    "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:01:00",
+                    "excluded-prefixes": [
+                      "2001:db8:400:100:ff::/80"
+                    ],
+                    "hostname": "boot-host",
+                    "ip-addresses": [
+                      "2001:db8:3::300"
+                    ],
+                    "option-data": [
+                      {
+                        "always-send": false,
+                        "code": 23,
+                        "csv-format": true,
+                        "data": "2001:db8:3::53",
+                        "name": "dns-servers",
+                        "never-send": false,
+                        "space": "dhcp6"
+                      }
+                    ],
+                    "prefixes": [
+                      "2001:db8:400:100::/56"
+                    ],
+                    "user-context": {
+                      "asset": 42
+                    }
+                  }
+                ],
                 "reservations-out-of-pool": true,
                 "store-extended-info": false,
                 "subnet": "2001:db8:3::/64",
                 "t1-percent": 0.5,
                 "t2-percent": 0.8,
+                "user-context": {
+                  "comment": "Second floor"
+                },
                 "valid-lifetime": 4000
               }
             ],
@@ -396,7 +523,9 @@
         "store-extended-info": false,
         "subnet6": [
           {
+            "adaptive-lease-time-threshold": 0.8,
             "allocator": "random",
+            "cache-max-age": 20,
             "cache-threshold": 0.25,
             "calculate-tee-times": true,
             "client-classes": [
@@ -426,16 +555,62 @@
             "pd-allocator": "flq",
             "pd-pools": [
               {
+                "client-classes": [
+                  "voip"
+                ],
                 "delegated-len": 56,
-                "option-data": [],
+                "evaluate-additional-classes": [
+                  "printers"
+                ],
+                "excluded-prefix": "2001:db8:100:ff::",
+                "excluded-prefix-len": 64,
+                "option-data": [
+                  {
+                    "always-send": false,
+                    "code": 23,
+                    "csv-format": true,
+                    "data": "2001:db8:100::53",
+                    "name": "dns-servers",
+                    "never-send": false,
+                    "space": "dhcp6"
+                  }
+                ],
+                "pool-id": 3,
                 "prefix": "2001:db8:100::",
-                "prefix-len": 48
+                "prefix-len": 48,
+                "user-context": {
+                  "rack": "r2"
+                }
               }
             ],
             "pools": [
               {
-                "option-data": [],
-                "pool": "2001:db8:1::10-2001:db8:1::ff"
+                "client-classes": [
+                  "voip"
+                ],
+                "ddns-generated-prefix": "pool",
+                "ddns-send-updates": true,
+                "evaluate-additional-classes": [
+                  "printers"
+                ],
+                "hostname-char-replacement": "x",
+                "hostname-char-set": "[^A-Za-z0-9.-]",
+                "option-data": [
+                  {
+                    "always-send": false,
+                    "code": 24,
+                    "csv-format": true,
+                    "data": "pool.example.org",
+                    "name": "domain-search",
+                    "never-send": false,
+                    "space": "dhcp6"
+                  }
+                ],
+                "pool": "2001:db8:1::10-2001:db8:1::ff",
+                "pool-id": 7,
+                "user-context": {
+                  "rack": "r1"
+                }
               },
               {
                 "option-data": [],
@@ -466,9 +641,12 @@
         ],
         "t1-percent": 0.5,
         "t2-percent": 0.8,
+        "user-context": {
+          "comment": "Coverage configuration"
+        },
         "valid-lifetime": 4000
       },
-      "hash": "7A8DF0DFBB999F6B5EEACE2BBFB27A49FC8E3B5F4B72DBA42836EAC8A206A01A"
+      "hash": "BAC835F462870E3414B858E2B24860B7AF6E5B89A1FCB2034FFA11AAC4AE3F5D"
     },
     "result": 0
   },
@@ -477,7 +655,7 @@
     "changes": {
       "after-update": {
         "arguments": {
-          "cltt": 1792043630,
+          "cltt": 1792416427,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -505,7 +683,7 @@
       },
       "before": {
         "arguments": {
-          "cltt": 1792043630,
+          "cltt": 1792416427,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -559,7 +737,7 @@
       },
       "delegated-prefix": {
         "arguments": {
-          "cltt": 1792043630,
+          "cltt": 1792416427,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -582,7 +760,7 @@
       },
       "present": {
         "arguments": {
-          "cltt": 1792043630,
+          "cltt": 1792416427,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": true,
           "fqdn-rev": false,
@@ -614,7 +792,7 @@
       "arguments": {
         "leases": [
           {
-            "cltt": 1792043630,
+            "cltt": 1792416427,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": true,
             "fqdn-rev": false,
@@ -639,7 +817,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792043630,
+            "cltt": 1792416427,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -653,7 +831,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792043630,
+            "cltt": 1792416427,
             "duid": "00:00:00",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -667,7 +845,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792043630,
+            "cltt": 1792416427,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -681,7 +859,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792043630,
+            "cltt": 1792416427,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -695,7 +873,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792043630,
+            "cltt": 1792416427,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -709,7 +887,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1792043630,
+            "cltt": 1792416427,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -724,7 +902,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792043630,
+            "cltt": 1792416427,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -739,7 +917,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1792043630,
+            "cltt": 1792416427,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -754,7 +932,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792043630,
+            "cltt": 1792416427,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -779,7 +957,7 @@
           "count": 4,
           "leases": [
             {
-              "cltt": 1792043630,
+              "cltt": 1792416427,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": true,
               "fqdn-rev": false,
@@ -804,7 +982,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792043630,
+              "cltt": 1792416427,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -818,7 +996,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792043630,
+              "cltt": 1792416427,
               "duid": "00:00:00",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -832,7 +1010,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792043630,
+              "cltt": 1792416427,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -855,7 +1033,7 @@
           "count": 4,
           "leases": [
             {
-              "cltt": 1792043630,
+              "cltt": 1792416427,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -869,7 +1047,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792043630,
+              "cltt": 1792416427,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -883,7 +1061,7 @@
               "valid-lft": 4294967295
             },
             {
-              "cltt": 1792043630,
+              "cltt": 1792416427,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -898,7 +1076,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792043630,
+              "cltt": 1792416427,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -922,7 +1100,7 @@
           "count": 2,
           "leases": [
             {
-              "cltt": 1792043630,
+              "cltt": 1792416427,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -937,7 +1115,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792043630,
+              "cltt": 1792416427,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1092,7 +1270,9 @@
       "arguments": {
         "shared-networks": [
           {
+            "adaptive-lease-time-threshold": 0.8,
             "allocator": "iterative",
+            "cache-max-age": 20,
             "cache-threshold": 0.25,
             "calculate-tee-times": true,
             "ddns-qualifying-suffix": "office.example.net",
@@ -1127,7 +1307,9 @@
             "store-extended-info": false,
             "subnet6": [
               {
+                "adaptive-lease-time-threshold": 0.8,
                 "allocator": "iterative",
+                "cache-max-age": 20,
                 "cache-threshold": 0.25,
                 "calculate-tee-times": true,
                 "id": 20,
@@ -1159,10 +1341,18 @@
                 "valid-lifetime": 4000
               },
               {
+                "adaptive-lease-time-threshold": 0.8,
                 "allocator": "iterative",
+                "cache-max-age": 20,
                 "cache-threshold": 0.25,
                 "calculate-tee-times": true,
+                "client-classes": [
+                  "voip"
+                ],
                 "ddns-qualifying-suffix": "office.example.org.",
+                "evaluate-additional-classes": [
+                  "printers"
+                ],
                 "id": 21,
                 "max-preferred-lifetime": 3000,
                 "max-valid-lifetime": 4000,
@@ -1170,12 +1360,37 @@
                 "min-valid-lifetime": 4000,
                 "option-data": [],
                 "pd-allocator": "iterative",
-                "pd-pools": [],
+                "pd-pools": [
+                  {
+                    "client-classes": [
+                      "voip"
+                    ],
+                    "delegated-len": 64,
+                    "evaluate-additional-classes": [
+                      "printers"
+                    ],
+                    "option-data": [],
+                    "prefix": "2001:db8:300::",
+                    "prefix-len": 48,
+                    "user-context": {
+                      "comment": "Second floor delegated prefixes"
+                    }
+                  }
+                ],
                 "pools": [
                   {
+                    "client-classes": [
+                      "voip"
+                    ],
                     "ddns-qualifying-suffix": "pool.example.org",
+                    "evaluate-additional-classes": [
+                      "printers"
+                    ],
                     "option-data": [],
-                    "pool": "2001:db8:3::100/120"
+                    "pool": "2001:db8:3::100/120",
+                    "user-context": {
+                      "comment": "Second floor pool"
+                    }
                   }
                 ],
                 "preferred-lifetime": 3000,
@@ -1191,6 +1406,9 @@
                 "subnet": "2001:db8:3::/64",
                 "t1-percent": 0.5,
                 "t2-percent": 0.8,
+                "user-context": {
+                  "comment": "Second floor"
+                },
                 "valid-lifetime": 4000
               }
             ],

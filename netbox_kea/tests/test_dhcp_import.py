@@ -106,7 +106,7 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
 
         self.assertIsInstance(plan, FamilyPlan)
         self.assertEqual((plan.family, plan.configuration_complete), (4, True))
-        self.assertEqual([planned.key for planned in plan.client_classes], ["voip", "printers"])
+        self.assertEqual([planned.key for planned in plan.client_classes], ["voip", "printers", "boot", "per-client"])
         self.assertEqual(
             [planned.key for planned in plan.option_definitions],
             [
@@ -207,7 +207,7 @@ class ApplyPlanWithoutKeaTest(TestCase):
         )
         self.assertEqual(
             set(ClientClass.objects.filter(dhcp_server__name=server.name).values_list("name", flat=True)),
-            {"apply-plan: voip", "apply-plan: printers"},
+            {"apply-plan: voip", "apply-plan: printers", "apply-plan: boot", "apply-plan: per-client"},
         )
         self.assertEqual(
             set(
