@@ -24,7 +24,7 @@ def daemon(family: int) -> str:
     return f"Dhcp{family}"
 
 
-def subnet(family: int, subnet_id: int | None, cidr: str) -> str:
+def subnet(family: int, subnet_id: int | None, cidr: str | None = None) -> str:
     """Return the path of a Subnet by its Kea subnet ID, or by its CIDR when Kea gave no ID."""
     identity = f"id={subnet_id}" if subnet_id is not None else f"subnet={cidr}"
     return f"{daemon(family)}/{_step(f'subnet{family}', identity)}"
@@ -50,6 +50,11 @@ def pool(subnet_path: str, text: str) -> str:
     return f"{subnet_path}/{_step('pools', f'pool={text}')}"
 
 
+def pool_collection(subnet_path: str) -> str:
+    """Return the path of the Pool collection of the Subnet at *subnet_path*."""
+    return f"{subnet_path}/pools"
+
+
 def pool_entry(subnet_path: str, index: int) -> str:
     """Return the path of the Pool entry at *index* of the Subnet at *subnet_path*."""
     return f"{subnet_path}/{_step('pools', index)}"
@@ -65,14 +70,20 @@ def client_class_entry(family: int, index: int) -> str:
     return f"{daemon(family)}/{_step('client-classes', index)}"
 
 
-def _default_space(family: int) -> str:
+def default_space(family: int) -> str:
+    """Return the Kea and DHCP plugin default option space of a family."""
     return f"dhcp{family}"
 
 
 def option_definition(family: int, space: str, code: int) -> str:
     """Return the path of a custom Option Definition by its space and code. The default space is left out."""
-    identity = f"code={code}" if space == _default_space(family) else f"space={space},code={code}"
+    identity = f"code={code}" if space == default_space(family) else f"space={space},code={code}"
     return f"{daemon(family)}/{_step('option-def', identity)}"
+
+
+def option_definition_collection(family: int) -> str:
+    """Return the path of the Option Definition collection."""
+    return f"{daemon(family)}/option-def"
 
 
 def option_definition_entry(family: int, index: int) -> str:
@@ -81,11 +92,18 @@ def option_definition_entry(family: int, index: int) -> str:
 
 
 def option(parent: str, option: DHCPOption, family: int) -> str:
-    """Return the path of a DHCP Option of the object at *parent*, by its code, or by its name without a code."""
+    """Return the path of a DHCP Option of the object at *parent*, by its code (else its name) and client classes."""
     identity = f"code={option.code}" if option.code is not None else f"name={option.name}"
-    if option.space not in (None, _default_space(family)):
+    if option.space not in (None, default_space(family)):
         identity = f"space={option.space},{identity}"
+    if option.client_classes:
+        identity = f"{identity},client-classes={'|'.join(sorted(option.client_classes))}"
     return f"{parent}/{_step('option-data', identity)}"
+
+
+def setting(parent: str, key: str) -> str:
+    """Return the path of the configuration key *key* of the object at *parent*."""
+    return f"{parent}/{key}"
 
 
 def option_collection(parent: str) -> str:
@@ -100,7 +118,7 @@ def option_entry(parent: str, index: int) -> str:
 
 def reservations(family: int, subnet_id: int | None = None) -> str:
     """Return the path of the Reservations of a Subnet, or of the Global Reservations without *subnet_id*."""
-    parent = daemon(family) if subnet_id is None else subnet(family, subnet_id, "")
+    parent = daemon(family) if subnet_id is None else subnet(family, subnet_id)
     return f"{parent}/reservations"
 
 
@@ -110,5 +128,5 @@ def reservation(family: int, subnet_id: int | None, identifier_type: str, value:
 
 
 def reservation_record(family: int, source_position: str) -> str:
-    """Return the path of a Reservation record that Kea returned, by its position in the reply."""
-    return f"{reservations(family)}/{source_position}"
+    """Return the path of a Reservation record by its position in the reservation-get-page reply, in any Scope."""
+    return f"{daemon(family)}/reservation-get-page/{source_position}"

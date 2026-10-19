@@ -49,6 +49,7 @@ class Reason(str, Enum):
     INVALID_KEA_DATA = "invalid_kea_data"
     NO_PLUGIN_HOME = "no_plugin_home"
     PARENT_NOT_IMPORTED = "parent_not_imported"
+    IPAM_OWNERSHIP = "ipam_ownership"
     WRITE_FAILED = "write_failed"
     READ_FAILED = "read_failed"
 
@@ -80,6 +81,7 @@ REASON_LABELS: dict[Reason, str] = {
     Reason.INVALID_KEA_DATA: "Invalid Kea data",
     Reason.NO_PLUGIN_HOME: "No DHCP plugin field by design",
     Reason.PARENT_NOT_IMPORTED: "Its parent object was not imported",
+    Reason.IPAM_OWNERSHIP: "IPAM ownership kept the IPAM object unchanged",
     Reason.WRITE_FAILED: "The write failed",
     Reason.READ_FAILED: "Kea could not be read in full",
 }
@@ -99,6 +101,7 @@ REASON_OUTCOME: dict[Reason, Outcome] = {
     Reason.INVALID_KEA_DATA: Outcome.NOT_IMPORTED,
     Reason.NO_PLUGIN_HOME: Outcome.NOT_IMPORTED,
     Reason.PARENT_NOT_IMPORTED: Outcome.SKIPPED,
+    Reason.IPAM_OWNERSHIP: Outcome.SKIPPED,
     Reason.WRITE_FAILED: Outcome.SKIPPED,
     Reason.READ_FAILED: Outcome.SKIPPED,
 }

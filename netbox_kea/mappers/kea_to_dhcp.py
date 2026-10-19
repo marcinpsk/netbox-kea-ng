@@ -231,7 +231,11 @@ def _option_def_intent(raw, path: str, dropped: list[DroppedEntry]) -> OptionDef
 
 def _option_defs(raw_list, family: int, dropped: list[DroppedEntry]) -> tuple[OptionDefIntent, ...]:
     """Normalize an ``option-def`` list, dropping invalid entries."""
+    if raw_list is None:
+        return ()
     if not isinstance(raw_list, list):
+        path = kea_paths.option_definition_collection(family)
+        dropped.append(DroppedEntry(Kind.OPTION_DEFINITION, path, "The collection is not a list."))
         return ()
     out = [
         _option_def_intent(raw, kea_paths.option_definition_entry(family, index), dropped)
@@ -242,7 +246,10 @@ def _option_defs(raw_list, family: int, dropped: list[DroppedEntry]) -> tuple[Op
 
 def _pools(raw_list, subnet_path: str, dropped: list[DroppedEntry]) -> tuple[PoolIntent, ...]:
     """Normalize a subnet's ``pools`` list to non-empty pool strings (with options)."""
+    if raw_list is None:
+        return ()
     if not isinstance(raw_list, list):
+        dropped.append(DroppedEntry(Kind.POOL, kea_paths.pool_collection(subnet_path), "The collection is not a list."))
         return ()
     out: list[PoolIntent] = []
     for index, entry in enumerate(raw_list):
@@ -275,7 +282,7 @@ def _subnet_intent(
     cidr = raw.get("subnet")
     if not cidr:
         if sid is not None:
-            path = kea_paths.subnet(family, sid, "")
+            path = kea_paths.subnet(family, sid)
         dropped.append(DroppedEntry(Kind.SUBNET, path, "The Subnet has no CIDR."))
         return None
     subnet_path = kea_paths.subnet(family, sid, cidr)

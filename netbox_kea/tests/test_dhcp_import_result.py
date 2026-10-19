@@ -7,6 +7,7 @@ The runs go through the real "Sync to DHCP plugin now" view with Kea stubbed at 
 
 from __future__ import annotations
 
+import threading
 import unittest
 from datetime import timedelta
 from typing import Any
@@ -15,8 +16,8 @@ from bs4 import BeautifulSoup
 from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.contrib.messages import ERROR, get_messages
-from django.db import connection
-from django.test import SimpleTestCase, TestCase
+from django.db import connection, connections
+from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -78,7 +79,7 @@ _FIRST_RUN = {
     ("option", "unsupported", "plugin_gap", f"{_SUBNET}/option-data[space=vendor-x,code=1]"),
     ("pool", "created", "", f"{_SUBNET}/pools[pool=192.0.2.10-192.0.2.20]"),
     ("reservation", "created", "", f"{_SUBNET}/reservations[hw-address=02:00:00:00:00:01]"),
-    ("reservation", "not_imported", "invalid_kea_data", "Dhcp4/reservations/hosts[1].hw-address"),
+    ("reservation", "not_imported", "invalid_kea_data", "Dhcp4/reservation-get-page/hosts[1].hw-address"),
 }
 # A second run of the same Kea data writes nothing, so only the facts that were not written remain.
 _SECOND_RUN = {entry for entry in _FIRST_RUN if entry[1] != "created"}
@@ -200,6 +201,38 @@ class RetentionTest(TestCase):
         self.assertEqual(DhcpImportEntry.objects.count(), DhcpImportRun.RETAINED_RUNS + 1)
 
 
+class ConcurrentStorageTest(TransactionTestCase):
+    """Two runs of one Server store one after the other, so retention never keeps one run too many."""
+
+    def test_storing_waits_for_another_transaction_that_holds_the_server(self):
+        server = _make_db_server(name="retention-lock")
+        holder = connection.Database.connect(**connection.get_connection_params())
+        holder.autocommit = False
+        done = threading.Event()
+
+        def store():
+            try:
+                store_run(server, DhcpImportTrigger.MANUAL, timezone.now(), [])
+            finally:
+                connections.close_all()
+                done.set()
+
+        try:
+            with holder.cursor() as cursor:
+                # NO KEY UPDATE lets the insert check its key, so only the explicit lock of store_run waits.
+                cursor.execute("SELECT id FROM netbox_kea_server WHERE id = %s FOR NO KEY UPDATE", [server.pk])
+            worker = threading.Thread(target=store)
+            worker.start()
+            self.assertFalse(done.wait(timeout=1))
+            self.assertFalse(DhcpImportRun.objects.exists())
+            holder.commit()
+            self.assertTrue(done.wait(timeout=30))
+            worker.join(timeout=30)
+        finally:
+            holder.close()
+        self.assertEqual(DhcpImportRun.objects.filter(server=server).count(), 1)
+
+
 class LatestRunPageTest(_ImportRunTestCase):
     """The Server's DHCP plugin page shows the latest run to a user who may view the Server, and only to them."""
 
@@ -289,4 +322,162 @@ class EntryVocabularyTest(SimpleTestCase):
                 "Dhcp4/reservations[duid=01:02]",
                 "Dhcp6/subnet6[id=20]/reservations[hw-address=02:00:00:00:00:01]",
             ],
+        )
+
+
+class ReviewedEntryTest(_ImportRunTestCase):
+    """Each fact that a run does not write has exactly one entry, and IPAM ownership outcomes are not errors."""
+
+    def _import(self, config: dict):
+        from netbox_kea.integrations import dhcp_plugin
+        from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
+
+        intent = parse_dhcp_config(config, 4)
+        intent.configuration_complete = True
+        return dhcp_plugin.import_server_config(self.server, intent, None)
+
+    def _paths(self, summary, kind: Kind) -> list[tuple[str, Outcome, Reason | None]]:
+        return [(entry.path, entry.outcome, entry.reason) for entry in summary.entries if entry.kind == kind]
+
+    def test_a_pool_that_ipam_ownership_keeps_unchanged_is_skipped_and_is_not_an_error(self):
+        pool = {"pool": "198.18.0.10-198.18.0.20"}
+        summary = self._import(
+            {
+                "subnet4": [
+                    {"id": 1, "subnet": "198.18.0.0/24", "pools": [pool]},
+                    {"id": 2, "subnet": "198.18.0.0/25", "pools": [pool]},
+                ]
+            }
+        )
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(
+            self._paths(summary, Kind.POOL),
+            [
+                (f"Dhcp4/subnet4[id={sid}]/pools[pool=198.18.0.10-198.18.0.20]", Outcome.SKIPPED, Reason.IPAM_OWNERSHIP)
+                for sid in (1, 2)
+            ],
+        )
+
+    def test_a_failed_option_definition_has_one_entry_and_its_options_are_skipped(self):
+        OptionDefinition = apps.get_model(DHCP_PLUGIN, "OptionDefinition")
+        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        dhcp_server = DHCPServer.objects.create(name=self.server.name)
+        # The plugin keeps definition names unique per server, so a second code with this name fails.
+        OptionDefinition.objects.create(
+            name="site-opt", family=4, space="dhcp4", code=230, type="string", standard=False, dhcp_server=dhcp_server
+        )
+        option = {"code": 231, "data": "x"}
+        summary = self._import(
+            {
+                "option-def": [{"name": "site-opt", "code": 231, "type": "string", "space": "dhcp4"}],
+                "option-data": [option],
+                "subnet4": [{"id": 1, "subnet": "198.18.1.0/24", "option-data": [option]}],
+            }
+        )
+
+        self.assertEqual(
+            self._paths(summary, Kind.OPTION_DEFINITION),
+            [("Dhcp4/option-def[code=231]", Outcome.SKIPPED, Reason.WRITE_FAILED)],
+        )
+        self.assertEqual(
+            self._paths(summary, Kind.OPTION),
+            [
+                ("Dhcp4/option-data[code=231]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+                ("Dhcp4/subnet4[id=1]/option-data[code=231]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+            ],
+        )
+
+    def test_the_children_of_a_failed_subnet_are_skipped(self):
+        summary = self._import(
+            {
+                "subnet4": [
+                    {
+                        "id": 1,
+                        "subnet": "not-a-cidr",
+                        "pools": [{"pool": "10.0.0.10-10.0.0.20", "option-data": [{"code": 3, "data": "10.0.0.1"}]}],
+                        "option-data": [{"code": 6, "data": "10.0.0.2"}],
+                    }
+                ]
+            }
+        )
+
+        subnet = "Dhcp4/subnet4[id=1]"
+        pool = f"{subnet}/pools[pool=10.0.0.10-10.0.0.20]"
+        self.assertEqual(
+            [(entry.kind, entry.path, entry.reason) for entry in summary.entries if entry.kind != Kind.SERVER],
+            [
+                (Kind.SUBNET, subnet, Reason.WRITE_FAILED),
+                (Kind.OPTION, f"{subnet}/option-data[code=6]", Reason.PARENT_NOT_IMPORTED),
+                (Kind.POOL, pool, Reason.PARENT_NOT_IMPORTED),
+                (Kind.OPTION, f"{pool}/option-data[code=3]", Reason.PARENT_NOT_IMPORTED),
+                (Kind.RESERVATION, "Dhcp4/reservations", Reason.READ_FAILED),
+            ],
+        )
+
+    def test_options_of_different_client_classes_have_different_paths(self):
+        summary = self._import(
+            {
+                "subnet4": [
+                    {
+                        "id": 1,
+                        "subnet": "198.18.2.0/24",
+                        "option-data": [
+                            {"code": 3, "data": "198.18.2.1", "client-classes": ["voip"]},
+                            {"code": 3, "data": "198.18.2.2", "client-classes": ["printers", "lab"]},
+                        ],
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(
+            [path for path, _outcome, _reason in self._paths(summary, Kind.OPTION)],
+            [
+                "Dhcp4/subnet4[id=1]/option-data[code=3,client-classes=voip]",
+                "Dhcp4/subnet4[id=1]/option-data[code=3,client-classes=lab|printers]",
+            ],
+        )
+
+
+class StoppedRunTest(_ImportRunTestCase):
+    """A run that stops part way still stores the entries it has, and an entry for the family that stopped."""
+
+    def test_a_run_refused_by_the_mapping_lock_stores_its_result(self):
+        from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK
+
+        holder = connection.Database.connect(**connection.get_connection_params())
+        try:
+            with holder.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_lock(%s, %s)", _METADATA_LOCK)
+            response = self._run()
+        finally:
+            holder.close()
+
+        self.assertIn(ERROR, [message.level for message in get_messages(response.wsgi_request)])
+        run = DhcpImportRun.objects.get(server=self.server)
+        self.assertEqual(
+            _entries(run),
+            {("server", "skipped", "write_failed", "Dhcp4")},
+        )
+        self.assertIn("stopped", DhcpImportEntry.objects.get(run=run).detail)
+
+
+class SettingEntryTest(_ImportRunTestCase):
+    """A Kea value that the import cannot convert to its DHCP plugin field has an entry."""
+
+    _import = ReviewedEntryTest._import
+
+    def test_a_value_that_cannot_be_converted_is_unsupported(self):
+        summary = self._import({"subnet4": [{"id": 1, "subnet": "198.18.3.0/24", "t1-percent": "not-a-number"}]})
+
+        self.assertIn(
+            not_written(
+                4,
+                Kind.SUBNET,
+                "Dhcp4/subnet4[id=1]/t1-percent",
+                Reason.PLUGIN_GAP,
+                "The value cannot be converted to the DHCP plugin field.",
+            ),
+            summary.entries,
         )

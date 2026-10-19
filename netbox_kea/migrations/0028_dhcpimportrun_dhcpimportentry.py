@@ -87,6 +87,7 @@ class Migration(migrations.Migration):
                             ('invalid_kea_data', 'Invalid Kea data'),
                             ('no_plugin_home', 'No DHCP plugin field by design'),
                             ('parent_not_imported', 'Its parent object was not imported'),
+                            ('ipam_ownership', 'IPAM ownership kept the IPAM object unchanged'),
                             ('write_failed', 'The write failed'),
                             ('read_failed', 'Kea could not be read in full'),
                         ],

@@ -156,7 +156,14 @@ def run_dhcp_plugin_import(
     for version, read in reads:
         path = kea_paths.daemon(version)
         if isinstance(read, FamilyRead):
-            summary = dhcp_plugin.import_server_config(server, read.config, read.reservations)
+            try:
+                summary = dhcp_plugin.import_server_config(server, read.config, read.reservations)
+            except Exception:
+                # The family wrote nothing, and the earlier families stay written, so the run keeps their entries.
+                detail = "The import stopped before this family was written. See the message and the server logs."
+                entries.append(not_written(version, Kind.SERVER, path, Reason.WRITE_FAILED, detail))
+                store_run(server, trigger, started, entries)
+                raise
             results.append((version, summary))
             entries.extend(summary.entries)
         elif read is None:
@@ -178,10 +185,12 @@ def store_run(server: Server, trigger: DhcpImportTrigger, started: datetime, ent
 
     A database failure is logged and never raised: the import has already written NetBox.
     """
-    from ..models import DhcpImportEntry, DhcpImportRun
+    from ..models import DhcpImportEntry, DhcpImportRun, Server
 
     try:
         with event_scope.atomic():
+            # One run of a Server at a time from here, so two runs cannot both keep one run too many.
+            list(Server.objects.select_for_update().filter(pk=server.pk).values_list("pk", flat=True))
             run = DhcpImportRun.objects.create(server=server, trigger=trigger, started=started, finished=timezone.now())
             DhcpImportEntry.objects.bulk_create(
                 DhcpImportEntry(

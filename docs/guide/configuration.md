@@ -57,9 +57,11 @@ fact that the run did not write has a reason:
 - **Unsupported**: the DHCP plugin cannot hold the fact. A later DHCP plugin release can remove this limit.
 - **Not imported**: the fact is out of scope (for example a Shared Network), the Kea data is not valid, or the DHCP
   plugin has no field for it by design.
-- **Skipped**: the parent object was not imported, a write failed, or Kea could not be read in full.
+- **Skipped**: the parent object was not imported, IPAM ownership kept the IP Range unchanged, a write failed, or
+  Kea could not be read in full.
 
-An object that did not change has no entry. NetBox keeps the 10 latest runs of each Server and deletes the older runs
+An object that did not change has no entry. A run that stops part way also stores its result, with an entry for the
+family that stopped. NetBox keeps the 10 latest runs of each Server and deletes the older runs
 when it stores a new one. Runs are not in the change log. A user who can view the Server can see its runs. When
 NetBox cannot store a result, it logs the error and the import still completes. In a branch the import refuses and
 stores no result.

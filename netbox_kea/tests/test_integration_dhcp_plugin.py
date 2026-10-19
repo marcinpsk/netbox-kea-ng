@@ -473,7 +473,7 @@ class DhcpPluginAdapterTest(TestCase):
                 Kind.SHARED_NETWORK,
                 "Dhcp4/shared-networks[name=office]",
                 Reason.NOT_IN_SCOPE,
-                "Its Subnets are imported without the Shared Network.",
+                "Its values and DHCP Options are not imported. Its Subnets are imported without it.",
             ),
             summary.entries,
         )
