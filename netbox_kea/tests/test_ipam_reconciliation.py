@@ -1853,7 +1853,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
 
         def run_import():
             with connection.execute_wrapper(observe_import):
-                import_reservation_snapshot(owner, None, observation, {}, summary)
+                import_reservation_snapshot(owner, None, observation, {}, summary, family=6)
 
         self._start("delete-server", delete_server)
         try:
@@ -1870,7 +1870,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         self.assertFalse(summary.ownership.complete)
         self.assertTrue(IPAMOwnershipLink.objects.filter(server=owner, prefix=released).exists())
         retry = ImportSummary()
-        import_reservation_snapshot(owner, None, observation, {}, retry)
+        import_reservation_snapshot(owner, None, observation, {}, retry, family=6)
         self.assertEqual(retry.errors, 0)
         self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=released).exists())
         released.refresh_from_db()
@@ -1939,7 +1939,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
 
         def run_import():
             with connection.execute_wrapper(observe_import):
-                import_reservation_snapshot(owner, None, observation, {}, summary)
+                import_reservation_snapshot(owner, None, observation, {}, summary, family=6)
 
         def delete_server():
             with connection.execute_wrapper(observe_delete):
@@ -1967,7 +1967,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         self.assertFalse(summary.ownership.complete)
         self.assertTrue(IPAMOwnershipLink.objects.filter(server=owner, prefix=second).exists())
         retry = ImportSummary()
-        import_reservation_snapshot(owner, None, observation, {}, retry)
+        import_reservation_snapshot(owner, None, observation, {}, retry, family=6)
         self.assertEqual(retry.errors, 0)
 
     def test_receipt_completion_does_not_block_an_ownership_foreign_key_at_commit(self):
@@ -2103,6 +2103,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
     def test_upgrade_concurrent_job_and_import_merge_completion_receipts(self):
         from django.apps import apps
 
+        from netbox_kea.models import DhcpImportTrigger
         from netbox_kea.tests.test_views_dhcp_plugin import _sync_responses
         from netbox_kea.views.dhcp_plugin_sync import run_dhcp_plugin_import
 
@@ -2114,7 +2115,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         responses["lease4-get-page"] = _lease_page([])
         with stub_kea(responses):
             self._start("job", lambda: KeaIpamSyncJob(_make_job()).run(server_pk=server.pk))
-            self._start("import", lambda: run_dhcp_plugin_import(server))
+            self._start("import", lambda: run_dhcp_plugin_import(server, DhcpImportTrigger.MANUAL))
             self._wait_for_lock_waits(2)
             holder.commit()
             self._join()

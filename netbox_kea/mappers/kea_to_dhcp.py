@@ -25,7 +25,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from .. import kea_paths
 from ..dhcp_options import DHCPOption, parse_dhcp_option
+from ..integrations.dhcp_import_report import DroppedEntry, Kind
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +103,7 @@ def _settings(raw: dict) -> dict:
 class OptionDefIntent:
     """A Kea custom ``option-def`` entry (defines a non-standard option code)."""
 
-    code: int | None
+    code: int
     name: str | None
     space: str | None
     type: str | None
@@ -111,8 +113,8 @@ class OptionDefIntent:
 
     @property
     def match_key(self) -> tuple:
-        """Identity: (space, code) — or (space, name) when code is absent."""
-        return (self.space, self.code if self.code is not None else self.name)
+        """Identity: (space, code)."""
+        return (self.space, self.code)
 
 
 @dataclass(frozen=True)
@@ -177,38 +179,43 @@ class ServerConfigIntent:
     global_options: tuple[DHCPOption, ...] = ()
     option_defs: tuple[OptionDefIntent, ...] = ()
     global_settings: dict = field(default_factory=dict)
+    # Entries that the parse dropped as invalid, each with its Kea path.
+    dropped: list[DroppedEntry] = field(default_factory=list)
 
 
-def _optional_dhcp_option(raw) -> DHCPOption | None:
+def _optional_dhcp_option(raw, path: str, dropped: list[DroppedEntry]) -> DHCPOption | None:
     try:
         return parse_dhcp_option(raw)
-    except ValueError:
-        # The importer has no summary, so log each dropped config entry.
+    except ValueError as exc:
         logger.warning("Discarded an invalid option-data entry: %r", raw, exc_info=True)
+        dropped.append(DroppedEntry(Kind.OPTION, path, str(exc)))
         return None
 
 
-def _options(raw_list) -> tuple[DHCPOption, ...]:
-    """Normalize an ``option-data`` list, dropping invalid entries."""
+def _options(raw_list, parent: str, dropped: list[DroppedEntry]) -> tuple[DHCPOption, ...]:
+    """Normalize the ``option-data`` list of the object at *parent*, dropping invalid entries."""
     if raw_list is None:
         return ()
     if not isinstance(raw_list, list):
-        # A present non-list collection dropped every option, so leave a record of it.
         logger.warning("Discarded a non-list option-data collection: %r", raw_list)
+        dropped.append(DroppedEntry(Kind.OPTION, kea_paths.option_collection(parent), "The collection is not a list."))
         return ()
-    options = (_optional_dhcp_option(raw) for raw in raw_list)
+    options = (
+        _optional_dhcp_option(raw, kea_paths.option_entry(parent, index), dropped) for index, raw in enumerate(raw_list)
+    )
     return tuple(option for option in options if option is not None)
 
 
-def _option_def_intent(raw: dict) -> OptionDefIntent | None:
-    """Normalize one Kea ``option-def`` dict; return ``None`` if not a dict."""
+def _option_def_intent(raw, path: str, dropped: list[DroppedEntry]) -> OptionDefIntent | None:
+    """Normalize one Kea ``option-def`` entry; drop one that is not a dict or has no valid code."""
     if not isinstance(raw, dict):
+        dropped.append(DroppedEntry(Kind.OPTION_DEFINITION, path, "The entry is not an object."))
         return None
-    code = raw.get("code")
     try:
-        code = int(code) if code is not None else None
-    except (TypeError, ValueError):
-        code = None
+        code = int(raw["code"])
+    except (KeyError, TypeError, ValueError):
+        dropped.append(DroppedEntry(Kind.OPTION_DEFINITION, path, "The entry has no valid code."))
+        return None
     record_types = raw.get("record-types")
     record_types = tuple(str(r) for r in record_types) if isinstance(record_types, list) else ()
     return OptionDefIntent(
@@ -222,57 +229,72 @@ def _option_def_intent(raw: dict) -> OptionDefIntent | None:
     )
 
 
-def _option_defs(raw_list) -> tuple[OptionDefIntent, ...]:
-    """Normalize an ``option-def`` list, dropping non-dict entries."""
+def _option_defs(raw_list, family: int, dropped: list[DroppedEntry]) -> tuple[OptionDefIntent, ...]:
+    """Normalize an ``option-def`` list, dropping invalid entries."""
     if not isinstance(raw_list, list):
         return ()
-    out = [_option_def_intent(o) for o in raw_list]
+    out = [
+        _option_def_intent(raw, kea_paths.option_definition_entry(family, index), dropped)
+        for index, raw in enumerate(raw_list)
+    ]
     return tuple(o for o in out if o is not None)
 
 
-def _pools(raw_list) -> tuple[PoolIntent, ...]:
+def _pools(raw_list, subnet_path: str, dropped: list[DroppedEntry]) -> tuple[PoolIntent, ...]:
     """Normalize a subnet's ``pools`` list to non-empty pool strings (with options)."""
     if not isinstance(raw_list, list):
         return ()
     out: list[PoolIntent] = []
-    for entry in raw_list:
-        if not isinstance(entry, dict):
+    for index, entry in enumerate(raw_list):
+        pool = entry.get("pool") if isinstance(entry, dict) else None
+        if not pool:
+            dropped.append(
+                DroppedEntry(Kind.POOL, kea_paths.pool_entry(subnet_path, index), "The entry has no pool range.")
+            )
             continue
-        pool = entry.get("pool")
-        if pool:
-            out.append(PoolIntent(pool=pool, options=_options(entry.get("option-data"))))
+        path = kea_paths.pool(subnet_path, pool)
+        out.append(PoolIntent(pool=pool, options=_options(entry.get("option-data"), path, dropped)))
     return tuple(out)
 
 
-def _subnet_intent(raw: dict, family: int, shared_network: str | None) -> SubnetIntent | None:
-    """Normalize one Kea subnet dict; return ``None`` when it has no CIDR."""
-    if not isinstance(raw, dict):
+def _subnet_id(raw: dict) -> int | None:
+    try:
+        return int(raw["id"])
+    except (KeyError, TypeError, ValueError):
         return None
+
+
+def _subnet_intent(
+    raw, family: int, shared_network: str | None, path: str, dropped: list[DroppedEntry]
+) -> SubnetIntent | None:
+    """Normalize the Kea subnet entry at *path*; drop one that is not a dict or has no CIDR."""
+    if not isinstance(raw, dict):
+        dropped.append(DroppedEntry(Kind.SUBNET, path, "The entry is not an object."))
+        return None
+    sid = _subnet_id(raw)
     cidr = raw.get("subnet")
     if not cidr:
+        if sid is not None:
+            path = kea_paths.subnet(family, sid, "")
+        dropped.append(DroppedEntry(Kind.SUBNET, path, "The Subnet has no CIDR."))
         return None
-    sid = raw.get("id")
-    try:
-        sid = int(sid) if sid is not None else None
-    except (TypeError, ValueError):
-        sid = None
+    subnet_path = kea_paths.subnet(family, sid, cidr)
     return SubnetIntent(
         kea_subnet_id=sid,
         cidr=cidr,
         family=family,
         shared_network=shared_network,
-        pools=_pools(raw.get("pools")),
-        options=_options(raw.get("option-data")),
+        pools=_pools(raw.get("pools"), subnet_path, dropped),
+        options=_options(raw.get("option-data"), subnet_path, dropped),
         settings=_settings(raw),
     )
 
 
-def _client_class_intent(raw: dict, family: int) -> ClientClassIntent | None:
-    """Normalize one Kea ``client-classes`` entry; return ``None`` if unusable."""
-    if not isinstance(raw, dict):
-        return None
-    name = raw.get("name")
+def _client_class_intent(raw, family: int, path: str, dropped: list[DroppedEntry]) -> ClientClassIntent | None:
+    """Normalize the Kea ``client-classes`` entry at *path*; drop one that is not a dict or has no name."""
+    name = raw.get("name") if isinstance(raw, dict) else None
     if not name:
+        dropped.append(DroppedEntry(Kind.CLIENT_CLASS, path, "The entry has no name."))
         return None
     # Kea renamed ``only-if-required`` → ``only-in-additional-list`` (2.7.4); accept either.
     only = raw.get("only-in-additional-list")
@@ -284,7 +306,7 @@ def _client_class_intent(raw: dict, family: int) -> ClientClassIntent | None:
         test=raw.get("test", "") or "",
         template_test=raw.get("template-test", "") or "",
         only_in_additional_list=only,
-        options=_options(raw.get("option-data")),
+        options=_options(raw.get("option-data"), kea_paths.client_class(family, name), dropped),
         settings=_settings(raw),
     )
 
@@ -302,7 +324,7 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
 
     Standalone subnets (under ``subnetN``) carry ``shared_network=None``; subnets
     nested in a ``shared-networks`` entry carry that network's name.  Malformed
-    entries (non-dicts, subnets without a CIDR) are skipped rather than raising,
+    entries (non-dicts, subnets without a CIDR) are dropped into ``dropped`` rather than raising,
     so a partially-malformed live config still imports what it can.
     Malformed subnet, shared-network, and client-class containers raise RuntimeError.
     """
@@ -315,31 +337,38 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
     if not isinstance(conf, dict):
         return result
 
-    result.global_options = _options(conf.get("option-data"))
-    result.option_defs = _option_defs(conf.get("option-def"))
+    root = kea_paths.daemon(family)
+    dropped = result.dropped
+    result.global_options = _options(conf.get("option-data"), root, dropped)
+    result.option_defs = _option_defs(conf.get("option-def"), family, dropped)
     result.global_settings = _settings(conf)
 
-    for raw_cc in _config_collection(conf, "client-classes"):
-        cc = _client_class_intent(raw_cc, family)
+    for index, raw_cc in enumerate(_config_collection(conf, "client-classes")):
+        cc = _client_class_intent(raw_cc, family, kea_paths.client_class_entry(family, index), dropped)
         if cc is not None:
             result.client_classes.append(cc)
 
-    for raw in _config_collection(conf, subnet_key):
-        subnet = _subnet_intent(raw, family, shared_network=None)
+    for index, raw in enumerate(_config_collection(conf, subnet_key)):
+        subnet = _subnet_intent(raw, family, None, kea_paths.subnet_entry(root, family, index), dropped)
         if subnet is not None:
             result.subnets.append(subnet)
 
-    for raw_net in _config_collection(conf, "shared-networks"):
-        if not isinstance(raw_net, dict):
-            continue
-        name = raw_net.get("name")
+    for net_index, raw_net in enumerate(_config_collection(conf, "shared-networks")):
+        name = raw_net.get("name") if isinstance(raw_net, dict) else None
         if not name:
+            path = kea_paths.shared_network_entry(family, net_index)
+            dropped.append(
+                DroppedEntry(Kind.SHARED_NETWORK, path, "The entry has no name, so its Subnets were not read.")
+            )
             continue
+        net_path = kea_paths.shared_network(family, name)
         result.shared_networks.append(
-            SharedNetworkIntent(name=name, family=family, options=_options(raw_net.get("option-data")))
+            SharedNetworkIntent(
+                name=name, family=family, options=_options(raw_net.get("option-data"), net_path, dropped)
+            )
         )
-        for raw in _config_collection(raw_net, subnet_key):
-            subnet = _subnet_intent(raw, family, shared_network=name)
+        for index, raw in enumerate(_config_collection(raw_net, subnet_key)):
+            subnet = _subnet_intent(raw, family, name, kea_paths.subnet_entry(net_path, family, index), dropped)
             if subnet is not None:
                 result.subnets.append(subnet)
 

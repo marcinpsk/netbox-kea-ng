@@ -2,6 +2,7 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% extends "netbox_kea/server_workspace.html" %}
 {% load helpers %}
+{% load render_table from django_tables2 %}
 
 {% block content %}
 {% include "netbox_kea/inc/sync_nav.html" %}
@@ -96,6 +97,51 @@
             </form>
           {% endif %}
         </div>
+      </div>
+
+      <div class="card mb-3" id="dhcp-import-latest-run">
+        <h5 class="card-header">Latest run</h5>
+        {% if latest_run %}
+          <div class="card-body pb-0">
+            <p class="small text-muted mb-2">
+              {{ latest_run.get_trigger_display }} run, started {{ latest_run.started|isodatetime }},
+              finished {{ latest_run.finished|isodatetime }}.
+              NetBox keeps the {{ latest_run.RETAINED_RUNS }} latest runs of each Server.
+            </p>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0 dhcp-import-counts">
+              <thead>
+                <tr>
+                  <th scope="col">Family</th>
+                  <th scope="col">Kind</th>
+                  {% for label in run_outcomes %}<th scope="col" class="text-end">{{ label }}</th>{% endfor %}
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in run_count_rows %}
+                  <tr>
+                    <td>DHCPv{{ row.family }}</td>
+                    <th scope="row" class="fw-normal">{{ row.kind }}</th>
+                    {% for count in row.counts %}<td class="text-end{% if not count %} text-muted{% endif %}">{{ count }}</td>{% endfor %}
+                  </tr>
+                {% empty %}
+                  <tr><td colspan="{{ run_outcomes|length|add:2 }}" class="text-muted">This run recorded no Kea facts.</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <div class="card-body pt-3 pb-2">
+            <h6 class="mb-0">Entries</h6>
+          </div>
+          <div class="table-responsive">
+            {% render_table run_entry_table %}
+          </div>
+        {% else %}
+          <div class="card-body">
+            <p class="text-muted mb-0">No DHCP Import has run for this Server yet.</p>
+          </div>
+        {% endif %}
       </div>
 
       <div class="card">

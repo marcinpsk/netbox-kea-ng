@@ -22,6 +22,7 @@ from netbox.models.features import ChangeLoggingMixin, JobsMixin
 
 from . import branching
 from .constants import STALE_CLEANUP_MODES, Family
+from .integrations.dhcp_import_report import KIND_LABELS, OUTCOME_LABELS, REASON_LABELS, choices
 from .kea import KeaClient
 from .leases import AllocationKind
 from .reservations import MAX_IDENTITY_LENGTH
@@ -697,6 +698,60 @@ class KeaDhcpLink(ChangeLoggingMixin):
     def __str__(self) -> str:
         key = f"subnet-id={self.kea_subnet_id}" if self.kea_identity is None else self.kea_identity
         return f"{self.server} v{self.family} {key} → {self.object_type_id}:{self.object_id}"
+
+
+class DhcpImportTrigger(models.TextChoices):
+    """What started a DHCP Import run."""
+
+    MANUAL = "manual", "Manual"
+    SCHEDULED = "scheduled", "Scheduled"
+
+
+class DhcpImportRun(models.Model):
+    """The stored result of one DHCP Import run of a Server.
+
+    A run is a log, not configuration, so it is not change-logged. Storing a run keeps the
+    :data:`RETAINED_RUNS` latest runs of its Server and deletes the older ones.
+    """
+
+    RETAINED_RUNS = 10
+
+    server: models.ForeignKey = models.ForeignKey(
+        to="netbox_kea.Server", on_delete=models.CASCADE, related_name="dhcp_import_runs"
+    )
+    trigger: models.CharField = models.CharField(max_length=16, choices=DhcpImportTrigger.choices)
+    started: models.DateTimeField = models.DateTimeField()
+    finished: models.DateTimeField = models.DateTimeField()
+
+    class Meta:
+        app_label = "netbox_kea"
+        verbose_name = "DHCP Import run"
+        ordering = ("-started", "-pk")
+        indexes = [models.Index(fields=["server", "-started"], name="dhcpimportrun_server_started")]
+
+    def __str__(self) -> str:
+        return f"{self.server} DHCP Import {self.started.isoformat()}"
+
+
+class DhcpImportEntry(models.Model):
+    """One Kea fact of a DHCP Import run: what the run did with it, and why when it did not write it."""
+
+    run: models.ForeignKey = models.ForeignKey(to=DhcpImportRun, on_delete=models.CASCADE, related_name="entries")
+    family: models.PositiveSmallIntegerField = models.PositiveSmallIntegerField()
+    kind: models.CharField = models.CharField(max_length=32, choices=choices(KIND_LABELS))
+    outcome: models.CharField = models.CharField(max_length=16, choices=choices(OUTCOME_LABELS))
+    reason: models.CharField = models.CharField(max_length=32, choices=choices(REASON_LABELS), blank=True)
+    kea_path: models.TextField = models.TextField()
+    detail: models.TextField = models.TextField(blank=True)
+
+    class Meta:
+        app_label = "netbox_kea"
+        verbose_name = "DHCP Import entry"
+        verbose_name_plural = "DHCP Import entries"
+        ordering = ("pk",)
+
+    def __str__(self) -> str:
+        return f"{self.kea_path}: {self.outcome}"
 
 
 # One sequence gives every link confirmation and every phase cutoff number (ADR 0006); migration 0019 creates it.

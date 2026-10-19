@@ -29,6 +29,7 @@ _BASELINE_PATH = Path(__file__).with_name("kea_wire_discipline_baseline.txt")
 _OWNERS = frozenset(
     {
         "kea.py",
+        "kea_paths.py",
         "server_configuration.py",
         "subnet_catalogue.py",
         "reservations.py",

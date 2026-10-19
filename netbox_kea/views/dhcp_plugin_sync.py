@@ -13,6 +13,7 @@ import logging
 from typing import Any
 
 from django.contrib import messages
+from django.db.models import Count
 from django.http import HttpRequest, HttpResponseForbidden, HttpResponseRedirect
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
@@ -28,9 +29,11 @@ from ..integrations.dhcp_import import (
     enabled_versions,
     run_dhcp_plugin_import,
 )
+from ..integrations.dhcp_import_report import KIND_LABELS, OUTCOME_LABELS, Kind, Outcome
 from ..mappers.kea_to_dhcp import ServerConfigIntent
-from ..models import Server
+from ..models import DhcpImportTrigger, Server
 from ..sync_permissions import sync_gate
+from ..tables import DhcpImportEntryTable
 from .notices import Notice
 from .workspace import server_family_url
 
@@ -185,8 +188,38 @@ class ServerDhcpPluginView(generic.ObjectView):
             "mapping_unavailable": unavailable,
             "drift": drift,
             "sync_refusal": _sync_refusal(request.user, instance),
+            **latest_run_context(request, instance),
             **sync_nav_context(request, instance, self, "dhcp_plugin", integration_runs=not refusal),
         }
+
+
+def latest_run_context(request: HttpRequest, server: Server) -> dict[str, Any]:
+    """Return the latest stored DHCP Import run of *server*, its counts per family and kind, and its entry table."""
+    run = server.dhcp_import_runs.first()
+    if run is None:
+        return {"latest_run": None}
+    counts: dict[tuple[int, str], dict[str, int]] = {}
+    for row in run.entries.values("family", "kind", "outcome").annotate(total=Count("pk")):
+        counts.setdefault((row["family"], row["kind"]), {})[row["outcome"]] = row["total"]
+    count_rows = [
+        {
+            "family": family,
+            "kind": KIND_LABELS[Kind(kind)],
+            "counts": [by_outcome.get(outcome, 0) for outcome in Outcome],
+        }
+        for (family, kind), by_outcome in sorted(counts.items(), key=lambda item: (item[0][0], _KIND_ORDER[item[0][1]]))
+    ]
+    table = DhcpImportEntryTable(run.entries.all(), user=request.user)
+    table.configure(request)
+    return {
+        "latest_run": run,
+        "run_outcomes": list(OUTCOME_LABELS.values()),
+        "run_count_rows": count_rows,
+        "run_entry_table": table,
+    }
+
+
+_KIND_ORDER = {kind.value: index for index, kind in enumerate(KIND_LABELS)}
 
 
 def _sync_refusal(user, server: Server) -> str:
@@ -214,7 +247,7 @@ class ServerDhcpPluginSyncNowView(View):
             return HttpResponseForbidden(refusal)
 
         try:
-            results = run_dhcp_plugin_import(server)
+            results = run_dhcp_plugin_import(server, DhcpImportTrigger.MANUAL)
         except (MetadataBusy, UnsupportedPluginVersion) as error:
             messages.error(request, error.message)
             return redirect
@@ -247,10 +280,10 @@ class ServerDhcpPluginSyncNowView(View):
                 notes.append(f"{summary.option_defs_created} custom option definition(s) created")
             if summary.options_skipped:
                 notes.append(f"{summary.options_skipped} option(s) skipped (unresolved/invalid)")
-            if summary.shared_networks_deferred:
+            if summary.shared_networks_not_imported:
                 notes.append(
-                    f"{summary.shared_networks_deferred} shared-network subnet(s) imported "
-                    "individually (grouping not represented)"
+                    f"{summary.shared_networks_not_imported} Shared Network(s) not imported; "
+                    "their Subnets were imported without them"
                 )
             if notes:
                 text += f" ({'; '.join(notes)})"
