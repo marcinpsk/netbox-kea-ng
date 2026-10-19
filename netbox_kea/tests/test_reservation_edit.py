@@ -339,7 +339,7 @@ class ReservationEditTests(TestCase):
         first = {
             "code": 222,
             "space": "vendor-lab",
-            "data": "opaque",
+            "data": "aabb",
             "csv-format": False,
             "never-send": True,
             "client-classes": ["lab"],
@@ -353,7 +353,7 @@ class ReservationEditTests(TestCase):
             hostname=state.initial["hostname"],
             option_rows=(
                 reservation_edit.OptionRow("custom", "other", True, original_option=current.options[1]),
-                reservation_edit.OptionRow("", "new", original_option=current.options[0]),
+                reservation_edit.OptionRow("", "aabc", original_option=current.options[0]),
             ),
         )
         with stub_kea(_responses(raw=raw)) as kea:
@@ -361,7 +361,7 @@ class ReservationEditTests(TestCase):
         sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
         self.assertEqual(
             sent["option-data"],
-            [{**first, "data": "new"}, second],
+            [{**first, "data": "aabc"}, second],
         )
         self.assertEqual(sent["user-context"], {"owner": "lab"})
 
@@ -383,13 +383,13 @@ class ReservationEditTests(TestCase):
                 self.assertEqual(kea.bodies("reservation-add")[0]["arguments"]["reservation"].get("hostname"), expected)
 
     def test_renamed_and_deleted_option_rows_do_not_reuse_old_metadata(self):
-        first = {"name": "custom", "space": "vendor-lab", "data": "old", "csv-format": False, "never-send": True}
+        first = {"name": "custom", "space": "vendor-lab", "data": "aabb", "csv-format": False, "never-send": True}
         raw = {**_raw(), "option-data": [first]}
         current, state = self._shown(raw=raw)
         for rows in (
-            (reservation_edit.OptionRow("renamed", "new", original_option=current.options[0]),),
+            (reservation_edit.OptionRow("renamed", "aabc", original_option=current.options[0]),),
             (
-                reservation_edit.OptionRow("custom", "old", delete=True, original_option=current.options[0]),
+                reservation_edit.OptionRow("custom", "aabb", delete=True, original_option=current.options[0]),
                 reservation_edit.OptionRow("custom", "new"),
             ),
         ):
@@ -407,7 +407,15 @@ class ReservationEditTests(TestCase):
             self.assertEqual(
                 kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
                 (
-                    [{"name": "renamed", "space": "vendor-lab", "data": "new", "csv-format": False, "never-send": True}]
+                    [
+                        {
+                            "name": "renamed",
+                            "space": "vendor-lab",
+                            "data": "aabc",
+                            "csv-format": False,
+                            "never-send": True,
+                        }
+                    ]
                     if len(rows) == 1
                     else [{"name": "custom", "data": "new"}]
                 ),
@@ -525,7 +533,7 @@ class ReservationEditTests(TestCase):
             target = {"code": code, "space": f"dhcp{family}", "data": data, "never-send": True, "csv-format": True}
             class_target = {
                 "name": "custom",
-                "data": "old",
+                "data": "aabb",
                 "client-classes": ["lab"],
                 "user-context": {"owner": "external"},
                 "csv-format": False,
@@ -541,7 +549,7 @@ class ReservationEditTests(TestCase):
                 for option in current.options
             ]
             rows[2] = replace(rows[2], data="new")
-            rows[3] = replace(rows[3], data="changed")
+            rows[3] = replace(rows[3], data="aabc")
             values = reservation_edit.SubmittedValues(
                 current.addresses,
                 hostname=state.initial["hostname"],
@@ -557,7 +565,7 @@ class ReservationEditTests(TestCase):
                     classed,
                     duplicate,
                     {**target, "data": "new"},
-                    {**class_target, "data": "changed"},
+                    {**class_target, "data": "aabc"},
                     foreign,
                     duplicate,
                     {"name": "added", "data": "last"},

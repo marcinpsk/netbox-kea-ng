@@ -3085,16 +3085,16 @@ class ReadModifyWriteTests(TestCase):
 
     def test_data_replacement_keeps_csv_format_and_live_metadata(self):
         for family in (4, 6):
-            seen = parse_dhcp_option({"code": 222, "data": "old", "csv-format": False, "never-send": True})
-            edit = DHCPOptionEdit((seen,), (DHCPOptionChange(seen, dataclasses.replace(seen, data="new")),))
+            seen = parse_dhcp_option({"code": 222, "data": "aabb", "csv-format": False, "never-send": True})
+            edit = DHCPOptionEdit((seen,), (DHCPOptionChange(seen, dataclasses.replace(seen, data="aabc")),))
             live = [
-                {"code": 222, "data": "old", "csv-format": False, "never-send": True, "user-context": {"owner": "lab"}}
+                {"code": 222, "data": "aabb", "csv-format": False, "never-send": True, "user-context": {"owner": "lab"}}
             ]
             for scope in ("server", "subnet"):
                 with self.subTest(family=family, scope=scope):
                     self.assertEqual(
                         self._write_options(family, scope, live, edit),
-                        [{**live[0], "data": "new"}],
+                        [{**live[0], "data": "aabc"}],
                     )
 
     def test_delivery_flag_edit_keeps_encoding_and_does_not_inject_absent_fields(self):
