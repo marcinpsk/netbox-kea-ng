@@ -52,8 +52,11 @@ other records are malformed, reports safe diagnostics, and states whether the ob
 or mutation of a malformed record fails closed.
 
 Identity and scope are immutable during update. A change to either requires explicit delete and create operations.
-An update refetches the latest raw record, checks a signed fingerprint of managed facts, applies explicit unchanged,
-set, and clear operations, and preserves unknown Kea fields. A managed-fact conflict rejects the update. A concurrent
+The Reservation edit module checks the token signature, its one-day maximum age and the Reservation Identity before
+any Kea read or change lock. The token uses the existing salt and carries the managed-fact fingerprint and the shown
+qualifying suffix. `config_write` refetches the latest record under the change lock and compares its managed-fact
+fingerprint with the authenticated token. The edit module supplies explicit unchanged, set and clear operations.
+The update preserves unknown Kea fields. A managed-fact conflict rejects the update. A concurrent
 change to an unknown field does not cause a false conflict. Mutation results distinguish intended state, applied
 state, persisted state, and verified state. [ADR 0012](0012-reservation-writes-are-configuration-changes.md) replaces this result
 with a Configuration Change Outcome. Existing reservation signals use one typed before-and-after payload.

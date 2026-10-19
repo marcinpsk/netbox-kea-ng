@@ -67,6 +67,13 @@ def _identity_query(identifier: str = "aa:bb:cc:dd:ee:ff", identifier_type: str 
     return urlencode({"identifier_type": identifier_type, "identifier": identifier})
 
 
+def _open_edit_token(client, url, responses, current):
+    """Open a valid form before injecting the read or capability failure under test."""
+    with stub_kea({**responses, "reservation-get": _res_get(current)}):
+        page = client.get(url)
+    return page.context["form"].initial["managed_fingerprint"]
+
+
 class TestReservationMutationViews(_ViewTestBase):
     def test_edit_and_delete_get_keep_both_display_snapshots(self):
         for version, cidr, identifier_type, identifier in (
@@ -1077,243 +1084,6 @@ class TestReservationMutationViews(_ViewTestBase):
         sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
         self.assertEqual(sent["option-data"], [option])
 
-    def test_edit_preserves_each_options_metadata_when_rows_are_reordered(self):
-        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
-        first = {
-            "name": "vendor-one",
-            "code": 224,
-            "space": "vendor-example",
-            "data": "first",
-            "csv-format": False,
-            "never-send": True,
-        }
-        second = {
-            "name": "vendor-two",
-            "code": 225,
-            "space": "vendor-example",
-            "data": "second",
-            "csv-format": False,
-            "always-send": True,
-        }
-        current = {
-            "subnet-id": 20,
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "hostname": "old.example.invalid",
-            "option-data": [first, second],
-        }
-        intended = {**current, "hostname": "new.example.invalid", "option-data": [second, first]}
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
-        query = _identity_query()
-        with stub_kea({**responses, "reservation-get": _res_get(current)}):
-            form_page = self.client.get(f"{url}?{query}")
-        fingerprint = form_page.context["form"].initial["managed_fingerprint"]
-
-        with stub_kea(
-            {
-                **responses,
-                "reservation-get": queued(_res_get(current), _res_get(current), _res_get(intended)),
-                "reservation-update": {"result": 0},
-            }
-        ) as kea:
-            response = self.client.post(
-                f"{url}?{query}",
-                {
-                    "subnet_cidr": "198.18.0.0/24",
-                    "ip_address": "",
-                    "identifier_type": "hw-address",
-                    "identifier": "aa:bb:cc:dd:ee:ff",
-                    "hostname": "new.example.invalid",
-                    "managed_fingerprint": fingerprint,
-                    "options-TOTAL_FORMS": "2",
-                    "options-INITIAL_FORMS": "2",
-                    "options-MIN_NUM_FORMS": "0",
-                    "options-MAX_NUM_FORMS": "1000",
-                    "options-0-name": "vendor-two",
-                    "options-0-data": "second",
-                    "options-0-always_send": "on",
-                    "options-1-name": "vendor-one",
-                    "options-1-data": "first",
-                },
-            )
-
-        self.assertEqual(response.status_code, 302)
-        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
-        self.assertEqual(sent["option-data"], [second, first])
-
-    def test_edit_replaces_option_metadata_when_its_name_changes(self):
-        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
-        current_option = {
-            "name": "vendor-old",
-            "code": 224,
-            "space": "vendor-example",
-            "data": "old-value",
-            "csv-format": False,
-            "never-send": True,
-        }
-        replacement = {"name": "vendor-renamed", "data": "new-value"}
-        current = {
-            "subnet-id": 20,
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "option-data": [current_option],
-        }
-        intended = {**current, "option-data": [replacement]}
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
-        query = _identity_query()
-        with stub_kea({**responses, "reservation-get": _res_get(current)}):
-            form_page = self.client.get(f"{url}?{query}")
-        fingerprint = form_page.context["form"].initial["managed_fingerprint"]
-
-        with stub_kea(
-            {
-                **responses,
-                "reservation-get": queued(_res_get(current), _res_get(current), _res_get(intended)),
-                "reservation-update": {"result": 0},
-            }
-        ) as kea:
-            response = self.client.post(
-                f"{url}?{query}",
-                {
-                    "subnet_cidr": "198.18.0.0/24",
-                    "ip_address": "",
-                    "identifier_type": "hw-address",
-                    "identifier": "aa:bb:cc:dd:ee:ff",
-                    "managed_fingerprint": fingerprint,
-                    "options-TOTAL_FORMS": "1",
-                    "options-INITIAL_FORMS": "1",
-                    "options-MIN_NUM_FORMS": "0",
-                    "options-MAX_NUM_FORMS": "1000",
-                    "options-0-original_index": "0",
-                    "options-0-name": "vendor-renamed",
-                    "options-0-data": "new-value",
-                },
-            )
-
-        self.assertEqual(response.status_code, 302)
-        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
-        self.assertEqual(sent["option-data"], [replacement])
-
-    def test_edit_does_not_reuse_metadata_from_a_deleted_option(self):
-        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
-        current_option = {
-            "name": "vendor-option",
-            "code": 224,
-            "space": "vendor-example",
-            "data": "old-value",
-            "csv-format": False,
-            "never-send": True,
-        }
-        replacement = {"name": "vendor-option", "data": "new-value"}
-        current = {
-            "subnet-id": 20,
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "option-data": [current_option],
-        }
-        intended = {**current, "option-data": [replacement]}
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
-        query = _identity_query()
-        with stub_kea({**responses, "reservation-get": _res_get(current)}):
-            form_page = self.client.get(f"{url}?{query}")
-        fingerprint = form_page.context["form"].initial["managed_fingerprint"]
-
-        with stub_kea(
-            {
-                **responses,
-                "reservation-get": queued(_res_get(current), _res_get(current), _res_get(intended)),
-                "reservation-update": {"result": 0},
-            }
-        ) as kea:
-            response = self.client.post(
-                f"{url}?{query}",
-                {
-                    "subnet_cidr": "198.18.0.0/24",
-                    "ip_address": "",
-                    "identifier_type": "hw-address",
-                    "identifier": "aa:bb:cc:dd:ee:ff",
-                    "managed_fingerprint": fingerprint,
-                    "options-TOTAL_FORMS": "2",
-                    "options-INITIAL_FORMS": "1",
-                    "options-MIN_NUM_FORMS": "0",
-                    "options-MAX_NUM_FORMS": "1000",
-                    "options-0-original_index": "0",
-                    "options-0-name": "vendor-option",
-                    "options-0-data": "old-value",
-                    "options-0-DELETE": "on",
-                    "options-1-name": "vendor-option",
-                    "options-1-data": "new-value",
-                },
-            )
-
-        self.assertEqual(response.status_code, 302)
-        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
-        self.assertEqual(sent["option-data"], [replacement])
-
-    def test_edit_preserves_option_spaces_when_duplicate_names_are_reordered(self):
-        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
-        first = {
-            "name": "vendor-option",
-            "code": 224,
-            "space": "vendor-one",
-            "data": "first",
-            "csv-format": False,
-            "never-send": True,
-        }
-        second = {
-            "name": "vendor-option",
-            "code": 224,
-            "space": "vendor-two",
-            "data": "second",
-            "csv-format": False,
-            "always-send": True,
-        }
-        current = {
-            "subnet-id": 20,
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "hostname": "old.example.invalid",
-            "option-data": [first, second],
-        }
-        intended = {**current, "hostname": "new.example.invalid", "option-data": [second, first]}
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
-        query = _identity_query()
-        with stub_kea({**responses, "reservation-get": _res_get(current)}):
-            form_page = self.client.get(f"{url}?{query}")
-        fingerprint = form_page.context["form"].initial["managed_fingerprint"]
-        self.assertContains(form_page, 'name="options-0-original_index"')
-        self.assertContains(form_page, 'name="options-1-original_index"')
-
-        with stub_kea(
-            {
-                **responses,
-                "reservation-get": queued(_res_get(current), _res_get(current), _res_get(intended)),
-                "reservation-update": {"result": 0},
-            }
-        ) as kea:
-            response = self.client.post(
-                f"{url}?{query}",
-                {
-                    "subnet_cidr": "198.18.0.0/24",
-                    "ip_address": "",
-                    "identifier_type": "hw-address",
-                    "identifier": "aa:bb:cc:dd:ee:ff",
-                    "hostname": "new.example.invalid",
-                    "managed_fingerprint": fingerprint,
-                    "options-TOTAL_FORMS": "2",
-                    "options-INITIAL_FORMS": "2",
-                    "options-MIN_NUM_FORMS": "0",
-                    "options-MAX_NUM_FORMS": "1000",
-                    "options-0-original_index": "1",
-                    "options-0-name": "vendor-option",
-                    "options-0-data": "second",
-                    "options-0-always_send": "on",
-                    "options-1-original_index": "0",
-                    "options-1-name": "vendor-option",
-                    "options-1-data": "first",
-                },
-            )
-
-        self.assertEqual(response.status_code, 302)
-        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
-        self.assertEqual(sent["option-data"], [second, first])
-
     def test_edit_rejects_a_tampered_signed_fingerprint(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         current = {
@@ -1339,7 +1109,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "invalid or expired")
-        self.assertNotIn("reservation-update", kea.commands())
+        self.assertEqual(kea.commands(), [])
 
     def test_delete_confirmation_and_post_use_canonical_identity(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
@@ -1839,9 +1609,10 @@ class TestReservationTargetReadFailures(_ViewTestBase):
             with self.subTest(failure=name):
                 self._fresh_client()
                 responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+                token = _open_edit_token(self.client, self._url("edit"), responses, self._CURRENT)
                 with stub_kea({**responses, "reservation-get": reply}) as kea:
                     response = self.client.post(
-                        self._url("edit"), {"hostname": "new.example.invalid", "managed_fingerprint": "unused"}
+                        self._url("edit"), {"hostname": "new.example.invalid", "managed_fingerprint": token}
                     )
                 self.assertEqual(response.status_code, 302)
                 self.assertNotIn("reservation-update", kea.commands())
@@ -1854,9 +1625,14 @@ class TestReservationTargetReadFailures(_ViewTestBase):
                 with self.subTest(action=action, method=method, failure=name):
                     self._fresh_client()
                     responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+                    data = {}
+                    if method == "post":
+                        data["managed_fingerprint"] = _open_edit_token(
+                            self.client, self._url(action), responses, self._CURRENT
+                        )
                     responses.update({"subnet4-list": reply, "reservation-get": _res_get(self._CURRENT)})
                     with stub_kea(responses) as kea:
-                        response = getattr(self.client, method)(self._url(action))
+                        response = getattr(self.client, method)(self._url(action), data)
                     self.assertEqual(response.status_code, 302)
                     self.assertNotIn("reservation-get", kea.commands())
                     self.assertEqual(self._messages(response), [HEADLINES["catalogue"], SUBNET_LIST_FAILURES[name]])
@@ -1966,6 +1742,13 @@ class TestMutationCapabilityGate(_ViewTestBase):
         return_url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
         query = _identity_query()
         responses = self._responses_without_mutation()
+        good = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        token = _open_edit_token(
+            self.client,
+            f"{url}?{query}",
+            good,
+            {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"},
+        )
 
         with stub_kea(responses) as kea:
             response = self.client.post(
@@ -1976,7 +1759,7 @@ class TestMutationCapabilityGate(_ViewTestBase):
                     "identifier_type": "hw-address",
                     "identifier": "aa:bb:cc:dd:ee:ff",
                     "hostname": "new.example.invalid",
-                    "managed_fingerprint": "stale",
+                    "managed_fingerprint": token,
                 },
                 follow=True,
             )

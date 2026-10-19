@@ -16,7 +16,14 @@ from django.utils.html import escape
 from netbox_kea.models import Server
 from netbox_kea.views.notices import HEADLINES
 
-from .kea_stub import LeaseDaemon, redirect_to_netrc_host, stub_kea
+from .kea_stub import (
+    LeaseDaemon,
+    _catalogue_responses_for_subnets,
+    _host_cmds_hooks,
+    _res_get,
+    redirect_to_netrc_host,
+    stub_kea,
+)
 from .test_lease_actions import _address4, _inputs
 from .utils import INVALID_SERVER_SETTINGS, _ViewTestBase, save_key_without_certificate
 
@@ -156,12 +163,28 @@ reservations:
             "edit": self._url("server_reservation4_edit", 20) + query,
             "delete": self._url("server_reservation4_delete", 20) + query,
         }
+        responses = _catalogue_responses_for_subnets(
+            4,
+            [{"id": 20, "subnet": "198.18.0.0/24"}],
+            global_settings={
+                "host-reservation-identifiers": ["hw-address"],
+                "hooks-libraries": _host_cmds_hooks(),
+            },
+        )
+        responses["reservation-get"] = _res_get({"subnet-id": 20, "hw-address": _IDENTITY["identifier"]})
+        with stub_kea(responses):
+            page = self.client.get(cases["edit"])
+        self.assertEqual(page.status_code, 200)
+        token = page.context["form"].initial["managed_fingerprint"]
         for name, url in cases.items():
             with self.subTest(name):
                 self._fresh_client()
                 expected = save_key_without_certificate(self.server)
+                data = {"subnet_cidr": "198.18.0.0/24", **_IDENTITY}
+                if name == "edit":
+                    data["managed_fingerprint"] = token
                 with stub_kea({}) as kea:
-                    response = self.client.post(url, {"subnet_cidr": "198.18.0.0/24", **_IDENTITY})
+                    response = self.client.post(url, data)
                 self.assertEqual(response.status_code, 302)
                 self.assertEqual(kea.commands(), [])
                 self.assertEqual(_messages(response), [expected])
