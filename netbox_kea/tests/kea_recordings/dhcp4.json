@@ -2,9 +2,11 @@
   "config-get": {
     "arguments": {
       "Dhcp4": {
+        "adaptive-lease-time-threshold": 0.8,
         "allocator": "iterative",
         "authoritative": false,
         "boot-file-name": "",
+        "cache-max-age": 20,
         "cache-threshold": 0.25,
         "calculate-tee-times": false,
         "client-classes": [
@@ -24,6 +26,57 @@
             "option-data": [],
             "option-def": [],
             "server-hostname": ""
+          },
+          {
+            "boot-file-name": "pxelinux.0",
+            "max-valid-lifetime": 900,
+            "min-valid-lifetime": 300,
+            "name": "boot",
+            "next-server": "192.0.2.5",
+            "only-in-additional-list": true,
+            "option-data": [
+              {
+                "always-send": false,
+                "code": 231,
+                "csv-format": true,
+                "data": "1",
+                "name": "boot-flag",
+                "never-send": false,
+                "space": "dhcp4",
+                "user-context": {
+                  "comment": "Class option"
+                }
+              }
+            ],
+            "option-def": [
+              {
+                "array": false,
+                "code": 231,
+                "encapsulate": "",
+                "name": "boot-flag",
+                "record-types": "",
+                "space": "dhcp4",
+                "type": "uint8",
+                "user-context": {
+                  "comment": "Class definition"
+                }
+              }
+            ],
+            "server-hostname": "boot.example.org",
+            "test": "option[93].hex == 0x0007",
+            "user-context": {
+              "owner": "provisioning"
+            },
+            "valid-lifetime": 600
+          },
+          {
+            "boot-file-name": "",
+            "name": "per-client",
+            "next-server": "0.0.0.0",
+            "option-data": [],
+            "option-def": [],
+            "server-hostname": "",
+            "template-test": "substring(option[61].hex, 0, 3)"
           }
         ],
         "control-sockets": [
@@ -109,6 +162,7 @@
           "thread-pool-size": 0
         },
         "next-server": "0.0.0.0",
+        "offer-lifetime": 30,
         "option-data": [
           {
             "always-send": false,
@@ -235,6 +289,17 @@
         "parked-packet-limit": 256,
         "rebind-timer": 2000,
         "renew-timer": 1000,
+        "reservations": [
+          {
+            "boot-file-name": "",
+            "client-classes": [],
+            "client-id": "01AABBCC000200",
+            "hostname": "global-host",
+            "next-server": "0.0.0.0",
+            "option-data": [],
+            "server-hostname": ""
+          }
+        ],
         "reservations-global": false,
         "reservations-in-subnet": true,
         "reservations-lookup-first": false,
@@ -247,12 +312,21 @@
         "server-tag": "",
         "shared-networks": [
           {
+            "adaptive-lease-time-threshold": 0.8,
             "allocator": "iterative",
+            "cache-max-age": 20,
             "cache-threshold": 0.25,
             "calculate-tee-times": false,
+            "client-classes": [
+              "voip"
+            ],
+            "evaluate-additional-classes": [
+              "printers"
+            ],
             "max-valid-lifetime": 4000,
             "min-valid-lifetime": 4000,
             "name": "empty-network",
+            "offer-lifetime": 30,
             "option-data": [],
             "rebind-timer": 2000,
             "relay": {
@@ -273,7 +347,9 @@
             "valid-lifetime": 4000
           },
           {
+            "adaptive-lease-time-threshold": 0.8,
             "allocator": "iterative",
+            "cache-max-age": 20,
             "cache-threshold": 0.25,
             "calculate-tee-times": false,
             "ddns-qualifying-suffix": "office.example.net",
@@ -281,6 +357,7 @@
             "max-valid-lifetime": 4000,
             "min-valid-lifetime": 4000,
             "name": "office",
+            "offer-lifetime": 30,
             "option-data": [
               {
                 "always-send": false,
@@ -307,12 +384,15 @@
                 "4o6-interface": "",
                 "4o6-interface-id": "",
                 "4o6-subnet": "",
+                "adaptive-lease-time-threshold": 0.8,
                 "allocator": "iterative",
+                "cache-max-age": 20,
                 "cache-threshold": 0.25,
                 "calculate-tee-times": false,
                 "id": 20,
                 "max-valid-lifetime": 4000,
                 "min-valid-lifetime": 4000,
+                "offer-lifetime": 30,
                 "option-data": [],
                 "pools": [
                   {
@@ -339,19 +419,37 @@
                 "4o6-interface": "",
                 "4o6-interface-id": "",
                 "4o6-subnet": "",
+                "adaptive-lease-time-threshold": 0.8,
                 "allocator": "iterative",
+                "cache-max-age": 20,
                 "cache-threshold": 0.25,
                 "calculate-tee-times": false,
+                "client-classes": [
+                  "voip"
+                ],
                 "ddns-qualifying-suffix": "office.example.org.",
+                "evaluate-additional-classes": [
+                  "printers"
+                ],
                 "id": 21,
                 "max-valid-lifetime": 4000,
                 "min-valid-lifetime": 4000,
+                "offer-lifetime": 30,
                 "option-data": [],
                 "pools": [
                   {
+                    "client-classes": [
+                      "voip"
+                    ],
                     "ddns-qualifying-suffix": "pool.example.org",
+                    "evaluate-additional-classes": [
+                      "printers"
+                    ],
                     "option-data": [],
-                    "pool": "198.51.100.200-198.51.100.220"
+                    "pool": "198.51.100.200-198.51.100.220",
+                    "user-context": {
+                      "comment": "Second floor pool"
+                    }
                   }
                 ],
                 "rebind-timer": 2000,
@@ -362,12 +460,41 @@
                   ]
                 },
                 "renew-timer": 1000,
-                "reservations": [],
+                "reservations": [
+                  {
+                    "boot-file-name": "host.efi",
+                    "client-classes": [
+                      "voip"
+                    ],
+                    "hostname": "boot-host",
+                    "hw-address": "aa:bb:cc:00:01:00",
+                    "ip-address": "198.51.100.240",
+                    "next-server": "192.0.2.5",
+                    "option-data": [
+                      {
+                        "always-send": false,
+                        "code": 15,
+                        "csv-format": true,
+                        "data": "host.example.org",
+                        "name": "domain-name",
+                        "never-send": false,
+                        "space": "dhcp4"
+                      }
+                    ],
+                    "server-hostname": "boot.example.org",
+                    "user-context": {
+                      "asset": 42
+                    }
+                  }
+                ],
                 "reservations-out-of-pool": true,
                 "store-extended-info": false,
                 "subnet": "198.51.100.128/25",
                 "t1-percent": 0.5,
                 "t2-percent": 0.875,
+                "user-context": {
+                  "comment": "Second floor"
+                },
                 "valid-lifetime": 4000
               }
             ],
@@ -388,7 +515,9 @@
             "4o6-interface": "",
             "4o6-interface-id": "",
             "4o6-subnet": "",
+            "adaptive-lease-time-threshold": 0.8,
             "allocator": "random",
+            "cache-max-age": 20,
             "cache-threshold": 0.25,
             "calculate-tee-times": false,
             "client-classes": [
@@ -416,8 +545,32 @@
             ],
             "pools": [
               {
-                "option-data": [],
-                "pool": "192.0.2.10-192.0.2.20"
+                "client-classes": [
+                  "voip"
+                ],
+                "ddns-generated-prefix": "pool",
+                "ddns-send-updates": true,
+                "evaluate-additional-classes": [
+                  "printers"
+                ],
+                "hostname-char-replacement": "x",
+                "hostname-char-set": "[^A-Za-z0-9.-]",
+                "option-data": [
+                  {
+                    "always-send": false,
+                    "code": 15,
+                    "csv-format": true,
+                    "data": "pool.example.org",
+                    "name": "domain-name",
+                    "never-send": false,
+                    "space": "dhcp4"
+                  }
+                ],
+                "pool": "192.0.2.10-192.0.2.20",
+                "pool-id": 7,
+                "user-context": {
+                  "rack": "r1"
+                }
               },
               {
                 "option-data": [],
@@ -446,9 +599,12 @@
         ],
         "t1-percent": 0.5,
         "t2-percent": 0.875,
+        "user-context": {
+          "comment": "Coverage configuration"
+        },
         "valid-lifetime": 4000
       },
-      "hash": "A827316D630F5BF68D718F38DABB7BD413ACA185E26D5BD621239147088F6708"
+      "hash": "8C95055B47BE8F79A7780E91AF1C6C25E0AEF2ABBB9C45242C785CCA27480C83"
     },
     "result": 0
   },
@@ -457,7 +613,7 @@
     "changes": {
       "after-update": {
         "arguments": {
-          "cltt": 1792043629,
+          "cltt": 1792416425,
           "fqdn-fwd": false,
           "fqdn-rev": false,
           "hostname": "renamed.example.org",
@@ -481,7 +637,7 @@
       },
       "before": {
         "arguments": {
-          "cltt": 1792043629,
+          "cltt": 1792416425,
           "fqdn-fwd": false,
           "fqdn-rev": false,
           "hostname": "host40.example.org",
@@ -528,7 +684,7 @@
       "present": {
         "arguments": {
           "client-id": "01:aa:bb:cc:00:00:10",
-          "cltt": 1792043629,
+          "cltt": 1792416425,
           "fqdn-fwd": true,
           "fqdn-rev": true,
           "hostname": "host10.example.org",
@@ -557,7 +713,7 @@
         "leases": [
           {
             "client-id": "01:aa:bb:cc:00:00:10",
-            "cltt": 1792043629,
+            "cltt": 1792416425,
             "fqdn-fwd": true,
             "fqdn-rev": true,
             "hostname": "host10.example.org",
@@ -578,7 +734,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792043629,
+            "cltt": 1792416425,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -589,7 +745,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1792043629,
+            "cltt": 1792416425,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -600,7 +756,7 @@
             "valid-lft": 86400
           },
           {
-            "cltt": 1792043629,
+            "cltt": 1792416425,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -611,7 +767,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792043629,
+            "cltt": 1792416425,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -623,7 +779,7 @@
           },
           {
             "client-id": "ff:00:00:00:15:00:02",
-            "cltt": 1792043629,
+            "cltt": 1792416425,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -645,7 +801,7 @@
           "leases": [
             {
               "client-id": "01:aa:bb:cc:00:00:10",
-              "cltt": 1792043629,
+              "cltt": 1792416425,
               "fqdn-fwd": true,
               "fqdn-rev": true,
               "hostname": "host10.example.org",
@@ -666,7 +822,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792043629,
+              "cltt": 1792416425,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -677,7 +833,7 @@
               "valid-lft": 4294967295
             },
             {
-              "cltt": 1792043629,
+              "cltt": 1792416425,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -697,7 +853,7 @@
           "count": 3,
           "leases": [
             {
-              "cltt": 1792043629,
+              "cltt": 1792416425,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -708,7 +864,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792043629,
+              "cltt": 1792416425,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -720,7 +876,7 @@
             },
             {
               "client-id": "ff:00:00:00:15:00:02",
-              "cltt": 1792043629,
+              "cltt": 1792416425,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -762,7 +918,7 @@
       },
       "after-update-without-expire": {
         "arguments": {
-          "cltt": 1792043629,
+          "cltt": 1792416425,
           "fqdn-fwd": false,
           "fqdn-rev": false,
           "hostname": "",
@@ -927,7 +1083,9 @@
       "arguments": {
         "shared-networks": [
           {
+            "adaptive-lease-time-threshold": 0.8,
             "allocator": "iterative",
+            "cache-max-age": 20,
             "cache-threshold": 0.25,
             "calculate-tee-times": false,
             "ddns-qualifying-suffix": "office.example.net",
@@ -935,6 +1093,7 @@
             "max-valid-lifetime": 4000,
             "min-valid-lifetime": 4000,
             "name": "office",
+            "offer-lifetime": 30,
             "option-data": [
               {
                 "always-send": false,
@@ -961,12 +1120,15 @@
                 "4o6-interface": "",
                 "4o6-interface-id": "",
                 "4o6-subnet": "",
+                "adaptive-lease-time-threshold": 0.8,
                 "allocator": "iterative",
+                "cache-max-age": 20,
                 "cache-threshold": 0.25,
                 "calculate-tee-times": false,
                 "id": 20,
                 "max-valid-lifetime": 4000,
                 "min-valid-lifetime": 4000,
+                "offer-lifetime": 30,
                 "option-data": [],
                 "pools": [
                   {
@@ -992,19 +1154,37 @@
                 "4o6-interface": "",
                 "4o6-interface-id": "",
                 "4o6-subnet": "",
+                "adaptive-lease-time-threshold": 0.8,
                 "allocator": "iterative",
+                "cache-max-age": 20,
                 "cache-threshold": 0.25,
                 "calculate-tee-times": false,
+                "client-classes": [
+                  "voip"
+                ],
                 "ddns-qualifying-suffix": "office.example.org.",
+                "evaluate-additional-classes": [
+                  "printers"
+                ],
                 "id": 21,
                 "max-valid-lifetime": 4000,
                 "min-valid-lifetime": 4000,
+                "offer-lifetime": 30,
                 "option-data": [],
                 "pools": [
                   {
+                    "client-classes": [
+                      "voip"
+                    ],
                     "ddns-qualifying-suffix": "pool.example.org",
+                    "evaluate-additional-classes": [
+                      "printers"
+                    ],
                     "option-data": [],
-                    "pool": "198.51.100.200-198.51.100.220"
+                    "pool": "198.51.100.200-198.51.100.220",
+                    "user-context": {
+                      "comment": "Second floor pool"
+                    }
                   }
                 ],
                 "rebind-timer": 2000,
@@ -1020,6 +1200,9 @@
                 "subnet": "198.51.100.128/25",
                 "t1-percent": 0.5,
                 "t2-percent": 0.875,
+                "user-context": {
+                  "comment": "Second floor"
+                },
                 "valid-lifetime": 4000
               }
             ],

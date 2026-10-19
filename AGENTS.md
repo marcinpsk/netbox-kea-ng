@@ -374,6 +374,19 @@ URL request
   `ImportSummary` counts only its entries, and an unchanged row has no entry. `store_run` stores a `DhcpImportRun`
   with its `DhcpImportEntry` rows, keeps the `RETAINED_RUNS` latest runs of the Server, and logs a database failure
   instead of raising it. The rows are main-only (ADR 0007) and not change-logged.
+- **Parity ledger** (`integrations/dhcp_import_ledger.py`, ADR 0013): every key that Kea accepts on an object the
+  DHCP Import can meet is listed once, as mapped (with the DHCP Plugin Capability its write needs), not imported
+  (with a reason), pending (with the #89 ticket that maps it) or deprecated (with the key Kea returns instead).
+  `MERGED_KEYS` lists the keys Kea merges into `config-get` from the parent object. `test_dhcp_import_ledger.py`
+  compares both with the recordings, and in the DHCP plugin job with the import's field maps and the plugin models.
+  When a change maps a key, change its entry in the same change.
+  - **After a Kea upgrade:** set the new `KEA_VERSION`, run `scripts/record_kea_config_get.py`, and list each key the
+    ledger test reports as missing. Remove each key that Kea no longer has. When Kea deprecates a key, set it on its
+    object in `kea-dhcp{4,6}.conf`, record again, and list it as deprecated. When a merged-key assertion fails, update
+    `MERGED_KEYS` and check the Declared Value inference that uses it.
+  - **After a netbox-plugin-dhcp upgrade:** run the DHCP plugin job. A "no plugin home" key whose name is now a plugin
+    field fails; move it to pending or mapped. A mapped target that the plugin removed fails. When the upgrade ships
+    a #88 change, keep the entries that name its capability, and record the capability as present in #88.
 - **Sync interval**: `SyncConfig.interval_minutes` is the only runtime source.
   `KeaIpamSyncJob.enqueue_once()` (rqworker startup) and each periodic `run()` read it.
   Ghost-job healing also runs inside `enqueue_once()`, not `ready()`.
@@ -587,8 +600,9 @@ resort, reserved for true external boundaries you cannot run locally.
   section of each recording holds lease replies for every state, an infinite lifetime and
   DHCPv6 delegated prefixes, and the lease changes that Kea refuses.
   `test_kea_recordings.py` requires zero diagnostics. The script also writes
-  `accepted-keys.json` from the keyword tables that Kea's `config-test` and
-  `config-set` check in the same release (`simple_parser{4,6}.cc`). `stub_kea()`
+  `accepted-keys.json` from the key lists that Kea's `config-test` and `config-set` check in the
+  same release: the keyword tables of `simple_parser{4,6}.cc`, and the host reservation and client
+  class key sets. The wire-discipline gate and the parity ledger read it. `stub_kea()`
   fails a `config-test` or `config-set` whose Shared Network or Subnet carries a key
   outside that file, because Kea rejects unknown keys. When you bump `KEA_VERSION` or
   make the parser read a new field, add the field to `kea-dhcp{4,6}.conf` and run
@@ -632,7 +646,7 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Kea wire-discipline gate.** `netbox_kea/tests/kea_wire_discipline.py` checks
   production code for Kea command names, hyphenated payload keys, and family-suffixed
   configuration keys or service names. String templates (f-strings, `.format`, `%`, `+`)
-  count when they can build a wire literal. Wire owners are `kea.py`, `kea_paths.py`, `server_configuration.py`,
+  count when they can build a wire literal. Wire owners are `kea.py`, `kea_paths.py`, `integrations/dhcp_import_ledger.py`, `server_configuration.py`,
   `subnet_catalogue.py`, `reservations.py`, `dhcp_options.py`, `leases.py`, and `subnet_settings.py`, relative to
   `netbox_kea/`.
   The checker excludes these exact modules, tests, and migrations. The transport stub
