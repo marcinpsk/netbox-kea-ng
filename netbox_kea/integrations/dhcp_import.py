@@ -22,6 +22,7 @@ from packaging.version import InvalidVersion, Version
 
 from .. import event_scope, kea_paths, server_configuration
 from ..constants import Family
+from ..dhcp_mapping_lifecycle import ImportEventsNotDispatched
 from ..ipam_reconciliation import complete_import_observation
 from ..kea import KeaException
 from ..mappers.kea_to_dhcp import ServerConfigIntent, parse_dhcp_config
@@ -158,6 +159,11 @@ def run_dhcp_plugin_import(
         if isinstance(read, FamilyRead):
             try:
                 summary = dhcp_plugin.import_server_config(server, read.config, read.reservations)
+            except ImportEventsNotDispatched as error:
+                # The family committed: its entries are true, only its events are lost.
+                entries.extend(error.summary.entries)
+                store_run(server, trigger, started, entries)
+                raise
             except Exception:
                 # The family wrote nothing, and the earlier families stay written, so the run keeps their entries.
                 detail = "The import stopped before this family was written. See the message and the server logs."
