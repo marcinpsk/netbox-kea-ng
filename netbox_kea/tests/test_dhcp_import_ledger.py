@@ -94,9 +94,22 @@ def _identity(table: str, family: Family, obj: dict):
         return (kind, obj[kind].replace(":", "").lower())
     if table == "option-def":
         return (obj.get("space", f"dhcp{family}"), obj["code"])
-    if table == "option-data":
-        return (obj.get("name"), tuple(sorted(obj.get("client-classes", []))))
     return obj["id"] if table == f"subnet{family}" else obj.get("name", table)
+
+
+def _matches(table: str, family: Family, declared: dict, returned: dict) -> bool:
+    """Return whether config-get returned *returned* for the configured *declared* object.
+
+    Kea returns an option with its space, name and code, so the configured spelling decides.
+    """
+    if table != "option-data":
+        return _identity(table, family, declared) == _identity(table, family, returned)
+    key = "code" if "code" in declared else "name"
+    return (
+        declared[key] == returned.get(key)
+        and declared.get("space", f"dhcp{family}") == returned["space"]
+        and sorted(declared.get("client-classes", [])) == sorted(returned.get("client-classes", []))
+    )
 
 
 def _objects(daemon: dict, family: Family) -> dict[str, list[tuple[tuple, dict]]]:
@@ -279,8 +292,7 @@ class RecordedKeaBehaviourTest(SimpleTestCase):
                             (got,) = [
                                 other[entry.replacement]
                                 for other_scope, other in returned[table]
-                                if other_scope == scope
-                                and _identity(table, family, other) == _identity(table, family, obj)
+                                if other_scope == scope and _matches(table, family, obj, other)
                             ]
                             if key == "comment":
                                 got = got["comment"]
@@ -302,6 +314,13 @@ class RecordedKeaBehaviourTest(SimpleTestCase):
             4,
         )
         self.assertEqual((merged, default), ({"option-data"}, {"pool-id"}))
+
+    def test_an_option_matches_by_its_configured_code_or_name_in_its_space(self):
+        returned = {"name": "tftp-list", "code": 224, "space": "dhcp4", "data": "192.0.2.69"}
+        self.assertTrue(_matches("option-data", 4, {"code": 224}, returned))
+        self.assertTrue(_matches("option-data", 4, {"name": "tftp-list"}, returned))
+        self.assertFalse(_matches("option-data", 4, {"name": "tftp-list", "space": "vendor-sub"}, returned))
+        self.assertFalse(_matches("option-data", 4, {"code": 224, "client-classes": ["voip"]}, returned))
 
     def test_a_pool_that_only_config_get_returns_fails_the_pairing(self):
         declared = [{"pool": "192.0.2.10 - 192.0.2.20"}]
