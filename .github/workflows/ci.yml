@@ -203,6 +203,8 @@ jobs:
           TEST_REDIS_HOST: localhost
         run: |
           pytest ${{ github.workspace }}/netbox_kea/tests/test_integration_dhcp_plugin.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_dhcp_import.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_views_dhcp_plugin.py \
             ${{ github.workspace }}/netbox_kea/tests/test_event_scope.py \
             --override-ini="DJANGO_SETTINGS_MODULE=netbox_kea.tests.isolated_settings" \
             --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
