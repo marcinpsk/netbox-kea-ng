@@ -156,6 +156,8 @@
           "type": "memfile"
         },
         "match-client-id": true,
+        "max-valid-lifetime": 4500,
+        "min-valid-lifetime": 3500,
         "multi-threading": {
           "enable-multi-threading": true,
           "packet-queue-size": 64,
@@ -323,8 +325,8 @@
             "evaluate-additional-classes": [
               "printers"
             ],
-            "max-valid-lifetime": 4000,
-            "min-valid-lifetime": 4000,
+            "max-valid-lifetime": 4500,
+            "min-valid-lifetime": 3500,
             "name": "empty-network",
             "offer-lifetime": 30,
             "option-data": [],
@@ -354,8 +356,8 @@
             "calculate-tee-times": false,
             "ddns-qualifying-suffix": "office.example.net",
             "interface": "eth0",
-            "max-valid-lifetime": 4000,
-            "min-valid-lifetime": 4000,
+            "max-valid-lifetime": 4500,
+            "min-valid-lifetime": 3500,
             "name": "office",
             "offer-lifetime": 30,
             "option-data": [
@@ -390,8 +392,8 @@
                 "cache-threshold": 0.25,
                 "calculate-tee-times": false,
                 "id": 20,
-                "max-valid-lifetime": 4000,
-                "min-valid-lifetime": 4000,
+                "max-valid-lifetime": 4500,
+                "min-valid-lifetime": 3500,
                 "offer-lifetime": 30,
                 "option-data": [],
                 "pools": [
@@ -432,8 +434,8 @@
                   "printers"
                 ],
                 "id": 21,
-                "max-valid-lifetime": 4000,
-                "min-valid-lifetime": 4000,
+                "max-valid-lifetime": 4500,
+                "min-valid-lifetime": 3500,
                 "offer-lifetime": 30,
                 "option-data": [],
                 "pools": [
@@ -523,10 +525,20 @@
             "client-classes": [
               "voip"
             ],
+            "ddns-conflict-resolution-mode": "check-with-dhcid",
+            "ddns-generated-prefix": "myhost",
+            "ddns-override-client-update": false,
+            "ddns-override-no-update": false,
             "ddns-qualifying-suffix": "",
+            "ddns-replace-client-name": "never",
+            "ddns-send-updates": true,
+            "ddns-ttl-percent": 0.5,
+            "ddns-update-on-renew": false,
             "evaluate-additional-classes": [
               "printers"
             ],
+            "hostname-char-replacement": "",
+            "hostname-char-set": "[^A-Za-z0-9.-]",
             "id": 10,
             "interface": "eth0",
             "max-valid-lifetime": 7200,
@@ -604,7 +616,7 @@
         },
         "valid-lifetime": 4000
       },
-      "hash": "8C95055B47BE8F79A7780E91AF1C6C25E0AEF2ABBB9C45242C785CCA27480C83"
+      "hash": "145114ACA631416480354B51CD75023591603C267E0FAFF654508AF5AE200F88"
     },
     "result": 0
   },
@@ -613,7 +625,7 @@
     "changes": {
       "after-update": {
         "arguments": {
-          "cltt": 1792416425,
+          "cltt": 1792417785,
           "fqdn-fwd": false,
           "fqdn-rev": false,
           "hostname": "renamed.example.org",
@@ -637,7 +649,7 @@
       },
       "before": {
         "arguments": {
-          "cltt": 1792416425,
+          "cltt": 1792417785,
           "fqdn-fwd": false,
           "fqdn-rev": false,
           "hostname": "host40.example.org",
@@ -684,7 +696,7 @@
       "present": {
         "arguments": {
           "client-id": "01:aa:bb:cc:00:00:10",
-          "cltt": 1792416425,
+          "cltt": 1792417785,
           "fqdn-fwd": true,
           "fqdn-rev": true,
           "hostname": "host10.example.org",
@@ -713,7 +725,7 @@
         "leases": [
           {
             "client-id": "01:aa:bb:cc:00:00:10",
-            "cltt": 1792416425,
+            "cltt": 1792417785,
             "fqdn-fwd": true,
             "fqdn-rev": true,
             "hostname": "host10.example.org",
@@ -734,7 +746,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792416425,
+            "cltt": 1792417785,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -745,7 +757,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1792416425,
+            "cltt": 1792417785,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -756,7 +768,7 @@
             "valid-lft": 86400
           },
           {
-            "cltt": 1792416425,
+            "cltt": 1792417785,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -767,7 +779,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792416425,
+            "cltt": 1792417785,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -779,7 +791,7 @@
           },
           {
             "client-id": "ff:00:00:00:15:00:02",
-            "cltt": 1792416425,
+            "cltt": 1792417785,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -801,7 +813,7 @@
           "leases": [
             {
               "client-id": "01:aa:bb:cc:00:00:10",
-              "cltt": 1792416425,
+              "cltt": 1792417785,
               "fqdn-fwd": true,
               "fqdn-rev": true,
               "hostname": "host10.example.org",
@@ -822,7 +834,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792416425,
+              "cltt": 1792417785,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -833,7 +845,7 @@
               "valid-lft": 4294967295
             },
             {
-              "cltt": 1792416425,
+              "cltt": 1792417785,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -853,7 +865,7 @@
           "count": 3,
           "leases": [
             {
-              "cltt": 1792416425,
+              "cltt": 1792417785,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -864,7 +876,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792416425,
+              "cltt": 1792417785,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -876,7 +888,7 @@
             },
             {
               "client-id": "ff:00:00:00:15:00:02",
-              "cltt": 1792416425,
+              "cltt": 1792417785,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -918,7 +930,7 @@
       },
       "after-update-without-expire": {
         "arguments": {
-          "cltt": 1792416425,
+          "cltt": 1792417785,
           "fqdn-fwd": false,
           "fqdn-rev": false,
           "hostname": "",
@@ -1090,8 +1102,8 @@
             "calculate-tee-times": false,
             "ddns-qualifying-suffix": "office.example.net",
             "interface": "eth0",
-            "max-valid-lifetime": 4000,
-            "min-valid-lifetime": 4000,
+            "max-valid-lifetime": 4500,
+            "min-valid-lifetime": 3500,
             "name": "office",
             "offer-lifetime": 30,
             "option-data": [
@@ -1126,8 +1138,8 @@
                 "cache-threshold": 0.25,
                 "calculate-tee-times": false,
                 "id": 20,
-                "max-valid-lifetime": 4000,
-                "min-valid-lifetime": 4000,
+                "max-valid-lifetime": 4500,
+                "min-valid-lifetime": 3500,
                 "offer-lifetime": 30,
                 "option-data": [],
                 "pools": [
@@ -1167,8 +1179,8 @@
                   "printers"
                 ],
                 "id": 21,
-                "max-valid-lifetime": 4000,
-                "min-valid-lifetime": 4000,
+                "max-valid-lifetime": 4500,
+                "min-valid-lifetime": 3500,
                 "offer-lifetime": 30,
                 "option-data": [],
                 "pools": [

@@ -322,16 +322,15 @@ def _send_option(opt: DHCPOption) -> str | None:
 def _create_custom_option_def(def_intent: OptionDefIntent, family: int, dhcp_server, summary: ImportSummary):
     """Create a non-standard ``OptionDefinition`` for a Kea custom option, scoped to the server."""
     OptionDefinition = _model("OptionDefinition")
-    space = def_intent.space or kea_paths.default_space(family)
-    fam = 6 if space == "dhcp6" else 4
+    space = def_intent.space
     path = kea_paths.option_definition(family, space, def_intent.code)
     try:
         obj = OptionDefinition(
-            name=def_intent.name or f"option-{def_intent.code}",
-            family=fam,
+            name=def_intent.name,
+            family=family,
             space=space,
             code=def_intent.code,
-            type=def_intent.type or "string",
+            type=def_intent.type,
             array=def_intent.array,
             record_types=list(def_intent.record_types) or None,
             encapsulate=def_intent.encapsulate,

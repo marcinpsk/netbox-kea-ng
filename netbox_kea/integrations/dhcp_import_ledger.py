@@ -11,7 +11,7 @@
 * :class:`Deprecated`: Kea rewrites the key to its replacement, so ``config-get`` never returns it.
 
 An entry names each DHCP Plugin Capability (#88) that its write needs. :data:`MERGED_KEYS` lists the keys that
-Kea merges into ``config-get`` from the parent object, which Declared Value inference uses.
+Kea merges into ``config-get`` from the parent object, for the Declared Value inference of #95.
 It reads no database. ``test_dhcp_import_ledger.py`` compares it with the recordings of a real Kea.
 """
 
@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from ..constants import Family
 from .dhcp_import_report import Reason
 
 
@@ -126,6 +127,7 @@ _LEASE = (
     "reservations-out-of-pool",
 )
 _CLASS_REFERENCES = ("client-classes", "evaluate-additional-classes")
+_DHCP4_LEASE = ("match-client-id", "authoritative", "offer-lifetime", *_BOOT_FIELDS)
 # The keys that Kea 3.2 rewrites, in every object that accepts them.
 _DEPRECATED = {
     "client-class": Deprecated("client-classes"),
@@ -147,15 +149,20 @@ def _no_plugin_home(*keys: str) -> dict[str, Entry]:
     return {key: NotImported() for key in keys}
 
 
-def _network_settings(family: int) -> tuple[str, ...]:
+def _code_capabilities(family: Family) -> tuple[Capability, ...]:
+    """Return the capability that an option code of *family* needs: DHCPv6 codes go above 255."""
+    return (Capability.OPTION_CODE_16_BIT,) if family == 6 else ()
+
+
+def _network_settings(family: Family) -> tuple[str, ...]:
     """Return the scalar keys that a Subnet and a Shared Network of *family* share."""
-    own = ("match-client-id", "authoritative", "offer-lifetime", *_BOOT_FIELDS) if family == 4 else _PREFERRED_LIFETIMES
+    own = _DHCP4_LEASE if family == 4 else _PREFERRED_LIFETIMES
     rest = ("pd-allocator", "rapid-commit", "interface-id") if family == 6 else ()
     return (*_LIFETIMES, *own, *_LEASE, *_DDNS, *rest)
 
 
-def _global(family: int) -> dict[str, Entry]:
-    own: tuple[str, ...] = ("match-client-id", "authoritative", "offer-lifetime", "echo-client-id", *_BOOT_FIELDS)
+def _global(family: Family) -> dict[str, Entry]:
+    own: tuple[str, ...] = (*_DHCP4_LEASE, "echo-client-id")
     if family == 6:
         own = (*_PREFERRED_LIFETIMES, "pd-allocator", "relay-supplied-options")
     server_level = (
@@ -171,7 +178,7 @@ def _global(family: int) -> dict[str, Entry]:
         "client-classes": Mapped("ClientClass"),
         f"subnet{family}": Mapped("Subnet"),
         "reservations": Mapped("HostReservation"),
-        "shared-networks": Pending(107),
+        "shared-networks": Pending(107, (Capability.SHARED_NETWORK_OPTIONAL_PREFIX,)),
         "adaptive-lease-time-threshold": Pending(99),
         "user-context": Pending(94, _USER_CONTEXT),
         "comment": _DEPRECATED["comment"],
@@ -207,7 +214,7 @@ def _global(family: int) -> dict[str, Entry]:
     return entries
 
 
-def _subnet(family: int) -> dict[str, Entry]:
+def _subnet(family: Family) -> dict[str, Entry]:
     entries = {
         **_fields("Subnet", *_network_settings(family)),
         "subnet": Mapped("Subnet.prefix"),
@@ -228,7 +235,7 @@ def _subnet(family: int) -> dict[str, Entry]:
     return entries
 
 
-def _shared_network(family: int) -> dict[str, Entry]:
+def _shared_network(family: Family) -> dict[str, Entry]:
     return {
         **_pending(
             107,
@@ -277,7 +284,7 @@ def _pd_pool() -> dict[str, Entry]:
     }
 
 
-def _reservation(family: int) -> dict[str, Entry]:
+def _reservation(family: Family) -> dict[str, Entry]:
     entries = {
         **_fields("HostReservation", "hw-address", "duid", "flex-id", "hostname"),
         "option-data": Mapped("Option"),
@@ -296,7 +303,7 @@ def _reservation(family: int) -> dict[str, Entry]:
     return entries
 
 
-def _client_class(family: int) -> dict[str, Entry]:
+def _client_class(family: Family) -> dict[str, Entry]:
     entries = {
         **_fields("ClientClass", "test", "template-test", "only-in-additional-list", *_LIFETIMES),
         "name": Mapped("ClientClass.name", (Capability.NAME_PER_SERVER,), pending=106),
@@ -311,11 +318,10 @@ def _client_class(family: int) -> dict[str, Entry]:
     return entries
 
 
-def _option_definition(family: int) -> dict[str, Entry]:
-    code = (Capability.OPTION_CODE_16_BIT,) if family == 6 else ()
+def _option_definition(family: Family) -> dict[str, Entry]:
     return {
         **_fields("OptionDefinition", "name", "type", "array", "record-types", "encapsulate"),
-        "code": Mapped("OptionDefinition.code", code),
+        "code": Mapped("OptionDefinition.code", _code_capabilities(family)),
         "space": Mapped("OptionDefinition.space", (Capability.OPTION_SPACES,)),
         "user-context": Pending(100, _USER_CONTEXT),
         "metadata": NotImported(),
@@ -323,11 +329,10 @@ def _option_definition(family: int) -> dict[str, Entry]:
     }
 
 
-def _option(family: int) -> dict[str, Entry]:
-    code = (Capability.OPTION_CODE_16_BIT,) if family == 6 else ()
+def _option(family: Family) -> dict[str, Entry]:
     return {
         "name": Mapped("Option.definition", (Capability.OPTION_WITHOUT_DEFINITION,)),
-        "code": Mapped("Option.definition", (Capability.OPTION_WITHOUT_DEFINITION, *code)),
+        "code": Mapped("Option.definition", (Capability.OPTION_WITHOUT_DEFINITION, *_code_capabilities(family))),
         "space": Mapped("Option.definition", (Capability.OPTION_SPACES,)),
         "data": Mapped("Option.data"),
         "csv-format": Mapped("Option.csv_format"),
@@ -340,7 +345,7 @@ def _option(family: int) -> dict[str, Entry]:
     }
 
 
-def _family(family: int) -> dict[str, dict[str, Entry]]:
+def _family(family: Family) -> dict[str, dict[str, Entry]]:
     tables = {
         f"Dhcp{family}": _global(family),
         "shared-networks": _shared_network(family),
@@ -356,10 +361,10 @@ def _family(family: int) -> dict[str, dict[str, Entry]]:
     return tables
 
 
-LEDGER: dict[int, dict[str, dict[str, Entry]]] = {family: _family(family) for family in (4, 6)}
+LEDGER: dict[Family, dict[str, dict[str, Entry]]] = {4: _family(4), 6: _family(6)}
 
-_MERGED_INTO_NETWORKS = (
-    "valid-lifetime",
+_MERGED_LEASE_KEYS = (
+    *_LIFETIMES,
     "renew-timer",
     "rebind-timer",
     "calculate-tee-times",
@@ -371,30 +376,33 @@ _MERGED_INTO_NETWORKS = (
     "allocator",
     "adaptive-lease-time-threshold",
 )
-# A Subnet also takes the derived minimum and maximum lifetimes and the relay of its Shared Network.
-_MERGED_INTO_SUBNETS = (*_MERGED_INTO_NETWORKS, "min-valid-lifetime", "max-valid-lifetime", "relay")
+_MERGED_INTO_NETWORKS: dict[Family, frozenset[str]] = {
+    4: frozenset({*_MERGED_LEASE_KEYS, "offer-lifetime"}),
+    6: frozenset({*_MERGED_LEASE_KEYS, *_PREFERRED_LIFETIMES, "pd-allocator"}),
+}
 
-# Kea 3.2 merges inherited values into Shared Networks and Subnets, and none into Pools and PD Pools.
-MERGED_KEYS: dict[int, dict[str, frozenset[str]]] = {
+# Kea 3.2 merges into a Shared Network from the global configuration, and into a Subnet from its parent. The global
+# configuration has no relay, so only a member Subnet takes one. Kea merges nothing into Pools and PD Pools.
+MERGED_KEYS: dict[Family, dict[str, frozenset[str]]] = {
     4: {
-        "shared-networks": frozenset({*_MERGED_INTO_NETWORKS, "offer-lifetime"}),
-        "subnet4": frozenset({*_MERGED_INTO_SUBNETS, "offer-lifetime"}),
+        "shared-networks": _MERGED_INTO_NETWORKS[4],
+        "subnet4": _MERGED_INTO_NETWORKS[4] | {"relay"},
         "pools": frozenset(),
     },
     6: {
-        "shared-networks": frozenset({*_MERGED_INTO_NETWORKS, "preferred-lifetime", "pd-allocator"}),
-        "subnet6": frozenset({*_MERGED_INTO_SUBNETS, *_PREFERRED_LIFETIMES, "pd-allocator"}),
+        "shared-networks": _MERGED_INTO_NETWORKS[6],
+        "subnet6": _MERGED_INTO_NETWORKS[6] | {"relay"},
         "pools": frozenset(),
         "pd-pools": frozenset(),
     },
 }
 
 
-def differences(recorded: dict[int, dict[str, set[str]]]) -> list[str]:
+def differences(recorded: dict[Family, dict[str, set[str]]]) -> list[str]:
     """Return each disagreement between :data:`LEDGER` and the keys that Kea accepts, by family and object."""
     found = []
-    for family in (4, 6):
-        listed, accepted = LEDGER[family], recorded.get(family, {})
+    for family, listed in LEDGER.items():
+        accepted = recorded.get(family, {})
         for table in sorted(listed.keys() | accepted.keys()):
             name = f"{table} (DHCPv{family})"
             if table not in accepted:
