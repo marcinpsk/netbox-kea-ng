@@ -1671,7 +1671,7 @@ class ConfigurationOptionsForm(SubnetOptionsForm):
         identity = data.get("original_option")
         if not data.get("name") and (not isinstance(identity, dict) or identity.get("code") is None):
             self.add_error("name", "An option name is required unless the existing option has a code.")
-        if identity is None and not data.get("data"):
+        if identity is None and not (data.get("data") or "").strip():
             self.add_error("data", "This field is required.")
         return data
 

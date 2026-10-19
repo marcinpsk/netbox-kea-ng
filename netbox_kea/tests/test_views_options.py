@@ -1022,6 +1022,24 @@ class TestServerOptionsPostInvalid(_ViewTestBase):
         self.assertEqual(response.context["formset"].forms[0].errors["data"], ["This field is required."])
         self.assertNotIn("config-set", kea.commands())
 
+    def test_post_new_row_with_whitespace_only_data_rerenders_with_a_data_error(self):
+        """The data field keeps its padding, so a blank-looking new value must still be refused."""
+        with stub_kea(_catalogue_responses_for_subnets(4, [])) as kea:
+            response = self.client.post(
+                self._url(),
+                {
+                    "form-TOTAL_FORMS": "1",
+                    "form-INITIAL_FORMS": "0",
+                    "form-MIN_NUM_FORMS": "0",
+                    "form-MAX_NUM_FORMS": "1000",
+                    "form-0-name": "routers",
+                    "form-0-data": "   ",
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["formset"].forms[0].errors["data"], ["This field is required."])
+        self.assertNotIn("config-set", kea.commands())
+
     def test_post_with_always_send_includes_flag(self):
         """POST with always_send=True writes always-send=True into the server option-data."""
         with _persist_stub(_EMPTY_SERVER_OPTIONS_CONFIG_GET) as kea:
