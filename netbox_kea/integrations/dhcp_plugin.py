@@ -48,6 +48,7 @@ v1 scope (import + diff, read-only against Kea):
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -1003,7 +1004,10 @@ def _upsert_reservation(
                 # Adopt a Global row imported before the link carried the family, so an
                 # upgrade relinks that row instead of duplicating it.
                 obj = _find_reservation(_unlinked(base), reservation, mac_obj)
-            before = None if obj is None else _reservation_state(obj)
+            # The relation reads give the state before the write and also drive the write.
+            addresses = frozenset() if obj is None else frozenset(obj.ipv6_addresses.values_list("pk", flat=True))
+            prefixes = {} if obj is None else dict(obj.ipv6_prefixes.values_list("pk", "prefix"))
+            before = None if obj is None else _reservation_state(obj, addresses, prefixes)
             if obj is None:
                 obj = HostReservation(
                     subnet=subnet_obj,
@@ -1024,10 +1028,16 @@ def _upsert_reservation(
             obj.ipv4_address = ipv4_ip
             obj.save()
             # An empty address list clears the previous IPv6 relations.
-            obj.ipv6_addresses.set(ipv6_ips)
+            wanted = {address.pk for address in ipv6_ips}
+            obj.ipv6_addresses.remove(*(addresses - wanted))
+            obj.ipv6_addresses.add(*(wanted - addresses))
             # Drop obsolete references before the delegated phase evaluates stale links.
             obj.ipv6_prefixes.remove(
-                *obj.ipv6_prefixes.exclude(prefix__in=[str(prefix) for prefix in reservation.delegated_prefixes])
+                *(
+                    pk
+                    for pk, prefix in prefixes.items()
+                    if ipaddress.ip_network(str(prefix)) not in reservation.delegated_prefixes
+                )
             )
             if isinstance(key, GlobalReservationKey):
                 _link_reservation(server, key, obj)
@@ -1049,7 +1059,7 @@ def reservation_path(key: ReservationKey, family: int) -> str:
     return kea_paths.reservation(family, subnet_id, key.identifier_type, key.value)
 
 
-def _reservation_state(obj) -> tuple:
+def _reservation_state(obj, addresses, prefixes) -> tuple:
     """Return the managed values of a DHCP plugin Reservation, to tell an update from an unchanged row."""
     return (
         obj.name,
@@ -1060,9 +1070,20 @@ def _reservation_state(obj) -> tuple:
         obj.client_id,
         obj.flex_id,
         obj.ipv4_address_id,
-        frozenset(obj.ipv6_addresses.values_list("pk", flat=True)),
-        frozenset(obj.ipv6_prefixes.values_list("pk", flat=True)),
+        frozenset(addresses),
+        frozenset(prefixes),
     )
+
+
+def _relation_states(objs) -> dict[int, tuple[set, set]]:
+    """Read the IPv6 addresses and Prefixes of every row in two queries, keyed by row."""
+    states: dict[int, tuple[set, set]] = {obj.pk: (set(), set()) for obj in objs}
+    rows = _model("HostReservation").objects.filter(pk__in=states)
+    for position, relation in enumerate(("ipv6_addresses", "ipv6_prefixes")):
+        for pk, related in rows.values_list("pk", relation):
+            if related is not None:
+                states[pk][position].add(related)
+    return states
 
 
 def _record_address_claims(report: SyncReport, claims: ClaimResult) -> bool:
@@ -1183,8 +1204,9 @@ def import_reservation_snapshot(
         summary.ownership.incomplete.add("delegated-prefix")
         logger.exception("Could not attach delegated Prefixes after DHCP import")
         summary.warn("Delegated Prefixes could not be attached. See server logs.")
+    relations = _relation_states(obj for _, obj, _ in imported)
     for planned, obj, before in imported:
-        if before is None or before != _reservation_state(obj):
+        if before is None or before != _reservation_state(obj, *relations[obj.pk]):
             outcome = Outcome.CREATED if before is None else Outcome.UPDATED
             summary.record(written(family, Kind.RESERVATION, reservation_path(planned.key, family), outcome))
 

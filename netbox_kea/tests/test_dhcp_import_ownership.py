@@ -14,6 +14,7 @@ from django.apps import apps
 from django.db import connection
 from django.db.models.signals import post_save
 from django.test import SimpleTestCase, TestCase
+from django.test.utils import CaptureQueriesContext
 from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 
@@ -318,6 +319,62 @@ class ImportOwnershipTest(TestCase):
 
     def delegated(self):
         return Prefix.objects.get(prefix=self.network)
+
+    def test_reservation_outcome_follows_its_ipv6_addresses_and_delegated_prefixes(self):
+        HostReservation = apps.get_model("netbox_dhcp", "HostReservation")
+        path = "Dhcp6/subnet6[id=1]/reservations[duid=01:02:03:04]"
+        for addresses, prefixes, outcome in (
+            (["2001:db8:1::10"], ["2001:db8:100::/56"], Outcome.CREATED),
+            (["2001:db8:1::10"], ["2001:db8:100::/56"], None),
+            (["2001:db8:1::11"], ["2001:db8:100::/56"], Outcome.UPDATED),
+            (["2001:db8:1::11"], ["2001:db8:200::/56"], Outcome.UPDATED),
+            ([], [], Outcome.UPDATED),
+            ([], [], None),
+        ):
+            with self.subTest(addresses=addresses, prefixes=prefixes):
+                summary = self.import_hosts([{**self.identity, "ip-addresses": addresses, "prefixes": prefixes}])
+                self.assertEqual(summary.errors, 0, summary.warnings)
+                written = [(e.outcome, e.path) for e in summary.entries if e.kind == Kind.RESERVATION]
+                self.assertEqual(written, [(outcome, path)] if outcome else [])
+                reservation = HostReservation.objects.get()
+                self.assertEqual(
+                    sorted(str(ip.address.ip) for ip in reservation.ipv6_addresses.all()), sorted(addresses)
+                )
+                self.assertEqual(sorted(str(p.prefix) for p in reservation.ipv6_prefixes.all()), sorted(prefixes))
+
+    def test_reservation_relation_reads_grow_once_per_row(self):
+        HostReservation = apps.get_model("netbox_dhcp", "HostReservation")
+        tables = {
+            relation: HostReservation._meta.get_field(relation).remote_field.through._meta.db_table
+            for relation in ("ipv6_addresses", "ipv6_prefixes")
+        }
+
+        def reads(count):
+            hosts = [
+                {
+                    "subnet-id": 1,
+                    "duid": f"01:02:03:{count:02x}:{row:02x}",
+                    "ip-addresses": [f"2001:db8:1::{count:x}{row:02x}"],
+                    "prefixes": [f"2001:db8:{count:x}{row:02x}::/56"],
+                }
+                for row in range(count)
+            ]
+            self.import_hosts(hosts)
+            with CaptureQueriesContext(connection) as queries:
+                summary = self.import_hosts(hosts)
+            self.assertEqual(summary.errors, 0, summary.warnings)
+            selects = [query["sql"] for query in queries if query["sql"].startswith("SELECT")]
+            return {relation: sum(f'"{table}"' in sql for sql in selects) for relation, table in tables.items()}
+
+        one, three = reads(1), reads(3)
+        # Per row: the pre-write read of each relation, and the delegated phase's Prefix set().
+        self.assertEqual(
+            {relation: (three[relation] - one[relation]) / 2 for relation in tables},
+            {
+                "ipv6_addresses": 1,
+                "ipv6_prefixes": 2,
+            },
+        )
 
     def test_shared_subnet_and_delegated_prefix_keeps_marker_and_repeat_import_is_unchanged(self):
         self.network = self.config["subnet6"][0]["subnet"]
