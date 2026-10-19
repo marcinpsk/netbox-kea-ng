@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import requests
+from django.apps import apps
+from packaging.version import Version
 
 from .. import server_configuration
 from ..constants import Family
@@ -24,11 +26,35 @@ from ..server_configuration import ServerConfigurationSnapshot
 from . import dhcp_plugin
 
 if TYPE_CHECKING:
+    from netbox.plugins import PluginConfig
+
     from ..ipam_reconciliation import ReservationObservation
     from ..models import Server
     from ..views.notices import Notice
 
 logger = logging.getLogger(__name__)
+
+#: The oldest netbox-plugin-dhcp release that the DHCP Import supports.
+REQUIRED_PLUGIN_VERSION = "0.2.0"
+
+
+class UnsupportedPluginVersion(Exception):
+    """The installed netbox-plugin-dhcp is older than :data:`REQUIRED_PLUGIN_VERSION`."""
+
+    def __init__(self, installed: str) -> None:
+        self.message = (
+            f"The DHCP Import needs netbox-plugin-dhcp {REQUIRED_PLUGIN_VERSION} or later. "
+            f"The installed version is {installed}."
+        )
+        super().__init__(self.message)
+
+
+def require_supported_plugin() -> None:
+    """Raise :class:`UnsupportedPluginVersion` when the installed netbox-plugin-dhcp is too old."""
+    plugin: PluginConfig = apps.get_app_config(dhcp_plugin.PLUGIN_APP_LABEL)
+    installed = plugin.version
+    if Version(installed) < Version(REQUIRED_PLUGIN_VERSION):
+        raise UnsupportedPluginVersion(installed)
 
 
 def enabled_versions(server: Server) -> list[Family]:
@@ -106,7 +132,12 @@ def run_dhcp_plugin_import(server: Server) -> list[tuple[Family, dhcp_plugin.Imp
 
     Returns ``(version, ImportSummary)`` for each version that was imported, and ``(version, Notice)`` for each
     version whose configuration Kea did not give. A version whose configuration could not be parsed is left out.
+
+    Raises:
+        UnsupportedPluginVersion: Before any Kea read, when the installed netbox-plugin-dhcp is too old.
+
     """
+    require_supported_plugin()
     reads = [(version, read_family(server, version)) for version in enabled_versions(server)]
     results: list[tuple[Family, dhcp_plugin.ImportSummary | Notice]] = [
         (

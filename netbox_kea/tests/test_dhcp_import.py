@@ -7,9 +7,13 @@ from __future__ import annotations
 import ipaddress
 import unittest
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from django.apps import apps
+from django.contrib.auth import get_user_model
+from django.contrib.messages import ERROR, get_messages
 from django.test import SimpleTestCase, TestCase
+from django.urls import reverse
 
 from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.integrations.dhcp_import_plan import (
@@ -34,6 +38,7 @@ from netbox_kea.reservations import (
 )
 from netbox_kea.subnet_catalogue import IncompleteCatalogueSnapshot, SubnetIdentity
 
+from .kea_stub import stub_kea
 from .test_integration_dhcp_plugin import _reservation_snapshot
 from .test_kea_recordings import _recording
 from .utils import _make_db_server
@@ -217,3 +222,34 @@ class ApplyPlanWithoutKeaTest(TestCase):
         global_link = KeaDhcpLink.objects.get(server=server, family=4, kea_identity=f"duid:{_GLOBAL_DUID}")
         self.assertEqual(global_link.sys4_object.duid, _GLOBAL_DUID)
         self.assertEqual((summary.subnets_created, summary.pools_created, summary.reservations_created), (3, 4, 2))
+
+
+class PluginVersionRefusalTest(TestCase):
+    """An installed netbox-plugin-dhcp older than 0.2.0 makes the import refuse before any Kea read or write."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def test_sync_now_refuses_an_older_plugin_and_names_the_required_version(self):
+        self.client.force_login(get_user_model().objects.create_superuser("version-refusal"))
+        server = _make_db_server(name="version-refusal", sync_dhcp_plugin_enabled=True)
+        url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[server.pk])
+
+        with patch.object(apps.get_app_config(DHCP_PLUGIN), "version", "0.1.9"), stub_kea({}) as kea:
+            response = self.client.post(url)
+
+        self.assertRedirects(
+            response, reverse("plugins:netbox_kea:server_dhcp_plugin", args=[server.pk]), fetch_redirect_response=False
+        )
+        (message,) = get_messages(response.wsgi_request)
+        self.assertEqual(message.level, ERROR)
+        self.assertEqual(
+            str(message),
+            "The DHCP Import needs netbox-plugin-dhcp 0.2.0 or later. The installed version is 0.1.9.",
+        )
+        self.assertEqual(kea.commands(), [])
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "DHCPServer").objects.filter(name=server.name).exists())
+        self.assertFalse(KeaDhcpLink.objects.filter(server=server).exists())
