@@ -269,7 +269,8 @@ class LedgerEntriesTest(SimpleTestCase):
     def test_user_context_is_gated_on_every_object_that_has_it(self):
         for family, tables in LEDGER.items():
             for table, keys in tables.items():
-                if "user-context" in keys:
+                # Kea's interface and socket settings have no plugin object.
+                if "user-context" in keys and table != "interfaces-config":
                     with self.subTest(family=family, table=table):
                         self.assertIn(Capability.USER_CONTEXT, keys["user-context"].capabilities)
 
@@ -390,7 +391,7 @@ class LedgerAgreesWithTheImportTest(SimpleTestCase):
     def test_a_key_without_a_plugin_home_has_no_plugin_field_of_its_name(self):
         models = {"Dhcp": "DHCPServer", "subnet": "Subnet", "shared-networks": "SharedNetwork", "pools": "Pool"}
         models |= {"pd-pools": "PDPool", "reservations": "HostReservation", "client-classes": "ClientClass"}
-        models |= {"option-def": "OptionDefinition", "option-data": "Option"}
+        models |= {"option-def": "OptionDefinition", "option-data": "Option", "interfaces-config": "DHCPServer"}
         for family, tables in LEDGER.items():
             for table, keys in tables.items():
                 model = models[table.rstrip("46")]

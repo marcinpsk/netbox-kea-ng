@@ -10,7 +10,7 @@ configurations load the same hook libraries as the Compose harness.
 It also reads the keyword tables that Kea's config-test and config-set check in the same
 release. It writes the keys Kea accepts on each object that the DHCP Import can meet to
 accepted-keys.json: the global configuration, Shared Network, Subnet, Pool, PD Pool, host
-reservation, client class, option-def and option-data. The parity ledger test compares them
+reservation, client class, option-def, option-data and interfaces-config. The parity ledger test compares them
 with netbox_kea/integrations/dhcp_import_ledger.py.
 The same daemons record lease replies: every lease state, an infinite lifetime, IPv6
 delegated prefixes, exact lookups, pages, the lease changes that Kea refuses, and an edit and
@@ -362,6 +362,16 @@ def _class_keys(source: str, family: int) -> list[str]:
     return sorted(key for name in names for key in re.findall(r'"([^"]+)"', sets[name]))
 
 
+def _interface_keys(source: str, family: int) -> list[str]:
+    """Return the keys that ``IfacesConfigParser::parse`` accepts in ``interfaces-config`` of *family*."""
+    tests = re.findall(r"element\.first == ([^)]*)\)", source)
+    keys = [match.group(1) for test in tests if (match := re.fullmatch(r'"([^"]+)"', test.strip()))]
+    if not keys or len(keys) != len(tests):
+        raise SystemExit("Could not read every interfaces-config key of the Kea source")
+    refused = set(re.findall(r'"(\S+) is not supported in DHCPv6"', source)) if family == 6 else set()
+    return sorted(set(keys) - refused)
+
+
 def _accepted_keys(family: int, version: str) -> dict[str, list[str]]:
     tables = _curl(KEA_PARSERS.format(version=version, source=f"simple_parser{family}.cc"))
     keys = {
@@ -376,6 +386,9 @@ def _accepted_keys(family: int, version: str) -> dict[str, list[str]]:
         ),
         "client-classes": _class_keys(
             _curl(KEA_PARSERS.format(version=version, source="client_class_def_parser.cc")), family
+        ),
+        "interfaces-config": _interface_keys(
+            _curl(KEA_PARSERS.format(version=version, source="ifaces_config_parser.cc")), family
         ),
     }
     if family == 6:
