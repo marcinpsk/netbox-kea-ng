@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""The downloads of scripts/record_kea_config_get.py end when a server stops sending."""
+"""scripts/record_kea_config_get.py reads every key of a Kea source list, and its downloads end when a server stops."""
 
 import importlib.util
 import select
@@ -63,6 +63,46 @@ def test_a_package_download_ends_when_the_server_stops_sending(script, stalled_u
 def test_a_keyword_table_download_ends_when_the_server_stops_sending(script, stalled_url):
     with (
         patch.object(script, "DOWNLOAD_SECONDS", 1),
-        patch.object(script, "KEYWORD_TABLES", stalled_url + "/{version}/simple_parser{family}.cc"),
+        patch.object(script, "KEA_PARSERS", stalled_url + "/{version}/{source}"),
     ):
         _stalls_until_the_deadline(lambda: script._accepted_keys(4, "3.2.0"))
+
+
+_TABLE = """const SimpleKeywords SimpleParser4::POOL4_PARAMETERS = {
+    { "pool",     Element::string },
+    { "array",    Element::boolean, },
+    { "metadata", Element::map }
+};
+"""
+
+
+def test_a_keyword_table_entry_without_a_trailing_comma_is_read(script):
+    assert script._table_keys(_TABLE, "POOL4_PARAMETERS") == ["array", "metadata", "pool"]
+
+
+def test_a_keyword_table_entry_that_cannot_be_read_stops_the_recording(script):
+    source = _TABLE.replace('{ "pool",     Element::string },', "{ POOL_KEY, Element::string },")
+    with pytest.raises(SystemExit):
+        script._table_keys(source, "POOL4_PARAMETERS")
+
+
+_HOSTS = """getSupportedParams4(const bool identifiers_only = false) {
+    if (params_set.empty()) {
+        params_set.insert("hostname");
+        params_set.insert( "user-context" );
+        params_set.insert ("client-classes");
+        params_set.insert(
+            "option-data");
+    }
+}
+"""
+
+
+def test_a_spaced_host_reservation_key_is_read(script):
+    assert script._host_keys(_HOSTS, 4) == ["client-classes", "hostname", "option-data", "user-context"]
+
+
+def test_a_host_reservation_key_that_cannot_be_read_stops_the_recording(script):
+    source = _HOSTS.replace('params_set.insert("hostname");', "params_set.insert(HOSTNAME);")
+    with pytest.raises(SystemExit):
+        script._host_keys(source, 4)

@@ -430,6 +430,7 @@
                   "voip"
                 ],
                 "ddns-qualifying-suffix": "office.example.org.",
+                "ddns-ttl": 600,
                 "evaluate-additional-classes": [
                   "printers"
                 ],
@@ -532,6 +533,8 @@
             "ddns-qualifying-suffix": "",
             "ddns-replace-client-name": "never",
             "ddns-send-updates": true,
+            "ddns-ttl-max": 900,
+            "ddns-ttl-min": 300,
             "ddns-ttl-percent": 0.5,
             "ddns-update-on-renew": false,
             "evaluate-additional-classes": [
@@ -616,7 +619,7 @@
         },
         "valid-lifetime": 4000
       },
-      "hash": "145114ACA631416480354B51CD75023591603C267E0FAFF654508AF5AE200F88"
+      "hash": "5BCF5C97447110ECE155FCD018C64A2FF277A974E7AF4A2AD0DE2159BBC1F033"
     },
     "result": 0
   },
@@ -625,7 +628,7 @@
     "changes": {
       "after-update": {
         "arguments": {
-          "cltt": 1792417785,
+          "cltt": 1792418478,
           "fqdn-fwd": false,
           "fqdn-rev": false,
           "hostname": "renamed.example.org",
@@ -649,7 +652,7 @@
       },
       "before": {
         "arguments": {
-          "cltt": 1792417785,
+          "cltt": 1792418478,
           "fqdn-fwd": false,
           "fqdn-rev": false,
           "hostname": "host40.example.org",
@@ -696,7 +699,7 @@
       "present": {
         "arguments": {
           "client-id": "01:aa:bb:cc:00:00:10",
-          "cltt": 1792417785,
+          "cltt": 1792418478,
           "fqdn-fwd": true,
           "fqdn-rev": true,
           "hostname": "host10.example.org",
@@ -725,7 +728,7 @@
         "leases": [
           {
             "client-id": "01:aa:bb:cc:00:00:10",
-            "cltt": 1792417785,
+            "cltt": 1792418478,
             "fqdn-fwd": true,
             "fqdn-rev": true,
             "hostname": "host10.example.org",
@@ -746,7 +749,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792417785,
+            "cltt": 1792418478,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -757,7 +760,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1792417785,
+            "cltt": 1792418478,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -768,7 +771,7 @@
             "valid-lft": 86400
           },
           {
-            "cltt": 1792417785,
+            "cltt": 1792418478,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -779,7 +782,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792417785,
+            "cltt": 1792418478,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -791,7 +794,7 @@
           },
           {
             "client-id": "ff:00:00:00:15:00:02",
-            "cltt": 1792417785,
+            "cltt": 1792418478,
             "fqdn-fwd": false,
             "fqdn-rev": false,
             "hostname": "",
@@ -813,7 +816,7 @@
           "leases": [
             {
               "client-id": "01:aa:bb:cc:00:00:10",
-              "cltt": 1792417785,
+              "cltt": 1792418478,
               "fqdn-fwd": true,
               "fqdn-rev": true,
               "hostname": "host10.example.org",
@@ -834,7 +837,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792417785,
+              "cltt": 1792418478,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -845,7 +848,7 @@
               "valid-lft": 4294967295
             },
             {
-              "cltt": 1792417785,
+              "cltt": 1792418478,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -865,7 +868,7 @@
           "count": 3,
           "leases": [
             {
-              "cltt": 1792417785,
+              "cltt": 1792418478,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -876,7 +879,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792417785,
+              "cltt": 1792418478,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -888,7 +891,7 @@
             },
             {
               "client-id": "ff:00:00:00:15:00:02",
-              "cltt": 1792417785,
+              "cltt": 1792418478,
               "fqdn-fwd": false,
               "fqdn-rev": false,
               "hostname": "",
@@ -930,7 +933,7 @@
       },
       "after-update-without-expire": {
         "arguments": {
-          "cltt": 1792417785,
+          "cltt": 1792418478,
           "fqdn-fwd": false,
           "fqdn-rev": false,
           "hostname": "",
@@ -1175,6 +1178,7 @@
                   "voip"
                 ],
                 "ddns-qualifying-suffix": "office.example.org.",
+                "ddns-ttl": 600,
                 "evaluate-additional-classes": [
                   "printers"
                 ],

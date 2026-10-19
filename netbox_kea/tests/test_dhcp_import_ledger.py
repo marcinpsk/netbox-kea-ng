@@ -9,6 +9,7 @@ test_kea_recordings.py). The agreement with the import's field maps needs netbox
 import ipaddress
 import json
 import unittest
+from collections import defaultdict
 from pathlib import Path
 
 from django.apps import apps
@@ -69,26 +70,7 @@ def _subnets(daemon: dict, family: Family) -> list[tuple[dict, dict | None]]:
     return standalone + members
 
 
-def _objects(daemon: dict, family: Family) -> dict[str, list[dict]]:
-    """Return every object of *daemon* by the ledger table that lists its keys."""
-    subnets = [subnet for subnet, _network in _subnets(daemon, family)]
-    classes = daemon.get("client-classes", [])
-    pools = [pool for subnet in subnets for pool in subnet.get("pools", [])]
-    pd_pools = [pool for subnet in subnets for pool in subnet.get("pd-pools", [])]
-    reservations = [*daemon.get("reservations", []), *(r for subnet in subnets for r in subnet.get("reservations", []))]
-    networks = daemon.get("shared-networks", [])
-    with_options = [daemon, *networks, *subnets, *pools, *pd_pools, *reservations, *classes]
-    return {
-        f"Dhcp{family}": [daemon],
-        "shared-networks": networks,
-        f"subnet{family}": subnets,
-        "pools": pools,
-        "pd-pools": pd_pools,
-        "reservations": reservations,
-        "client-classes": classes,
-        "option-def": [*daemon.get("option-def", []), *(d for c in classes for d in c.get("option-def", []))],
-        "option-data": [option for parent in with_options for option in parent.get("option-data", [])],
-    }
+_IDENTIFIERS = ("hw-address", "duid", "circuit-id", "client-id", "flex-id")
 
 
 def _pool_identity(pool: dict) -> tuple:
@@ -103,37 +85,76 @@ def _pool_identity(pool: dict) -> tuple:
 
 
 def _identity(table: str, family: Family, obj: dict):
-    """Return the identity that pairs a configured object with the one config-get returned."""
-    identities = {
-        f"Dhcp{family}": lambda o: f"Dhcp{family}",
-        "shared-networks": lambda o: o["name"],
-        f"subnet{family}": lambda o: o["id"],
-        "pools": _pool_identity,
-        "pd-pools": _pool_identity,
-        "client-classes": lambda o: o["name"],
-        "option-def": lambda o: (o.get("space", f"dhcp{family}"), o["code"]),
-        "option-data": lambda o: (o.get("name"), o.get("data")),
-    }
-    return identities[table](obj)
+    """Return the identity, within its parent, that pairs a configured object with the one config-get returned."""
+    if table in ("pools", "pd-pools"):
+        return _pool_identity(obj)
+    if table == "reservations":
+        # Kea returns a client-id without colons and in upper case.
+        kind = next(key for key in _IDENTIFIERS if key in obj)
+        return (kind, obj[kind].replace(":", "").lower())
+    if table == "option-def":
+        return (obj.get("space", f"dhcp{family}"), obj["code"])
+    if table == "option-data":
+        return (obj.get("name"), tuple(sorted(obj.get("client-classes", []))))
+    return obj["id"] if table == f"subnet{family}" else obj.get("name", table)
 
 
-def _returned_for(table: str, family: Family, declared: dict, returned: list[dict]) -> dict:
-    """Return the object of *returned* that config-get returned for the *declared* one."""
-    (match,) = [obj for obj in returned if _identity(table, family, obj) == _identity(table, family, declared)]
-    return match
+def _objects(daemon: dict, family: Family) -> dict[str, list[tuple[tuple, dict]]]:
+    """Return every object of *daemon* by the ledger table that lists its keys, each with the path of its parent."""
+    found: dict[str, list[tuple[tuple, dict]]] = defaultdict(list)
+
+    def visit(table: str, obj: dict, scope: tuple) -> tuple:
+        found[table].append((scope, obj))
+        here = (*scope, (table, _identity(table, family, obj)))
+        for child in ("option-data", "option-def"):
+            for entry in obj.get(child, []):
+                found[child].append((here, entry))
+        return here
+
+    def visit_subnet(subnet: dict, scope: tuple) -> None:
+        here = visit(f"subnet{family}", subnet, scope)
+        for table in ("pools", "pd-pools", "reservations"):
+            for child in subnet.get(table, []):
+                visit(table, child, here)
+
+    root = visit(f"Dhcp{family}", daemon, ())
+    for table in ("client-classes", "reservations"):
+        for obj in daemon.get(table, []):
+            visit(table, obj, root)
+    for subnet in daemon.get(f"subnet{family}", []):
+        visit_subnet(subnet, root)
+    for network in daemon.get("shared-networks", []):
+        here = visit("shared-networks", network, root)
+        for subnet in network.get(f"subnet{family}", []):
+            visit_subnet(subnet, here)
+    return found
+
+
+def _paired(table: str, family: Family, declared: list[dict], returned: list[dict]) -> list[tuple[dict, dict]]:
+    """Pair each configured object with the one config-get returned; both sides must hold the same objects."""
+    by_identity = {_identity(table, family, obj): obj for obj in returned}
+    identities = [_identity(table, family, obj) for obj in declared]
+    if sorted(map(repr, identities)) != sorted(map(repr, by_identity)) or len(by_identity) != len(returned):
+        raise AssertionError(f"{table}: config-get returned {sorted(by_identity)}, the configuration has {identities}")
+    return [(obj, by_identity[identity]) for obj, identity in zip(declared, identities, strict=True)]
 
 
 def _undeclared(declared: dict, returned: dict, parent: dict, table: str, family: Family) -> tuple[set[str], set[str]]:
     """Split the keys that config-get returned and the configuration did not declare: merged, or Kea defaults.
 
-    A merged key has its parent's value. A declared deprecated key declares its replacement.
+    A merged key has its parent's value. A declared deprecated key declares its replacement. An empty collection of
+    child objects is a Kea default.
     """
     rewritten = {
         entry.replacement
         for key, entry in LEDGER[family][table].items()
         if isinstance(entry, Deprecated) and key in declared
     }
-    undeclared = returned.keys() - declared.keys() - rewritten - _CHILD_COLLECTIONS
+    undeclared = {
+        key
+        for key in returned.keys() - declared.keys() - rewritten
+        if not (key in _CHILD_COLLECTIONS and returned[key] == [])
+    }
     merged = {key for key in undeclared if key in parent and parent[key] == returned[key]}
     return merged, undeclared - merged
 
@@ -150,17 +171,23 @@ def _observed(family: Family) -> tuple[dict[str, set[str]], dict[str, set[str]]]
         merges[table] |= merged
         defaults[table] |= default
 
-    networks = returned["shared-networks"]
-    for network in declared["shared-networks"]:
-        observe("shared-networks", network, _returned_for("shared-networks", family, network, networks), returned)
-    subnets = [subnet for subnet, _network in _subnets(returned, family)]
-    for subnet, network in _subnets(declared, family):
-        got = _returned_for(f"subnet{family}", family, subnet, subnets)
-        parent = returned if network is None else _returned_for("shared-networks", family, network, networks)
-        observe(f"subnet{family}", subnet, got, parent)
+    networks = _paired("shared-networks", family, declared["shared-networks"], returned["shared-networks"])
+    for obj, got in networks:
+        observe("shared-networks", obj, got, returned)
+    returned_networks = {obj["name"]: got for obj, got in networks}
+    subnets = _paired(
+        f"subnet{family}",
+        family,
+        [subnet for subnet, _network in _subnets(declared, family)],
+        [subnet for subnet, _network in _subnets(returned, family)],
+    )
+    parents = {subnet["id"]: network for subnet, network in _subnets(declared, family)}
+    for subnet, got in subnets:
+        network = parents[subnet["id"]]
+        observe(f"subnet{family}", subnet, got, returned if network is None else returned_networks[network["name"]])
         for table in tables[2:]:
-            for pool in subnet.get(table, []):
-                observe(table, pool, _returned_for(table, family, pool, got[table]), got)
+            for pool, got_pool in _paired(table, family, subnet.get(table, []), got.get(table, [])):
+                observe(table, pool, got_pool, got)
     return merges, defaults
 
 
@@ -245,11 +272,16 @@ class RecordedKeaBehaviourTest(SimpleTestCase):
                     if not isinstance(entry, Deprecated):
                         continue
                     with self.subTest(family=family, table=table, key=key):
-                        carriers = [obj for obj in declared[table] if key in obj]
+                        carriers = [(scope, obj) for scope, obj in declared[table] if key in obj]
                         self.assertTrue(carriers, "the coverage configuration declares the key")
-                        self.assertFalse(any(key in obj for obj in returned[table]))
-                        for obj in carriers:
-                            got = _returned_for(table, family, obj, returned[table])[entry.replacement]
+                        self.assertFalse(any(key in obj for _scope, obj in returned[table]))
+                        for scope, obj in carriers:
+                            (got,) = [
+                                other[entry.replacement]
+                                for other_scope, other in returned[table]
+                                if other_scope == scope
+                                and _identity(table, family, other) == _identity(table, family, obj)
+                            ]
                             if key == "comment":
                                 got = got["comment"]
                             self.assertEqual(got, [obj[key]] if key == "client-class" else obj[key])
@@ -259,6 +291,24 @@ class RecordedKeaBehaviourTest(SimpleTestCase):
             with self.subTest(family=family):
                 merges, _defaults = _observed(family)
                 self.assertEqual(merges, {table: set(keys) for table, keys in MERGED_KEYS[family].items()})
+
+    def test_a_non_empty_collection_with_the_parent_value_counts_as_merged(self):
+        option = {"code": 6, "data": "192.0.2.53"}
+        merged, default = _undeclared(
+            {"pool": "192.0.2.10-192.0.2.20"},
+            {"pool": "192.0.2.10-192.0.2.20", "option-data": [option], "pool-id": 3},
+            {"option-data": [option]},
+            "pools",
+            4,
+        )
+        self.assertEqual((merged, default), ({"option-data"}, {"pool-id"}))
+
+    def test_a_pool_that_only_config_get_returns_fails_the_pairing(self):
+        declared = [{"pool": "192.0.2.10 - 192.0.2.20"}]
+        returned = [{"pool": "192.0.2.10-192.0.2.20"}, {"pool": "192.0.2.64/26"}]
+        with self.assertRaises(AssertionError):
+            _paired("pools", 4, declared, returned)
+        self.assertEqual(_paired("pools", 4, declared, returned[:1]), [(declared[0], returned[0])])
 
     def test_every_other_undeclared_key_is_a_known_kea_default(self):
         for family in LEDGER:
