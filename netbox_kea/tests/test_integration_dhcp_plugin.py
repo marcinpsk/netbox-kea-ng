@@ -1230,6 +1230,46 @@ class DhcpPluginMappingImportTest(TestCase):
             [(moved.pk, 1)],
         )
 
+    def test_a_custom_definition_of_both_families_is_unsupported_for_the_second_family(self):
+        """One DHCPServer holds both families, and the plugin holds one custom definition per space and code there."""
+        from netbox_kea.integrations.dhcp_import_report import Outcome, Reason
+        from netbox_kea.models import KeaDhcpLink
+
+        OptionDefinition = apps.get_model(DHCP_PLUGIN, "OptionDefinition")
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        space = "vendor-specific-options-space"
+
+        def conf(family):
+            return {
+                "option-def": [{"name": f"vendor-v{family}", "code": 250, "type": "uint8", "space": space}],
+                "option-data": [{"code": 250, "space": space, "data": str(family)}],
+                f"subnet{family}": [],
+            }
+
+        v4 = self.adapter.import_server_config(self.server, parse_dhcp_config(conf(4), 4))
+        self.assertEqual(v4.option_defs_created, 1, v4.warnings)
+        for _ in range(2):  # the next run reports the same limit and writes nothing
+            v6 = self.adapter.import_server_config(self.server, parse_dhcp_config(conf(6), 6))
+            self.assertEqual(v6.errors, 0, v6.warnings)
+            entries = {entry.kind: entry for entry in v6.entries if entry.kind in (Kind.OPTION_DEFINITION, Kind.OPTION)}
+            self.assertEqual(
+                {kind: (entry.outcome, entry.reason) for kind, entry in entries.items()},
+                {
+                    Kind.OPTION_DEFINITION: (Outcome.UNSUPPORTED, Reason.PLUGIN_GAP),
+                    Kind.OPTION: (Outcome.UNSUPPORTED, Reason.PLUGIN_GAP),
+                },
+            )
+            self.assertIn("#94", entries[Kind.OPTION_DEFINITION].detail)
+            self.assertIn(f"{space}:250", entries[Kind.OPTION].detail)
+
+        (definition,) = OptionDefinition.objects.filter(standard=False, dhcp_server__name=self.server.name)
+        self.assertEqual((definition.family, definition.name), (4, "vendor-v4"))
+        self.assertEqual(list(Option.objects.filter(definition=definition).values_list("data", flat=True)), ["4"])
+        self.assertEqual(
+            list(KeaDhcpLink.objects.filter(server=self.server).values_list("family", "kind", "kea_identity")),
+            [(4, "option_definition", f"{space}:250")],
+        )
+
     def test_an_upgrade_adopts_the_rows_an_earlier_release_imported_without_a_mapping(self):
         from netbox_kea.models import KeaDhcpLink
 

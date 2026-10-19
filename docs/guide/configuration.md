@@ -54,7 +54,9 @@ that it writes to its Kea source. A later run finds the object through its mappi
 object, the mapping stays and the import keeps your name. The first run after an upgrade maps each object that an
 earlier release imported, so it makes no duplicate. One DHCP Server holds both families, so when the two families of
 a Server have a client class of the same name, the class of the second family also names its family, for example
-`kea1 DHCPv6: voip`.
+`kea1 DHCPv6: voip`. The DHCP plugin holds one custom Option Definition for each space and code of a DHCP Server, so
+when both families declare the same space and code, the second family reports that definition and its Options as
+unsupported.
 
 Each run of **Sync to DHCP plugin now** stores its result. The **DHCP Plugin** page under Sync shows the latest run:
 the counts for each family, object kind and outcome, and one entry for each Kea fact that the run created, updated or

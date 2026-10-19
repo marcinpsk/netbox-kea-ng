@@ -325,8 +325,20 @@ class CustomDefinitions:
 
     server: Server
     declared: dict[OptionDefinitionKey, OptionDefIntent]
-    # The row of each written definition, or the reason that it has none.
+    # The row of each written definition, or why it has none.
     written: dict[OptionDefinitionKey, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _Unresolved:
+    """Why an Option has no Option Definition: the reason and the detail of its entry."""
+
+    reason: Reason
+    detail: str
+
+
+_NO_DEFINITION = _Unresolved(Reason.PLUGIN_GAP, "No matching Option Definition.")
+_DEFINITION_NOT_WRITTEN = _Unresolved(Reason.PARENT_NOT_IMPORTED, "See server logs.")
 
 
 def _option_definition_fields(def_intent: OptionDefIntent, family: int, dhcp_server) -> dict:
@@ -343,6 +355,23 @@ def _option_definition_fields(def_intent: OptionDefIntent, family: int, dhcp_ser
     }
 
 
+def _held_option_definition(held, family: int, key: OptionDefinitionKey, path: str, summary: ImportSummary):
+    """Report a definition that another mapping holds on this DHCPServer, which the plugin cannot hold twice."""
+    from django.contrib.contenttypes.models import ContentType
+
+    holder = (
+        _link_model()
+        .objects.filter(object_type=ContentType.objects.get_for_model(held.model), object_id__in=held.values("pk"))
+        .first()
+    )
+    holder_family = f"DHCPv{holder.family}" if holder is not None else "another"
+    limit = "The DHCP plugin holds one custom Option Definition for each space and code of a DHCP server"
+    detail = f"{limit}, and the {holder_family} import holds it. #94 gives each family its own DHCP server."
+    summary.record(not_written(family, Kind.OPTION_DEFINITION, path, Reason.PLUGIN_GAP, detail))
+    summary.warn(f"option-def {key.space}:{key.code}: {detail}")
+    return _Unresolved(Reason.PLUGIN_GAP, f"Option Definition {key.space}:{key.code} is not imported. {limit}.")
+
+
 def _write_option_definition(
     definitions: CustomDefinitions, key: OptionDefinitionKey, family: int, dhcp_server, summary: ImportSummary
 ):
@@ -356,9 +385,13 @@ def _write_option_definition(
         with event_scope.atomic():
             obj = mapped_target(definitions.server, family, key.source)
             if obj is None:
+                held = OptionDefinition.objects.filter(
+                    standard=False, dhcp_server=dhcp_server, space=key.space, code=key.code
+                )
                 # Adopt a definition that an import created before Option Definitions had a mapping.
-                unmapped = OptionDefinition.objects.filter(standard=False, dhcp_server=dhcp_server, space=key.space)
-                obj = _unlinked(unmapped.filter(code=key.code)).first()
+                obj = _unlinked(held).first()
+                if obj is None and held.exists():
+                    return _held_option_definition(held, family, key, path, summary)
             if obj is None:
                 obj = OptionDefinition(name=def_intent.name, standard=False, **fields)
                 obj.save()
@@ -377,7 +410,7 @@ def _write_option_definition(
     except Exception as exc:  # noqa: BLE001 — a bad definition must not abort the import
         summary.record(write_failed(family, Kind.OPTION_DEFINITION, path))
         summary.warn(f"option-def code={key.code}: {exc}")
-        return Reason.PARENT_NOT_IMPORTED
+        return _DEFINITION_NOT_WRITTEN
     if outcome is not None:
         summary.record(written(family, Kind.OPTION_DEFINITION, path, outcome))
     return obj
@@ -415,7 +448,7 @@ def _resolve_option_definition(opt: DHCPOption, family: int, dhcp_server, defini
         found = custom.filter(code=opt.code).first()
     elif opt.name:
         found = custom.filter(name=opt.name).first()
-    return found if found is not None else Reason.PLUGIN_GAP
+    return found if found is not None else _NO_DEFINITION
 
 
 def _option_values(obj) -> tuple:
@@ -446,9 +479,8 @@ def upsert_options(
     for opt in options:
         path = kea_paths.option(parent_path, opt, family)
         definition = _resolve_option_definition(opt, family, dhcp_server, custom_defs, summary)
-        if isinstance(definition, Reason):
-            detail = "No matching Option Definition." if definition is Reason.PLUGIN_GAP else "See server logs."
-            summary.record(not_written(family, Kind.OPTION, path, definition, detail))
+        if isinstance(definition, _Unresolved):
+            summary.record(not_written(family, Kind.OPTION, path, definition.reason, definition.detail))
             summary.warn(f"option {option_identity(opt, family)}: no matching definition, skipped")
             continue
         try:
