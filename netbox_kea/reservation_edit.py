@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from django.core import signing
@@ -399,14 +399,7 @@ def save_add(
 
     def build(subnet: VerifiedSubnet, catalogue: CatalogueSnapshot) -> Reservation:
         reservation = build_add(family, identity, values, subnet, catalogue)
-        if reservation.addresses:
-            if subnet.configuration is None:
-                warnings.append(PoolCheckUnavailable(subnet.cidr))
-            else:
-                warnings.extend(
-                    PoolOverlap(address, pool)
-                    for address, pool in addresses_in_pools(reservation.addresses, subnet.configuration.pools)
-                )
+        warnings.extend(_pool_warning_facts(reservation, subnet))
         return reservation
 
     outcome = config_write.add_reservation(server, family, subnet_cidr, build)
@@ -451,14 +444,63 @@ class AfterApplyFacts:
     claim: ClaimResult | ClaimSkipped | ClaimFailure
 
 
-def save_import(server: Server, proposal: ReservationImportProposal) -> ReservationChangeOutcome:
-    """Create one transfer proposal with its stored hostname in the live verified Subnet."""
-    return config_write.add_reservation(
-        server,
-        proposal.family,
-        proposal.subnet_cidr,
-        lambda subnet, _catalogue: resolve_import_proposal(proposal, subnet.identity),
+def _pool_warning_facts(
+    reservation: Reservation, subnet: VerifiedSubnet
+) -> tuple[PoolOverlap | PoolCheckUnavailable, ...]:
+    if not reservation.addresses:
+        return ()
+    if subnet.configuration is None:
+        return (PoolCheckUnavailable(subnet.cidr),)
+    return tuple(
+        PoolOverlap(address, pool)
+        for address, pool in addresses_in_pools(reservation.addresses, subnet.configuration.pools)
     )
+
+
+def save_import(server: Server, proposal: ReservationImportProposal) -> AddOutcome:
+    """Create one transfer proposal with its stored hostname and live pool overlap facts."""
+    warnings: list[PoolOverlap | PoolCheckUnavailable] = []
+
+    def build(subnet: VerifiedSubnet, _catalogue: CatalogueSnapshot) -> Reservation:
+        reservation = resolve_import_proposal(proposal, subnet.identity)
+        warnings.extend(_pool_warning_facts(reservation, subnet))
+        return reservation
+
+    outcome = config_write.add_reservation(server, proposal.family, proposal.subnet_cidr, build)
+    return AddOutcome(
+        outcome.application,
+        outcome.persistence,
+        outcome.diagnostics,
+        previous=outcome.previous,
+        intended=outcome.intended,
+        verification=outcome.verification,
+        catalogue=outcome.catalogue,
+        warnings=tuple(warnings),
+    )
+
+
+@dataclass(frozen=True)
+class PoolOverlapSummary:
+    """The bounded Reservation Identities with an address inside an allocation Pool."""
+
+    identities: tuple[ReservationIdentity, ...]
+    remaining: int
+
+
+def pool_overlap_summary(outcomes: tuple[AddOutcome, ...], *, limit: int = 5) -> PoolOverlapSummary:
+    """Count each applied scoped Reservation once, regardless of its addresses or Pools."""
+    if limit < 1:
+        raise ValueError("A pool overlap summary needs a positive limit.")
+    identities = tuple(
+        {
+            (outcome.intended.family, outcome.intended.scope, outcome.intended.identity): outcome.intended.identity
+            for outcome in outcomes
+            if outcome.application == "applied"
+            and outcome.intended is not None
+            and any(isinstance(fact, PoolOverlap) for fact in outcome.warnings)
+        }.values()
+    )
+    return PoolOverlapSummary(identities[:limit], max(0, len(identities) - limit))
 
 
 def _journal_after_apply(
@@ -510,8 +552,47 @@ def _signal_after_apply(
     return "failed" if errors else "succeeded"
 
 
+class ImportSyncRefused(ValueError):
+    """A requested import claim cannot pass the manual Sync permission rule."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
+
+@dataclass(frozen=True)
+class ImportContext:
+    """One import's permission decision, bound to its Server and operator."""
+
+    server: Server
+    user: Any
+    sync_to_netbox: bool = False
+    _server_id: int = field(init=False, repr=False)
+    _user_id: int = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.server.pk is None or self.user.pk is None:
+            raise ValueError("An import needs a saved Server and user.")
+        if self.sync_to_netbox:
+            gate = sync_gate(self.user, claim_permissions(RESERVATION))
+            if not gate.allowed:
+                raise ImportSyncRefused(gate.reason)
+        object.__setattr__(self, "_server_id", self.server.pk)
+        object.__setattr__(self, "_user_id", self.user.pk)
+
+    def check_target(self, server: Server, user: Any) -> None:
+        """Refuse reuse of a permission decision for another Server or operator."""
+        if server.pk != self._server_id or user.pk != self._user_id:
+            raise ValueError("The import permission decision belongs to another Server or user.")
+
+
+def prepare_import(server: Server, user: Any, *, sync_to_netbox: bool = False) -> ImportContext:
+    """Check the optional claim permissions once, before the import sends any entry."""
+    return ImportContext(server, user, sync_to_netbox)
+
+
 def _claim_after_apply(
-    server: Server, outcome: ReservationChangeOutcome, user: Any, requested: bool
+    server: Server, outcome: ReservationChangeOutcome, user: Any, requested: bool, context: ImportContext | None
 ) -> ClaimResult | ClaimSkipped | ClaimFailure:
     if not requested:
         return ClaimSkipped("not-requested")
@@ -519,10 +600,11 @@ def _claim_after_apply(
     if reservation is None or not reservation.addresses:
         return ClaimSkipped("nothing-to-sync")
     try:
-        gate = sync_gate(user, claim_permissions(RESERVATION))
-        if not gate.allowed:
-            logger.warning("User %r requested a Reservation IPAM sync that the manual Sync rule refuses", user)
-            return ClaimSkipped("permission", gate.reason)
+        if context is None:
+            gate = sync_gate(user, claim_permissions(RESERVATION))
+            if not gate.allowed:
+                logger.warning("User %r requested a Reservation IPAM sync that the manual Sync rule refuses", user)
+                return ClaimSkipped("permission", gate.reason)
         return claim(server, reservation.family, [reservation], force=True, catalogue=outcome.catalogue)
     except event_scope.EventDispatchError:
         logger.exception("The events of the NetBox IPAM sync of a Reservation could not be dispatched")
@@ -533,11 +615,20 @@ def _claim_after_apply(
 
 
 def after_apply(
-    server: Server, outcome: ReservationChangeOutcome, user: Any, *, sync_to_netbox: bool = False, request: Any = None
+    server: Server,
+    outcome: ReservationChangeOutcome,
+    user: Any,
+    *,
+    sync_to_netbox: bool = False,
+    request: Any = None,
+    import_context: ImportContext | None = None,
 ) -> AfterApplyFacts:
     """Run independent side effects only after Kea applied the change, outside its classification."""
     if outcome.application != "applied":
         return AfterApplyFacts(None, "not-applied", "not-applied", ClaimSkipped("not-applied"))
+    if import_context is not None:
+        import_context.check_target(server, user)
+        sync_to_netbox = import_context.sync_to_netbox
     reservation = outcome.intended or outcome.previous
     if reservation is None:
         raise ValueError("An applied Reservation change needs the Reservation before or after it.")
@@ -546,4 +637,6 @@ def after_apply(
     )
     journal = _journal_after_apply(server, user, action, reservation)
     signal = _signal_after_apply(server, outcome, action, reservation, request)
-    return AfterApplyFacts(action, journal, signal, _claim_after_apply(server, outcome, user, sync_to_netbox))
+    return AfterApplyFacts(
+        action, journal, signal, _claim_after_apply(server, outcome, user, sync_to_netbox, import_context)
+    )

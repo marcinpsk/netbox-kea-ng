@@ -118,7 +118,7 @@ permission that the Sync can use. An enabled ObjectPermission of the user, or of
 | --- | --- |
 | Lease **Sync**, lease add with **Sync to NetBox IPAM** | `ipam.add_ipaddress`, `ipam.change_ipaddress`, `dcim.add_macaddress`, `dcim.change_macaddress` |
 | Lease **Sync** of a DHCPv6 delegated prefix | `ipam.add_prefix`, `ipam.change_prefix` |
-| Reservation **Sync all** and **Sync All to NetBox**, Reservation add or edit with **Sync to NetBox IPAM** | The same as for a lease |
+| Reservation **Sync all** and **Sync All to NetBox**, Reservation add or edit with **Sync to NetBox IPAM**, Reservation import with **Sync to NetBox** | The same as for a lease |
 | **Sync to DHCP plugin now** | The same as for a lease, `ipam.add_prefix`, `ipam.change_prefix`, `ipam.add_iprange`, `ipam.change_iprange`, change permission on the Server, and the `netbox_dhcp` permissions below |
 
 **Sync All to NetBox** runs only the reservation phase. Its stale cleanup cannot delete an IP address, so it needs no

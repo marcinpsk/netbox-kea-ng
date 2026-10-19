@@ -185,7 +185,14 @@ Integrations that read leases from the plugin must change with the typed lease r
   sends anything. Then the import creates one Reservation at a time, and stops at the first entry that Kea does
   not apply or does not confirm, or when the Server connection settings are not valid. The report lists each entry
   by its position in the document (`reservations[N]`) and its identity: the entries that Kea created, the entry
-  where the import stopped, and the entries that NetBox did not send
+  where the import stopped, and the entries that NetBox did not send. The document hostname is the stored
+  hostname, so transfer preserves it exactly instead of applying the add form's published-name conversion
+- The import's **Sync to NetBox** option claims each created Reservation's addresses in NetBox IPAM. NetBox checks
+  the manual Sync permissions once before it sends any entry. A missing permission refuses the import. A failed
+  IPAM claim appears on that entry in the report, and the import continues with the next entry. Without this option,
+  the import does not claim addresses
+- One warning lists Reservations whose addresses lie inside allocation Pools. It names at most five Reservation
+  Identities, then gives the number of remaining entries. Each Reservation counts once, even with several addresses
 
 *+ Reserve* on a lease opens the Reservation form with the address, the client identifier and the hostname of
 the lease. After the save, the lease search shows the lease as *Reserved*.
