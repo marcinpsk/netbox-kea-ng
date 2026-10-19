@@ -14,7 +14,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generic, TypeVar
 
-from .. import kea_paths
 from ..constants import Family, validate_family
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import (
@@ -129,8 +128,7 @@ def _option_definitions(config: ServerConfigIntent) -> tuple[Planned[OptionDefin
     """Key each custom Option Definition. A later definition of the same key replaces an earlier one."""
     index: dict[OptionDefinitionKey, OptionDefIntent] = {}
     for definition in config.option_defs:
-        space = definition.space or kea_paths.default_space(config.family)
-        index[OptionDefinitionKey(space, definition.code)] = definition
+        index[OptionDefinitionKey(definition.space, definition.code)] = definition
     return tuple(Planned(key, definition) for key, definition in index.items())
 
 

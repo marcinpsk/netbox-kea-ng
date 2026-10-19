@@ -383,10 +383,11 @@ URL request
   - **After a Kea upgrade:** set the new `KEA_VERSION`, run `scripts/record_kea_config_get.py`, and list each key the
     ledger test reports as missing. Remove each key that Kea no longer has. When Kea deprecates a key, set it on its
     object in `kea-dhcp{4,6}.conf`, record again, and list it as deprecated. When a merged-key assertion fails, update
-    `MERGED_KEYS` and check the Declared Value inference that uses it.
+    `MERGED_KEYS` (the Declared Value inference of #95 reads it).
   - **After a netbox-plugin-dhcp upgrade:** run the DHCP plugin job. A "no plugin home" key whose name is now a plugin
     field fails; move it to pending or mapped. A mapped target that the plugin removed fails. When the upgrade ships
-    a #88 change, keep the entries that name its capability, and record the capability as present in #88.
+    a #88 change, check that the capability check matches the shipped shape, as #88 says. The entries that name the
+    capability stay: the capability probe (#106) finds it present at run time.
 - **Sync interval**: `SyncConfig.interval_minutes` is the only runtime source.
   `KeaIpamSyncJob.enqueue_once()` (rqworker startup) and each periodic `run()` read it.
   Ghost-job healing also runs inside `enqueue_once()`, not `ready()`.
@@ -646,9 +647,10 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Kea wire-discipline gate.** `netbox_kea/tests/kea_wire_discipline.py` checks
   production code for Kea command names, hyphenated payload keys, and family-suffixed
   configuration keys or service names. String templates (f-strings, `.format`, `%`, `+`)
-  count when they can build a wire literal. Wire owners are `kea.py`, `kea_paths.py`, `integrations/dhcp_import_ledger.py`, `server_configuration.py`,
-  `subnet_catalogue.py`, `reservations.py`, `dhcp_options.py`, `leases.py`, and `subnet_settings.py`, relative to
-  `netbox_kea/`.
+  count when they can build a wire literal. Wire owners are `kea.py`, `kea_paths.py`,
+  `integrations/dhcp_import_ledger.py`, `server_configuration.py`, `subnet_catalogue.py`, `reservations.py`,
+  `dhcp_options.py`, `leases.py`, and `subnet_settings.py`, relative to `netbox_kea/`. The vocabulary of hyphenated
+  keys includes every key in `accepted-keys.json`.
   The checker excludes these exact modules, tests, and migrations. The transport stub
   `tests/kea_stub.py` may also use wire literals to model Kea responses.
   It also checks `arguments` when code uses it as a raw payload key. Prefer typed domain

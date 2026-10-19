@@ -217,6 +217,8 @@ class ApplyPlanWithoutKeaTest(TestCase):
             ),
             {("dhcp4", 224), ("dhcp4", 225), ("dhcp4", 226)},
         )
+        record = OptionDefinition.objects.get(dhcp_server__name=server.name, code=225)
+        self.assertEqual(record.record_types, ["uint8", "string"])
         in_subnet = HostReservation.objects.get(subnet=links.get(kea_subnet_id=10).sys4_object)
         self.assertEqual(str(in_subnet.ipv4_address.address.ip), "192.0.2.30")
         global_link = KeaDhcpLink.objects.get(server=server, family=4, kea_identity=f"duid:{_GLOBAL_DUID}")

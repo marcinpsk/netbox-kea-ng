@@ -346,9 +346,9 @@ def _table_keys(source: str, table: str) -> list[str]:
 def _host_keys(source: str, family: int) -> list[str]:
     """Return the keys that ``getSupportedParams4`` or ``getSupportedParams6`` accepts on a host reservation."""
     body = re.search(rf"^getSupportedParams{family}\(.*?^\}}", source, re.MULTILINE | re.DOTALL)
-    keys = re.findall(r'\.insert\("([^"]+)"\)', body.group(0)) if body else []
-    if not keys:
-        raise SystemExit(f"No DHCPv{family} host reservation keys in the Kea source")
+    keys = re.findall(r'\.insert\(\s*"([^"]+)"\s*\)', body.group(0)) if body else []
+    if not keys or len(keys) != body.group(0).count(".insert("):
+        raise SystemExit(f"Could not read every DHCPv{family} host reservation key of the Kea source")
     return sorted(keys)
 
 

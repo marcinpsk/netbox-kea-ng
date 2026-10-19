@@ -128,6 +128,10 @@
         "mac-sources": [
           "any"
         ],
+        "max-preferred-lifetime": 3500,
+        "max-valid-lifetime": 4500,
+        "min-preferred-lifetime": 2500,
+        "min-valid-lifetime": 3500,
         "multi-threading": {
           "enable-multi-threading": true,
           "packet-queue-size": 64,
@@ -307,10 +311,10 @@
             "evaluate-additional-classes": [
               "printers"
             ],
-            "max-preferred-lifetime": 3000,
-            "max-valid-lifetime": 4000,
-            "min-preferred-lifetime": 3000,
-            "min-valid-lifetime": 4000,
+            "max-preferred-lifetime": 3500,
+            "max-valid-lifetime": 4500,
+            "min-preferred-lifetime": 2500,
+            "min-valid-lifetime": 3500,
             "name": "empty-network",
             "option-data": [],
             "pd-allocator": "iterative",
@@ -342,10 +346,10 @@
             "calculate-tee-times": true,
             "ddns-qualifying-suffix": "office.example.net",
             "interface": "eth0",
-            "max-preferred-lifetime": 3000,
-            "max-valid-lifetime": 4000,
-            "min-preferred-lifetime": 3000,
-            "min-valid-lifetime": 4000,
+            "max-preferred-lifetime": 3500,
+            "max-valid-lifetime": 4500,
+            "min-preferred-lifetime": 2500,
+            "min-valid-lifetime": 3500,
             "name": "office",
             "option-data": [
               {
@@ -378,10 +382,10 @@
                 "cache-threshold": 0.25,
                 "calculate-tee-times": true,
                 "id": 20,
-                "max-preferred-lifetime": 3000,
-                "max-valid-lifetime": 4000,
-                "min-preferred-lifetime": 3000,
-                "min-valid-lifetime": 4000,
+                "max-preferred-lifetime": 3500,
+                "max-valid-lifetime": 4500,
+                "min-preferred-lifetime": 2500,
+                "min-valid-lifetime": 3500,
                 "option-data": [],
                 "pd-allocator": "iterative",
                 "pd-pools": [],
@@ -420,10 +424,10 @@
                   "printers"
                 ],
                 "id": 21,
-                "max-preferred-lifetime": 3000,
-                "max-valid-lifetime": 4000,
-                "min-preferred-lifetime": 3000,
-                "min-valid-lifetime": 4000,
+                "max-preferred-lifetime": 3500,
+                "max-valid-lifetime": 4500,
+                "min-preferred-lifetime": 2500,
+                "min-valid-lifetime": 3500,
                 "option-data": [],
                 "pd-allocator": "iterative",
                 "pd-pools": [
@@ -531,10 +535,20 @@
             "client-classes": [
               "voip"
             ],
+            "ddns-conflict-resolution-mode": "check-with-dhcid",
+            "ddns-generated-prefix": "myhost",
+            "ddns-override-client-update": false,
+            "ddns-override-no-update": false,
             "ddns-qualifying-suffix": "",
+            "ddns-replace-client-name": "never",
+            "ddns-send-updates": true,
+            "ddns-ttl-percent": 0.5,
+            "ddns-update-on-renew": false,
             "evaluate-additional-classes": [
               "printers"
             ],
+            "hostname-char-replacement": "",
+            "hostname-char-set": "[^A-Za-z0-9.-]",
             "id": 10,
             "interface-id": "port-7",
             "max-preferred-lifetime": 3600,
@@ -581,6 +595,12 @@
                 "user-context": {
                   "rack": "r2"
                 }
+              },
+              {
+                "delegated-len": 64,
+                "option-data": [],
+                "prefix": "2001:db8:200::",
+                "prefix-len": 48
               }
             ],
             "pools": [
@@ -646,7 +666,7 @@
         },
         "valid-lifetime": 4000
       },
-      "hash": "BAC835F462870E3414B858E2B24860B7AF6E5B89A1FCB2034FFA11AAC4AE3F5D"
+      "hash": "756393021656C3F8707EFF3DACED6E353469372D4FC49B9B8372B2C2E940C331"
     },
     "result": 0
   },
@@ -655,7 +675,7 @@
     "changes": {
       "after-update": {
         "arguments": {
-          "cltt": 1792416427,
+          "cltt": 1792417787,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -683,7 +703,7 @@
       },
       "before": {
         "arguments": {
-          "cltt": 1792416427,
+          "cltt": 1792417787,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -737,7 +757,7 @@
       },
       "delegated-prefix": {
         "arguments": {
-          "cltt": 1792416427,
+          "cltt": 1792417787,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -760,7 +780,7 @@
       },
       "present": {
         "arguments": {
-          "cltt": 1792416427,
+          "cltt": 1792417787,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": true,
           "fqdn-rev": false,
@@ -792,7 +812,7 @@
       "arguments": {
         "leases": [
           {
-            "cltt": 1792416427,
+            "cltt": 1792417787,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": true,
             "fqdn-rev": false,
@@ -817,7 +837,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792416427,
+            "cltt": 1792417787,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -831,7 +851,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792416427,
+            "cltt": 1792417787,
             "duid": "00:00:00",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -845,7 +865,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792416427,
+            "cltt": 1792417787,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -859,7 +879,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792416427,
+            "cltt": 1792417787,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -873,7 +893,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792416427,
+            "cltt": 1792417787,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -887,7 +907,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1792416427,
+            "cltt": 1792417787,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -902,7 +922,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792416427,
+            "cltt": 1792417787,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -917,7 +937,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1792416427,
+            "cltt": 1792417787,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -932,7 +952,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792416427,
+            "cltt": 1792417787,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -957,7 +977,7 @@
           "count": 4,
           "leases": [
             {
-              "cltt": 1792416427,
+              "cltt": 1792417787,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": true,
               "fqdn-rev": false,
@@ -982,7 +1002,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792416427,
+              "cltt": 1792417787,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -996,7 +1016,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792416427,
+              "cltt": 1792417787,
               "duid": "00:00:00",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1010,7 +1030,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792416427,
+              "cltt": 1792417787,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1033,7 +1053,7 @@
           "count": 4,
           "leases": [
             {
-              "cltt": 1792416427,
+              "cltt": 1792417787,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1047,7 +1067,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792416427,
+              "cltt": 1792417787,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1061,7 +1081,7 @@
               "valid-lft": 4294967295
             },
             {
-              "cltt": 1792416427,
+              "cltt": 1792417787,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1076,7 +1096,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792416427,
+              "cltt": 1792417787,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1100,7 +1120,7 @@
           "count": 2,
           "leases": [
             {
-              "cltt": 1792416427,
+              "cltt": 1792417787,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1115,7 +1135,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792416427,
+              "cltt": 1792417787,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1277,10 +1297,10 @@
             "calculate-tee-times": true,
             "ddns-qualifying-suffix": "office.example.net",
             "interface": "eth0",
-            "max-preferred-lifetime": 3000,
-            "max-valid-lifetime": 4000,
-            "min-preferred-lifetime": 3000,
-            "min-valid-lifetime": 4000,
+            "max-preferred-lifetime": 3500,
+            "max-valid-lifetime": 4500,
+            "min-preferred-lifetime": 2500,
+            "min-valid-lifetime": 3500,
             "name": "office",
             "option-data": [
               {
@@ -1313,10 +1333,10 @@
                 "cache-threshold": 0.25,
                 "calculate-tee-times": true,
                 "id": 20,
-                "max-preferred-lifetime": 3000,
-                "max-valid-lifetime": 4000,
-                "min-preferred-lifetime": 3000,
-                "min-valid-lifetime": 4000,
+                "max-preferred-lifetime": 3500,
+                "max-valid-lifetime": 4500,
+                "min-preferred-lifetime": 2500,
+                "min-valid-lifetime": 3500,
                 "option-data": [],
                 "pd-allocator": "iterative",
                 "pd-pools": [],
@@ -1354,10 +1374,10 @@
                   "printers"
                 ],
                 "id": 21,
-                "max-preferred-lifetime": 3000,
-                "max-valid-lifetime": 4000,
-                "min-preferred-lifetime": 3000,
-                "min-valid-lifetime": 4000,
+                "max-preferred-lifetime": 3500,
+                "max-valid-lifetime": 4500,
+                "min-preferred-lifetime": 2500,
+                "min-valid-lifetime": 3500,
                 "option-data": [],
                 "pd-allocator": "iterative",
                 "pd-pools": [
