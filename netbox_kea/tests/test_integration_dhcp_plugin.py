@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ipaddress
 import unittest
+from functools import partial
 
 from django.apps import apps
 from django.contrib.auth import get_user_model
@@ -1016,6 +1017,180 @@ class DhcpPluginClientClassImportTest(TestCase):
         self.assertEqual(second.client_classes_updated, 1)
         cc = ClientClass.objects.get(name=f"{self.server.name}: voip")
         self.assertEqual(cc.test, "substring(option[60].hex,0,4) == 'Cisco'")
+
+
+def _mapped_conf():
+    """Return a DHCPv4 configuration with one row of each mapped kind that the import writes."""
+    return {
+        "option-def": [{"name": "site-code", "code": 222, "type": "uint8", "space": "dhcp4"}],
+        "client-classes": [
+            {"name": "voip", "test": "option[60].hex == 'voip'", "option-data": [{"code": 222, "data": "7"}]}
+        ],
+        "subnet4": [
+            {
+                "id": 1,
+                "subnet": "10.98.0.0/24",
+                "pools": [{"pool": "10.98.0.10-10.98.0.100", "option-data": [{"code": 222, "data": "5"}]}],
+                "reservations": [
+                    {"hw-address": "aa:bb:cc:dd:ee:98", "ip-address": "10.98.0.150", "hostname": "mapped"}
+                ],
+            }
+        ],
+    }
+
+
+@tag("dhcp_plugin")
+class DhcpPluginMappingImportTest(TestCase):
+    """Each imported Pool, In-Subnet Reservation, client class and custom Option Definition has a mapping."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def setUp(self):
+        from netbox_kea.integrations import dhcp_plugin
+
+        self.server = _make_db_server(name=f"kea-mapped-{timezone.now().timestamp()}")
+        self.adapter = dhcp_plugin
+        self.conf = _mapped_conf()
+
+    def _import(self):
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(self.conf, 4), _reservation_snapshot(self.conf, 4)
+        )
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        return summary
+
+    def _rows(self) -> dict:
+        """Return the imported row of each kind, by the source columns it must map to."""
+        model = partial(apps.get_model, DHCP_PLUGIN)
+        subnet = model("Subnet").objects.get(dhcp_server__name=self.server.name)
+        return {
+            ("subnet", 1, None): subnet,
+            ("pool", 1, "10.98.0.10-10.98.0.100"): model("Pool").objects.get(subnet=subnet),
+            ("reservation", 1, "hw-address:aa:bb:cc:dd:ee:98"): model("HostReservation").objects.get(subnet=subnet),
+            ("client_class", None, "voip"): model("ClientClass").objects.get(dhcp_server__name=self.server.name),
+            ("option_definition", None, "dhcp4:222"): model("OptionDefinition").objects.get(
+                standard=False, dhcp_server__name=self.server.name
+            ),
+        }
+
+    def _assert_one_mapping_each(self, rows: dict) -> dict:
+        from netbox_kea.models import KeaDhcpLink
+
+        links = {}
+        for source, row in rows.items():
+            with self.subTest(source=source):
+                mapped = KeaDhcpLink.objects.filter(
+                    object_type=ContentType.objects.get_for_model(row), object_id=row.pk
+                )
+                self.assertEqual(
+                    list(mapped.values_list("server", "family", "kind", "kea_subnet_id", "kea_identity")),
+                    [(self.server.pk, 4, *source)],
+                )
+                links[source] = mapped.get().pk
+        self.assertEqual(KeaDhcpLink.objects.filter(server=self.server).count(), len(rows))
+        return links
+
+    def test_each_imported_row_has_one_mapping_to_its_kea_source(self):
+        self._import()
+
+        self._assert_one_mapping_each(self._rows())
+
+    def test_a_second_import_finds_every_row_through_its_mapping(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
+        self._import()
+        rows = {source: row.pk for source, row in self._rows().items()}
+        links = self._assert_one_mapping_each(self._rows())
+
+        second = self._import()
+
+        self.assertEqual([entry for entry in second.entries if entry.outcome == Outcome.CREATED], [])
+        self.assertEqual({source: row.pk for source, row in self._rows().items()}, rows)
+        self.assertEqual(self._assert_one_mapping_each(self._rows()), links)
+
+    def test_a_renamed_row_keeps_its_mapping_and_the_next_import_updates_it(self):
+        self._import()
+        rows = self._rows()
+        for row in rows.values():
+            row.snapshot()
+            row.name = f"renamed {row.pk}"
+            row.save()
+        self.conf["option-def"][0]["type"] = "uint16"
+        self.conf["client-classes"][0]["test"] = "option[60].hex == 'phone'"
+        self.conf["subnet4"][0]["reservations"][0]["hostname"] = "renamed-host"
+        self.conf["subnet4"][0]["pools"][0]["option-data"][0]["data"] = "6"
+
+        summary = self._import()
+
+        current = self._rows()
+        self.assertEqual({source: row.pk for source, row in current.items()}, {s: r.pk for s, r in rows.items()})
+        for source, row in current.items():
+            with self.subTest(source=source):
+                self.assertEqual(row.name, f"renamed {row.pk}")
+        self.assertEqual(current[("option_definition", None, "dhcp4:222")].type, "uint16")
+        self.assertEqual(current[("client_class", None, "voip")].test, "option[60].hex == 'phone'")
+        self.assertEqual(current[("reservation", 1, "hw-address:aa:bb:cc:dd:ee:98")].hostname, "renamed-host")
+        self.assertEqual(
+            list(current[("pool", 1, "10.98.0.10-10.98.0.100")].options.values_list("data", flat=True)), ["6"]
+        )
+        self.assertEqual(
+            {(entry.kind, entry.outcome.value) for entry in summary.entries if entry.kind != Kind.OPTION},
+            {(Kind.OPTION_DEFINITION, "updated"), (Kind.CLIENT_CLASS, "updated"), (Kind.RESERVATION, "updated")},
+        )
+        self._assert_one_mapping_each(current)
+
+    def test_an_upgrade_adopts_the_rows_an_earlier_release_imported_without_a_mapping(self):
+        from netbox_kea.models import KeaDhcpLink
+
+        self._import()
+        rows = {source: row.pk for source, row in self._rows().items()}
+        # An earlier release mapped only the Subnet; the import matched the other rows by structure.
+        KeaDhcpLink.objects.filter(server=self.server).exclude(kind="subnet").delete()
+
+        summary = self._import()
+
+        self.assertEqual(
+            (summary.pools_created, summary.reservations_created, summary.client_classes_created),
+            (0, 0, 0),
+        )
+        self.assertEqual(summary.option_defs_created, 0)
+        self.assertEqual({source: row.pk for source, row in self._rows().items()}, rows)
+        self._assert_one_mapping_each(self._rows())
+
+    def test_a_pool_of_a_subnet_without_a_kea_id_imports_without_a_mapping(self):
+        from netbox_kea.models import KeaDhcpLink
+
+        Pool = apps.get_model(DHCP_PLUGIN, "Pool")
+        conf = {"subnet4": [{"subnet": "10.97.0.0/24", "pools": [{"pool": "10.97.0.10-10.97.0.20"}]}]}
+
+        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+
+        self.assertEqual((summary.errors, summary.subnets_created, summary.pools_created), (0, 1, 1), summary.warnings)
+        self.assertEqual(Pool.objects.filter(subnet__dhcp_server__name=self.server.name).count(), 1)
+        self.assertFalse(KeaDhcpLink.objects.filter(server=self.server).exists())
+
+    def test_one_class_name_in_both_families_imports_two_rows(self):
+        """One DHCPServer holds both families, so the class of the other family takes a family-qualified name."""
+        from netbox_kea.models import KeaDhcpLink
+
+        ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
+        for family in (4, 6, 4, 6):
+            conf = {"client-classes": [{"name": "voip", "test": f"family {family}"}], f"subnet{family}": []}
+            summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, family))
+            self.assertEqual(summary.errors, 0, summary.warnings)
+
+        rows = {row.name: row.test for row in ClientClass.objects.filter(dhcp_server__name=self.server.name)}
+        self.assertEqual(
+            rows, {f"{self.server.name}: voip": "family 4", f"{self.server.name} DHCPv6: voip": "family 6"}
+        )
+        self.assertEqual(
+            sorted(KeaDhcpLink.objects.filter(server=self.server).values_list("family", "kind", "kea_identity")),
+            [(4, "client_class", "voip"), (6, "client_class", "voip")],
+        )
 
 
 @tag("dhcp_plugin")

@@ -327,8 +327,16 @@ class DHCPImportChangeRecordTest(TestCase):
         server = _make_db_server(name="snapshot-server", ca_url="https://kea.example.invalid", dhcp6=False)
         config = {
             "valid-lifetime": 3600,
+            "option-def": [{"name": "site-code", "code": 222, "type": "uint8", "space": "dhcp4"}],
             "client-classes": [{"name": "phones", "test": "option[60].text == 'phone'", "valid-lifetime": 1800}],
-            "subnet4": [{"id": 1, "subnet": "198.18.0.0/24", "valid-lifetime": 7200}],
+            "subnet4": [
+                {
+                    "id": 1,
+                    "subnet": "198.18.0.0/24",
+                    "valid-lifetime": 7200,
+                    "pools": [{"pool": "198.18.0.10-198.18.0.20", "option-data": [{"code": 222, "data": "5"}]}],
+                }
+            ],
         }
         first = import_server_config(server, parse_dhcp_config(config, 4), _reservation_snapshot(config, 4))
         self.assertEqual(first.errors, 0, first.warnings)
@@ -337,7 +345,7 @@ class DHCPImportChangeRecordTest(TestCase):
         request = RequestFactory().post("/plugins/kea/import/")
         request.user = get_user_model().objects.create_user("import-operator")
         request.id = uuid.uuid4()
-        for model_name in ("DHCPServer", "ClientClass", "Subnet"):
+        for model_name in ("DHCPServer", "ClientClass", "Subnet", "Pool", "OptionDefinition"):
             model = apps.get_model("netbox_dhcp", model_name)
             with (
                 self.subTest(model=model_name),

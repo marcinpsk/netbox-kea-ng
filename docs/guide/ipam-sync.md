@@ -126,9 +126,8 @@ delete permission. When a user does not have a required grant, the Sync control 
 missing or constrained permission, and the server refuses the request with the same text. A grant that only an LDAP
 group mapping (`FIND_GROUP_PERMS`) gives does not count.
 
-**Sync to DHCP plugin now** also writes the DHCP plugin objects. It needs add and change on DHCP Server, Option,
-Client Class, Subnet and Host Reservation, and add on Option Definition and Pool. The import never changes a Pool or
-an Option Definition that exists.
+**Sync to DHCP plugin now** also writes the DHCP plugin objects. It needs add and change on DHCP Server, Option
+Definition, Option, Client Class, Subnet, Pool and Host Reservation.
 
 ## Upgrade to ownership links
 

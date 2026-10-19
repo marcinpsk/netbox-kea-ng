@@ -57,7 +57,7 @@ from netbox_kea.tests.test_branching import (
     _provisioned_branch,
     _recorded_kea,
 )
-from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
+from netbox_kea.tests.test_integration_dhcp_plugin import _mapped_conf, _reservation_snapshot
 from netbox_kea.tests.test_ipam_reconciliation import _lease, _reconcile, _row
 from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server, with_sync_config
 
@@ -937,6 +937,58 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                     self.assertEqual(mapping_identity(restored), mapping_identity(mappings[source]), source)
                     self.assertEqual(restored.created, mappings[source].created, source)
                     self.assertEqual(type(target).objects.get(pk=target.pk).created, target.created, source)
+
+    def test_squash_restores_imported_rows_of_every_kind_and_reimport_creates_none(self):
+        from netbox_dhcp.models import ClientClass, OptionDefinition, Subnet
+
+        from netbox_kea.dhcp_mapping_lifecycle import mapping_identity
+
+        conf = _mapped_conf()
+        server = _make_db_server(name="mapping-imported-kinds", ca_url="https://kea.example.invalid")
+        intent, observation = parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4)
+        with event_tracking(_change_request(self.user)):
+            summary = import_server_config(server, intent, observation)
+        self.assertEqual(summary.errors, 0, summary.warnings)
+
+        def links():
+            return KeaDhcpLink.objects.filter(server=server)
+
+        mappings = {link.pk: (mapping_identity(link), link.created) for link in links()}
+        targets = {(type(link.sys4_object), link.object_id): link.sys4_object.created for link in links()}
+        self.assertEqual(
+            sorted(links().values_list("kind", flat=True)),
+            ["client_class", "option_definition", "pool", "reservation", "subnet"],
+        )
+        branch = _provisioned_branch(self, "mapping-imported-kinds")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        # The Subnet takes its Pool, its Reservation and their Options; the Option Definition goes last.
+        for target in (
+            Subnet.objects.get(dhcp_server__name=server.name),
+            ClientClass.objects.get(dhcp_server__name=server.name),
+            OptionDefinition.objects.get(standard=False, dhcp_server__name=server.name),
+        ):
+            self._delete(branch, target)
+        with activate_branch(branch):
+            self.assertEqual(list(links().values_list("kind", flat=True)), [])
+
+        branch.merge(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertEqual(list(links().values_list("kind", flat=True)), [])
+        for model, pk in targets:
+            self.assertFalse(model.objects.filter(pk=pk).exists(), model)
+
+        branch.revert(user=self.user)
+        self.assertEqual({link.pk: (mapping_identity(link), link.created) for link in links()}, mappings)
+        for (model, pk), created in targets.items():
+            self.assertEqual(model.objects.get(pk=pk).created, created, model)
+
+        with event_tracking(_change_request(self.user)):
+            again = import_server_config(server, intent, observation)
+        self.assertEqual(again.errors, 0, again.warnings)
+        self.assertEqual([entry.path for entry in again.entries if entry.outcome.value == "created"], [])
+        self.assertEqual(set(links().values_list("pk", flat=True)), set(mappings))
 
     def test_squash_restores_global_reservations(self):
         for family in (4, 6):

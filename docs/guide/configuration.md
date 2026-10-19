@@ -49,6 +49,13 @@ stale cleanup while the switch is off.
 The DHCP Import needs netbox-plugin-dhcp 0.2.0 or later. With an older release installed, **Sync to DHCP plugin now**
 refuses before it reads Kea, names the required version, and changes nothing.
 
+The import keeps a DHCP Import Mapping from each Subnet, Pool, Reservation, client class and custom Option Definition
+that it writes to its Kea source. A later run finds the object through its mapping and updates it. When you rename an
+object, the mapping stays and the import keeps your name. The first run after an upgrade maps each object that an
+earlier release imported, so it makes no duplicate. One DHCP Server holds both families, so when the two families of
+a Server have a client class of the same name, the class of the second family also names its family, for example
+`kea1 DHCPv6: voip`.
+
 Each run of **Sync to DHCP plugin now** stores its result. The **DHCP Plugin** page under Sync shows the latest run:
 the counts for each family, object kind and outcome, and one entry for each Kea fact that the run created, updated or
 did not write. An entry names its fact by a Kea path, for example `Dhcp4/subnet4[id=20]/option-data[code=150]`. A

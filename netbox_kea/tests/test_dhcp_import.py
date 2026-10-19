@@ -226,6 +226,28 @@ class ApplyPlanWithoutKeaTest(TestCase):
         )
         self.assertEqual(global_link.sys4_object.duid, _GLOBAL_DUID)
         self.assertEqual((summary.subnets_created, summary.pools_created, summary.reservations_created), (3, 4, 2))
+        # Each imported row has exactly one DHCP Import Mapping, and a second apply finds each row through it.
+        rows = [
+            *Pool.objects.filter(subnet__dhcp_server__name=server.name),
+            *HostReservation.objects.filter(subnet__dhcp_server__name=server.name),
+            *HostReservation.objects.filter(dhcp_server__name=server.name, subnet__isnull=True),
+            *ClientClass.objects.filter(dhcp_server__name=server.name),
+            *OptionDefinition.objects.filter(standard=False, dhcp_server__name=server.name),
+        ]
+        mapped = KeaDhcpLink.objects.filter(server=server, family=4).exclude(kind="subnet")
+        self.assertCountEqual(
+            mapped.values_list("object_type__model", "object_id"),
+            [(row._meta.model_name, row.pk) for row in rows],
+        )
+        # Four Pools, two Reservations, four client classes and three custom Option Definitions.
+        self.assertEqual(mapped.count(), 13)
+        before = set(KeaDhcpLink.objects.filter(server=server).values_list("pk", "object_id"))
+
+        again = dhcp_plugin.apply_plan(server, plan)
+
+        self.assertEqual(again.errors, 0, again.warnings)
+        self.assertEqual([entry.path for entry in again.entries if entry.outcome.value == "created"], [])
+        self.assertEqual(set(KeaDhcpLink.objects.filter(server=server).values_list("pk", "object_id")), before)
 
 
 class PluginVersionRefusalTest(TestCase):

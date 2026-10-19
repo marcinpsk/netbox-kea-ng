@@ -368,7 +368,10 @@ URL request
   runs subnet/lease/reservation/prefix/range sync phases, writes a per-server
   summary to the job log.
 - **DHCP Import** (`integrations/`): `dhcp_import.run_dhcp_plugin_import(server, trigger)` reads Kea for every
-  enabled family, plans each family (`dhcp_import_plan.py`) and applies each plan (`dhcp_plugin.apply_plan`). Each Kea
+  enabled family, plans each family (`dhcp_import_plan.py`) and applies each plan (`dhcp_plugin.apply_plan`). Each
+  Subnet, Pool, Reservation, client class and custom Option Definition that the apply writes has a DHCP Import Mapping
+  (`KeaDhcpLink`: a kind of `MAPPING_KINDS` and the source columns of `dhcp_import_plan.MappingSource`). `mapped_target` and `observe_mapping` in `dhcp_mapping_lifecycle.py` read and
+  write it through that source; an unmapped row that matches by structure is adopted once. Each Kea
   fact of a run is an `ImportEntry` (`dhcp_import_report.py`): a kind, a Kea path from `kea_paths.py`, an outcome and,
   for a fact that was not written, a reason from a closed set. The reason gives the outcome (`REASON_OUTCOME`).
   `ImportSummary` counts only its entries, and an unchanged row has no entry. `store_run` stores a `DhcpImportRun`
