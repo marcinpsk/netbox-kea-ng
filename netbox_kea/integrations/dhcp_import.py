@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 import requests
 from django.apps import apps
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 
 from .. import server_configuration
 from ..constants import Family
@@ -50,11 +50,15 @@ class UnsupportedPluginVersion(Exception):
 
 
 def require_supported_plugin() -> None:
-    """Raise :class:`UnsupportedPluginVersion` when the installed netbox-plugin-dhcp is too old."""
+    """Raise :class:`UnsupportedPluginVersion` when the installed netbox-plugin-dhcp is too old or has no valid version."""
     plugin: PluginConfig = apps.get_app_config(dhcp_plugin.PLUGIN_APP_LABEL)
     installed = plugin.version
-    if Version(installed) < Version(REQUIRED_PLUGIN_VERSION):
-        raise UnsupportedPluginVersion(installed)
+    try:
+        supported = Version(installed) >= Version(REQUIRED_PLUGIN_VERSION)
+    except (InvalidVersion, TypeError):
+        supported = False
+    if not supported:
+        raise UnsupportedPluginVersion(str(installed))
 
 
 def enabled_versions(server: Server) -> list[Family]:

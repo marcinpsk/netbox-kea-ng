@@ -253,3 +253,20 @@ class PluginVersionRefusalTest(TestCase):
         self.assertEqual(kea.commands(), [])
         self.assertFalse(apps.get_model(DHCP_PLUGIN, "DHCPServer").objects.filter(name=server.name).exists())
         self.assertFalse(KeaDhcpLink.objects.filter(server=server).exists())
+
+    def test_sync_now_refuses_a_plugin_version_it_cannot_read(self):
+        self.client.force_login(get_user_model().objects.create_superuser("version-unreadable"))
+        server = _make_db_server(name="version-unreadable", sync_dhcp_plugin_enabled=True)
+        url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[server.pk])
+
+        with patch.object(apps.get_app_config(DHCP_PLUGIN), "version", "main"), stub_kea({}) as kea:
+            response = self.client.post(url)
+
+        (message,) = get_messages(response.wsgi_request)
+        self.assertEqual(message.level, ERROR)
+        self.assertEqual(
+            str(message),
+            "The DHCP Import needs netbox-plugin-dhcp 0.2.0 or later. The installed version is main.",
+        )
+        self.assertEqual(kea.commands(), [])
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "DHCPServer").objects.filter(name=server.name).exists())
