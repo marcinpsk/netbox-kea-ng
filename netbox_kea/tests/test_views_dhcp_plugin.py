@@ -24,7 +24,7 @@ from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 
-from netbox_kea.integrations import dhcp_plugin
+from netbox_kea.integrations import dhcp_import, dhcp_plugin
 from netbox_kea.models import DhcpIntegrationConfig, Server
 from netbox_kea.views import dhcp_plugin_sync as dps
 from netbox_kea.views.notices import HEADLINES, Notice
@@ -115,7 +115,7 @@ class ReadReservationObservationTest(TestCase):
         )
 
         with stub_kea(responses):
-            snapshot = dps._read_reservation_observation(self._server(), 4)
+            snapshot = dhcp_import._read_reservation_observation(self._server(), 4)
 
         self.assertIsNotNone(snapshot)
         self.assertFalse(snapshot.snapshot.complete)
@@ -124,8 +124,8 @@ class ReadReservationObservationTest(TestCase):
         responses = _sync_responses({4: {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]}})
         responses["reservation-get-page"] = requests.ConnectionError("read failed")
 
-        with self.assertLogs("netbox_kea.views.dhcp_plugin_sync", level="WARNING"), stub_kea(responses):
-            snapshot = dps._read_reservation_observation(self._server(), 4)
+        with self.assertLogs("netbox_kea.integrations.dhcp_import", level="WARNING"), stub_kea(responses):
+            snapshot = dhcp_import._read_reservation_observation(self._server(), 4)
 
         self.assertIsNone(snapshot)
 
@@ -385,9 +385,9 @@ class FetchConfigIntentTest(TestCase):
             with (
                 self.subTest(reply=reply),
                 stub_kea({"config-get": reply}),
-                self.assertLogs("netbox_kea.views.dhcp_plugin_sync", level="WARNING") as cm,
+                self.assertLogs("netbox_kea.integrations.dhcp_import", level="WARNING") as cm,
             ):
-                result = dps._fetch_config_intent(self.server, 4)
+                result = dhcp_import._fetch_config_intent(self.server, 4)
             # A malformed reply is a logged read failure with the configuration Notice, not a silent "no config".
             self.assertIsInstance(result, Notice)
             self.assertTrue(result.unavailable)
@@ -403,7 +403,7 @@ class FetchConfigIntentTest(TestCase):
                 stub_kea({"config-get": reply}),
                 self.assertLogs("netbox_kea.server_configuration", level="WARNING") as cm,
             ):
-                self.assertIsInstance(dps._fetch_config_intent(self.server, 4), Notice)
+                self.assertIsInstance(dhcp_import._fetch_config_intent(self.server, 4), Notice)
             self.assertTrue(any(reason in line for line in cm.output), cm.output)
 
 
@@ -419,8 +419,8 @@ class FetchConfigCollectionsTest(TestCase):
             ):
                 with self.subTest(version=version, conf=conf):
                     response = {"result": 0, "arguments": {f"Dhcp{version}": conf}}
-                    with stub_kea({"config-get": response}), self.assertLogs(dps.logger, level="WARNING") as cm:
-                        self.assertIsNone(dps._fetch_config_intent(server, version))
+                    with stub_kea({"config-get": response}), self.assertLogs(dhcp_import.logger, level="WARNING") as cm:
+                        self.assertIsNone(dhcp_import._fetch_config_intent(server, version))
                     self.assertTrue(any("could not parse the configuration" in line for line in cm.output))
 
     def test_valid_entries_survive_malformed_neighbors(self):
@@ -435,7 +435,7 @@ class FetchConfigCollectionsTest(TestCase):
             ],
         }
         with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": conf}}}) as kea:
-            intent = dps._fetch_config_intent(server, 4)
+            intent = dhcp_import._fetch_config_intent(server, 4)
         self.assertEqual(kea.commands(), ["config-get"])
         self.assertFalse(intent.configuration_complete)
         self.assertEqual([subnet.kea_subnet_id for subnet in intent.subnets], [1, 2])
