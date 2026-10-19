@@ -138,3 +138,8 @@ def test_an_interface_key_that_cannot_be_read_stops_the_recording(script):
     source = _INTERFACES.replace('element.first == "interfaces"', "element.first == INTERFACES")
     with pytest.raises(SystemExit):
         script._interface_keys(source, 4)
+
+
+def test_an_unspaced_interface_key_is_read(script):
+    source = _INTERFACES.replace('element.first == "user-context"', 'element.first=="user-context"')
+    assert script._interface_keys(source, 4) == ["dhcp-socket-type", "interfaces", "user-context"]

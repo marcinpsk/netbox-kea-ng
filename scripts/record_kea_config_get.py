@@ -364,9 +364,9 @@ def _class_keys(source: str, family: int) -> list[str]:
 
 def _interface_keys(source: str, family: int) -> list[str]:
     """Return the keys that ``IfacesConfigParser::parse`` accepts in ``interfaces-config`` of *family*."""
-    tests = re.findall(r"element\.first == ([^)]*)\)", source)
-    keys = [match.group(1) for test in tests if (match := re.fullmatch(r'"([^"]+)"', test.strip()))]
-    if not keys or len(keys) != len(tests):
+    keys = re.findall(r'element\.first\s*==\s*"([^"]+)"', source)
+    # One key per comparison. A split "not supported in DHCPv6" literal is out of reach.
+    if not keys or len(keys) != len(re.findall(r"element\.first\s*==", source)):
         raise SystemExit("Could not read every interfaces-config key of the Kea source")
     refused = set(re.findall(r'"(\S+) is not supported in DHCPv6"', source)) if family == 6 else set()
     return sorted(set(keys) - refused)
