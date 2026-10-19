@@ -143,3 +143,22 @@ def test_an_interface_key_that_cannot_be_read_stops_the_recording(script):
 def test_an_unspaced_interface_key_is_read(script):
     source = _INTERFACES.replace('element.first == "user-context"', 'element.first=="user-context"')
     assert script._interface_keys(source, 4) == ["dhcp-socket-type", "interfaces", "user-context"]
+
+
+_CLASSES = """    static std::set<std::string> supported_params = { "name",
+                                                      "only-if-required",   // deprecated
+                                                      /* a block comment */ "test"};
+    static std::set<std::string> supported_params_v4 = { "next-server" };
+    static std::set<std::string> supported_params_v6 = { "preferred-lifetime" };
+"""
+
+
+def test_a_client_class_key_after_a_comment_is_read(script):
+    assert script._class_keys(_CLASSES, 4) == ["name", "next-server", "only-if-required", "test"]
+    assert script._class_keys(_CLASSES, 6) == ["name", "only-if-required", "preferred-lifetime", "test"]
+
+
+def test_a_client_class_key_that_cannot_be_read_stops_the_recording(script):
+    source = _CLASSES.replace('{ "next-server" }', '{ "next-server", BOOT_FILE_NAME }')
+    with pytest.raises(SystemExit):
+        script._class_keys(source, 4)

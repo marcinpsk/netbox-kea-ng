@@ -359,7 +359,12 @@ def _class_keys(source: str, family: int) -> list[str]:
     names = ("supported_params", f"supported_params_v{family}")
     if any(name not in sets for name in names):
         raise SystemExit(f"No DHCPv{family} client class keys in the Kea source")
-    return sorted(key for name in names for key in re.findall(r'"([^"]+)"', sets[name]))
+    bodies = (re.sub(r"//[^\n]*|/\*.*?\*/", "", sets[name], flags=re.DOTALL) for name in names)
+    entries = [entry.strip() for body in bodies for entry in body.split(",")]
+    keys = [match.group(1) for entry in entries if (match := re.fullmatch(r'"([^"]+)"', entry))]
+    if len(keys) != len(entries):
+        raise SystemExit(f"Could not read every DHCPv{family} client class key of the Kea source")
+    return sorted(keys)
 
 
 def _interface_keys(source: str, family: int) -> list[str]:
