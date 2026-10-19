@@ -37,6 +37,9 @@ class Capability(str, Enum):
     OPTION_WITHOUT_DEFINITION = "option_without_definition"
     SERVER_ID_FIELDS = "server_id_fields"
     RELAY_ADDRESS_LIST = "relay_address_list"
+    DHCP4O6_SUBNET_SELECTION = "dhcp4o6_subnet_selection"
+    ADDRESS_REGISTRATION = "address_registration"
+    STASH_AGENT_OPTIONS = "stash_agent_options"
 
 
 # The row of each capability in the #88 gap table.
@@ -51,6 +54,9 @@ GAPS: dict[Capability, int] = {
     Capability.OPTION_WITHOUT_DEFINITION: 9,
     Capability.SERVER_ID_FIELDS: 10,
     Capability.RELAY_ADDRESS_LIST: 11,
+    Capability.DHCP4O6_SUBNET_SELECTION: 12,
+    Capability.ADDRESS_REGISTRATION: 13,
+    Capability.STASH_AGENT_OPTIONS: 14,
 }
 
 
@@ -165,9 +171,11 @@ def _global(family: Family) -> dict[str, Entry]:
     own: tuple[str, ...] = (*_DHCP4_LEASE, "echo-client-id")
     if family == 6:
         own = (*_PREFERRED_LIFETIMES, "pd-allocator", "relay-supplied-options")
-    server_level = (
-        ("stash-agent-options",) if family == 4 else ("allow-address-registration", "data-directory", "mac-sources")
-    )
+    if family == 4:
+        protocol = {"stash-agent-options": Pending(94, (Capability.STASH_AGENT_OPTIONS,))}
+    else:
+        protocol = {"allow-address-registration": Pending(94, (Capability.ADDRESS_REGISTRATION,))}
+    server_level = () if family == 4 else ("data-directory", "mac-sources")
     entries = {
         **_fields("DHCPServer", *_LIFETIMES, *_LEASE, *_DDNS, *own, "decline-probation-period"),
         "host-reservation-identifiers": Mapped(
@@ -182,6 +190,8 @@ def _global(family: Family) -> dict[str, Entry]:
         "adaptive-lease-time-threshold": Pending(99),
         "user-context": Pending(94, _USER_CONTEXT),
         "comment": _DEPRECATED["comment"],
+        "interfaces-config": Pending(94),
+        **protocol,
         # Server-level facts with no plugin home by design (#88 "Not plugin gaps").
         **_no_plugin_home(
             "lease-database",
@@ -194,7 +204,6 @@ def _global(family: Family) -> dict[str, Entry]:
             "expired-leases-processing",
             "multi-threading",
             "sanity-checks",
-            "interfaces-config",
             "config-control",
             "server-tag",
             "dhcp-queue-control",
@@ -229,7 +238,8 @@ def _subnet(family: Family) -> dict[str, Entry]:
         **_DEPRECATED,
     }
     if family == 4:
-        entries |= _no_plugin_home("4o6-interface", "4o6-interface-id", "4o6-subnet")
+        gated = (Capability.DHCP4O6_SUBNET_SELECTION,)
+        entries |= {key: Pending(99, gated) for key in ("4o6-interface", "4o6-interface-id", "4o6-subnet")}
     else:
         entries["pd-pools"] = Pending(101)
     return entries
@@ -345,6 +355,22 @@ def _option(family: Family) -> dict[str, Entry]:
     }
 
 
+def _interfaces(family: Family) -> dict[str, Entry]:
+    """Return the ``interfaces-config`` keys: where the server serves DHCP, and how Kea opens its sockets."""
+    socket_keys = ("dhcp-socket-type", "outbound-interface") if family == 4 else ()
+    return {
+        "interfaces": Pending(94),
+        **_no_plugin_home(
+            "re-detect",
+            "service-sockets-require-all",
+            "service-sockets-retry-wait-time",
+            "service-sockets-max-retries",
+            "user-context",
+            *socket_keys,
+        ),
+    }
+
+
 def _family(family: Family) -> dict[str, dict[str, Entry]]:
     tables = {
         f"Dhcp{family}": _global(family),
@@ -355,6 +381,7 @@ def _family(family: Family) -> dict[str, dict[str, Entry]]:
         "client-classes": _client_class(family),
         "option-def": _option_definition(family),
         "option-data": _option(family),
+        "interfaces-config": _interfaces(family),
     }
     if family == 6:
         tables["pd-pools"] = _pd_pool()

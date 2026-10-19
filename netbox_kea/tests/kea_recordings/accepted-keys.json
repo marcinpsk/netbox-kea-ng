@@ -88,6 +88,16 @@
       "user-context",
       "valid-lifetime"
     ],
+    "interfaces-config": [
+      "dhcp-socket-type",
+      "interfaces",
+      "outbound-interface",
+      "re-detect",
+      "service-sockets-max-retries",
+      "service-sockets-require-all",
+      "service-sockets-retry-wait-time",
+      "user-context"
+    ],
     "option-data": [
       "always-send",
       "client-classes",
@@ -348,6 +358,14 @@
       "test",
       "user-context",
       "valid-lifetime"
+    ],
+    "interfaces-config": [
+      "interfaces",
+      "re-detect",
+      "service-sockets-max-retries",
+      "service-sockets-require-all",
+      "service-sockets-retry-wait-time",
+      "user-context"
     ],
     "option-data": [
       "always-send",

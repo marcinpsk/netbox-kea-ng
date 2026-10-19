@@ -106,3 +106,35 @@ def test_a_host_reservation_key_that_cannot_be_read_stops_the_recording(script):
     source = _HOSTS.replace('params_set.insert("hostname");', "params_set.insert(HOSTNAME);")
     with pytest.raises(SystemExit):
         script._host_keys(source, 4)
+
+
+_INTERFACES = """IfacesConfigParser::parse(const CfgIfacePtr& cfg, const ConstElementPtr& ifaces_config) {
+    for (auto const& element : ifaces_config->mapValue()) {
+        if (element.first == "interfaces") {
+            continue;
+        }
+        if (element.first == "dhcp-socket-type") {
+            if (protocol_ == AF_INET) {
+                continue;
+            } else {
+                isc_throw(DhcpConfigError,
+                          "dhcp-socket-type is not supported in DHCPv6");
+            }
+        }
+        if (element.first == "user-context") {
+            continue;
+        }
+    }
+}
+"""
+
+
+def test_the_interface_keys_leave_out_a_key_that_dhcpv6_refuses(script):
+    assert script._interface_keys(_INTERFACES, 4) == ["dhcp-socket-type", "interfaces", "user-context"]
+    assert script._interface_keys(_INTERFACES, 6) == ["interfaces", "user-context"]
+
+
+def test_an_interface_key_that_cannot_be_read_stops_the_recording(script):
+    source = _INTERFACES.replace('element.first == "interfaces"', "element.first == INTERFACES")
+    with pytest.raises(SystemExit):
+        script._interface_keys(source, 4)

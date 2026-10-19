@@ -678,7 +678,7 @@
     "changes": {
       "after-update": {
         "arguments": {
-          "cltt": 1792418480,
+          "cltt": 1792421435,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -706,7 +706,7 @@
       },
       "before": {
         "arguments": {
-          "cltt": 1792418480,
+          "cltt": 1792421435,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -760,7 +760,7 @@
       },
       "delegated-prefix": {
         "arguments": {
-          "cltt": 1792418480,
+          "cltt": 1792421435,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -783,7 +783,7 @@
       },
       "present": {
         "arguments": {
-          "cltt": 1792418480,
+          "cltt": 1792421435,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": true,
           "fqdn-rev": false,
@@ -815,7 +815,7 @@
       "arguments": {
         "leases": [
           {
-            "cltt": 1792418480,
+            "cltt": 1792421435,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": true,
             "fqdn-rev": false,
@@ -840,7 +840,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792418480,
+            "cltt": 1792421435,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -854,7 +854,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792418480,
+            "cltt": 1792421435,
             "duid": "00:00:00",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -868,7 +868,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792418480,
+            "cltt": 1792421435,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -882,7 +882,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792418480,
+            "cltt": 1792421435,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -896,7 +896,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792418480,
+            "cltt": 1792421435,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -910,7 +910,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1792418480,
+            "cltt": 1792421435,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -925,7 +925,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792418480,
+            "cltt": 1792421435,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -940,7 +940,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1792418480,
+            "cltt": 1792421435,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -955,7 +955,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792418480,
+            "cltt": 1792421435,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -980,7 +980,7 @@
           "count": 4,
           "leases": [
             {
-              "cltt": 1792418480,
+              "cltt": 1792421435,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": true,
               "fqdn-rev": false,
@@ -1005,7 +1005,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792418480,
+              "cltt": 1792421435,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1019,7 +1019,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792418480,
+              "cltt": 1792421435,
               "duid": "00:00:00",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1033,7 +1033,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792418480,
+              "cltt": 1792421435,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1056,7 +1056,7 @@
           "count": 4,
           "leases": [
             {
-              "cltt": 1792418480,
+              "cltt": 1792421435,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1070,7 +1070,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792418480,
+              "cltt": 1792421435,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1084,7 +1084,7 @@
               "valid-lft": 4294967295
             },
             {
-              "cltt": 1792418480,
+              "cltt": 1792421435,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1099,7 +1099,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792418480,
+              "cltt": 1792421435,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1123,7 +1123,7 @@
           "count": 2,
           "leases": [
             {
-              "cltt": 1792418480,
+              "cltt": 1792421435,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1138,7 +1138,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792418480,
+              "cltt": 1792421435,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
