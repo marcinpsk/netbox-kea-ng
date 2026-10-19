@@ -18,6 +18,7 @@ from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 
 from netbox_kea.integrations import dhcp_plugin
+from netbox_kea.integrations.dhcp_import_report import Kind, Outcome, Reason
 from netbox_kea.ipam_reconciliation import (
     DelegatedPrefixPhase,
     PoolClaim,
@@ -26,7 +27,7 @@ from netbox_kea.ipam_reconciliation import (
     reconcile,
 )
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
-from netbox_kea.models import IPAMOwnershipLink, next_confirmation_number
+from netbox_kea.models import DhcpImportTrigger, IPAMOwnershipLink, next_confirmation_number
 from netbox_kea.pools import parse_pool
 from netbox_kea.views.dhcp_plugin_sync import _summary_problems, run_dhcp_plugin_import
 from netbox_kea.views.notices import Notice
@@ -55,7 +56,7 @@ class ImportOwnershipTest(TestCase):
         self.server.sync_dhcp_plugin_enabled = True
         self.server.save()
         with stub_kea(_sync_responses({6: self.config}, {6: []})):
-            results = run_dhcp_plugin_import(self.server)
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.assertEqual(results[0][1].errors, 0)
         self.server.refresh_from_db()
         self.assertIsNotNone(self.server.ipam_first_complete_at)
@@ -85,7 +86,7 @@ class ImportOwnershipTest(TestCase):
                 self.assertTrue(observed.diagnostics)
                 self.assertEqual(observed.subnet_diagnostics, ())
                 with stub_kea(_sync_responses({6: config}, {6: []})):
-                    results = run_dhcp_plugin_import(server)
+                    results = run_dhcp_plugin_import(server, DhcpImportTrigger.MANUAL)
                 summary = results[0][1]
                 self.assertEqual(summary.errors, 0)
                 server.refresh_from_db()
@@ -118,7 +119,7 @@ class ImportOwnershipTest(TestCase):
         observed = observed_configuration(6, config, self.server)
         self.assertTrue(observed.subnet_diagnostics)
         with stub_kea(_sync_responses({6: config}, {6: []})):
-            results = run_dhcp_plugin_import(self.server)
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         summary = results[0][1]
         self.assertEqual(summary.errors, 0)
         self.assertTrue({"subnet", "pool"} <= summary.ownership.incomplete)
@@ -136,7 +137,7 @@ class ImportOwnershipTest(TestCase):
         self.server.save()
         stale = Server.objects.get(pk=self.server.pk)
         with stub_kea(_sync_responses({6: self.config}, {6: []})):
-            results = run_dhcp_plugin_import(self.server)
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.assertEqual(results[0][1].errors, 0)
         self.server.refresh_from_db()
         receipts = self.server.ipam_initial_observations
@@ -156,7 +157,7 @@ class ImportOwnershipTest(TestCase):
         Prefix.objects.create(prefix=self.network, description="Operator delegation")
         hosts = [{"subnet-id": 0, "duid": "01:02:03:04", "prefixes": [self.network]}]
         with stub_kea(_sync_responses({6: self.config}, {6: hosts})):
-            results = run_dhcp_plugin_import(self.server)
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.assertEqual(results[0][1].errors, 0)
         self.server.refresh_from_db()
         self.assertIsNotNone(self.server.ipam_first_complete_at)
@@ -169,7 +170,7 @@ class ImportOwnershipTest(TestCase):
         responses = _sync_responses({6: self.config}, {6: []})
         responses["subnet4-list"] = {"result": 1, "text": "unavailable"}
         with stub_kea(responses):
-            run_dhcp_plugin_import(self.server)
+            run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.server.refresh_from_db()
         self.assertIsNone(self.server.ipam_first_complete_at)
         self.assertEqual(self.server.ipam_initial_observations, {})
@@ -191,7 +192,7 @@ class ImportOwnershipTest(TestCase):
 
                 responses["config-get"] = config_get
                 with stub_kea(responses):
-                    results = run_dhcp_plugin_import(self.server)
+                    results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
                 # The unread DHCPv4 configuration is a Notice; only DHCPv6 is imported.
                 self.assertEqual(
                     [(family, isinstance(item, Notice)) for family, item in results], [(4, True), (6, False)]
@@ -204,7 +205,7 @@ class ImportOwnershipTest(TestCase):
                 self.assertIsNone(self.server.ipam_first_complete_at)
                 self.assertEqual(self.server.ipam_initial_observations, {})
         with stub_kea(_sync_responses({4: {"subnet4": []}, 6: self.config}, {4: [], 6: []})):
-            run_dhcp_plugin_import(self.server)
+            run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.server.refresh_from_db()
         self.assertIsNotNone(self.server.ipam_first_complete_at)
         self.assertEqual(set(self.server.ipam_initial_observations), {"import"})
@@ -232,7 +233,7 @@ class ImportOwnershipTest(TestCase):
         self.assertEqual(prefix.status, "active")
         self.assertTrue(IPAMOwnershipLink.objects.filter(prefix=prefix).exists())
         with stub_kea(_sync_responses({6: {"subnet6": []}}, {6: []})):
-            run_dhcp_plugin_import(self.server)
+            run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.server.refresh_from_db()
         self.assertIsNotNone(self.server.ipam_first_complete_at)
         run_job({"subnet6": []})
@@ -249,12 +250,12 @@ class ImportOwnershipTest(TestCase):
             responses = _sync_responses(configs, {4: [], 6: []})
             responses[f"subnet{failed}-list"] = {"result": 1, "text": "unavailable"}
             with stub_kea(responses):
-                run_dhcp_plugin_import(self.server)
+                run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
             self.server.refresh_from_db()
             self.assertIsNone(self.server.ipam_first_complete_at)
             self.assertEqual(self.server.ipam_initial_observations, {})
         with stub_kea(_sync_responses(configs, {4: [], 6: []})):
-            run_dhcp_plugin_import(self.server)
+            run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.server.refresh_from_db()
         self.assertIsNotNone(self.server.ipam_first_complete_at)
 
@@ -265,7 +266,7 @@ class ImportOwnershipTest(TestCase):
         for _ in range(2):
             Prefix.objects.create(prefix="2001:db8:1::/64", description="[kea-sync: subnet]")
         with stub_kea(_sync_responses({6: self.config}, {6: []})):
-            results = run_dhcp_plugin_import(self.server)
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.assertGreater(results[0][1].errors, 0)
         self.server.refresh_from_db()
         self.assertIsNone(self.server.ipam_first_complete_at)
@@ -302,7 +303,7 @@ class ImportOwnershipTest(TestCase):
             self.assertNotEqual(obj.status, "deprecated")
         self.assertEqual(IPAMOwnershipLink.objects.filter(server=owner).count(), 3)
         with stub_kea(_sync_responses({4: {"subnet4": []}}, {4: []})):
-            run_dhcp_plugin_import(unknown)
+            run_dhcp_plugin_import(unknown, DhcpImportTrigger.MANUAL)
         run_job({"subnet4": []}, [])
         self.assertFalse(IPAddress.objects.filter(pk=address.pk).exists())
         for obj in (prefix, ip_range):
@@ -472,7 +473,7 @@ class ImportOwnershipTest(TestCase):
         conf = {"subnet6": [{"id": 9, "subnet": "2001:db8:9::/64"}]}
         observation = _reservation_snapshot(conf, 6, [{**self.identity, "subnet-id": 9}])
         summary = dhcp_plugin.ImportSummary()
-        dhcp_plugin.import_reservation_snapshot(self.server, None, observation, None, summary)
+        dhcp_plugin.import_reservation_snapshot(self.server, None, observation, None, summary, family=6)
         self.assertEqual(summary.reservations_skipped, 1)
         self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix=self.delegated()), before)
 
@@ -571,7 +572,7 @@ class ImportOwnershipTest(TestCase):
 
         responses["subnet6-list"] = confirm
         with stub_kea(responses):
-            results = run_dhcp_plugin_import(self.server)
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0][1].errors, 0)
         self.assertEqual(len(confirmations), 1)
@@ -727,6 +728,11 @@ class ImportOwnershipTest(TestCase):
         self.assertEqual((summary.errors, summary.subnets_created, summary.pools_created), (0, 1, 0))
         self.assertFalse(IPRange.objects.exists())
         self.assertTrue(any("unusable range, skipped" in warning for warning in summary.warnings))
+        (entry,) = [entry for entry in summary.entries if entry.kind == Kind.POOL]
+        self.assertEqual(
+            (entry.path, entry.outcome, entry.reason),
+            ("Dhcp6/subnet6[id=1]/pools[pool=2001:db8:1::/64]", Outcome.UNSUPPORTED, Reason.PLUGIN_GAP),
+        )
 
 
 class TypedNetworkClaimTest(TestCase):

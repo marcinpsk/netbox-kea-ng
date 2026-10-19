@@ -11,6 +11,7 @@ from __future__ import annotations
 from django.test import SimpleTestCase
 
 from netbox_kea.dhcp_options import DHCPOption, DHCPOptionIdentity, option_identity
+from netbox_kea.integrations.dhcp_import_report import Kind
 from netbox_kea.mappers.kea_to_dhcp import (
     OptionDefIntent,
     parse_dhcp_config,
@@ -384,3 +385,49 @@ class TestParseDhcpConfigRobustness(SimpleTestCase):
     def test_invalid_version_raises(self):
         with self.assertRaises(ValueError):
             parse_dhcp_config({}, 5)
+
+
+class TestParseDhcpConfigDroppedEntries(SimpleTestCase):
+    """Each entry that the parse drops is reported with its Kea path, so the import result can list it."""
+
+    def test_each_dropped_entry_has_its_kind_and_kea_path(self):
+        conf = {
+            "option-data": "not-a-list",
+            "option-def": ["nope", {"name": "bad-code", "code": "x"}],
+            "client-classes": [{"test": "member('ALL')"}],
+            "subnet6": [
+                "nope",
+                {"id": 4},
+                {
+                    "id": 5,
+                    "subnet": "2001:db8:5::/64",
+                    "pools": [{"option-data": []}],
+                    "option-data": [{"data": "x"}],
+                },
+            ],
+            "shared-networks": [{"subnet6": [{"id": 6, "subnet": "2001:db8:6::/64"}]}, {"name": "lab", "subnet6": [7]}],
+        }
+
+        dropped = parse_dhcp_config(conf, 6).dropped
+
+        self.assertEqual(
+            [(entry.kind, entry.path) for entry in dropped],
+            [
+                (Kind.OPTION, "Dhcp6/option-data"),
+                (Kind.OPTION_DEFINITION, "Dhcp6/option-def[0]"),
+                (Kind.OPTION_DEFINITION, "Dhcp6/option-def[1]"),
+                (Kind.CLIENT_CLASS, "Dhcp6/client-classes[0]"),
+                (Kind.SUBNET, "Dhcp6/subnet6[0]"),
+                (Kind.SUBNET, "Dhcp6/subnet6[id=4]"),
+                (Kind.POOL, "Dhcp6/subnet6[id=5]/pools[0]"),
+                (Kind.OPTION, "Dhcp6/subnet6[id=5]/option-data[0]"),
+                (Kind.SHARED_NETWORK, "Dhcp6/shared-networks[0]"),
+                (Kind.SUBNET, "Dhcp6/shared-networks[name=lab]/subnet6[0]"),
+            ],
+        )
+        self.assertEqual(dropped[5].detail, "The Subnet has no CIDR.")
+
+    def test_a_valid_configuration_drops_nothing(self):
+        conf = {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.20"}]}]}
+
+        self.assertEqual(parse_dhcp_config(conf, 4).dropped, [])

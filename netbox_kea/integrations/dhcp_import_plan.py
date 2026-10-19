@@ -16,13 +16,21 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 
 from ..constants import Family, validate_family
 from ..kea import subnet_network
-from ..mappers.kea_to_dhcp import ClientClassIntent, OptionDefIntent, PoolIntent, ServerConfigIntent, SubnetIntent
+from ..mappers.kea_to_dhcp import (
+    ClientClassIntent,
+    OptionDefIntent,
+    PoolIntent,
+    ServerConfigIntent,
+    SharedNetworkIntent,
+    SubnetIntent,
+)
 from ..pools import Pool, parse_pool
 from ..reservations import IdentifierType, InSubnetReservationScope, Reservation
 
 if TYPE_CHECKING:
     from ..dhcp_options import DHCPOption
     from ..ipam_reconciliation import ReservationObservation
+    from .dhcp_import_report import DroppedEntry
 
 K = TypeVar("K")
 T = TypeVar("T")
@@ -107,9 +115,13 @@ class FamilyPlan:
     server: PlannedServer
     option_definitions: tuple[Planned[OptionDefinitionKey, OptionDefIntent], ...]
     client_classes: tuple[Planned[str, ClientClassIntent], ...]
+    # Planned so that the result reports each one; the DHCP plugin model holds none yet.
+    shared_networks: tuple[Planned[str, SharedNetworkIntent], ...]
     subnets: tuple[PlannedSubnet, ...]
     # None: the read failed. keyed_reservations() keys its records.
     reservations: ReservationObservation | None
+    # The configuration entries that the parse dropped as invalid.
+    dropped: tuple[DroppedEntry, ...]
 
 
 def default_space(family: int) -> str:
@@ -118,11 +130,9 @@ def default_space(family: int) -> str:
 
 
 def _option_definitions(config: ServerConfigIntent) -> tuple[Planned[OptionDefinitionKey, OptionDefIntent], ...]:
-    """Key each custom Option Definition that has a code. A later definition of the same key replaces an earlier one."""
+    """Key each custom Option Definition. A later definition of the same key replaces an earlier one."""
     index: dict[OptionDefinitionKey, OptionDefIntent] = {}
     for definition in config.option_defs:
-        if definition.code is None:
-            continue
         index[OptionDefinitionKey(definition.space or default_space(config.family), definition.code)] = definition
     return tuple(Planned(key, definition) for key, definition in index.items())
 
@@ -162,6 +172,8 @@ def plan_family(config: ServerConfigIntent, observation: ReservationObservation 
         server=PlannedServer(config.global_settings, config.global_options, config.host_reservation_identifiers),
         option_definitions=_option_definitions(config),
         client_classes=tuple(Planned(intent.name, intent) for intent in config.client_classes),
+        shared_networks=tuple(Planned(intent.name, intent) for intent in config.shared_networks),
         subnets=tuple(_planned_subnet(subnet) for subnet in config.subnets),
         reservations=observation,
+        dropped=tuple(config.dropped),
     )

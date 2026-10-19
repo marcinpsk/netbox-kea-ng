@@ -83,6 +83,7 @@ from netbox_kea import display_cache  # noqa: E402
 from netbox_kea.jobs import KeaIpamSyncJob  # noqa: E402
 from netbox_kea.kea import KeaCommand, KeaException  # noqa: E402
 from netbox_kea.models import (  # noqa: E402
+    DhcpImportRun,
     DhcpIntegrationConfig,
     DisplayCacheConfig,
     IPAMOwnershipLink,
@@ -233,6 +234,8 @@ class BranchabilityPinTest(SimpleTestCase):
                 "netbox_kea.DisplayCacheConfig",
                 "netbox_kea.KeaDhcpLink",
                 "netbox_kea.IPAMOwnershipLink",
+                "netbox_kea.DhcpImportRun",
+                "netbox_kea.DhcpImportEntry",
             },
         )
 
@@ -1093,6 +1096,8 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
                 "netbox_kea.DisplayCacheConfig",
                 "netbox_kea.KeaDhcpLink",
                 "netbox_kea.IPAMOwnershipLink",
+                "netbox_kea.DhcpImportRun",
+                "netbox_kea.DhcpImportEntry",
             },
         )
         main_only = {
@@ -1102,6 +1107,8 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
             "netbox_kea.DhcpIntegrationConfig",
             "netbox_kea.DisplayCacheConfig",
             "netbox_kea.IPAMOwnershipLink",
+            "netbox_kea.DhcpImportRun",
+            "netbox_kea.DhcpImportEntry",
         }
         self.assertEqual((_refusal_receivers(pre_save), _refusal_receivers(pre_delete)), (main_only, main_only))
 
@@ -1245,6 +1252,20 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
                 self.assertEqual(client.post(url, data).status_code, 302)
                 self.assertEqual(saved(), expected)
                 self.assertEqual(ObjectChange.objects.count(), before[1] + 1)
+
+    def test_a_dhcp_import_in_a_branch_is_refused_and_stores_no_result(self):
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        client = Client()
+        client.force_login(get_user_model().objects.create_superuser("import-in-branch"))
+        client.cookies[COOKIE_NAME] = self.branch.schema_id
+
+        with stub_kea({}) as kea, _writes(self.branch) as writes:
+            response = client.post(reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk]))
+
+        self.assertContains(response, f"Branch {self.branch.name} is active.", status_code=409)
+        self.assertEqual((writes, kea.commands()), ([], []))
+        self.assertFalse(DhcpImportRun.objects.exists())
 
     def test_on_main_a_save_and_a_delete_are_not_refused(self):
         self.server.ca_url = _AFTER
