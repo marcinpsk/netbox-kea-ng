@@ -188,7 +188,7 @@ class ApplyPlanWithoutKeaTest(TestCase):
         ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
         OptionDefinition = apps.get_model(DHCP_PLUGIN, "OptionDefinition")
-        links = KeaDhcpLink.objects.filter(server=server, family=4, kea_subnet_id__isnull=False)
+        links = KeaDhcpLink.objects.filter(server=server, family=4, kind="subnet")
         self.assertEqual(
             {link.kea_subnet_id: str(link.sys4_object.prefix.prefix) for link in links},
             {10: "192.0.2.0/24", 20: "198.51.100.0/25", 21: "198.51.100.128/25"},
@@ -221,7 +221,9 @@ class ApplyPlanWithoutKeaTest(TestCase):
         self.assertEqual(record.record_types, ["uint8", "string"])
         in_subnet = HostReservation.objects.get(subnet=links.get(kea_subnet_id=10).sys4_object)
         self.assertEqual(str(in_subnet.ipv4_address.address.ip), "192.0.2.30")
-        global_link = KeaDhcpLink.objects.get(server=server, family=4, kea_identity=f"duid:{_GLOBAL_DUID}")
+        global_link = KeaDhcpLink.objects.get(
+            server=server, family=4, kind="reservation", kea_subnet_id=None, kea_identity=f"duid:{_GLOBAL_DUID}"
+        )
         self.assertEqual(global_link.sys4_object.duid, _GLOBAL_DUID)
         self.assertEqual((summary.subnets_created, summary.pools_created, summary.reservations_created), (3, 4, 2))
 

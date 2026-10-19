@@ -1070,6 +1070,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
         self.link = KeaDhcpLink.objects.create(
             server=self.server,
             family=4,
+            kind="subnet",
             kea_subnet_id=7,
             object_type=ContentType.objects.get_for_model(VRF),
             object_id=1,

@@ -126,9 +126,9 @@ def linked_dhcp_targets(server):
             family=4,
             sys4_object=target,
             **(
-                {"kea_subnet_id": index + 1}
+                {"kind": "subnet", "kea_subnet_id": index + 1}
                 if isinstance(target, subnet_model)
-                else {"kea_identity": "duid:00:01:02:03"}
+                else {"kind": "reservation", "kea_identity": "duid:00:01:02:03"}
             ),
         )
         for index, target in enumerate(targets)

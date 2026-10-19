@@ -44,6 +44,7 @@ from netbox_branching.signals import pre_merge, squash_dependency_graph_built
 from netbox_branching.utilities import activate_branch
 from utilities.exceptions import AbortRequest
 
+from netbox_kea.integrations.dhcp_import_plan import MappingSource
 from netbox_kea.integrations.dhcp_plugin import import_server_config
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.models import KeaDhcpLink, Server
@@ -645,7 +646,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 with event_tracking(_change_request(self.user)):
                     current = type(target).objects.create(pk=created_pk, **values)
                     current.tags.add(tag)
-                    mapping = observe_mapping(server, 4, current, subnet_id=current.subnet_id)
+                    mapping = observe_mapping(server, 4, current, MappingSource.subnet(current.subnet_id))
                 request_finished.send(sender=type(self))
                 if strategy == "iterative":
                     self._assert_tag_replay_refused(branch)
@@ -774,7 +775,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 before = ObjectChange.objects.count()
                 previous = KeaDhcpLink.objects.get(pk=link.pk).last_synced
                 with event_tracking(_change_request(self.user)):
-                    mapping = observe_mapping(merged_source, 4, target, subnet_id=7)
+                    mapping = observe_mapping(merged_source, 4, target, MappingSource.subnet(7))
                 self.assertEqual(mapping.pk, link.pk)
                 self.assertGreater(mapping.last_synced, previous)
                 self.assertEqual(ObjectChange.objects.count(), before)
@@ -937,6 +938,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             pk=link.pk,
             server_id=link.server_id,
             family=link.family,
+            kind="subnet",
             kea_subnet_id=99,
             object_type_id=link.object_type_id,
             object_id=link.object_id,
@@ -1939,6 +1941,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             _link = KeaDhcpLink.objects.create(
                 server=server,
                 family=4,
+                kind="reservation",
                 kea_identity="hw-address:02:00:00:00:00:08",
                 object_type=ContentType.objects.get_for_model(target),
                 object_id=target.pk,
@@ -2286,6 +2289,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             lambda: KeaDhcpLink.objects.create(
                 server_id=link.server_id,
                 family=6,
+                kind="subnet",
                 kea_subnet_id=99,
                 object_type_id=link.object_type_id,
                 object_id=link.object_id,
@@ -2296,6 +2300,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                     KeaDhcpLink(
                         server_id=link.server_id,
                         family=6,
+                        kind="subnet",
                         kea_subnet_id=99,
                         object_type_id=link.object_type_id,
                         object_id=link.object_id,
@@ -2357,6 +2362,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             ("created", "invalid"),
             ("created", "2026-10-04T01:00:00"),
             ("kea_identity", "missing"),
+            ("kind", "missing"),
             ("object_type", "missing"),
         )
         for index, (field, value) in enumerate(malformed):
@@ -2534,6 +2540,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             pk=link.pk,
             server_id=link.server_id,
             family=link.family,
+            kind=link.kind,
             kea_subnet_id=link.kea_subnet_id,
             object_type_id=link.object_type_id,
             object_id=target.pk,
@@ -2576,6 +2583,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             pk=link.pk,
             server_id=link.server_id,
             family=link.family,
+            kind=link.kind,
             kea_identity=link.kea_identity,
             object_type_id=link.object_type_id,
             object_id=target.pk,
@@ -3256,6 +3264,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         conflicting = KeaDhcpLink.objects.create(
             server_id=link.server_id,
             family=6,
+            kind="reservation",
             kea_identity="new-global-identity",
             object_type_id=link.object_type_id,
             object_id=target.pk,

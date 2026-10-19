@@ -8,6 +8,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
+#: The largest DHCP Option code: DHCPv6 codes are 16 bits.
+MAX_OPTION_CODE = 65_535
+
 # Kea standard option definitions (name, code) for the dhcp4 and dhcp6 spaces, which also back the option-name
 # suggestion list. Source: isc-projects/kea src/lib/dhcp/std_option_defs.h at tag Kea-3.2.0.
 KEA_DHCP4_STD_OPTIONS: list[tuple[str, int]] = [
@@ -241,7 +244,7 @@ def parse_option_definition(entry: Any, family: int) -> OptionDefinition:
     if not isinstance(entry, dict):
         raise ValueError("An Option Definition must be an object.")
     code = entry.get("code")
-    if isinstance(code, bool) or not isinstance(code, int) or not 0 <= code <= 65_535:
+    if isinstance(code, bool) or not isinstance(code, int) or not 0 <= code <= MAX_OPTION_CODE:
         raise ValueError("An Option Definition requires a valid code.")
     name, space, kind = entry.get("name"), entry.get("space", f"dhcp{family}"), entry.get("type")
     if (
@@ -530,7 +533,7 @@ def parse_dhcp_option(entry: Any) -> DHCPOption:
     if not isinstance(entry, dict):
         raise ValueError("A DHCP Option must be an object.")
     code = entry.get("code")
-    if code is not None and (isinstance(code, bool) or not isinstance(code, int) or not 0 <= code <= 65_535):
+    if code is not None and (isinstance(code, bool) or not isinstance(code, int) or not 0 <= code <= MAX_OPTION_CODE):
         raise ValueError("A DHCP Option code must be an integer from 0 through 65535.")
     name = entry.get("name")
     if name is not None and (not isinstance(name, str) or not name):

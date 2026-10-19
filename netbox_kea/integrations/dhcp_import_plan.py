@@ -3,18 +3,20 @@
 """The plan step of the DHCP Import: the keyed DHCP plugin objects that one family of a Kea read intends.
 
 The plan is pure. It reads no database, no DHCP plugin and no Kea, so a test can build it from recorded Kea
-replies. Each planned object carries its DHCP Import Mapping identity where one exists (a Subnet by Kea subnet ID,
-a Global Reservation by family and identifier), else its structural key. The plan keeps the Reservation
+replies. Each planned object carries its key, and :class:`MappingSource` gives the DHCP Import Mapping identity of
+a key: the columns of ``KeaDhcpLink`` that the apply step reads and writes. The plan keeps the Reservation
 observation, and :func:`keyed_reservations` keys its records. The apply step in
 :mod:`netbox_kea.integrations.dhcp_plugin` turns the parsed intents into plugin field values.
 """
 
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generic, TypeVar
 
 from ..constants import Family, validate_family
+from ..dhcp_options import MAX_OPTION_CODE
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import (
     ClientClassIntent,
@@ -25,7 +27,8 @@ from ..mappers.kea_to_dhcp import (
     SubnetIntent,
 )
 from ..pools import Pool, parse_pool
-from ..reservations import IdentifierType, InSubnetReservationScope, Reservation
+from ..reservations import MAX_IDENTITY_LENGTH, IdentifierType, InSubnetReservationScope, Reservation
+from .dhcp_import_report import Kind
 
 if TYPE_CHECKING:
     from ..dhcp_options import DHCPOption
@@ -44,12 +47,57 @@ class Planned(Generic[K, T]):
     intent: T
 
 
+# The longest text of one address: an IPv6 address with no zero group.
+_MAX_ADDRESS_TEXT = len(str(ipaddress.IPv6Address(2**128 - 1)))
+#: The longest Kea name that the import keys: a DHCP plugin row holds a name of 255 characters.
+MAX_KEA_NAME_LENGTH = 255
+#: The longest ``KeaDhcpLink.kea_identity`` that a :class:`MappingSource` gives, from the identity of each kind.
+MAX_MAPPING_IDENTITY_LENGTH = max(
+    MAX_IDENTITY_LENGTH,  # A Reservation: "identifier-type:value".
+    2 * _MAX_ADDRESS_TEXT + len("-"),  # A Pool: "start-end".
+    MAX_KEA_NAME_LENGTH + len(":") + len(str(MAX_OPTION_CODE)),  # An Option Definition: "space:code".
+    MAX_KEA_NAME_LENGTH,  # A Shared Network or a client class: its name.
+)
+
+
+@dataclass(frozen=True)
+class MappingSource:
+    """The Kea source of a DHCP Import Mapping in one Server and family, in the ``KeaDhcpLink`` identity columns.
+
+    ``kea_subnet_id`` is the Kea subnet ID of the object or of its Subnet. ``kea_identity`` identifies the object in
+    that Subnet, or in the Server and family when ``kea_subnet_id`` is ``None``. A Subnet has no ``kea_identity``.
+    """
+
+    kind: Kind
+    kea_subnet_id: int | None = None
+    kea_identity: str | None = None
+
+    @classmethod
+    def subnet(cls, subnet_id: int) -> MappingSource:
+        """Return the source of a Subnet by its Kea subnet ID."""
+        return cls(Kind.SUBNET, kea_subnet_id=subnet_id)
+
+    @classmethod
+    def named(cls, kind: Kind, name: str) -> MappingSource:
+        """Return the source of a Shared Network or a client class by its Kea name."""
+        return cls(kind, kea_identity=name)
+
+    def columns(self) -> dict[str, object]:
+        """Return the ``KeaDhcpLink`` identity columns, for a lookup and for a write."""
+        return {"kind": self.kind.value, "kea_subnet_id": self.kea_subnet_id, "kea_identity": self.kea_identity}
+
+
 @dataclass(frozen=True)
 class OptionDefinitionKey:
     """A custom Option Definition by option space and code."""
 
     space: str
     code: int
+
+    @property
+    def source(self) -> MappingSource:
+        """Return the DHCP Import Mapping source of the definition."""
+        return MappingSource(Kind.OPTION_DEFINITION, kea_identity=f"{self.space}:{self.code}")
 
 
 @dataclass(frozen=True)
@@ -59,19 +107,26 @@ class PoolKey:
     subnet_id: int | None
     range: Pool
 
+    @property
+    def source(self) -> MappingSource | None:
+        """Return the DHCP Import Mapping source of the Pool, or ``None`` when its Subnet has no Kea subnet ID."""
+        if self.subnet_id is None:
+            return None
+        return MappingSource(Kind.POOL, kea_subnet_id=self.subnet_id, kea_identity=self.range.range)
+
 
 @dataclass(frozen=True)
 class GlobalReservationKey:
-    """A Global Reservation by family and Kea identifier: its DHCP Import Mapping identity."""
+    """A Global Reservation by family and Kea identifier."""
 
     family: Family
     identifier_type: IdentifierType
     value: str
 
     @property
-    def link_identity(self) -> str:
-        """Return the ``KeaDhcpLink.kea_identity`` of the mapping. Its column fits every identity Kea accepts."""
-        return f"{self.identifier_type}:{self.value}"
+    def source(self) -> MappingSource:
+        """Return the DHCP Import Mapping source of the Reservation. The family is a column of the mapping."""
+        return MappingSource(Kind.RESERVATION, kea_identity=f"{self.identifier_type}:{self.value}")
 
 
 @dataclass(frozen=True)
@@ -81,6 +136,13 @@ class InSubnetReservationKey:
     subnet_id: int
     identifier_type: IdentifierType
     value: str
+
+    @property
+    def source(self) -> MappingSource:
+        """Return the DHCP Import Mapping source of the Reservation."""
+        return MappingSource(
+            Kind.RESERVATION, kea_subnet_id=self.subnet_id, kea_identity=f"{self.identifier_type}:{self.value}"
+        )
 
 
 ReservationKey = GlobalReservationKey | InSubnetReservationKey
@@ -145,7 +207,7 @@ def _planned_subnet(subnet: SubnetIntent) -> PlannedSubnet:
 
 
 def reservation_key(reservation: Reservation) -> ReservationKey:
-    """Return the key of a Reservation: its DHCP Import Mapping identity in Global Scope, else its structural key."""
+    """Return the key of a Reservation: its Reservation Identity."""
     identity = reservation.identity
     if isinstance(reservation.scope, InSubnetReservationScope):
         return InSubnetReservationKey(reservation.scope.subnet.subnet_id, identity.identifier_type, identity.value)

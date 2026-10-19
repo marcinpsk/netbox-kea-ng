@@ -22,10 +22,10 @@ from netbox.models.features import ChangeLoggingMixin, JobsMixin
 
 from . import branching
 from .constants import STALE_CLEANUP_MODES, Family
-from .integrations.dhcp_import_report import KIND_LABELS, OUTCOME_LABELS, REASON_LABELS, choices
+from .integrations.dhcp_import_plan import MAX_MAPPING_IDENTITY_LENGTH
+from .integrations.dhcp_import_report import KIND_LABELS, OUTCOME_LABELS, REASON_LABELS, Kind, choices
 from .kea import KeaClient
 from .leases import AllocationKind
-from .reservations import MAX_IDENTITY_LENGTH
 
 
 @dataclass(frozen=True)
@@ -614,25 +614,34 @@ class PinnedSettings:
         return context
 
 
+# The identity columns of a DHCP Import Mapping: a Kea subnet ID, an identity in that Subnet, or a global identity.
+_SUBNET_SOURCE = models.Q(kea_subnet_id__isnull=False, kea_identity__isnull=True)
+_IN_SUBNET_SOURCE = models.Q(kea_subnet_id__isnull=False, kea_identity__isnull=False)
+_GLOBAL_SOURCE = models.Q(kea_subnet_id__isnull=True, kea_identity__isnull=False)
+
+#: Each DHCP Import Mapping kind: the netbox_dhcp model it points at, and the identity columns it sets.
+MAPPING_KINDS: dict[Kind, tuple[str, models.Q]] = {
+    Kind.SHARED_NETWORK: ("SharedNetwork", _GLOBAL_SOURCE),
+    Kind.SUBNET: ("Subnet", _SUBNET_SOURCE),
+    Kind.POOL: ("Pool", _IN_SUBNET_SOURCE),
+    # A Reservation Identity holds its Reservation Scope: a Kea subnet ID, or none for Global.
+    Kind.RESERVATION: ("HostReservation", _IN_SUBNET_SOURCE | _GLOBAL_SOURCE),
+    Kind.CLIENT_CLASS: ("ClientClass", _GLOBAL_SOURCE),
+    Kind.OPTION_DEFINITION: ("OptionDefinition", _GLOBAL_SOURCE),
+}
+
+
 class KeaDhcpLink(ChangeLoggingMixin):
-    """Maps a Kea object identity to the netbox-plugin-dhcp (``netbox_dhcp``) record imported from it.
+    """A DHCP Import Mapping: maps a Kea source object to the netbox-plugin-dhcp (``netbox_dhcp``) row imported from it.
 
-    Kea's ``subnet-id`` is unique only per ``(server, protocol)`` — overlaps across
-    servers and between the v4/v6 daemons are normal — but ``netbox_dhcp``'s
-    ``Subnet.subnet_id`` is a single *global* unique namespace (and its auto-allocator
-    hands out a global ``max+1``).  Kea's id therefore cannot be stored there.  This
-    link holds the authoritative ``(server, family, kea_subnet_id)`` identity and points
-    — via a ``GenericForeignKey`` so there is no hard migration dependency on
-    ``netbox_dhcp`` being installed — at the imported DHCP-plugin object.  It is the
-    match key for idempotent re-import and the future home for accept/lock + drift state.
+    The source is ``(server, family, kind, kea_subnet_id, kea_identity)``. ``kea_subnet_id`` holds the Kea subnet ID
+    of a Subnet, or of the Subnet of a Pool or an In-Subnet Reservation. ``kea_identity`` holds the identity inside
+    that Subnet, or inside the Server and family for a global kind (``dhcp_import_plan.MappingSource``). Kea's
+    ``subnet-id`` is unique only per ``(server, family)``, and ``netbox_dhcp`` has one global ``Subnet.subnet_id``
+    namespace, so Kea's identity lives here. The ``GenericForeignKey`` keeps ``netbox_dhcp`` optional.
 
-    A Global Reservation has no ``subnet-id``, and ``netbox_dhcp`` derives a
-    ``HostReservation``'s family from its Subnet, so a Global row carries no family of
-    its own.  ``kea_identity`` holds that missing half of the identity here, which keeps
-    the DHCPv4 and DHCPv6 Reservations of one identifier on separate rows.
-
-    Exactly one identity kind is set per row, so the two partial unique constraints
-    together cover every link and no row can escape both.
+    ``MAPPING_KINDS`` ties each kind to its identity columns. Each identity shape has its own partial unique
+    constraint on non-null columns, so no row escapes uniqueness through a NULL.
     """
 
     server = models.ForeignKey(
@@ -643,22 +652,23 @@ class KeaDhcpLink(ChangeLoggingMixin):
     family = models.PositiveSmallIntegerField(
         help_text="IP family of the linked object (4 or 6).",
     )
+    kind: models.CharField = models.CharField(
+        max_length=32,
+        choices=choices({kind: KIND_LABELS[kind] for kind in MAPPING_KINDS}),
+        help_text="The kind of the Kea source object.",
+    )
     kea_subnet_id = models.PositiveIntegerField(
         null=True,
         blank=True,
-        help_text="Kea subnet-id for subnet links; null for objects without a Kea subnet-id.",
+        help_text="Kea subnet-id of the source object or of its Subnet; null for a global source.",
     )
-    # NULL is a distinct state here, not "empty": it means Kea identifies this link by
-    # subnet-id. keadhcplink_one_identity_kind requires NULL or a value greater than "",
-    # so "" would satisfy neither branch. Do not collapse it to a blank default.
+    # NULL is a distinct state here, not "empty": it means a Subnet source, and keadhcplink_kind_identity
+    # refuses "" for every kind. Do not collapse it to a blank default.
     kea_identity = models.CharField(  # noqa: DJ001
-        max_length=MAX_IDENTITY_LENGTH,
+        max_length=MAX_MAPPING_IDENTITY_LENGTH,
         null=True,
         blank=True,
-        help_text=(
-            "Normalized 'identifier-type:value' for a Global Reservation link; "
-            "null for objects Kea identifies by subnet-id."
-        ),
+        help_text="Identity of the source object in its Subnet or globally; null for a Subnet source.",
     )
     object_type = models.ForeignKey(
         to="contenttypes.ContentType",
@@ -679,25 +689,36 @@ class KeaDhcpLink(ChangeLoggingMixin):
                 name="keadhcplink_unique_sys4_object",
             ),
             models.UniqueConstraint(
-                fields=["server", "family", "kea_subnet_id"],
-                name="keadhcplink_unique_subnet_identity",
-                condition=models.Q(kea_subnet_id__isnull=False),
+                fields=["server", "family", "kind", "kea_subnet_id"],
+                name="keadhcplink_unique_subnet_source",
+                condition=_SUBNET_SOURCE,
             ),
             models.UniqueConstraint(
-                fields=["server", "family", "kea_identity"],
-                name="keadhcplink_unique_reservation_identity",
-                condition=models.Q(kea_identity__isnull=False),
+                fields=["server", "family", "kind", "kea_subnet_id", "kea_identity"],
+                name="keadhcplink_unique_in_subnet_source",
+                condition=_IN_SUBNET_SOURCE,
+            ),
+            models.UniqueConstraint(
+                fields=["server", "family", "kind", "kea_identity"],
+                name="keadhcplink_unique_global_source",
+                condition=_GLOBAL_SOURCE,
             ),
             models.CheckConstraint(
-                condition=models.Q(kea_subnet_id__isnull=False, kea_identity__isnull=True)
-                | models.Q(kea_subnet_id__isnull=True, kea_identity__isnull=False, kea_identity__gt=""),
-                name="keadhcplink_one_identity_kind",
+                condition=reduce(
+                    or_,
+                    (
+                        models.Q(kind=kind.value) & columns & ~models.Q(kea_identity="")
+                        for kind, (_, columns) in MAPPING_KINDS.items()
+                    ),
+                ),
+                name="keadhcplink_kind_identity",
             ),
         ]
 
     def __str__(self) -> str:
-        key = f"subnet-id={self.kea_subnet_id}" if self.kea_identity is None else self.kea_identity
-        return f"{self.server} v{self.family} {key} → {self.object_type_id}:{self.object_id}"
+        scope = [] if self.kea_subnet_id is None else [f"subnet-id={self.kea_subnet_id}"]
+        key = " ".join([*scope, *([] if self.kea_identity is None else [self.kea_identity])])
+        return f"{self.server} v{self.family} {self.kind} {key} → {self.object_type_id}:{self.object_id}"
 
 
 class DhcpImportTrigger(models.TextChoices):

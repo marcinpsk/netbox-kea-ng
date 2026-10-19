@@ -279,7 +279,7 @@ class DhcpPluginAdapterTest(TestCase):
         self.assertEqual(summary.reservations_created, 1)
 
         # Subnet linked by Kea identity, sharing the IPAM Prefix the sync owns.
-        link = KeaDhcpLink.objects.get(server=self.server, family=4, kea_subnet_id=1)
+        link = KeaDhcpLink.objects.get(server=self.server, family=4, kind="subnet", kea_subnet_id=1)
         self.assertIsNone(link.kea_identity)
         subnet = link.sys4_object
         self.assertIsInstance(subnet, Subnet)
@@ -326,8 +326,8 @@ class DhcpPluginAdapterTest(TestCase):
         self.adapter.import_server_config(self.server, parse_dhcp_config(conf4, 4), _reservation_snapshot(conf4, 4))
         self.adapter.import_server_config(self.server, parse_dhcp_config(conf6, 6), _reservation_snapshot(conf6, 6))
 
-        link4 = KeaDhcpLink.objects.get(server=self.server, family=4, kea_subnet_id=1)
-        link6 = KeaDhcpLink.objects.get(server=self.server, family=6, kea_subnet_id=1)
+        link4 = KeaDhcpLink.objects.get(server=self.server, family=4, kind="subnet", kea_subnet_id=1)
+        link6 = KeaDhcpLink.objects.get(server=self.server, family=6, kind="subnet", kea_subnet_id=1)
         # Same Kea subnet-id (1) for both families, but distinct plugin Subnets +
         # distinct globally-unique plugin subnet_ids — no UniqueConstraint collision.
         self.assertNotEqual(link4.object_id, link6.object_id)
@@ -350,7 +350,9 @@ class DhcpPluginAdapterTest(TestCase):
         self.assertEqual(second.subnets_created, 0)
         self.assertEqual(second.pools_created, 0)
         self.assertEqual(second.reservations_created, 0)
-        self.assertEqual(KeaDhcpLink.objects.filter(server=self.server, family=4, kea_subnet_id=1).count(), 1)
+        self.assertEqual(
+            KeaDhcpLink.objects.filter(server=self.server, family=4, kind="subnet", kea_subnet_id=1).count(), 1
+        )
         self.assertEqual(Subnet.objects.filter(prefix__prefix="10.99.0.0/24").count(), 1)
         self.assertEqual(Pool.objects.count(), 1)
         self.assertEqual(HostReservation.objects.count(), 1)
@@ -394,9 +396,11 @@ class DhcpPluginAdapterTest(TestCase):
         self.assertEqual(summary.errors, 1, summary.warnings)
         self.assertEqual(summary.subnets_created, 1)
         self.assertIn("subnet 10.97.1.0/24 (id=1)", summary.warnings[0])
-        link = KeaDhcpLink.objects.get(server=self.server, family=4, kea_subnet_id=2)
+        link = KeaDhcpLink.objects.get(server=self.server, family=4, kind="subnet", kea_subnet_id=2)
         self.assertEqual(str(link.sys4_object.prefix.prefix), "10.97.2.0/24")
-        self.assertFalse(KeaDhcpLink.objects.filter(server=self.server, family=4, kea_subnet_id=1).exists())
+        self.assertFalse(
+            KeaDhcpLink.objects.filter(server=self.server, family=4, kind="subnet", kea_subnet_id=1).exists()
+        )
         self.assertEqual(Subnet.objects.count(), 1)
 
     def test_pool_range_sync_error_is_counted_and_later_pools_import(self):
@@ -538,7 +542,7 @@ class DhcpPluginAdapterTest(TestCase):
         conf = {"subnet4": [{"id": 1, "subnet": "10.52.0.0/24"}]}  # bare: deletable without children
 
         self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
-        link = KeaDhcpLink.objects.get(server=self.server, family=4, kea_subnet_id=1)
+        link = KeaDhcpLink.objects.get(server=self.server, family=4, kind="subnet", kea_subnet_id=1)
         old_pk = link.sys4_object.pk
 
         Subnet.objects.filter(pk=old_pk).delete()
@@ -547,6 +551,7 @@ class DhcpPluginAdapterTest(TestCase):
         link = KeaDhcpLink.objects.create(
             server=self.server,
             family=4,
+            kind="subnet",
             kea_subnet_id=1,
             object_type_id=link.object_type_id,
             object_id=old_pk,
@@ -557,7 +562,7 @@ class DhcpPluginAdapterTest(TestCase):
         # keadhcplink_unique_subnet_identity constraint by creating a duplicate.
         summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
         self.assertEqual(summary.errors, 0, summary.warnings)
-        links = KeaDhcpLink.objects.filter(server=self.server, family=4, kea_subnet_id=1)
+        links = KeaDhcpLink.objects.filter(server=self.server, family=4, kind="subnet", kea_subnet_id=1)
         self.assertEqual(links.count(), 1)
         new_subnet = links.first().sys4_object
         self.assertIsNotNone(new_subnet)
@@ -1215,7 +1220,11 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         self.assertEqual(v4_row.hostname, "dual-v4")
         self.assertEqual(v6_row.hostname, "dual-v6")
         self.assertEqual(
-            sorted(KeaDhcpLink.objects.filter(kea_identity__isnull=False).values_list("family", "kea_identity")),
+            sorted(
+                KeaDhcpLink.objects.filter(kind="reservation", kea_subnet_id__isnull=True).values_list(
+                    "family", "kea_identity"
+                )
+            ),
             [(4, f"hw-address:{identifier}"), (6, f"hw-address:{identifier}")],
         )
 
@@ -1234,7 +1243,7 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         legacy = HostReservation.objects.get()
         legacy.name = "legacy name from an earlier import"
         legacy.save()
-        KeaDhcpLink.objects.filter(kea_identity__isnull=False).delete()
+        KeaDhcpLink.objects.filter(kind="reservation", kea_subnet_id__isnull=True).delete()
 
         summary = self.adapter.import_server_config(self.server, intent, snapshot)
 
@@ -1246,7 +1255,7 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         self.assertIn("DHCPv4", adopted.name)
         self.assertEqual(
             KeaDhcpLink.objects.filter(
-                server=self.server, family=4, kea_identity="hw-address:aa:bb:cc:dd:ee:42"
+                server=self.server, family=4, kind="reservation", kea_identity="hw-address:aa:bb:cc:dd:ee:42"
             ).count(),
             1,
         )

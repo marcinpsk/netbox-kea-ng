@@ -64,7 +64,7 @@ from django.db.models.signals import post_delete
 
 from .. import event_scope, kea_paths
 from ..constants import IPNetworkValue
-from ..dhcp_mapping_lifecycle import coordinated_import
+from ..dhcp_mapping_lifecycle import coordinated_import, mapped_target, observe_mapping
 from ..dhcp_options import DHCPOption, option_identity
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import ClientClassIntent, OptionDefIntent, ServerConfigIntent
@@ -74,6 +74,7 @@ from ..subnet_catalogue import CatalogueUnavailable
 from .dhcp_import_plan import (
     GlobalReservationKey,
     InSubnetReservationKey,
+    MappingSource,
     OptionDefinitionKey,
     keyed_reservations,
     plan_family,
@@ -746,13 +747,6 @@ def upsert_client_class(
     return obj
 
 
-def _linked_subnet(server, family: int, kea_subnet_id: int):
-    """Return the DHCP-plugin Subnet previously linked for this Kea identity, or ``None``."""
-    KeaDhcpLink = _link_model()
-    link = KeaDhcpLink.objects.filter(server=server, family=family, kea_subnet_id=kea_subnet_id).first()
-    return link.sys4_object if link is not None else None
-
-
 def _subnet_name(server, planned: PlannedSubnet, network: IPNetworkValue) -> str:
     """Build a globally-unique name (NetBoxDHCPModelMixin requires unique ``name``)."""
     family = planned.intent.family
@@ -777,16 +771,13 @@ def upsert_subnet(server, dhcp_server, planned: PlannedSubnet, summary: ImportSu
 
     Returns the ``netbox_dhcp.Subnet`` instance, or ``None`` on error.
     """
-    from ..dhcp_mapping_lifecycle import observe_mapping
-
     Subnet = _model("Subnet")
     intent = planned.intent
     path = subnet_path(planned)
     source = _Source(intent.family, Kind.SUBNET, path)
+    mapping = MappingSource.subnet(planned.key) if planned.key is not None else None
 
-    existing = None
-    if planned.key is not None:
-        existing = _linked_subnet(server, intent.family, planned.key)
+    existing = mapped_target(server, intent.family, mapping) if mapping is not None else None
 
     changed = False
     try:
@@ -824,8 +815,8 @@ def upsert_subnet(server, dhcp_server, planned: PlannedSubnet, summary: ImportSu
                 ).items():
                     setattr(subnet_obj, name, value)
                 subnet_obj.save()
-            if planned.key is not None:
-                observe_mapping(server, intent.family, subnet_obj, subnet_id=planned.key)
+            if mapping is not None:
+                observe_mapping(server, intent.family, subnet_obj, mapping)
     except event_scope.EventDispatchError:
         raise
     except Exception as exc:  # noqa: BLE001 — one bad subnet must not abort the import
@@ -908,24 +899,6 @@ def _unusable_pool(family: int, path: str, key: PoolKey | None, result: RangeCla
     return not_written(family, Kind.POOL, path, Reason.WRITE_FAILED, "The IP Range could not be claimed.")
 
 
-def _linked_reservation(server, key: GlobalReservationKey):
-    """Return the DHCP-plugin reservation linked to this Kea Global identity, or ``None``."""
-    KeaDhcpLink = _link_model()
-    link = KeaDhcpLink.objects.filter(server=server, family=key.family, kea_identity=key.link_identity).first()
-    return link.sys4_object if link is not None else None
-
-
-def _link_reservation(server, key: GlobalReservationKey, obj) -> None:
-    """Record the ``(server, family, identity)`` link for one Global Reservation.
-
-    Keyed on the Kea identity rather than the row, so a link whose row was deleted is
-    relinked instead of colliding with ``keadhcplink_unique_sys4_object``.
-    """
-    from ..dhcp_mapping_lifecycle import observe_mapping
-
-    observe_mapping(server, key.family, obj, reservation_identity=key.link_identity)
-
-
 def _unlinked(base):
     """Restrict *base* to the rows no Kea link claims yet."""
     from django.contrib.contenttypes.models import ContentType
@@ -995,7 +968,7 @@ def _upsert_reservation(
             ipv4_ip, ipv6_ips, mac_obj = _reservation_addresses(reservation, claims, catalogue, summary)
             if reservation.identity.identifier_type == "hw-address" and mac_obj is None:
                 raise RuntimeError("The reservation hardware address could not be resolved.")
-            linked = _linked_reservation(server, key) if isinstance(key, GlobalReservationKey) else None
+            linked = mapped_target(server, key.family, key.source) if isinstance(key, GlobalReservationKey) else None
             if linked is not None:
                 obj = linked
             elif subnet_obj is not None:
@@ -1040,7 +1013,7 @@ def _upsert_reservation(
                 )
             )
             if isinstance(key, GlobalReservationKey):
-                _link_reservation(server, key, obj)
+                observe_mapping(server, key.family, obj, key.source)
     except event_scope.EventDispatchError:
         raise
     except Exception:
@@ -1155,7 +1128,7 @@ def import_reservation_snapshot(
     for planned in keyed_reservations(observation):
         reservation, key = planned.intent, planned.key
         if isinstance(key, InSubnetReservationKey):
-            subnet_obj = _linked_subnet(server, reservation.family, key.subnet_id)
+            subnet_obj = mapped_target(server, reservation.family, MappingSource.subnet(key.subnet_id))
             if subnet_obj is None:
                 complete = False
                 summary.record(
