@@ -701,7 +701,8 @@ def merge_option_edit(
     """Check the complete shown snapshot and merge its targeted edits onto the live entries.
 
     Raises:
-        DHCPOptionConflict: If the shown list changed or an edited identity is missing, repeated or submitted twice.
+        DHCPOptionConflict: If the shown list changed, an edited identity is missing, repeated or submitted twice,
+            or an added or changed entry takes the identity of another entry.
         DHCPOptionNameChange: If a name edit changes the identity of a coded DHCP Option.
 
     """
@@ -751,6 +752,18 @@ def merge_option_edit(
                 "Reload the form before saving."
             )
         replacements[index] = replacement
-    return [
-        option for index, entry in enumerate(existing) if (option := replacements.get(index, entry)) is not None
-    ] + additions
+    merged = [
+        (option, index in replacements)
+        for index, entry in enumerate(existing)
+        if (option := replacements.get(index, entry)) is not None
+    ] + [(option, True) for option in additions]
+    identities = [option_identity(parse_dhcp_option(option), family, definitions) for option, _ in merged]
+    taken = Counter(identities)
+    for (option, changed), identity in zip(merged, identities, strict=True):
+        # Untouched live duplicates stay: only a changed entry may not take an identity twice.
+        if changed and taken[identity] > 1:
+            raise DHCPOptionConflict(
+                f"DHCP Option '{_option_label(parse_dhcp_option(option), family)}' already exists. "
+                "Edit the existing option instead."
+            )
+    return [option for option, _ in merged]

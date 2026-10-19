@@ -1372,6 +1372,25 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
                     ],
                 )
 
+    def test_an_added_or_renamed_option_with_a_taken_identity_aborts_before_write(self):
+        options = [{"code": 3, "data": "198.18.0.1"}, {"name": "ntp-servers", "data": "198.18.0.123"}]
+        for case in ("added", "added twice", "renamed"):
+            for scope in ("server", "subnet"):
+                with self.subTest(case=case, scope=scope), _persist_stub(self._config(scope, options)) as kea:
+                    data = self._submitted(self.client.get(self._url(scope)))
+                    if case == "renamed":
+                        data["form-1-name"] = "routers"
+                    else:
+                        rows = ("routers",) if case == "added" else ("domain-name-servers", "domain-name-servers")
+                        for index, name in enumerate(rows, start=int(data["form-TOTAL_FORMS"])):
+                            data[f"form-{index}-name"] = name
+                            data[f"form-{index}-data"] = "198.18.0.2"
+                        data["form-TOTAL_FORMS"] = str(int(data["form-TOTAL_FORMS"]) + len(rows))
+                    post = self.client.post(self._url(scope), data)
+                    self.assertNotIn("config-set", kea.commands())
+                    self.assertEqual(post.status_code, 200)
+                    self.assertIn("already exists", str(post.context["formset"].non_form_errors()))
+
     def test_untouched_padded_data_keeps_its_value_encoding_and_duplicates(self):
         padded = {
             "code": 6,
