@@ -178,11 +178,18 @@ def run_dhcp_plugin_import(
         else:
             results.append((version, read))
             entries.append(not_written(version, Kind.SERVER, path, Reason.READ_FAILED, " ".join(read.lines)))
-    complete_import_observation(
-        server,
-        {family: summary.ownership for family, summary in results if isinstance(summary, dhcp_plugin.ImportSummary)},
-    )
-    store_run(server, trigger, started, entries)
+    try:
+        complete_import_observation(
+            server,
+            {
+                family: summary.ownership
+                for family, summary in results
+                if isinstance(summary, dhcp_plugin.ImportSummary)
+            },
+        )
+    finally:
+        # Every family has committed, so the run is stored even when the receipt fails.
+        store_run(server, trigger, started, entries)
     return results
 
 
