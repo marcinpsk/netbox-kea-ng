@@ -19,9 +19,11 @@ from .dhcp_options import (
     AmbiguousFormOption,
     DHCPOption,
     InvalidAddress,
+    OptionDefinition,
     address_list,
     form_option_fields,
     parse_dhcp_option,
+    parse_option_definition,
 )
 from .kea import (
     CandidateConfiguration,
@@ -114,19 +116,6 @@ class SharedNetwork:
 
 
 @dataclass(frozen=True)
-class OptionDefinition:
-    """One validated custom DHCP Option definition."""
-
-    code: int
-    name: str
-    space: str
-    type: str
-    array: bool
-    encapsulate: str | None
-    record_types: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class ServerConfigurationSnapshot:
     """Immutable configuration facts observed for one Server and family."""
 
@@ -158,6 +147,14 @@ class ServerConfigurationSnapshot:
     hook_libraries: tuple[str, ...] = ()
     # Diagnostics of the two Reservation facts above; only the Reservation capabilities read them.
     reservation_diagnostics: tuple[Diagnostic, ...] = ()
+
+    @property
+    def option_definitions_complete(self) -> bool:
+        """Return whether the read proves the complete custom Option Definition collection."""
+        return self.available and not any(
+            diagnostic.code in {"invalid-option-definition", "invalid-option-definition-collection"}
+            for diagnostic in self.diagnostics
+        )
 
     @property
     def reservation_facts_complete(self) -> bool:
@@ -975,33 +972,6 @@ def _string_tuple(
     return tuple(value)
 
 
-def _parse_definition(entry: Any, family: Family) -> OptionDefinition:
-    if not isinstance(entry, dict):
-        raise ValueError("An Option Definition must be an object.")
-    code = entry.get("code")
-    if isinstance(code, bool) or not isinstance(code, int) or not 0 <= code <= 65_535:
-        raise ValueError("An Option Definition requires a valid code.")
-    name, space, kind = entry.get("name"), entry.get("space", f"dhcp{family}"), entry.get("type")
-    if (
-        not isinstance(name, str)
-        or not name
-        or not isinstance(space, str)
-        or not space
-        or not isinstance(kind, str)
-        or not kind
-    ):
-        raise ValueError("An Option Definition requires name, space and type strings.")
-    array = entry.get("array", False)
-    encapsulate = entry.get("encapsulate", "")
-    record_types = entry.get("record-types", "")
-    if not isinstance(array, bool) or not isinstance(encapsulate, str) or not isinstance(record_types, str):
-        raise ValueError("An Option Definition has invalid field types.")
-    records = tuple(value.strip() for value in record_types.split(",")) if record_types else ()
-    if any(not value for value in records):
-        raise ValueError("An Option Definition has an empty record type.")
-    return OptionDefinition(code, name, space, kind, array, encapsulate or None, records)
-
-
 def _parse_definitions(entries: Any, family: Family, diagnostics: list[Diagnostic]) -> tuple[OptionDefinition, ...]:
     if not isinstance(entries, list):
         diagnostics.append(
@@ -1016,7 +986,7 @@ def _parse_definitions(entries: Any, family: Family, diagnostics: list[Diagnosti
     definitions: list[OptionDefinition] = []
     for index, entry in enumerate(entries):
         try:
-            definitions.append(_parse_definition(entry, family))
+            definitions.append(parse_option_definition(entry, family))
         except ValueError:  # noqa: PERF203
             diagnostics.append(
                 Diagnostic(

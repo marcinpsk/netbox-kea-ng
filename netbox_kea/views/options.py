@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any, cast
 from urllib.parse import urlencode as _urlencode
 
@@ -18,7 +19,14 @@ from utilities.views import register_model_view
 from .. import config_write, forms, server_configuration
 from ..config_write import ConfigChangeOutcome
 from ..constants import Family
-from ..dhcp_options import DHCPOption, DHCPOptionConflict, DHCPOptionNameChange
+from ..dhcp_options import (
+    DHCPOption,
+    DHCPOptionChange,
+    DHCPOptionConflict,
+    DHCPOptionEdit,
+    DHCPOptionNameChange,
+    parse_dhcp_option,
+)
 from ..kea import KeaException
 from ..models import Server
 from ..utilities import OptionalViewTab
@@ -56,14 +64,49 @@ def config_nav_context(server_pk: int, section: str, dhcp_version: Family) -> di
     }
 
 
-def _run_option_change(request: HttpRequest, confirmed: str, change: Callable[[], ConfigChangeOutcome]) -> None:
-    """Run a DHCP Option change. A stale or renamed option row is a form error, not a Configuration Change result."""
+def _option_edit(formset: Any) -> DHCPOptionEdit:
+    """Translate the bound option rows into the snapshot and the operator's changed assignments."""
+    snapshot: list[DHCPOption] = []
+    changes: list[DHCPOptionChange] = []
+    for form in formset.forms:
+        row = form.cleaned_data
+        if not row:
+            continue
+        original = row.get("original_option")
+        seen = parse_dhcp_option(original) if original is not None else None
+        if seen is not None:
+            snapshot.append(seen)
+        if row.get("DELETE"):
+            intended = None
+        elif seen is None:
+            intended = DHCPOption(
+                code=None,
+                name=row["name"],
+                space=None,
+                data=row["data"],
+                csv_format=None,
+                always_send=True if row["always_send"] else None,
+                never_send=None,
+            )
+        else:
+            intended = replace(seen, name=row["name"] or None, data=row["data"])
+            if bool(seen.always_send) != row["always_send"]:
+                intended = replace(intended, always_send=row["always_send"])
+        if intended != seen:
+            changes.append(DHCPOptionChange(seen, intended))
+    return DHCPOptionEdit(tuple(snapshot), tuple(changes))
+
+
+def _run_option_change(
+    request: HttpRequest, confirmed: str, change: Callable[[], ConfigChangeOutcome], formset: Any
+) -> bool:
+    """Run an option change, or keep its named conflict on the bound form."""
     try:
         _run_change(request, confirmed, change)
-    except DHCPOptionConflict:
-        messages.error(request, "DHCP Options changed or are ambiguous. Reload the form before saving.")
-    except DHCPOptionNameChange:
-        messages.error(request, "A coded DHCP Option cannot be renamed. Delete it and add a new option instead.")
+    except (DHCPOptionConflict, DHCPOptionNameChange) as exc:
+        formset._non_form_errors = formset.error_class([exc.message])
+        return False
+    return True
 
 
 class _BaseSubnetOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
@@ -152,12 +195,14 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
         cidr: str = form.cleaned_data["subnet_cidr"]
         if not formset.is_valid():
             return self._render(request, server, subnet_id, cidr, formset, form, return_url)
-        rows = [row.cleaned_data for row in formset.forms if row.cleaned_data]
-        _run_option_change(
+        edit = _option_edit(formset)
+        if not _run_option_change(
             request,
             f"Subnet {subnet_id} options updated.",
-            lambda: config_write.set_subnet_options(server, self.dhcp_version, subnet_id, cidr, rows),
-        )
+            lambda: config_write.set_subnet_options(server, self.dhcp_version, subnet_id, cidr, edit),
+            formset,
+        ):
+            return self._render(request, server, subnet_id, cidr, formset, form, return_url)
         return redirect(return_url)
 
 
@@ -238,12 +283,24 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
                 },
             )
 
-        rows = [row.cleaned_data for row in formset.forms if row.cleaned_data]
-        _run_option_change(
+        edit = _option_edit(formset)
+        if not _run_option_change(
             request,
             f"DHCPv{self.dhcp_version} server options updated.",
-            lambda: config_write.set_server_options(server, self.dhcp_version, rows),
-        )
+            lambda: config_write.set_server_options(server, self.dhcp_version, edit),
+            formset,
+        ):
+            return render(
+                request,
+                "netbox_kea/server_dhcp_options_edit.html",
+                {
+                    "object": server,
+                    "server": server,
+                    "formset": formset,
+                    "return_url": return_url,
+                    **config_nav_context(server.pk, "options", self.dhcp_version),
+                },
+            )
         return redirect(return_url)
 
 

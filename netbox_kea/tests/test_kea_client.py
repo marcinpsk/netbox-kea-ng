@@ -1638,8 +1638,8 @@ class TestSubnetUpdate(TestCase):
                 "client-class": "premium",
                 "pools": [{"pool": "10.0.0.100-10.0.0.110"}],
                 "option-data": [
-                    {"name": "domain-name", "data": "example.org"},
                     {"name": "routers", "data": "10.0.0.2"},
+                    {"name": "domain-name", "data": "example.org"},
                 ],
                 "valid-lifetime": 7200,
             },
@@ -1711,9 +1711,9 @@ class TestSubnetUpdate(TestCase):
         self.assertEqual(
             self._options(existing, dns_servers=("10.0.0.53",)),
             [
-                {"name": "domain-name-servers", "space": "vendor-4491", "data": "10.0.0.99"},
                 {"code": 6, "data": "10.0.0.53", "always-send": True},
                 {"code": 42, "never-send": True},
+                {"name": "domain-name-servers", "space": "vendor-4491", "data": "10.0.0.99"},
             ],
         )
 
@@ -1758,12 +1758,12 @@ class TestSubnetUpdate(TestCase):
 
     def test_a_dhcpv6_subnet_replaces_its_dns_option_and_keeps_the_others(self):
         existing = [
-            {"name": "dns-servers", "data": "2001:4860:4860::8888"},
+            {"name": "dns-servers", "data": "2001:db8::53"},
             {"name": "domain-search", "data": "example.com"},
         ]
         self.assertEqual(
-            self._options(existing, version=6, dns_servers=("2001:4860:4860::8844",)),
-            [{"name": "domain-search", "data": "example.com"}, {"name": "dns-servers", "data": "2001:4860:4860::8844"}],
+            self._options(existing, version=6, dns_servers=("2001:db8::54",)),
+            [{"name": "dns-servers", "data": "2001:db8::54"}, {"name": "domain-search", "data": "example.com"}],
         )
 
     def test_a_live_pool_entry_that_the_edit_cannot_keep_raises_and_sends_no_update(self):

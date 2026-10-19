@@ -507,6 +507,24 @@ reservations:
         )
         self.assertEqual(result.proposals, ())
 
+    def test_document_option_identity_uses_default_space_codes_and_class_sets(self):
+        document = json.loads(export_reservation_document(self.records[:1], "json"))
+        options = document["reservations"][0]["options"]
+        options[:] = [{"name": "routers", "data": "198.18.0.1"}, {"code": 3, "space": "dhcp4", "data": "198.18.0.2"}]
+        result = parse_reservation_document(json.dumps(document), "json")
+        self.assertEqual([item.code for item in result.diagnostics], ["duplicate-option"])
+        for first_classes, second_classes, duplicate in (
+            (["voip"], ["lab"], False),
+            (["voip", "lab"], ["lab", "voip"], True),
+        ):
+            options[0]["client_classes"] = first_classes
+            options[1]["client_classes"] = second_classes
+            result = parse_reservation_document(json.dumps(document), "json")
+            with self.subTest(classes=(first_classes, second_classes)):
+                self.assertEqual([item.code for item in result.diagnostics].count("unknown-field"), 2)
+                self.assertEqual("duplicate-option" in [item.code for item in result.diagnostics], duplicate)
+                self.assertEqual(result.proposals, ())
+
     def test_duplicate_dhcp_options_are_not_retained(self):
         diagnostics = []
 
@@ -517,6 +535,7 @@ reservations:
             ],
             "reservations[0].options",
             diagnostics,
+            4,
         )
 
         self.assertIsNotNone(options)

@@ -180,7 +180,7 @@ def dispatch_error_only_logged(request, obj):
 
 def _sync_to_netbox(request, server, leases):
     try:
-        # ok: kea-dispatch-error-swallowed
+        # ruleid: kea-dispatch-error-swallowed
         claim(server, 4, leases, force=False)
     except event_scope.EventDispatchError:
         logger.exception("The events of the sync could not be dispatched")
@@ -216,3 +216,74 @@ def claim(*args, **kwargs):
 
 def reconcile(*args, **kwargs):
     return args, kwargs
+
+
+def journal_events_reported(obj) -> SideEffectStatus:
+    try:
+        # ok: kea-dispatch-error-swallowed
+        with event_scope.atomic():
+            obj.save()
+    except event_scope.EventDispatchError:
+        logger.exception("Committed journal events failed")
+        return "events-failed"
+    except RuntimeError:
+        return "failed"
+
+
+def typed_status_cannot_hide_a_committed_write(obj) -> SideEffectStatus:
+    try:
+        # ruleid: kea-dispatch-error-swallowed
+        with event_scope.atomic():
+            obj.save()
+    except event_scope.EventDispatchError:
+        return "failed"
+    except RuntimeError:
+        return "failed"
+
+
+def an_untyped_string_is_not_a_committed_event_fact(obj):
+    try:
+        # ruleid: kea-dispatch-error-swallowed
+        with event_scope.atomic():
+            obj.save()
+    except event_scope.EventDispatchError:
+        return "events-failed"
+    except RuntimeError:
+        return "failed"
+
+
+def committed_claim_events_reported(server, records):
+    try:
+        # ok: kea-dispatch-error-swallowed
+        return claim(server, 4, records, force=True)
+    except event_scope.EventDispatchError:
+        return ClaimFailure("events-failed")
+    except RuntimeError:
+        return ClaimFailure("failed")
+
+
+def a_failed_claim_fact_is_not_a_committed_event_fact(server, records):
+    try:
+        # ruleid: kea-dispatch-error-swallowed
+        return claim(server, 4, records, force=True)
+    except event_scope.EventDispatchError:
+        return ClaimFailure("failed")
+    except RuntimeError:
+        return ClaimFailure("failed")
+
+
+def a_valid_handler_does_not_hide_another_failed_unit(obj) -> SideEffectStatus:
+    try:
+        # ok: kea-dispatch-error-swallowed
+        with event_scope.atomic():
+            obj.save()
+    except event_scope.EventDispatchError:
+        return "events-failed"
+    except RuntimeError:
+        return "failed"
+    try:
+        # ruleid: kea-dispatch-error-swallowed
+        with event_scope.atomic():
+            obj.save()
+    except RuntimeError:
+        return "failed"

@@ -24,7 +24,14 @@ from netbox_kea import config_write, subnet_catalogue
 from netbox_kea.change_outcome import ChangeRejected
 from netbox_kea.config_write import ConfigChangeOutcome, SubnetAddOutcome
 from netbox_kea.constants import Family
-from netbox_kea.dhcp_options import DHCPOptionConflict, DHCPOptionNameChange, parse_dhcp_options
+from netbox_kea.dhcp_options import (
+    DHCPOptionChange,
+    DHCPOptionConflict,
+    DHCPOptionEdit,
+    DHCPOptionNameChange,
+    parse_dhcp_option,
+    parse_dhcp_options,
+)
 from netbox_kea.kea import (
     CandidateTargetMissing,
     MalformedConfiguration,
@@ -1379,8 +1386,8 @@ _UPDATED = {
         "subnet": "10.0.20.0/24",
         "pools": [{"pool": "10.0.20.100-10.0.20.110"}],
         "option-data": [
-            {"name": "domain-name", "data": "example.org"},
             {"name": "routers", "data": "10.0.20.254"},
+            {"name": "domain-name", "data": "example.org"},
             {"name": "domain-name-servers", "data": "192.0.2.53"},
         ],
         "relay": {"ip-addresses": ["198.51.100.1"]},
@@ -1392,8 +1399,8 @@ _UPDATED = {
         "subnet": "2001:db8:20::/64",
         "pools": [{"pool": "2001:db8:20::200-2001:db8:20::2ff"}],
         "option-data": [
-            {"name": "domain-search", "data": "example.org"},
             {"name": "dns-servers", "data": "2001:db8::54"},
+            {"name": "domain-search", "data": "example.org"},
             {"name": "sntp-servers", "data": "2001:db8::123"},
         ],
         "valid-lifetime": 3600,
@@ -2589,6 +2596,31 @@ def _new_row(name: str, data: str) -> dict:
     return {"name": name, "data": data, "always_send": False, "DELETE": False, "original_option": None}
 
 
+def _option_rows_edit(rows: list[dict]) -> DHCPOptionEdit:
+    """Build typed intents for the existing Configuration Change scenarios."""
+    snapshot, changes = [], []
+    for row in rows:
+        original = row.get("original_option")
+        seen = parse_dhcp_option(original) if original is not None else None
+        if seen is not None:
+            snapshot.append(seen)
+        intended = None
+        if not row.get("DELETE"):
+            values = dict(original or {})
+            if row["name"]:
+                values["name"] = row["name"]
+            else:
+                values.pop("name", None)
+            if "data" in values or row["data"]:
+                values["data"] = row["data"]
+            if "always-send" in values or row.get("always_send"):
+                values["always-send"] = bool(row.get("always_send"))
+            intended = parse_dhcp_option(values)
+        if intended != seen:
+            changes.append(DHCPOptionChange(seen, intended))
+    return DHCPOptionEdit(tuple(snapshot), tuple(changes))
+
+
 def _seen_rows(options: list[dict]) -> list[dict]:
     """The options form rows that a GET builds from *options*, before any edit."""
     return [{**option.form_initial(), "DELETE": False} for option in parse_dhcp_options(copy.deepcopy(options))]
@@ -2674,12 +2706,14 @@ class ReadModifyWriteTests(TestCase):
         return {
             "set_subnet_options": (
                 lambda: config_write.set_subnet_options(
-                    self.server, version, 1, _SEEN[version], [_new_row(name, data)]
+                    self.server, version, 1, _SEEN[version], _option_rows_edit([_new_row(name, data)])
                 ),
                 subnet_options,
             ),
             "set_server_options": (
-                lambda: config_write.set_server_options(self.server, version, [_new_row(name, data)]),
+                lambda: config_write.set_server_options(
+                    self.server, version, _option_rows_edit([_new_row(name, data)])
+                ),
                 server_options,
             ),
             "add_option_definition": (
@@ -2726,7 +2760,9 @@ class ReadModifyWriteTests(TestCase):
 
     def test_subnet_options_reach_a_member_of_a_shared_network(self):
         with stub_kea(_rmw_responses(4)) as kea:
-            outcome = config_write.set_subnet_options(self.server, 4, 2, _MOVED[4], [_new_row("routers", "10.0.1.1")])
+            outcome = config_write.set_subnet_options(
+                self.server, 4, 2, _MOVED[4], _option_rows_edit([_new_row("routers", "10.0.1.1")])
+            )
         self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
         written = kea.bodies("config-set")[0]["arguments"]["Dhcp4"]
         self.assertEqual(
@@ -2760,7 +2796,9 @@ class ReadModifyWriteTests(TestCase):
     def test_a_config_test_that_cannot_reach_the_daemon_is_not_sent(self):
         unreachable = {"result": 128, "text": "Connection refused"}
         with stub_kea(_rmw_responses(4, **{"config-test": unreachable})) as kea:
-            rejection = self._rejection(lambda: config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])]))
+            rejection = self._rejection(
+                lambda: config_write.set_server_options(self.server, 4, _option_rows_edit([_new_row(*_DNS[4])]))
+            )
         self.assertEqual(rejection.reason, "not-sent")
         self.assertEqual(rejection.diagnostics, (f"{_DAEMON_UNREACHABLE} Kea replied: Connection refused",))
         self.assertEqual(kea.commands(), ["config-get", "config-test"])
@@ -2768,7 +2806,7 @@ class ReadModifyWriteTests(TestCase):
     def test_an_unsupported_config_test_is_skipped(self):
         unsupported = {"result": 2, "text": "'config-test' command not supported."}
         with stub_kea(_rmw_responses(4, **{"config-test": unsupported})) as kea:
-            outcome = config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])])
+            outcome = config_write.set_server_options(self.server, 4, _option_rows_edit([_new_row(*_DNS[4])]))
         self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
         self.assertEqual(kea.commands(), ["config-get", "config-test", "config-set", *_PERSIST])
 
@@ -2821,7 +2859,9 @@ class ReadModifyWriteTests(TestCase):
             with self.subTest(label):
                 with stub_kea(responses) as kea:
                     rejection = self._rejection(
-                        lambda: config_write.set_subnet_options(self.server, 4, 1, _SEEN[4], [_new_row(*_DNS[4])])
+                        lambda: config_write.set_subnet_options(
+                            self.server, 4, 1, _SEEN[4], _option_rows_edit([_new_row(*_DNS[4])])
+                        )
                     )
                 self.assertEqual(rejection.reason, "not-sent")
                 self.assertEqual(
@@ -2884,19 +2924,13 @@ class ReadModifyWriteTests(TestCase):
     def test_a_malformed_dhcp_option_in_the_configuration_is_not_sent(self):
         running = _running(4, **{"option-data": [{"name": "routers", "data": 5}]})
         with stub_kea(_rmw_responses(4, config_get=running)) as kea:
-            rejection = self._rejection(lambda: config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])]))
+            rejection = self._rejection(
+                lambda: config_write.set_server_options(self.server, 4, _option_rows_edit([_new_row(*_DNS[4])]))
+            )
         self.assertEqual(
             (rejection.reason, rejection.diagnostics),
             ("not-sent", ("Kea returned a configuration that NetBox cannot edit safely.",)),
         )
-        self.assertEqual(kea.commands(), ["config-get"])
-
-    def test_a_bad_submitted_option_row_is_not_blamed_on_kea(self):
-        row = {**_new_row("routers", "10.0.0.1"), "original_option": {"code": "six"}}
-        with stub_kea(_rmw_responses(4)) as kea, self.assertRaises(ValueError) as raised:
-            config_write.set_server_options(self.server, 4, [row])
-        self.assertNotIsInstance(raised.exception, ChangeRejected)
-        self.assertEqual(str(raised.exception), "A DHCP Option code must be an integer from 0 through 65535.")
         self.assertEqual(kea.commands(), ["config-get"])
 
     def test_a_missing_target_without_a_diagnostic_is_not_an_empty_rejection(self):
@@ -2912,7 +2946,7 @@ class ReadModifyWriteTests(TestCase):
             with self.subTest(label):
                 with stub_kea(_rmw_responses(4, **{"config-test": failure})) as kea:
                     rejection = self._rejection(
-                        lambda: config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])])
+                        lambda: config_write.set_server_options(self.server, 4, _option_rows_edit([_new_row(*_DNS[4])]))
                     )
                 self.assertEqual(
                     (rejection.reason, rejection.diagnostics),
@@ -2927,10 +2961,10 @@ class ReadModifyWriteTests(TestCase):
         for rows, error in (([_new_row("routers", "10.0.0.1")], DHCPOptionConflict), ([stale], DHCPOptionConflict)):
             with self.subTest(error=error.__name__, rows=rows):
                 with stub_kea(_rmw_responses(4, config_get=running)) as kea, self.assertRaises(error):
-                    config_write.set_server_options(self.server, 4, rows)
+                    config_write.set_server_options(self.server, 4, _option_rows_edit(rows))
                 self.assertEqual(kea.commands(), ["config-get"])
         with stub_kea(_rmw_responses(4, config_get=running)) as kea, self.assertRaises(DHCPOptionNameChange):
-            config_write.set_server_options(self.server, 4, [renamed])
+            config_write.set_server_options(self.server, 4, _option_rows_edit([renamed]))
         self.assertEqual(kea.commands(), ["config-get"])
 
     def test_a_live_option_value_that_differs_from_the_form_is_a_conflict(self):
@@ -2938,7 +2972,7 @@ class ReadModifyWriteTests(TestCase):
             {"code": 6, "name": "domain-name-servers", "data": "192.0.2.1"},
             {"name": "routers", "data": "10.0.0.1"},
         ]
-        for field, value in (("data", "192.0.2.9"), ("always-send", True)):
+        for field, value in (("data", "192.0.2.9"), ("always-send", True), ("never-send", True), ("csv-format", False)):
             live = copy.deepcopy(seen)
             live[0][field] = value
             # The operator edits only the other row, and leaves the changed option as the form showed it.
@@ -2948,13 +2982,13 @@ class ReadModifyWriteTests(TestCase):
             for scope, change, config_get, reads in (
                 (
                     "server",
-                    lambda edit: config_write.set_server_options(self.server, 4, edit),
+                    lambda edit: config_write.set_server_options(self.server, 4, _option_rows_edit(edit)),
                     _running(4, **{"option-data": live}),
                     ["config-get"],
                 ),
                 (
                     "subnet",
-                    lambda edit: config_write.set_subnet_options(self.server, 4, 1, _SEEN[4], edit),
+                    lambda edit: config_write.set_subnet_options(self.server, 4, 1, _SEEN[4], _option_rows_edit(edit)),
                     subnet_live,
                     self._reads(4, "set_subnet_options"),
                 ),
@@ -2970,11 +3004,138 @@ class ReadModifyWriteTests(TestCase):
         rows = _seen_rows(live)
         rows[1]["data"] = "10.0.0.2"
         with stub_kea(_rmw_responses(4, config_get=_running(4, **{"option-data": live}))) as kea:
-            outcome = config_write.set_server_options(self.server, 4, rows)
+            outcome = config_write.set_server_options(self.server, 4, _option_rows_edit(rows))
         self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
         self.assertEqual(
             kea.bodies("config-set")[0]["arguments"]["Dhcp4"]["option-data"], [live[0], {**live[1], "data": "10.0.0.2"}]
         )
+
+    def test_a_standard_option_name_targets_its_live_code_in_the_default_space(self):
+        rows = _seen_rows([{"name": "routers", "data": "198.18.0.1"}])
+        rows[0]["data"] = "198.18.0.2"
+        live = [{"code": 3, "space": "dhcp4", "data": "198.18.0.1", "user-context": {"owner": "lab"}}]
+        with stub_kea(_rmw_responses(4, config_get=_running(4, **{"option-data": live}))) as kea:
+            config_write.set_server_options(self.server, 4, _option_rows_edit(rows))
+        self.assertEqual(
+            kea.bodies("config-set")[0]["arguments"]["Dhcp4"]["option-data"],
+            [{"code": 3, "space": "dhcp4", "data": "198.18.0.2", "user-context": {"owner": "lab"}}],
+        )
+
+    def test_an_edit_preserves_untouched_identical_duplicates_in_live_order(self):
+        duplicate = {"code": 6, "data": "198.18.0.53"}
+        live = [duplicate, {"name": "routers", "data": "198.18.0.1"}, duplicate]
+        rows = _seen_rows(live)
+        rows[1]["data"] = "198.18.0.2"
+        rows.reverse()
+        with stub_kea(_rmw_responses(4, config_get=_running(4, **{"option-data": live}))) as kea:
+            config_write.set_server_options(self.server, 4, _option_rows_edit(rows))
+        self.assertEqual(
+            kea.bodies("config-set")[0]["arguments"]["Dhcp4"]["option-data"],
+            [duplicate, {"name": "routers", "data": "198.18.0.2"}, duplicate],
+        )
+
+    def _write_options(self, family, scope, live, edit, *, definitions=()):
+        daemon = (
+            {"option-data": live}
+            if scope == "server"
+            else {f"subnet{family}": [{**_subnet(family), "option-data": live}]}
+        )
+        if definitions:
+            daemon["option-def"] = list(definitions)
+        running = _running(family, **daemon)
+        with stub_kea(_rmw_responses(family, config_get=running)) as kea:
+            if scope == "server":
+                outcome = config_write.set_server_options(self.server, family, edit)
+            else:
+                outcome = config_write.set_subnet_options(self.server, family, 1, _SEEN[family], edit)
+        self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+        reads = ["config-get"] if scope == "server" else [f"subnet{family}-list", "config-get", "config-get"]
+        self.assertEqual(kea.commands(), [*reads, "config-test", "config-set", *_PERSIST])
+        written = kea.bodies("config-set")[0]["arguments"][f"Dhcp{family}"]
+        return written["option-data"] if scope == "server" else written[f"subnet{family}"][0]["option-data"]
+
+    def test_option_identity_resolves_standard_live_custom_and_unknown_names(self):
+        cases = (
+            (4, {"name": "routers"}, {"code": 3, "space": "dhcp4"}, ()),
+            (6, {"name": "dns-servers"}, {"code": 23, "space": "dhcp6"}, ()),
+            (
+                4,
+                {"name": "custom", "space": "vendor-lab"},
+                {"code": 222, "space": "vendor-lab"},
+                ({"name": "custom", "code": 222, "space": "vendor-lab", "type": "string"},),
+            ),
+            (
+                6,
+                {"name": "custom"},
+                {"code": 222, "space": "dhcp6"},
+                ({"name": "custom", "code": 222, "type": "string"},),
+            ),
+            (4, {"name": "unknown"}, {"name": "unknown", "space": "dhcp4"}, ()),
+        )
+        for family, shown_identity, live_identity, definitions in cases:
+            seen = parse_dhcp_option({**shown_identity, "data": "before"})
+            edit = DHCPOptionEdit((seen,), (DHCPOptionChange(seen, dataclasses.replace(seen, data="after")),))
+            live = [{**live_identity, "data": "before", "user-context": {"owner": "lab"}}]
+            for scope in ("server", "subnet"):
+                with self.subTest(family=family, identity=shown_identity, scope=scope):
+                    self.assertEqual(
+                        self._write_options(family, scope, live, edit, definitions=definitions),
+                        [{**live_identity, "data": "after", "user-context": {"owner": "lab"}}],
+                    )
+
+    def test_data_replacement_clears_csv_format_and_keeps_live_metadata(self):
+        for family in (4, 6):
+            seen = parse_dhcp_option({"code": 222, "data": "old", "csv-format": False, "never-send": True})
+            edit = DHCPOptionEdit((seen,), (DHCPOptionChange(seen, dataclasses.replace(seen, data="new")),))
+            live = [
+                {"code": 222, "data": "old", "csv-format": False, "never-send": True, "user-context": {"owner": "lab"}}
+            ]
+            for scope in ("server", "subnet"):
+                with self.subTest(family=family, scope=scope):
+                    self.assertEqual(
+                        self._write_options(family, scope, live, edit),
+                        [{"code": 222, "data": "new", "never-send": True, "user-context": {"owner": "lab"}}],
+                    )
+
+    def test_delivery_flag_edit_keeps_encoding_and_does_not_inject_absent_fields(self):
+        seen = parse_dhcp_option({"code": 222, "csv-format": False})
+        edit = DHCPOptionEdit((seen,), (DHCPOptionChange(seen, dataclasses.replace(seen, always_send=True)),))
+        for scope in ("server", "subnet"):
+            with self.subTest(scope=scope):
+                self.assertEqual(
+                    self._write_options(4, scope, [{"code": 222, "csv-format": False}], edit),
+                    [{"code": 222, "csv-format": False, "always-send": True}],
+                )
+
+    def test_additions_append_after_live_entries_and_deletions_keep_other_positions(self):
+        live = [{"code": 6, "data": "keep"}, {"code": 3, "data": "remove"}, {"code": 42, "data": "keep"}]
+        seen = parse_dhcp_options(live)
+        added = parse_dhcp_option({"name": "custom", "data": "new"})
+        edit = DHCPOptionEdit(tuple(reversed(seen)), (DHCPOptionChange(None, added), DHCPOptionChange(seen[1], None)))
+        for scope in ("server", "subnet"):
+            with self.subTest(scope=scope):
+                self.assertEqual(
+                    self._write_options(4, scope, live, edit),
+                    [{"code": 6, "data": "keep"}, {"code": 42, "data": "keep"}, {"name": "custom", "data": "new"}],
+                )
+
+    def test_editing_a_duplicate_identity_conflicts_with_the_option_name(self):
+        live = [{"name": "routers", "data": "198.18.0.1"}, {"code": 3, "data": "198.18.0.1"}]
+        seen = parse_dhcp_options(live)
+        edit = DHCPOptionEdit(seen, (DHCPOptionChange(seen[0], dataclasses.replace(seen[0], data="198.18.0.2")),))
+        for scope in ("server", "subnet"):
+            running = _running(
+                4,
+                **({"option-data": live} if scope == "server" else {"subnet4": [{**_subnet(4), "option-data": live}]}),
+            )
+            with self.subTest(scope=scope), stub_kea(_rmw_responses(4, config_get=running)) as kea:
+                with self.assertRaisesRegex(DHCPOptionConflict, "routers.*ambiguous"):
+                    if scope == "server":
+                        config_write.set_server_options(self.server, 4, edit)
+                    else:
+                        config_write.set_subnet_options(self.server, 4, 1, _SEEN[4], edit)
+                self.assertNotIn("config-test", kea.commands())
+                self.assertNotIn("config-set", kea.commands())
 
     def test_every_failure_on_config_set_is_unknown_and_still_persisted(self):
         replies = {
@@ -3005,20 +3166,24 @@ class ReadModifyWriteTests(TestCase):
             recorded = _CONTROL_AGENT[f"network{version}-add"]
             with self.subTest(version=version):
                 with stub_kea(_rmw_responses(version, **{"config-set": recorded})) as kea:
-                    outcome = config_write.set_server_options(self.server, version, [_new_row(*_DNS[version])])
+                    outcome = config_write.set_server_options(
+                        self.server, version, _option_rows_edit([_new_row(*_DNS[version])])
+                    )
                 self.assertEqual(outcome.application, "unknown")
                 self.assertEqual(kea.commands()[-3:], _PERSIST)
 
     def test_a_refused_connection_on_config_set_is_not_sent(self):
         with stub_kea(_rmw_responses(4, **{"config-set": _refused_connection()})) as kea:
-            rejection = self._rejection(lambda: config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])]))
+            rejection = self._rejection(
+                lambda: config_write.set_server_options(self.server, 4, _option_rows_edit([_new_row(*_DNS[4])]))
+            )
         self.assertEqual((rejection.reason, rejection.diagnostics), ("not-sent", ("Kea could not be reached.",)))
         self.assertEqual(kea.commands(), ["config-get", "config-test", "config-set"])
 
     def test_a_config_write_failure_after_config_set_is_applied_and_failed(self):
         failure = {"result": 1, "text": "Unable to open file for writing"}
         with stub_kea(_rmw_responses(4, **{"config-write": failure})) as kea:
-            outcome = config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])])
+            outcome = config_write.set_server_options(self.server, 4, _option_rows_edit([_new_row(*_DNS[4])]))
         self.assertEqual(
             outcome, ConfigChangeOutcome("applied", "failed", ("config-write failed: Unable to open file for writing",))
         )
@@ -3027,14 +3192,16 @@ class ReadModifyWriteTests(TestCase):
     def test_persistence_not_requested_sends_no_persist_step(self):
         self.server.persist_config = False
         with stub_kea(_rmw_responses(4, **{"config-set": requests.ReadTimeout()})) as kea:
-            outcome = config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])])
+            outcome = config_write.set_server_options(self.server, 4, _option_rows_edit([_new_row(*_DNS[4])]))
         self.assertEqual(outcome.persistence, "not-requested")
         self.assertEqual(kea.commands(), ["config-get", "config-test", "config-set"])
 
     def test_a_missing_tls_file_on_config_test_is_an_invalid_client_configuration(self):
         missing = OSError("Could not find the TLS certificate file, invalid path: /nonexistent/client.pem")
         with stub_kea(_rmw_responses(4, **{"config-test": missing})):
-            rejection = self._rejection(lambda: config_write.set_server_options(self.server, 4, [_new_row(*_DNS[4])]))
+            rejection = self._rejection(
+                lambda: config_write.set_server_options(self.server, 4, _option_rows_edit([_new_row(*_DNS[4])]))
+            )
         self.assertEqual(rejection.reason, "invalid-client-configuration")
 
 
@@ -3061,6 +3228,245 @@ def _with_network(version: int, **fields) -> dict:
         **fields,
     }
     return _running(version, **{"shared-networks": [network]})
+
+
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
+class FormManagedOptionEditTests(TestCase):
+    """Fixed form fields change only their selected DHCP Option through real Configuration Changes."""
+
+    _FIELDS = (
+        (4, "gateway", 3, "routers", "198.18.0.1", "198.18.0.2"),
+        (4, "dns_servers", 6, "domain-name-servers", "198.18.0.53", "198.18.0.54"),
+        (4, "ntp_servers", 42, "ntp-servers", "198.18.0.123", "198.18.0.124"),
+        (6, "dns_servers", 23, "dns-servers", "2001:db8::53", "2001:db8::54"),
+        (6, "ntp_servers", 31, "sntp-servers", "2001:db8::123", "2001:db8::124"),
+    )
+
+    def setUp(self):
+        self.server = _make_db_server()
+
+    def _sent(self, family, scope, options, *, shown, edited):
+        """Send a field edit with explicit shown values, and return the option list that reached Kea."""
+        if scope == "subnet":
+            cidr = {4: "198.18.0.0/24", 6: "2001:db8::/64"}[family]
+            subnet = {"id": 20, "subnet": cidr, "pools": [], "option-data": options}
+            daemon = SubnetDaemon(family, [subnet])
+            fields = SubnetFields(
+                (), shown.get("gateway", ""), shown.get("dns_servers", ()), shown.get("ntp_servers", ()), ""
+            )
+            before = SubnetEdit(fields, None, None, None, None, None)
+            after = dataclasses.replace(before, fields=dataclasses.replace(fields, **edited))
+            with stub_kea(daemon.responses()) as kea:
+                outcome = config_write.edit_subnet(
+                    self.server, family, 20, cidr, after, shown=before, original_network=None, shared_network=None
+                )
+            self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+            return kea.bodies(f"subnet{family}-update")[0]["arguments"][f"subnet{family}"][0]["option-data"]
+        network = {"name": "net-a", f"subnet{family}": [], "option-data": options}
+        running = _running(family, **{"shared-networks": [network]})
+        before = SharedNetworkEdit("", "", (), shown.get("dns_servers", ()), shown.get("ntp_servers", ()))
+        after = dataclasses.replace(before, **edited)
+        with stub_kea(_rmw_responses(family, config_get=running)) as kea:
+            outcome = config_write.edit_shared_network(self.server, family, "net-a", after, shown=before)
+        self.assertEqual(outcome, ConfigChangeOutcome("applied", "persisted"))
+        return kea.bodies("config-set")[0]["arguments"][f"Dhcp{family}"]["shared-networks"][0]["option-data"]
+
+    def test_a_fixed_dns_edit_keeps_the_selected_entry_in_its_live_position(self):
+        for family, code, old, new in ((4, 6, "198.18.0.53", "198.18.0.54"), (6, 23, "2001:db8::53", "2001:db8::54")):
+            options = [
+                {"code": code, "data": old, "always-send": True, "user-context": {"owner": "lab"}},
+                {"name": "custom", "data": "keep"},
+            ]
+            for scope in ("subnet", "shared-network"):
+                with self.subTest(family=family, scope=scope):
+                    sent = self._sent(
+                        family, scope, options, shown={"dns_servers": (old,)}, edited={"dns_servers": (new,)}
+                    )
+                    self.assertEqual(
+                        sent,
+                        [
+                            {"code": code, "data": new, "always-send": True, "user-context": {"owner": "lab"}},
+                            {"name": "custom", "data": "keep"},
+                        ],
+                    )
+
+    def test_each_fixed_field_edits_only_its_default_space_unclassed_entry(self):
+        for family, field, code, name, old, new in self._FIELDS:
+            classed = {"name": name, "data": old, "client-classes": ["voip"], "csv-format": True}
+            foreign = {"name": name, "space": "vendor-lab", "data": "opaque", "csv-format": False}
+            duplicate = {"name": "custom", "space": "vendor-lab", "data": "keep"}
+            target = {
+                "code": code,
+                "space": f"dhcp{family}",
+                "data": old,
+                "csv-format": True,
+                "always-send": True,
+                "never-send": False,
+                "user-context": {"owner": "lab"},
+            }
+            options = [classed, target, foreign, duplicate, duplicate]
+            for scope in ("subnet",) if field == "gateway" else ("subnet", "shared-network"):
+                with self.subTest(family=family, field=field, scope=scope):
+                    sent = self._sent(
+                        family,
+                        scope,
+                        options,
+                        shown={field: old if field == "gateway" else (old,)},
+                        edited={field: new if field == "gateway" else (new,)},
+                    )
+                    self.assertEqual(
+                        sent,
+                        [
+                            classed,
+                            {
+                                "code": code,
+                                "space": f"dhcp{family}",
+                                "data": new,
+                                "always-send": True,
+                                "never-send": False,
+                                "user-context": {"owner": "lab"},
+                            },
+                            foreign,
+                            duplicate,
+                            duplicate,
+                        ],
+                    )
+
+    def test_simultaneous_fixed_field_changes_keep_each_live_position(self):
+        for family in (4, 6):
+            dns_code, ntp_code = (6, 42) if family == 4 else (23, 31)
+            old_dns, new_dns = ("198.18.0.53", "198.18.0.54") if family == 4 else ("2001:db8::53", "2001:db8::54")
+            old_ntp, new_ntp = ("198.18.0.123", "198.18.0.124") if family == 4 else ("2001:db8::123", "2001:db8::124")
+            for scope in ("subnet", "shared-network"):
+                marker = {"name": "custom", "data": "keep"}
+                options = [
+                    {"code": ntp_code, "data": old_ntp, "csv-format": True},
+                    marker,
+                    {"code": dns_code, "data": old_dns, "always-send": True},
+                ]
+                shown = {"dns_servers": (old_dns,), "ntp_servers": (old_ntp,)}
+                edited = {"dns_servers": (new_dns,), "ntp_servers": (new_ntp,)}
+                expected = [
+                    {"code": ntp_code, "data": new_ntp},
+                    marker,
+                    {"code": dns_code, "data": new_dns, "always-send": True},
+                ]
+                if family == 4 and scope == "subnet":
+                    options.append({"code": 3, "data": "198.18.0.1", "never-send": False})
+                    shown["gateway"] = "198.18.0.1"
+                    edited["gateway"] = "198.18.0.2"
+                    expected.append({"code": 3, "data": "198.18.0.2", "never-send": False})
+                with self.subTest(family=family, scope=scope):
+                    self.assertEqual(self._sent(family, scope, options, shown=shown, edited=edited), expected)
+
+    def test_clearing_each_fixed_field_deletes_only_its_selected_entry(self):
+        for family, field, code, name, old, _new in self._FIELDS:
+            classed = {"code": code, "data": old, "client-classes": ["voip"]}
+            foreign = {"name": name, "space": "vendor-lab", "data": "keep"}
+            target = {"name": name, "data": old, "never-send": True}
+            for scope in ("subnet",) if field == "gateway" else ("subnet", "shared-network"):
+                with self.subTest(family=family, field=field, scope=scope):
+                    sent = self._sent(
+                        family,
+                        scope,
+                        [classed, target, foreign],
+                        shown={field: old if field == "gateway" else (old,)},
+                        edited={field: "" if field == "gateway" else ()},
+                    )
+                    self.assertEqual(sent, [classed, foreign])
+
+    def test_empty_absent_fixed_fields_keep_classed_and_foreign_space_entries(self):
+        for family, _field, code, name, old, _new in self._FIELDS:
+            options = [
+                {"name": name, "data": old, "client-classes": ["voip"]},
+                {"code": code, "space": "vendor-lab", "data": "keep"},
+            ]
+            for scope in ("subnet", "shared-network"):
+                with self.subTest(family=family, option=name, scope=scope):
+                    self.assertEqual(self._sent(family, scope, options, shown={}, edited={}), options)
+
+    def test_all_new_fixed_options_append_after_the_existing_entries(self):
+        held = {"name": "custom", "data": "keep", "user-context": {"owner": "lab"}}
+        for family in (4, 6):
+            dns = "198.18.0.53" if family == 4 else "2001:db8::53"
+            ntp = "198.18.0.123" if family == 4 else "2001:db8::123"
+            for scope in ("subnet", "shared-network"):
+                edited = {"dns_servers": (dns,), "ntp_servers": (ntp,)}
+                expected = [held]
+                if scope == "subnet":
+                    edited["gateway"] = "198.18.0.1"
+                    if family == 4:
+                        expected.append({"name": "routers", "data": "198.18.0.1"})
+                expected.extend(
+                    [
+                        {"name": "domain-name-servers" if family == 4 else "dns-servers", "data": dns},
+                        {"name": "ntp-servers" if family == 4 else "sntp-servers", "data": ntp},
+                    ]
+                )
+                with self.subTest(family=family, scope=scope):
+                    self.assertEqual(self._sent(family, scope, [held], shown={}, edited=edited), expected)
+
+    def test_empty_fields_keep_unshowable_and_empty_entries_in_their_positions(self):
+        for family, field, code, _name, _old, _new in self._FIELDS:
+            entries = [
+                {"code": code, "data": "C6120035", "csv-format": False},
+                {"code": code, "never-send": True},
+                {"code": code, "data": "", "never-send": True},
+            ]
+            if field == "gateway":
+                entries.append({"code": code, "data": "198.18.0.1, 198.18.0.2", "csv-format": True})
+            for entry in entries:
+                for scope in ("subnet",) if field == "gateway" else ("subnet", "shared-network"):
+                    with self.subTest(family=family, field=field, scope=scope, entry=entry):
+                        marker = {"name": "custom", "data": "keep"}
+                        self.assertEqual(
+                            self._sent(family, scope, [entry, marker], shown={}, edited={}), [entry, marker]
+                        )
+
+    def test_semantically_unchanged_addresses_keep_raw_text_and_encoding(self):
+        cases = (
+            (4, "dns_servers", 6, " 198.18.0.53,198.18.0.54, ", ("198.18.0.53", "198.18.0.54")),
+            (6, "dns_servers", 23, " 2001:0DB8:0:0::53 ,2001:db8::0054, ", ("2001:db8::53", "2001:db8::54")),
+            (4, "ntp_servers", 42, " 198.18.0.123, ", ("198.18.0.123",)),
+            (6, "ntp_servers", 31, "2001:0DB8:0:0::0123,", ("2001:db8::123",)),
+            (4, "gateway", 3, " 198.18.0.1 ", "198.18.0.1"),
+        )
+        for family, field, code, data, canonical in cases:
+            held = {"code": code, "data": data, "csv-format": True, "never-send": False}
+            marker = {"name": "custom", "data": "keep"}
+            for scope in ("subnet",) if field == "gateway" else ("subnet", "shared-network"):
+                with self.subTest(family=family, field=field, scope=scope):
+                    self.assertEqual(
+                        self._sent(family, scope, [held, marker], shown={field: canonical}, edited={field: canonical}),
+                        [held, marker],
+                    )
+
+    def test_replacing_unshowable_data_clears_encoding_and_keeps_other_keys(self):
+        for family, field, code, _name, _old, new in self._FIELDS:
+            held = {
+                "code": code,
+                "data": "C6120035",
+                "csv-format": False,
+                "never-send": True,
+                "always-send": False,
+                "user-context": {"owner": "lab"},
+            }
+            for scope in ("subnet",) if field == "gateway" else ("subnet", "shared-network"):
+                with self.subTest(family=family, field=field, scope=scope):
+                    self.assertEqual(
+                        self._sent(
+                            family, scope, [held], shown={}, edited={field: new if field == "gateway" else (new,)}
+                        ),
+                        [
+                            {
+                                "code": code,
+                                "data": new,
+                                "never-send": True,
+                                "always-send": False,
+                                "user-context": {"owner": "lab"},
+                            }
+                        ],
+                    )
 
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)
@@ -3278,8 +3684,8 @@ class ConcurrentReadModifyWriteTests(TransactionTestCase):
         dns, ntp = _new_row("domain-name-servers", "192.0.2.53"), _new_row("ntp-servers", "192.0.2.123")
         kea = self._race(
             running,
-            lambda: config_write.set_server_options(self.server, 4, [dns]),
-            lambda: config_write.set_server_options(self.server, 4, [ntp]),
+            lambda: config_write.set_server_options(self.server, 4, _option_rows_edit([dns])),
+            lambda: config_write.set_server_options(self.server, 4, _option_rows_edit([ntp])),
         )
         self.assertEqual(self.results["first"], ConfigChangeOutcome("applied", "persisted"))
         # The second form did not show the first DHCP Option, so saving it would delete that option.
@@ -3301,8 +3707,8 @@ class ConcurrentReadModifyWriteTests(TransactionTestCase):
         ntp[1]["data"] = "192.0.2.124"
         kea = self._race(
             running,
-            lambda: config_write.set_server_options(self.server, 4, dns),
-            lambda: config_write.set_server_options(self.server, 4, ntp),
+            lambda: config_write.set_server_options(self.server, 4, _option_rows_edit(dns)),
+            lambda: config_write.set_server_options(self.server, 4, _option_rows_edit(ntp)),
         )
         self.assertEqual(self.results["first"], ConfigChangeOutcome("applied", "persisted"))
         # The second form still shows the old DNS value, so saving it would revert the first change.
@@ -3338,8 +3744,12 @@ class ConcurrentReadModifyWriteTests(TransactionTestCase):
         )
         kea = self._race(
             running,
-            lambda: config_write.set_subnet_options(self.server, 4, 1, _SEEN[4], [_new_row("routers", "10.0.0.1")]),
-            lambda: config_write.set_server_options(self.server, 4, [_new_row("domain-name-servers", "192.0.2.53")]),
+            lambda: config_write.set_subnet_options(
+                self.server, 4, 1, _SEEN[4], _option_rows_edit([_new_row("routers", "10.0.0.1")])
+            ),
+            lambda: config_write.set_server_options(
+                self.server, 4, _option_rows_edit([_new_row("domain-name-servers", "192.0.2.53")])
+            ),
         )
         applied = ConfigChangeOutcome("applied", "persisted")
         self.assertEqual(self.results, {"first": applied, "second": applied})

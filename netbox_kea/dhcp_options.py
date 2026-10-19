@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import ipaddress
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections import Counter
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from typing import Any
 
 # Kea standard option definitions (name, code) for the dhcp4 and dhcp6 spaces, which also back the option-name
@@ -222,12 +223,63 @@ def kea_std_options(version: int) -> list[tuple[str, int]]:
     return {4: KEA_DHCP4_STD_OPTIONS, 6: KEA_DHCP6_STD_OPTIONS}[version]
 
 
+@dataclass(frozen=True)
+class OptionDefinition:
+    """One validated custom DHCP Option definition."""
+
+    code: int
+    name: str
+    space: str
+    type: str
+    array: bool
+    encapsulate: str | None
+    record_types: tuple[str, ...]
+
+
+def parse_option_definition(entry: Any, family: int) -> OptionDefinition:
+    """Parse one custom DHCP Option Definition with its family default space."""
+    if not isinstance(entry, dict):
+        raise ValueError("An Option Definition must be an object.")
+    code = entry.get("code")
+    if isinstance(code, bool) or not isinstance(code, int) or not 0 <= code <= 65_535:
+        raise ValueError("An Option Definition requires a valid code.")
+    name, space, kind = entry.get("name"), entry.get("space", f"dhcp{family}"), entry.get("type")
+    if (
+        not isinstance(name, str)
+        or not name
+        or not isinstance(space, str)
+        or not space
+        or not isinstance(kind, str)
+        or not kind
+    ):
+        raise ValueError("An Option Definition requires name, space and type strings.")
+    array = entry.get("array", False)
+    encapsulate = entry.get("encapsulate", "")
+    record_types = entry.get("record-types", "")
+    if not isinstance(array, bool) or not isinstance(encapsulate, str) or not isinstance(record_types, str):
+        raise ValueError("An Option Definition has invalid field types.")
+    records = tuple(value.strip() for value in record_types.split(",")) if record_types else ()
+    if any(not value for value in records):
+        raise ValueError("An Option Definition has an empty record type.")
+    return OptionDefinition(code, name, space, kind, array, encapsulate or None, records)
+
+
 class DHCPOptionConflict(ValueError):
     """An existing DHCP Option cannot be identified safely for an edit."""
+
+    def __init__(self, message: str) -> None:
+        """Keep the public conflict message, which names the affected DHCP Option."""
+        super().__init__(message)
+        self.message = message
 
 
 class DHCPOptionNameChange(ValueError):
     """A name edit would change the identity of a coded DHCP Option."""
+
+    def __init__(self, message: str) -> None:
+        """Keep the public refusal message, which names the affected DHCP Option."""
+        super().__init__(message)
+        self.message = message
 
 
 @dataclass(frozen=True)
@@ -243,16 +295,6 @@ class DHCPOption:
     never_send: bool | None
     client_classes: tuple[str, ...] = ()
 
-    @property
-    def match_key(self) -> tuple[str | None, int | str | None]:
-        """Return the option definition identity within its containing configuration."""
-        return self.space, self.code if self.code is not None else self.name
-
-    @property
-    def assignment_key(self) -> tuple[tuple[str | None, int | str | None], frozenset[str]]:
-        """Identify one assignment of an option to a set of client classes."""
-        return self.match_key, frozenset(self.client_classes)
-
     def form_initial(self) -> dict[str, Any]:
         """Return editable values, and the identity and value that the operator saw for this existing row."""
         original: dict[str, Any] = {
@@ -263,6 +305,8 @@ class DHCPOption:
                 "name": self.name,
                 "data": self.data,
                 "always-send": self.always_send,
+                "never-send": self.never_send,
+                "csv-format": self.csv_format,
             }.items()
             if value is not None
         }
@@ -275,24 +319,6 @@ class DHCPOption:
             "original_option": original,
         }
 
-    def same_value(self, other: DHCPOption) -> bool:
-        """Return whether both options send the same data with the same always-send flag."""
-        return (self.data, self.always_send) == (other.data, other.always_send)
-
-    def matches_intent(self, intended: DHCPOption, *, exact_space: bool = False) -> bool:
-        """Return whether this resolved Option is the target of a submitted intent.
-
-        With *exact_space* the two spaces must be equal. Otherwise a space missing on
-        either side matches any space, which is only safe once no exact match remains.
-        """
-        if exact_space:
-            same_space = self.space == intended.space
-        else:
-            same_space = self.space is None or intended.space is None or self.space == intended.space
-        if self.code is not None and intended.code is not None:
-            return same_space and self.code == intended.code
-        return same_space and self.name is not None and self.name == intended.name
-
 
 _STANDARD_CODES: dict[int, dict[str, int]] = {version: dict(kea_std_options(version)) for version in (4, 6)}
 
@@ -300,6 +326,34 @@ _STANDARD_CODES: dict[int, dict[str, int]] = {version: dict(kea_std_options(vers
 _STANDARD_NAMES: dict[int, dict[int, str]] = {
     version: {code: name for name, code in codes.items()} for version, codes in _STANDARD_CODES.items()
 }
+
+
+@dataclass(frozen=True)
+class DHCPOptionIdentity:
+    """One family-aware assignment of an Option Definition to a set of client classes."""
+
+    space: str
+    code_or_name: int | str
+    client_classes: frozenset[str]
+
+
+def option_identity(
+    option: DHCPOption, family: int, definitions: Sequence[OptionDefinition] = ()
+) -> DHCPOptionIdentity:
+    """Resolve an assignment against the standard and live custom Option Definitions."""
+    space = option.space or f"dhcp{family}"
+    code = option.code
+    if code is None:
+        for definition in definitions:
+            if definition.name == option.name and (definition.space or f"dhcp{family}") == space:
+                code = definition.code
+                break
+        if code is None and space == f"dhcp{family}":
+            code = _STANDARD_CODES[family].get(option.name or "")
+    value = code if code is not None else option.name
+    if value is None:
+        raise ValueError("A DHCP Option requires a code or name.")
+    return DHCPOptionIdentity(space, value, frozenset(option.client_classes))
 
 
 def _in_default_space(option: DHCPOption, version: int) -> bool:
@@ -376,9 +430,7 @@ def _fitting_entries(options: Sequence[DHCPOption], version: int, managed: FormM
     return [
         index
         for index, option in enumerate(options)
-        if _in_default_space(option, version)
-        and not option.client_classes
-        and (option.code == managed.code if option.code is not None else option.name == managed.name)
+        if option_identity(option, version) == DHCPOptionIdentity(f"dhcp{version}", managed.code, frozenset())
     ]
 
 
@@ -461,6 +513,13 @@ def address_list_data(addresses: Sequence[str]) -> str:
     return ", ".join(addresses)
 
 
+def parse_option_client_classes(value: Any) -> tuple[str, ...]:
+    """Parse the class tags that participate in a DHCP Option assignment identity."""
+    if not isinstance(value, list) or not all(isinstance(tag, str) and tag for tag in value):
+        raise ValueError("DHCP Option class tags must be a list of non-empty strings.")
+    return tuple(value)
+
+
 def parse_dhcp_option(entry: Any) -> DHCPOption:
     """Parse one raw Kea option-data entry.
 
@@ -487,9 +546,7 @@ def parse_dhcp_option(entry: Any) -> DHCPOption:
     flags = (entry.get("csv-format"), entry.get("always-send"), entry.get("never-send"))
     if any(flag is not None and not isinstance(flag, bool) for flag in flags):
         raise ValueError("DHCP Option delivery flags must be Boolean values.")
-    client_classes = entry.get("client-classes", [])
-    if not isinstance(client_classes, list) or not all(isinstance(tag, str) and tag for tag in client_classes):
-        raise ValueError("DHCP Option class tags must be a list of non-empty strings.")
+    client_classes = parse_option_client_classes(entry.get("client-classes", []))
     return DHCPOption(
         code=code,
         name=name,
@@ -498,7 +555,7 @@ def parse_dhcp_option(entry: Any) -> DHCPOption:
         csv_format=flags[0],
         always_send=flags[1],
         never_send=flags[2],
-        client_classes=tuple(client_classes),
+        client_classes=client_classes,
     )
 
 
@@ -509,46 +566,191 @@ def parse_dhcp_options(entries: Any) -> tuple[DHCPOption, ...]:
     return tuple(parse_dhcp_option(entry) for entry in entries)
 
 
-def merge_option_form_rows(rows: list[dict[str, Any]], existing: Any) -> list[dict[str, Any]]:
-    """Merge exposed edits onto fresh raw options selected by their typed identity.
+@dataclass(frozen=True)
+class DHCPOptionChange:
+    """The seen and intended DHCP Option of one add, replacement or deletion."""
+
+    seen: DHCPOption | None
+    intended: DHCPOption | None
+
+
+@dataclass(frozen=True)
+class DHCPOptionEdit:
+    """Every shown DHCP Option, and only the assignments that the operator changes."""
+
+    snapshot: tuple[DHCPOption, ...]
+    changes: tuple[DHCPOptionChange, ...]
+
+
+def form_option_edit(options: Sequence[DHCPOption], family: int, fields: Mapping[str, str]) -> DHCPOptionEdit:
+    """Translate fixed form fields into one edit of their default-space, unclassed assignments.
+
+    Empty fields keep entries whose data the form cannot show. Unchanged address lists keep their live text and
+    encoding, because the form shows canonical addresses.
 
     Raises:
-        DHCPOptionConflict: If a row's option is missing, ambiguous, submitted twice, or has a changed live value.
-        DHCPOptionNameChange: If a row renames a coded DHCP Option.
+        AmbiguousFormOption: If more than one entry fits a field.
+
+    """
+    changes: list[DHCPOptionChange] = []
+    managed = form_managed_options(family)
+    for field, data in fields.items():
+        index = form_managed_entry(options, family, field)
+        if index is None:
+            if data:
+                intended = parse_dhcp_option({"name": managed[field].name, "data": data})
+                changes.append(DHCPOptionChange(None, intended))
+            continue
+        seen = options[index]
+        if not data:
+            if seen.data and form_shows(seen, field):
+                changes.append(DHCPOptionChange(seen, None))
+        elif seen.csv_format is False or not _same_addresses(data, seen.data):
+            changes.append(DHCPOptionChange(seen, replace(seen, data=data, csv_format=None)))
+    return DHCPOptionEdit(tuple(options), tuple(changes))
+
+
+def _same_addresses(data: str, old_data: str) -> bool:
+    """Return whether both strings hold the same ordered address list."""
+    try:
+        return address_list(data) == address_list(old_data)
+    except InvalidAddress:
+        return False
+
+
+def _managed_value(option: DHCPOption) -> tuple[str, bool | None, bool | None, bool | None]:
+    return option.data, option.always_send, option.never_send, option.csv_format
+
+
+def _option_label(option: DHCPOption, family: int) -> str:
+    return option_name(option, family) or str(option.code)
+
+
+def _written_option(option: DHCPOption, seen: DHCPOption | None, live: dict[str, Any]) -> dict[str, Any]:
+    """Write only changed values onto the live entry, keeping its representation and unknown keys."""
+    result = dict(live)
+    for attribute, key in (
+        ("code", "code"),
+        ("name", "name"),
+        ("space", "space"),
+        ("client_classes", "client-classes"),
+        ("data", "data"),
+        ("always_send", "always-send"),
+        ("never_send", "never-send"),
+        ("csv_format", "csv-format"),
+    ):
+        value = getattr(option, attribute)
+        if seen is not None and value == getattr(seen, attribute):
+            continue
+        if value is None or (attribute == "client_classes" and not value):
+            result.pop(key, None)
+        else:
+            result[key] = list(value) if attribute == "client_classes" else value
+    if seen is not None and option.data != seen.data:
+        result.pop("csv-format", None)
+    return result
+
+
+def option_data(option: DHCPOption) -> dict[str, Any]:
+    """Serialize the set facts of one DHCP Option with the shared wire schema."""
+    return _written_option(option, None, {})
+
+
+def check_option_snapshot(
+    snapshot: Sequence[DHCPOption],
+    live_options: Sequence[DHCPOption],
+    family: int,
+    definitions: Sequence[OptionDefinition] = (),
+) -> None:
+    """Refuse a changed complete snapshot with the affected DHCP Option name."""
+
+    def fingerprint(option: DHCPOption):
+        return option_identity(option, family, definitions), _managed_value(option)
+
+    shown = Counter(fingerprint(option) for option in snapshot)
+    live = Counter(fingerprint(option) for option in live_options)
+    if shown != live:
+        changed = next(
+            option for option in (*snapshot, *live_options) if shown[fingerprint(option)] != live[fingerprint(option)]
+        )
+        raise DHCPOptionConflict(
+            f"DHCP Option '{_option_label(changed, family)}' changed in Kea. Reload the form before saving."
+        )
+
+
+def option_matches_intent(
+    observed: DHCPOption,
+    intended: DHCPOption,
+    family: int,
+    definitions: Sequence[OptionDefinition] = (),
+) -> bool:
+    """Compare canonical assignments and the managed values that the caller sets."""
+    return (
+        option_identity(observed, family, definitions) == option_identity(intended, family, definitions)
+        and observed.data == intended.data
+        and all(
+            getattr(intended, field) is None or getattr(observed, field) == getattr(intended, field)
+            for field in ("csv_format", "always_send", "never_send")
+        )
+    )
+
+
+def merge_option_edit(
+    edit: DHCPOptionEdit, existing: list[dict[str, Any]], family: int, definitions: Sequence[OptionDefinition] = ()
+) -> list[dict[str, Any]]:
+    """Check the complete shown snapshot and merge its targeted edits onto the live entries.
+
+    Raises:
+        DHCPOptionConflict: If the shown list changed or an edited identity is missing, repeated or submitted twice.
+        DHCPOptionNameChange: If a name edit changes the identity of a coded DHCP Option.
 
     """
     parsed = parse_dhcp_options(existing)
-    used: set[tuple[tuple[str | None, int | str | None], frozenset[str]]] = set()
-    result = []
-    for row in rows:
-        original = row.get("original_option")
-        if original is not None:
-            seen = parse_dhcp_option(original)
-            key = seen.assignment_key
-            matches = [index for index, option in enumerate(parsed) if option.assignment_key == key]
-            if len(matches) != 1 or key in used:
-                raise DHCPOptionConflict("An existing DHCP Option is missing, ambiguous, or submitted twice.")
-            if not parsed[matches[0]].same_value(seen):
-                raise DHCPOptionConflict("The live value of a DHCP Option changed. Reload the form before saving.")
-            used.add(key)
-            option = dict(existing[matches[0]])
-        else:
-            option = {}
-        if row.get("DELETE"):
+
+    def fingerprint(option: DHCPOption):
+        return option_identity(option, family, definitions), _managed_value(option)
+
+    check_option_snapshot(edit.snapshot, parsed, family, definitions)
+    shown = Counter(fingerprint(option) for option in edit.snapshot)
+    replacements: dict[int, dict[str, Any] | None] = {}
+    additions: list[dict[str, Any]] = []
+    for change in edit.changes:
+        seen, intended = change.seen, change.intended
+        if seen is None:
+            if intended is None:
+                raise DHCPOptionConflict(
+                    f"DHCP Option '{_option_label(edit.snapshot[0], family) if edit.snapshot else 'new option'}' "
+                    "has no add, replacement or deletion intent."
+                )
+            additions.append(_written_option(intended, None, {}))
             continue
-        name = row["name"]
-        if option.get("code") is not None and name and name != option.get("name"):
-            raise DHCPOptionNameChange("An existing coded DHCP Option cannot be renamed.")
-        if name:
-            option["name"] = name
-        else:
-            option.pop("name", None)
-        if "data" in option or row["data"]:
-            option["data"] = row["data"]
-        if "always-send" in option or row.get("always_send"):
-            option["always-send"] = bool(row.get("always_send"))
-        parse_dhcp_option(option)
-        result.append(option)
-    if len(used) != len(parsed):
-        raise DHCPOptionConflict("The live DHCP Option list changed. Reload the form before saving.")
-    return result
+        identity = option_identity(seen, family, definitions)
+        matches = [
+            index for index, option in enumerate(parsed) if option_identity(option, family, definitions) == identity
+        ]
+        if len(matches) != 1 or matches[0] in replacements or fingerprint(seen) not in shown:
+            raise DHCPOptionConflict(
+                f"DHCP Option '{_option_label(seen, family)}' is missing or ambiguous. Reload the form before saving."
+            )
+        index = matches[0]
+        if (
+            intended is not None
+            and (seen.code is not None or parsed[index].code is not None)
+            and intended.name != seen.name
+            and intended.name
+        ):
+            named = replace(intended, code=None)
+            if option_identity(named, family, definitions) != identity:
+                raise DHCPOptionNameChange(
+                    f"DHCP Option '{_option_label(seen, family)}' cannot be renamed. Delete it and add a new option instead."
+                )
+        replacement = None if intended is None else _written_option(intended, seen, existing[index])
+        if replacement is not None and replacement.get("code") is None and not replacement.get("name"):
+            raise DHCPOptionConflict(
+                f"DHCP Option '{_option_label(seen, family)}' cannot clear its only live identifier. "
+                "Reload the form before saving."
+            )
+        replacements[index] = replacement
+    return [
+        option for index, entry in enumerate(existing) if (option := replacements.get(index, entry)) is not None
+    ] + additions
