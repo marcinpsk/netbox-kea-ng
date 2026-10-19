@@ -26,7 +26,7 @@ import logging
 from dataclasses import dataclass, field
 
 from .. import kea_paths
-from ..dhcp_options import DHCPOption, parse_dhcp_option
+from ..dhcp_options import DHCPOption, parse_dhcp_option, parse_option_definition
 from ..integrations.dhcp_import_report import DroppedEntry, Kind
 
 logger = logging.getLogger(__name__)
@@ -104,10 +104,10 @@ class OptionDefIntent:
     """A Kea custom ``option-def`` entry (defines a non-standard option code)."""
 
     code: int
-    name: str | None
-    space: str | None
-    type: str | None
-    array: bool | None
+    name: str
+    space: str
+    type: str
+    array: bool
     record_types: tuple[str, ...]
     encapsulate: str | None
 
@@ -206,26 +206,21 @@ def _options(raw_list, parent: str, dropped: list[DroppedEntry]) -> tuple[DHCPOp
     return tuple(option for option in options if option is not None)
 
 
-def _option_def_intent(raw, path: str, dropped: list[DroppedEntry]) -> OptionDefIntent | None:
-    """Normalize one Kea ``option-def`` entry; drop one that is not a dict or has no valid code."""
-    if not isinstance(raw, dict):
-        dropped.append(DroppedEntry(Kind.OPTION_DEFINITION, path, "The entry is not an object."))
-        return None
+def _option_def_intent(raw, family: int, path: str, dropped: list[DroppedEntry]) -> OptionDefIntent | None:
+    """Normalize one Kea ``option-def`` entry; drop one that :func:`parse_option_definition` refuses."""
     try:
-        code = int(raw["code"])
-    except (KeyError, TypeError, ValueError):
-        dropped.append(DroppedEntry(Kind.OPTION_DEFINITION, path, "The entry has no valid code."))
+        definition = parse_option_definition(raw, family)
+    except ValueError as exc:
+        dropped.append(DroppedEntry(Kind.OPTION_DEFINITION, path, str(exc)))
         return None
-    record_types = raw.get("record-types")
-    record_types = tuple(str(r) for r in record_types) if isinstance(record_types, list) else ()
     return OptionDefIntent(
-        code=code,
-        name=raw.get("name"),
-        space=raw.get("space"),
-        type=raw.get("type"),
-        array=raw.get("array"),
-        record_types=record_types,
-        encapsulate=raw.get("encapsulate") or None,
+        code=definition.code,
+        name=definition.name,
+        space=definition.space,
+        type=definition.type,
+        array=definition.array,
+        record_types=definition.record_types,
+        encapsulate=definition.encapsulate,
     )
 
 
@@ -238,7 +233,7 @@ def _option_defs(raw_list, family: int, dropped: list[DroppedEntry]) -> tuple[Op
         dropped.append(DroppedEntry(Kind.OPTION_DEFINITION, path, "The collection is not a list."))
         return ()
     out = [
-        _option_def_intent(raw, kea_paths.option_definition_entry(family, index), dropped)
+        _option_def_intent(raw, family, kea_paths.option_definition_entry(family, index), dropped)
         for index, raw in enumerate(raw_list)
     ]
     return tuple(o for o in out if o is not None)

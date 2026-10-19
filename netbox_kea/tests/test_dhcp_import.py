@@ -106,7 +106,7 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
 
         self.assertIsInstance(plan, FamilyPlan)
         self.assertEqual((plan.family, plan.configuration_complete), (4, True))
-        self.assertEqual([planned.key for planned in plan.client_classes], ["voip", "printers"])
+        self.assertEqual([planned.key for planned in plan.client_classes], ["voip", "printers", "boot", "per-client"])
         self.assertEqual(
             [planned.key for planned in plan.option_definitions],
             [
@@ -207,7 +207,7 @@ class ApplyPlanWithoutKeaTest(TestCase):
         )
         self.assertEqual(
             set(ClientClass.objects.filter(dhcp_server__name=server.name).values_list("name", flat=True)),
-            {"apply-plan: voip", "apply-plan: printers"},
+            {"apply-plan: voip", "apply-plan: printers", "apply-plan: boot", "apply-plan: per-client"},
         )
         self.assertEqual(
             set(
@@ -217,6 +217,8 @@ class ApplyPlanWithoutKeaTest(TestCase):
             ),
             {("dhcp4", 224), ("dhcp4", 225), ("dhcp4", 226)},
         )
+        record = OptionDefinition.objects.get(dhcp_server__name=server.name, code=225)
+        self.assertEqual(record.record_types, ["uint8", "string"])
         in_subnet = HostReservation.objects.get(subnet=links.get(kea_subnet_id=10).sys4_object)
         self.assertEqual(str(in_subnet.ipv4_address.address.ip), "192.0.2.30")
         global_link = KeaDhcpLink.objects.get(server=server, family=4, kea_identity=f"duid:{_GLOBAL_DUID}")

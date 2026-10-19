@@ -16,6 +16,7 @@ from netbox_kea.mappers.kea_to_dhcp import (
     OptionDefIntent,
     parse_dhcp_config,
 )
+from netbox_kea.tests.test_kea_recordings import _recording
 
 
 class TestParseDhcpConfigStructure(SimpleTestCase):
@@ -234,7 +235,7 @@ class TestParseDhcpConfigOptionDefs(SimpleTestCase):
                     "space": "dhcp4",
                     "type": "string",
                     "array": False,
-                    "record-types": [],
+                    "record-types": "",
                     "encapsulate": "",
                 }
             ]
@@ -255,13 +256,10 @@ class TestParseDhcpConfigOptionDefs(SimpleTestCase):
         )
         self.assertEqual(defs[0].match_key, ("dhcp4", 222))
 
-    def test_record_types_captured(self):
-        conf = {
-            "option-def": [
-                {"code": 223, "name": "r", "space": "dhcp4", "type": "record", "record-types": ["uint8", "string"]}
-            ]
-        }
-        self.assertEqual(parse_dhcp_config(conf, 4).option_defs[0].record_types, ("uint8", "string"))
+    def test_record_types_are_read_from_the_recorded_kea_string(self):
+        conf = _recording(4)["config-get"]["arguments"]["Dhcp4"]
+        definitions = {d.code: d for d in parse_dhcp_config(conf, 4).option_defs}
+        self.assertEqual(definitions[225].record_types, ("uint8", "string"))
 
     def test_non_dict_option_def_skipped(self):
         conf = {"option-def": ["nope", None, {"code": 224, "name": "ok", "space": "dhcp4", "type": "string"}]}
