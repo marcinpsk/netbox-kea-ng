@@ -47,6 +47,13 @@ uniqueness scope. A fact without its capability is unsupported: the DHCP Import 
 an installed plugin release gains the capability.
 _Avoid_: Plugin gap, plugin version check
 
+**DHCP Import Result**:
+The stored record of one DHCP Import run: the Server, the start and end times, the trigger, and one entry for each
+Kea fact that the run created, updated, removed or did not write. An entry names its fact by a Kea path, such as
+`Dhcp4/subnet4[id=20]/option-data[code=150]`. A fact that the run did not write has a reason from a closed set, and
+the reason gives its outcome: unsupported, not imported or skipped. An object that did not change has no entry.
+_Avoid_: Import log, import summary
+
 **Stale DHCP Import Object**:
 A NetBox DHCP object with a DHCP Import Mapping whose Kea source a Complete observation of the same kind no longer
 reports. The DHCP Import removes it. An Incomplete observation cannot make an object stale. A Pool whose range
