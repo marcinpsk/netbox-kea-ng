@@ -907,7 +907,7 @@ def _upsert_reservation(
             obj.ipv6_prefixes.remove(
                 *obj.ipv6_prefixes.exclude(prefix__in=[str(prefix) for prefix in reservation.delegated_prefixes])
             )
-            if subnet_obj is None:
+            if isinstance(key, GlobalReservationKey):
                 _link_reservation(server, key, obj)
         if created:
             summary.reservations_created += 1
