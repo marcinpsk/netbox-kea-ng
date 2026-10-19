@@ -456,6 +456,9 @@ class DhcpImportEventTest(_Recorded, TransactionTestCase):
         self.assertEqual((response.status_code, refused), (302, [server.pk]))
         server.refresh_from_db()
         self.assertEqual((server.ipam_initial_observations, server.ipam_first_complete_at), ({}, None))
+        # The family committed before the receipt failed, so the run keeps its entries.
+        stored = set(DhcpImportEntry.objects.filter(run__server=server).values_list("kind", "outcome", "kea_path"))
+        self.assertIn(("subnet", "created", "Dhcp4/subnet4[id=1]"), stored)
         subnet = apps.get_model("netbox_dhcp", "Subnet").objects.get(prefix__prefix="10.88.0.0/24")
         self.assertIn((type(subnet), subnet.pk), self.dispatched())
         receipts = [
