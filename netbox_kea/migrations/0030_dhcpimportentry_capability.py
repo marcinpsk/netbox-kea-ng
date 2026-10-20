@@ -4,6 +4,9 @@
 
 from django.db import migrations, models
 
+# netbox_kea tables stay in main, so branch migrate fakes this migration (ADR 0007).
+fake_on_branch = True
+
 
 class Migration(migrations.Migration):
     dependencies = [
@@ -22,7 +25,7 @@ class Migration(migrations.Migration):
                     ('name_per_server', 'Name unique per DHCP server (#88 gap 3)'),
                     ('server_family', 'DHCP server address family (#88 gap 4)'),
                     ('flex_id_identifier', 'flex-id Reservation identifier (#88 gap 5)'),
-                    ("user_context", "User context (#88 gap 6)"),
+                    ('user_context', 'User context (#88 gap 6)'),
                     ('option_spaces', 'Kea option space names (#88 gap 7)'),
                     ('option_code_16_bit', 'DHCPv6 option codes above 255 (#88 gap 8)'),
                     ('option_without_definition', 'DHCP Option without an Option Definition (#88 gap 9)'),

@@ -21,6 +21,8 @@ from django.db import models
 from ..reservations import FLEX_ID
 from .dhcp_import_report import Capability
 
+PLUGIN_APP_LABEL = "netbox_dhcp"
+
 #: Returns a netbox_dhcp model class by name.
 ModelLookup = Callable[[str], type[models.Model]]
 
@@ -44,9 +46,14 @@ def _has_fields(model: type[models.Model], *names: str) -> bool:
 
 
 def _unique_per_server(model: type[models.Model], name: str) -> bool:
-    """Return whether *name* is not unique alone and a uniqueness constraint scopes it to its DHCP server."""
+    """Return whether *name* is not unique alone and a uniqueness constraint scopes it to its DHCP server.
+
+    A unique expression is not read, so its model fails closed.
+    """
     field = _field(model, name)
     if field is None or field.unique:
+        return False
+    if any(isinstance(c, models.UniqueConstraint) and c.expressions for c in model._meta.constraints):
         return False
     unique_sets = [
         set(constraint.fields)
@@ -185,8 +192,6 @@ class PluginCapabilities:
 
 
 def _plugin_model(name: str) -> type[models.Model]:
-    from .dhcp_plugin import PLUGIN_APP_LABEL
-
     return apps.get_model(PLUGIN_APP_LABEL, name)
 
 

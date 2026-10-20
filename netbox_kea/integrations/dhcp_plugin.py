@@ -80,11 +80,9 @@ from .dhcp_import_plan import (
     plan_family,
 )
 from .dhcp_import_report import Capability, ImportEntry, Kind, Outcome, Reason, not_written, unsupported, written
-from .dhcp_plugin_capabilities import PluginCapabilities, probe
+from .dhcp_plugin_capabilities import PLUGIN_APP_LABEL, PluginCapabilities, probe
 
 logger = logging.getLogger(__name__)
-
-PLUGIN_APP_LABEL = "netbox_dhcp"
 
 
 def is_available() -> bool:
@@ -710,6 +708,12 @@ def _apply_global_settings(
     return True
 
 
+def _cleared(obj, attr: str):
+    """Return the value that clears field *attr* of *obj*: None when nullable, else the field's empty default."""
+    db_field = obj._meta.get_field(attr)
+    return None if db_field.null else db_field.get_default()
+
+
 def _inherited_settings_fields(obj, parent, settings: dict, field_map, summary: ImportSummary, source: _Source) -> dict:
     """Plan *obj*'s tuning fields from Kea, storing only genuine overrides.
 
@@ -728,16 +732,9 @@ def _inherited_settings_fields(obj, parent, settings: dict, field_map, summary: 
             continue
         raw = settings.get(kea_key)
         value = _transform_value(transform, raw, kea_key, summary, source) if kea_key in settings else None
-        # Store only a genuine override (present and differing from the parent);
-        # otherwise clear it so the child inherits (and stale overrides don't linger).
-        if not _is_unset(value) and value != getattr(parent, attr, None):
-            desired = value
-        else:
-            # "Cleared" value: None for nullable fields, the field's empty default
-            # (e.g. "" for a non-null CharField like hostname_char_set) otherwise.
-            db_field = obj._meta.get_field(attr)
-            desired = None if db_field.null else db_field.get_default()
-        fields[attr] = desired
+        # Store only a genuine override; otherwise clear it so the child inherits and a stale override goes.
+        override = not _is_unset(value) and value != getattr(parent, attr, None)
+        fields[attr] = value if override else _cleared(obj, attr)
     return fields
 
 
@@ -772,7 +769,9 @@ def _client_class_changes(
     if intent.only_in_additional_list is not None:
         fields["only_in_additional_list"] = intent.only_in_additional_list
     if capabilities.has(Capability.USER_CONTEXT):
-        fields["user_context"] = intent.user_context
+        fields["user_context"] = (
+            intent.user_context if intent.user_context is not None else _cleared(obj, "user_context")
+        )
     elif intent.user_context is not None:
         detail = "The DHCP plugin has no user-context field on a client class."
         summary.record(
@@ -797,11 +796,13 @@ def _class_name_taken(name: str, obj, capabilities: PluginCapabilities) -> bool:
     return (others.exclude(pk=obj.pk) if obj is not None else others).exists()
 
 
-def _name_taken_detail(name: str) -> str:
-    return (
+def _record_name_taken(summary: ImportSummary, family: int, path: str, name: str) -> None:
+    detail = (
         f"Another client class holds the name {name!r}. "
         "The DHCP plugin needs each client class name to be unique across all DHCP servers."
     )
+    summary.record(unsupported(family, Kind.CLIENT_CLASS, path, Capability.NAME_PER_SERVER, detail))
+    summary.warn(f"client-class {name}: {detail}")
 
 
 def upsert_client_class(
@@ -827,9 +828,7 @@ def upsert_client_class(
                 obj = _unlinked(released).first()
             name_taken = _class_name_taken(planned.key, obj, capabilities)
             if obj is None and name_taken:
-                detail = _name_taken_detail(planned.key)
-                summary.record(unsupported(intent.family, Kind.CLIENT_CLASS, path, Capability.NAME_PER_SERVER, detail))
-                summary.warn(f"client-class {intent.name}: {detail}")
+                _record_name_taken(summary, intent.family, path, planned.key)
                 _skip_options(summary, intent.family, path, intent.options)
                 return None
             if obj is None:
@@ -858,10 +857,7 @@ def upsert_client_class(
         return None
 
     if name_taken:
-        detail = _name_taken_detail(planned.key)
-        name_path = kea_paths.setting(path, "name")
-        summary.record(unsupported(intent.family, Kind.CLIENT_CLASS, name_path, Capability.NAME_PER_SERVER, detail))
-        summary.warn(f"client-class {intent.name}: {detail}")
+        _record_name_taken(summary, intent.family, kea_paths.setting(path, "name"), planned.key)
     if outcome is not None:
         summary.record(written(intent.family, Kind.CLIENT_CLASS, path, outcome))
     upsert_options(obj, intent.options, intent.family, dhcp_server, custom_defs, summary, path)

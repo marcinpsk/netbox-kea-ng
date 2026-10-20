@@ -15,6 +15,7 @@ from django.contrib.messages import ERROR, get_messages
 from django.contrib.postgres.fields import ArrayField
 from django.core.validators import MaxValueValidator
 from django.db import models
+from django.db.models.functions import Lower
 from django.test import SimpleTestCase, TestCase
 from django.test.utils import isolate_apps
 from django.urls import reverse
@@ -217,6 +218,20 @@ class CapabilityProbeTest(SimpleTestCase):
         self.assertFalse(capabilities.has(Capability.NAME_PER_SERVER))
         self.assertTrue(capabilities.has(Capability.SUBNET_ID_PER_SERVER))
 
+    @isolate_apps("netbox_kea")
+    def test_a_unique_expression_on_the_name_lacks_the_name_per_server_capability(self):
+        plugin = _proposed_plugin_models()
+        global_name = models.UniqueConstraint(Lower("name"), name="expressionclientclass_global_name")
+        plugin["ClientClass"] = _probe_model(
+            "ExpressionClientClass",
+            "name",
+            dhcp_server=models.ForeignKey(plugin["DHCPServer"], on_delete=models.CASCADE),
+            name=models.CharField(max_length=255),
+            user_context=models.JSONField(null=True),
+            extra_constraints=[global_name],
+        )
+        self.assertFalse(probe(plugin.__getitem__).has(Capability.NAME_PER_SERVER))
+
 
 class _ProbeModel(models.Model):
     """A model that the probe reads; no table is created."""
@@ -228,12 +243,19 @@ class _ProbeModel(models.Model):
         return type(self).__name__
 
 
-def _probe_model(model_name: str, /, *unique_per_server: str, **fields: models.Field) -> type[models.Model]:
+def _probe_model(
+    model_name: str,
+    /,
+    *unique_per_server: str,
+    extra_constraints: list[models.UniqueConstraint] | None = None,
+    **fields: models.Field,
+) -> type[models.Model]:
     """Return a model with *fields*, and a uniqueness constraint on each of *unique_per_server* with dhcp_server."""
     constraints = [
         models.UniqueConstraint(fields=[field, "dhcp_server"], name=f"{model_name.lower()}_{field}_per_server")
         for field in unique_per_server
     ]
+    constraints.extend(extra_constraints or [])
     meta = type("Meta", (), {"constraints": constraints})
     return type(model_name, (_ProbeModel,), {"__module__": __name__, "Meta": meta, **fields})
 
