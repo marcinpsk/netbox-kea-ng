@@ -204,6 +204,8 @@ jobs:
         run: |
           pytest ${{ github.workspace }}/netbox_kea/tests/test_integration_dhcp_plugin.py \
             ${{ github.workspace }}/netbox_kea/tests/test_dhcp_import.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_dhcp_import_result.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_dhcp_import_ledger.py \
             ${{ github.workspace }}/netbox_kea/tests/test_views_dhcp_plugin.py \
             ${{ github.workspace }}/netbox_kea/tests/test_event_scope.py \
             --override-ini="DJANGO_SETTINGS_MODULE=netbox_kea.tests.isolated_settings" \

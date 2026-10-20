@@ -14,6 +14,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .dhcp_options import DHCPOption
 
+#: The Kea key of the free-form context that an operator attaches to a Kea object.
+USER_CONTEXT = "user-context"
+
 
 def _step(key: str, identity: str | int) -> str:
     return f"{key}[{identity}]"

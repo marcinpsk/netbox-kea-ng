@@ -10,54 +10,18 @@
 * :class:`Pending`: a later ticket of #89 maps the key.
 * :class:`Deprecated`: Kea rewrites the key to its replacement, so ``config-get`` never returns it.
 
-An entry names each DHCP Plugin Capability (#88) that its write needs. :data:`MERGED_KEYS` lists the keys that
-Kea merges into ``config-get`` from the parent object, for the Declared Value inference of #95.
+An entry names each DHCP Plugin Capability (#88) that its write needs, and :mod:`.dhcp_plugin_capabilities` checks
+each one. :data:`MERGED_KEYS` lists the keys that Kea merges into ``config-get`` from the parent object, for the
+Declared Value inference of #95.
 It reads no database. ``test_dhcp_import_ledger.py`` compares it with the recordings of a real Kea.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 
 from ..constants import Family
-from .dhcp_import_report import Reason
-
-
-class Capability(str, Enum):
-    """A DHCP Plugin Capability that a key's write needs, named after its #88 gap."""
-
-    SHARED_NETWORK_OPTIONAL_PREFIX = "shared_network_optional_prefix"
-    SUBNET_ID_PER_SERVER = "subnet_id_per_server"
-    NAME_PER_SERVER = "name_per_server"
-    FLEX_ID_IDENTIFIER = "flex_id_identifier"
-    USER_CONTEXT = "user_context"
-    OPTION_SPACES = "option_spaces"
-    OPTION_CODE_16_BIT = "option_code_16_bit"
-    OPTION_WITHOUT_DEFINITION = "option_without_definition"
-    SERVER_ID_FIELDS = "server_id_fields"
-    RELAY_ADDRESS_LIST = "relay_address_list"
-    DHCP4O6_SUBNET_SELECTION = "dhcp4o6_subnet_selection"
-    ADDRESS_REGISTRATION = "address_registration"
-    STASH_AGENT_OPTIONS = "stash_agent_options"
-
-
-# The row of each capability in the #88 gap table.
-GAPS: dict[Capability, int] = {
-    Capability.SHARED_NETWORK_OPTIONAL_PREFIX: 1,
-    Capability.SUBNET_ID_PER_SERVER: 2,
-    Capability.NAME_PER_SERVER: 3,
-    Capability.FLEX_ID_IDENTIFIER: 5,
-    Capability.USER_CONTEXT: 6,
-    Capability.OPTION_SPACES: 7,
-    Capability.OPTION_CODE_16_BIT: 8,
-    Capability.OPTION_WITHOUT_DEFINITION: 9,
-    Capability.SERVER_ID_FIELDS: 10,
-    Capability.RELAY_ADDRESS_LIST: 11,
-    Capability.DHCP4O6_SUBNET_SELECTION: 12,
-    Capability.ADDRESS_REGISTRATION: 13,
-    Capability.STASH_AGENT_OPTIONS: 14,
-}
+from .dhcp_import_report import Capability, Reason
 
 
 @dataclass(frozen=True)
@@ -316,9 +280,9 @@ def _reservation(family: Family) -> dict[str, Entry]:
 def _client_class(family: Family) -> dict[str, Entry]:
     entries = {
         **_fields("ClientClass", "test", "template-test", "only-in-additional-list", *_LIFETIMES),
-        "name": Mapped("ClientClass.name", (Capability.NAME_PER_SERVER,), pending=106),
+        "name": Mapped("ClientClass.name", (Capability.NAME_PER_SERVER,)),
         "option-data": Mapped("Option"),
-        "user-context": Pending(106, _USER_CONTEXT),
+        "user-context": Mapped("ClientClass.user_context", _USER_CONTEXT),
         "only-if-required": Deprecated("only-in-additional-list"),
     }
     if family == 4:

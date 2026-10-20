@@ -942,11 +942,12 @@ class DhcpImportEntryTable(GenericTable):
     kind = tables.Column(verbose_name="Kind")
     outcome = tables.Column(verbose_name="Outcome")
     reason = tables.Column(verbose_name="Reason", default="—")
+    capability = tables.Column(verbose_name="DHCP plugin capability", default="—")
     kea_path = MonospaceColumn(verbose_name="Kea path")
     detail = tables.Column(verbose_name="Detail", default="—")
 
     class Meta(GenericTable.Meta):
         model = DhcpImportEntry
         empty_text = "This run recorded no Kea facts."
-        fields = ("family", "kind", "outcome", "reason", "kea_path", "detail")
+        fields = ("family", "kind", "outcome", "reason", "capability", "kea_path", "detail")
         default_columns = fields

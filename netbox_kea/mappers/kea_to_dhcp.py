@@ -163,6 +163,8 @@ class ClientClassIntent:
     only_in_additional_list: bool | None
     options: tuple[DHCPOption, ...]
     settings: dict = field(default_factory=dict)
+    # None: the class declares no user-context.
+    user_context: dict | None = None
 
 
 @dataclass
@@ -310,6 +312,7 @@ def _client_class_intent(raw, family: int, path: str, dropped: list[DroppedEntry
         only_in_additional_list=only,
         options=_options(raw.get("option-data"), kea_paths.client_class(family, name), dropped),
         settings=_settings(raw),
+        user_context=raw.get(kea_paths.USER_CONTEXT),
     )
 
 

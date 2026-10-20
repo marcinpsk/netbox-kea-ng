@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from .subnet_catalogue import CatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
 IdentifierType = Literal["hw-address", "duid", "circuit-id", "client-id", "flex-id"]
+FLEX_ID: IdentifierType = "flex-id"
 ReservationQueryMode = Literal["page", "identity", "address", "hostname"]
 
 _IDENTIFIERS: dict[Family, tuple[IdentifierType, ...]] = {

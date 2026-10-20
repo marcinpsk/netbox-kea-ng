@@ -995,7 +995,7 @@ class DhcpPluginClientClassImportTest(TestCase):
         self.assertEqual(summary.client_classes_created, 1)
         self.assertEqual(summary.options_created, 1)  # the class's routers option
 
-        cc = ClientClass.objects.get(name=f"{self.server.name}: voip")
+        cc = ClientClass.objects.get(name="voip")
         self.assertEqual(cc.dhcp_server, DHCPServer.objects.get(name=self.server.name))
         self.assertEqual(cc.test, "substring(option[60].hex,0,6) == 'Aastra'")
         # BOOTP settings differ from the server baseline → stored on the class.
@@ -1006,12 +1006,91 @@ class DhcpPluginClientClassImportTest(TestCase):
         ct = ContentType.objects.get_for_model(ClientClass)
         self.assertTrue(Option.objects.filter(assigned_object_type=ct, assigned_object_id=cc.pk).exists())
 
-    def test_client_class_name_is_namespaced_to_server(self):
+    def test_client_class_keeps_its_kea_name(self):
         ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
         self.adapter.import_server_config(self.server, parse_dhcp_config(self._conf(), 4))
-        # Namespaced so two servers' identically-named Kea classes don't collide.
-        self.assertTrue(ClientClass.objects.filter(name=f"{self.server.name}: voip").exists())
-        self.assertFalse(ClientClass.objects.filter(name="voip").exists())
+        self.assertEqual(
+            list(ClientClass.objects.filter(dhcp_server__name=self.server.name).values_list("name", flat=True)),
+            ["voip"],
+        )
+
+    def test_a_second_server_class_of_a_taken_name_is_unsupported_and_its_other_classes_import(self):
+        from netbox_kea.integrations.dhcp_import_report import Capability, Outcome
+
+        ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
+        self.adapter.import_server_config(self.server, parse_dhcp_config(self._conf(), 4))
+        second = _make_db_server(name=f"{self.server.name}-second")
+        conf = self._conf()
+        conf["client-classes"].append({"name": "printers", "test": "option[60].hex == 'printer'"})
+
+        summary = self.adapter.import_server_config(second, parse_dhcp_config(conf, 4))
+
+        path = "Dhcp4/client-classes[name=voip]"
+        (entry,) = [entry for entry in summary.entries if entry.path == path]
+        self.assertEqual(
+            (entry.outcome, entry.reason, entry.capability),
+            (Outcome.UNSUPPORTED, Reason.PLUGIN_GAP, Capability.NAME_PER_SERVER),
+        )
+        self.assertIn("voip", entry.detail)
+        (option,) = [entry for entry in summary.entries if entry.path.startswith(f"{path}/option-data")]
+        self.assertEqual(option.reason, Reason.PARENT_NOT_IMPORTED)
+        self.assertEqual(summary.client_classes_created, 1)
+        self.assertEqual(ClientClass.objects.get(name="voip").dhcp_server.name, self.server.name)
+        self.assertEqual(ClientClass.objects.get(name="printers").dhcp_server.name, second.name)
+
+    def test_a_namespaced_class_is_renamed_to_its_kea_name_through_its_mapping(self):
+        from netbox_kea.models import KeaDhcpLink
+
+        ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
+        self.adapter.import_server_config(self.server, parse_dhcp_config(self._conf(), 4))
+        row = ClientClass.objects.get(name="voip")
+        ClientClass.objects.filter(pk=row.pk).update(name=f"{self.server.name}: voip")
+
+        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(self._conf(), 4))
+
+        self.assertEqual(summary.client_classes_updated, 1)
+        self.assertEqual(ClientClass.objects.get(pk=row.pk).name, "voip")
+        self.assertEqual(KeaDhcpLink.objects.get(server=self.server, kind="client_class").object_id, row.pk)
+
+    def test_a_namespaced_class_whose_kea_name_is_taken_keeps_its_name_and_its_other_fields_follow_kea(self):
+        from netbox_kea.integrations.dhcp_import_report import Capability, Outcome
+        from netbox_kea.models import KeaDhcpLink
+
+        ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
+        first = _make_db_server(name=f"{self.server.name}-first")
+        self.adapter.import_server_config(first, parse_dhcp_config(self._conf(), 4))
+        self.adapter.import_server_config(self.server, parse_dhcp_config({"client-classes": [{"name": "data"}]}, 4))
+        # A mapped row with the namespaced name of the released importer.
+        namespaced = ClientClass.objects.get(name="data")
+        ClientClass.objects.filter(pk=namespaced.pk).update(name=f"{self.server.name}: voip")
+        KeaDhcpLink.objects.filter(server=self.server, kind="client_class").update(kea_identity="voip")
+        conf = self._conf()
+        conf["client-classes"][0]["test"] = "option[60].hex == 'phone'"
+
+        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+
+        (entry,) = [entry for entry in summary.entries if entry.outcome == Outcome.UNSUPPORTED]
+        self.assertEqual(
+            (entry.path, entry.capability), ("Dhcp4/client-classes[name=voip]/name", Capability.NAME_PER_SERVER)
+        )
+        row = ClientClass.objects.get(pk=namespaced.pk)
+        self.assertEqual((row.name, row.test), (f"{self.server.name}: voip", "option[60].hex == 'phone'"))
+        self.assertEqual(ClientClass.objects.get(name="voip").dhcp_server.name, first.name)
+
+    def test_a_class_user_context_is_unsupported_and_the_class_imports(self):
+        from netbox_kea.integrations.dhcp_import_report import Capability, Outcome
+
+        conf = self._conf()
+        conf["client-classes"][0]["user-context"] = {"site": "lab"}
+
+        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+
+        (entry,) = [entry for entry in summary.entries if entry.outcome == Outcome.UNSUPPORTED]
+        self.assertEqual(
+            (entry.path, entry.capability),
+            ("Dhcp4/client-classes[name=voip]/user-context", Capability.USER_CONTEXT),
+        )
+        self.assertEqual(summary.client_classes_created, 1)
 
     def test_reimport_is_idempotent(self):
         ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
@@ -1019,7 +1098,7 @@ class DhcpPluginClientClassImportTest(TestCase):
         second = self.adapter.import_server_config(self.server, parse_dhcp_config(self._conf(), 4))
         self.assertEqual(second.client_classes_created, 0)
         self.assertEqual(second.client_classes_updated, 0)
-        self.assertEqual(ClientClass.objects.filter(name=f"{self.server.name}: voip").count(), 1)
+        self.assertEqual(ClientClass.objects.filter(name="voip").count(), 1)
 
     def test_changed_test_expression_reported_as_updated(self):
         ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
@@ -1028,7 +1107,7 @@ class DhcpPluginClientClassImportTest(TestCase):
         conf["client-classes"][0]["test"] = "substring(option[60].hex,0,4) == 'Cisco'"
         second = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
         self.assertEqual(second.client_classes_updated, 1)
-        cc = ClientClass.objects.get(name=f"{self.server.name}: voip")
+        cc = ClientClass.objects.get(name="voip")
         self.assertEqual(cc.test, "substring(option[60].hex,0,4) == 'Cisco'")
 
 
@@ -1166,7 +1245,9 @@ class DhcpPluginMappingImportTest(TestCase):
         self.assertEqual({source: row.pk for source, row in current.items()}, {s: r.pk for s, r in rows.items()})
         for source, row in current.items():
             with self.subTest(source=source):
-                self.assertEqual(row.name, f"renamed {row.pk}")
+                # A client class name is its Kea name, so the import names it again.
+                expected = "voip" if source[0] == "client_class" else f"renamed {row.pk}"
+                self.assertEqual(row.name, expected)
         definition = current[("option_definition", None, "dhcp4:222")]
         self.assertEqual((definition.space, definition.code, definition.type), ("dhcp4", 222, "uint16"))
         self.assertEqual(current[("client_class", None, "voip")].test, "option[60].hex == 'phone'")
@@ -1352,7 +1433,7 @@ class DhcpPluginMappingImportTest(TestCase):
         return rows
 
     def test_an_upgrade_adopts_the_rows_that_the_released_importer_wrote(self):
-        from netbox_kea.integrations.dhcp_import_report import Outcome
+        from netbox_kea.integrations.dhcp_import_report import Capability, Outcome
         from netbox_kea.models import KeaDhcpLink
 
         ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
@@ -1375,8 +1456,9 @@ class DhcpPluginMappingImportTest(TestCase):
             self.assertEqual(summary.errors, 0, summary.warnings)
             return sorted(entry.kind.value for entry in summary.entries if entry.outcome == Outcome.CREATED)
 
-        # The first run creates only what the released importer had not written: the Option and the class of DHCPv6.
-        for expected4, expected6 in ((["option"], ["client_class"]), ([], [])):
+        # The first run creates only what the released importer had not written: the Option. The DHCPv6 class
+        # cannot take the Kea name that the adopted DHCPv4 class now holds.
+        for expected4, expected6 in ((["option"], []), ([], [])):
             v4 = self.adapter.import_server_config(
                 self.server, parse_dhcp_config(conf4, 4), _reservation_snapshot(conf4, 4, hosts)
             )
@@ -1388,16 +1470,19 @@ class DhcpPluginMappingImportTest(TestCase):
             }
             self.assertEqual(seen, {source: row.pk for source, row in rows.items()})
 
+            self.assertEqual(
+                [(entry.path, entry.capability) for entry in v6.entries if entry.outcome == Outcome.UNSUPPORTED],
+                [("Dhcp6/client-classes[name=voip]", Capability.NAME_PER_SERVER)],
+            )
+
         classes = dict(ClientClass.objects.filter(dhcp_server__name=self.server.name).values_list("name", "test"))
-        self.assertEqual(
-            classes, {f"{self.server.name}: voip": "family 4", f"{self.server.name} DHCPv6: voip": "family 6"}
-        )
-        (v6_link,) = KeaDhcpLink.objects.filter(server=self.server, family=6)
-        self.assertEqual(
-            (v6_link.kind, v6_link.kea_identity, v6_link.object_id),
-            ("client_class", "voip", ClientClass.objects.get(name=f"{self.server.name} DHCPv6: voip").pk),
-        )
+        self.assertEqual(classes, {"voip": "family 4"})
+        self.assertFalse(KeaDhcpLink.objects.filter(server=self.server, family=6).exists())
+        # The adopted class takes its Kea name. Every other row keeps the name that the released importer gave it.
+        self.assertEqual(ClientClass.objects.get(name="voip").pk, rows[("client_class", None, "voip")].pk)
         for source, row in rows.items():
+            if source[0] == "client_class":
+                continue
             with self.subTest(source=source):
                 self.assertEqual(type(row).objects.filter(name=row.name).get().pk, row.pk)
         self.assertEqual(
@@ -1416,8 +1501,9 @@ class DhcpPluginMappingImportTest(TestCase):
         self.assertEqual(Pool.objects.filter(subnet__dhcp_server__name=self.server.name).count(), 1)
         self.assertFalse(KeaDhcpLink.objects.filter(server=self.server).exists())
 
-    def test_one_class_name_in_both_families_imports_two_rows(self):
-        """One DHCPServer holds both families, so the class of the other family takes a family-qualified name."""
+    def test_one_class_name_in_both_families_is_unsupported_in_the_second(self):
+        """The DHCP plugin keeps class names unique across all DHCP servers, so one Kea name holds one row."""
+        from netbox_kea.integrations.dhcp_import_report import Capability, Outcome
         from netbox_kea.models import KeaDhcpLink
 
         ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
@@ -1425,14 +1511,14 @@ class DhcpPluginMappingImportTest(TestCase):
             conf = {"client-classes": [{"name": "voip", "test": f"family {family}"}], f"subnet{family}": []}
             summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, family))
             self.assertEqual(summary.errors, 0, summary.warnings)
+            unsupported = [entry.capability for entry in summary.entries if entry.outcome == Outcome.UNSUPPORTED]
+            self.assertEqual(unsupported, [Capability.NAME_PER_SERVER] if family == 6 else [])
 
         rows = {row.name: row.test for row in ClientClass.objects.filter(dhcp_server__name=self.server.name)}
-        self.assertEqual(
-            rows, {f"{self.server.name}: voip": "family 4", f"{self.server.name} DHCPv6: voip": "family 6"}
-        )
+        self.assertEqual(rows, {"voip": "family 4"})
         self.assertEqual(
             sorted(KeaDhcpLink.objects.filter(server=self.server).values_list("family", "kind", "kea_identity")),
-            [(4, "client_class", "voip"), (6, "client_class", "voip")],
+            [(4, "client_class", "voip")],
         )
 
 

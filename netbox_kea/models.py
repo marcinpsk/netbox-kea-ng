@@ -23,7 +23,14 @@ from netbox.models.features import ChangeLoggingMixin, JobsMixin
 from . import branching
 from .constants import STALE_CLEANUP_MODES, Family
 from .integrations.dhcp_import_plan import MAX_MAPPING_IDENTITY_LENGTH
-from .integrations.dhcp_import_report import KIND_LABELS, OUTCOME_LABELS, REASON_LABELS, Kind, choices
+from .integrations.dhcp_import_report import (
+    CAPABILITY_LABELS,
+    KIND_LABELS,
+    OUTCOME_LABELS,
+    REASON_LABELS,
+    Kind,
+    choices,
+)
 from .kea import KeaClient
 from .leases import AllocationKind
 
@@ -762,6 +769,8 @@ class DhcpImportEntry(models.Model):
     kind: models.CharField = models.CharField(max_length=32, choices=choices(KIND_LABELS))
     outcome: models.CharField = models.CharField(max_length=16, choices=choices(OUTCOME_LABELS))
     reason: models.CharField = models.CharField(max_length=32, choices=choices(REASON_LABELS), blank=True)
+    # The DHCP Plugin Capability that an unsupported fact needs, when one decides it.
+    capability: models.CharField = models.CharField(max_length=40, choices=choices(CAPABILITY_LABELS), blank=True)
     kea_path: models.TextField = models.TextField()
     detail: models.TextField = models.TextField(blank=True)
 

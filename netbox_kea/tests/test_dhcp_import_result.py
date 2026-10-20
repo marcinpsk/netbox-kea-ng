@@ -26,6 +26,7 @@ from netbox_kea.dhcp_options import DHCPOption
 from netbox_kea.integrations.dhcp_import import store_run
 from netbox_kea.integrations.dhcp_import_report import (
     REASON_OUTCOME,
+    Capability,
     ImportEntry,
     Kind,
     Outcome,
@@ -259,6 +260,32 @@ class LatestRunPageTest(_ImportRunTestCase):
         self.assertIn(f"{_SUBNET}/option-data[space=vendor-x,code=1]", text)
         self.assertIn("The DHCP plugin cannot hold it", text)
 
+    def test_an_unsupported_fact_is_stored_and_shown_with_its_capability(self):
+        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        other = DHCPServer.objects.create(name="import-result-other")
+        apps.get_model(DHCP_PLUGIN, "ClientClass").objects.create(name="voip", dhcp_server=other)
+        path = "Dhcp4/client-classes[name=voip]"
+
+        self._run()
+
+        entry = DhcpImportEntry.objects.get(run__server=self.server, kea_path=path)
+        self.assertEqual(
+            (entry.outcome, entry.reason, entry.capability), ("unsupported", "plugin_gap", "name_per_server")
+        )
+        card = BeautifulSoup(self._page().content, "html.parser").select_one("#dhcp-import-latest-run")
+        counts = {
+            tuple(cell.get_text(strip=True) for cell in row.find_all(["th", "td"]))
+            for row in card.select("table.dhcp-import-counts tbody tr")
+        }
+        # Created, updated, removed, unsupported, skipped, not imported.
+        self.assertIn(("DHCPv4", "Client class", "0", "0", "0", "1", "0", "0"), counts)
+        row = next(
+            row
+            for row in card.select("table.table tbody tr")
+            if path in [cell.get_text(strip=True) for cell in row.find_all("td")]
+        )
+        self.assertIn("Name unique per DHCP server (#88 gap 3)", row.get_text(" ", strip=True))
+
     def test_the_page_says_when_no_run_is_stored(self):
         page = BeautifulSoup(self._page().content, "html.parser")
 
@@ -293,6 +320,18 @@ class EntryVocabularyTest(SimpleTestCase):
 
         self.assertEqual(entry.outcome, Outcome.UNSUPPORTED)
         self.assertEqual(set(REASON_OUTCOME), set(Reason))
+
+    def test_only_a_plugin_gap_entry_names_a_capability(self):
+        with self.assertRaises(ValueError):
+            ImportEntry(
+                4,
+                Kind.SUBNET,
+                "Dhcp4/subnet4[id=1]",
+                Outcome.NOT_IMPORTED,
+                Reason.NOT_IN_SCOPE,
+                "",
+                Capability.USER_CONTEXT,
+            )
 
     def test_an_entry_refuses_an_outcome_that_disagrees_with_its_reason(self):
         for outcome, reason in ((Outcome.CREATED, Reason.WRITE_FAILED), (Outcome.SKIPPED, None)):

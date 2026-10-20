@@ -212,6 +212,7 @@ def store_run(server: Server, trigger: DhcpImportTrigger, started: datetime, ent
                     kind=entry.kind.value,
                     outcome=entry.outcome.value,
                     reason=entry.reason.value if entry.reason is not None else "",
+                    capability=entry.capability.value if entry.capability is not None else "",
                     kea_path=entry.path,
                     detail=entry.detail,
                 )

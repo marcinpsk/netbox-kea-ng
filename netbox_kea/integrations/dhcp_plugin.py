@@ -39,8 +39,9 @@ v1 scope (import + diff, read-only against Kea):
   it differs from the DHCPServer parent** (parent-diff suppression) — otherwise it
   is left blank to inherit, keeping the records minimal and faithful.
 * **Client classes** (``client-classes``) are imported as ``ClientClass`` rows
-  (test/template-test, additional-list flag, BOOTP + lifetime settings, options),
-  named ``"<server>: <kea-name>"`` since the plugin requires a globally-unique name.
+  (test/template-test, additional-list flag, BOOTP + lifetime settings, options) with
+  their Kea name. While the plugin keeps class names unique across all servers, a class
+  whose name another row holds is reported as unsupported (:mod:`.dhcp_plugin_capabilities`).
 * **Deferred** (reported, not imported): shared-network grouping (the plugin's
   ``SharedNetwork`` requires a prefix Kea does not model — member subnets are
   flattened onto the ``DHCPServer``).
@@ -78,7 +79,8 @@ from .dhcp_import_plan import (
     keyed_reservations,
     plan_family,
 )
-from .dhcp_import_report import ImportEntry, Kind, Outcome, Reason, not_written, written
+from .dhcp_import_report import Capability, ImportEntry, Kind, Outcome, Reason, not_written, unsupported, written
+from .dhcp_plugin_capabilities import PluginCapabilities, probe
 
 logger = logging.getLogger(__name__)
 
@@ -753,21 +755,15 @@ def upsert_dhcp_server(server):
     )
 
 
-def _client_class_name(server, kea_name: str, family: int | None = None) -> str:
-    """Namespace a Kea class name to this server (NetBoxDHCPModelMixin needs a unique name).
-
-    One DHCPServer holds both families, so the class of a second family with the same Kea name also names
-    its family. Note: this namespaced name will NOT match the bare Kea class name referenced from a subnet's
-    ``client-classes`` list or another class's ``test`` expression. That is fine for the v1 import (those
-    references are not imported), but a future push-back / reference-resolution phase must map the bare Kea
-    name back to this namespaced row.
-    """
-    scope = server.name if family is None else f"{server.name} DHCPv{family}"
-    return f"{scope}: {kea_name}"[:255]
+def _released_client_class_name(server, kea_name: str) -> str:
+    """Return the name that the released importer gave a Kea class, before a class had a mapping."""
+    return f"{server.name}: {kea_name}"[:255]
 
 
-def _client_class_changes(obj, dhcp_server, intent: ClientClassIntent, summary: ImportSummary, path: str) -> dict:
-    """Plan the changed identity, expressions and inherited fields of one Client Class."""
+def _client_class_changes(
+    obj, dhcp_server, intent: ClientClassIntent, summary: ImportSummary, path: str, capabilities: PluginCapabilities
+) -> dict:
+    """Plan the changed identity, expressions and inherited fields of one Client Class. Its name is planned apart."""
     fields = {
         "dhcp_server_id": dhcp_server.pk,
         "test": intent.test or "",
@@ -775,9 +771,37 @@ def _client_class_changes(obj, dhcp_server, intent: ClientClassIntent, summary: 
     }
     if intent.only_in_additional_list is not None:
         fields["only_in_additional_list"] = intent.only_in_additional_list
+    if capabilities.has(Capability.USER_CONTEXT):
+        fields["user_context"] = intent.user_context
+    elif intent.user_context is not None:
+        detail = "The DHCP plugin has no user-context field on a client class."
+        summary.record(
+            unsupported(
+                intent.family,
+                Kind.CLIENT_CLASS,
+                kea_paths.setting(path, kea_paths.USER_CONTEXT),
+                Capability.USER_CONTEXT,
+                detail,
+            )
+        )
     source = _Source(intent.family, Kind.CLIENT_CLASS, path)
     fields.update(_inherited_settings_fields(obj, dhcp_server, intent.settings, _COMMON_FIELDS, summary, source))
     return {name: value for name, value in fields.items() if getattr(obj, name) != value}
+
+
+def _class_name_taken(name: str, obj, capabilities: PluginCapabilities) -> bool:
+    """Return whether another client class holds *name* while the DHCP plugin keeps class names unique globally."""
+    if capabilities.has(Capability.NAME_PER_SERVER):
+        return False
+    others = _model("ClientClass").objects.filter(name=name)
+    return (others.exclude(pk=obj.pk) if obj is not None else others).exists()
+
+
+def _name_taken_detail(name: str) -> str:
+    return (
+        f"Another client class holds the name {name!r}. "
+        "The DHCP plugin needs each client class name to be unique across all DHCP servers."
+    )
 
 
 def upsert_client_class(
@@ -786,8 +810,9 @@ def upsert_client_class(
     planned: Planned[str, ClientClassIntent],
     custom_defs: CustomDefinitions,
     summary: ImportSummary,
+    capabilities: PluginCapabilities,
 ):
-    """Get/create the DHCP-plugin ``ClientClass`` for *planned* through its mapping, keyed by its Kea name."""
+    """Get/create the DHCP-plugin ``ClientClass`` for *planned* through its mapping. The row takes the Kea name."""
     ClientClass = _model("ClientClass")
     intent = planned.intent
     path = kea_paths.client_class(intent.family, planned.key)
@@ -795,21 +820,28 @@ def upsert_client_class(
     outcome = None
     try:
         with event_scope.atomic():
-            cc_name = _client_class_name(server, planned.key)
             obj = mapped_target(server, intent.family, source)
             if obj is None:
-                # Adopt a row that an import created before client classes had a mapping.
-                obj = _unlinked(ClientClass.objects.filter(name=cc_name)).first()
+                # Adopt a row that the released importer created before client classes had a mapping.
+                released = ClientClass.objects.filter(name=_released_client_class_name(server, planned.key))
+                obj = _unlinked(released).first()
+            name_taken = _class_name_taken(planned.key, obj, capabilities)
+            if obj is None and name_taken:
+                detail = _name_taken_detail(planned.key)
+                summary.record(unsupported(intent.family, Kind.CLIENT_CLASS, path, Capability.NAME_PER_SERVER, detail))
+                summary.warn(f"client-class {intent.name}: {detail}")
+                _skip_options(summary, intent.family, path, intent.options)
+                return None
             if obj is None:
-                if ClientClass.objects.filter(name=cc_name).exists():
-                    cc_name = _client_class_name(server, planned.key, intent.family)
-                obj = ClientClass(name=cc_name, dhcp_server=dhcp_server)
-                for name, value in _client_class_changes(obj, dhcp_server, intent, summary, path).items():
+                obj = ClientClass(name=planned.key, dhcp_server=dhcp_server)
+                for name, value in _client_class_changes(obj, dhcp_server, intent, summary, path, capabilities).items():
                     setattr(obj, name, value)
                 obj.save()
                 outcome = Outcome.CREATED
             else:
-                changes = _client_class_changes(obj, dhcp_server, intent, summary, path)
+                changes = _client_class_changes(obj, dhcp_server, intent, summary, path, capabilities)
+                if not name_taken and obj.name != planned.key:
+                    changes["name"] = planned.key
                 if changes:
                     obj.snapshot()
                     for name, value in changes.items():
@@ -825,6 +857,11 @@ def upsert_client_class(
         _skip_options(summary, intent.family, path, intent.options)
         return None
 
+    if name_taken:
+        detail = _name_taken_detail(planned.key)
+        name_path = kea_paths.setting(path, "name")
+        summary.record(unsupported(intent.family, Kind.CLIENT_CLASS, name_path, Capability.NAME_PER_SERVER, detail))
+        summary.warn(f"client-class {intent.name}: {detail}")
     if outcome is not None:
         summary.record(written(intent.family, Kind.CLIENT_CLASS, path, outcome))
     upsert_options(obj, intent.options, intent.family, dhcp_server, custom_defs, summary, path)
@@ -1365,13 +1402,13 @@ def import_server_config(
     config: ServerConfigIntent,
     reservation_observation: ReservationObservation | None = None,
 ) -> ImportSummary:
-    """Plan one parsed ``(server, family)`` Kea config and apply the plan to the DHCP plugin."""
-    return apply_plan(server, plan_family(config, reservation_observation))
+    """Plan one parsed ``(server, family)`` Kea config, probe the installed DHCP plugin, and apply the plan to it."""
+    return apply_plan(server, plan_family(config, reservation_observation), probe())
 
 
 @coordinated_import
-def apply_plan(server, plan: FamilyPlan) -> ImportSummary:
-    """Apply the plan of one ``(server, family)`` to the DHCP plugin.
+def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> ImportSummary:
+    """Apply the plan of one ``(server, family)`` to the DHCP plugin, writing a gated fact only with its *capabilities*.
 
     Idempotent: re-running finds each row through its ``KeaDhcpLink`` mapping and updates it rather than
     duplicating it.
@@ -1391,7 +1428,7 @@ def apply_plan(server, plan: FamilyPlan) -> ImportSummary:
         summary.record(written(plan.family, Kind.SERVER, root, Outcome.CREATED if created else Outcome.UPDATED))
     upsert_options(dhcp_server, plan.server.global_options, plan.family, dhcp_server, custom_defs, summary, root)
     for planned_class in plan.client_classes:
-        upsert_client_class(server, dhcp_server, planned_class, custom_defs, summary)
+        upsert_client_class(server, dhcp_server, planned_class, custom_defs, summary, capabilities)
     for planned_network in plan.shared_networks:
         summary.record(
             not_written(
