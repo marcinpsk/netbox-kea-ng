@@ -30,7 +30,7 @@ from netbox_kea.views import dhcp_plugin_sync as dps
 from netbox_kea.views.notices import HEADLINES, Notice
 
 from .kea_stub import READ_FAILURES, _res_page, _subnet_list, stub_kea
-from .utils import _make_db_server, with_dhcp_integration_config
+from .utils import _make_db_server, with_dhcp_integration_config, without_dhcp_plugin
 
 DHCP_PLUGIN = "netbox_dhcp"
 
@@ -495,6 +495,7 @@ class SyncNowErrorHandlingTest(TestCase):
         self.assertContains(resp, "An internal error occurred")
 
 
+@without_dhcp_plugin()
 class SummaryProblemsTest(SimpleTestCase):
     """Every non-zero problem count must be reported, not only the first one.
 

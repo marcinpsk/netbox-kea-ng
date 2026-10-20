@@ -46,6 +46,7 @@ from .utils import (
     linked_dhcp_targets,
     take_reservation_name,
     with_sync_config,
+    without_dhcp_plugin,
 )
 
 DHCP_PLUGIN = "netbox_dhcp"
@@ -3522,6 +3523,7 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
                 self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=referenced).exists())
 
 
+@without_dhcp_plugin()
 class ImportSummaryCompletenessTest(TestCase):
     """Reservation import counts must distinguish traversal and record failures.
 
@@ -3552,7 +3554,7 @@ class ImportSummaryCompletenessTest(TestCase):
 
     def _import(self, snapshot):
         from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
-        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
         summary = ImportSummary()
         observation = (
@@ -3561,7 +3563,14 @@ class ImportSummaryCompletenessTest(TestCase):
             else None
         )
         import_reservation_snapshot(
-            _make_db_server(), None, observation, None, summary, family=4, adoption_servers=(), capabilities=probe()
+            _make_db_server(),
+            None,
+            observation,
+            None,
+            summary,
+            family=4,
+            adoption_servers=(),
+            capabilities=PluginCapabilities(frozenset()),
         )
         return summary
 
@@ -3591,6 +3600,7 @@ class ImportSummaryCompletenessTest(TestCase):
         self.assertEqual(summary.reservations_quarantined, 0)
 
 
+@without_dhcp_plugin()
 class SkippedReservationCompletenessTest(TestCase):
     """A record the importer drops must be counted as skipped.
 
@@ -3603,7 +3613,7 @@ class SkippedReservationCompletenessTest(TestCase):
 
     def test_record_for_an_unlinked_subnet_id_reports_the_record_as_skipped(self):
         from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
-        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
         from netbox_kea.views.dhcp_plugin_sync import _summary_problems
 
         conf = {"subnet4": [{"id": 7, "subnet": "198.18.7.0/24"}]}
@@ -3613,7 +3623,14 @@ class SkippedReservationCompletenessTest(TestCase):
 
         # No KeaDhcpLink exists for subnet-id 7, so the record cannot be imported.
         import_reservation_snapshot(
-            self.server, None, snapshot, None, summary, family=4, adoption_servers=(), capabilities=probe()
+            self.server,
+            None,
+            snapshot,
+            None,
+            summary,
+            family=4,
+            adoption_servers=(),
+            capabilities=PluginCapabilities(frozenset()),
         )
 
         self.assertTrue(snapshot.snapshot.complete)

@@ -9,6 +9,7 @@ import re
 from typing import TYPE_CHECKING
 
 import requests
+from django.apps import apps
 from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
@@ -58,6 +59,19 @@ class SettingsRowOverride(TestContextDecorator):
     def _write(self, values: dict) -> None:
         if self.model.objects.filter(pk=1).update(**values) != 1:
             raise RuntimeError(f"{self.model.__name__} has no row")
+
+
+class without_dhcp_plugin(TestContextDecorator):
+    """Run a test as the CI unit-test job does: with netbox_dhcp absent from the app registry."""
+
+    def enable(self) -> None:
+        self.installed = apps.app_configs
+        apps.app_configs = {label: config for label, config in self.installed.items() if label != "netbox_dhcp"}
+        apps.clear_cache()
+
+    def disable(self) -> None:
+        apps.app_configs = self.installed
+        apps.clear_cache()
 
 
 def with_kea_client_config(**values) -> SettingsRowOverride:
