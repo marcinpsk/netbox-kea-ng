@@ -5,13 +5,16 @@
 The plan is pure. It reads no database, no DHCP plugin and no Kea, so a test can build it from recorded Kea
 replies. Each planned object carries its key, and :class:`MappingSource` gives the DHCP Import Mapping identity of
 a key: the columns of ``KeaDhcpLink`` that the apply step reads and writes. The plan keeps the Reservation
-observation, and :func:`keyed_reservations` keys its records. The apply step in
-:mod:`netbox_kea.integrations.dhcp_plugin` turns the parsed intents into plugin field values.
+observation, and :func:`keyed_reservations` keys its records. :func:`observations` gives the Kea sources that the
+read reports for each mapped kind, and whether the read is Complete for that kind: the removal of Stale DHCP Import
+Objects and the drift view both use it. The apply step in :mod:`netbox_kea.integrations.dhcp_plugin` turns the parsed
+intents into plugin field values.
 """
 
 from __future__ import annotations
 
 import ipaddress
+from collections import Counter
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generic, TypeVar
 
@@ -30,7 +33,7 @@ from ..mappers.kea_to_dhcp import (
 from ..pools import Pool, parse_pool
 from ..reservations import MAX_IDENTITY_LENGTH, IdentifierType, InSubnetReservationScope, Reservation, identity_text
 from .dhcp_import_ledger import KEA_DEFAULTS, MERGED_KEYS
-from .dhcp_import_report import Kind
+from .dhcp_import_report import KIND_LABELS, Kind
 
 if TYPE_CHECKING:
     from ..dhcp_options import DHCPOption
@@ -93,6 +96,26 @@ class MappingSource:
     def columns(self) -> dict[str, object]:
         """Return the ``KeaDhcpLink`` identity columns, for a lookup and for a write."""
         return {"kind": self.kind.value, "kea_subnet_id": self.kea_subnet_id, "kea_identity": self.kea_identity}
+
+    def path(self, family: int) -> str:
+        """Return the Kea path of the source in *family*."""
+        identity = self.kea_identity or ""
+        if self.kind == Kind.SUBNET:
+            return kea_paths.subnet(family, self.kea_subnet_id)
+        if self.kind == Kind.POOL:
+            return kea_paths.pool(kea_paths.subnet(family, self.kea_subnet_id), identity)
+        if self.kind == Kind.RESERVATION:
+            # An identifier type has no colon, so the first colon ends it.
+            identifier_type, _, value = identity.partition(":")
+            return kea_paths.reservation(family, self.kea_subnet_id, identifier_type, value)
+        if self.kind == Kind.OPTION_DEFINITION:
+            space, _, code = identity.rpartition(":")
+            return kea_paths.option_definition(family, space, int(code))
+        if self.kind == Kind.CLIENT_CLASS:
+            return kea_paths.client_class(family, identity)
+        if self.kind == Kind.SHARED_NETWORK:
+            return kea_paths.shared_network(family, identity)
+        return kea_paths.daemon(family)
 
 
 @dataclass(frozen=True)
@@ -300,3 +323,127 @@ def plan_family(config: ServerConfigIntent, observation: ReservationObservation 
         reservations=observation,
         dropped=tuple(config.dropped),
     )
+
+
+#: The mapped kinds whose Stale DHCP Import Objects a run removes, children before their parents.
+REMOVAL_ORDER: tuple[Kind, ...] = (
+    Kind.RESERVATION,
+    Kind.POOL,
+    Kind.SUBNET,
+    Kind.SHARED_NETWORK,
+    Kind.CLIENT_CLASS,
+    Kind.OPTION_DEFINITION,
+)
+_CONFIGURATION_KINDS = frozenset(REMOVAL_ORDER) - {Kind.RESERVATION}
+
+
+@dataclass(frozen=True)
+class KindObservation:
+    """The Kea sources of one mapped kind that a read reports, and why the observation is Incomplete.
+
+    Only a Complete observation can make a mapped row stale.
+    """
+
+    sources: frozenset[MappingSource]
+    # Empty when the observation is Complete.
+    incomplete: str = ""
+
+    @property
+    def complete(self) -> bool:
+        """Return whether the read reported every Kea source of the kind."""
+        return not self.incomplete
+
+
+def _counted(count: int, singular: str, plural: str) -> str:
+    return f"{count} {singular if count == 1 else plural}"
+
+
+def _configuration_gaps(plan: FamilyPlan) -> dict[Kind, list[str]]:
+    """Return why the configuration read is Incomplete for each configuration kind."""
+    gaps: dict[Kind, list[str]] = {kind: [] for kind in _CONFIGURATION_KINDS}
+    if not plan.configuration_complete:
+        for reasons in gaps.values():
+            reasons.append("The Server Configuration was not read in full.")
+    dropped = Counter(entry.kind for entry in plan.dropped)
+    for kind, reasons in gaps.items():
+        if dropped[kind]:
+            entries = _counted(dropped[kind], f"{KIND_LABELS[kind]} entry", f"{KIND_LABELS[kind]} entries")
+            verb = "is" if dropped[kind] == 1 else "are"
+            reasons.append(f"The configuration has {entries} that {verb} not valid.")
+    if dropped[Kind.SUBNET]:
+        gaps[Kind.POOL].append("A Subnet entry that is not valid hides its Pools.")
+    unkeyed_subnets = sum(subnet.key is None for subnet in plan.subnets)
+    if unkeyed_subnets:
+        gaps[Kind.SUBNET].append(f"{_counted(unkeyed_subnets, 'Subnet has', 'Subnets have')} no Kea subnet ID.")
+    unkeyed_pools = sum(pool.key is None or pool.key.source is None for subnet in plan.subnets for pool in subnet.pools)
+    if unkeyed_pools:
+        gaps[Kind.POOL].append(f"{_counted(unkeyed_pools, 'Pool has', 'Pools have')} no mapping identity.")
+    return gaps
+
+
+def _reservation_gap(observation: ReservationObservation | None) -> str:
+    """Return why the Reservation observation is Incomplete, or "" when it holds every Reservation."""
+    # Imported here: models imports this module, and subnet_catalogue imports models.
+    from ..subnet_catalogue import CompleteCatalogueSnapshot
+
+    if observation is None:
+        return "The Reservation Snapshot could not be read."
+    if not isinstance(observation.catalogue, CompleteCatalogueSnapshot):
+        return "The Subnet Catalogue of the Reservation Snapshot is incomplete."
+    snapshot = observation.snapshot
+    if snapshot.traversal_truncated:
+        return "The Reservation walk did not read every page."
+    if snapshot.diagnostics:
+        records = _counted(len(snapshot.diagnostics), "Reservation record", "Reservation records")
+        return f"{records} could not be parsed, and one of them can be a mapped Reservation."
+    if not snapshot.complete:
+        return "The Reservation Snapshot is incomplete."
+    return ""
+
+
+def _observed_sources(plan: FamilyPlan) -> dict[Kind, frozenset[MappingSource]]:
+    """Return the Kea source of each object that the plan reports, by mapped kind."""
+    return {
+        Kind.RESERVATION: frozenset(planned.key.source for planned in keyed_reservations(plan.reservations)),
+        Kind.POOL: frozenset(
+            pool.key.source
+            for subnet in plan.subnets
+            for pool in subnet.pools
+            if pool.key is not None and pool.key.source is not None
+        ),
+        Kind.SUBNET: frozenset(MappingSource.subnet(subnet.key) for subnet in plan.subnets if subnet.key is not None),
+        Kind.SHARED_NETWORK: frozenset(
+            MappingSource.named(Kind.SHARED_NETWORK, planned.key) for planned in plan.shared_networks
+        ),
+        Kind.CLIENT_CLASS: frozenset(
+            MappingSource.named(Kind.CLIENT_CLASS, planned.key) for planned in plan.client_classes
+        ),
+        Kind.OPTION_DEFINITION: frozenset(planned.key.source for planned in plan.option_definitions),
+    }
+
+
+def observations(plan: FamilyPlan) -> dict[Kind, KindObservation]:
+    """Return the observation of each kind of :data:`REMOVAL_ORDER` that one family of a read gives.
+
+    The global configuration of a family has no observation: a family that was not read gives no plan.
+    """
+    sources = _observed_sources(plan)
+    gaps = {kind: " ".join(reasons) for kind, reasons in _configuration_gaps(plan).items()}
+    gaps[Kind.RESERVATION] = _reservation_gap(plan.reservations)
+    return {kind: KindObservation(sources[kind], gaps[kind]) for kind in REMOVAL_ORDER}
+
+
+def kind_path(family: int, kind: Kind) -> str:
+    """Return the Kea path that names every entry of one mapped kind in *family*."""
+    daemon = kea_paths.daemon(family)
+    subnets = kea_paths.every_entry(kea_paths.setting(daemon, kea_paths.subnet_collection(family)))
+    collections = {
+        Kind.RESERVATION: kea_paths.reservations(family),
+        Kind.POOL: kea_paths.pool_collection(subnets),
+        Kind.SHARED_NETWORK: kea_paths.setting(daemon, kea_paths.SHARED_NETWORKS),
+        Kind.CLIENT_CLASS: kea_paths.setting(daemon, kea_paths.CLIENT_CLASSES),
+        Kind.OPTION_DEFINITION: kea_paths.option_definition_collection(family),
+    }
+    if kind == Kind.SUBNET:
+        return subnets
+    return kea_paths.every_entry(collections[kind]) if kind in collections else daemon

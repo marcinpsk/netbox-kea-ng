@@ -34,6 +34,11 @@ def _step(key: str, identity: str | int) -> str:
     return f"{key}[{identity}]"
 
 
+def every_entry(path: str) -> str:
+    """Return the path that names every entry of the collection at *path*."""
+    return _step(path, "*")
+
+
 def daemon(family: int) -> str:
     """Return the path of the configuration of one daemon."""
     return f"Dhcp{family}"
