@@ -7,6 +7,7 @@ The runs go through the real "Sync to DHCP plugin now" view with Kea stubbed at 
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import unittest
 from datetime import timedelta
@@ -17,7 +18,7 @@ from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.messages import ERROR, get_messages
-from django.db import connection, connections
+from django.db import DatabaseError, connection, connections, transaction
 from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -532,26 +533,34 @@ def _new_session():
     return cast(Any, connection).Database.connect(**connection.get_connection_params())
 
 
+def _lock_key(server: Server) -> tuple[int, int]:
+    from netbox_kea.integrations.dhcp_import import IMPORT_LOCK_CLASS
+
+    return IMPORT_LOCK_CLASS, server.pk
+
+
+def _held_elsewhere(server: Server) -> bool:
+    """Return whether another session holds the import lock of *server*: take it from a new session, then release it."""
+    other = _new_session()
+    try:
+        with other.cursor() as cursor:
+            cursor.execute("SELECT pg_try_advisory_lock(%s, %s)", _lock_key(server))
+            (taken,) = cursor.fetchone()
+            if taken:
+                cursor.execute("SELECT pg_advisory_unlock(%s, %s)", _lock_key(server))
+    finally:
+        other.close()
+    return not taken
+
+
 class ServerImportLockTest(_ImportRunTestCase):
     """Two DHCP Imports of one Server never interleave: a run holds a Server lock from its first Kea read to its result."""
 
     def _key(self) -> tuple[int, int]:
-        from netbox_kea.integrations.dhcp_import import IMPORT_LOCK_CLASS
-
-        return IMPORT_LOCK_CLASS, self.server.pk
+        return _lock_key(self.server)
 
     def _held_elsewhere(self) -> bool:
-        """Return whether another session holds the lock: take it from a new connection, then release it."""
-        other = _new_session()
-        try:
-            with other.cursor() as cursor:
-                cursor.execute("SELECT pg_try_advisory_lock(%s, %s)", self._key())
-                (taken,) = cursor.fetchone()
-                if taken:
-                    cursor.execute("SELECT pg_advisory_unlock(%s, %s)", self._key())
-        finally:
-            other.close()
-        return not taken
+        return _held_elsewhere(self.server)
 
     def test_a_run_while_another_run_holds_the_lock_is_refused_before_any_kea_read(self):
         from netbox_kea.models import KeaDhcpLink
@@ -626,6 +635,32 @@ class ServerImportLockTest(_ImportRunTestCase):
         )
         self.assertEqual(DhcpImportRun.objects.filter(server=self.server).count(), 1)
         self.assertFalse(self._held_elsewhere())
+
+
+class ImportLockReleaseTest(TransactionTestCase):
+    """The import lock is released, and the error of the run kept, also when the transaction of the run failed."""
+
+    def test_a_failed_transaction_keeps_the_error_of_the_run_and_releases_the_lock(self):
+        from netbox_kea.integrations.dhcp_import import _server_import_lock
+
+        server = _make_db_server(name="lock-release")
+        with self.assertRaisesMessage(RuntimeError, "the run failed"):
+            with transaction.atomic(), _server_import_lock(server):
+                with connection.cursor() as cursor, contextlib.suppress(DatabaseError):
+                    cursor.execute("SELECT 1 / 0")
+                raise RuntimeError("the run failed")
+
+        self.assertFalse(_held_elsewhere(server))
+
+    def test_a_lock_that_is_not_held_at_release_is_logged(self):
+        from netbox_kea.integrations.dhcp_import import _server_import_lock
+
+        server = _make_db_server(name="lock-lost")
+        with self.assertLogs("netbox_kea.integrations.dhcp_import", "ERROR") as logs:
+            with _server_import_lock(server), connection.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_unlock(%s, %s)", _lock_key(server))
+
+        self.assertIn("was not held at release", logs.output[0])
 
 
 class SettingEntryTest(_ImportRunTestCase):

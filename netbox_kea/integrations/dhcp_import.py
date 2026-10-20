@@ -169,8 +169,17 @@ def _server_import_lock(server: Server) -> Iterator[None]:
     try:
         yield
     finally:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT pg_advisory_unlock(%s, %s)", [IMPORT_LOCK_CLASS, server.pk])
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_unlock(%s, %s)", [IMPORT_LOCK_CLASS, server.pk])
+                (released,) = cursor.fetchone()
+        except DatabaseError:
+            # A failed transaction refuses the unlock; ending the session releases the lock.
+            logger.exception("DHCP-plugin sync: could not release the import lock of %s", server.name)
+            connection.close()
+        else:
+            if not released:
+                logger.error("DHCP-plugin sync: the import lock of %s was not held at release", server.name)
 
 
 def run_dhcp_plugin_import(
