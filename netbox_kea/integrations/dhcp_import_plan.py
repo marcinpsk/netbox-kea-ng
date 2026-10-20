@@ -65,12 +65,18 @@ class MappingSource:
     """The Kea source of a DHCP Import Mapping in one Server and family, in the ``KeaDhcpLink`` identity columns.
 
     ``kea_subnet_id`` is the Kea subnet ID of the object or of its Subnet. ``kea_identity`` identifies the object in
-    that Subnet, or in the Server and family when ``kea_subnet_id`` is ``None``. A Subnet has no ``kea_identity``.
+    that Subnet, or in the Server and family when ``kea_subnet_id`` is ``None``. A Subnet has no ``kea_identity``, and
+    the global configuration of a family has neither.
     """
 
     kind: Kind
     kea_subnet_id: int | None = None
     kea_identity: str | None = None
+
+    @classmethod
+    def server(cls) -> MappingSource:
+        """Return the source of the global configuration of one family: the Server and family identify it."""
+        return cls(Kind.SERVER)
 
     @classmethod
     def subnet(cls, subnet_id: int) -> MappingSource:
@@ -156,6 +162,9 @@ class PlannedServer:
     global_options: tuple[DHCPOption, ...]
     # None: the key is absent or invalid in the Server Configuration Snapshot.
     host_reservation_identifiers: tuple[str, ...] | None
+    user_context: dict | None
+    # None: the interface list is not valid.
+    interfaces: tuple[str, ...] | None
 
 
 @dataclass(frozen=True)
@@ -226,7 +235,13 @@ def plan_family(config: ServerConfigIntent, observation: ReservationObservation 
     return FamilyPlan(
         family=validate_family(config.family),
         configuration_complete=config.configuration_complete,
-        server=PlannedServer(config.global_settings, config.global_options, config.host_reservation_identifiers),
+        server=PlannedServer(
+            config.global_settings,
+            config.global_options,
+            config.host_reservation_identifiers,
+            config.user_context,
+            config.interfaces,
+        ),
         option_definitions=_option_definitions(config),
         client_classes=tuple(Planned(intent.name, intent) for intent in config.client_classes),
         shared_networks=tuple(Planned(intent.name, intent) for intent in config.shared_networks),

@@ -48,7 +48,7 @@ from netbox_kea.subnet_catalogue import IncompleteCatalogueSnapshot, SubnetIdent
 from .kea_stub import stub_kea
 from .test_integration_dhcp_plugin import _reservation_snapshot
 from .test_kea_recordings import _recording
-from .utils import _make_db_server
+from .utils import _make_db_server, imported_dhcp_servers
 
 DHCP_PLUGIN = "netbox_dhcp"
 _IN_SUBNET_MAC = "02:00:00:00:00:0a"
@@ -370,7 +370,7 @@ class ApplyPlanWithoutKeaTest(TestCase):
         self.assertEqual(
             sorted(
                 (str(pool.ip_range.start_address.ip), str(pool.ip_range.end_address.ip))
-                for pool in Pool.objects.filter(subnet__dhcp_server__name=server.name)
+                for pool in Pool.objects.filter(subnet__dhcp_server__in=imported_dhcp_servers(server))
             ),
             [
                 ("192.0.2.10", "192.0.2.20"),
@@ -380,18 +380,20 @@ class ApplyPlanWithoutKeaTest(TestCase):
             ],
         )
         self.assertEqual(
-            set(ClientClass.objects.filter(dhcp_server__name=server.name).values_list("name", flat=True)),
+            set(
+                ClientClass.objects.filter(dhcp_server__in=imported_dhcp_servers(server)).values_list("name", flat=True)
+            ),
             {"voip", "printers", "boot", "per-client"},
         )
         self.assertEqual(
             set(
-                OptionDefinition.objects.filter(standard=False, dhcp_server__name=server.name).values_list(
-                    "space", "code"
-                )
+                OptionDefinition.objects.filter(
+                    standard=False, dhcp_server__in=imported_dhcp_servers(server)
+                ).values_list("space", "code")
             ),
             {("dhcp4", 224), ("dhcp4", 225), ("dhcp4", 226)},
         )
-        record = OptionDefinition.objects.get(dhcp_server__name=server.name, code=225)
+        record = OptionDefinition.objects.get(dhcp_server__in=imported_dhcp_servers(server), code=225)
         self.assertEqual(record.record_types, ["uint8", "string"])
         in_subnet = HostReservation.objects.get(subnet=links.get(kea_subnet_id=10).sys4_object)
         self.assertEqual(str(in_subnet.ipv4_address.address.ip), "192.0.2.30")
@@ -402,13 +404,13 @@ class ApplyPlanWithoutKeaTest(TestCase):
         self.assertEqual((summary.subnets_created, summary.pools_created, summary.reservations_created), (3, 4, 2))
         # Each imported row has exactly one DHCP Import Mapping, and a second apply finds each row through it.
         rows = [
-            *Pool.objects.filter(subnet__dhcp_server__name=server.name),
-            *HostReservation.objects.filter(subnet__dhcp_server__name=server.name),
-            *HostReservation.objects.filter(dhcp_server__name=server.name, subnet__isnull=True),
-            *ClientClass.objects.filter(dhcp_server__name=server.name),
-            *OptionDefinition.objects.filter(standard=False, dhcp_server__name=server.name),
+            *Pool.objects.filter(subnet__dhcp_server__in=imported_dhcp_servers(server)),
+            *HostReservation.objects.filter(subnet__dhcp_server__in=imported_dhcp_servers(server)),
+            *HostReservation.objects.filter(dhcp_server__in=imported_dhcp_servers(server), subnet__isnull=True),
+            *ClientClass.objects.filter(dhcp_server__in=imported_dhcp_servers(server)),
+            *OptionDefinition.objects.filter(standard=False, dhcp_server__in=imported_dhcp_servers(server)),
         ]
-        mapped = KeaDhcpLink.objects.filter(server=server, family=4).exclude(kind="subnet")
+        mapped = KeaDhcpLink.objects.filter(server=server, family=4).exclude(kind__in=["subnet", "server"])
         self.assertCountEqual(
             mapped.values_list("object_type__model", "object_id"),
             [(row._meta.model_name, row.pk) for row in rows],
@@ -451,7 +453,9 @@ class PluginVersionRefusalTest(TestCase):
             "The DHCP Import needs netbox-plugin-dhcp 0.2.0 or later. The installed version is 0.1.9.",
         )
         self.assertEqual(kea.commands(), [])
-        self.assertFalse(apps.get_model(DHCP_PLUGIN, "DHCPServer").objects.filter(name=server.name).exists())
+        self.assertFalse(
+            apps.get_model(DHCP_PLUGIN, "DHCPServer").objects.filter(name__startswith=server.name).exists()
+        )
         self.assertFalse(KeaDhcpLink.objects.filter(server=server).exists())
 
     def test_sync_now_refuses_a_plugin_version_it_cannot_read(self):
@@ -469,4 +473,6 @@ class PluginVersionRefusalTest(TestCase):
             "The DHCP Import needs netbox-plugin-dhcp 0.2.0 or later. The installed version is main.",
         )
         self.assertEqual(kea.commands(), [])
-        self.assertFalse(apps.get_model(DHCP_PLUGIN, "DHCPServer").objects.filter(name=server.name).exists())
+        self.assertFalse(
+            apps.get_model(DHCP_PLUGIN, "DHCPServer").objects.filter(name__startswith=server.name).exists()
+        )

@@ -95,6 +95,32 @@ def active_tabs(response) -> list[str]:
     return _ACTIVE_TAB.findall(response.content.decode())
 
 
+def take_reservation_name(subnet_name: str, duid: str):
+    """Create an unmapped Reservation that holds the name the import gives *duid* in a Subnet, so that write fails."""
+    from django.apps import apps
+
+    from netbox_kea.integrations.dhcp_plugin import _synthesized_name
+
+    holder = apps.get_model("netbox_dhcp", "DHCPServer").objects.create(name=f"name holder {duid[-8:]}")
+    return apps.get_model("netbox_dhcp", "HostReservation").objects.create(
+        name=_synthesized_name(subnet_name, f" duid:{duid}"), dhcp_server=holder, duid="00:00:00:01"
+    )
+
+
+def imported_dhcp_server(server, family: int):
+    """Return the DHCP plugin DHCPServer that the DHCP Import maps to the global configuration of *family*."""
+    from netbox_kea.models import KeaDhcpLink
+
+    return KeaDhcpLink.objects.get(server=server, family=family, kind="server").sys4_object
+
+
+def imported_dhcp_servers(server) -> list[int]:
+    """Return the primary keys of the DHCPServers that the DHCP Import maps to *server*, for a filter."""
+    from netbox_kea.models import KeaDhcpLink
+
+    return list(KeaDhcpLink.objects.filter(server=server, kind="server").values_list("object_id", flat=True))
+
+
 def linked_dhcp_targets(server):
     """Create one linked target of each DHCP Import Mapping kind, with object IDs that collide across models.
 
@@ -165,6 +191,8 @@ def linked_dhcp_targets(server):
             ),
             {"kind": "option_definition", "kea_identity": "dhcp4:222"},
         ),
+        # Last: deleting the DHCPServer cascades to the targets that it holds.
+        (dhcp_server, {"kind": "server"}),
     ]
     return tuple(
         (target, KeaDhcpLink.objects.create(server=server, family=4, sys4_object=target, **source))

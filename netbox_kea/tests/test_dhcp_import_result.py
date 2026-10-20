@@ -73,6 +73,7 @@ _FIRST_RUN = {
     ("option", "not_imported", "invalid_kea_data", "Dhcp4/client-classes[name=voip]/option-data[0]"),
     ("client_class", "created", "", "Dhcp4/client-classes[name=voip]"),
     ("server", "created", "", "Dhcp4"),
+    ("server", "unsupported", "plugin_gap", "Dhcp4"),
     ("shared_network", "not_imported", "not_in_scope", "Dhcp4/shared-networks[name=office]"),
     ("subnet", "created", "", _SUBNET),
     ("subnet", "created", "", "Dhcp4/subnet4[id=30]"),
@@ -159,6 +160,7 @@ class StoredResultTest(_ImportRunTestCase):
                 ("subnet", "not_imported", "invalid_kea_data", "Dhcp4/subnet4[id=21]"),
                 ("subnet", "created", "", "Dhcp4/subnet4[subnet=203.0.113.0/24]"),
                 ("server", "created", "", "Dhcp4"),
+                ("server", "unsupported", "plugin_gap", "Dhcp4"),
                 ("reservation", "skipped", "read_failed", "Dhcp4/reservations"),
             },
         )

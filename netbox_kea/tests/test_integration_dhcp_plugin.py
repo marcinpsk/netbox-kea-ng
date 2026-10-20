@@ -38,7 +38,15 @@ from netbox_kea.reservations import (
 from netbox_kea.subnet_catalogue import IncompleteCatalogueSnapshot, SubnetIdentity, VerifiedSubnet
 
 from .kea_stub import _res_page, kea_client, observed_configuration, stub_kea
-from .utils import _make_db_server, lease_phase, linked_dhcp_targets, with_sync_config
+from .utils import (
+    _make_db_server,
+    imported_dhcp_server,
+    imported_dhcp_servers,
+    lease_phase,
+    linked_dhcp_targets,
+    take_reservation_name,
+    with_sync_config,
+)
 
 DHCP_PLUGIN = "netbox_dhcp"
 
@@ -516,15 +524,42 @@ class DhcpPluginAdapterTest(TestCase):
             summary.entries,
         )
 
+    def test_two_long_duids_in_a_subnet_of_a_long_server_name_import_two_reservations(self):
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        self.server.name = "k" * 255
+        self.server.save()
+        conf = {"subnet6": [{"id": 6, "subnet": "2001:db8:6::/64"}]}
+        hosts = [{"subnet-id": 6, "duid": ":".join([octet] * 84)} for octet in ("aa", "bb")]
+
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6, hosts)
+        )
+
+        self.assertEqual((summary.errors, summary.reservations_created), (0, 2), summary.warnings)
+        self.assertEqual(HostReservation.objects.filter(subnet__dhcp_server__name__startswith="kkk").count(), 2)
+
+    def test_one_long_duid_in_two_subnets_imports_two_reservations(self):
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        duid = ":".join(["aa"] * 84)
+        conf = {"subnet6": [{"id": 4, "subnet": "2001:db8:4::/64"}, {"id": 5, "subnet": "2001:db8:5::/64"}]}
+        hosts = [{"subnet-id": 4, "duid": duid}, {"subnet-id": 5, "duid": duid}]
+
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6, hosts)
+        )
+
+        self.assertEqual((summary.errors, summary.reservations_created), (0, 2), summary.warnings)
+        self.assertEqual(HostReservation.objects.filter(duid=duid).count(), 2)
+
     def test_reservation_database_failure_does_not_stop_healthy_sibling(self):
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
-        common_duid = ":".join(["aa"] * 83)
         conf = {"subnet6": [{"id": 3, "subnet": "2001:db8:3::/64"}]}
         hosts = [
-            {"subnet-id": 3, "duid": common_duid + ":01", "hostname": "first.example"},
-            {"subnet-id": 3, "duid": common_duid + ":02", "hostname": "collision.example"},
+            {"subnet-id": 3, "duid": "01:02:01", "hostname": "first.example"},
+            {"subnet-id": 3, "duid": "01:02:02", "hostname": "collision.example"},
             {"subnet-id": 3, "duid": "01:02:03", "hostname": "healthy.example"},
         ]
+        take_reservation_name(f"{self.server.name} DHCPv6 subnet 3", "01:02:02")
         summary = self.adapter.import_server_config(
             self.server, parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6, hosts)
         )
@@ -665,7 +700,7 @@ class DhcpPluginOptionImportTest(TestCase):
         }
         summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
         self.assertEqual(summary.options_created, 1, summary.warnings)
-        srv = DHCPServer.objects.get(name=self.server.name)
+        srv = imported_dhcp_server(self.server, 4)
         opt = Option.objects.get(assigned_object_type=self._ct(DHCPServer), assigned_object_id=srv.pk)
         self.assertEqual(opt.definition.code, 6)
 
@@ -689,7 +724,7 @@ class DhcpPluginOptionImportTest(TestCase):
 
         definition = OptionDefinition.objects.get(code=224, standard=False)
         self.assertEqual(definition.name, "my-custom")
-        self.assertEqual(definition.dhcp_server.name, self.server.name)
+        self.assertEqual(definition.dhcp_server, imported_dhcp_server(self.server, 4))
         self.assertTrue(Option.objects.filter(definition=definition).exists())
 
     def test_name_only_option_writes_its_declared_custom_definition_on_the_first_import(self):
@@ -797,7 +832,7 @@ class DhcpPluginTuningImportTest(TestCase):
     def test_global_settings_applied_to_dhcp_server(self):
         from decimal import Decimal
 
-        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        apps.get_model(DHCP_PLUGIN, "DHCPServer")
         conf = {
             "valid-lifetime": 3600,
             "renew-timer": 900,
@@ -811,7 +846,7 @@ class DhcpPluginTuningImportTest(TestCase):
         }
         self._import(conf)
 
-        srv = DHCPServer.objects.get(name=self.server.name)
+        srv = imported_dhcp_server(self.server, 4)
         self.assertEqual(srv.valid_lifetime, 3600)
         self.assertEqual(srv.renew_timer, 900)
         self.assertEqual(srv.allocator, "iterative")
@@ -825,10 +860,10 @@ class DhcpPluginTuningImportTest(TestCase):
         self.assertEqual(srv.host_reservation_identifiers, ["hw-address", "duid", "circuit-id", "client-id"])
 
     def test_absent_host_reservation_identifiers_keep_the_stored_value(self):
-        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        apps.get_model(DHCP_PLUGIN, "DHCPServer")
         self._import({"host-reservation-identifiers": ["duid"], "subnet4": []})
         self._import({"valid-lifetime": 3600, "subnet4": []})
-        self.assertEqual(DHCPServer.objects.get(name=self.server.name).host_reservation_identifiers, ["duid"])
+        self.assertEqual(imported_dhcp_server(self.server, 4).host_reservation_identifiers, ["duid"])
 
     def test_subnet_value_equal_to_global_is_suppressed(self):
         Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
@@ -870,18 +905,6 @@ class DhcpPluginTuningImportTest(TestCase):
         subnet = Subnet.objects.get(prefix__prefix="2001:db8:30::/64")
         self.assertEqual(subnet.t2_percent, Decimal("0.8"))
 
-    def test_dualstack_global_first_family_wins_shared_fields(self):
-        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
-        # v4 sets shared valid-lifetime; v6 supplies preferred-lifetime and a *different*
-        # valid-lifetime that must NOT clobber v4's (single DHCPServer spans both).
-        self.adapter.import_server_config(self.server, parse_dhcp_config({"valid-lifetime": 3600, "subnet4": []}, 4))
-        self.adapter.import_server_config(
-            self.server, parse_dhcp_config({"valid-lifetime": 4000, "preferred-lifetime": 3000, "subnet6": []}, 6)
-        )
-        srv = DHCPServer.objects.get(name=self.server.name)
-        self.assertEqual(srv.valid_lifetime, 3600)  # v4 (first) wins the shared field
-        self.assertEqual(srv.preferred_lifetime, 3000)  # v6 fills the gap
-
     def test_tuning_reimport_is_idempotent(self):
         conf = {
             "valid-lifetime": 3600,
@@ -909,14 +932,14 @@ class DhcpPluginTuningImportTest(TestCase):
 
     def test_global_setting_change_resyncs_on_reimport(self):
         # Finding 2: a changed global value must re-sync (was write-once before).
-        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        apps.get_model(DHCP_PLUGIN, "DHCPServer")
         self.adapter.import_server_config(self.server, parse_dhcp_config({"valid-lifetime": 3600, "subnet4": []}, 4))
         self.adapter.import_server_config(self.server, parse_dhcp_config({"valid-lifetime": 7200, "subnet4": []}, 4))
-        srv = DHCPServer.objects.get(name=self.server.name)
+        srv = imported_dhcp_server(self.server, 4)
         self.assertEqual(srv.valid_lifetime, 7200)
 
     def test_failed_global_save_does_not_clear_a_subnet_override(self):
-        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        apps.get_model(DHCP_PLUGIN, "DHCPServer")
         Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
         conf1 = {"valid-lifetime": 3600, "subnet4": [{"id": 8, "subnet": "10.43.0.0/24", "valid-lifetime": 7200}]}
         first = self.adapter.import_server_config(self.server, parse_dhcp_config(conf1, 4))
@@ -930,7 +953,7 @@ class DhcpPluginTuningImportTest(TestCase):
         }
         second = self.adapter.import_server_config(self.server, parse_dhcp_config(conf2, 4))
 
-        self.assertEqual(DHCPServer.objects.get(name=self.server.name).valid_lifetime, 3600)
+        self.assertEqual(imported_dhcp_server(self.server, 4).valid_lifetime, 3600)
         subnet = Subnet.objects.get(prefix__prefix="10.43.0.0/24")
         self.assertEqual(subnet.valid_lifetime, 7200, "subnet override was cleared to inherit the stale DB global")
         self.assertEqual(second.errors, 2, second.warnings)
@@ -947,8 +970,390 @@ class DhcpPluginTuningImportTest(TestCase):
 
         self.assertEqual(
             [(entry.path, entry.reason) for entry in summary.entries if entry.kind == Kind.SERVER],
-            [("Dhcp4", Reason.WRITE_FAILED)],
+            [("Dhcp4", Reason.PLUGIN_GAP), ("Dhcp4", Reason.WRITE_FAILED)],
         )
+
+
+def _device(name: str, *interfaces: str):
+    """Return a Device with an Interface of each name."""
+    from dcim.models import Device, DeviceRole, DeviceType, Interface, Manufacturer, Site
+
+    site = Site.objects.create(name=name, slug=name)
+    manufacturer = Manufacturer.objects.create(name=name, slug=name)
+    device_type = DeviceType.objects.create(manufacturer=manufacturer, model=name, slug=name)
+    device = Device.objects.create(
+        name=name, site=site, device_type=device_type, role=DeviceRole.objects.create(name=name, slug=name)
+    )
+    for interface in interfaces:
+        Interface.objects.create(device=device, name=interface, type="1000base-t")
+    return device
+
+
+@tag("dhcp_plugin")
+class DhcpPluginServerPerFamilyTest(TestCase):
+    """Each family of a Server has its own DHCPServer, which holds only that daemon's global configuration."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def setUp(self):
+        from netbox_kea.integrations import dhcp_plugin
+
+        self.server = _make_db_server(name=f"kea-family-{timezone.now().timestamp()}")
+        self.adapter = dhcp_plugin
+        self.conf = {
+            4: {"valid-lifetime": 3600, "subnet4": [{"id": 1, "subnet": "10.60.0.0/24"}]},
+            6: {
+                "valid-lifetime": 4000,
+                "preferred-lifetime": 3000,
+                "subnet6": [{"id": 1, "subnet": "2001:db8:60::/64"}],
+            },
+        }
+
+    def _import(self, family: int):
+        intent = parse_dhcp_config(self.conf[family], family)
+        # The read step takes the identifier types from the Server Configuration Snapshot.
+        intent.host_reservation_identifiers = tuple(self.conf[family].get("host-reservation-identifiers", ())) or None
+        summary = self.adapter.import_server_config(self.server, intent)
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        return summary
+
+    def _unsupported(self, summary) -> list[tuple[str, object]]:
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
+        return sorted(
+            ((entry.path, entry.capability) for entry in summary.entries if entry.outcome == Outcome.UNSUPPORTED),
+            key=str,
+        )
+
+    def test_a_dual_stack_import_maps_one_dhcp_server_to_each_family_with_its_own_globals(self):
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        self._import(4)
+        self._import(6)
+
+        v4, v6 = imported_dhcp_server(self.server, 4), imported_dhcp_server(self.server, 6)
+        self.assertEqual((v4.name, v6.name), (f"{self.server.name} DHCPv4", f"{self.server.name} DHCPv6"))
+        self.assertEqual((v4.valid_lifetime, v4.preferred_lifetime), (3600, None))
+        self.assertEqual((v6.valid_lifetime, v6.preferred_lifetime), (4000, 3000))
+        self.assertEqual(Subnet.objects.get(prefix__prefix="10.60.0.0/24").dhcp_server, v4)
+        self.assertEqual(Subnet.objects.get(prefix__prefix="2001:db8:60::/64").dhcp_server, v6)
+
+    def test_a_dhcpv6_global_change_reaches_the_dhcpv6_server_on_the_next_run(self):
+        from netbox_kea.integrations.dhcp_import_report import Kind, Outcome
+
+        self._import(4)
+        self._import(6)
+        self.conf[6]["preferred-lifetime"] = 2000
+
+        summary = self._import(6)
+
+        self.assertEqual(imported_dhcp_server(self.server, 6).preferred_lifetime, 2000)
+        self.assertIn(
+            (Kind.SERVER, "Dhcp6", Outcome.UPDATED),
+            [(entry.kind, entry.path, entry.outcome) for entry in summary.entries],
+        )
+
+    def test_a_global_value_that_kea_no_longer_declares_is_cleared(self):
+        self.conf[6]["relay-supplied-options"] = [65]
+        self._import(6)
+        del self.conf[6]["preferred-lifetime"]
+        del self.conf[6]["relay-supplied-options"]
+
+        self._import(6)
+
+        v6 = imported_dhcp_server(self.server, 6)
+        self.assertEqual((v6.preferred_lifetime, v6.relay_supplied_options), (None, []))
+
+    def test_an_upgrade_adopts_the_existing_dhcp_server_for_the_primary_family(self):
+        from django.contrib.contenttypes.models import ContentType
+        from extras.models import Tag
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        from netbox_kea.models import KeaDhcpLink
+
+        model = partial(apps.get_model, DHCP_PLUGIN)
+        # The importer before #94 kept one DHCPServer, named after the Server, for both families.
+        device = _device(f"{self.server.name}-device")
+        existing = model("DHCPServer").objects.create(
+            name=self.server.name, device=device, comments="operator notes", preferred_lifetime=3000
+        )
+        existing.tags.add(Tag.objects.create(name="kea-family-tag", slug="kea-family-tag"))
+        v6_subnet = model("Subnet").objects.create(
+            name=f"{self.server.name} DHCPv6 subnet 1",
+            prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:60::/64")),
+            dhcp_server=existing,
+        )
+        KeaDhcpLink.objects.create(server=self.server, family=6, kind="subnet", kea_subnet_id=1, sys4_object=v6_subnet)
+        # A custom definition and global Options of DHCPv6, which that importer wrote without a mapping.
+        definition = model("OptionDefinition").objects.create(
+            name=f"{self.server.name}-site", family=6, space="dhcp6", code=250, type="uint8", dhcp_server=existing
+        )
+        dns = model("OptionDefinition").objects.get(standard=True, space="dhcp6", code=23)
+        on_existing = {
+            "assigned_object_type": ContentType.objects.get_for_model(existing),
+            "assigned_object_id": existing.pk,
+        }
+        options = [
+            model("Option").objects.create(definition=definition, data="7", **on_existing),
+            model("Option").objects.create(definition=dns, data="2001:db8::53", **on_existing),
+        ]
+        self.conf[6] |= {
+            "option-def": [{"name": f"{self.server.name}-site", "code": 250, "type": "uint8", "space": "dhcp6"}],
+            "option-data": [{"code": 250, "space": "dhcp6", "data": "7"}, {"code": 23, "data": "2001:db8::53"}],
+        }
+
+        self._import(4)
+        self._import(6)
+
+        v4, v6 = imported_dhcp_server(self.server, 4), imported_dhcp_server(self.server, 6)
+        self.assertEqual(v4.pk, existing.pk)
+        self.assertEqual(
+            (v4.name, v4.device, v4.comments, list(v4.tags.names())),
+            (self.server.name, device, "operator notes", ["kea-family-tag"]),
+        )
+        # DHCPv4 does not declare preferred-lifetime, so the DHCPv4 server no longer holds the DHCPv6 value.
+        self.assertIsNone(v4.preferred_lifetime)
+        self.assertEqual((v6.name, v6.device, v6.preferred_lifetime), (f"{self.server.name} DHCPv6", device, 3000))
+        # Each DHCPv6 row moves to the DHCPv6 server: no duplicate is created.
+        self.assertEqual(model("Subnet").objects.get(pk=v6_subnet.pk).dhcp_server, v6)
+        self.assertEqual(model("OptionDefinition").objects.get(standard=False, code=250).pk, definition.pk)
+        self.assertEqual(model("OptionDefinition").objects.get(pk=definition.pk).dhcp_server, v6)
+        self.assertEqual(sorted(v6.options.values_list("pk", flat=True)), sorted(option.pk for option in options))
+        self.assertFalse(v4.options.exists())
+        self.assertEqual(KeaDhcpLink.objects.filter(server=self.server, kind="server").count(), 2)
+        self.assertFalse(model("DHCPServer").objects.filter(name=f"{self.server.name} DHCPv4").exists())
+
+    def test_the_family_names_of_a_long_server_name_differ(self):
+        self.server.name = "k" * 255
+        self.server.save()
+
+        self._import(4)
+        self._import(6)
+
+        names = [imported_dhcp_server(self.server, family).name for family in (4, 6)]
+        self.assertNotEqual(*names)
+        self.assertTrue(all(len(name) == 255 for name in names))
+
+    def test_a_server_named_like_another_servers_dhcp_server_takes_none_of_its_rows(self):
+        self.conf[4]["option-data"] = [{"code": 6, "data": "192.0.2.53"}]
+        self._import(4)
+        first = imported_dhcp_server(self.server, 4)
+        other = _make_db_server(name=first.name, dhcp6=False)
+
+        summary = self.adapter.import_server_config(other, parse_dhcp_config({"subnet4": []}, 4))
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(list(first.options.values_list("data", flat=True)), ["192.0.2.53"])
+        self.assertNotEqual(imported_dhcp_server(other, 4).pk, first.pk)
+
+    def test_after_the_upgrade_an_option_that_an_operator_adds_stays_where_it_is(self):
+        from django.contrib.contenttypes.models import ContentType
+
+        model = partial(apps.get_model, DHCP_PLUGIN)
+        existing = model("DHCPServer").objects.create(name=self.server.name)
+        self._import(4)
+        self._import(6)
+        dns = model("OptionDefinition").objects.get(standard=True, space="dhcp6", code=23)
+        added = model("Option").objects.create(
+            definition=dns,
+            data="2001:db8::53",
+            assigned_object_type=ContentType.objects.get_for_model(existing),
+            assigned_object_id=existing.pk,
+        )
+
+        self._import(6)
+
+        self.assertEqual(model("Option").objects.get(pk=added.pk).assigned_object_id, existing.pk)
+
+    def test_a_wildcard_with_names_still_reports_a_name_that_matches_nothing(self):
+        from netbox_kea.integrations.dhcp_import_report import Reason
+
+        self.conf[4]["interfaces-config"] = {"interfaces": ["*", "eth9"]}
+
+        summary = self._import(4)
+
+        self.assertIn(
+            ("Dhcp4/interfaces-config/interfaces[eth9]", Reason.NO_MATCHING_INTERFACE),
+            [(entry.path, entry.reason) for entry in summary.entries],
+        )
+
+    def test_a_wildcard_interface_list_keeps_the_interface_links(self):
+        from netbox_kea.integrations.dhcp_import_report import Reason
+
+        device = _device(f"{self.server.name}-wildcard", "eth0")
+        self._import(4)
+        v4 = imported_dhcp_server(self.server, 4)
+        v4.snapshot()
+        v4.device = device
+        v4.save()
+        v4.device_interfaces.set(device.interfaces.all())
+        self.conf[4]["interfaces-config"] = {"interfaces": ["*"]}
+
+        summary = self._import(4)
+
+        self.assertEqual(list(v4.device_interfaces.values_list("name", flat=True)), ["eth0"])
+        self.assertIn(
+            ("Dhcp4/interfaces-config/interfaces[*]", Reason.NO_PLUGIN_HOME),
+            [(entry.path, entry.reason) for entry in summary.entries],
+        )
+
+    def test_a_dhcpv6_only_upgrade_adopts_the_existing_dhcp_server_for_dhcpv6(self):
+        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        self.server.dhcp4 = False
+        self.server.save()
+        existing = DHCPServer.objects.create(name=self.server.name)
+
+        self._import(6)
+
+        self.assertEqual(imported_dhcp_server(self.server, 6).pk, existing.pk)
+
+    def test_with_plugin_0_2_0_the_gated_global_facts_are_unsupported_and_the_rest_imports(self):
+        from netbox_kea.integrations.dhcp_import_report import Capability
+
+        self.conf[6] |= {
+            "server-id": {"type": "EN", "identifier": "0102", "enterprise-id": 2495, "htype": 0, "time": 0},
+            "user-context": {"site": "lab"},
+            "host-reservation-identifiers": ["hw-address", "duid", "flex-id"],
+            "allow-address-registration": True,
+        }
+        self.conf[4]["stash-agent-options"] = True
+
+        v6 = self._import(6)
+        v4 = self._import(4)
+
+        self.assertEqual(
+            self._unsupported(v6),
+            sorted(
+                [
+                    ("Dhcp6", Capability.SERVER_FAMILY),
+                    ("Dhcp6/server-id/identifier", Capability.SERVER_ID_FIELDS),
+                    ("Dhcp6/server-id/enterprise-id", Capability.SERVER_ID_FIELDS),
+                    ("Dhcp6/user-context", Capability.USER_CONTEXT),
+                    ("Dhcp6/host-reservation-identifiers", Capability.FLEX_ID_IDENTIFIER),
+                    ("Dhcp6/allow-address-registration", Capability.ADDRESS_REGISTRATION),
+                ],
+                key=str,
+            ),
+        )
+        self.assertEqual(
+            self._unsupported(v4),
+            sorted(
+                [("Dhcp4", Capability.SERVER_FAMILY), ("Dhcp4/stash-agent-options", Capability.STASH_AGENT_OPTIONS)],
+                key=str,
+            ),
+        )
+        server6 = imported_dhcp_server(self.server, 6)
+        self.assertEqual((server6.server_id, server6.host_reservation_identifiers), ("EN", ["hw-address", "duid"]))
+
+    def test_with_the_capabilities_the_gated_global_facts_are_planned(self):
+        from netbox_kea.integrations.dhcp_import_plan import plan_family
+        from netbox_kea.integrations.dhcp_import_report import Capability
+        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+
+        self.conf[6] |= {
+            "server-id": {"type": "EN", "identifier": "0102", "enterprise-id": 2495, "htype": 0, "time": 0},
+            "user-context": {"site": "lab"},
+            "host-reservation-identifiers": ["hw-address", "flex-id"],
+            "allow-address-registration": True,
+        }
+        intent = parse_dhcp_config(self.conf[6], 6)
+        intent.host_reservation_identifiers = ("hw-address", "flex-id")
+        summary = self.adapter.ImportSummary()
+
+        values = self.adapter.server_values(
+            plan_family(intent, None).server, 6, PluginCapabilities(frozenset(Capability)), summary
+        )
+
+        gated = (
+            "family",
+            "server_id",
+            "server_id_identifier",
+            "server_id_enterprise_id",
+            "server_id_htype",
+            "server_id_time",
+            "user_context",
+            "host_reservation_identifiers",
+            "allow_address_registration",
+        )
+        self.assertEqual(
+            {name: values[name] for name in gated},
+            {
+                "family": 6,
+                "server_id": "EN",
+                "server_id_identifier": "0102",
+                "server_id_enterprise_id": 2495,
+                "server_id_htype": None,
+                "server_id_time": None,
+                "user_context": {"site": "lab"},
+                "host_reservation_identifiers": ["hw-address", "flex-id"],
+                "allow_address_registration": True,
+            },
+        )
+        self.assertEqual(summary.entries, [])
+
+    def test_the_interface_list_links_the_named_interfaces_of_the_device(self):
+        from netbox_kea.integrations.dhcp_import_report import Reason
+
+        device = _device(f"{self.server.name}-host", "eth0", "eth1", "eth2")
+        self._import(4)
+        v4 = imported_dhcp_server(self.server, 4)
+        v4.snapshot()
+        v4.device = device
+        v4.save()
+        self.conf[4]["interfaces-config"] = {"interfaces": ["eth0", "eth1/10.60.0.1", "eth9"]}
+
+        summary = self._import(4)
+
+        self.assertEqual(sorted(v4.device_interfaces.values_list("name", flat=True)), ["eth0", "eth1"])
+        not_linked = {entry.path: entry.reason for entry in summary.entries if entry.reason is not None}
+        self.assertEqual(
+            {path: reason for path, reason in not_linked.items() if "interfaces-config" in path},
+            {
+                "Dhcp4/interfaces-config/interfaces[eth1/10.60.0.1]": Reason.NO_PLUGIN_HOME,
+                "Dhcp4/interfaces-config/interfaces[eth9]": Reason.NO_MATCHING_INTERFACE,
+            },
+        )
+        self.conf[4]["interfaces-config"] = {"interfaces": ["eth2"]}
+
+        self._import(4)
+
+        self.assertEqual(list(v4.device_interfaces.values_list("name", flat=True)), ["eth2"])
+
+    def test_the_interface_list_links_the_named_interfaces_of_the_virtual_machine(self):
+        from virtualization.models import Cluster, ClusterType, VirtualMachine, VMInterface
+
+        name = f"{self.server.name}-vm"
+        cluster = Cluster.objects.create(name=name, type=ClusterType.objects.create(name=name, slug=name))
+        vm = VirtualMachine.objects.create(name=name, cluster=cluster)
+        VMInterface.objects.create(virtual_machine=vm, name="ens3")
+        self._import(4)
+        v4 = imported_dhcp_server(self.server, 4)
+        v4.snapshot()
+        v4.virtual_machine = vm
+        v4.save()
+        self.conf[4]["interfaces-config"] = {"interfaces": ["ens3"]}
+
+        self._import(4)
+
+        self.assertEqual(list(v4.virtual_machine_interfaces.values_list("name", flat=True)), ["ens3"])
+
+    def test_a_new_dhcp_server_takes_the_device_of_the_other_family(self):
+        device = _device(f"{self.server.name}-shared", "eth0")
+        self._import(4)
+        v4 = imported_dhcp_server(self.server, 4)
+        v4.snapshot()
+        v4.device = device
+        v4.save()
+        self.conf[6]["interfaces-config"] = {"interfaces": ["eth0"]}
+
+        self._import(6)
+
+        v6 = imported_dhcp_server(self.server, 6)
+        self.assertEqual((v6.device, list(v6.device_interfaces.values_list("name", flat=True))), (device, ["eth0"]))
 
 
 @tag("dhcp_plugin")
@@ -988,7 +1393,7 @@ class DhcpPluginClientClassImportTest(TestCase):
 
         ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
         Option = apps.get_model(DHCP_PLUGIN, "Option")
-        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        apps.get_model(DHCP_PLUGIN, "DHCPServer")
 
         summary = self.adapter.import_server_config(self.server, parse_dhcp_config(self._conf(), 4))
         self.assertEqual(summary.errors, 0, summary.warnings)
@@ -996,7 +1401,7 @@ class DhcpPluginClientClassImportTest(TestCase):
         self.assertEqual(summary.options_created, 1)  # the class's routers option
 
         cc = ClientClass.objects.get(name="voip")
-        self.assertEqual(cc.dhcp_server, DHCPServer.objects.get(name=self.server.name))
+        self.assertEqual(cc.dhcp_server, imported_dhcp_server(self.server, 4))
         self.assertEqual(cc.test, "substring(option[60].hex,0,6) == 'Aastra'")
         # BOOTP settings differ from the server baseline → stored on the class.
         self.assertEqual(cc.next_server, "192.0.2.254")
@@ -1010,7 +1415,11 @@ class DhcpPluginClientClassImportTest(TestCase):
         ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
         self.adapter.import_server_config(self.server, parse_dhcp_config(self._conf(), 4))
         self.assertEqual(
-            list(ClientClass.objects.filter(dhcp_server__name=self.server.name).values_list("name", flat=True)),
+            list(
+                ClientClass.objects.filter(dhcp_server__in=imported_dhcp_servers(self.server)).values_list(
+                    "name", flat=True
+                )
+            ),
             ["voip"],
         )
 
@@ -1035,8 +1444,8 @@ class DhcpPluginClientClassImportTest(TestCase):
         (option,) = [entry for entry in summary.entries if entry.path.startswith(f"{path}/option-data")]
         self.assertEqual(option.reason, Reason.PARENT_NOT_IMPORTED)
         self.assertEqual(summary.client_classes_created, 1)
-        self.assertEqual(ClientClass.objects.get(name="voip").dhcp_server.name, self.server.name)
-        self.assertEqual(ClientClass.objects.get(name="printers").dhcp_server.name, second.name)
+        self.assertEqual(ClientClass.objects.get(name="voip").dhcp_server, imported_dhcp_server(self.server, 4))
+        self.assertEqual(ClientClass.objects.get(name="printers").dhcp_server, imported_dhcp_server(second, 4))
 
     def test_a_namespaced_class_is_renamed_to_its_kea_name_through_its_mapping(self):
         from netbox_kea.models import KeaDhcpLink
@@ -1053,7 +1462,7 @@ class DhcpPluginClientClassImportTest(TestCase):
         self.assertEqual(KeaDhcpLink.objects.get(server=self.server, kind="client_class").object_id, row.pk)
 
     def test_a_namespaced_class_whose_kea_name_is_taken_keeps_its_name_and_its_other_fields_follow_kea(self):
-        from netbox_kea.integrations.dhcp_import_report import Capability, Outcome
+        from netbox_kea.integrations.dhcp_import_report import Capability
         from netbox_kea.models import KeaDhcpLink
 
         ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
@@ -1069,23 +1478,23 @@ class DhcpPluginClientClassImportTest(TestCase):
 
         summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
 
-        (entry,) = [entry for entry in summary.entries if entry.outcome == Outcome.UNSUPPORTED]
+        (entry,) = [entry for entry in summary.entries if entry.capability not in (None, Capability.SERVER_FAMILY)]
         self.assertEqual(
             (entry.path, entry.capability), ("Dhcp4/client-classes[name=voip]/name", Capability.NAME_PER_SERVER)
         )
         row = ClientClass.objects.get(pk=namespaced.pk)
         self.assertEqual((row.name, row.test), (f"{self.server.name}: voip", "option[60].hex == 'phone'"))
-        self.assertEqual(ClientClass.objects.get(name="voip").dhcp_server.name, first.name)
+        self.assertEqual(ClientClass.objects.get(name="voip").dhcp_server, imported_dhcp_server(first, 4))
 
     def test_a_class_user_context_is_unsupported_and_the_class_imports(self):
-        from netbox_kea.integrations.dhcp_import_report import Capability, Outcome
+        from netbox_kea.integrations.dhcp_import_report import Capability
 
         conf = self._conf()
         conf["client-classes"][0]["user-context"] = {"site": "lab"}
 
         summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
 
-        (entry,) = [entry for entry in summary.entries if entry.outcome == Outcome.UNSUPPORTED]
+        (entry,) = [entry for entry in summary.entries if entry.capability not in (None, Capability.SERVER_FAMILY)]
         self.assertEqual(
             (entry.path, entry.capability),
             ("Dhcp4/client-classes[name=voip]/user-context", Capability.USER_CONTEXT),
@@ -1158,14 +1567,19 @@ class DhcpPluginMappingImportTest(TestCase):
     def _rows(self) -> dict:
         """Return the imported row of each kind, by the source columns it must map to."""
         model = partial(apps.get_model, DHCP_PLUGIN)
-        subnet = model("Subnet").objects.get(dhcp_server__name=self.server.name, prefix__prefix="10.98.0.0/24")
+        subnet = model("Subnet").objects.get(
+            dhcp_server__in=imported_dhcp_servers(self.server), prefix__prefix="10.98.0.0/24"
+        )
         return {
+            ("server", None, None): subnet.dhcp_server,
             ("subnet", 1, None): subnet,
             ("pool", 1, "10.98.0.10-10.98.0.100"): model("Pool").objects.get(subnet=subnet),
             ("reservation", 1, "hw-address:aa:bb:cc:dd:ee:98"): model("HostReservation").objects.get(subnet=subnet),
-            ("client_class", None, "voip"): model("ClientClass").objects.get(dhcp_server__name=self.server.name),
+            ("client_class", None, "voip"): model("ClientClass").objects.get(
+                dhcp_server__in=imported_dhcp_servers(self.server)
+            ),
             ("option_definition", None, "dhcp4:222"): model("OptionDefinition").objects.get(
-                standard=False, dhcp_server__name=self.server.name
+                standard=False, dhcp_server__in=imported_dhcp_servers(self.server)
             ),
         }
 
@@ -1259,6 +1673,8 @@ class DhcpPluginMappingImportTest(TestCase):
         self.assertEqual(
             {(entry.kind, entry.outcome.value) for entry in summary.entries if entry.kind != Kind.OPTION},
             {
+                # The family of the DHCP server is reported on every run with plugin 0.2.0.
+                (Kind.SERVER, "unsupported"),
                 (Kind.OPTION_DEFINITION, "updated"),
                 (Kind.CLIENT_CLASS, "updated"),
                 (Kind.POOL, "updated"),
@@ -1343,13 +1759,11 @@ class DhcpPluginMappingImportTest(TestCase):
             [(moved.pk, 1)],
         )
 
-    def test_a_custom_definition_of_both_families_is_unsupported_for_the_second_family(self):
-        """One DHCPServer holds both families, and the plugin holds one custom definition per space and code there."""
-        from netbox_kea.integrations.dhcp_import_report import Outcome, Reason
+    def test_a_custom_definition_of_both_families_imports_on_the_dhcp_server_of_each_family(self):
+        """The plugin holds one custom definition per space and code of a DHCP server, and each family has its own."""
         from netbox_kea.models import KeaDhcpLink
 
         OptionDefinition = apps.get_model(DHCP_PLUGIN, "OptionDefinition")
-        Option = apps.get_model(DHCP_PLUGIN, "Option")
         space = "vendor-specific-options-space"
 
         def conf(family):
@@ -1359,29 +1773,22 @@ class DhcpPluginMappingImportTest(TestCase):
                 f"subnet{family}": [],
             }
 
-        v4 = self.adapter.import_server_config(self.server, parse_dhcp_config(conf(4), 4))
-        self.assertEqual(v4.option_defs_created, 1, v4.warnings)
-        for _ in range(2):  # the next run reports the same limit and writes nothing
-            v6 = self.adapter.import_server_config(self.server, parse_dhcp_config(conf(6), 6))
-            self.assertEqual(v6.errors, 0, v6.warnings)
-            entries = {entry.kind: entry for entry in v6.entries if entry.kind in (Kind.OPTION_DEFINITION, Kind.OPTION)}
-            self.assertEqual(
-                {kind: (entry.outcome, entry.reason) for kind, entry in entries.items()},
-                {
-                    Kind.OPTION_DEFINITION: (Outcome.UNSUPPORTED, Reason.PLUGIN_GAP),
-                    Kind.OPTION: (Outcome.UNSUPPORTED, Reason.PLUGIN_GAP),
-                },
-            )
-            self.assertIn("#94", entries[Kind.OPTION_DEFINITION].detail)
-            self.assertIn(f"{space}:250", entries[Kind.OPTION].detail)
+        for family in (4, 6):
+            summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf(family), family))
+            self.assertEqual((summary.errors, summary.option_defs_created), (0, 1), summary.warnings)
 
-        (definition,) = OptionDefinition.objects.filter(standard=False, dhcp_server__name=self.server.name)
-        self.assertEqual((definition.family, definition.name), (4, "vendor-v4"))
-        self.assertEqual(list(Option.objects.filter(definition=definition).values_list("data", flat=True)), ["4"])
-        self.assertEqual(
-            list(KeaDhcpLink.objects.filter(server=self.server).values_list("family", "kind", "kea_identity")),
-            [(4, "option_definition", f"{space}:250")],
-        )
+        for family in (4, 6):
+            with self.subTest(family=family):
+                dhcp_server = imported_dhcp_server(self.server, family)
+                definition = OptionDefinition.objects.get(standard=False, dhcp_server=dhcp_server)
+                self.assertEqual((definition.family, definition.name), (family, f"vendor-v{family}"))
+                self.assertEqual(
+                    list(dhcp_server.options.values_list("definition", "data")), [(definition.pk, str(family))]
+                )
+                self.assertEqual(
+                    KeaDhcpLink.objects.get(server=self.server, family=family, kind="option_definition").object_id,
+                    definition.pk,
+                )
 
     def _seed_released_import(self) -> dict:
         """Write the rows that the importer before #93 wrote, with the kinds that migration 0029 gives its mappings.
@@ -1405,6 +1812,7 @@ class DhcpPluginMappingImportTest(TestCase):
             name=f"{self.server.name} DHCPv4 subnet 1", prefix=prefix, dhcp_server=dhcp_server
         )
         rows = {
+            ("server", None, None): dhcp_server,
             ("subnet", 1, None): subnet,
             ("pool", 1, "10.95.0.10-10.95.0.100"): model("Pool").objects.create(
                 name=f"{subnet.name} pool 10.95.0.10-10.95.0.100", subnet=subnet, ip_range=ip_range.ip_range
@@ -1456,9 +1864,9 @@ class DhcpPluginMappingImportTest(TestCase):
             self.assertEqual(summary.errors, 0, summary.warnings)
             return sorted(entry.kind.value for entry in summary.entries if entry.outcome == Outcome.CREATED)
 
-        # The first run creates only what the released importer had not written: the Option. The DHCPv6 class
-        # cannot take the Kea name that the adopted DHCPv4 class now holds.
-        for expected4, expected6 in ((["option"], []), ([], [])):
+        # The first run creates only what the released importer had not written: the Option and the DHCPv6 server.
+        # The DHCPv6 class cannot take the Kea name that the adopted DHCPv4 class now holds.
+        for expected4, expected6 in ((["option"], ["server"]), ([], [])):
             v4 = self.adapter.import_server_config(
                 self.server, parse_dhcp_config(conf4, 4), _reservation_snapshot(conf4, 4, hosts)
             )
@@ -1471,13 +1879,17 @@ class DhcpPluginMappingImportTest(TestCase):
             self.assertEqual(seen, {source: row.pk for source, row in rows.items()})
 
             self.assertEqual(
-                [(entry.path, entry.capability) for entry in v6.entries if entry.outcome == Outcome.UNSUPPORTED],
+                [(entry.path, entry.capability) for entry in v6.entries if entry.kind == Kind.CLIENT_CLASS],
                 [("Dhcp6/client-classes[name=voip]", Capability.NAME_PER_SERVER)],
             )
 
-        classes = dict(ClientClass.objects.filter(dhcp_server__name=self.server.name).values_list("name", "test"))
+        classes = dict(
+            ClientClass.objects.filter(dhcp_server__in=imported_dhcp_servers(self.server)).values_list("name", "test")
+        )
         self.assertEqual(classes, {"voip": "family 4"})
-        self.assertFalse(KeaDhcpLink.objects.filter(server=self.server, family=6).exists())
+        self.assertEqual(
+            list(KeaDhcpLink.objects.filter(server=self.server, family=6).values_list("kind", flat=True)), ["server"]
+        )
         # The adopted class takes its Kea name. Every other row keeps the name that the released importer gave it.
         self.assertEqual(ClientClass.objects.get(name="voip").pk, rows[("client_class", None, "voip")].pk)
         for source, row in rows.items():
@@ -1498,12 +1910,12 @@ class DhcpPluginMappingImportTest(TestCase):
         summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
 
         self.assertEqual((summary.errors, summary.subnets_created, summary.pools_created), (0, 1, 1), summary.warnings)
-        self.assertEqual(Pool.objects.filter(subnet__dhcp_server__name=self.server.name).count(), 1)
-        self.assertFalse(KeaDhcpLink.objects.filter(server=self.server).exists())
+        self.assertEqual(Pool.objects.filter(subnet__dhcp_server__in=imported_dhcp_servers(self.server)).count(), 1)
+        self.assertFalse(KeaDhcpLink.objects.filter(server=self.server).exclude(kind="server").exists())
 
     def test_one_class_name_in_both_families_is_unsupported_in_the_second(self):
         """The DHCP plugin keeps class names unique across all DHCP servers, so one Kea name holds one row."""
-        from netbox_kea.integrations.dhcp_import_report import Capability, Outcome
+        from netbox_kea.integrations.dhcp_import_report import Capability
         from netbox_kea.models import KeaDhcpLink
 
         ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
@@ -1511,35 +1923,46 @@ class DhcpPluginMappingImportTest(TestCase):
             conf = {"client-classes": [{"name": "voip", "test": f"family {family}"}], f"subnet{family}": []}
             summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, family))
             self.assertEqual(summary.errors, 0, summary.warnings)
-            unsupported = [entry.capability for entry in summary.entries if entry.outcome == Outcome.UNSUPPORTED]
+            unsupported = [
+                entry.capability for entry in summary.entries if entry.kind == Kind.CLIENT_CLASS and entry.capability
+            ]
             self.assertEqual(unsupported, [Capability.NAME_PER_SERVER] if family == 6 else [])
 
-        rows = {row.name: row.test for row in ClientClass.objects.filter(dhcp_server__name=self.server.name)}
+        rows = {
+            row.name: row.test for row in ClientClass.objects.filter(dhcp_server__in=imported_dhcp_servers(self.server))
+        }
         self.assertEqual(rows, {"voip": "family 4"})
         self.assertEqual(
-            sorted(KeaDhcpLink.objects.filter(server=self.server).values_list("family", "kind", "kea_identity")),
+            sorted(
+                KeaDhcpLink.objects.filter(server=self.server)
+                .exclude(kind="server")
+                .values_list("family", "kind", "kea_identity")
+            ),
             [(4, "client_class", "voip")],
         )
 
-    def test_one_class_name_in_both_families_is_not_imported_in_the_second_with_per_server_names(self):
-        """Per-server class names still collide here: both families of a Server share one DHCP server."""
+    def test_a_class_name_that_its_dhcp_server_holds_is_not_imported_with_per_server_names(self):
+        """With per-server class names, the import does not take over a row of its DHCP server that it did not write."""
         from netbox_kea.integrations import dhcp_plugin
         from netbox_kea.integrations.dhcp_import_plan import plan_family
         from netbox_kea.integrations.dhcp_import_report import Capability
         from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
+        ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
         capabilities = PluginCapabilities(frozenset({Capability.NAME_PER_SERVER}))
-        for family in (4, 6):
-            conf = {"client-classes": [{"name": "voip", "test": f"family {family}"}], f"subnet{family}": []}
-            plan = plan_family(parse_dhcp_config(conf, family), None)
-            summary = dhcp_plugin.apply_plan(self.server, plan, capabilities)
-            self.assertEqual(summary.errors, 0, summary.warnings)
+        conf = {"client-classes": [{"name": "voip", "test": "member('KNOWN')"}], "subnet4": []}
+        dhcp_server, _ = dhcp_plugin.upsert_dhcp_server(self.server, 4)
+        ClientClass.objects.create(name="voip", dhcp_server=dhcp_server)
 
+        summary = dhcp_plugin.apply_plan(self.server, plan_family(parse_dhcp_config(conf, 4), None), capabilities)
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
         self.assertEqual(
             [(entry.path, entry.reason) for entry in summary.entries if entry.kind == Kind.CLIENT_CLASS],
-            [("Dhcp6/client-classes[name=voip]", Reason.NOT_IN_SCOPE)],
+            [("Dhcp4/client-classes[name=voip]", Reason.NOT_IN_SCOPE)],
         )
-        self.assertIn("of this DHCP server", summary.warnings[0])
+        self.assertIn("of this DHCP server", summary.warnings[-1])
+        self.assertEqual(ClientClass.objects.get(name="voip").test, "")
 
 
 @tag("dhcp_plugin")
@@ -1581,7 +2004,7 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
 
     def test_global_reservation_attached_to_dhcp_server(self):
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
-        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        apps.get_model(DHCP_PLUGIN, "DHCPServer")
 
         conf = {"subnet4": []}
         hosts = [
@@ -1594,8 +2017,30 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         self.assertEqual(summary.errors, 0, summary.warnings)
         res = HostReservation.objects.get(hostname="global-host")
         self.assertIsNone(res.subnet)
-        self.assertEqual(res.dhcp_server, DHCPServer.objects.get(name=self.server.name))
+        self.assertEqual(res.dhcp_server, imported_dhcp_server(self.server, 4))
         self.assertIsNone(res.ipv4_address)
+
+    def test_a_global_reservation_imports_with_its_adoption_servers_and_no_custom_definitions(self):
+        from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot, upsert_dhcp_server
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        conf = {"subnet4": []}
+        hosts = [{"subnet-id": 0, "duid": "01:02:03:04:05:06", "hostname": "global-duid-host"}]
+        dhcp_server, _ = upsert_dhcp_server(self.server, 4)
+        summary = ImportSummary()
+
+        import_reservation_snapshot(
+            self.server,
+            dhcp_server,
+            _reservation_snapshot(conf, 4, hosts),
+            None,
+            summary,
+            family=4,
+            adoption_servers=(dhcp_server.pk,),
+        )
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(HostReservation.objects.get(hostname="global-duid-host").dhcp_server, dhcp_server)
 
     def test_manually_curated_address_is_left_unchanged_but_still_linked(self):
         """The unattended import never claims a foreign IPAM row, and still points at it."""
@@ -1915,9 +2360,8 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
 
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
         conf = {"subnet6": [{"id": 6, "subnet": "2001:db8:6::/64"}]}
-        common_duid = ["aa"] * 83
-        first_duid = ":".join([*common_duid, "01"])
-        colliding_duid = ":".join([*common_duid, "02"])
+        first_duid = "01:02:06:01"
+        colliding_duid = "01:02:06:02"
         intent = parse_dhcp_config(conf, 6)
 
         first = self.adapter.import_server_config(
@@ -1925,6 +2369,7 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
             intent,
             _reservation_snapshot(conf, 6, [{"subnet-id": 6, "duid": first_duid}]),
         )
+        held = take_reservation_name(f"{self.server.name} DHCPv6 subnet 6", colliding_duid)
         collision = self.adapter.import_server_config(
             self.server,
             intent,
@@ -1942,7 +2387,7 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         )
 
         self.assertEqual(first.errors, 0, first.warnings)
-        self.assertEqual(HostReservation.objects.count(), 1)
+        self.assertEqual(HostReservation.objects.exclude(pk=held.pk).count(), 1)
         self.assertEqual(collision.errors, 1, collision.warnings)
         self.assertFalse(Prefix.objects.filter(prefix="2001:db8:face::/56").exists())
 
@@ -2143,7 +2588,7 @@ class ImportSummaryCompletenessTest(TestCase):
             if snapshot is not None
             else None
         )
-        import_reservation_snapshot(_make_db_server(), None, observation, None, summary, family=4)
+        import_reservation_snapshot(_make_db_server(), None, observation, None, summary, family=4, adoption_servers=())
         return summary
 
     def test_absent_snapshot_reports_the_counts_as_unread(self):
@@ -2192,7 +2637,7 @@ class SkippedReservationCompletenessTest(TestCase):
         summary = ImportSummary()
 
         # No KeaDhcpLink exists for subnet-id 7, so the record cannot be imported.
-        import_reservation_snapshot(self.server, None, snapshot, None, summary, family=4)
+        import_reservation_snapshot(self.server, None, snapshot, None, summary, family=4, adoption_servers=())
 
         self.assertTrue(snapshot.snapshot.complete)
         self.assertEqual(summary.reservations_created, 0)

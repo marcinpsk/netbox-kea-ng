@@ -16,6 +16,8 @@ v1 scope (import + diff, read-only against Kea):
   IPAM ownership claims so the DHCP-plugin rows **share** the same
   ``ipam.Prefix``/``IPRange``/``IPAddress`` and ``dcim.MACAddress`` objects the
   IPAM sync maintains.
+* **One DHCPServer per Server and family** (Kea runs one daemon per family). It holds only its daemon's global
+  configuration, maps to it, and links the interfaces that ``interfaces-config`` names.
 * **Host reservations** come from the shared typed Reservation Snapshot. The
   adapter never parses raw ``reservation-get-page`` records. Valid records import
   even when the snapshot quarantines other records. A Global Reservation skips the
@@ -49,6 +51,7 @@ v1 scope (import + diff, read-only against Kea):
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import logging
 from dataclasses import dataclass, field
@@ -70,9 +73,10 @@ from ..dhcp_options import DHCPOption, option_identity
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import ClientClassIntent, OptionDefIntent, ServerConfigIntent
 from ..published_name import reservation_published_name
-from ..reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, identity_text
+from ..reservations import FLEX_ID, TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, identity_text
 from ..subnet_catalogue import CatalogueUnavailable
 from .dhcp_import_plan import (
+    MAX_KEA_NAME_LENGTH,
     InSubnetReservationKey,
     MappingSource,
     OptionDefinitionKey,
@@ -325,6 +329,8 @@ class CustomDefinitions:
 
     server: Server
     declared: dict[OptionDefinitionKey, OptionDefIntent]
+    # The DHCPServers whose unmapped rows of this family the import adopts (_adoption_servers).
+    adoption_servers: tuple[int, ...]
     # The row of each written definition, or why it has none.
     written: dict[OptionDefinitionKey, object] = field(default_factory=dict)
 
@@ -368,7 +374,7 @@ def _held_option_definition(held, family: int, key: OptionDefinitionKey, path: s
     )
     holder_family = f"DHCPv{holder.family}" if holder is not None else "another"
     limit = "The DHCP plugin holds one custom Option Definition for each space and code of a DHCP server"
-    detail = f"{limit}, and the {holder_family} import holds it. #94 gives each family its own DHCP server."
+    detail = f"{limit}, and the {holder_family} import holds it."
     summary.record(not_written(family, Kind.OPTION_DEFINITION, path, Reason.PLUGIN_GAP, detail))
     summary.warn(f"option-def {key.space}:{key.code}: {detail}")
     return _Unresolved(Reason.PLUGIN_GAP, f"Option Definition {key.space}:{key.code} is not imported. {limit}.")
@@ -387,11 +393,11 @@ def _write_option_definition(
         with event_scope.atomic():
             obj = mapped_target(definitions.server, family, key.source)
             if obj is None:
-                held = OptionDefinition.objects.filter(
-                    standard=False, dhcp_server=dhcp_server, space=key.space, code=key.code
-                )
+                same_key = OptionDefinition.objects.filter(standard=False, space=key.space, code=key.code)
                 # Adopt a definition that an import created before Option Definitions had a mapping.
-                obj = _unlinked(held).first()
+                adoptable = same_key.filter(dhcp_server__in=definitions.adoption_servers, family=family)
+                obj = _unlinked(adoptable).first()
+                held = same_key.filter(dhcp_server=dhcp_server)
                 if obj is None and held.exists():
                     return _held_option_definition(held, family, key, path, summary)
             if obj is None:
@@ -545,14 +551,8 @@ def _relay_to_str(value):
 
 
 def _server_id_type(value):
-    """Reduce a Kea ``server-id`` dict to its ``type`` (the plugin stores only the type)."""
+    """Reduce a Kea ``server-id`` map to its type."""
     return value.get("type") if isinstance(value, dict) else value
-
-
-def _hr_identifiers(value: tuple[str, ...]) -> list[str] | None:
-    """Keep only host-reservation identifier types the plugin's choice set knows."""
-    valid = {"circuit-id", "hw-address", "duid", "client-id"}
-    return [x for x in value if x in valid] or None
 
 
 # (kea_key, sys4_attr, transform). Fields shared by DHCPServer + Subnet.
@@ -610,7 +610,7 @@ _SERVER_FIELDS: tuple[tuple[str, str, object], ...] = (
     ("decline-probation-period", "decline_probation_period", None),
     ("echo-client-id", "echo_client_id", None),
     ("relay-supplied-options", "relay_supplied_options", None),
-    ("server-id", "server_id", _server_id_type),
+    (kea_paths.SERVER_ID, "server_id", _server_id_type),
 )
 
 
@@ -640,72 +640,6 @@ def _transform_value(transform, raw, kea_key: str, summary: ImportSummary, sourc
         summary.record(not_written(source.family, source.kind, path, Reason.PLUGIN_GAP, detail))
         summary.warn(f"setting {kea_key}: {exc}")
         return None
-
-
-def _server_values(planned: PlannedServer, model_fields: set[str], summary: ImportSummary, family: int) -> dict:
-    """Return each value that *planned* sets for a field in *model_fields* of ``DHCPServer``, by field name."""
-    settings = planned.global_settings
-    source = _Source(family, Kind.SERVER, kea_paths.daemon(family))
-    values = {
-        attr: _transform_value(transform, settings[kea_key], kea_key, summary, source)
-        for kea_key, attr, transform in _SERVER_FIELDS
-        if attr in model_fields and kea_key in settings
-    }
-    identifiers = planned.host_reservation_identifiers
-    if "host_reservation_identifiers" in model_fields and identifiers is not None:
-        values["host_reservation_identifiers"] = _hr_identifiers(identifiers)
-    return values
-
-
-def _apply_global_settings(
-    dhcp_server, planned: PlannedServer, summary: ImportSummary, *, primary: bool, family: int
-) -> bool | None:
-    """Populate ``DHCPServer`` global tuning fields from a Kea config block.
-
-    netbox_dhcp has a single ``DHCPServer`` row spanning both protocols, so one
-    family is authoritative.  The *primary* family (DHCPv4, or whichever family is
-    enabled on a single-stack server) **mirrors** its values — re-import re-syncs a
-    changed global value.  The secondary family only **fills gaps** (e.g. the
-    DHCPv6-only ``preferred-lifetime``/``pd-allocator``) so it never clobbers the
-    primary family's shared fields and dual-stack re-imports do not thrash.
-
-    Known limitation: a change to a *secondary-only* field (e.g. DHCPv6
-    ``preferred-lifetime``) on a dual-stack server is not re-synced, since the
-    secondary family is fill-only for an already-set field.
-
-    Return whether a changed value was saved, or ``None`` after a failed save. The failure is recorded here.
-    """
-    model_fields = {f.name for f in dhcp_server._meta.get_fields()}
-    changed: dict = {}
-    for attr, value in _server_values(planned, model_fields, summary, family).items():
-        if _is_unset(value):
-            continue
-        current = getattr(dhcp_server, attr, None)
-        if primary:
-            # This family owns the global config — mirror changed values on re-import.
-            if current != value:
-                changed[attr] = value
-        elif _is_unset(current):
-            # Secondary protocol only fills gaps the primary family did not set.
-            changed[attr] = value
-    if not changed:
-        return False
-    dhcp_server.snapshot()
-    for attr, value in changed.items():
-        setattr(dhcp_server, attr, value)
-    try:
-        with event_scope.atomic():
-            dhcp_server.save()
-    except event_scope.EventDispatchError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        path = kea_paths.daemon(family)
-        summary.record(write_failed(family, Kind.SERVER, path))
-        summary.warn(f"DHCPServer settings: {exc}")
-        # Children diff against this instance, so it must hold the persisted values.
-        dhcp_server.refresh_from_db(fields=list(changed))
-        return None
-    return True
 
 
 def _cleared(obj, attr: str):
@@ -743,13 +677,248 @@ def _inherited_settings_fields(obj, parent, settings: dict, field_map, summary: 
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def upsert_dhcp_server(server):
-    """Get/create the ``netbox_dhcp.DHCPServer`` mirroring this Kea *server* (match by name), and whether it is new."""
-    DHCPServer = _model("DHCPServer")
-    return DHCPServer.objects.get_or_create(
-        name=server.name,
-        defaults={"description": "Imported from Kea by netbox-kea"},
+# The gated scalar globals of one daemon: Kea key, DHCPServer field and the capability that the field needs.
+_GATED_SERVER_FIELDS: tuple[tuple[str, str, Capability], ...] = (
+    (kea_paths.ALLOW_ADDRESS_REGISTRATION, "allow_address_registration", Capability.ADDRESS_REGISTRATION),
+    (kea_paths.STASH_AGENT_OPTIONS, "stash_agent_options", Capability.STASH_AGENT_OPTIONS),
+)
+
+
+def _server_id_values(raw, root: str, family: int, capabilities: PluginCapabilities, summary: ImportSummary) -> dict:
+    """Return the ``server-id`` parameter fields of the DHCPServer; ``_SERVER_FIELDS`` holds its type.
+
+    Without the capability each parameter that Kea does not generate is unsupported.
+    """
+    server_id = raw if isinstance(raw, dict) else {}
+    values = {}
+    for key, generated in kea_paths.SERVER_ID_PARAMETERS.items():
+        value = server_id.get(key, generated)
+        declared = value != generated
+        if capabilities.has(Capability.SERVER_ID_FIELDS):
+            values[f"server_id_{key.replace('-', '_')}"] = value if declared else None
+        elif declared:
+            path = kea_paths.setting(kea_paths.setting(root, kea_paths.SERVER_ID), key)
+            detail = "The DHCP plugin keeps only the type of server-id."
+            summary.record(unsupported(family, Kind.SERVER, path, Capability.SERVER_ID_FIELDS, detail))
+    return values
+
+
+def _identifier_values(
+    identifiers: tuple[str, ...], root: str, family: int, capabilities: PluginCapabilities, summary: ImportSummary
+) -> list[str] | None:
+    """Keep the Reservation identifier types that the DHCP plugin can hold; flex-id needs its capability."""
+    field = _model("DHCPServer")._meta.get_field("host_reservation_identifiers")
+    valid = {value for value, _label in field.base_field.flatchoices}
+    if capabilities.has(Capability.FLEX_ID_IDENTIFIER):
+        valid.add(FLEX_ID)
+    elif FLEX_ID in identifiers:
+        path = kea_paths.setting(root, kea_paths.HOST_RESERVATION_IDENTIFIERS)
+        detail = "The DHCP plugin has no flex-id Reservation identifier. The other identifier types import."
+        summary.record(unsupported(family, Kind.SERVER, path, Capability.FLEX_ID_IDENTIFIER, detail))
+    return [identifier for identifier in identifiers if identifier in valid] or None
+
+
+def server_values(
+    planned: PlannedServer, family: int, capabilities: PluginCapabilities, summary: ImportSummary
+) -> dict:
+    """Return the managed DHCPServer fields of one family's global configuration, by field name.
+
+    ``None`` clears a field that Kea does not declare. A gated fact whose capability is missing is not a field here:
+    it has an unsupported entry instead.
+    """
+    settings = planned.global_settings
+    root = kea_paths.daemon(family)
+    source = _Source(family, Kind.SERVER, root)
+    values = {
+        attr: _transform_value(transform, settings[kea_key], kea_key, summary, source) if kea_key in settings else None
+        for kea_key, attr, transform in _SERVER_FIELDS
+    }
+    values |= _server_id_values(settings.get(kea_paths.SERVER_ID), root, family, capabilities, summary)
+    if planned.host_reservation_identifiers is not None:
+        values["host_reservation_identifiers"] = _identifier_values(
+            planned.host_reservation_identifiers, root, family, capabilities, summary
+        )
+    if capabilities.has(Capability.SERVER_FAMILY):
+        values["family"] = family
+    else:
+        detail = "The DHCP plugin has no address family on a DHCP server."
+        summary.record(unsupported(family, Kind.SERVER, root, Capability.SERVER_FAMILY, detail))
+    if capabilities.has(Capability.USER_CONTEXT):
+        values["user_context"] = planned.user_context
+    elif planned.user_context is not None:
+        path = kea_paths.setting(root, kea_paths.USER_CONTEXT)
+        detail = "The DHCP plugin has no user-context field on a DHCP server."
+        summary.record(unsupported(family, Kind.SERVER, path, Capability.USER_CONTEXT, detail))
+    for kea_key, attr, capability in _GATED_SERVER_FIELDS:
+        if capabilities.has(capability):
+            values[attr] = settings.get(kea_key)
+        elif kea_key in settings:
+            detail = f"The DHCP plugin has no {kea_key} field."
+            summary.record(unsupported(family, Kind.SERVER, kea_paths.setting(root, kea_key), capability, detail))
+    return values
+
+
+def _apply_global_settings(dhcp_server, values: dict, summary: ImportSummary, family: int) -> bool | None:
+    """Make the managed fields of *dhcp_server* equal *values*, clearing each ``None`` (or unset) value.
+
+    Each family has its own DHCPServer, so this family's configuration owns every managed field of it.
+    Return whether a changed value was saved, or ``None`` after a failed save. The failure is recorded here.
+    """
+    changed = {}
+    for attr, value in values.items():
+        desired = _cleared(dhcp_server, attr) if _is_unset(value) else value
+        if getattr(dhcp_server, attr) != desired:
+            changed[attr] = desired
+    if not changed:
+        return False
+    dhcp_server.snapshot()
+    for attr, value in changed.items():
+        setattr(dhcp_server, attr, value)
+    try:
+        with event_scope.atomic():
+            dhcp_server.save()
+    except event_scope.EventDispatchError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        summary.record(write_failed(family, Kind.SERVER, kea_paths.daemon(family)))
+        summary.warn(f"DHCPServer settings: {exc}")
+        # Children diff against this instance, so it must hold the persisted values.
+        dhcp_server.refresh_from_db(fields=list(changed))
+        return None
+    return True
+
+
+def _interface_name(entry: str, family: int, summary: ImportSummary) -> str | None:
+    """Return the interface name of one Kea interface list entry, recording the part that the plugin cannot hold."""
+    path = kea_paths.interface(family, entry)
+    if entry == "*":
+        detail = "'*' selects every interface. The import links only the interfaces that Kea names."
+        summary.record(not_written(family, Kind.SERVER, path, Reason.NO_PLUGIN_HOME, detail))
+        return None
+    name, separator, _address = entry.partition("/")
+    if separator:
+        detail = f"The address is a Kea socket setting with no DHCP plugin field. Interface {name} is linked."
+        summary.record(not_written(family, Kind.SERVER, path, Reason.NO_PLUGIN_HOME, detail))
+    return name
+
+
+def _link_interfaces(dhcp_server, entries: tuple[str, ...] | None, summary: ImportSummary, family: int) -> bool:
+    """Link the device or virtual machine interfaces that the Kea interface list names. Return whether it changed.
+
+    ``None`` (a list that is not valid) leaves the links alone. A name that matches no interface has an entry.
+    """
+    if entries is None:
+        return False
+    from dcim.models import Interface
+    from virtualization.models import VMInterface
+
+    names = {name: entry for entry in entries if (name := _interface_name(entry, family, summary)) is not None}
+    device = Interface.objects.filter(device=dhcp_server.device_id, name__in=names) if dhcp_server.device_id else []
+    vm = (
+        VMInterface.objects.filter(virtual_machine=dhcp_server.virtual_machine_id, name__in=names)
+        if dhcp_server.virtual_machine_id
+        else []
     )
+    wanted = {"device_interfaces": {i.pk for i in device}, "virtual_machine_interfaces": {i.pk for i in vm}}
+    matched = {i.name for i in device} | {i.name for i in vm}
+    for name, entry in names.items():
+        if name not in matched:
+            detail = f"The DHCP server's device or virtual machine has no interface {name}."
+            path = kea_paths.interface(family, entry)
+            summary.record(not_written(family, Kind.SERVER, path, Reason.NO_MATCHING_INTERFACE, detail))
+    if "*" in entries:
+        # The DHCP plugin cannot hold "every interface", so the links that an operator made stay.
+        return False
+    current = {relation: set(getattr(dhcp_server, relation).values_list("pk", flat=True)) for relation in wanted}
+    if current == wanted:
+        return False
+    dhcp_server.snapshot()
+    for relation, pks in wanted.items():
+        getattr(dhcp_server, relation).set(pks)
+    return True
+
+
+def _other_family(family: int) -> int:
+    return 6 if family == 4 else 4
+
+
+def _primary_family(server) -> int:
+    """Return the family whose DHCPServer an upgrade adopts: DHCPv4, or DHCPv6 on a DHCPv6-only Server."""
+    return 4 if server.dhcp4 else 6
+
+
+def _adoption_servers(server, dhcp_server) -> tuple[int, ...]:
+    """Return *dhcp_server* and the DHCPServer that an import before #94 named after the Server, for both families.
+
+    A DHCPServer that another Server maps is not that row, even when its name matches.
+    """
+    from django.contrib.contenttypes.models import ContentType
+
+    DHCPServer = _model("DHCPServer")
+    mapped_elsewhere = (
+        _link_model()
+        .objects.filter(object_type=ContentType.objects.get_for_model(DHCPServer))
+        .exclude(server=server)
+        .values("object_id")
+    )
+    legacy = DHCPServer.objects.filter(name=server.name).exclude(pk=dhcp_server.pk).exclude(pk__in=mapped_elsewhere)
+    return (dhcp_server.pk, *legacy.values_list("pk", flat=True))
+
+
+def _move_family_options(dhcp_server, adoption_servers: tuple[int, ...], family: int) -> None:
+    """Move the global Options of *family* that an import before #94 wrote on the DHCPServer of both families."""
+    from django.contrib.contenttypes.models import ContentType
+
+    stale = _model("Option").objects.filter(
+        assigned_object_type=ContentType.objects.get_for_model(dhcp_server),
+        assigned_object_id__in=[pk for pk in adoption_servers if pk != dhcp_server.pk],
+        definition__family=family,
+    )
+    for option in stale:
+        option.snapshot()
+        option.assigned_object_id = dhcp_server.pk
+        option.save()
+
+
+def upsert_dhcp_server(server, family: int):
+    """Get or create the DHCPServer of one family of *server* through its mapping, and whether it is new.
+
+    The first run after an upgrade adopts the DHCPServer that an earlier import named after the Server, for the
+    primary family. A new DHCPServer takes the device or virtual machine of the Server's other DHCPServer, and the
+    global Options of its family that an earlier import wrote on that adopted row.
+    """
+    DHCPServer = _model("DHCPServer")
+    source = MappingSource.server()
+    created = False
+    with event_scope.atomic():
+        dhcp_server = mapped_target(server, family, source)
+        if dhcp_server is None and family == _primary_family(server):
+            dhcp_server = _unlinked(DHCPServer.objects.filter(name=server.name)).first()
+        if dhcp_server is None:
+            other = mapped_target(server, _other_family(family), source)
+            dhcp_server = DHCPServer(
+                name=_synthesized_name(server.name, f" DHCPv{family}"),
+                description="Imported from Kea by netbox-kea",
+                device_id=other.device_id if other is not None else None,
+                virtual_machine_id=other.virtual_machine_id if other is not None else None,
+            )
+            dhcp_server.save()
+            created = True
+            _move_family_options(dhcp_server, _adoption_servers(server, dhcp_server), family)
+        observe_mapping(server, family, dhcp_server, source)
+    return dhcp_server, created
+
+
+_NAME_DIGEST_LENGTH = 12
+
+
+def _synthesized_name(scope: str, detail: str) -> str:
+    """Return a DHCP plugin row name. A name too long for the plugin ends with a hash of all of it, to stay distinct."""
+    name = f"{scope}{detail}"
+    if len(name) <= MAX_KEA_NAME_LENGTH:
+        return name
+    digest = hashlib.sha256(name.encode()).hexdigest()[:_NAME_DIGEST_LENGTH]
+    return f"{name[: MAX_KEA_NAME_LENGTH - _NAME_DIGEST_LENGTH - 1]}~{digest}"
 
 
 def _released_client_class_name(server, kea_name: str) -> str:
@@ -800,10 +969,7 @@ def _record_name_taken(
     summary: ImportSummary, family: int, path: str, name: str, capabilities: PluginCapabilities
 ) -> None:
     if capabilities.has(Capability.NAME_PER_SERVER):
-        detail = (
-            f"Another client class of this DHCP server holds the name {name!r}. "
-            "Both families of a Server share one DHCP server."
-        )
+        detail = f"Another client class of this DHCP server holds the name {name!r}."
         entry = not_written(family, Kind.CLIENT_CLASS, path, Reason.NOT_IN_SCOPE, detail)
     else:
         detail = (
@@ -878,19 +1044,19 @@ def _subnet_name(server, planned: PlannedSubnet, network: IPNetworkValue) -> str
     """Build a globally-unique name (NetBoxDHCPModelMixin requires unique ``name``)."""
     family = planned.intent.family
     if planned.key is not None:
-        return f"{server.name} DHCPv{family} subnet {planned.key}"[:255]
-    return f"{server.name} DHCPv{family} {network}"[:255]
+        return _synthesized_name(server.name, f" DHCPv{family} subnet {planned.key}")
+    return _synthesized_name(server.name, f" DHCPv{family} {network}")
 
 
 def _pool_name(subnet_obj, pool_intent) -> str:
     """Build a unique pool name scoped to its parent subnet's (unique) name."""
-    return f"{subnet_obj.name} pool {pool_intent.pool}"[:255]
+    return _synthesized_name(subnet_obj.name, f" pool {pool_intent.pool}")
 
 
 def _reservation_name(scope_name: str, reservation: Reservation) -> str:
     """Build a unique reservation name scoped to its parent's (unique) name."""
     identity = reservation.identity
-    return f"{scope_name} {identity_text(identity.identifier_type, identity.value)}"[:255]
+    return _synthesized_name(scope_name, f" {identity_text(identity.identifier_type, identity.value)}")
 
 
 def upsert_subnet(server, dhcp_server, planned: PlannedSubnet, summary: ImportSummary, claims: ClaimResult):
@@ -1088,6 +1254,7 @@ def _upsert_reservation(
     summary,
     claims,
     catalogue,
+    adoption_servers: tuple[int, ...],
 ):
     """Upsert one typed Reservation through its mapping while preserving its Global or In-Subnet Scope.
 
@@ -1111,8 +1278,8 @@ def _upsert_reservation(
         base = HostReservation.objects.filter(subnet=subnet_obj)
         scope_name = subnet_obj.name
     else:
-        base = HostReservation.objects.filter(dhcp_server=dhcp_server, subnet__isnull=True)
-        scope_name = f"{dhcp_server.name} DHCPv{reservation.family}"
+        base = HostReservation.objects.filter(dhcp_server__in=adoption_servers, subnet__isnull=True)
+        scope_name = f"{server.name} DHCPv{reservation.family}"
 
     try:
         with event_scope.atomic():
@@ -1249,8 +1416,12 @@ def import_reservation_snapshot(
     summary: ImportSummary,
     *,
     family: int,
+    adoption_servers: tuple[int, ...],
 ) -> None:
-    """Import valid typed records and report quarantined Snapshot records."""
+    """Import valid typed records and report quarantined Snapshot records.
+
+    A Global Reservation may adopt an unmapped row of a DHCP server in *adoption_servers*.
+    """
     from ..ipam_reconciliation import DelegatedPrefixPhase, claim, reconcile
 
     if observation is None:
@@ -1292,7 +1463,15 @@ def import_reservation_snapshot(
         else:
             subnet_obj = None
         upserted = _upsert_reservation(
-            planned, subnet_obj, server, dhcp_server, custom_defs, summary, claims, observation.catalogue
+            planned,
+            subnet_obj,
+            server,
+            dhcp_server,
+            custom_defs,
+            summary,
+            claims,
+            observation.catalogue,
+            adoption_servers,
         )
         if upserted is None:
             complete = False
@@ -1423,14 +1602,16 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     root = kea_paths.daemon(plan.family)
     for dropped in plan.dropped:
         summary.record(not_written(plan.family, dropped.kind, dropped.path, Reason.INVALID_KEA_DATA, dropped.detail))
-    dhcp_server, created = upsert_dhcp_server(server)
-    custom_defs = CustomDefinitions(server, {planned.key: planned.intent for planned in plan.option_definitions})
+    dhcp_server, created = upsert_dhcp_server(server, plan.family)
+    adoption_servers = _adoption_servers(server, dhcp_server)
+    custom_defs = CustomDefinitions(
+        server, {planned.key: planned.intent for planned in plan.option_definitions}, adoption_servers
+    )
 
-    # Global (server-level) tuning fields + options + client classes. DHCPv4 (or the
-    # only enabled family) is authoritative for the shared, single DHCPServer row.
-    primary = plan.family == 4 or not server.dhcp4
-    changed = _apply_global_settings(dhcp_server, plan.server, summary, primary=primary, family=plan.family)
-    if changed is not None and (created or changed):
+    values = server_values(plan.server, plan.family, capabilities, summary)
+    changed = _apply_global_settings(dhcp_server, values, summary, plan.family)
+    linked = _link_interfaces(dhcp_server, plan.server.interfaces, summary, plan.family)
+    if changed is not None and (created or changed or linked):
         summary.record(written(plan.family, Kind.SERVER, root, Outcome.CREATED if created else Outcome.UPDATED))
     upsert_options(dhcp_server, plan.server.global_options, plan.family, dhcp_server, custom_defs, summary, root)
     for planned_class in plan.client_classes:
@@ -1476,7 +1657,15 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         summary.ownership.disagreements.update(
             address for address, result in outcomes.items() if result.outcome == "disagreement"
         )
-    import_reservation_snapshot(server, dhcp_server, plan.reservations, custom_defs, summary, family=plan.family)
+    import_reservation_snapshot(
+        server,
+        dhcp_server,
+        plan.reservations,
+        custom_defs,
+        summary,
+        family=plan.family,
+        adoption_servers=adoption_servers,
+    )
     if not plan.configuration_complete:
         summary.ownership.incomplete.update({"subnet", "pool"})
     if (

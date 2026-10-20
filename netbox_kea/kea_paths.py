@@ -16,6 +16,14 @@ if TYPE_CHECKING:
 
 #: The Kea key of the free-form context that an operator attaches to a Kea object.
 USER_CONTEXT = "user-context"
+# Global keys of the daemon configuration that the DHCP Import reads by name.
+SERVER_ID = "server-id"
+HOST_RESERVATION_IDENTIFIERS = "host-reservation-identifiers"
+ALLOW_ADDRESS_REGISTRATION = "allow-address-registration"
+STASH_AGENT_OPTIONS = "stash-agent-options"
+INTERFACES_CONFIG = "interfaces-config"
+#: The ``server-id`` keys besides its type, each with the value that tells Kea to generate it.
+SERVER_ID_PARAMETERS = {"identifier": "", "enterprise-id": 0, "htype": 0, "time": 0}
 
 
 def _step(key: str, identity: str | int) -> str:
@@ -102,6 +110,11 @@ def option(parent: str, option: DHCPOption, family: int) -> str:
     if option.client_classes:
         identity = f"{identity},client-classes={'|'.join(sorted(option.client_classes))}"
     return f"{parent}/{_step('option-data', identity)}"
+
+
+def interface(family: int, entry: str) -> str:
+    """Return the path of one entry of the interface list of a daemon."""
+    return f"{daemon(family)}/{INTERFACES_CONFIG}/{_step('interfaces', entry)}"
 
 
 def setting(parent: str, key: str) -> str:

@@ -1304,6 +1304,31 @@ def test_dhcp_plugin_ci_uses_xdist():
     assert [_xdist_settings(entry) for entry in _pytest_commands(command)] == [{"workers": "1", "maxschedchunk": "1"}]
 
 
+#: A test that skips when the DHCP plugin is absent, as each module in this suite writes it.
+_DHCP_PLUGIN_SKIP = re.compile(r"\bnot apps\.is_installed\((?:\"netbox_dhcp\"|DHCP_PLUGIN)\)")
+#: One whole test module in a pytest command. A node ID (``module.py::Test``) runs part of it only.
+_WHOLE_TEST_MODULE = re.compile(r"netbox_kea/tests/(test_\w+\.py)(?=\s)")
+
+
+def test_every_module_that_needs_the_dhcp_plugin_runs_in_a_dhcp_plugin_job():
+    """A module that skips without netbox_dhcp must run whole in a CI job that installs it."""
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    covered = {
+        module
+        for job in ("dhcp-plugin-test", "branching-test")
+        for command in _pytest_commands(_workflow_job(workflow, job))
+        for module in _WHOLE_TEST_MODULE.findall(command)
+    }
+    needs_plugin = {
+        path.name
+        for path in (REPOSITORY_ROOT / "netbox_kea" / "tests").glob("test_*.py")
+        if _DHCP_PLUGIN_SKIP.search(path.read_text())
+    }
+
+    assert {"test_dhcp_import.py", "test_dhcp_import_ownership.py"} <= needs_plugin, needs_plugin
+    assert not needs_plugin - covered, f"No DHCP plugin CI job runs: {sorted(needs_plugin - covered)}"
+
+
 def test_pytest_configuration_works_with_django_plugin_disabled():
     """Keep unit-only pytest options out of the integration test command."""
     with tempfile.TemporaryDirectory(dir=REPOSITORY_ROOT) as temporary_directory:

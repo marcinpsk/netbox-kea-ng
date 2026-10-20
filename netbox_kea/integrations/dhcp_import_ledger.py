@@ -136,14 +136,18 @@ def _global(family: Family) -> dict[str, Entry]:
     if family == 6:
         own = (*_PREFERRED_LIFETIMES, "pd-allocator", "relay-supplied-options")
     if family == 4:
-        protocol = {"stash-agent-options": Pending(94, (Capability.STASH_AGENT_OPTIONS,))}
+        protocol = {"stash-agent-options": Mapped("DHCPServer.stash_agent_options", (Capability.STASH_AGENT_OPTIONS,))}
     else:
-        protocol = {"allow-address-registration": Pending(94, (Capability.ADDRESS_REGISTRATION,))}
+        protocol = {
+            "allow-address-registration": Mapped(
+                "DHCPServer.allow_address_registration", (Capability.ADDRESS_REGISTRATION,)
+            )
+        }
     server_level = () if family == 4 else ("data-directory", "mac-sources")
     entries = {
         **_fields("DHCPServer", *_LIFETIMES, *_LEASE, *_DDNS, *own, "decline-probation-period"),
         "host-reservation-identifiers": Mapped(
-            "DHCPServer.host_reservation_identifiers", (Capability.FLEX_ID_IDENTIFIER,), pending=94
+            "DHCPServer.host_reservation_identifiers", (Capability.FLEX_ID_IDENTIFIER,)
         ),
         "option-data": Mapped("Option"),
         "option-def": Mapped("OptionDefinition", pending=100),
@@ -152,9 +156,10 @@ def _global(family: Family) -> dict[str, Entry]:
         "reservations": Mapped("HostReservation"),
         "shared-networks": Pending(107, (Capability.SHARED_NETWORK_OPTIONAL_PREFIX,)),
         "adaptive-lease-time-threshold": Pending(99),
-        "user-context": Pending(94, _USER_CONTEXT),
+        "user-context": Mapped("DHCPServer.user_context", _USER_CONTEXT),
         "comment": _DEPRECATED["comment"],
-        "interfaces-config": Pending(94),
+        # The interface list links DHCPServer interfaces; the other keys are Kea socket settings.
+        "interfaces-config": Mapped("DHCPServer.interfaces"),
         **protocol,
         # Server-level facts with no plugin home by design (#88 "Not plugin gaps").
         **_no_plugin_home(
@@ -183,7 +188,7 @@ def _global(family: Family) -> dict[str, Entry]:
         ),
     }
     if family == 6:
-        entries["server-id"] = Mapped("DHCPServer.server_id", (Capability.SERVER_ID_FIELDS,), pending=94)
+        entries["server-id"] = Mapped("DHCPServer.server_id", (Capability.SERVER_ID_FIELDS,))
     return entries
 
 
@@ -323,7 +328,7 @@ def _interfaces(family: Family) -> dict[str, Entry]:
     """Return the ``interfaces-config`` keys: where the server serves DHCP, and how Kea opens its sockets."""
     socket_keys = ("dhcp-socket-type", "outbound-interface") if family == 4 else ()
     return {
-        "interfaces": Pending(94),
+        "interfaces": Mapped("DHCPServer.interfaces"),
         **_no_plugin_home(
             "re-detect",
             "service-sockets-require-all",
