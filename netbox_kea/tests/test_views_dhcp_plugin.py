@@ -325,6 +325,8 @@ class SyncNowEndToEndTest(TestCase):
         placeholder = page.select_one("#dhcp-import-drift")
         drift_url = reverse("plugins:netbox_kea:server_dhcp_plugin_drift", args=[self.server.pk])
         self.assertEqual((placeholder["hx-get"], placeholder["hx-trigger"]), (drift_url, "load"))
+        # The placeholder has the header of the loaded card, so the swap moves nothing.
+        self.assertEqual(placeholder.select_one("a.drift-latest-run")["href"], "#dhcp-import-latest-run")
         self.assertContains(resp, "Shared Network grouping")
         self.assertContains(resp, "Direct-interface mapping")
         self.assertContains(resp, "DHCP option mapping")
@@ -679,6 +681,7 @@ class DriftPartialTest(TestCase):
             },
         )
         self.assertEqual(page.select_one("a.drift-latest-run")["href"], "#dhcp-import-latest-run")
+        self.assertIn("Unknown: Kea could not be read", " ".join(page.select_one(".drift-legend").get_text().split()))
 
     def test_an_incomplete_observation_labels_its_unobserved_rows_not_seen_never_stale(self):
         self._import()

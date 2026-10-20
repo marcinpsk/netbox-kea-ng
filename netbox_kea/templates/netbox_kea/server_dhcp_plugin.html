@@ -146,7 +146,7 @@
 
       {% url 'plugins:netbox_kea:server_dhcp_plugin_drift' object.pk as drift_url %}
       <div class="card" id="dhcp-import-drift" hx-get="{{ drift_url }}" hx-trigger="load" hx-swap="innerHTML">
-        <h5 class="card-header">Drift</h5>
+        {% include "netbox_kea/inc/dhcp_plugin_drift_header.html" %}
         <div class="card-body">
           <p class="text-muted mb-0" role="status">Reading Kea&hellip;</p>
         </div>

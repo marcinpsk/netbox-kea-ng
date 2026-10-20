@@ -2,12 +2,7 @@
 {# SPDX-License-Identifier: Apache-2.0 #}
 {# The drift card body that htmx loads into #dhcp-import-drift on the DHCP Plugin page. #}
 {% load helpers %}
-<h5 class="card-header d-flex justify-content-between align-items-center">
-  Drift
-  <a class="btn btn-sm btn-outline-secondary drift-latest-run" href="#dhcp-import-latest-run">
-    <i class="mdi mdi-history" aria-hidden="true"></i> Latest run
-  </a>
-</h5>
+{% include "netbox_kea/inc/dhcp_plugin_drift_header.html" %}
 {% if drift_refusal %}
   <div class="card-body">
     <div class="alert alert-warning mb-0" role="alert">
@@ -17,11 +12,13 @@
   </div>
 {% else %}
   <div class="card-body pb-2">
-    <p class="small text-muted mb-0">
+    <p class="small text-muted mb-0 drift-legend">
       A live read of Kea, compared with the DHCP Import Mappings. <strong>Missing</strong>: Kea has the object, and
       NetBox has no imported row for it. <strong>Stale</strong>: NetBox has an imported row whose Kea object is gone,
       so the next run removes it. <strong>Not seen</strong>: Kea was not read in full for that kind, so nothing can
-      be stale. The import does not write Shared Networks yet, so each one shows as missing.
+      be stale. <strong>Unknown</strong>: Kea could not be read, or its configuration could not be parsed, so the
+      state of each imported row is not known. The import does not write Shared Networks yet, so each one shows as
+      missing.
     </p>
   </div>
   {% for drift in families %}
