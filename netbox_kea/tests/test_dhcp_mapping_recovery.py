@@ -9,6 +9,7 @@ from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import timedelta
 from io import StringIO
+from itertools import count
 from threading import Event, get_ident
 
 import pytest
@@ -45,6 +46,7 @@ from netbox_branching.utilities import activate_branch
 from utilities.exceptions import AbortRequest
 
 from netbox_kea.integrations.dhcp_import_plan import MappingSource
+from netbox_kea.integrations.dhcp_import_report import Reason
 from netbox_kea.integrations.dhcp_plugin import import_server_config
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.models import KeaDhcpLink, Server
@@ -96,11 +98,16 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                             self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
 
     def _imported(self, kind, family, suffix):
+        from netbox_dhcp.models import Subnet
+
         server = _make_db_server(name=f"mapping-{suffix}", ca_url="https://kea.example.invalid")
         config = {f"subnet{family}": []}
         observation = None
         if kind == "subnet":
-            config[f"subnet{family}"] = [{"id": 7, "subnet": "198.18.0.0/24" if family == 4 else "2001:db8::/64"}]
+            # netbox-plugin-dhcp 0.2.0 keeps Subnet IDs unique across all DHCP servers.
+            subnet_id = next(n for n in count(7) if not Subnet.objects.filter(subnet_id=n).exists())
+            prefix = "198.18.0.0/24" if family == 4 else "2001:db8::/64"
+            config[f"subnet{family}"] = [{"id": subnet_id, "subnet": prefix}]
         else:
             observation = _reservation_snapshot(
                 config, family, [{"subnet-id": 0, "hw-address": "02:00:00:00:00:07", "hostname": "mapping"}]
@@ -109,6 +116,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         with event_tracking(_change_request(self.user)):
             summary = import_server_config(server, intent, observation)
         self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual([e for e in summary.entries if e.reason == Reason.SUBNET_ID_CLASH], [], summary.warnings)
         link = KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=family)
         return server, intent, observation, link.sys4_object, link
 
@@ -4092,7 +4100,8 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
         mac = MACAddress.objects.create(mac_address="02:00:00:00:00:41")
         hosts = {
             4: _KEA_OBJECTS[4].reservation,
-            6: {"subnet-id": 10, "hw-address": "02:00:00:00:00:41", "ip-addresses": ["2001:db8:1::16"]},
+            # DHCPv4 holds plugin Subnet ID 10, so a Global Reservation carries the DHCPv6 MAC reference.
+            6: {"subnet-id": 0, "hw-address": "02:00:00:00:00:41"},
         }
         kea = _recorded_kea() | {"reservation-get-page": lambda body: _res_page([hosts[_family(body)]])}
         workers = self._workers()
