@@ -523,6 +523,19 @@ class DhcpPluginAdapterTest(TestCase):
             summary.entries,
         )
 
+    def test_one_long_duid_in_two_subnets_imports_two_reservations(self):
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        duid = ":".join(["aa"] * 84)
+        conf = {"subnet6": [{"id": 4, "subnet": "2001:db8:4::/64"}, {"id": 5, "subnet": "2001:db8:5::/64"}]}
+        hosts = [{"subnet-id": 4, "duid": duid}, {"subnet-id": 5, "duid": duid}]
+
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6, hosts)
+        )
+
+        self.assertEqual((summary.errors, summary.reservations_created), (0, 2), summary.warnings)
+        self.assertEqual(HostReservation.objects.filter(duid=duid).count(), 2)
+
     def test_reservation_database_failure_does_not_stop_healthy_sibling(self):
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
         common_duid = ":".join(["aa"] * 83)
@@ -1109,6 +1122,49 @@ class DhcpPluginServerPerFamilyTest(TestCase):
         names = [imported_dhcp_server(self.server, family).name for family in (4, 6)]
         self.assertEqual([name[-6:] for name in names], ["DHCPv4", "DHCPv6"])
         self.assertTrue(all(len(name) == 255 for name in names))
+
+    def test_a_server_named_like_another_servers_dhcp_server_takes_none_of_its_rows(self):
+        self.conf[4]["option-data"] = [{"code": 6, "data": "192.0.2.53"}]
+        self._import(4)
+        first = imported_dhcp_server(self.server, 4)
+        other = _make_db_server(name=first.name, dhcp6=False)
+
+        summary = self.adapter.import_server_config(other, parse_dhcp_config({"subnet4": []}, 4))
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(list(first.options.values_list("data", flat=True)), ["192.0.2.53"])
+        self.assertNotEqual(imported_dhcp_server(other, 4).pk, first.pk)
+
+    def test_after_the_upgrade_an_option_that_an_operator_adds_stays_where_it_is(self):
+        from django.contrib.contenttypes.models import ContentType
+
+        model = partial(apps.get_model, DHCP_PLUGIN)
+        existing = model("DHCPServer").objects.create(name=self.server.name)
+        self._import(4)
+        self._import(6)
+        dns = model("OptionDefinition").objects.get(standard=True, space="dhcp6", code=23)
+        added = model("Option").objects.create(
+            definition=dns,
+            data="2001:db8::53",
+            assigned_object_type=ContentType.objects.get_for_model(existing),
+            assigned_object_id=existing.pk,
+        )
+
+        self._import(6)
+
+        self.assertEqual(model("Option").objects.get(pk=added.pk).assigned_object_id, existing.pk)
+
+    def test_a_wildcard_with_names_still_reports_a_name_that_matches_nothing(self):
+        from netbox_kea.integrations.dhcp_import_report import Reason
+
+        self.conf[4]["interfaces-config"] = {"interfaces": ["*", "eth9"]}
+
+        summary = self._import(4)
+
+        self.assertIn(
+            ("Dhcp4/interfaces-config/interfaces[eth9]", Reason.NO_MATCHING_INTERFACE),
+            [(entry.path, entry.reason) for entry in summary.entries],
+        )
 
     def test_a_wildcard_interface_list_keeps_the_interface_links(self):
         from netbox_kea.integrations.dhcp_import_report import Reason

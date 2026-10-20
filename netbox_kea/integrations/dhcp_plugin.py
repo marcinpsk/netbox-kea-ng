@@ -812,9 +812,6 @@ def _link_interfaces(dhcp_server, entries: tuple[str, ...] | None, summary: Impo
     from virtualization.models import VMInterface
 
     names = {name: entry for entry in entries if (name := _interface_name(entry, family, summary)) is not None}
-    if "*" in entries:
-        # The DHCP plugin cannot hold "every interface", so the links that an operator made stay.
-        return False
     device = Interface.objects.filter(device=dhcp_server.device_id, name__in=names) if dhcp_server.device_id else []
     vm = (
         VMInterface.objects.filter(virtual_machine=dhcp_server.virtual_machine_id, name__in=names)
@@ -828,6 +825,9 @@ def _link_interfaces(dhcp_server, entries: tuple[str, ...] | None, summary: Impo
             detail = f"The DHCP server's device or virtual machine has no interface {name}."
             path = kea_paths.interface(family, entry)
             summary.record(not_written(family, Kind.SERVER, path, Reason.NO_MATCHING_INTERFACE, detail))
+    if "*" in entries:
+        # The DHCP plugin cannot hold "every interface", so the links that an operator made stay.
+        return False
     current = {relation: set(getattr(dhcp_server, relation).values_list("pk", flat=True)) for relation in wanted}
     if current == wanted:
         return False
@@ -847,8 +847,20 @@ def _primary_family(server) -> int:
 
 
 def _adoption_servers(server, dhcp_server) -> tuple[int, ...]:
-    """Return *dhcp_server* and the DHCPServer that an import before #94 named after the Server, for both families."""
-    legacy = _model("DHCPServer").objects.filter(name=server.name).exclude(pk=dhcp_server.pk)
+    """Return *dhcp_server* and the DHCPServer that an import before #94 named after the Server, for both families.
+
+    A DHCPServer that another Server maps is not that row, even when its name matches.
+    """
+    from django.contrib.contenttypes.models import ContentType
+
+    DHCPServer = _model("DHCPServer")
+    mapped_elsewhere = (
+        _link_model()
+        .objects.filter(object_type=ContentType.objects.get_for_model(DHCPServer))
+        .exclude(server=server)
+        .values("object_id")
+    )
+    legacy = DHCPServer.objects.filter(name=server.name).exclude(pk=dhcp_server.pk).exclude(pk__in=mapped_elsewhere)
     return (dhcp_server.pk, *legacy.values_list("pk", flat=True))
 
 
@@ -861,18 +873,18 @@ def _move_family_options(dhcp_server, adoption_servers: tuple[int, ...], family:
         assigned_object_id__in=[pk for pk in adoption_servers if pk != dhcp_server.pk],
         definition__family=family,
     )
-    with event_scope.atomic():
-        for option in stale:
-            option.snapshot()
-            option.assigned_object_id = dhcp_server.pk
-            option.save()
+    for option in stale:
+        option.snapshot()
+        option.assigned_object_id = dhcp_server.pk
+        option.save()
 
 
 def upsert_dhcp_server(server, family: int):
     """Get or create the DHCPServer of one family of *server* through its mapping, and whether it is new.
 
     The first run after an upgrade adopts the DHCPServer that an earlier import named after the Server, for the
-    primary family. A new DHCPServer takes the device or virtual machine of the Server's other DHCPServer.
+    primary family. A new DHCPServer takes the device or virtual machine of the Server's other DHCPServer, and the
+    global Options of its family that an earlier import wrote on that adopted row.
     """
     DHCPServer = _model("DHCPServer")
     source = MappingSource.server()
@@ -891,6 +903,7 @@ def upsert_dhcp_server(server, family: int):
             )
             dhcp_server.save()
             created = True
+            _move_family_options(dhcp_server, _adoption_servers(server, dhcp_server), family)
         observe_mapping(server, family, dhcp_server, source)
     return dhcp_server, created
 
@@ -898,9 +911,11 @@ def upsert_dhcp_server(server, family: int):
 def _synthesized_name(scope: str, detail: str) -> str:
     """Return a DHCP plugin row name: *scope* shortened so that *detail* fits, which keeps the names distinct.
 
-    A *detail* longer than a name itself is cut, so two such names can still be equal.
+    A *detail* that leaves no room for the scope is cut instead, so names of different scopes stay distinct.
     """
-    return f"{scope[: max(0, MAX_KEA_NAME_LENGTH - len(detail))]}{detail}"[:MAX_KEA_NAME_LENGTH]
+    if len(detail) >= MAX_KEA_NAME_LENGTH:
+        return f"{scope}{detail}"[:MAX_KEA_NAME_LENGTH]
+    return f"{scope[: MAX_KEA_NAME_LENGTH - len(detail)]}{detail}"
 
 
 def _released_client_class_name(server, kea_name: str) -> str:
@@ -1579,7 +1594,6 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     custom_defs = CustomDefinitions(
         server, {planned.key: planned.intent for planned in plan.option_definitions}, adoption_servers
     )
-    _move_family_options(dhcp_server, adoption_servers, plan.family)
 
     values = server_values(plan.server, plan.family, capabilities, summary)
     changed = _apply_global_settings(dhcp_server, values, summary, plan.family)
