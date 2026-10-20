@@ -969,10 +969,7 @@ def _record_name_taken(
     summary: ImportSummary, family: int, path: str, name: str, capabilities: PluginCapabilities
 ) -> None:
     if capabilities.has(Capability.NAME_PER_SERVER):
-        detail = (
-            f"Another client class of this DHCP server holds the name {name!r}. "
-            "Both families of a Server share one DHCP server."
-        )
+        detail = f"Another client class of this DHCP server holds the name {name!r}."
         entry = not_written(family, Kind.CLIENT_CLASS, path, Reason.NOT_IN_SCOPE, detail)
     else:
         detail = (

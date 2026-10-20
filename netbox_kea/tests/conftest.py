@@ -286,11 +286,12 @@ def _one_entry_per_import_fact():
     record = ImportSummary.record
     repeated = []
 
+    def fact(entry):
+        # An unsupported entry names the one capability-gated field of its path that the plugin cannot hold.
+        return (entry.family, entry.kind, entry.path, entry.capability)
+
     def record_once(summary, entry):
-        fact = (entry.family, entry.kind, entry.path)
-        repeated.extend(
-            (earlier, entry) for earlier in summary.entries if (earlier.family, earlier.kind, earlier.path) == fact
-        )
+        repeated.extend((earlier, entry) for earlier in summary.entries if fact(earlier) == fact(entry))
         record(summary, entry)
 
     with patch.object(ImportSummary, "record", record_once):
