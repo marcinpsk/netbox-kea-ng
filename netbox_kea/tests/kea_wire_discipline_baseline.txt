@@ -7,10 +7,7 @@
 # Update: python3 netbox_kea/tests/kea_wire_discipline.py --update-baseline
 
 constants.py::<module>	2
-integrations/dhcp_plugin.py::<module>	42
-integrations/dhcp_plugin.py::_apply_reservation_identifier	4
 integrations/dhcp_plugin.py::_find_reservation	4
-integrations/dhcp_plugin.py::_relay_to_str	1
 integrations/dhcp_plugin.py::_send_option	2
 integrations/dhcp_plugin.py::_upsert_reservation	1
 mappers/kea_to_dhcp.py::<module>	43

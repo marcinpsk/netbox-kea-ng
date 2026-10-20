@@ -25,16 +25,15 @@ ObjectChange values for IPAM, MAC addresses, DHCP imports, the sync toggle and t
 `netbox_kea/tests/snapshot_discipline.py` scans production Python modules. Tests
 and migrations are excluded. The native suite and pre-commit hook run the same
 scanner. The inventory names the module, function, direct receiver, classification
-and save count for each current site. It covers 36 saves: 24 loaded updates and
-12 explicit create, plain bookkeeping or framework sites. An unclassified direct
+and save count for each current site. It covers 33 saves: 17 loaded updates and
+16 explicit create, plain bookkeeping or framework sites. An unclassified direct
 save or a changed save count requires an inventory review.
 
 For loaded sites, a small local walk checks standalone snapshots, direct field
-assignments, `setattr()` and two named mutation helpers: `_update_mac_description`
-and `_apply_reservation_identifier`. The receiver must be the direct first argument
-of a recognized helper. A call that passes the receiver as `instance=` also changes it,
-because a ModelForm copies its data onto the instance when it validates. The current Option, ClientClass, HostReservation, Pool
-and OptionDefinition branches also admit their explicitly named constructors before a first save.
+assignments, `setattr()` and one named mutation helper: `_update_mac_description`.
+The receiver must be the direct first argument of a recognized helper. A call that passes the receiver as `instance=` also changes it,
+because a ModelForm copies its data onto the instance when it validates. The HostReservation branch also admits its explicitly named constructor before a first save. The DHCP Import
+writes the other loaded DHCP plugin rows through `_save_changes`, which takes the snapshot before it sets a field.
 
 The walk follows both sides of an `if`, the body of a `with`, and the existing
 try/handler layout. Loops use zero and one iteration paths. A loaded save needs
@@ -65,8 +64,8 @@ with further bypasses. The final scope uses a small explicit persistence invento
 and checks the current direct patterns. It accepts the alias and dynamic limits
 above. The runtime snapshot fix and its real ObjectChange tests remain intact.
 
-The tree has 23 runtime snapshots. Each of the 21 inventoried loaded-save
-snapshots is removed and moved after mutation in memory. All 42 variants must produce a snapshot or mutation diagnostic.
+The tree has 19 runtime snapshots. Each of the 16 inventoried loaded-save
+snapshots is removed and moved after mutation in memory. All 32 variants must produce a snapshot or mutation diagnostic.
 Nearby controls cover early, missing, late, conditional and wrong-receiver
 snapshots, the mutation helpers, new saves and changed save counts. The
 production tree and hook provide passing controls. Native focused tests, Ruff,

@@ -38,10 +38,12 @@ v1 scope (import + diff, read-only against Kea):
   server-scoped custom definition created from a Kea ``option-def``.  Options
   whose definition cannot be resolved are reported as unsupported, never fatal.
 * **Tuning fields** (lifetimes, timers, lease/DDNS/BOOTP/network settings) are
-  imported onto the ``DHCPServer`` (global), ``Subnet`` and ``ClientClass``. A Subnet
+  imported onto the ``DHCPServer`` (global), ``Subnet``, ``Pool`` (DDNS) and ``ClientClass``. A Subnet
   or client class gets only its Declared Values (:func:`.dhcp_import_plan.declared_values`),
   and every other field is cleared to inherit. A value that a member Subnet inherits
   from its Shared Network is reported, never copied onto the Subnet.
+* **Ownership.** Every writer sets exactly the managed fields of :mod:`.dhcp_import_fields` on a mapped row, and
+  :func:`_managed_changes` refuses a write that names another set. Unmanaged fields and unmapped rows stay.
 * **Client classes** (``client-classes``) are imported as ``ClientClass`` rows
   (test/template-test, additional-list flag, BOOTP + lifetime settings, options) with
   their Kea name. While the plugin keeps class names unique across all servers, a class
@@ -86,6 +88,15 @@ from ..mappers.kea_to_dhcp import OptionDefIntent, ServerConfigIntent
 from ..published_name import reservation_published_name
 from ..reservations import FLEX_ID, TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, identity_text
 from ..subnet_catalogue import CatalogueUnavailable
+from .dhcp_import_fields import (
+    CLIENT_CLASS_FIELDS,
+    GATED_SERVER_FIELDS,
+    POOL_FIELDS,
+    SERVER_FIELDS,
+    SUBNET_FIELDS,
+    managed_fields,
+    server_id_field,
+)
 from .dhcp_import_plan import (
     MAX_KEA_NAME_LENGTH,
     InSubnetReservationKey,
@@ -402,7 +413,12 @@ def _held_option_definition(held, family: int, key: OptionDefinitionKey, path: s
 
 
 def _write_option_definition(
-    definitions: CustomDefinitions, key: OptionDefinitionKey, family: int, dhcp_server, summary: ImportSummary
+    definitions: CustomDefinitions,
+    key: OptionDefinitionKey,
+    family: int,
+    dhcp_server,
+    summary: ImportSummary,
+    capabilities: PluginCapabilities,
 ):
     """Write the custom Option Definition of *key* through its mapping. Return the row, or why it has none."""
     OptionDefinition = _model("OptionDefinition")
@@ -422,16 +438,15 @@ def _write_option_definition(
                 if obj is None and held.exists():
                     return _held_option_definition(held, family, key, path, summary)
             if obj is None:
-                obj = OptionDefinition(name=def_intent.name, standard=False, **fields)
+                obj = OptionDefinition(name=def_intent.name, standard=False)
+                for name, value in _managed_changes(obj, fields, capabilities).items():
+                    setattr(obj, name, value)
                 obj.save()
                 outcome = Outcome.CREATED
             else:
-                changes = {name: value for name, value in fields.items() if getattr(obj, name) != value}
+                changes = _managed_changes(obj, fields, capabilities)
                 if changes:
-                    obj.snapshot()
-                    for name, value in changes.items():
-                        setattr(obj, name, value)
-                    obj.save()
+                    _save_changes(obj, changes)
                     outcome = Outcome.UPDATED
             observe_mapping(definitions.server, family, obj, key.source)
     except event_scope.EventDispatchError:
@@ -445,7 +460,9 @@ def _write_option_definition(
     return obj
 
 
-def _resolve_option_definition(opt: DHCPOption, family: int, dhcp_server, definitions: CustomDefinitions, summary):
+def _resolve_option_definition(
+    opt: DHCPOption, family: int, dhcp_server, definitions: CustomDefinitions, summary, capabilities: PluginCapabilities
+):
     """Find (or write) the ``OptionDefinition`` a Kea ``option-data`` entry refers to.
 
     Prefers the sys4-shipped **standard** definition (by space+code, else space+name). Then a custom definition
@@ -474,7 +491,9 @@ def _resolve_option_definition(opt: DHCPOption, family: int, dhcp_server, defini
         key = next((each for each, intent in declared if each.space == space and intent.name == opt.name), None)
     if key is not None and key in definitions.declared:
         if key not in definitions.written:
-            definitions.written[key] = _write_option_definition(definitions, key, family, dhcp_server, summary)
+            definitions.written[key] = _write_option_definition(
+                definitions, key, family, dhcp_server, summary, capabilities
+            )
         return definitions.written[key]
 
     custom = OptionDefinition.objects.filter(standard=False, dhcp_server=dhcp_server, space=space)
@@ -485,10 +504,6 @@ def _resolve_option_definition(opt: DHCPOption, family: int, dhcp_server, defini
     return found if found is not None else _NO_DEFINITION
 
 
-def _option_values(obj) -> tuple:
-    return (obj.data, obj.csv_format, obj.send_option)
-
-
 def upsert_options(
     parent_obj,
     options,
@@ -497,6 +512,7 @@ def upsert_options(
     custom_defs: CustomDefinitions,
     summary: ImportSummary,
     parent_path: str,
+    capabilities: PluginCapabilities,
 ) -> None:
     """Upsert DHCP-plugin ``Option`` rows for *options* assigned to *parent_obj*, the Kea object at *parent_path*.
 
@@ -512,30 +528,29 @@ def upsert_options(
     ct = ContentType.objects.get_for_model(type(parent_obj))
     for opt in options:
         path = kea_paths.option(parent_path, opt, family)
-        definition = _resolve_option_definition(opt, family, dhcp_server, custom_defs, summary)
+        definition = _resolve_option_definition(opt, family, dhcp_server, custom_defs, summary, capabilities)
         if isinstance(definition, _Unresolved):
             summary.record(not_written(family, Kind.OPTION, path, definition.reason, definition.detail))
             summary.warn(f"option {option_identity(opt, family)}: no matching definition, skipped")
             continue
+        desired = {"data": opt.data or "", "csv_format": opt.csv_format, "send_option": _send_option(opt)}
+        outcome = None
         try:
             with event_scope.atomic():
-                existing = Option.objects.filter(
+                obj = Option.objects.filter(
                     assigned_object_type=ct, assigned_object_id=parent_obj.pk, definition=definition
                 ).first()
-                before = None if existing is None else _option_values(existing)
-                if existing is None:
+                if obj is None:
                     obj = Option(definition=definition, assigned_object_type=ct, assigned_object_id=parent_obj.pk)
-                else:
-                    obj = existing
-                    obj.snapshot()
-                obj.data = opt.data or ""
-                obj.csv_format = opt.csv_format
-                obj.send_option = _send_option(opt)
-                obj.save()
-            if before is None:
-                summary.record(written(family, Kind.OPTION, path, Outcome.CREATED))
-            elif before != _option_values(obj):
-                summary.record(written(family, Kind.OPTION, path, Outcome.UPDATED))
+                    for name, value in _managed_changes(obj, desired, capabilities).items():
+                        setattr(obj, name, value)
+                    obj.save()
+                    outcome = Outcome.CREATED
+                elif changes := _managed_changes(obj, desired, capabilities):
+                    _save_changes(obj, changes)
+                    outcome = Outcome.UPDATED
+            if outcome is not None:
+                summary.record(written(family, Kind.OPTION, path, outcome))
         except event_scope.EventDispatchError:
             raise
         except Exception as exc:  # noqa: BLE001 — one bad option must not abort the import
@@ -544,95 +559,8 @@ def upsert_options(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tuning fields (lifetimes/timers/lease/DDNS/BOOTP/network) — Kea key → sys4 field
+# Managed fields (dhcp_import_fields): Kea owns them on a mapped row
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-def _decimal(value):
-    """Coerce a Kea numeric to ``Decimal`` via ``str`` (avoids float-precision noise)."""
-    from decimal import Decimal
-
-    return None if value is None else Decimal(str(value))
-
-
-def _norm_ddns_replace(value):
-    """Map Kea ``ddns-replace-client-name`` (hyphenated) to the plugin's underscored choice."""
-    return value.replace("-", "_") if isinstance(value, str) else value
-
-
-def _relay_to_str(value):
-    """Flatten a Kea ``relay`` (``{"ip-addresses": [...]}``) to the plugin's CSV string."""
-    if isinstance(value, dict):
-        addrs = value.get("ip-addresses") or []
-    elif isinstance(value, list):
-        addrs = value
-    else:
-        return value or None
-    return ", ".join(addrs) if addrs else None
-
-
-def _server_id_type(value):
-    """Reduce a Kea ``server-id`` map to its type."""
-    return value.get("type") if isinstance(value, dict) else value
-
-
-# (kea_key, sys4_attr, transform). Fields shared by DHCPServer + Subnet.
-_COMMON_FIELDS: tuple[tuple[str, str, object], ...] = (
-    ("valid-lifetime", "valid_lifetime", None),
-    ("min-valid-lifetime", "min_valid_lifetime", None),
-    ("max-valid-lifetime", "max_valid_lifetime", None),
-    ("preferred-lifetime", "preferred_lifetime", None),
-    ("min-preferred-lifetime", "min_preferred_lifetime", None),
-    ("max-preferred-lifetime", "max_preferred_lifetime", None),
-    ("offer-lifetime", "offer_lifetime", None),
-    ("renew-timer", "renew_timer", None),
-    ("rebind-timer", "rebind_timer", None),
-    ("match-client-id", "match_client_id", None),
-    ("authoritative", "authoritative", None),
-    ("reservations-global", "reservations_global", None),
-    ("reservations-out-of-pool", "reservations_out_of_pool", None),
-    ("reservations-in-subnet", "reservations_in_subnet", None),
-    ("calculate-tee-times", "calculate_tee_times", None),
-    ("t1-percent", "t1_percent", _decimal),
-    ("t2-percent", "t2_percent", _decimal),
-    ("cache-threshold", "cache_threshold", _decimal),
-    ("cache-max-age", "cache_max_age", None),
-    ("store-extended-info", "store_extended_info", None),
-    ("allocator", "allocator", None),
-    ("pd-allocator", "pd_allocator", None),
-    ("ddns-send-updates", "ddns_send_updates", None),
-    ("ddns-override-no-update", "ddns_override_no_update", None),
-    ("ddns-override-client-update", "ddns_override_client_update", None),
-    ("ddns-replace-client-name", "ddns_replace_client_name", _norm_ddns_replace),
-    ("ddns-generated-prefix", "ddns_generated_prefix", None),
-    ("ddns-qualifying-suffix", "ddns_qualifying_suffix", None),
-    ("ddns-update-on-renew", "ddns_update_on_renew", None),
-    ("ddns-conflict-resolution-mode", "ddns_conflict_resolution_mode", None),
-    ("ddns-ttl-percent", "ddns_ttl_percent", _decimal),
-    ("ddns-ttl", "ddns_ttl", None),
-    ("ddns-ttl-min", "ddns_ttl_min", None),
-    ("ddns-ttl-max", "ddns_ttl_max", None),
-    ("hostname-char-set", "hostname_char_set", None),
-    ("hostname-char-replacement", "hostname_char_replacement", None),
-    ("next-server", "next_server", None),
-    ("server-hostname", "server_hostname", None),
-    ("boot-file-name", "boot_file_name", None),
-)
-
-_SUBNET_FIELDS: tuple[tuple[str, str, object], ...] = (
-    *_COMMON_FIELDS,
-    ("relay", "relay", _relay_to_str),
-    ("interface-id", "interface_id", None),
-    ("rapid-commit", "rapid_commit", None),
-)
-
-_SERVER_FIELDS: tuple[tuple[str, str, object], ...] = (
-    *_COMMON_FIELDS,
-    ("decline-probation-period", "decline_probation_period", None),
-    ("echo-client-id", "echo_client_id", None),
-    ("relay-supplied-options", "relay_supplied_options", None),
-    (kea_paths.SERVER_ID, "server_id", _server_id_type),
-)
 
 
 def _is_unset(value) -> bool:
@@ -670,16 +598,12 @@ def _cleared(obj, attr: str):
 
 
 def _settings_fields(obj, settings: dict, field_map, summary: ImportSummary, source: _Source) -> dict:
-    """Plan *obj*'s tuning fields from its Declared Values. A key that *settings* lacks clears its field to inherit.
+    """Plan *obj*'s settings fields from its Declared Values. A key that *settings* lacks clears its field to inherit.
 
-    The ``model_fields`` guard skips fields *obj* does not have, so one field map serves models with different mixins
-    (e.g. ``Subnet`` vs ``ClientClass``). Return the desired fields without changing *obj*.
+    Return the desired fields without changing *obj*.
     """
-    model_fields = {f.name for f in obj._meta.get_fields()}
     fields = {}
     for kea_key, attr, transform in field_map:
-        if attr not in model_fields:
-            continue
         value = (
             _transform_value(transform, settings[kea_key], kea_key, summary, source) if kea_key in settings else None
         )
@@ -687,20 +611,45 @@ def _settings_fields(obj, settings: dict, field_map, summary: ImportSummary, sou
     return fields
 
 
+def _managed_changes(obj, desired: dict, capabilities: PluginCapabilities) -> dict:
+    """Return the managed fields of obj whose value differs from desired.
+
+    *desired* must name each scalar managed field of the model that the installed plugin has, by field name or by
+    the column name of a foreign key. Relations are not checked here.
+    """
+    model = type(obj).__name__
+    named = {obj._meta.get_field(key).name for key in desired}
+    expected = {field.name for field in managed_fields(model, capabilities) if not field.relation}
+    if named != expected or len(named) != len(desired):
+        raise RuntimeError(
+            f"The {model} write does not match its managed fields: "
+            f"missing {sorted(expected - named)}, unexpected {sorted(named - expected)}"
+        )
+    return {key: value for key, value in desired.items() if getattr(obj, key) != value}
+
+
+def _save_changes(obj, changes: dict) -> None:
+    """Write *changes* to the loaded row *obj* after its change-log snapshot."""
+    obj.snapshot()
+    for name, value in changes.items():
+        setattr(obj, name, value)
+    obj.save()
+
+
+def _relation_changes(obj, desired: dict[str, set[int]]) -> dict[str, set[int]]:
+    """Return the many-to-many relations of *obj* whose rows differ from *desired*. A new row has no rows yet."""
+    if obj.pk is None:
+        return {name: pks for name, pks in desired.items() if pks}
+    return {name: pks for name, pks in desired.items() if set(getattr(obj, name).values_list("pk", flat=True)) != pks}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Upserts
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-# The gated scalar globals of one daemon: Kea key, DHCPServer field and the capability that the field needs.
-_GATED_SERVER_FIELDS: tuple[tuple[str, str, Capability], ...] = (
-    (kea_paths.ALLOW_ADDRESS_REGISTRATION, "allow_address_registration", Capability.ADDRESS_REGISTRATION),
-    (kea_paths.STASH_AGENT_OPTIONS, "stash_agent_options", Capability.STASH_AGENT_OPTIONS),
-)
-
-
 def _server_id_values(raw, root: str, family: int, capabilities: PluginCapabilities, summary: ImportSummary) -> dict:
-    """Return the ``server-id`` parameter fields of the DHCPServer; ``_SERVER_FIELDS`` holds its type.
+    """Return the ``server-id`` parameter fields of the DHCPServer; ``SERVER_FIELDS`` holds its type.
 
     Without the capability each parameter that Kea does not generate is unsupported.
     """
@@ -710,7 +659,7 @@ def _server_id_values(raw, root: str, family: int, capabilities: PluginCapabilit
         value = server_id.get(key, generated)
         declared = value != generated
         if capabilities.has(Capability.SERVER_ID_FIELDS):
-            values[f"server_id_{key.replace('-', '_')}"] = value if declared else None
+            values[server_id_field(key)] = value if declared else None
         elif declared:
             path = kea_paths.setting(kea_paths.setting(root, kea_paths.SERVER_ID), key)
             detail = "The DHCP plugin keeps only the type of server-id."
@@ -739,14 +688,14 @@ def server_values(
     """Return the managed DHCPServer fields of one family's global configuration, by field name.
 
     ``None`` clears a field that Kea does not declare. A gated fact whose capability is missing is not a field here:
-    it has an unsupported entry instead.
+    it has an unsupported entry instead. The Reservation identifier types are missing when Kea's list is not valid.
     """
     settings = planned.global_settings
     root = kea_paths.daemon(family)
     source = _Source(family, Kind.SERVER, root)
     values = {
         attr: _transform_value(transform, settings[kea_key], kea_key, summary, source) if kea_key in settings else None
-        for kea_key, attr, transform in _SERVER_FIELDS
+        for kea_key, attr, transform in SERVER_FIELDS
     }
     values |= _server_id_values(settings.get(kea_paths.SERVER_ID), root, family, capabilities, summary)
     if planned.host_reservation_identifiers is not None:
@@ -764,7 +713,7 @@ def server_values(
         path = kea_paths.setting(root, kea_paths.USER_CONTEXT)
         detail = "The DHCP plugin has no user-context field on a DHCP server."
         summary.record(unsupported(family, Kind.SERVER, path, Capability.USER_CONTEXT, detail))
-    for kea_key, attr, capability in _GATED_SERVER_FIELDS:
+    for kea_key, attr, capability in GATED_SERVER_FIELDS:
         if capabilities.has(capability):
             values[attr] = settings.get(kea_key)
         elif kea_key in settings:
@@ -773,32 +722,32 @@ def server_values(
     return values
 
 
-def _apply_global_settings(dhcp_server, values: dict, summary: ImportSummary, family: int) -> bool | None:
+def _apply_global_settings(
+    dhcp_server, values: dict, summary: ImportSummary, family: int, capabilities: PluginCapabilities
+) -> bool | None:
     """Make the managed fields of *dhcp_server* equal *values*, clearing each ``None`` (or unset) value.
 
     Each family has its own DHCPServer, so this family's configuration owns every managed field of it.
     Return whether a changed value was saved, or ``None`` after a failed save. The failure is recorded here.
     """
-    changed = {}
-    for attr, value in values.items():
-        desired = _cleared(dhcp_server, attr) if _is_unset(value) else value
-        if getattr(dhcp_server, attr) != desired:
-            changed[attr] = desired
-    if not changed:
-        return False
-    dhcp_server.snapshot()
-    for attr, value in changed.items():
-        setattr(dhcp_server, attr, value)
+    desired = {attr: _cleared(dhcp_server, attr) if _is_unset(value) else value for attr, value in values.items()}
+    # A Kea list that is not valid leaves the identifier types as they are.
+    desired.setdefault("host_reservation_identifiers", dhcp_server.host_reservation_identifiers)
+    changed: dict = {}
     try:
+        changed = _managed_changes(dhcp_server, desired, capabilities)
+        if not changed:
+            return False
         with event_scope.atomic():
-            dhcp_server.save()
+            _save_changes(dhcp_server, changed)
     except event_scope.EventDispatchError:
         raise
     except Exception as exc:  # noqa: BLE001
         summary.record(write_failed(family, Kind.SERVER, kea_paths.daemon(family)))
         summary.warn(f"DHCPServer settings: {exc}")
-        # Children diff against this instance, so it must hold the persisted values.
-        dhcp_server.refresh_from_db(fields=list(changed))
+        if changed:
+            # Children diff against this instance, so it must hold the persisted values.
+            dhcp_server.refresh_from_db(fields=list(changed))
         return None
     return True
 
@@ -844,11 +793,11 @@ def _link_interfaces(dhcp_server, entries: tuple[str, ...] | None, summary: Impo
     if "*" in entries:
         # The DHCP plugin cannot hold "every interface", so the links that an operator made stay.
         return False
-    current = {relation: set(getattr(dhcp_server, relation).values_list("pk", flat=True)) for relation in wanted}
-    if current == wanted:
+    relations = _relation_changes(dhcp_server, wanted)
+    if not relations:
         return False
     dhcp_server.snapshot()
-    for relation, pks in wanted.items():
+    for relation, pks in relations.items():
         getattr(dhcp_server, relation).set(pks)
     return True
 
@@ -942,17 +891,23 @@ def _released_client_class_name(server, kea_name: str) -> str:
 
 
 def _client_class_changes(
-    obj, dhcp_server, planned: PlannedClientClass, summary: ImportSummary, path: str, capabilities: PluginCapabilities
+    obj,
+    dhcp_server,
+    planned: PlannedClientClass,
+    summary: ImportSummary,
+    path: str,
+    capabilities: PluginCapabilities,
+    name_taken: bool,
 ) -> dict:
-    """Plan the changed identity, expressions and settings fields of one Client Class. Its name is planned apart."""
+    """Plan the changed managed fields of one Client Class. A class whose Kea name is taken keeps its name."""
     intent = planned.intent
     fields = {
+        "name": obj.name if name_taken else planned.key,
         "dhcp_server_id": dhcp_server.pk,
         "test": intent.test or "",
         "template_test": intent.template_test or "",
+        "only_in_additional_list": intent.only_in_additional_list,
     }
-    if intent.only_in_additional_list is not None:
-        fields["only_in_additional_list"] = intent.only_in_additional_list
     if capabilities.has(Capability.USER_CONTEXT):
         fields["user_context"] = (
             intent.user_context if intent.user_context is not None else _cleared(obj, "user_context")
@@ -969,8 +924,8 @@ def _client_class_changes(
             )
         )
     source = _Source(intent.family, Kind.CLIENT_CLASS, path)
-    fields.update(_settings_fields(obj, planned.settings, _COMMON_FIELDS, summary, source))
-    return {name: value for name, value in fields.items() if getattr(obj, name) != value}
+    fields.update(_settings_fields(obj, planned.settings, CLIENT_CLASS_FIELDS, summary, source))
+    return _managed_changes(obj, fields, capabilities)
 
 
 def _class_name_taken(name: str, obj, dhcp_server, capabilities: PluginCapabilities) -> bool:
@@ -1024,22 +979,17 @@ def upsert_client_class(
                 _skip_options(summary, intent.family, path, intent.options)
                 return None
             if obj is None:
-                obj = ClientClass(name=planned.key, dhcp_server=dhcp_server)
+                obj = ClientClass()
                 for name, value in _client_class_changes(
-                    obj, dhcp_server, planned, summary, path, capabilities
+                    obj, dhcp_server, planned, summary, path, capabilities, name_taken=False
                 ).items():
                     setattr(obj, name, value)
                 obj.save()
                 outcome = Outcome.CREATED
             else:
-                changes = _client_class_changes(obj, dhcp_server, planned, summary, path, capabilities)
-                if not name_taken and obj.name != planned.key:
-                    changes["name"] = planned.key
+                changes = _client_class_changes(obj, dhcp_server, planned, summary, path, capabilities, name_taken)
                 if changes:
-                    obj.snapshot()
-                    for name, value in changes.items():
-                        setattr(obj, name, value)
-                    obj.save()
+                    _save_changes(obj, changes)
                     outcome = Outcome.UPDATED
             observe_mapping(server, intent.family, obj, source)
     except event_scope.EventDispatchError:
@@ -1054,7 +1004,7 @@ def upsert_client_class(
         _record_name_taken(summary, intent.family, kea_paths.setting(path, "name"), planned.key, capabilities)
     if outcome is not None:
         summary.record(written(intent.family, Kind.CLIENT_CLASS, path, outcome))
-    upsert_options(obj, intent.options, intent.family, dhcp_server, custom_defs, summary, path)
+    upsert_options(obj, intent.options, intent.family, dhcp_server, custom_defs, summary, path, capabilities)
     return obj
 
 
@@ -1078,7 +1028,13 @@ def _reservation_name(scope_name: str, reservation: Reservation) -> str:
 
 
 def upsert_subnet(
-    server, dhcp_server, planned: PlannedSubnet, summary: ImportSummary, claims: ClaimResult, renumbered: bool
+    server,
+    dhcp_server,
+    planned: PlannedSubnet,
+    summary: ImportSummary,
+    claims: ClaimResult,
+    renumbered: bool,
+    capabilities: PluginCapabilities,
 ):
     """Get/create the DHCP-plugin ``Subnet`` for *planned*, tracked via ``KeaDhcpLink`` by its key.
 
@@ -1104,30 +1060,23 @@ def upsert_subnet(
             prefix_obj = result.prefix
             if result.outcome in {"conflict", "disagreement"}:
                 summary.warn(f"subnet {network}: IPAM ownership {result.outcome}, Prefix left unchanged")
-            if existing is not None:
-                fields = {"prefix_id": prefix_obj.pk, "dhcp_server_id": dhcp_server.pk, "shared_network_id": None}
-                fields.update(_settings_fields(existing, planned.settings, _SUBNET_FIELDS, summary, source))
-                changed = any(getattr(existing, name) != value for name, value in fields.items())
-                if changed:
-                    existing.snapshot()
-                    for name, value in fields.items():
-                        setattr(existing, name, value)
-                    existing.save()
-                subnet_obj = existing
-            else:
-                # Without a Kea subnet ID, the plugin numbers the Subnet.
-                subnet_obj = Subnet(
-                    subnet_id=planned.key,
-                    name=_subnet_name(server, planned, network),
-                    prefix=prefix_obj,
-                    dhcp_server=dhcp_server,
-                    shared_network=None,
-                )
-                for name, value in _settings_fields(
-                    subnet_obj, planned.settings, _SUBNET_FIELDS, summary, source
-                ).items():
+            subnet_obj = existing if existing is not None else Subnet(name=_subnet_name(server, planned, network))
+            fields = {
+                "prefix_id": prefix_obj.pk,
+                "dhcp_server_id": dhcp_server.pk,
+                "shared_network_id": None,
+                # settle_subnet_ids gave a mapped row its Kea subnet ID. Without one, the plugin numbers a new Subnet.
+                "subnet_id": planned.key if planned.key is not None else subnet_obj.subnet_id,
+                **_settings_fields(subnet_obj, planned.settings, SUBNET_FIELDS, summary, source),
+            }
+            changes = _managed_changes(subnet_obj, fields, capabilities)
+            if existing is None:
+                for name, value in changes.items():
                     setattr(subnet_obj, name, value)
                 subnet_obj.save()
+            elif changes:
+                _save_changes(subnet_obj, changes)
+                changed = True
             if mapping is not None:
                 observe_mapping(server, intent.family, subnet_obj, mapping)
     except event_scope.EventDispatchError:
@@ -1318,36 +1267,100 @@ def settle_subnet_ids(
     return result
 
 
-def _upsert_pool(server, family: int, subnet_obj, range_obj, planned_pool) -> tuple:
-    """Get or create one Pool through its mapping, and return it with its outcome (``None`` when unchanged)."""
+@dataclass(frozen=True)
+class ClassReferences:
+    """The client classes that one family of a Server imports, for the class lists of its other Kea objects."""
+
+    server: Server
+    family: int
+    # The names that Kea's client-classes of this family defines.
+    defined: frozenset[str]
+
+    def resolve(
+        self, names: tuple[str, ...], parent_path: str, key: str, kind: Kind, summary: ImportSummary
+    ) -> set[int]:
+        """Return the imported client class of each name in the class list *key* of the *kind* at *parent_path*.
+
+        A name without an imported class has an entry and is left out. The import never creates a class for it.
+        """
+        found = set()
+        for name in names:
+            obj = mapped_target(self.server, self.family, MappingSource.named(Kind.CLIENT_CLASS, name))
+            if obj is not None:
+                found.add(obj.pk)
+                continue
+            path = kea_paths.class_reference(parent_path, key, name)
+            if name in self.defined:
+                detail = f"Client class {name} was not imported."
+                summary.record(not_written(self.family, kind, path, Reason.PARENT_NOT_IMPORTED, detail))
+            else:
+                detail = f"The DHCP plugin has no row for {name}, a class that Kea's client-classes does not define."
+                summary.record(not_written(self.family, kind, path, Reason.NO_PLUGIN_HOME, detail))
+        return found
+
+
+def _upsert_pool(
+    server,
+    family: int,
+    subnet_obj,
+    range_obj,
+    planned_pool,
+    classes: dict[str, set[int]],
+    summary: ImportSummary,
+    path: str,
+    capabilities: PluginCapabilities,
+) -> tuple:
+    """Get or create one Pool and set its managed fields. Return it with its outcome (``None`` when unchanged)."""
     Pool = _model("Pool")
+    intent = planned_pool.intent
     source = planned_pool.key.source
-    name = _pool_name(subnet_obj, planned_pool.intent)
+    same_range = Pool.objects.filter(subnet=subnet_obj, ip_range=range_obj)
     if source is None:
         # A Subnet without a Kea subnet ID gives its Pools no mapping identity, so they match by structure.
-        pool_obj, created = Pool.objects.get_or_create(subnet=subnet_obj, ip_range=range_obj, defaults={"name": name})
-        return pool_obj, Outcome.CREATED if created else None
-    pool_obj = mapped_target(server, family, source)
+        pool_obj = same_range.first()
+    else:
+        pool_obj = mapped_target(server, family, source)
+        if pool_obj is None:
+            # Adopt a Pool that an import created before Pools had a mapping.
+            pool_obj = _unlinked(same_range).first()
+    created = pool_obj is None
     if pool_obj is None:
-        # Adopt a Pool that an import created before Pools had a mapping.
-        pool_obj = _unlinked(Pool.objects.filter(subnet=subnet_obj, ip_range=range_obj)).first()
-    outcome = None
-    if pool_obj is None:
-        pool_obj = Pool(subnet=subnet_obj, ip_range=range_obj, name=name)
+        pool_obj = Pool(name=_pool_name(subnet_obj, intent))
+    fields = {
+        "subnet_id": subnet_obj.pk,
+        "ip_range_id": range_obj.pk,
+        "pool_id": intent.pool_id,
+        **_settings_fields(pool_obj, intent.settings, POOL_FIELDS, summary, _Source(family, Kind.POOL, path)),
+    }
+    changes = _managed_changes(pool_obj, fields, capabilities)
+    relations = _relation_changes(pool_obj, classes)
+    if created:
+        for name, value in changes.items():
+            setattr(pool_obj, name, value)
         pool_obj.save()
-        outcome = Outcome.CREATED
-    elif (pool_obj.subnet_id, pool_obj.ip_range_id) != (subnet_obj.pk, range_obj.pk):
+    elif changes:
+        _save_changes(pool_obj, changes)
+    elif relations:
         pool_obj.snapshot()
-        pool_obj.subnet = subnet_obj
-        pool_obj.ip_range = range_obj
-        pool_obj.save()
-        outcome = Outcome.UPDATED
-    observe_mapping(server, family, pool_obj, source)
-    return pool_obj, outcome
+    for name, pks in relations.items():
+        getattr(pool_obj, name).set(pks)
+    if source is not None:
+        observe_mapping(server, family, pool_obj, source)
+    if created:
+        return pool_obj, Outcome.CREATED
+    return pool_obj, Outcome.UPDATED if changes or relations else None
 
 
 def upsert_pools(
-    server, subnet_obj, planned: PlannedSubnet, summary: ImportSummary, dhcp_server, custom_defs, claims
+    server,
+    subnet_obj,
+    planned: PlannedSubnet,
+    summary: ImportSummary,
+    dhcp_server,
+    custom_defs,
+    claims,
+    classes: ClassReferences,
+    capabilities: PluginCapabilities,
 ) -> None:
     """Get/create DHCP-plugin ``Pool`` rows (and their options) for each planned Pool of *planned*."""
     intent = planned.intent
@@ -1365,7 +1378,28 @@ def upsert_pools(
                 if result is not None and result.outcome in {"conflict", "disagreement"}:
                     summary.warn(f"pool {pool_intent.pool}: IPAM ownership {result.outcome}, IP Range left unchanged")
                 if range_obj is not None:
-                    pool_obj, outcome = _upsert_pool(server, intent.family, subnet_obj, range_obj, planned_pool)
+                    references = {
+                        relation: classes.resolve(names, path, key, Kind.POOL, summary)
+                        for relation, key, names in (
+                            ("client_classes", kea_paths.CLIENT_CLASSES, pool_intent.client_classes),
+                            (
+                                "evaluate_additional_classes",
+                                kea_paths.EVALUATE_ADDITIONAL_CLASSES,
+                                pool_intent.evaluate_additional_classes,
+                            ),
+                        )
+                    }
+                    pool_obj, outcome = _upsert_pool(
+                        server,
+                        intent.family,
+                        subnet_obj,
+                        range_obj,
+                        planned_pool,
+                        references,
+                        summary,
+                        path,
+                        capabilities,
+                    )
         except event_scope.EventDispatchError:
             raise
         except Exception as exc:  # noqa: BLE001 — one bad pool must not abort the import
@@ -1378,7 +1412,9 @@ def upsert_pools(
             continue
         if outcome is not None:
             summary.record(written(intent.family, Kind.POOL, path, outcome))
-        upsert_options(pool_obj, pool_intent.options, intent.family, dhcp_server, custom_defs, summary, path)
+        upsert_options(
+            pool_obj, pool_intent.options, intent.family, dhcp_server, custom_defs, summary, path, capabilities
+        )
 
 
 def _unusable_pool(family: int, path: str, key: PoolKey | None, result: RangeClaim | None) -> ImportEntry:
@@ -1434,6 +1470,7 @@ def _upsert_reservation(
     claims,
     catalogue,
     adoption_servers: tuple[int, ...],
+    capabilities: PluginCapabilities,
 ):
     """Upsert one typed Reservation through its mapping while preserving its Global or In-Subnet Scope.
 
@@ -1474,24 +1511,33 @@ def _upsert_reservation(
             addresses = frozenset() if obj is None else frozenset(obj.ipv6_addresses.values_list("pk", flat=True))
             prefixes = {} if obj is None else dict(obj.ipv6_prefixes.values_list("pk", "prefix"))
             before = None if obj is None else _reservation_state(obj, addresses, prefixes)
+            fields = {
+                # The Reservation Scope is a managed field: a row that an operator moved returns to it.
+                "subnet_id": subnet_obj.pk if subnet_obj is not None else None,
+                "dhcp_server_id": None if subnet_obj is not None else dhcp_server.pk,
+                # The DHCP row mirrors the stored Kea hostname, not the published name.
+                "hostname": reservation.hostname or None,
+                **_reservation_identifier_values(reservation, mac_obj),
+                # One row holds one family. _reservation_addresses returns the other
+                # family empty, which also splits a row an earlier import merged.
+                "ipv4_address_id": ipv4_ip.pk if ipv4_ip is not None else None,
+            }
             if obj is None:
                 obj = HostReservation(name=_reservation_name(scope_name, reservation))
+                for name, value in _managed_changes(obj, fields, capabilities).items():
+                    setattr(obj, name, value)
+                obj.save()
             else:
                 obj.snapshot()
+                changes = _managed_changes(obj, fields, capabilities)
                 if linked is None and subnet_obj is None:
                     # Newly adopted: take the family-qualified name so the other family is free
                     # to create its own row under the unique-name constraint.
-                    obj.name = _reservation_name(scope_name, reservation)
-            # The Reservation Scope is a managed field: a row that an operator moved returns to it.
-            obj.subnet = subnet_obj
-            obj.dhcp_server = None if subnet_obj is not None else dhcp_server
-            # The DHCP row mirrors the stored Kea hostname, not the published name.
-            obj.hostname = reservation.hostname or None
-            _apply_reservation_identifier(obj, reservation, mac_obj)
-            # One row holds one family. _reservation_addresses returns the other
-            # family empty, which also splits a row an earlier import merged.
-            obj.ipv4_address = ipv4_ip
-            obj.save()
+                    changes["name"] = _reservation_name(scope_name, reservation)
+                if changes:
+                    for name, value in changes.items():
+                        setattr(obj, name, value)
+                    obj.save()
             # An empty address list clears the previous IPv6 relations.
             wanted = {address.pk for address in ipv6_ips}
             obj.ipv6_addresses.remove(*(addresses - wanted))
@@ -1513,7 +1559,7 @@ def _upsert_reservation(
         summary.warn(f"reservation {reservation.identity.value} in {scope} could not be imported. See server logs.")
         _skip_options(summary, reservation.family, path, reservation.options)
         return None
-    upsert_options(obj, reservation.options, reservation.family, dhcp_server, custom_defs, summary, path)
+    upsert_options(obj, reservation.options, reservation.family, dhcp_server, custom_defs, summary, path, capabilities)
     return obj, before
 
 
@@ -1596,6 +1642,7 @@ def import_reservation_snapshot(
     *,
     family: int,
     adoption_servers: tuple[int, ...],
+    capabilities: PluginCapabilities,
     subnet_ids: SubnetIdSettlement | None = None,
 ) -> None:
     """Import valid typed records and report quarantined Snapshot records.
@@ -1661,6 +1708,7 @@ def import_reservation_snapshot(
             claims,
             observation.catalogue,
             adoption_servers,
+            capabilities,
         )
         if upserted is None:
             complete = False
@@ -1719,14 +1767,17 @@ def _attach_delegated_prefixes(imported, report: SyncReport, summary: ImportSumm
         obj.ipv6_prefixes.set(prefixes)
 
 
-def _apply_reservation_identifier(obj, reservation: Reservation, mac_obj) -> None:
-    """Set the single Kea identifier on a DHCP-plugin reservation (clearing the others)."""
+def _reservation_identifier_values(reservation: Reservation, mac_obj) -> dict:
+    """Return the identifier fields of a DHCP-plugin reservation: its single Kea identifier, the others cleared."""
     identity = reservation.identity
-    obj.hw_address = mac_obj if identity.identifier_type == "hw-address" else None
-    obj.duid = identity.value if identity.identifier_type == "duid" else None
-    obj.circuit_id = identity.value if identity.identifier_type == "circuit-id" else None
-    obj.client_id = identity.value if identity.identifier_type == "client-id" else None
-    obj.flex_id = identity.value if identity.identifier_type == "flex-id" else None
+    values: dict = {"hw_address_id": None, "duid": None, "circuit_id": None, "client_id": None, "flex_id": None}
+    # Each Kea identifier type names its plugin field.
+    field_name = identity.identifier_type.replace("-", "_")
+    if field_name == "hw_address":
+        values["hw_address_id"] = mac_obj.pk
+    else:
+        values[field_name] = identity.value
+    return values
 
 
 def _claim_config_networks(server, plan: FamilyPlan):
@@ -1798,13 +1849,16 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     )
 
     values = server_values(plan.server, plan.family, capabilities, summary)
-    changed = _apply_global_settings(dhcp_server, values, summary, plan.family)
+    changed = _apply_global_settings(dhcp_server, values, summary, plan.family, capabilities)
     linked = _link_interfaces(dhcp_server, plan.server.interfaces, summary, plan.family)
     if changed is not None and (created or changed or linked):
         summary.record(written(plan.family, Kind.SERVER, root, Outcome.CREATED if created else Outcome.UPDATED))
-    upsert_options(dhcp_server, plan.server.global_options, plan.family, dhcp_server, custom_defs, summary, root)
+    upsert_options(
+        dhcp_server, plan.server.global_options, plan.family, dhcp_server, custom_defs, summary, root, capabilities
+    )
     for planned_class in plan.client_classes:
         upsert_client_class(server, dhcp_server, planned_class, custom_defs, summary, capabilities)
+    classes = ClassReferences(server, plan.family, frozenset(planned.key for planned in plan.client_classes))
     for planned_network in plan.shared_networks:
         summary.record(
             not_written(
@@ -1833,7 +1887,9 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
             _skip_subnet_children(summary, planned_subnet)
             continue
         renumbered = planned_subnet.key in subnet_ids.renumbered
-        subnet_obj = upsert_subnet(server, dhcp_server, planned_subnet, summary, prefix_claims, renumbered)
+        subnet_obj = upsert_subnet(
+            server, dhcp_server, planned_subnet, summary, prefix_claims, renumbered, capabilities
+        )
         if subnet_obj is None:
             _skip_subnet_children(summary, planned_subnet)
             continue
@@ -1846,8 +1902,11 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
             custom_defs,
             summary,
             subnet_path(planned_subnet),
+            capabilities,
         )
-        upsert_pools(server, subnet_obj, planned_subnet, summary, dhcp_server, custom_defs, pool_claims)
+        upsert_pools(
+            server, subnet_obj, planned_subnet, summary, dhcp_server, custom_defs, pool_claims, classes, capabilities
+        )
     for source, outcomes in (("subnet", prefix_claims.prefixes), ("pool", pool_claims.ranges)):
         if any(result.outcome == "error" for result in outcomes.values()):
             summary.ownership.incomplete.add(source)
@@ -1867,6 +1926,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         summary,
         family=plan.family,
         adoption_servers=adoption_servers,
+        capabilities=capabilities,
         subnet_ids=subnet_ids,
     )
     if not plan.configuration_complete:

@@ -3,7 +3,7 @@
 """The parity ledger lists each Kea key that the DHCP Import can meet once, and agrees with a real Kea 3.2.
 
 The key lists, the deprecated keys and the merged keys come from scripts/record_kea_config_get.py (see
-test_kea_recordings.py). The agreement with the import's field maps needs netbox_dhcp.
+test_kea_recordings.py). The check of the plugin model fields needs netbox_dhcp.
 """
 
 import ipaddress
@@ -17,6 +17,7 @@ from django.core.exceptions import FieldDoesNotExist
 from django.test import SimpleTestCase, tag
 
 from netbox_kea.constants import Family
+from netbox_kea.integrations import dhcp_import_fields as fields
 from netbox_kea.integrations import dhcp_import_ledger as ledger
 from netbox_kea.integrations.dhcp_import_ledger import (
     KEA_DEFAULTS,
@@ -28,6 +29,7 @@ from netbox_kea.integrations.dhcp_import_ledger import (
     Pending,
 )
 from netbox_kea.integrations.dhcp_import_report import Capability, Reason
+from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
 # The open tickets of #89 that map a key.
@@ -272,6 +274,39 @@ class LedgerEntriesTest(SimpleTestCase):
                     with self.subTest(family=family, table=table):
                         self.assertIn(Capability.USER_CONTEXT, keys["user-context"].capabilities)
 
+    def test_the_mapped_settings_are_the_field_maps_of_the_import(self):
+        field_maps = {
+            "Dhcp": ("DHCPServer", fields.SERVER_FIELDS),
+            "subnet": ("Subnet", fields.SUBNET_FIELDS),
+            "pools": ("Pool", fields.POOL_FIELDS),
+            "client-classes": ("ClientClass", fields.CLIENT_CLASS_FIELDS),
+        }
+        for family in LEDGER:
+            for prefix, (model, field_map) in field_maps.items():
+                table = prefix if prefix in ("pools", "client-classes") else f"{prefix}{family}"
+                keys = LEDGER[family][table]
+                with self.subTest(family=family, table=table):
+                    written = {kea_key: f"{model}.{attr}" for kea_key, attr, _transform in field_map if kea_key in keys}
+                    mapped = {
+                        key: entry.target
+                        for key, entry in keys.items()
+                        if isinstance(entry, Mapped) and key in KEA_SETTINGS_KEYS
+                    }
+                    self.assertEqual(mapped, written)
+
+    def test_every_mapped_field_of_a_model_with_managed_fields_is_managed(self):
+        # The fields that find an Option, and the name that a custom Option Definition takes when it is created.
+        identity = {"Option.definition", "OptionDefinition.name"}
+        for family, table, key, entry in self._entries():
+            if not isinstance(entry, Mapped) or "." not in entry.target or entry.target in identity:
+                continue
+            model, field = entry.target.split(".")
+            if model not in fields.MANAGED_FIELDS:
+                continue
+            with self.subTest(family=family, table=table, key=key):
+                written = {"device_interfaces", "virtual_machine_interfaces"} if field == "interfaces" else {field}
+                self.assertLessEqual(written, {managed.name for managed in fields.MANAGED_FIELDS[model]})
+
 
 class RecordedKeaBehaviourTest(SimpleTestCase):
     """The recorded Kea 3.2 shows the deprecated keys and the merged keys that the ledger states."""
@@ -367,32 +402,6 @@ class LedgerAgreesWithTheImportTest(SimpleTestCase):
                             if field and field not in self._field_names(model):
                                 missing = [c for c in entry.capabilities if not capabilities.has(c)]
                                 self.assertTrue(missing, f"{plugin_model.__name__} has no field {field}")
-
-    def test_the_mapped_settings_are_the_field_maps_of_the_import(self):
-        from netbox_kea.integrations import dhcp_plugin
-        from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS
-
-        field_maps = {
-            "Dhcp": ("DHCPServer", dhcp_plugin._SERVER_FIELDS),
-            "subnet": ("Subnet", dhcp_plugin._SUBNET_FIELDS),
-            "client-classes": ("ClientClass", dhcp_plugin._COMMON_FIELDS),
-        }
-        for family in LEDGER:
-            for prefix, (model, field_map) in field_maps.items():
-                table = prefix if prefix == "client-classes" else f"{prefix}{family}"
-                keys = LEDGER[family][table]
-                with self.subTest(family=family, table=table):
-                    written = {
-                        kea_key: f"{model}.{attr}"
-                        for kea_key, attr, _transform in field_map
-                        if kea_key in keys and attr in self._field_names(model)
-                    }
-                    mapped = {
-                        key: entry.target
-                        for key, entry in keys.items()
-                        if isinstance(entry, Mapped) and key in KEA_SETTINGS_KEYS
-                    }
-                    self.assertEqual(mapped, written)
 
     def test_a_key_without_a_plugin_home_has_no_plugin_field_of_its_name(self):
         models = {"Dhcp": "DHCPServer", "subnet": "Subnet", "shared-networks": "SharedNetwork", "pools": "Pool"}

@@ -118,10 +118,15 @@ class OptionDefIntent:
 
 @dataclass(frozen=True)
 class PoolIntent:
-    """A Kea pool string (``start-end`` range or ``CIDR``) within a subnet."""
+    """A Kea pool string (``start-end`` range or ``CIDR``) within a subnet, with its Declared Values."""
 
     pool: str
     options: tuple[DHCPOption, ...] = ()
+    pool_id: int | None = None
+    client_classes: tuple[str, ...] = ()
+    evaluate_additional_classes: tuple[str, ...] = ()
+    # Kea merges no value into a Pool, so each setting is a Declared Value.
+    settings: dict = field(default_factory=dict)
 
     @property
     def match_key(self) -> str:
@@ -261,8 +266,38 @@ def _pools(raw_list, subnet_path: str, dropped: list[DroppedEntry]) -> tuple[Poo
             )
             continue
         path = kea_paths.pool(subnet_path, pool)
-        out.append(PoolIntent(pool=pool, options=_options(entry.get("option-data"), path, dropped)))
+        out.append(
+            PoolIntent(
+                pool=pool,
+                options=_options(entry.get("option-data"), path, dropped),
+                pool_id=_pool_id(entry.get(kea_paths.POOL_ID), path, dropped),
+                client_classes=_class_list(entry, kea_paths.CLIENT_CLASSES, path, dropped),
+                evaluate_additional_classes=_class_list(entry, kea_paths.EVALUATE_ADDITIONAL_CLASSES, path, dropped),
+                settings=_settings(entry),
+            )
+        )
     return tuple(out)
+
+
+def _pool_id(raw, path: str, dropped: list[DroppedEntry]) -> int | None:
+    """Read a Pool's ``pool-id``; drop one that is not a non-negative integer."""
+    if raw is None:
+        return None
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+        return raw
+    dropped.append(
+        DroppedEntry(Kind.POOL, kea_paths.setting(path, kea_paths.POOL_ID), "The ID is not a non-negative integer.")
+    )
+    return None
+
+
+def _class_list(raw: dict, key: str, path: str, dropped: list[DroppedEntry]) -> tuple[str, ...]:
+    """Read the class names of the list *key* of the Pool at *path*; drop a list that is not of names."""
+    names = raw.get(key, [])
+    if isinstance(names, list) and all(isinstance(name, str) and name for name in names):
+        return tuple(names)
+    dropped.append(DroppedEntry(Kind.POOL, kea_paths.setting(path, key), "The list is not a list of class names."))
+    return ()
 
 
 def _subnet_id(raw: dict) -> int | None:
