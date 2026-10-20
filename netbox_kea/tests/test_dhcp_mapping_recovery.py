@@ -1049,13 +1049,17 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         branch = _provisioned_branch(self, "mapping-fresh-tab")
         self.client.force_login(self.user)
         self.client.cookies[COOKIE_NAME] = branch.schema_id
-        with stub_kea(_recorded_kea()), CaptureQueriesContext(connections["default"]) as queries:
-            response = self.client.get(reverse("plugins:netbox_kea:server_dhcp_plugin", args=[server.pk]))
-        self.assertEqual(response.status_code, 200)
-        self.assertNotContains(response, "Create a fresh branch")
-        catalog = [query for query in queries.captured_queries if "pg_attribute" in query["sql"]]
-        # compute_drift, the guarded KeaDhcpLink query of each family, and the sources header: one round each.
-        self.assertEqual(len(catalog), 4 * (1 + len(target_models())))
+        rounds = 1 + len(target_models())
+        # Each reply: its mapping check and the sources header. The drift card also: the guarded KeaDhcpLink query of
+        # each family. One round each.
+        for name, expected in (("server_dhcp_plugin", 2 * rounds), ("server_dhcp_plugin_drift", 4 * rounds)):
+            with self.subTest(name), stub_kea(_recorded_kea()):
+                with CaptureQueriesContext(connections["default"]) as queries:
+                    response = self.client.get(reverse(f"plugins:netbox_kea:{name}", args=[server.pk]))
+                self.assertEqual(response.status_code, 200)
+                self.assertNotContains(response, "Create a fresh branch")
+                catalog = [query for query in queries.captured_queries if "pg_attribute" in query["sql"]]
+                self.assertEqual(len(catalog), expected)
 
     def test_affected_iterative_merge_refuses_before_mutation(self):
         _, _, _, target, link = self._imported("subnet", 4, "iterative")

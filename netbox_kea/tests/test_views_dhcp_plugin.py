@@ -9,7 +9,6 @@ gated on ``netbox_dhcp`` being installed.  Only the Kea HTTP transport is stubbe
 
 from __future__ import annotations
 
-import re
 import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
@@ -317,26 +316,15 @@ class SyncNowEndToEndTest(TestCase):
             resp = self.client.post(self.url, follow=True)
         self.assertContains(resp, "could not be read")
 
-    def test_drift_view_renders_imported_status(self):
-        self.server.dhcp6 = True
-        self.server.save(update_fields=["dhcp6"])
-        conf = {
-            4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]},
-            6: {"subnet6": [{"id": 1, "subnet": "2001:db8:88::/64"}]},
-        }
-        with stub_kea(_sync_responses(conf)):
-            self.client.post(self.url, follow=True)
-            tab_url = reverse("plugins:netbox_kea:server_dhcp_plugin", args=[self.server.pk])
-            resp = self.client.get(tab_url)
-        self.assertContains(resp, "Imported")
-        self.assertContains(resp, "10.88.0.0/24")
-        self.assertContains(resp, "2001:db8:88::/64")
-        self.assertContains(resp, "DHCPv4")
-        self.assertContains(resp, "DHCPv6")
-        # Match the marker class on a table element, so a Bootstrap class change here
-        # does not fail a test about the merged drift table.
-        drift_tables = re.findall(r"<table[^>]*\bdrift-table\b[^>]*>", resp.content.decode())
-        self.assertEqual(len(drift_tables), 1, drift_tables)
+    def test_the_page_loads_the_drift_card_lazily_and_reads_no_kea(self):
+        with stub_kea({}) as kea:
+            resp = self.client.get(reverse("plugins:netbox_kea:server_dhcp_plugin", args=[self.server.pk]))
+
+        self.assertEqual(kea.commands(), [])
+        page = BeautifulSoup(resp.content, "html.parser")
+        placeholder = page.select_one("#dhcp-import-drift")
+        drift_url = reverse("plugins:netbox_kea:server_dhcp_plugin_drift", args=[self.server.pk])
+        self.assertEqual((placeholder["hx-get"], placeholder["hx-trigger"]), (drift_url, "load"))
         self.assertContains(resp, "Shared Network grouping")
         self.assertContains(resp, "Direct-interface mapping")
         self.assertContains(resp, "DHCP option mapping")
@@ -346,6 +334,7 @@ class SyncNowEndToEndTest(TestCase):
         self.assertContains(resp, "DHCP options are imported")
         self.assertContains(resp, "Unsupported options are skipped")
         self.assertNotContains(resp, "are not imported")
+        self.assertNotContains(resp, "rphan")
 
     def test_the_page_is_the_dhcp_plugin_subsection_of_sync(self):
         conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]}}
@@ -581,3 +570,145 @@ class SummaryProblemsTest(SimpleTestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("1 reservation(s) were skipped after they were read.", problems[0])
         self.assertNotIn("host_cmds", problems[0])
+
+
+_DRIFT_CONF: dict[int, dict] = {
+    4: {
+        "option-def": [{"name": "site-code", "code": 251, "type": "uint8", "space": "dhcp4"}],
+        "client-classes": [{"name": "voip"}],
+        "shared-networks": [{"name": "office"}],
+        "subnet4": [
+            {
+                "id": 51,
+                "subnet": "10.86.0.0/24",
+                "pools": [{"pool": "10.86.0.10-10.86.0.20", "option-data": [{"code": 251, "data": "1"}]}],
+            }
+        ],
+    }
+}
+_DRIFT_HOSTS = {
+    4: [
+        {"subnet-id": 51, "hw-address": "02:00:00:00:00:51", "ip-address": "10.86.0.50"},
+        {"subnet-id": 0, "duid": "01:02:03:04:51"},
+    ]
+}
+_SUBNET_51 = "Dhcp4/subnet4[id=51]"
+# (kind, Kea path) of each object of _DRIFT_CONF and _DRIFT_HOSTS that the import maps.
+_MAPPED = {
+    ("reservation", f"{_SUBNET_51}/reservations[hw-address=02:00:00:00:00:51]"),
+    ("reservation", "Dhcp4/reservations[duid=01:02:03:04:51]"),
+    ("pool", f"{_SUBNET_51}/pools[pool=10.86.0.10-10.86.0.20]"),
+    ("subnet", _SUBNET_51),
+    ("client_class", "Dhcp4/client-classes[name=voip]"),
+    ("option_definition", "Dhcp4/option-def[code=251]"),
+}
+
+
+class DriftPartialTest(TestCase):
+    """The drift card compares a live read with the mappings of every mapped kind, through the import's own rule."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        self.client.force_login(get_user_model().objects.create_superuser("dps-drift"))
+        self.server = _make_db_server(
+            name=f"kea-drift-{timezone.now().timestamp()}", sync_dhcp_plugin_enabled=True, dhcp4=True, dhcp6=False
+        )
+        self.url = reverse("plugins:netbox_kea:server_dhcp_plugin_drift", args=[self.server.pk])
+
+    def _import(self):
+        with stub_kea(_sync_responses(_DRIFT_CONF, _DRIFT_HOSTS)):
+            self.client.post(reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk]))
+
+    def _drift(self, responses: dict) -> BeautifulSoup:
+        with stub_kea(responses):
+            resp = self.client.get(self.url, HTTP_HX_REQUEST="true")
+        self.assertEqual(resp.status_code, 200)
+        return BeautifulSoup(resp.content, "html.parser")
+
+    def _objects(self, page: BeautifulSoup) -> set[tuple[str, str, str]]:
+        return {
+            (str(row["data-state"]), str(row["data-kind"]), row.code.get_text() if row.code else "")
+            for row in page.select("tr[data-state]")
+        }
+
+    def _counts(self, page: BeautifulSoup) -> dict[str, tuple[int, ...]]:
+        return {
+            str(row["data-kind"]): tuple(int(cell.get_text()) for cell in row.select("td.drift-count"))
+            for row in page.select("tr[data-kind-summary]")
+        }
+
+    def test_every_observed_object_without_a_mapping_is_missing(self):
+        page = self._drift(_sync_responses(_DRIFT_CONF, _DRIFT_HOSTS))
+
+        self.assertEqual(
+            self._objects(page),
+            {("missing", kind, path) for kind, path in _MAPPED}
+            | {("missing", "shared_network", "Dhcp4/shared-networks[name=office]")},
+        )
+
+    def test_every_mapped_object_that_kea_no_longer_reports_is_stale(self):
+        self._import()
+
+        page = self._drift(_sync_responses({4: {"subnet4": []}}, {4: []}))
+
+        self.assertEqual(self._objects(page), {("stale", kind, path) for kind, path in _MAPPED})
+
+    def test_a_kea_that_matches_the_mappings_lists_nothing_and_counts_each_kind_in_step(self):
+        self._import()
+
+        page = self._drift(_sync_responses(_DRIFT_CONF, _DRIFT_HOSTS))
+
+        self.assertEqual(self._objects(page), {("missing", "shared_network", "Dhcp4/shared-networks[name=office]")})
+        # In step, missing, stale, not seen.
+        self.assertEqual(
+            self._counts(page),
+            {
+                "reservation": (2, 0, 0, 0),
+                "pool": (1, 0, 0, 0),
+                "subnet": (1, 0, 0, 0),
+                "shared_network": (0, 1, 0, 0),
+                "client_class": (1, 0, 0, 0),
+                "option_definition": (1, 0, 0, 0),
+            },
+        )
+        self.assertEqual(page.select_one("a.drift-latest-run")["href"], "#dhcp-import-latest-run")
+
+    def test_an_incomplete_observation_labels_its_unobserved_rows_not_seen_never_stale(self):
+        self._import()
+
+        page = self._drift(_sync_responses(_DRIFT_CONF, reservations_available=False))
+
+        self.assertEqual(
+            self._objects(page),
+            {("missing", "shared_network", "Dhcp4/shared-networks[name=office]")}
+            | {("unseen", kind, path) for kind, path in _MAPPED if kind == "reservation"},
+        )
+        self.assertIn("The Reservation Snapshot could not be read.", page.get_text())
+
+    def test_a_failed_read_returns_the_notice_and_lists_the_mapped_rows_as_unknown(self):
+        self._import()
+
+        page = self._drift({"config-get": requests.ConnectionError("Kea is unreachable")})
+
+        self.assertIn(HEADLINES["configuration"], page.select_one(".alert-danger").get_text())
+        self.assertEqual(self._objects(page), {("unknown", kind, path) for kind, path in _MAPPED})
+
+    def test_a_refused_integration_returns_its_reason_and_reads_no_kea(self):
+        Server.objects.filter(pk=self.server.pk).update(sync_dhcp_plugin_enabled=False)
+
+        with stub_kea({}) as kea:
+            resp = self.client.get(self.url, HTTP_HX_REQUEST="true")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(kea.commands(), [])
+        self.assertIn(
+            "Enable 'Sync to DHCP plugin' on this server first.",
+            BeautifulSoup(resp.content, "html.parser").select_one(".alert-warning").get_text(),
+        )

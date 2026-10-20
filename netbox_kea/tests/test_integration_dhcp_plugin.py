@@ -847,7 +847,7 @@ class DhcpPluginTuningImportTest(TestCase):
 
     def _import(self, conf: dict) -> None:
         """Import *conf* through the live read of the DHCP plugin sync."""
-        from netbox_kea.views.dhcp_plugin_sync import _fetch_config_intent
+        from netbox_kea.integrations.dhcp_import import _fetch_config_intent
 
         with stub_kea({"config-get": {"result": 0, "arguments": {"Dhcp4": conf}}}):
             intent = _fetch_config_intent(self.server, 4)

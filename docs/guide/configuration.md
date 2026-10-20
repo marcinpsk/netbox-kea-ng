@@ -128,6 +128,13 @@ to a stale Subnet, or when an Option still uses a stale Option Definition. A rem
 its DHCP Options. It never deletes an IP address, a Prefix or an IP Range. The change log records each removal, and
 the import needs the delete permission of each DHCP plugin model that it can remove.
 
+The **Drift** card of the same page reads Kea after the page opens and compares it with the imported rows of each
+mapped kind. It lists each missing object (Kea has it, NetBox has no imported row) and each stale object (the next run
+removes it), with a count of the objects that are in step. When Kea was not read in full for a kind, the card shows
+why, and it lists the imported rows that it did not see as not seen, never as stale. When Kea cannot be read, the card
+shows the error and lists the imported rows as unknown. Its **Latest run** link opens the stored result of the last
+run.
+
 An object that did not change has no entry. A run that stops part way also stores its result, with an entry for the
 family that stopped. NetBox keeps the 10 latest runs of each Server and deletes the older runs
 when it stores a new one. Runs are not in the change log. A user who can view the Server can see its runs. When
