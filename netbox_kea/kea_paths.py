@@ -23,6 +23,7 @@ ALLOW_ADDRESS_REGISTRATION = "allow-address-registration"
 STASH_AGENT_OPTIONS = "stash-agent-options"
 INTERFACES_CONFIG = "interfaces-config"
 SHARED_NETWORKS = "shared-networks"
+CLIENT_CLASSES = "client-classes"
 #: The ``server-id`` keys besides its type, each with the value that tells Kea to generate it.
 SERVER_ID_PARAMETERS = {"identifier": "", "enterprise-id": 0, "htype": 0, "time": 0}
 
@@ -79,12 +80,12 @@ def pool_entry(subnet_path: str, index: int) -> str:
 
 def client_class(family: int, name: str) -> str:
     """Return the path of a client class by its name."""
-    return f"{daemon(family)}/{_step('client-classes', f'name={name}')}"
+    return f"{daemon(family)}/{_step(CLIENT_CLASSES, f'name={name}')}"
 
 
 def client_class_entry(family: int, index: int) -> str:
     """Return the path of the client class entry at *index*."""
-    return f"{daemon(family)}/{_step('client-classes', index)}"
+    return f"{daemon(family)}/{_step(CLIENT_CLASSES, index)}"
 
 
 def default_space(family: int) -> str:

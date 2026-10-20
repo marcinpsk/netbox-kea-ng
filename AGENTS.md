@@ -382,13 +382,14 @@ URL request
 - **Parity ledger** (`integrations/dhcp_import_ledger.py`, ADR 0013): every key that Kea accepts on an object the
   DHCP Import can meet is listed once, as mapped (with the DHCP Plugin Capability its write needs), not imported
   (with a reason), pending (with the #89 ticket that maps it) or deprecated (with the key Kea returns instead).
-  `MERGED_KEYS` lists the keys Kea merges into `config-get` from the parent object. `test_dhcp_import_ledger.py`
-  compares both with the recordings, and in the DHCP plugin job with the import's field maps and the plugin models.
+  `MERGED_KEYS` lists the keys Kea merges into `config-get` from the parent object, and `KEA_DEFAULTS` the values
+  Kea returns when no level declares a key. `test_dhcp_import_ledger.py` compares them with the recordings, and in
+  the DHCP plugin job with the import's field maps and the plugin models.
   When a change maps a key, change its entry in the same change.
   - **After a Kea upgrade:** set the new `KEA_VERSION`, run `scripts/record_kea_config_get.py`, and list each key the
     ledger test reports as missing. Remove each key that Kea no longer has. When Kea deprecates a key, set it on its
-    object in `kea-dhcp{4,6}.conf`, record again, and list it as deprecated. When a merged-key assertion fails, update
-    `MERGED_KEYS` (the Declared Value inference of #95 reads it).
+    object in `kea-dhcp{4,6}.conf`, record again, and list it as deprecated. When a merged-key or Kea-default
+    assertion fails, update `MERGED_KEYS` or `KEA_DEFAULTS` (the Declared Value inference reads both).
   - **After a netbox-plugin-dhcp upgrade:** run the DHCP plugin job. A "no plugin home" key whose name is now a plugin
     field fails; move it to pending or mapped. A mapped target that the plugin removed fails. When the upgrade ships
     a #88 change, check that the capability check matches the shipped shape, as #88 says. The entries that name the

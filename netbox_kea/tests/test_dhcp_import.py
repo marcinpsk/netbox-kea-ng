@@ -22,6 +22,7 @@ from django.test.utils import isolate_apps
 from django.urls import reverse
 
 from netbox_kea.integrations import dhcp_plugin
+from netbox_kea.integrations.dhcp_import_ledger import KEA_DEFAULTS
 from netbox_kea.integrations.dhcp_import_plan import (
     FamilyPlan,
     GlobalReservationKey,
@@ -194,6 +195,24 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
                     {subnet.key: subnet.inherited for subnet in plan.subnets},
                     {10: {}, 20: {**office, "ddns-qualifying-suffix": "office.example.net"}, 21: office},
                 )
+
+    def test_each_client_class_plans_the_values_that_the_configuration_declares(self):
+        settings = {}
+        for family in (4, 6):
+            declared = {
+                obj["name"]: {key: obj[key] for key in KEA_SETTINGS_KEYS if key in obj}
+                for obj in _recording_configuration(family)["client-classes"]
+            }
+            plan = plan_family(_recorded_intent(family), None)
+            settings[family] = {planned.key: planned.settings for planned in plan.client_classes}
+            with self.subTest(family=family):
+                self.assertEqual(settings[family], declared)
+        # Kea returns its own default boot fields on a class that declares none, not the global values.
+        returned = {obj["name"]: obj for obj in _recorded_config(4)["client-classes"]}
+        unset = KEA_DEFAULTS[4]["client-classes"]["next-server"]
+        self.assertEqual((returned["voip"]["next-server"], _recorded_config(4)["next-server"]), (unset, "192.0.2.1"))
+        self.assertEqual(settings[4]["voip"], {})
+        self.assertEqual(settings[4]["printers"], {"valid-lifetime": 4000, "boot-file-name": "global.efi"})
 
     def test_kea_default_counts_as_inherited_only_where_the_parent_has_no_value(self):
         # As config-get returns it: Kea gives rapid-commit to a standalone Subnet and to each Shared Network.
@@ -599,6 +618,64 @@ class ApplyPlanWithoutKeaTest(TestCase):
         self.assertEqual((subnets[20].renew_timer, subnets[21].renew_timer, subnets[10].renew_timer), (None, None, 900))
         self.assertEqual(imported_dhcp_server(server, 4).renew_timer, 1200)
 
+    def _client_classes(self, server) -> dict:
+        ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
+        rows = ClientClass.objects.filter(dhcp_server=imported_dhcp_server(server, 4))
+        return {row.name: {attr: getattr(row, attr) for attr in _CLASS_FIELDS} for row in rows}
+
+    def test_apply_writes_only_the_declared_values_of_each_client_class(self):
+        server = _make_db_server(name="class-declared-values", ca_url="https://kea.example.invalid", dhcp6=False)
+
+        summary = dhcp_plugin.apply_plan(server, plan_family(_recorded_intent(4), None), probe())
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        dhcp_server = imported_dhcp_server(server, 4)
+        self.assertEqual(
+            (dhcp_server.next_server, dhcp_server.boot_file_name, dhcp_server.valid_lifetime),
+            ("192.0.2.1", "global.efi", 4000),
+        )
+        nothing = dict.fromkeys(_CLASS_FIELDS)
+        self.assertEqual(
+            self._client_classes(server),
+            {
+                "voip": nothing,
+                "per-client": nothing,
+                "printers": {**nothing, "valid_lifetime": 4000, "boot_file_name": "global.efi"},
+                "boot": {
+                    **nothing,
+                    "valid_lifetime": 600,
+                    "min_valid_lifetime": 300,
+                    "max_valid_lifetime": 900,
+                    "next_server": "192.0.2.5",
+                    "server_hostname": "boot.example.org",
+                    "boot_file_name": "pxelinux.0",
+                },
+            },
+        )
+
+    def test_a_class_value_that_kea_no_longer_returns_is_cleared(self):
+        server = _make_db_server(name="class-value-removed", ca_url="https://kea.example.invalid", dhcp6=False)
+        dhcp_plugin.apply_plan(server, plan_family(_recorded_intent(4), None), probe())
+        before = self._client_classes(server)
+        self.assertEqual((before["boot"]["valid_lifetime"], before["printers"]["boot_file_name"]), (600, "global.efi"))
+
+        config = _recorded_config(4)
+        for obj in config["client-classes"]:
+            if obj["name"] in ("boot", "printers"):
+                del obj["valid-lifetime"]
+                obj["boot-file-name"] = ""
+        intent = parse_dhcp_config(config, 4)
+        intent.configuration_complete = True
+        summary = dhcp_plugin.apply_plan(server, plan_family(intent, None), probe())
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        classes = self._client_classes(server)
+        self.assertEqual(
+            {name: (classes[name]["valid_lifetime"], classes[name]["boot_file_name"]) for name in ("boot", "printers")},
+            {"boot": (None, None), "printers": (None, None)},
+        )
+        self.assertEqual(classes["boot"]["next_server"], "192.0.2.5")
+
 
 # The Subnet fields that Kea's config-get fills from the parent or that the coverage configuration declares.
 _INHERITABLE = (
@@ -619,6 +696,17 @@ _INHERITABLE = (
     "ddns_qualifying_suffix",
     "reservations_global",
     "reservations_in_subnet",
+)
+
+
+# The ClientClass fields that the coverage configuration declares on some class.
+_CLASS_FIELDS = (
+    "valid_lifetime",
+    "min_valid_lifetime",
+    "max_valid_lifetime",
+    "next_server",
+    "server_hostname",
+    "boot_file_name",
 )
 
 

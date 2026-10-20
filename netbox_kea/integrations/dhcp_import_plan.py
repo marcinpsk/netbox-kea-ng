@@ -170,6 +170,16 @@ class PlannedServer:
 
 
 @dataclass(frozen=True)
+class PlannedClientClass:
+    """A client class by its Kea name."""
+
+    key: str
+    intent: ClientClassIntent
+    # The Declared Values of the class, by Kea key.
+    settings: dict
+
+
+@dataclass(frozen=True)
 class PlannedSubnet:
     """A Subnet by Kea subnet ID, with its Pools. ``None``: Kea gave no ID, so the Subnet has no mapping identity."""
 
@@ -191,7 +201,7 @@ class FamilyPlan:
     configuration_complete: bool
     server: PlannedServer
     option_definitions: tuple[Planned[OptionDefinitionKey, OptionDefIntent], ...]
-    client_classes: tuple[Planned[str, ClientClassIntent], ...]
+    client_classes: tuple[PlannedClientClass, ...]
     # Planned so that the result reports each one; the DHCP plugin model holds none yet.
     shared_networks: tuple[Planned[str, SharedNetworkIntent], ...]
     subnets: tuple[PlannedSubnet, ...]
@@ -230,6 +240,12 @@ def declared_values(family: Family, table: str, settings: dict, parent: dict) ->
         return key not in parent and key in defaults and value == defaults[key]
 
     return {key: value for key, value in settings.items() if not inherited(key, value)}
+
+
+def _planned_client_class(intent: ClientClassIntent, family: Family) -> PlannedClientClass:
+    # Kea merges no value into a client class, so the class has no parent values.
+    settings = declared_values(family, kea_paths.CLIENT_CLASSES, intent.settings, {})
+    return PlannedClientClass(intent.name, intent, settings)
 
 
 def _planned_subnets(config: ServerConfigIntent, family: Family) -> tuple[PlannedSubnet, ...]:
@@ -278,7 +294,7 @@ def plan_family(config: ServerConfigIntent, observation: ReservationObservation 
             config.interfaces,
         ),
         option_definitions=_option_definitions(config),
-        client_classes=tuple(Planned(intent.name, intent) for intent in config.client_classes),
+        client_classes=tuple(_planned_client_class(intent, family) for intent in config.client_classes),
         shared_networks=tuple(Planned(intent.name, intent) for intent in config.shared_networks),
         subnets=_planned_subnets(config, family),
         reservations=observation,
