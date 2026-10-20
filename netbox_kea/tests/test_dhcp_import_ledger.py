@@ -31,7 +31,7 @@ from netbox_kea.integrations.dhcp_import_report import Capability, Reason
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
 # The open tickets of #89 that map a key.
-_PARITY_TICKETS = frozenset({93, 94, 96, 97, 98, 99, 100, 101, 104, 106, 107})
+_PARITY_TICKETS = frozenset({97, 98, 99, 100, 101, 104, 107})
 # Collections of child objects: an empty one in config-get is a Kea default, never a merge.
 _CHILD_COLLECTIONS = frozenset({"option-data", "option-def", "pools", "pd-pools", "reservations", "subnet4", "subnet6"})
 

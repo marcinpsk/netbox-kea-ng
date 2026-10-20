@@ -173,7 +173,7 @@ WRITTEN: frozenset[Outcome] = frozenset({Outcome.CREATED, Outcome.UPDATED, Outco
 class ImportEntry:
     """One Kea fact of a run: its family, kind, Kea path and outcome, and the reason when it was not written.
 
-    A fact that the installed DHCP plugin cannot hold names the missing :class:`Capability`, when one decides it.
+    An unsupported fact names the missing :class:`Capability`, when one decides it.
     """
 
     family: int
@@ -188,8 +188,8 @@ class ImportEntry:
         expected = None if self.outcome in WRITTEN else self.outcome
         if (REASON_OUTCOME[self.reason] if self.reason is not None else None) != expected:
             raise ValueError(f"Outcome {self.outcome} does not match reason {self.reason}")
-        if self.capability is not None and self.reason != Reason.PLUGIN_GAP:
-            raise ValueError(f"Only a {Reason.PLUGIN_GAP} entry names a capability, not {self.reason}")
+        if self.capability is not None and self.outcome != Outcome.UNSUPPORTED:
+            raise ValueError(f"Only an unsupported entry names a capability, not {self.reason}")
 
 
 def written(family: int, kind: Kind, path: str, outcome: Outcome) -> ImportEntry:
@@ -205,6 +205,13 @@ def not_written(family: int, kind: Kind, path: str, reason: Reason, detail: str 
 def unsupported(family: int, kind: Kind, path: str, capability: Capability, detail: str) -> ImportEntry:
     """Return the entry of a fact that the run did not write because the installed DHCP plugin lacks *capability*."""
     return ImportEntry(family, kind, path, Outcome.UNSUPPORTED, Reason.PLUGIN_GAP, detail, capability)
+
+
+def subnet_id_clash(family: int, kind: Kind, path: str, detail: str) -> ImportEntry:
+    """Return the entry of a fact of a Subnet whose Kea subnet ID another Server or family holds in the DHCP plugin."""
+    return ImportEntry(
+        family, kind, path, Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH, detail, Capability.SUBNET_ID_PER_SERVER
+    )
 
 
 @dataclass(frozen=True)

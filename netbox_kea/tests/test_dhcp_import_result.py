@@ -323,7 +323,7 @@ class EntryVocabularyTest(SimpleTestCase):
         self.assertEqual(entry.outcome, Outcome.UNSUPPORTED)
         self.assertEqual(set(REASON_OUTCOME), set(Reason))
 
-    def test_only_a_plugin_gap_entry_names_a_capability(self):
+    def test_only_an_unsupported_entry_names_a_capability(self):
         with self.assertRaises(ValueError):
             ImportEntry(
                 4,

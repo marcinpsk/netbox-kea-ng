@@ -72,6 +72,12 @@ follow Kea. With netbox-plugin-dhcp 0.2.0, the family of a DHCP Server, the `ser
 type, a global `user-context`, the `flex-id` Reservation identifier, `allow-address-registration` (DHCPv6) and
 `stash-agent-options` (DHCPv4) are unsupported. The rest of the global configuration imports.
 
+Each imported Subnet holds Kea's subnet ID. A Subnet that an earlier release imported takes its Kea subnet ID on the
+next run. netbox-plugin-dhcp 0.2.0 keeps Subnet IDs unique across all DHCP Servers, but Kea numbers the Subnets of
+each daemon on its own. So when another DHCP Server already holds the ID, for example the DHCPv4 Subnet 1 of a
+dual-stack Server, the Subnet is unsupported, together with its Pools and In-Subnet Reservations. The entry names the
+Subnet that holds the ID. The import never gives a Subnet another ID.
+
 Each run of **Sync to DHCP plugin now** stores its result. The **DHCP Plugin** page under Sync shows the latest run:
 the counts for each family, object kind and outcome, and one entry for each Kea fact that the run created, updated or
 did not write. An entry names its fact by a Kea path, for example `Dhcp4/subnet4[id=20]/option-data[code=150]`. A
