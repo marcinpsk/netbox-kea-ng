@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from typing import Any
 
 from django.contrib import messages
@@ -97,13 +98,35 @@ def _summary_problems(summary) -> list[str]:
 _SHOWN_OBJECTS = 50
 
 
+class DriftState(str, Enum):
+    """How one object of the drift card stands between live Kea and its DHCP Import Mapping."""
+
+    # Kea has the object, and no mapping names it.
+    MISSING = "missing"
+    # A Complete observation no longer reports the mapped row, so the next run removes it.
+    STALE = "stale"
+    # An Incomplete observation did not report the mapped row, so it cannot judge it.
+    UNSEEN = "unseen"
+    # Kea was not read for the family.
+    UNKNOWN = "unknown"
+
+
+# The badge text and colour of each state.
+_STATE_BADGES: dict[DriftState, tuple[str, str]] = {
+    DriftState.MISSING: ("Missing", "info"),
+    DriftState.STALE: ("Stale", "warning"),
+    DriftState.UNSEEN: ("Not seen", "secondary"),
+    DriftState.UNKNOWN: ("Unknown", "secondary"),
+}
+
+
 @dataclass(frozen=True)
 class DriftObject:
     """One object that live Kea and the DHCP Import Mappings disagree on, or that the read cannot judge."""
 
     kind: Kind
     path: str
-    state: str
+    state: DriftState
     # The mapped DHCP plugin row; a missing object has none.
     target: object = None
 
@@ -111,6 +134,11 @@ class DriftObject:
     def label(self) -> str:
         """Return the label of the kind."""
         return KIND_LABELS[self.kind]
+
+    @property
+    def badge(self) -> tuple[str, str]:
+        """Return the badge text and colour of the state."""
+        return _STATE_BADGES[self.state]
 
 
 @dataclass(frozen=True)
@@ -160,7 +188,7 @@ def family_drift(server: Server, family: Family, user) -> FamilyDrift:
     if not isinstance(read, FamilyRead):
         drift.notice, drift.unparsable = read, read is None
         for kind, rows in mapped.items():
-            drift.show(_drift_objects(family, kind, rows, "unknown"))
+            drift.show(_drift_objects(family, kind, rows, DriftState.UNKNOWN))
         drift.objects = _viewable_targets(drift.objects, user)
         return drift
     observed = observations(plan_family(read.config, read.reservations))
@@ -168,7 +196,7 @@ def family_drift(server: Server, family: Family, user) -> FamilyDrift:
         observation, rows = observed[kind], mapped[kind]
         missing = dict.fromkeys(observation.sources - rows.keys())
         unobserved = {source: row for source, row in rows.items() if source not in observation.sources}
-        state = "stale" if observation.complete else "unseen"
+        state = DriftState.STALE if observation.complete else DriftState.UNSEEN
         drift.kinds.append(
             KindDrift(
                 kind,
@@ -179,7 +207,7 @@ def family_drift(server: Server, family: Family, user) -> FamilyDrift:
                 incomplete=observation.incomplete,
             )
         )
-        drift.show(_drift_objects(family, kind, missing, "missing"))
+        drift.show(_drift_objects(family, kind, missing, DriftState.MISSING))
         drift.show(_drift_objects(family, kind, unobserved, state))
     drift.objects = _viewable_targets(drift.objects, user)
     return drift
@@ -211,7 +239,7 @@ def _viewable_targets(objects: list[DriftObject], user) -> list[DriftObject]:
     ]
 
 
-def _drift_objects(family: int, kind: Kind, rows: dict[MappingSource, object], state: str) -> list[DriftObject]:
+def _drift_objects(family: int, kind: Kind, rows: dict[MappingSource, object], state: DriftState) -> list[DriftObject]:
     """Return one object of *state* for each source of *rows*, in Kea path order."""
     objects = [DriftObject(kind, source.path(family), state, row) for source, row in rows.items()]
     return sorted(objects, key=lambda obj: obj.path)

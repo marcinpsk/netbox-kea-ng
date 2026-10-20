@@ -122,6 +122,7 @@ from .dhcp_import_report import (
     Kind,
     Outcome,
     Reason,
+    counted,
     not_written,
     subnet_id_clash,
     unsupported,
@@ -1874,7 +1875,7 @@ def _row_key(obj) -> tuple:
     return obj._meta.concrete_model, obj.pk
 
 
-def _keeps_with_parent(model) -> bool:
+def _goes_with_parent(model) -> bool:
     """Return whether rows of *model* go with a deleted parent: models outside the DHCP plugin, Options, through rows."""
     return model._meta.app_label != PLUGIN_APP_LABEL or model._meta.auto_created or model is _model("Option")
 
@@ -1892,10 +1893,9 @@ def _named_rows(rows) -> str:
 
 def _counted_rows(rows: list) -> str:
     """Return the number of *rows* of each model, for the detail of an entry."""
-    counts = Counter(row._meta.concrete_model for row in rows)
+    models = Counter(row._meta.concrete_model for row in rows)
     return ", ".join(
-        f"{count} {model._meta.verbose_name if count == 1 else model._meta.verbose_name_plural}"
-        for model, count in counts.items()
+        counted(count, model._meta.verbose_name, model._meta.verbose_name_plural) for model, count in models.items()
     )
 
 
@@ -1905,7 +1905,8 @@ def _removal_footprint(target, removable: dict) -> tuple[list, list]:
     A row blocks the delete when it is a DHCP plugin row that the run does not remove. Raises ``ProtectedError`` when a
     row still uses one of the rows.
     """
-    collector = Collector(using="default")
+    # The same alias as the delete, so the check sees the rows that the delete would remove.
+    collector = Collector(using=target._state.db)
     collector.collect([target])
     rows = [obj for objects in collector.data.values() for obj in objects]
     rows.extend(obj for queryset in collector.fast_deletes for obj in queryset)
@@ -1914,7 +1915,7 @@ def _removal_footprint(target, removable: dict) -> tuple[list, list]:
     blocking = [
         obj
         for obj in rows
-        if _row_key(obj) != own and _row_key(obj) not in removable and not _keeps_with_parent(obj._meta.concrete_model)
+        if _row_key(obj) != own and _row_key(obj) not in removable and not _goes_with_parent(obj._meta.concrete_model)
     ]
     return cascaded, blocking
 
@@ -1934,11 +1935,10 @@ def _remove_stale_row(row: _StaleRow, removable: dict, family: int, summary: Imp
         raise
     except ProtectedError as error:
         removable.pop(_row_key(row.target))
-        users = list(error.protected_objects)
-        detail = f"It is kept while {_counted_rows(users)} still {'uses' if len(users) == 1 else 'use'} it."
+        detail = f"It is kept while it is in use by {_counted_rows(list(error.protected_objects))}."
         summary.record(not_written(family, row.source.kind, path, Reason.REMOVAL_BLOCKED, detail))
         return []
-    except Exception as exc:  # noqa: BLE001 — one failed removal must not abort the import
+    except Exception as exc:  # noqa: BLE001 (one failed removal must not abort the import)
         removable.pop(_row_key(row.target))
         summary.record(write_failed(family, row.source.kind, path))
         summary.warn(f"stale {row.source.kind.value} {path}: {exc}")
@@ -1990,7 +1990,8 @@ def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> No
         if observed[kind].complete:
             removable.update((_row_key(row.target), row) for row in rows)
         elif rows:
-            detail = f"{observed[kind].incomplete} {_kept_rows(len(rows), kind)}"
+            kept = counted(len(rows), f"mapped {KIND_LABELS[kind]} row was", f"mapped {KIND_LABELS[kind]} rows were")
+            detail = f"{observed[kind].incomplete} {kept} kept."
             summary.record(
                 not_written(plan.family, kind, kind_path(plan.family, kind), Reason.INCOMPLETE_OBSERVATION, detail)
             )
@@ -2002,11 +2003,6 @@ def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> No
             for gone in _remove_stale_row(row, removable, plan.family, summary):
                 removed.add(_row_key(gone.target))
                 summary.record(written(plan.family, gone.source.kind, gone.source.path(plan.family), Outcome.REMOVED))
-
-
-def _kept_rows(count: int, kind: Kind) -> str:
-    noun = "row was" if count == 1 else "rows were"
-    return f"{count} mapped {KIND_LABELS[kind]} {noun} kept."
 
 
 # The DHCP plugin rows that apply_plan adds and changes.

@@ -198,6 +198,11 @@ class ImportEntry:
             raise ValueError(f"Only an unsupported entry names a capability, not {self.reason}")
 
 
+def counted(count: int, singular: str, plural: str) -> str:
+    """Return *count* with the singular or plural form of the phrase that follows it, for the detail of an entry."""
+    return f"{count} {singular if count == 1 else plural}"
+
+
 def written(family: int, kind: Kind, path: str, outcome: Outcome) -> ImportEntry:
     """Return the entry of a fact that the run created, updated or removed."""
     return ImportEntry(family, kind, path, outcome)

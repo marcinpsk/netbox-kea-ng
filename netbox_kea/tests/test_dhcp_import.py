@@ -34,6 +34,7 @@ from netbox_kea.integrations.dhcp_import_plan import (
     OptionDefinitionKey,
     PoolKey,
     keyed_reservations,
+    kind_path,
     observations,
     plan_family,
 )
@@ -386,6 +387,13 @@ class KindObservationTest(SimpleTestCase):
                 observed = observations(plan_family(_recorded_intent(4), observation))[Kind.RESERVATION]
                 self.assertFalse(observed.complete)
                 self.assertIn(reason, observed.incomplete)
+
+    def test_a_kind_without_a_path_refuses_instead_of_naming_the_daemon(self):
+        with self.assertRaises(ValueError):
+            MappingSource(Kind.OPTION).path(4)
+        with self.assertRaises(ValueError):
+            kind_path(4, Kind.SERVER)
+        self.assertEqual(MappingSource.server().path(4), "Dhcp4")
 
     def test_a_mapping_source_names_its_kea_path(self):
         sources = {

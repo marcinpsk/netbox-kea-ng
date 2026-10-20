@@ -688,7 +688,7 @@ class StaleRemovalTest(_ImportRunTestCase):
             kind=Kind.OPTION_DEFINITION.value, reason=Reason.REMOVAL_BLOCKED.value
         )
         self.assertEqual((entry.outcome, entry.kea_path), (Outcome.SKIPPED.value, "Dhcp4/option-def[code=241]"))
-        self.assertEqual(entry.detail, "It is kept while 1 Option still uses it.")
+        self.assertEqual(entry.detail, "It is kept while it is in use by 1 Option.")
 
     def test_a_removal_is_change_logged_for_the_target_and_its_mapping(self):
         from core.models import ObjectChange

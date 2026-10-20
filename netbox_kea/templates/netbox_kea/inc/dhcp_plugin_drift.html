@@ -82,20 +82,10 @@
           </thead>
           <tbody>
             {% for obj in drift.objects %}
-              <tr data-state="{{ obj.state }}" data-kind="{{ obj.kind.value }}">
+              <tr data-state="{{ obj.state.value }}" data-kind="{{ obj.kind.value }}">
                 <td>{{ obj.label }}</td>
                 <td><code>{{ obj.path }}</code></td>
-                <td>
-                  {% if obj.state == "missing" %}
-                    <span class="badge text-bg-info">Missing</span>
-                  {% elif obj.state == "stale" %}
-                    <span class="badge text-bg-warning">Stale</span>
-                  {% elif obj.state == "unseen" %}
-                    <span class="badge text-bg-secondary">Not seen</span>
-                  {% else %}
-                    <span class="badge text-bg-secondary">Unknown</span>
-                  {% endif %}
-                </td>
+                <td><span class="badge text-bg-{{ obj.badge.1 }}">{{ obj.badge.0 }}</span></td>
                 <td>{{ obj.target|linkify|placeholder }}</td>
               </tr>
             {% endfor %}

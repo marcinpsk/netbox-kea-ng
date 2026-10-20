@@ -33,7 +33,7 @@ from ..mappers.kea_to_dhcp import (
 from ..pools import Pool, parse_pool
 from ..reservations import MAX_IDENTITY_LENGTH, IdentifierType, InSubnetReservationScope, Reservation, identity_text
 from .dhcp_import_ledger import KEA_DEFAULTS, MERGED_KEYS
-from .dhcp_import_report import KIND_LABELS, Kind
+from .dhcp_import_report import KIND_LABELS, Kind, counted
 
 if TYPE_CHECKING:
     from ..dhcp_options import DHCPOption
@@ -115,7 +115,9 @@ class MappingSource:
             return kea_paths.client_class(family, identity)
         if self.kind == Kind.SHARED_NETWORK:
             return kea_paths.shared_network(family, identity)
-        return kea_paths.daemon(family)
+        if self.kind == Kind.SERVER:
+            return kea_paths.daemon(family)
+        raise ValueError(f"A {self.kind.value} source has no Kea path.")
 
 
 @dataclass(frozen=True)
@@ -354,10 +356,6 @@ class KindObservation:
         return not self.incomplete
 
 
-def _counted(count: int, singular: str, plural: str) -> str:
-    return f"{count} {singular if count == 1 else plural}"
-
-
 def _configuration_gaps(plan: FamilyPlan) -> dict[Kind, list[str]]:
     """Return why the configuration read is Incomplete for each configuration kind."""
     gaps: dict[Kind, list[str]] = {kind: [] for kind in _CONFIGURATION_KINDS}
@@ -367,17 +365,17 @@ def _configuration_gaps(plan: FamilyPlan) -> dict[Kind, list[str]]:
     dropped = Counter(entry.kind for entry in plan.dropped)
     for kind, reasons in gaps.items():
         if dropped[kind]:
-            entries = _counted(dropped[kind], f"{KIND_LABELS[kind]} entry", f"{KIND_LABELS[kind]} entries")
-            verb = "is" if dropped[kind] == 1 else "are"
-            reasons.append(f"The configuration has {entries} that {verb} not valid.")
+            label = KIND_LABELS[kind]
+            entries = counted(dropped[kind], f"{label} entry that is", f"{label} entries that are")
+            reasons.append(f"The configuration has {entries} not valid.")
     if dropped[Kind.SUBNET]:
         gaps[Kind.POOL].append("A Subnet entry that is not valid hides its Pools.")
     unkeyed_subnets = sum(subnet.key is None for subnet in plan.subnets)
     if unkeyed_subnets:
-        gaps[Kind.SUBNET].append(f"{_counted(unkeyed_subnets, 'Subnet has', 'Subnets have')} no Kea subnet ID.")
+        gaps[Kind.SUBNET].append(f"{counted(unkeyed_subnets, 'Subnet has', 'Subnets have')} no Kea subnet ID.")
     unkeyed_pools = sum(pool.key is None or pool.key.source is None for subnet in plan.subnets for pool in subnet.pools)
     if unkeyed_pools:
-        gaps[Kind.POOL].append(f"{_counted(unkeyed_pools, 'Pool has', 'Pools have')} no mapping identity.")
+        gaps[Kind.POOL].append(f"{counted(unkeyed_pools, 'Pool has', 'Pools have')} no mapping identity.")
     return gaps
 
 
@@ -394,7 +392,7 @@ def _reservation_gap(observation: ReservationObservation | None) -> str:
     if snapshot.traversal_truncated:
         return "The Reservation walk did not read every page."
     if snapshot.diagnostics:
-        records = _counted(len(snapshot.diagnostics), "Reservation record", "Reservation records")
+        records = counted(len(snapshot.diagnostics), "Reservation record", "Reservation records")
         return f"{records} could not be parsed, and one of them can be a mapped Reservation."
     if not snapshot.complete:
         return "The Reservation Snapshot is incomplete."
@@ -446,4 +444,6 @@ def kind_path(family: int, kind: Kind) -> str:
     }
     if kind == Kind.SUBNET:
         return subnets
-    return kea_paths.every_entry(collections[kind]) if kind in collections else daemon
+    if kind not in collections:
+        raise ValueError(f"A {kind.value} has no collection that a run can remove from.")
+    return kea_paths.every_entry(collections[kind])
