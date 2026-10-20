@@ -127,8 +127,8 @@ class DriftObject:
     kind: Kind
     path: str
     state: DriftState
-    # The mapped DHCP plugin row; a missing object has none.
-    target: object = None
+    # The mapped DHCP plugin row; a missing object has none. The plugin is optional, so its models have no type here.
+    target: Any = None
 
     @property
     def label(self) -> str:
@@ -214,7 +214,7 @@ def family_drift(server: Server, family: Family, user) -> FamilyDrift:
 
 
 # The relations that the name of a DHCP plugin row reads, by model.
-_NAME_RELATIONS = {"optiondefinition": ("dhcp_server", "client_class")}
+_NAME_RELATIONS: dict[str, tuple[str, ...]] = {"optiondefinition": ("dhcp_server", "client_class")}
 
 
 def _viewable_targets(objects: list[DriftObject], user) -> list[DriftObject]:
@@ -222,7 +222,7 @@ def _viewable_targets(objects: list[DriftObject], user) -> list[DriftObject]:
 
     One query for each model, so the card reads a fixed number of queries for any number of rows.
     """
-    pks: dict[type, set[int]] = defaultdict(set)
+    pks: dict[Any, set[int]] = defaultdict(set)
     for obj in objects:
         if obj.target is not None:
             pks[obj.target._meta.concrete_model].add(obj.target.pk)
@@ -239,7 +239,7 @@ def _viewable_targets(objects: list[DriftObject], user) -> list[DriftObject]:
     ]
 
 
-def _drift_objects(family: int, kind: Kind, rows: dict[MappingSource, object], state: DriftState) -> list[DriftObject]:
+def _drift_objects(family: int, kind: Kind, rows: dict[MappingSource, Any], state: DriftState) -> list[DriftObject]:
     """Return one object of *state* for each source of *rows*, in Kea path order."""
     objects = [DriftObject(kind, source.path(family), state, row) for source, row in rows.items()]
     return sorted(objects, key=lambda obj: obj.path)
