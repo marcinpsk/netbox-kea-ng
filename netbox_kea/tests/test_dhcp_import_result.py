@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 import unittest
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 
 from bs4 import BeautifulSoup
 from django.apps import apps
@@ -525,6 +525,107 @@ class StoppedRunTest(_ImportRunTestCase):
             {("server", "skipped", "write_failed", "Dhcp4")},
         )
         self.assertIn("stopped", DhcpImportEntry.objects.get(run=run).detail)
+
+
+def _new_session():
+    """Open a second database session, outside the test transaction, for the other side of a lock."""
+    return cast(Any, connection).Database.connect(**connection.get_connection_params())
+
+
+class ServerImportLockTest(_ImportRunTestCase):
+    """Two DHCP Imports of one Server never interleave: a run holds a Server lock from its first Kea read to its result."""
+
+    def _key(self) -> tuple[int, int]:
+        from netbox_kea.integrations.dhcp_import import IMPORT_LOCK_CLASS
+
+        return IMPORT_LOCK_CLASS, self.server.pk
+
+    def _held_elsewhere(self) -> bool:
+        """Return whether another session holds the lock: take it from a new connection, then release it."""
+        other = _new_session()
+        try:
+            with other.cursor() as cursor:
+                cursor.execute("SELECT pg_try_advisory_lock(%s, %s)", self._key())
+                (taken,) = cursor.fetchone()
+                if taken:
+                    cursor.execute("SELECT pg_advisory_unlock(%s, %s)", self._key())
+        finally:
+            other.close()
+        return not taken
+
+    def test_a_run_while_another_run_holds_the_lock_is_refused_before_any_kea_read(self):
+        from netbox_kea.models import KeaDhcpLink
+
+        holder = _new_session()
+        try:
+            with holder.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_lock(%s, %s)", self._key())
+            url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk])
+            with stub_kea(_kea()) as kea:
+                response = self.client.post(url)
+        finally:
+            holder.close()
+
+        self.assertEqual(kea.commands(), [])
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)],
+            ["Another DHCP Import of this Server is running. Nothing changed. Retry this operation."],
+        )
+        self.assertFalse(DhcpImportRun.objects.filter(server=self.server).exists())
+        self.assertFalse(KeaDhcpLink.objects.filter(server=self.server).exists())
+        self.assertFalse(self._held_elsewhere())
+
+    def test_a_run_releases_the_lock(self):
+        self._run()
+
+        self.assertTrue(DhcpImportRun.objects.filter(server=self.server).exists())
+        self.assertFalse(self._held_elsewhere())
+
+    def test_a_run_that_raises_releases_the_lock(self):
+        from unittest.mock import patch
+
+        from netbox_kea.integrations import dhcp_plugin
+
+        with patch.object(dhcp_plugin, "import_server_config", autospec=True, side_effect=RuntimeError("boom")):
+            response = self._run()
+
+        self.assertIn(ERROR, [message.level for message in get_messages(response.wsgi_request)])
+        self.assertFalse(self._held_elsewhere())
+
+    def test_a_run_holds_the_lock_after_its_read_so_a_second_run_cannot_interleave(self) -> None:
+        from netbox_kea.dhcp_mapping_lifecycle import MetadataBusy
+        from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
+
+        refusals: list[str] = []
+        responses = _kea()
+        read_config = responses["config-get"]
+
+        def second_run():
+            try:
+                run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+            except MetadataBusy as error:
+                refusals.append(error.message)
+            finally:
+                connections.close_all()
+
+        def config_get(body):
+            # Run A has started its read; run B tries to start now, as in a read-then-apply interleaving.
+            if not refusals:
+                thread = threading.Thread(target=second_run)
+                thread.start()
+                thread.join()
+            return read_config(body)
+
+        responses["config-get"] = config_get
+        url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk])
+        with stub_kea(responses):
+            self.client.post(url)
+
+        self.assertEqual(
+            refusals, ["Another DHCP Import of this Server is running. Nothing changed. Retry this operation."]
+        )
+        self.assertEqual(DhcpImportRun.objects.filter(server=self.server).count(), 1)
+        self.assertFalse(self._held_elsewhere())
 
 
 class SettingEntryTest(_ImportRunTestCase):

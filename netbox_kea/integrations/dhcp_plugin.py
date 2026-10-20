@@ -1976,7 +1976,8 @@ def _stale_rows(server, plan: FamilyPlan, observed) -> dict[Kind, list[_StaleRow
     """Return the mapped rows of each kind whose Kea source the plan does not observe.
 
     A mapping that an import confirmed after this read started belongs to a newer read, so it is never stale here.
-    A plan without a read time can judge no mapping.
+    The import lock keeps two runs of one Server apart; this cutoff covers the other writers, such as an ADR 0008
+    merge or revert replay in main. A plan without a read time can judge no mapping.
     """
     if plan.read_started is None:
         return {}

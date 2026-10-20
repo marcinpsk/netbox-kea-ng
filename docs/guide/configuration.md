@@ -135,6 +135,9 @@ why, and it lists the imported rows that it did not see as not seen, never as st
 shows the error and lists the imported rows as unknown. Its **Latest run** link opens the stored result of the last
 run.
 
+One run of a Server runs at a time. A second run of the same Server, while one runs, is refused before it reads Kea
+and changes nothing; run it again when the first one has finished.
+
 An object that did not change has no entry. A run that stops part way also stores its result, with an entry for the
 family that stopped. NetBox keeps the 10 latest runs of each Server and deletes the older runs
 when it stores a new one. Runs are not in the change log. A user who can view the Server can see its runs. When
