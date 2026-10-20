@@ -814,7 +814,7 @@ class StaleRemovalTest(_ImportRunTestCase):
         self.assertEqual(mapping.request_id, target.request_id)
         self.assertEqual(mapping.prechange_data["object_id"], subnet.pk)
 
-    def test_an_unmapped_pool_in_a_stale_subnet_keeps_the_subnet_and_the_run_names_it(self):
+    def test_an_unmapped_pool_in_a_stale_subnet_keeps_the_subnet_and_the_run_counts_it(self):
         Pool = apps.get_model(DHCP_PLUGIN, "Pool")
         mapped = next(row for row in self._mapped(Kind.POOL) if row.subnet.subnet_id == 42)
         from ipam.models import IPRange
@@ -831,8 +831,15 @@ class StaleRemovalTest(_ImportRunTestCase):
         self.assertEqual(self._removed(run), {("pool", "Dhcp4/subnet4[id=42]/pools[pool=198.51.100.10-198.51.100.20]")})
         entry = DhcpImportEntry.objects.filter(run=run).get(kind=Kind.SUBNET.value, reason=Reason.REMOVAL_BLOCKED.value)
         self.assertEqual(entry.kea_path, "Dhcp4/subnet4[id=42]")
-        self.assertIn("operator pool", entry.detail)
+        self.assertEqual(entry.detail, "It is kept because its removal would also remove 1 Pool.")
         self.assertEqual(sorted(row.subnet_id for row in self._mapped(Kind.SUBNET)), [41, 42])
+        # A Server viewer reads the run, and may not view the Pool, so the run must not name it.
+        viewer = get_user_model().objects.create_user("stale-removal-viewer")
+        _grant([Server], ["view"], user=viewer)
+        self.client.force_login(viewer)
+        page = self.client.get(reverse("plugins:netbox_kea:server_dhcp_plugin", args=[self.server.pk]))
+        self.assertContains(page, "would also remove 1 Pool")
+        self.assertNotContains(page, "operator pool")
 
     def test_a_stale_subnet_keeps_a_mapped_reservation_that_an_incomplete_observation_cannot_judge(self):
         del self.config[4]["subnet4"][0]

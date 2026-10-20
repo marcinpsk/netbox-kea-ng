@@ -1882,17 +1882,6 @@ def _goes_with_parent(model) -> bool:
     return model._meta.app_label != PLUGIN_APP_LABEL or model._meta.auto_created or model is _model("Option")
 
 
-_NAMED_ROWS = 5
-
-
-def _named_rows(rows) -> str:
-    """Return a short list of *rows* by model and name, for the detail of an entry."""
-    rows = list(rows)
-    names = [f"{row._meta.verbose_name} {row}" for row in rows[:_NAMED_ROWS]]
-    more = f" and {len(rows) - _NAMED_ROWS} more" if len(rows) > _NAMED_ROWS else ""
-    return ", ".join(names) + more
-
-
 def _counted_rows(rows: list) -> str:
     """Return the number of *rows* of each model, for the detail of an entry."""
     models = Counter(row._meta.concrete_model for row in rows)
@@ -1947,7 +1936,8 @@ def _remove_stale_row(row: _StaleRow, removable: dict, family: int, summary: Imp
         return []
     if blocking:
         removable.pop(_row_key(row.target))
-        detail = f"It is kept because its removal would also remove {_named_rows(blocking)}."
+        # Counts only: any viewer of the Server reads the run, without permission on the rows.
+        detail = f"It is kept because its removal would also remove {_counted_rows(blocking)}."
         summary.record(not_written(family, row.source.kind, path, Reason.REMOVAL_BLOCKED, detail))
         return []
     return [row, *(removable[_row_key(obj)] for obj in cascaded)]
