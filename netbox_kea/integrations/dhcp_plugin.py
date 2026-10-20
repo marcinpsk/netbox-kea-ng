@@ -409,9 +409,9 @@ def _held_option_definition(held, family: int, key: OptionDefinitionKey, path: s
         .objects.filter(object_type=ContentType.objects.get_for_model(held.model), object_id__in=held.values("pk"))
         .first()
     )
-    holder_family = f"DHCPv{holder.family}" if holder is not None else "another"
     limit = "The DHCP plugin holds one custom Option Definition for each space and code of a DHCP server"
-    detail = f"{limit}, and the {holder_family} import holds it."
+    holder_text = f"the DHCPv{holder.family} import holds it" if holder is not None else "another row holds it"
+    detail = f"{limit}, and {holder_text}."
     summary.record(not_written(family, Kind.OPTION_DEFINITION, path, Reason.PLUGIN_GAP, detail))
     summary.warn(f"option-def {key.space}:{key.code}: {detail}")
     return _Unresolved(Reason.PLUGIN_GAP, f"Option Definition {key.space}:{key.code} is not imported. {limit}.")
@@ -1098,6 +1098,11 @@ def upsert_subnet(
             prefix_obj = result.prefix
             if result.outcome in {"conflict", "disagreement"}:
                 summary.warn(f"subnet {network}: IPAM ownership {result.outcome}, Prefix left unchanged")
+            if mapping is None:
+                # A Subnet without a Kea subnet ID has no mapping identity. An unmapped Subnet stays as it is.
+                unmapped = _unlinked(Subnet.objects.filter(dhcp_server=dhcp_server, prefix=prefix_obj)).first()
+                if unmapped is not None:
+                    return unmapped
             subnet_obj = existing if existing is not None else Subnet(name=_subnet_name(server, planned, network))
             fields = {
                 "prefix_id": prefix_obj.pk,

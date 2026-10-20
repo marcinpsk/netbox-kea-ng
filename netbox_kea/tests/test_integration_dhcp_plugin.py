@@ -1878,6 +1878,30 @@ class DhcpPluginMappingImportTest(TestCase):
                     definition.pk,
                 )
 
+    def test_a_custom_definition_that_an_unmapped_row_holds_names_that_row(self):
+        OptionDefinition = apps.get_model(DHCP_PLUGIN, "OptionDefinition")
+        space = "vendor-specific-options-space"
+        self.adapter.import_server_config(self.server, parse_dhcp_config({"subnet4": []}, 4))
+        # An operator row of the other family holds the space and code on the DHCPv4 DHCPServer.
+        OptionDefinition.objects.create(
+            name="operator-v6", standard=False, space=space, code=250, family=6, type="uint8",
+            dhcp_server=imported_dhcp_server(self.server, 4),
+        )  # fmt: skip
+        conf = {
+            "option-def": [{"name": "vendor-v4", "code": 250, "type": "uint8", "space": space}],
+            "option-data": [{"code": 250, "space": space, "data": "4"}],
+            "subnet4": [],
+        }
+
+        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+
+        (entry,) = [entry for entry in summary.entries if entry.kind == Kind.OPTION_DEFINITION]
+        self.assertEqual(
+            entry.detail,
+            "The DHCP plugin holds one custom Option Definition for each space and code of a DHCP server,"
+            " and another row holds it.",
+        )
+
     def _seed_released_import(self) -> dict:
         """Write the rows that the importer before #93 wrote, with the kinds that migration 0029 gives its mappings.
 
@@ -2125,6 +2149,17 @@ class DhcpPluginSubnetIdImportTest(TestCase):
         self.assertEqual(
             (self._subnet(self.server, 4242).subnet_id, self._subnet(self.server, 77).subnet_id), (4242, 77)
         )
+
+    def test_a_subnet_without_a_kea_subnet_id_imports_again_without_an_error(self):
+        model = partial(apps.get_model, DHCP_PLUGIN)
+        conf = {"subnet4": [{"subnet": "10.94.3.0/24", "pools": [{"pool": "10.94.3.10-10.94.3.20"}]}]}
+        self.assertEqual(self._import(self.server, conf).errors, 0)
+
+        summary = self._import(self.server, conf)
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(model("Subnet").objects.filter(prefix__prefix="10.94.3.0/24").count(), 1)
+        self.assertEqual(model("Pool").objects.filter(subnet__prefix__prefix="10.94.3.0/24").count(), 1)
 
     def test_a_subnet_id_that_another_server_holds_is_unsupported_with_its_pools_and_reservations(self):
         from netbox_kea.integrations.dhcp_import_report import Capability
