@@ -10,7 +10,8 @@ refuses. The drift card reads Kea as the import does, and changes nothing.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from collections import defaultdict
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from django.contrib import messages
@@ -146,12 +147,12 @@ class FamilyDrift:
         self.hidden += max(len(objects) - _SHOWN_OBJECTS, 0)
 
 
-def family_drift(server: Server, family: Family) -> FamilyDrift:
+def family_drift(server: Server, family: Family, user) -> FamilyDrift:
     """Compare a live read of *family* with its DHCP Import Mappings, through the rule that the removal uses.
 
     A missing object is in Kea without a mapping. A stale object has a mapping that a Complete observation no longer
     reports, so the next run removes it. An Incomplete observation cannot judge its unobserved rows, and a family that
-    Kea did not give leaves every mapped row unknown.
+    Kea did not give leaves every mapped row unknown. An object names its imported row only when *user* may view it.
     """
     mapped = dhcp_plugin.mapped_rows(server, family)
     drift = FamilyDrift(family)
@@ -160,6 +161,7 @@ def family_drift(server: Server, family: Family) -> FamilyDrift:
         drift.notice, drift.unparsable = read, read is None
         for kind, rows in mapped.items():
             drift.show(_drift_objects(family, kind, rows, "unknown"))
+        drift.objects = _viewable_targets(drift.objects, user)
         return drift
     observed = observations(plan_family(read.config, read.reservations))
     for kind in REMOVAL_ORDER:
@@ -179,7 +181,34 @@ def family_drift(server: Server, family: Family) -> FamilyDrift:
         )
         drift.show(_drift_objects(family, kind, missing, "missing"))
         drift.show(_drift_objects(family, kind, unobserved, state))
+    drift.objects = _viewable_targets(drift.objects, user)
     return drift
+
+
+# The relations that the name of a DHCP plugin row reads, by model.
+_NAME_RELATIONS = {"optiondefinition": ("dhcp_server", "client_class")}
+
+
+def _viewable_targets(objects: list[DriftObject], user) -> list[DriftObject]:
+    """Keep the imported row of each object only when *user* may view it, loaded with what its name reads.
+
+    One query for each model, so the card reads a fixed number of queries for any number of rows.
+    """
+    pks: dict[type, set[int]] = defaultdict(set)
+    for obj in objects:
+        if obj.target is not None:
+            pks[obj.target._meta.concrete_model].add(obj.target.pk)
+    viewable = {}
+    for model, selected in pks.items():
+        queryset = model.objects.restrict(user, "view").filter(pk__in=selected)
+        for row in queryset.select_related(*_NAME_RELATIONS.get(model._meta.model_name, ())):
+            viewable[model, row.pk] = row
+    return [
+        replace(obj, target=viewable.get((obj.target._meta.concrete_model, obj.target.pk)))
+        if obj.target is not None
+        else obj
+        for obj in objects
+    ]
 
 
 def _drift_objects(family: int, kind: Kind, rows: dict[MappingSource, object], state: str) -> list[DriftObject]:
@@ -235,7 +264,7 @@ class ServerDhcpPluginDriftView(generic.ObjectView):
         refusal = dhcp_plugin.integration_refusal(instance) or _mapping_unavailable()
         if refusal:
             return {"drift_refusal": refusal}
-        return {"families": [family_drift(instance, family) for family in enabled_versions(instance)]}
+        return {"families": [family_drift(instance, family, request.user) for family in enabled_versions(instance)]}
 
 
 def latest_run_context(request: HttpRequest, server: Server) -> dict[str, Any]:

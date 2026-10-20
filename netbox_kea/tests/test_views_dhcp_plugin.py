@@ -701,6 +701,47 @@ class DriftPartialTest(TestCase):
         self.assertIn(("unseen", "client_class", "Dhcp4/client-classes[name=voip]"), self._objects(page))
         self.assertIn("1 Client class entry that is not valid", page.get_text())
 
+    def _links(self, page: BeautifulSoup) -> dict[str, str]:
+        return {
+            str(row["data-kind"]): row.select("td")[3].get_text(strip=True)
+            for row in page.select("tr[data-state]")
+            if row.select("td")[3].a is not None
+        }
+
+    def test_the_card_names_only_the_rows_that_the_user_may_view(self):
+        from django.contrib.auth import get_user_model
+
+        from .utils import _grant
+
+        self._import()
+        viewer = get_user_model().objects.create_user("drift-viewer")
+        _grant([Server], ["view"], user=viewer)
+        _grant([apps.get_model(DHCP_PLUGIN, "Subnet")], ["view"], user=viewer)
+        self.client.force_login(viewer)
+
+        page = self._drift(_sync_responses({4: {"subnet4": []}}, {4: []}))
+
+        self.assertEqual(len(self._objects(page)), len(_MAPPED))
+        self.assertEqual(set(self._links(page)), {"subnet"})
+
+    def test_the_card_reads_a_fixed_number_of_queries_for_any_number_of_rows(self):
+        def stale_card_queries(codes: range) -> int:
+            config = {
+                4: {
+                    "option-def": [{"name": f"opt-{code}", "code": code, "type": "uint8"} for code in codes],
+                    "option-data": [{"code": code, "data": "1"} for code in codes],
+                }
+            }
+            with stub_kea(_sync_responses(config, {4: []})):
+                self.client.post(reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk]))
+            with stub_kea(_sync_responses({4: {}}, {4: []})), CaptureQueriesContext(connection) as queries:
+                page = BeautifulSoup(self.client.get(self.url, HTTP_HX_REQUEST="true").content, "html.parser")
+            self.assertEqual(len(self._links(page)), 1 if len(codes) else 0)
+            self.assertEqual(len(page.select("tr[data-state=stale]")), len(codes))
+            return len(queries.captured_queries)
+
+        self.assertEqual(stale_card_queries(range(230, 231)), stale_card_queries(range(230, 234)))
+
     def test_a_failed_read_returns_the_notice_and_lists_the_mapped_rows_as_unknown(self):
         self._import()
 
