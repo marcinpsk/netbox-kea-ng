@@ -282,6 +282,18 @@ class SyncNowEndToEndTest(TestCase):
         ct = ContentType.objects.get_for_model(Subnet)
         self.assertTrue(Option.objects.filter(assigned_object_type=ct, assigned_object_id=subnet.pk).exists())
 
+    def test_post_reports_the_stale_objects_that_it_removed(self):
+        subnet = {"id": 2, "subnet": "10.87.0.0/24", "pools": [{"pool": "10.87.0.10-10.87.0.99"}]}
+        conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}, subnet]}}
+        with stub_kea(_sync_responses(conf)):
+            self.client.post(self.url)
+        del conf[4]["subnet4"][1]
+
+        with stub_kea(_sync_responses(conf)):
+            resp = self.client.post(self.url, follow=True)
+
+        self.assertContains(resp, "2 stale objects removed")
+
     def test_post_imports_db_backed_reservations(self):
         # Subnet is in config-get; the reservation lives ONLY in the hosts DB
         # (reservation-get-page) — the case config-get-only import was missing.

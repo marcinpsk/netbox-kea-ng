@@ -53,6 +53,8 @@ class Reason(str, Enum):
     IPAM_OWNERSHIP = "ipam_ownership"
     WRITE_FAILED = "write_failed"
     READ_FAILED = "read_failed"
+    INCOMPLETE_OBSERVATION = "incomplete_observation"
+    REMOVAL_BLOCKED = "removal_blocked"
 
 
 KIND_LABELS: dict[Kind, str] = {
@@ -85,6 +87,8 @@ REASON_LABELS: dict[Reason, str] = {
     Reason.IPAM_OWNERSHIP: "IPAM ownership kept the IPAM object unchanged",
     Reason.WRITE_FAILED: "The write failed",
     Reason.READ_FAILED: "Kea could not be read in full",
+    Reason.INCOMPLETE_OBSERVATION: "Kea was not observed in full, so removal was suppressed",
+    Reason.REMOVAL_BLOCKED: "Other rows still depend on it, so it was not removed",
 }
 
 
@@ -164,6 +168,8 @@ REASON_OUTCOME: dict[Reason, Outcome] = {
     Reason.IPAM_OWNERSHIP: Outcome.SKIPPED,
     Reason.WRITE_FAILED: Outcome.SKIPPED,
     Reason.READ_FAILED: Outcome.SKIPPED,
+    Reason.INCOMPLETE_OBSERVATION: Outcome.SKIPPED,
+    Reason.REMOVAL_BLOCKED: Outcome.SKIPPED,
 }
 
 WRITTEN: frozenset[Outcome] = frozenset({Outcome.CREATED, Outcome.UPDATED, Outcome.REMOVED})

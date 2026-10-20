@@ -281,7 +281,8 @@ class ServerDhcpPluginSyncNowView(View):
                 f"{summary.reservations_updated} updated, "
                 f"{summary.options_created} options created, {summary.options_updated} updated, "
                 f"{summary.client_classes_created} client classes created, "
-                f"{summary.client_classes_updated} updated"
+                f"{summary.client_classes_updated} updated, "
+                f"{summary.removed} stale objects removed"
             )
             notes = []
             if summary.option_defs_created:

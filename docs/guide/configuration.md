@@ -105,8 +105,8 @@ dual-stack Server, the Subnet is unsupported, together with its Pools and In-Sub
 Subnet that holds the ID. The import never gives a Subnet another ID.
 
 Each run of **Sync to DHCP plugin now** stores its result. The **DHCP Plugin** page under Sync shows the latest run:
-the counts for each family, object kind and outcome, and one entry for each Kea fact that the run created, updated or
-did not write. An entry names its fact by a Kea path, for example `Dhcp4/subnet4[id=20]/option-data[code=150]`. A
+the counts for each family, object kind and outcome, and one entry for each Kea fact that the run created, updated,
+removed or did not write. An entry names its fact by a Kea path, for example `Dhcp4/subnet4[id=20]/option-data[code=150]`. A
 fact that the run did not write has a reason:
 
 - **Unsupported**: the DHCP plugin cannot hold the fact. A later DHCP plugin release can remove this limit. When
@@ -115,8 +115,18 @@ fact that the run did not write has a reason:
   installed models at each run, so a release that gains the capability imports the fact with no netbox-kea change.
 - **Not imported**: the fact is out of scope (for example a Shared Network), the Kea data is not valid, or the DHCP
   plugin has no field for it by design.
-- **Skipped**: the parent object was not imported, IPAM ownership kept the IP Range unchanged, a write failed, or
-  Kea could not be read in full.
+- **Skipped**: the parent object was not imported, IPAM ownership kept the IP Range unchanged, a write failed,
+  Kea could not be read in full, or the run kept a stale object (see below).
+
+A run removes each Stale DHCP Import Object: a mapped Subnet, Pool, Reservation, client class or custom Option
+Definition whose Kea source Kea no longer reports. A Pool whose range changes in Kea is a new Pool, so the run removes
+the old row and creates a new one. The run removes an object only after it read every Kea object of that kind. When
+the Server Configuration or the Reservation Snapshot was not read in full, the run keeps the objects of the kinds that
+the read covers, and one skipped entry for each kind tells why and how many objects it kept. The run also keeps an
+object when its removal would remove a DHCP plugin row that the run keeps, for example a Pool that an operator added
+to a stale Subnet, or when an Option still uses a stale Option Definition. A removal deletes the DHCP plugin row with
+its DHCP Options. It never deletes an IP address, a Prefix or an IP Range. The change log records each removal, and
+the import needs the delete permission of each DHCP plugin model that it can remove.
 
 An object that did not change has no entry. A run that stops part way also stores its result, with an entry for the
 family that stopped. NetBox keeps the 10 latest runs of each Server and deletes the older runs
