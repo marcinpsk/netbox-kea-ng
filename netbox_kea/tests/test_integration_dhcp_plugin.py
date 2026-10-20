@@ -692,6 +692,19 @@ class DhcpPluginOptionImportTest(TestCase):
         self.assertEqual(definition.dhcp_server.name, self.server.name)
         self.assertTrue(Option.objects.filter(definition=definition).exists())
 
+    def test_name_only_option_writes_its_declared_custom_definition_on_the_first_import(self):
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        conf = {
+            "option-def": [{"code": 225, "name": "site-name", "space": "dhcp4", "type": "string"}],
+            "option-data": [{"name": "site-name", "data": "lab"}],
+            "subnet4": [],
+        }
+
+        summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
+
+        self.assertEqual((summary.errors, summary.option_defs_created, summary.options_created), (0, 1, 1))
+        self.assertEqual(Option.objects.get(definition__name="site-name", definition__standard=False).data, "lab")
+
     def test_unresolvable_option_is_skipped_not_fatal(self):
         # Custom code with no option-def → no definition to bind → skipped, import still ok.
         conf = {
