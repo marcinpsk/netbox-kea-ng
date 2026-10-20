@@ -273,3 +273,26 @@ def _plugin_cache_hygiene():
     _drop_plugin_cache_entries()
     yield
     _drop_plugin_cache_entries()
+
+
+@pytest.fixture(autouse=True)
+def _one_entry_per_import_fact():
+    """Fail a test whose DHCP Import records two entries for one Kea fact: each fact has one outcome (CONTEXT.md).
+
+    The check runs at teardown, because the import catches broad exceptions around its writes.
+    """
+    from netbox_kea.integrations.dhcp_plugin import ImportSummary
+
+    record = ImportSummary.record
+    repeated = []
+
+    def record_once(summary, entry):
+        fact = (entry.family, entry.kind, entry.path)
+        repeated.extend(
+            (earlier, entry) for earlier in summary.entries if (earlier.family, earlier.kind, earlier.path) == fact
+        )
+        record(summary, entry)
+
+    with patch.object(ImportSummary, "record", record_once):
+        yield
+    assert not repeated, f"One Kea fact has two entries: {repeated}"

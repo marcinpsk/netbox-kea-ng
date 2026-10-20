@@ -516,7 +516,7 @@ class SummaryProblemsTest(SimpleTestCase):
             (Kind.SUBNET, Reason.WRITE_FAILED, errors),
         ):
             for index in range(count):
-                summary.record(not_written(4, kind, f"Dhcp4/{kind}[{index}]", reason))
+                summary.record(not_written(4, kind, f"Dhcp4/{kind}/{reason}[{index}]", reason))
         return summary
 
     def test_no_problems_yields_no_notes(self):
