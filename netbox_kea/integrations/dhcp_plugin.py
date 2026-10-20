@@ -36,10 +36,10 @@ v1 scope (import + diff, read-only against Kea):
   server-scoped custom definition created from a Kea ``option-def``.  Options
   whose definition cannot be resolved are reported as unsupported, never fatal.
 * **Tuning fields** (lifetimes, timers, lease/DDNS/BOOTP/network settings) are
-  imported onto the ``DHCPServer`` (global) and ``Subnet``.  ``config-get`` returns
-  these fully defaulted and inherited, so each subnet field is stored **only when
-  it differs from the DHCPServer parent** (parent-diff suppression) — otherwise it
-  is left blank to inherit, keeping the records minimal and faithful.
+  imported onto the ``DHCPServer`` (global) and ``Subnet``. A Subnet gets only its
+  Declared Values (:func:`.dhcp_import_plan.declared_values`), and every other field
+  is cleared to inherit. A value that a member Subnet inherits from its Shared Network
+  is reported, never copied onto the Subnet.
 * **Client classes** (``client-classes``) are imported as ``ClientClass`` rows
   (test/template-test, additional-list flag, BOOTP + lifetime settings, options) with
   their Kea name. While the plugin keeps class names unique across all servers, a class
@@ -648,27 +648,23 @@ def _cleared(obj, attr: str):
     return None if db_field.null else db_field.get_default()
 
 
-def _inherited_settings_fields(obj, parent, settings: dict, field_map, summary: ImportSummary, source: _Source) -> dict:
-    """Plan *obj*'s tuning fields from Kea, storing only genuine overrides.
+def _settings_fields(obj, settings: dict, field_map, summary: ImportSummary, source: _Source, parent=None) -> dict:
+    """Plan *obj*'s tuning fields from the Kea *settings*. A key that *settings* lacks clears its field to inherit.
 
-    ``config-get`` returns every value fully inherited, so a field is stored on the
-    child only when it is present and **differs** from the stored *parent*
-    (parent-diff suppression).  A value equal to the parent — or one Kea no longer
-    reports — is **cleared**, so a removed Kea override does not linger as stale data
-    on re-import.  The ``model_fields`` guard skips fields *obj* does not have, so one
-    field map serves models with different mixins (e.g. ``Subnet`` vs ``ClientClass``).
-    Return the desired fields without changing *obj*.
+    With a stored *parent*, an empty value or one equal to the parent's field is cleared too. The ``model_fields``
+    guard skips fields *obj* does not have, so one field map serves models with different mixins (e.g. ``Subnet``
+    vs ``ClientClass``). Return the desired fields without changing *obj*.
     """
     model_fields = {f.name for f in obj._meta.get_fields()}
     fields = {}
     for kea_key, attr, transform in field_map:
         if attr not in model_fields:
             continue
-        raw = settings.get(kea_key)
-        value = _transform_value(transform, raw, kea_key, summary, source) if kea_key in settings else None
-        # Store only a genuine override; otherwise clear it so the child inherits and a stale override goes.
-        override = not _is_unset(value) and value != getattr(parent, attr, None)
-        fields[attr] = value if override else _cleared(obj, attr)
+        value = (
+            _transform_value(transform, settings[kea_key], kea_key, summary, source) if kea_key in settings else None
+        )
+        inherited = value is None or (parent is not None and (_is_unset(value) or value == getattr(parent, attr, None)))
+        fields[attr] = _cleared(obj, attr) if inherited else value
     return fields
 
 
@@ -953,7 +949,7 @@ def _client_class_changes(
             )
         )
     source = _Source(intent.family, Kind.CLIENT_CLASS, path)
-    fields.update(_inherited_settings_fields(obj, dhcp_server, intent.settings, _COMMON_FIELDS, summary, source))
+    fields.update(_settings_fields(obj, intent.settings, _COMMON_FIELDS, summary, source, dhcp_server))
     return {name: value for name, value in fields.items() if getattr(obj, name) != value}
 
 
@@ -1085,9 +1081,7 @@ def upsert_subnet(server, dhcp_server, planned: PlannedSubnet, summary: ImportSu
                 summary.warn(f"subnet {network}: IPAM ownership {result.outcome}, Prefix left unchanged")
             if existing is not None:
                 fields = {"prefix_id": prefix_obj.pk, "dhcp_server_id": dhcp_server.pk, "shared_network_id": None}
-                fields.update(
-                    _inherited_settings_fields(existing, dhcp_server, intent.settings, _SUBNET_FIELDS, summary, source)
-                )
+                fields.update(_settings_fields(existing, planned.settings, _SUBNET_FIELDS, summary, source))
                 changed = any(getattr(existing, name) != value for name, value in fields.items())
                 if changed:
                     existing.snapshot()
@@ -1103,8 +1097,8 @@ def upsert_subnet(server, dhcp_server, planned: PlannedSubnet, summary: ImportSu
                     dhcp_server=dhcp_server,
                     shared_network=None,
                 )
-                for name, value in _inherited_settings_fields(
-                    subnet_obj, dhcp_server, intent.settings, _SUBNET_FIELDS, summary, source
+                for name, value in _settings_fields(
+                    subnet_obj, planned.settings, _SUBNET_FIELDS, summary, source
                 ).items():
                     setattr(subnet_obj, name, value)
                 subnet_obj.save()
@@ -1122,6 +1116,21 @@ def upsert_subnet(server, dhcp_server, planned: PlannedSubnet, summary: ImportSu
     elif changed:
         summary.record(written(intent.family, Kind.SUBNET, path, Outcome.UPDATED))
     return subnet_obj
+
+
+def _report_inherited(summary: ImportSummary, planned: PlannedSubnet) -> None:
+    """Record each value that a Subnet inherits from its Shared Network, which the import does not hold."""
+    path = subnet_path(planned)
+    detail = f"Kea applies the value of Shared Network {planned.intent.shared_network}, which is not imported."
+    for key in planned.inherited:
+        entry = not_written(
+            planned.intent.family,
+            Kind.SUBNET,
+            kea_paths.setting(path, key),
+            Reason.INHERITED_FROM_SHARED_NETWORK,
+            detail,
+        )
+        summary.record(entry)
 
 
 def _skip_subnet_children(summary: ImportSummary, planned: PlannedSubnet) -> None:
@@ -1636,6 +1645,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         if subnet_obj is None:
             _skip_subnet_children(summary, planned_subnet)
             continue
+        _report_inherited(summary, planned_subnet)
         upsert_options(
             subnet_obj,
             planned_subnet.intent.options,

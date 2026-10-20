@@ -33,9 +33,8 @@ logger = logging.getLogger(__name__)
 
 # Scalar Kea config keys that map onto netbox_dhcp tuning fields (lifetimes, timers,
 # lease/DDNS/BOOTP/network settings, and server-level globals).  ``config-get``
-# returns these fully defaulted+inherited at both the global and subnet scope; the
-# adapter decides which apply to which model and suppresses values inherited from
-# the parent.  Captured verbatim here (the Kea→sys4 field mapping lives in the adapter).
+# merges some of them from the parent; the plan keeps only the Declared Values.
+# Captured verbatim here (the Kea→sys4 field mapping lives in the adapter).
 KEA_SETTINGS_KEYS: tuple[str, ...] = (
     # lifetimes / timers
     "valid-lifetime",
@@ -150,6 +149,7 @@ class SharedNetworkIntent:
     name: str
     family: int
     options: tuple[DHCPOption, ...]
+    settings: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -391,7 +391,10 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
         net_path = kea_paths.shared_network(family, name)
         result.shared_networks.append(
             SharedNetworkIntent(
-                name=name, family=family, options=_options(raw_net.get("option-data"), net_path, dropped)
+                name=name,
+                family=family,
+                options=_options(raw_net.get("option-data"), net_path, dropped),
+                settings=_settings(raw_net),
             )
         )
         for index, raw in enumerate(_config_collection(raw_net, subnet_key)):
