@@ -1001,6 +1001,34 @@ class DhcpPluginTuningImportTest(TestCase):
         )
         self.assertIsNone(imported_dhcp_server(self.server, 4).valid_lifetime)
 
+    def test_a_global_save_that_the_database_refuses_is_a_failed_write_and_the_row_keeps_its_values(self):
+        from netbox_kea.integrations.dhcp_import_plan import plan_family
+        from netbox_kea.integrations.dhcp_import_report import Kind
+        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+
+        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        # The value passes the field validators, so only the database can refuse the save. The test rolls it back.
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"ALTER TABLE {DHCPServer._meta.db_table} ADD CONSTRAINT kea_test_renew CHECK (renew_timer < 1000)"
+            )
+        self._import({"renew-timer": 900, "subnet4": []})
+        dhcp_server = imported_dhcp_server(self.server, 4)
+        planned = plan_family(parse_dhcp_config({"renew-timer": 1200, "rebind-timer": 1800, "subnet4": []}, 4), None)
+        summary = self.adapter.ImportSummary()
+        capabilities = probe()
+        values = self.adapter.server_values(dhcp_server, planned.server, 4, capabilities, summary)
+
+        saved = self.adapter._apply_global_settings(dhcp_server, values, summary, 4, capabilities)
+
+        self.assertIsNone(saved)
+        self.assertEqual(
+            [(entry.path, entry.reason) for entry in summary.entries if entry.kind == Kind.SERVER][-1],
+            ("Dhcp4", Reason.WRITE_FAILED),
+        )
+        self.assertIn("DHCPServer settings", summary.warnings[-1])
+        self.assertEqual((dhcp_server.renew_timer, dhcp_server.rebind_timer), (900, None))
+
 
 def _device(name: str, *interfaces: str):
     """Return a Device with an Interface of each name."""
@@ -1095,6 +1123,31 @@ class DhcpPluginServerPerFamilyTest(TestCase):
 
         v6 = imported_dhcp_server(self.server, 6)
         self.assertEqual((v6.preferred_lifetime, v6.relay_supplied_options), (None, []))
+
+    def test_relay_supplied_options_that_kea_sends_as_text_import_as_codes(self):
+        from netbox_kea.integrations.dhcp_import_report import Kind, Outcome
+
+        # The recorded config-get reply sends each code as text.
+        self.conf[6]["relay-supplied-options"] = ["65"]
+        self._import(6)
+
+        summary = self._import(6)
+
+        self.assertEqual(imported_dhcp_server(self.server, 6).relay_supplied_options, [65])
+        self.assertNotIn((Kind.SERVER, Outcome.UPDATED), [(entry.kind, entry.outcome) for entry in summary.entries])
+
+    def test_a_relay_supplied_option_that_is_not_a_code_cannot_be_converted(self):
+        from netbox_kea.integrations.dhcp_import_report import Reason
+
+        self.conf[6]["relay-supplied-options"] = ["65", "agent"]
+
+        summary = self._import(6)
+
+        self.assertIn(
+            ("Dhcp6/relay-supplied-options", Reason.PLUGIN_GAP),
+            [(entry.path, entry.reason) for entry in summary.entries],
+        )
+        self.assertEqual(imported_dhcp_server(self.server, 6).relay_supplied_options, [])
 
     def test_an_upgrade_adopts_the_existing_dhcp_server_for_the_primary_family(self):
         from django.contrib.contenttypes.models import ContentType

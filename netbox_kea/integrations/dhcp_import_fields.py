@@ -43,6 +43,11 @@ def relay_to_str(value):
     return ", ".join(addrs) if addrs else None
 
 
+def option_codes(value):
+    """Convert a Kea list of option codes, which ``config-get`` returns as text, to integers."""
+    return [int(code) for code in value]
+
+
 def server_id_type(value):
     """Reduce a Kea ``server-id`` map to its type."""
     return value.get("type") if isinstance(value, dict) else value
@@ -117,7 +122,7 @@ SERVER_FIELDS: FieldMap = (
     *COMMON_FIELDS,
     ("decline-probation-period", "decline_probation_period", None),
     ("echo-client-id", "echo_client_id", None),
-    ("relay-supplied-options", "relay_supplied_options", None),
+    ("relay-supplied-options", "relay_supplied_options", option_codes),
     (kea_paths.SERVER_ID, "server_id", server_id_type),
 )
 
