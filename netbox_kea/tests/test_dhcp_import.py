@@ -232,6 +232,12 @@ class CapabilityProbeTest(SimpleTestCase):
         )
         self.assertFalse(probe(plugin.__getitem__).has(Capability.NAME_PER_SERVER))
 
+    @isolate_apps("netbox_kea")
+    def test_a_user_context_that_cannot_be_cleared_lacks_the_capability(self):
+        plugin = _proposed_plugin_models()
+        plugin["Pool"] = _probe_model("RequiredContextPool", user_context=models.JSONField())
+        self.assertFalse(probe(plugin.__getitem__).has(Capability.USER_CONTEXT))
+
 
 class _ProbeModel(models.Model):
     """A model that the probe reads; no table is created."""

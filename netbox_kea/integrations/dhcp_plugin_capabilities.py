@@ -82,7 +82,11 @@ def _flex_id_identifier(model: ModelLookup) -> bool:
 
 def _user_context(model: ModelLookup) -> bool:
     fields = [_field(model(name), "user_context") for name in _KEA_OBJECT_MODELS]
-    return all(field is not None and field.get_internal_type() == "JSONField" for field in fields)
+    # The import clears an undeclared user-context, so the field must be nullable or have a default.
+    return all(
+        field is not None and field.get_internal_type() == "JSONField" and (field.null or field.has_default())
+        for field in fields
+    )
 
 
 def _option_spaces(model: ModelLookup) -> bool:
@@ -144,7 +148,8 @@ CHECKS: dict[Capability, Check] = {
         "flex-id is a choice of DHCPServer.host_reservation_identifiers.", _flex_id_identifier
     ),
     Capability.USER_CONTEXT: Check(
-        f"Each of {', '.join(_KEA_OBJECT_MODELS)} has a JSON field user_context.", _user_context
+        f"Each of {', '.join(_KEA_OBJECT_MODELS)} has a JSON field user_context that is nullable or has a default.",
+        _user_context,
     ),
     Capability.OPTION_SPACES: Check("OptionDefinition.space has no closed set of choices.", _option_spaces),
     Capability.OPTION_CODE_16_BIT: Check(
