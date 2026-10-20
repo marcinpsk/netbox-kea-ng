@@ -36,7 +36,7 @@ from netbox_kea.views.notices import Notice
 from .kea_stub import observed_configuration, stub_kea
 from .test_integration_dhcp_plugin import _reservation_snapshot
 from .test_views_dhcp_plugin import _sync_responses
-from .utils import _make_db_server
+from .utils import _make_db_server, take_reservation_name
 
 
 class ImportOwnershipTest(TestCase):
@@ -514,11 +514,11 @@ class ImportOwnershipTest(TestCase):
     def test_failed_reservation_keeps_stale_delegated_link_and_healthy_sibling_imports(self):
         self.server.sync_deprecate_prefixes_and_ranges = True
         self.server.save()
-        common = ":".join(["aa"] * 83)
-        failed = {**self.identity, "duid": common + ":01"}
+        failed = {**self.identity, "duid": "01:02:05:01"}
         self.import_hosts([{**failed, "prefixes": [self.network]}])
         before = IPAMOwnershipLink.objects.values().get(prefix=self.delegated())
-        summary = self.import_hosts([{**failed, "duid": common + ":02"}, self.identity])
+        take_reservation_name(f"{self.server.name} DHCPv6 subnet 1", "01:02:05:02")
+        summary = self.import_hosts([{**failed, "duid": "01:02:05:02"}, self.identity])
         self.assertEqual(summary.errors, 1, summary.warnings)
         self.assertEqual(summary.reservations_created, 1)
         self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix=self.delegated()), before)

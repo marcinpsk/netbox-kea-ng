@@ -44,6 +44,7 @@ from .utils import (
     imported_dhcp_servers,
     lease_phase,
     linked_dhcp_targets,
+    take_reservation_name,
     with_sync_config,
 )
 
@@ -523,6 +524,20 @@ class DhcpPluginAdapterTest(TestCase):
             summary.entries,
         )
 
+    def test_two_long_duids_in_a_subnet_of_a_long_server_name_import_two_reservations(self):
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        self.server.name = "k" * 255
+        self.server.save()
+        conf = {"subnet6": [{"id": 6, "subnet": "2001:db8:6::/64"}]}
+        hosts = [{"subnet-id": 6, "duid": ":".join([octet] * 84)} for octet in ("aa", "bb")]
+
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6, hosts)
+        )
+
+        self.assertEqual((summary.errors, summary.reservations_created), (0, 2), summary.warnings)
+        self.assertEqual(HostReservation.objects.filter(subnet__dhcp_server__name__startswith="kkk").count(), 2)
+
     def test_one_long_duid_in_two_subnets_imports_two_reservations(self):
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
         duid = ":".join(["aa"] * 84)
@@ -538,13 +553,13 @@ class DhcpPluginAdapterTest(TestCase):
 
     def test_reservation_database_failure_does_not_stop_healthy_sibling(self):
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
-        common_duid = ":".join(["aa"] * 83)
         conf = {"subnet6": [{"id": 3, "subnet": "2001:db8:3::/64"}]}
         hosts = [
-            {"subnet-id": 3, "duid": common_duid + ":01", "hostname": "first.example"},
-            {"subnet-id": 3, "duid": common_duid + ":02", "hostname": "collision.example"},
+            {"subnet-id": 3, "duid": "01:02:01", "hostname": "first.example"},
+            {"subnet-id": 3, "duid": "01:02:02", "hostname": "collision.example"},
             {"subnet-id": 3, "duid": "01:02:03", "hostname": "healthy.example"},
         ]
+        take_reservation_name(f"{self.server.name} DHCPv6 subnet 3", "01:02:02")
         summary = self.adapter.import_server_config(
             self.server, parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6, hosts)
         )
@@ -1120,7 +1135,7 @@ class DhcpPluginServerPerFamilyTest(TestCase):
         self._import(6)
 
         names = [imported_dhcp_server(self.server, family).name for family in (4, 6)]
-        self.assertEqual([name[-6:] for name in names], ["DHCPv4", "DHCPv6"])
+        self.assertNotEqual(*names)
         self.assertTrue(all(len(name) == 255 for name in names))
 
     def test_a_server_named_like_another_servers_dhcp_server_takes_none_of_its_rows(self):
@@ -2320,9 +2335,8 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
 
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
         conf = {"subnet6": [{"id": 6, "subnet": "2001:db8:6::/64"}]}
-        common_duid = ["aa"] * 83
-        first_duid = ":".join([*common_duid, "01"])
-        colliding_duid = ":".join([*common_duid, "02"])
+        first_duid = "01:02:06:01"
+        colliding_duid = "01:02:06:02"
         intent = parse_dhcp_config(conf, 6)
 
         first = self.adapter.import_server_config(
@@ -2330,6 +2344,7 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
             intent,
             _reservation_snapshot(conf, 6, [{"subnet-id": 6, "duid": first_duid}]),
         )
+        held = take_reservation_name(f"{self.server.name} DHCPv6 subnet 6", colliding_duid)
         collision = self.adapter.import_server_config(
             self.server,
             intent,
@@ -2347,7 +2362,7 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         )
 
         self.assertEqual(first.errors, 0, first.warnings)
-        self.assertEqual(HostReservation.objects.count(), 1)
+        self.assertEqual(HostReservation.objects.exclude(pk=held.pk).count(), 1)
         self.assertEqual(collision.errors, 1, collision.warnings)
         self.assertFalse(Prefix.objects.filter(prefix="2001:db8:face::/56").exists())
 

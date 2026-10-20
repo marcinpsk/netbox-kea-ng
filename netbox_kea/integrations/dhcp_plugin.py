@@ -51,6 +51,7 @@ v1 scope (import + diff, read-only against Kea):
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import logging
 from dataclasses import dataclass, field
@@ -908,14 +909,16 @@ def upsert_dhcp_server(server, family: int):
     return dhcp_server, created
 
 
-def _synthesized_name(scope: str, detail: str) -> str:
-    """Return a DHCP plugin row name: *scope* shortened so that *detail* fits, which keeps the names distinct.
+_NAME_DIGEST_LENGTH = 12
 
-    A *detail* that leaves no room for the scope is cut instead, so names of different scopes stay distinct.
-    """
-    if len(detail) >= MAX_KEA_NAME_LENGTH:
-        return f"{scope}{detail}"[:MAX_KEA_NAME_LENGTH]
-    return f"{scope[: MAX_KEA_NAME_LENGTH - len(detail)]}{detail}"
+
+def _synthesized_name(scope: str, detail: str) -> str:
+    """Return a DHCP plugin row name. A name too long for the plugin ends with a hash of all of it, to stay distinct."""
+    name = f"{scope}{detail}"
+    if len(name) <= MAX_KEA_NAME_LENGTH:
+        return name
+    digest = hashlib.sha256(name.encode()).hexdigest()[:_NAME_DIGEST_LENGTH]
+    return f"{name[: MAX_KEA_NAME_LENGTH - _NAME_DIGEST_LENGTH - 1]}~{digest}"
 
 
 def _released_client_class_name(server, kea_name: str) -> str:
