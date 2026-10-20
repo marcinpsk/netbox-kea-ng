@@ -29,7 +29,7 @@ from django.contrib.messages import get_messages
 from django.core.management import call_command
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.signals import request_finished
-from django.db import IntegrityError, OperationalError, connection, connections, transaction
+from django.db import IntegrityError, OperationalError, connection, connections, models, transaction
 from django.db.models.signals import m2m_changed, post_delete, post_save, pre_delete, pre_save
 from django.test import TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
@@ -109,7 +109,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         with event_tracking(_change_request(self.user)):
             summary = import_server_config(server, intent, observation)
         self.assertEqual(summary.errors, 0, summary.warnings)
-        link = KeaDhcpLink.objects.get(server=server, family=family)
+        link = KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=family)
         return server, intent, observation, link.sys4_object, link
 
     def _delete(self, branch, target, queryset=False):
@@ -150,7 +150,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertEqual(again.errors, 0, again.warnings)
         self.assertEqual(again.subnets_created, 0)
         self.assertEqual(again.reservations_created, 0)
-        self.assertEqual(KeaDhcpLink.objects.get(server=server, family=family).pk, link.pk)
+        self.assertEqual(KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=family).pk, link.pk)
         self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).sys4_object.pk, target.pk)
 
     def test_squash_restores_imported_subnets(self):
@@ -373,7 +373,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 with event_tracking(_change_request(self.user)):
                     summary = import_server_config(server, changed_intent)
                 self.assertEqual(summary.errors, 0, summary.warnings)
-                self.assertEqual(KeaDhcpLink.objects.get(server=server, family=4).pk, link.pk)
+                self.assertEqual(KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=4).pk, link.pk)
                 observed.append(type(target).objects.get(pk=target.pk).valid_lifetime)
 
         squash_dependency_graph_built.connect(importing, weak=False)
@@ -957,16 +957,18 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         targets = {(type(link.sys4_object), link.object_id): link.sys4_object.created for link in links()}
         self.assertEqual(
             sorted(links().values_list("kind", flat=True)),
-            ["client_class", "option_definition", "pool", "reservation", "subnet"],
+            ["client_class", "option_definition", "pool", "reservation", "server", "subnet"],
         )
+        dhcp_server = links().get(kind="server").sys4_object
         branch = _provisioned_branch(self, "mapping-imported-kinds")
         branch.merge_strategy = "squash"
         branch.save(provision=False)
-        # The Subnet takes its Pool, its Reservation and their Options; the Option Definition goes last.
+        # The Subnet takes its Pool, its Reservation and their Options; the DHCPServer goes last.
         for target in (
-            Subnet.objects.get(dhcp_server__name=server.name),
-            ClientClass.objects.get(dhcp_server__name=server.name),
-            OptionDefinition.objects.get(standard=False, dhcp_server__name=server.name),
+            Subnet.objects.get(dhcp_server=dhcp_server),
+            ClientClass.objects.get(dhcp_server=dhcp_server),
+            OptionDefinition.objects.get(standard=False, dhcp_server=dhcp_server),
+            dhcp_server,
         ):
             self._delete(branch, target)
         with activate_branch(branch):
@@ -2617,7 +2619,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 with event_tracking(_change_request(self.user)):
                     summary = import_server_config(server, intent, observation)
                 self.assertEqual(summary.errors, 0, summary.warnings)
-                mapping = KeaDhcpLink.objects.get(server=server, family=4)
+                mapping = KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=4)
                 self.assertEqual(mapping.object_id, target.pk)
                 adopted.append(mapping.pk)
             finally:
@@ -3187,7 +3189,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertEqual(summaries[0].errors, 0, summaries[0].warnings)
         self.assertEqual(summaries[0].subnets_created, 0)
         self.assertTrue(blocked, "The importer selected mapping state before coordination")
-        self.assertEqual(KeaDhcpLink.objects.get(server=server, family=4).pk, link.pk)
+        self.assertEqual(KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=4).pk, link.pk)
         self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).object_id, target.pk)
 
     def test_missing_source_server_refuses_branch_deletion_capture(self):
@@ -3275,7 +3277,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         with event_tracking(_change_request(self.user)):
             summary = import_server_config(server, intent, observation)
         self.assertEqual(summary.errors, 0, summary.warnings)
-        replacement = KeaDhcpLink.objects.get(server=server, family=4)
+        replacement = KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=4)
         self.assertNotEqual(replacement.pk, link.pk)
         before = ObjectChange.objects.count()
         with self.assertRaisesMessage(AbortRequest, "identity"):
@@ -3309,7 +3311,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             with event_tracking(_change_request(self.user)):
                 summary = import_server_config(server, intent, observation)
             self.assertEqual(summary.errors, 0, summary.warnings)
-            adopted.append(KeaDhcpLink.objects.get(server=server, family=4))
+            adopted.append(KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=4))
 
         pre_merge.connect(import_after_preflight, weak=False)
         try:
@@ -3342,7 +3344,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         with event_tracking(_change_request(self.user)):
             summary = import_server_config(server, intent, observation)
         self.assertEqual(summary.errors, 0, summary.warnings)
-        adopted = KeaDhcpLink.objects.get(server=server, family=6)
+        adopted = KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=6)
         self.assertEqual(adopted.object_id, created.pk)
         before = ObjectChange.objects.count()
         with self.assertRaisesMessage(AbortRequest, "mapping"):
@@ -3368,7 +3370,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 with event_tracking(_change_request(self.user)):
                     summary = import_server_config(server, intent, observation)
                 self.assertEqual(summary.errors, 0, summary.warnings)
-                adopted.append(KeaDhcpLink.objects.get(server=server, family=4).pk)
+                adopted.append(KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=4).pk)
 
         squash_dependency_graph_built.connect(importing, weak=False)
         try:
@@ -3403,7 +3405,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                     summary = import_server_config(server, changed_intent)
                 self.assertEqual(summary.errors, 0, summary.warnings)
                 current = type(target).objects.get(pk=target.pk)
-                mapping = KeaDhcpLink.objects.get(server=server, family=4)
+                mapping = KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=4)
                 self.assertEqual(current.valid_lifetime, 600)
                 self.assertEqual(mapping.pk, link.pk)
                 observed.append(current.pk)
@@ -3818,18 +3820,27 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
 
     def test_a_deletion_made_relevant_after_its_probe_refuses_before_any_change(self):
         from ipam.models import IPAddress
-        from netbox_dhcp.models import DHCPServer
+        from netbox_dhcp.models import DHCPCluster
 
-        _, _, _, target, link = self._imported("reservation", 4, "made-relevant")
-        empty = DHCPServer.objects.create(name="lock-scope-empty")
+        server, _, _, reservation, link = self._imported("reservation", 4, "made-relevant")
+        dhcp_server = reservation.dhcp_server
+        server_link = KeaDhcpLink.objects.get(server=server, family=4, kind="server")
+        empty = DHCPCluster.objects.create(name="lock-scope-empty")
         loose = IPAddress.objects.create(address="203.0.113.50/24")
         cases = (
-            # A writer moves the mapped reservation under the probed DHCP server before the native collection.
-            ("collection", empty, lambda sql: sql.startswith("SAVEPOINT"), {"dhcp_server": empty}),
+            # A writer puts the mapped DHCP server in the probed cluster before the native collection.
+            (
+                "collection",
+                empty,
+                lambda sql: sql.startswith("SAVEPOINT"),
+                dhcp_server,
+                server_link,
+                {"dhcp_cluster": empty},
+            ),
             # A writer commits a reference to the probed address before the row fence.
-            ("fence", loose, lambda sql: sql.endswith("FOR UPDATE"), {"ipv4_address": loose}),
+            ("fence", loose, lambda sql: sql.endswith("FOR UPDATE"), reservation, link, {"ipv4_address": loose}),
         )
-        for name, deleted, paused_at, change in cases:
+        for name, deleted, paused_at, target, mapping, change in cases:
             with self.subTest(name):
                 outcome = self._deletion_raced_by_a_writer(deleted, paused_at, target, change)
                 self.assertEqual(outcome, [_STALE_GATE])
@@ -3837,58 +3848,18 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
                 current = type(target).objects.get(pk=target.pk)
                 for field, value in change.items():
                     self.assertEqual(getattr(current, f"{field}_id"), value.pk)
-                self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk, object_id=target.pk).exists())
+                self.assertTrue(KeaDhcpLink.objects.filter(pk=mapping.pk, object_id=target.pk).exists())
 
-    @override_settings(EVENTS_PIPELINE=[_EVENTS_RECORDER])
-    def test_limit_c_a_caught_late_delete_guard_inside_a_transaction_dispatches_the_reverted_delete(self):
-        from netbox_dhcp.models import DHCPServer
+    def test_a_delete_that_cascades_to_a_dhcp_target_starts_from_a_dhcp_target(self):
+        """Each cascade parent of a DHCP target is a target, so its delete is coordinated from the start (#94)."""
+        from netbox_kea.dhcp_mapping_lifecycle import target_models
 
-        _, _, _, target, link = self._imported("reservation", 4, "late-guard-events")
-        empty = DHCPServer.objects.create(name="lock-scope-late-guard-events")
-        paused, release, outcome = Event(), Event(), []
-        DISPATCHED_EVENTS.clear()
-        self.addCleanup(DISPATCHED_EVENTS.clear)
-
-        def pause(execute, sql, params, many, context):
-            if not paused.is_set() and sql.startswith("SAVEPOINT"):
-                paused.set()
-                release.wait(20)
-            return execute(sql, params, many, context)
-
-        def delete_in_a_caller_transaction():
-            # A caller that catches the refusal and commits, as a plugin row loop inside a transaction would.
-            try:
-                with event_tracking(_change_request(self.user)), transaction.atomic():
-                    with connections["default"].execute_wrapper(pause):
-                        try:
-                            DHCPServer.objects.get(pk=empty.pk).delete()
-                        except AbortRequest as error:
-                            outcome.append(error.message)
-            finally:
-                connections.close_all()
-
-        def move_the_reservation():
-            try:
-                current = type(target).objects.get(pk=target.pk)
-                current.dhcp_server = empty
-                current.save()
-            finally:
-                connections.close_all()
-
-        workers = self._workers()
-        deleting = workers.submit(delete_in_a_caller_transaction)
-        try:
-            self.assertTrue(paused.wait(20), "The deletion did not reach its savepoint")
-            workers.submit(move_the_reservation).result(timeout=20)
-        finally:
-            release.set()
-        deleting.result(timeout=20)
-        self.assertEqual(outcome, [_STALE_GATE])
-        self.assertTrue(type(target).objects.filter(pk=target.pk).exists())
-        self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
-        # Accepted limit (#302): NetBox queued the delete event before the guard refused, and the caller committed.
-        dispatched = [(e["object_type"].model_class(), e["object_id"], e["event_type"]) for e in DISPATCHED_EVENTS]
-        self.assertIn((type(target), target.pk, "object_deleted"), dispatched)
+        targets = set(target_models())
+        for model in targets:
+            for field in model._meta.concrete_fields:
+                if isinstance(field, models.ForeignKey) and field.remote_field.on_delete is models.CASCADE:
+                    with self.subTest(model=model.__name__, field=field.name):
+                        self.assertIn(field.related_model, targets)
 
     def test_dependency_delete_during_replay_rolls_back_the_whole_revert(self):
         _, _, _, target, link = self._imported("subnet", 4, "dependency-replay")

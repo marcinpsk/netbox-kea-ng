@@ -153,6 +153,8 @@ uv run python scripts/check_docs_media.py site docs/guide/assets
   change.
 - **Event-rollback job (NetBox 4.3)**: runs `test_event_scope.py` on the supported floor, where
   `event_scope.atomic()` is always a plain transaction. Keep that module free of netbox-branching fixtures.
+- **DHCP plugin job**: runs with netbox-plugin-dhcp 0.2.0. A test module that skips without `netbox_dhcp`
+  must be in its file list (or the branching job's). `test_pytest_configuration.py` fails when one is missing.
 - **Branching job**: the unit-test NetBox release with netbox-branching 1.2.1 and netbox-plugin-dhcp 0.2.0.
   It runs `test_branching.py` and `test_dhcp_mapping_recovery.py` with
   `NETBOX_KEA_REQUIRE_BRANCHING=1`, so these modules fail

@@ -21,13 +21,12 @@ from netbox_kea.integrations import dhcp_import_ledger as ledger
 from netbox_kea.integrations.dhcp_import_ledger import (
     LEDGER,
     MERGED_KEYS,
-    Capability,
     Deprecated,
     Mapped,
     NotImported,
     Pending,
 )
-from netbox_kea.integrations.dhcp_import_report import Reason
+from netbox_kea.integrations.dhcp_import_report import Capability, Reason
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
 # The open tickets of #89 that map a key.
@@ -257,14 +256,14 @@ class LedgerEntriesTest(SimpleTestCase):
                     self.assertIn(entry.replacement, LEDGER[family][table])
                     self.assertNotIsInstance(LEDGER[family][table][entry.replacement], Deprecated)
 
-    def test_every_capability_gates_a_key_and_names_its_gap(self):
+    def test_every_capability_but_the_family_gates_a_key(self):
         named = {
             capability
             for _family, _table, _key, entry in self._entries()
             for capability in getattr(entry, "capabilities", ())
         }
-        self.assertEqual(named, set(Capability))
-        self.assertEqual(set(ledger.GAPS), set(Capability))
+        # The family of a DHCPServer is the Kea daemon itself, not a key.
+        self.assertEqual(named, set(Capability) - {Capability.SERVER_FAMILY})
 
     def test_user_context_is_gated_on_every_object_that_has_it(self):
         for family, tables in LEDGER.items():
@@ -351,16 +350,20 @@ class LedgerAgreesWithTheImportTest(SimpleTestCase):
         return {field.name for field in apps.get_model("netbox_dhcp", model)._meta.get_fields()}
 
     def test_every_mapped_target_is_a_plugin_model_or_field(self):
+        """A field that the installed plugin lacks is the shape that #88 proposes, behind a missing capability."""
+        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+
+        capabilities = probe()
         for family, tables in LEDGER.items():
             for table, keys in tables.items():
                 for key, entry in keys.items():
                     if isinstance(entry, Mapped):
                         with self.subTest(family=family, table=table, key=key):
                             model, _, field = entry.target.partition(".")
-                            if field:
-                                apps.get_model("netbox_dhcp", model)._meta.get_field(field)
-                            else:
-                                apps.get_model("netbox_dhcp", model)
+                            plugin_model = apps.get_model("netbox_dhcp", model)
+                            if field and field not in self._field_names(model):
+                                missing = [c for c in entry.capabilities if not capabilities.has(c)]
+                                self.assertTrue(missing, f"{plugin_model.__name__} has no field {field}")
 
     def test_the_mapped_settings_are_the_field_maps_of_the_import(self):
         from netbox_kea.integrations import dhcp_plugin

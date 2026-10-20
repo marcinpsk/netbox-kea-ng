@@ -53,6 +53,7 @@ SITES = (
     SaveSite("views/settings_page.py", "SettingsView.post", "instance", "loaded"),
     SaveSite("integrations/dhcp_plugin.py", "upsert_options", "obj", "loaded", constructors=("Option",)),
     SaveSite("integrations/dhcp_plugin.py", "_apply_global_settings", "dhcp_server", "loaded"),
+    SaveSite("integrations/dhcp_plugin.py", "_move_family_options", "option", "loaded"),
     SaveSite(
         "integrations/dhcp_plugin.py", "upsert_client_class", "obj", "loaded", count=2, constructors=("ClientClass",)
     ),
@@ -68,6 +69,7 @@ SITES = (
     ),
     SaveSite("integrations/dhcp_plugin.py", "_upsert_pool", "pool_obj", "loaded", count=2, constructors=("Pool",)),
     SaveSite("integrations/dhcp_plugin.py", "upsert_subnet", "subnet_obj", "create"),
+    SaveSite("integrations/dhcp_plugin.py", "upsert_dhcp_server", "dhcp_server", "create"),
     SaveSite("ipam_reconciliation.py", "_claim", "ip", "create"),
     SaveSite("ipam_reconciliation.py", "_store_link", "link", "plain"),
     SaveSite("ipam_reconciliation.py", "_remove_stale_link", "link", "plain"),

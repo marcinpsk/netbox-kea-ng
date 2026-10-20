@@ -49,21 +49,38 @@ stale cleanup while the switch is off.
 The DHCP Import needs netbox-plugin-dhcp 0.2.0 or later. With an older release installed, **Sync to DHCP plugin now**
 refuses before it reads Kea, names the required version, and changes nothing.
 
-The import keeps a DHCP Import Mapping from each Subnet, Pool, Reservation, client class and custom Option Definition
-that it writes to its Kea source. A later run finds the object through its mapping and updates it. When you rename an
-object, the mapping stays and the import keeps your name. The first run after an upgrade maps each object that an
-earlier release imported, so it makes no duplicate. One DHCP Server holds both families, so when the two families of
-a Server have a client class of the same name, the class of the second family also names its family, for example
-`kea1 DHCPv6: voip`. The DHCP plugin holds one custom Option Definition for each space and code of a DHCP Server, so
-when both families declare the same space and code, the second family reports that definition and its Options as
-unsupported.
+Kea runs DHCPv4 and DHCPv6 as separate daemons, so the import writes one DHCP Server for each enabled family of a
+Server, named for example `kea1 DHCPv4` and `kea1 DHCPv6`. Each DHCP Server holds only the global configuration,
+global DHCP Options, client classes and Option Definitions of its own daemon, and the Subnets and Reservations of its
+family attach to it. A global value that Kea no longer declares is cleared on the next run. The first run after an
+upgrade keeps the DHCP Server that an earlier release named after the Server, with its device, tags and comments, for
+DHCPv4 (or for DHCPv6 on a DHCPv6-only Server). A new DHCP Server takes the device or virtual machine of the Server's
+other DHCP Server when that one is already imported; after that, the device or virtual machine is yours to change.
+Rows that the earlier release wrote for the other family move to that family's DHCP Server. The import links the interfaces that
+Kea's `interfaces-config` names to the DHCP Server's device or virtual machine interfaces of those names. A name that
+matches no interface is reported, and so are `*` and the address part of an entry such as `eth0/192.0.2.1`, which
+the DHCP plugin cannot hold.
+
+The import keeps a DHCP Import Mapping from each DHCP Server, Subnet, Pool, Reservation, client class and custom
+Option Definition that it writes to its Kea source. A later run finds the object through its mapping and updates it. When you rename an
+object, the mapping stays and the import keeps your name. A client class is the exception: it keeps its Kea name,
+because Kea refers to a class by name. The first run after an upgrade maps each object that an earlier release
+imported, so it makes no duplicate, and renames each client class from `kea1: voip` to `voip`. The DHCP plugin keeps
+client class names unique across all DHCP Servers. So when another client class already holds the name, the class is
+unsupported: a new class is not created, and an existing class keeps its old name while its other fields still
+follow Kea. With netbox-plugin-dhcp 0.2.0, the family of a DHCP Server, the `server-id` parameters other than its
+type, a global `user-context`, the `flex-id` Reservation identifier, `allow-address-registration` (DHCPv6) and
+`stash-agent-options` (DHCPv4) are unsupported. The rest of the global configuration imports.
 
 Each run of **Sync to DHCP plugin now** stores its result. The **DHCP Plugin** page under Sync shows the latest run:
 the counts for each family, object kind and outcome, and one entry for each Kea fact that the run created, updated or
 did not write. An entry names its fact by a Kea path, for example `Dhcp4/subnet4[id=20]/option-data[code=150]`. A
 fact that the run did not write has a reason:
 
-- **Unsupported**: the DHCP plugin cannot hold the fact. A later DHCP plugin release can remove this limit.
+- **Unsupported**: the DHCP plugin cannot hold the fact. A later DHCP plugin release can remove this limit. When
+  the installed release lacks a DHCP Plugin Capability that the fact needs, the entry names that capability and its
+  row in the [DHCP plugin gap list](https://github.com/marcinpsk/netbox-kea-ng/issues/88). The import checks the
+  installed models at each run, so a release that gains the capability imports the fact with no netbox-kea change.
 - **Not imported**: the fact is out of scope (for example a Shared Network), the Kea data is not valid, or the DHCP
   plugin has no field for it by design.
 - **Skipped**: the parent object was not imported, IPAM ownership kept the IP Range unchanged, a write failed, or

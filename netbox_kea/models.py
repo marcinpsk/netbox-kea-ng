@@ -23,7 +23,14 @@ from netbox.models.features import ChangeLoggingMixin, JobsMixin
 from . import branching
 from .constants import STALE_CLEANUP_MODES, Family
 from .integrations.dhcp_import_plan import MAX_MAPPING_IDENTITY_LENGTH
-from .integrations.dhcp_import_report import KIND_LABELS, OUTCOME_LABELS, REASON_LABELS, Kind, choices
+from .integrations.dhcp_import_report import (
+    CAPABILITY_LABELS,
+    KIND_LABELS,
+    OUTCOME_LABELS,
+    REASON_LABELS,
+    Kind,
+    choices,
+)
 from .kea import KeaClient
 from .leases import AllocationKind
 
@@ -614,13 +621,17 @@ class PinnedSettings:
         return context
 
 
-# The identity columns of a DHCP Import Mapping: a Kea subnet ID, an identity in that Subnet, or a global identity.
+# The identity columns of a DHCP Import Mapping: none (the family itself), a Kea subnet ID, an identity in that
+# Subnet, or a global identity.
+_FAMILY_SOURCE = models.Q(kea_subnet_id__isnull=True, kea_identity__isnull=True)
 _SUBNET_SOURCE = models.Q(kea_subnet_id__isnull=False, kea_identity__isnull=True)
 _IN_SUBNET_SOURCE = models.Q(kea_subnet_id__isnull=False, kea_identity__isnull=False)
 _GLOBAL_SOURCE = models.Q(kea_subnet_id__isnull=True, kea_identity__isnull=False)
 
 #: Each DHCP Import Mapping kind: the netbox_dhcp model it points at, and the identity columns it sets.
 MAPPING_KINDS: dict[Kind, tuple[str, models.Q]] = {
+    # The global configuration of one family: one DHCPServer per Server and family.
+    Kind.SERVER: ("DHCPServer", _FAMILY_SOURCE),
     Kind.SHARED_NETWORK: ("SharedNetwork", _GLOBAL_SOURCE),
     Kind.SUBNET: ("Subnet", _SUBNET_SOURCE),
     Kind.POOL: ("Pool", _IN_SUBNET_SOURCE),
@@ -636,7 +647,8 @@ class KeaDhcpLink(ChangeLoggingMixin):
 
     The source is ``(server, family, kind, kea_subnet_id, kea_identity)``. ``kea_subnet_id`` holds the Kea subnet ID
     of a Subnet, or of the Subnet of a Pool or an In-Subnet Reservation. ``kea_identity`` holds the identity inside
-    that Subnet, or inside the Server and family for a global kind (``dhcp_import_plan.MappingSource``). Kea's
+    that Subnet, or inside the Server and family for a global kind (``dhcp_import_plan.MappingSource``). The global
+    configuration of a family sets neither, because the Server and family identify it. Kea's
     ``subnet-id`` is unique only per ``(server, family)``, and ``netbox_dhcp`` has one global ``Subnet.subnet_id``
     namespace, so Kea's identity lives here. The ``GenericForeignKey`` keeps ``netbox_dhcp`` optional.
 
@@ -662,13 +674,13 @@ class KeaDhcpLink(ChangeLoggingMixin):
         blank=True,
         help_text="Kea subnet-id of the source object or of its Subnet; null for a global source.",
     )
-    # NULL is a distinct state here, not "empty": it means a Subnet source, and keadhcplink_kind_identity
+    # NULL is a distinct state here, not "empty": it means a Subnet or family source, and keadhcplink_kind_identity
     # refuses "" for every kind. Do not collapse it to a blank default.
     kea_identity = models.CharField(  # noqa: DJ001
         max_length=MAX_MAPPING_IDENTITY_LENGTH,
         null=True,
         blank=True,
-        help_text="Identity of the source object in its Subnet or globally; null for a Subnet source.",
+        help_text="Identity of the source object in its Subnet or globally; null for a Subnet or family source.",
     )
     object_type = models.ForeignKey(
         to="contenttypes.ContentType",
@@ -687,6 +699,11 @@ class KeaDhcpLink(ChangeLoggingMixin):
             models.UniqueConstraint(
                 fields=["object_type", "object_id"],
                 name="keadhcplink_unique_sys4_object",
+            ),
+            models.UniqueConstraint(
+                fields=["server", "family", "kind"],
+                name="keadhcplink_unique_family_source",
+                condition=_FAMILY_SOURCE,
             ),
             models.UniqueConstraint(
                 fields=["server", "family", "kind", "kea_subnet_id"],
@@ -762,6 +779,8 @@ class DhcpImportEntry(models.Model):
     kind: models.CharField = models.CharField(max_length=32, choices=choices(KIND_LABELS))
     outcome: models.CharField = models.CharField(max_length=16, choices=choices(OUTCOME_LABELS))
     reason: models.CharField = models.CharField(max_length=32, choices=choices(REASON_LABELS), blank=True)
+    # The DHCP Plugin Capability that an unsupported fact needs, when one decides it.
+    capability: models.CharField = models.CharField(max_length=40, choices=choices(CAPABILITY_LABELS), blank=True)
     kea_path: models.TextField = models.TextField()
     detail: models.TextField = models.TextField(blank=True)
 
