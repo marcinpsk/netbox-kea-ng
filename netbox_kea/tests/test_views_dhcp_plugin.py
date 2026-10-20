@@ -692,6 +692,15 @@ class DriftPartialTest(TestCase):
         )
         self.assertIn("The Reservation Snapshot could not be read.", page.get_text())
 
+    def test_a_client_class_whose_name_is_not_text_makes_client_classes_incomplete(self):
+        self._import()
+        config = {4: {**_DRIFT_CONF[4], "client-classes": [{"name": ["bad"]}]}}
+
+        page = self._drift(_sync_responses(config, _DRIFT_HOSTS))
+
+        self.assertIn(("unseen", "client_class", "Dhcp4/client-classes[name=voip]"), self._objects(page))
+        self.assertIn("1 Client class entry that is not valid", page.get_text())
+
     def test_a_failed_read_returns_the_notice_and_lists_the_mapped_rows_as_unknown(self):
         self._import()
 

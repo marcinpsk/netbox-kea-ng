@@ -802,3 +802,51 @@ class StaleRemovalTest(_ImportRunTestCase):
         run = self._sync(self.config, {4: [{"subnet-id": 41, "hw-address": "not-a-mac"}]})
 
         self._assert_reservations_kept(run, "1 Reservation record could not be parsed")
+
+    def _assert_kept_with_suppression(self, run: DhcpImportRun, kind: Kind, count: int) -> None:
+        self.assertEqual(self._removed(run), set())
+        self.assertEqual(len(self._mapped(kind)), count)
+        entry = DhcpImportEntry.objects.filter(run=run).get(kind=kind.value, reason=Reason.INCOMPLETE_OBSERVATION.value)
+        self.assertEqual(entry.outcome, Outcome.SKIPPED.value)
+
+    def test_a_null_option_definition_collection_keeps_the_mapped_definitions(self):
+        # The Pool that holds the Option goes, so only the Incomplete collection keeps the definition.
+        self.config[4]["option-def"] = None
+        self.config[4]["subnet4"][0]["pools"] = [{"pool": "192.0.2.10-192.0.2.20"}]
+        del self.config[4]["subnet4"][1]["pools"]
+
+        run = self._sync(self.config, self.hosts)
+
+        self.assertEqual(len(self._mapped(Kind.OPTION_DEFINITION)), 1)
+        entry = DhcpImportEntry.objects.filter(run=run).get(
+            kind=Kind.OPTION_DEFINITION.value, reason=Reason.INCOMPLETE_OBSERVATION.value
+        )
+        self.assertEqual(entry.kea_path, "Dhcp4/option-def[*]")
+
+    def test_a_null_pool_collection_keeps_the_mapped_pools(self):
+        self.config[4]["subnet4"][1]["pools"] = None
+
+        run = self._sync(self.config, self.hosts)
+
+        self._assert_kept_with_suppression(run, Kind.POOL, 2)
+
+    def test_a_client_class_whose_name_is_not_text_keeps_the_mapped_classes(self):
+        self.config[4]["client-classes"] = [{"name": ["bad"]}]
+
+        run = self._sync(self.config, self.hosts)
+
+        self._assert_kept_with_suppression(run, Kind.CLIENT_CLASS, 1)
+        self.assertTrue(
+            DhcpImportEntry.objects.filter(
+                run=run, kind=Kind.CLIENT_CLASS.value, reason=Reason.INVALID_KEA_DATA.value
+            ).exists()
+        )
+
+    def test_a_null_client_class_collection_imports_nothing_and_removes_nothing(self):
+        self.config[4]["client-classes"] = None
+
+        run = self._sync(self.config, self.hosts)
+
+        self.assertEqual(self._removed(run), set())
+        self.assertEqual(len(self._mapped(Kind.CLIENT_CLASS)), 1)
+        self.assertEqual(_entries(run), {("server", "not_imported", "invalid_kea_data", "Dhcp4")})
