@@ -19,8 +19,9 @@ The Kea version is the Compose harness default, so both use the same Kea.
 
 Recording notes for Kea 3.2. config-get merges inherited values into Shared Networks (from the global
 configuration) and into Subnets (from their Shared Network, else the global configuration). It merges nothing
-into Pools and PD Pools. It returns `client-class`, `require-client-classes` and `only-if-required` as their
-replacements, and moves `comment` into `user-context`. The parity ledger states both, and its test checks them.
+into client classes, Pools and PD Pools: a DHCPv4 class that declares no boot field returns Kea's default, also when
+the global configuration declares one. It returns `client-class`, `require-client-classes` and `only-if-required`
+as their replacements, and moves `comment` into `user-context`. The parity ledger states both, and its test checks them.
 
 Kea 3.2 has no Control Agent, so control-agent.json comes from the last Kea release series
 that has one. The script installs that agent from ISC's signed package repository into the

@@ -1304,6 +1304,67 @@ def test_dhcp_plugin_ci_uses_xdist():
     assert [_xdist_settings(entry) for entry in _pytest_commands(command)] == [{"workers": "1", "maxschedchunk": "1"}]
 
 
+#: A test that skips when the DHCP plugin is absent, as each module in this suite writes it.
+_DHCP_PLUGIN_SKIP = re.compile(r"\bnot apps\.is_installed\((?:\"netbox_dhcp\"|DHCP_PLUGIN)\)")
+#: One whole test module in a pytest command. A node ID (``module.py::Test``) runs part of it only.
+_WHOLE_TEST_MODULE = re.compile(r"netbox_kea/tests/(test_\w+\.py)(?=\s|$)")
+
+
+def test_a_whole_test_module_matches_as_the_last_token_of_a_command():
+    """A module path that ends a command runs whole; a node ID runs part of the module only."""
+    (command,) = _pytest_commands("pytest -v netbox_kea/tests/test_a.py::Test netbox_kea/tests/test_b.py\n")
+
+    assert _WHOLE_TEST_MODULE.findall(command) == ["test_b.py"]
+
+
+def test_every_module_that_needs_the_dhcp_plugin_runs_in_a_dhcp_plugin_job():
+    """A module that skips without netbox_dhcp must run whole in a CI job that installs it."""
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    covered = {
+        module
+        for job in ("dhcp-plugin-test", "branching-test")
+        for command in _pytest_commands(_workflow_job(workflow, job))
+        for module in _WHOLE_TEST_MODULE.findall(command)
+    }
+    needs_plugin = {
+        path.name
+        for path in (REPOSITORY_ROOT / "netbox_kea" / "tests").glob("test_*.py")
+        if _DHCP_PLUGIN_SKIP.search(path.read_text())
+    }
+
+    assert {"test_dhcp_import.py", "test_dhcp_import_ownership.py"} <= needs_plugin, needs_plugin
+    assert not needs_plugin - covered, f"No DHCP plugin CI job runs: {sorted(needs_plugin - covered)}"
+
+
+def _unguarded_plugin_free_classes(path: Path) -> list[str]:
+    """Return the classes of *path* that import the DHCP integration and run without netbox_dhcp, undecorated."""
+    source = path.read_text()
+    found = []
+    for node in ast.parse(source).body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        imports_integration = any(
+            isinstance(child, ast.ImportFrom) and (child.module or "").startswith("netbox_kea.integrations.dhcp_plugin")
+            for child in ast.walk(node)
+        )
+        decorators = {ast.unparse(decorator) for decorator in node.decorator_list}
+        skips = _DHCP_PLUGIN_SKIP.search(ast.get_source_segment(source, node) or "")
+        if imports_integration and not skips and "without_dhcp_plugin()" not in decorators:
+            found.append(f"{path.name}::{node.name}")
+    return found
+
+
+def test_a_test_class_that_runs_without_the_dhcp_plugin_also_runs_without_it_locally():
+    """CI unit-test has no netbox_dhcp; the local runner has it, so a plugin lookup there passes locally only."""
+    found = [
+        name
+        for path in sorted((REPOSITORY_ROOT / "netbox_kea" / "tests").glob("test_*.py"))
+        for name in _unguarded_plugin_free_classes(path)
+    ]
+
+    assert not found, f"Decorate with @without_dhcp_plugin(), or skip without netbox_dhcp: {found}"
+
+
 def test_pytest_configuration_works_with_django_plugin_disabled():
     """Keep unit-only pytest options out of the integration test command."""
     with tempfile.TemporaryDirectory(dir=REPOSITORY_ROOT) as temporary_directory:

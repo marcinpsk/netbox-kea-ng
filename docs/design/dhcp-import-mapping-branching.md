@@ -17,9 +17,11 @@ to the main-only policy. CONTEXT.md defines the domain terms.
 
 ## Contract
 
-Only `KeaDhcpLink` gains branchability. Imported Subnets and Global Reservations already follow
-native DHCP-plugin routing. The lifecycle applies to IPv4 and IPv6, instance deletion and queryset
-deletion. In-Subnet Reservations continue to have no separate mapping.
+Only `KeaDhcpLink` gains branchability. Its targets already follow native DHCP-plugin routing: one
+model for each mapping kind in `MAPPING_KINDS` (`models.py`), which are Shared Network, Subnet, Pool,
+HostReservation (both Reservation Scopes), client class and Option Definition. A Subnet deletion
+also deletes the mappings of its Pools and In-Subnet Reservations. The lifecycle applies to IPv4 and
+IPv6, instance deletion and queryset deletion.
 
 | Operation | Target and mapping outcome |
 | --- | --- |
@@ -33,8 +35,8 @@ deletion. In-Subnet Reservations continue to have no separate mapping.
 Server, sync settings, IPAM ownership and live Kea operations retain ADR 0007's main-only policy.
 Imports remain main-only. The feature adds no manual mapping editor or branch import.
 
-A source identity includes the Server and address family, then either the Kea subnet ID or the
-Global Reservation Identity. Source and target uniqueness constraints remain enforced. A repeated
+A source identity includes the Server, the address family and the kind, then the Kea subnet ID of the
+object or of its Subnet, and the identity inside that scope. Source and target uniqueness constraints remain enforced. A repeated
 observation updates the observation timestamp without a semantic mapping-history change. Genuine
 association changes retain native before and after history.
 
@@ -113,8 +115,8 @@ does not establish provenance.
 ## Validation contract
 
 Use real import and native branch operations against PostgreSQL, and public HTTP requests for
-operator messages. Stub external Kea transport only. The recovery suite must cover both target
-kinds, families and deletion paths, discard, dry runs, complete rollback and retry. It must also
+operator messages. Stub external Kea transport only. The recovery suite must cover every target
+kind, families and deletion paths, discard, dry runs, complete rollback and retry. It must also
 exercise newer main state, adopted branch-created targets, missing dependencies, reused identities,
 incomplete history, uniqueness conflicts, observation-only import, old schemas and exemptions.
 

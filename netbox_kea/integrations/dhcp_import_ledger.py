@@ -10,54 +10,18 @@
 * :class:`Pending`: a later ticket of #89 maps the key.
 * :class:`Deprecated`: Kea rewrites the key to its replacement, so ``config-get`` never returns it.
 
-An entry names each DHCP Plugin Capability (#88) that its write needs. :data:`MERGED_KEYS` lists the keys that
-Kea merges into ``config-get`` from the parent object, for the Declared Value inference of #95.
+An entry names each DHCP Plugin Capability (#88) that its write needs, and :mod:`.dhcp_plugin_capabilities` checks
+each one. :data:`MERGED_KEYS` lists the keys that Kea merges into ``config-get`` from the parent object, and
+:data:`KEA_DEFAULTS` the values that Kea gives when no level declares a key, for the Declared Value inference.
 It reads no database. ``test_dhcp_import_ledger.py`` compares it with the recordings of a real Kea.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 
 from ..constants import Family
-from .dhcp_import_report import Reason
-
-
-class Capability(str, Enum):
-    """A DHCP Plugin Capability that a key's write needs, named after its #88 gap."""
-
-    SHARED_NETWORK_OPTIONAL_PREFIX = "shared_network_optional_prefix"
-    SUBNET_ID_PER_SERVER = "subnet_id_per_server"
-    NAME_PER_SERVER = "name_per_server"
-    FLEX_ID_IDENTIFIER = "flex_id_identifier"
-    USER_CONTEXT = "user_context"
-    OPTION_SPACES = "option_spaces"
-    OPTION_CODE_16_BIT = "option_code_16_bit"
-    OPTION_WITHOUT_DEFINITION = "option_without_definition"
-    SERVER_ID_FIELDS = "server_id_fields"
-    RELAY_ADDRESS_LIST = "relay_address_list"
-    DHCP4O6_SUBNET_SELECTION = "dhcp4o6_subnet_selection"
-    ADDRESS_REGISTRATION = "address_registration"
-    STASH_AGENT_OPTIONS = "stash_agent_options"
-
-
-# The row of each capability in the #88 gap table.
-GAPS: dict[Capability, int] = {
-    Capability.SHARED_NETWORK_OPTIONAL_PREFIX: 1,
-    Capability.SUBNET_ID_PER_SERVER: 2,
-    Capability.NAME_PER_SERVER: 3,
-    Capability.FLEX_ID_IDENTIFIER: 5,
-    Capability.USER_CONTEXT: 6,
-    Capability.OPTION_SPACES: 7,
-    Capability.OPTION_CODE_16_BIT: 8,
-    Capability.OPTION_WITHOUT_DEFINITION: 9,
-    Capability.SERVER_ID_FIELDS: 10,
-    Capability.RELAY_ADDRESS_LIST: 11,
-    Capability.DHCP4O6_SUBNET_SELECTION: 12,
-    Capability.ADDRESS_REGISTRATION: 13,
-    Capability.STASH_AGENT_OPTIONS: 14,
-}
+from .dhcp_import_report import Capability, Reason
 
 
 @dataclass(frozen=True)
@@ -172,14 +136,18 @@ def _global(family: Family) -> dict[str, Entry]:
     if family == 6:
         own = (*_PREFERRED_LIFETIMES, "pd-allocator", "relay-supplied-options")
     if family == 4:
-        protocol = {"stash-agent-options": Pending(94, (Capability.STASH_AGENT_OPTIONS,))}
+        protocol = {"stash-agent-options": Mapped("DHCPServer.stash_agent_options", (Capability.STASH_AGENT_OPTIONS,))}
     else:
-        protocol = {"allow-address-registration": Pending(94, (Capability.ADDRESS_REGISTRATION,))}
+        protocol = {
+            "allow-address-registration": Mapped(
+                "DHCPServer.allow_address_registration", (Capability.ADDRESS_REGISTRATION,)
+            )
+        }
     server_level = () if family == 4 else ("data-directory", "mac-sources")
     entries = {
         **_fields("DHCPServer", *_LIFETIMES, *_LEASE, *_DDNS, *own, "decline-probation-period"),
         "host-reservation-identifiers": Mapped(
-            "DHCPServer.host_reservation_identifiers", (Capability.FLEX_ID_IDENTIFIER,), pending=94
+            "DHCPServer.host_reservation_identifiers", (Capability.FLEX_ID_IDENTIFIER,)
         ),
         "option-data": Mapped("Option"),
         "option-def": Mapped("OptionDefinition", pending=100),
@@ -188,9 +156,10 @@ def _global(family: Family) -> dict[str, Entry]:
         "reservations": Mapped("HostReservation"),
         "shared-networks": Pending(107, (Capability.SHARED_NETWORK_OPTIONAL_PREFIX,)),
         "adaptive-lease-time-threshold": Pending(99),
-        "user-context": Pending(94, _USER_CONTEXT),
+        "user-context": Mapped("DHCPServer.user_context", _USER_CONTEXT),
         "comment": _DEPRECATED["comment"],
-        "interfaces-config": Pending(94),
+        # The interface list links DHCPServer interfaces; the other keys are Kea socket settings.
+        "interfaces-config": Mapped("DHCPServer.interfaces"),
         **protocol,
         # Server-level facts with no plugin home by design (#88 "Not plugin gaps").
         **_no_plugin_home(
@@ -219,7 +188,7 @@ def _global(family: Family) -> dict[str, Entry]:
         ),
     }
     if family == 6:
-        entries["server-id"] = Mapped("DHCPServer.server_id", (Capability.SERVER_ID_FIELDS,), pending=94)
+        entries["server-id"] = Mapped("DHCPServer.server_id", (Capability.SERVER_ID_FIELDS,))
     return entries
 
 
@@ -227,7 +196,7 @@ def _subnet(family: Family) -> dict[str, Entry]:
     entries = {
         **_fields("Subnet", *_network_settings(family)),
         "subnet": Mapped("Subnet.prefix"),
-        "id": Pending(96, (Capability.SUBNET_ID_PER_SERVER,)),
+        "id": Mapped("Subnet.subnet_id", (Capability.SUBNET_ID_PER_SERVER,)),
         "relay": Mapped("Subnet.relay", (Capability.RELAY_ADDRESS_LIST,), pending=99),
         "option-data": Mapped("Option"),
         "pools": Mapped("Pool"),
@@ -266,9 +235,9 @@ def _shared_network(family: Family) -> dict[str, Entry]:
 
 def _pool() -> dict[str, Entry]:
     return {
+        **_fields("Pool", "pool-id", *_CLASS_REFERENCES, *_DDNS),
         "pool": Mapped("Pool.ip_range"),
         "option-data": Mapped("Option"),
-        **_pending(99, "pool-id", *_CLASS_REFERENCES, *_DDNS),
         "user-context": Pending(99, _USER_CONTEXT),
         "metadata": NotImported(),
         **_DEPRECATED,
@@ -316,9 +285,9 @@ def _reservation(family: Family) -> dict[str, Entry]:
 def _client_class(family: Family) -> dict[str, Entry]:
     entries = {
         **_fields("ClientClass", "test", "template-test", "only-in-additional-list", *_LIFETIMES),
-        "name": Mapped("ClientClass.name", (Capability.NAME_PER_SERVER,), pending=106),
+        "name": Mapped("ClientClass.name", (Capability.NAME_PER_SERVER,)),
         "option-data": Mapped("Option"),
-        "user-context": Pending(106, _USER_CONTEXT),
+        "user-context": Mapped("ClientClass.user_context", _USER_CONTEXT),
         "only-if-required": Deprecated("only-in-additional-list"),
     }
     if family == 4:
@@ -359,7 +328,7 @@ def _interfaces(family: Family) -> dict[str, Entry]:
     """Return the ``interfaces-config`` keys: where the server serves DHCP, and how Kea opens its sockets."""
     socket_keys = ("dhcp-socket-type", "outbound-interface") if family == 4 else ()
     return {
-        "interfaces": Pending(94),
+        "interfaces": Mapped("DHCPServer.interfaces"),
         **_no_plugin_home(
             "re-detect",
             "service-sockets-require-all",
@@ -409,18 +378,39 @@ _MERGED_INTO_NETWORKS: dict[Family, frozenset[str]] = {
 }
 
 # Kea 3.2 merges into a Shared Network from the global configuration, and into a Subnet from its parent. The global
-# configuration has no relay, so only a member Subnet takes one. Kea merges nothing into Pools and PD Pools.
+# configuration has no relay, so only a member Subnet takes one. Kea merges nothing into client classes, Pools and
+# PD Pools.
 MERGED_KEYS: dict[Family, dict[str, frozenset[str]]] = {
     4: {
+        "client-classes": frozenset(),
         "shared-networks": _MERGED_INTO_NETWORKS[4],
         "subnet4": _MERGED_INTO_NETWORKS[4] | {"relay"},
         "pools": frozenset(),
     },
     6: {
+        "client-classes": frozenset(),
         "shared-networks": _MERGED_INTO_NETWORKS[6],
         "subnet6": _MERGED_INTO_NETWORKS[6] | {"relay"},
         "pools": frozenset(),
         "pd-pools": frozenset(),
+    },
+}
+
+# The values that Kea 3.2 returns for these keys on an object that declares none and into which Kea merges none.
+KEA_DEFAULTS: dict[Family, dict[str, dict[str, object]]] = {
+    4: {
+        # Kea's unset next-server, not an address to bind.
+        "client-classes": {"next-server": "0.0.0.0", "server-hostname": "", "boot-file-name": ""},  # noqa: S104
+        "shared-networks": {"relay": {"ip-addresses": []}},
+        "subnet4": {"4o6-interface": "", "4o6-interface-id": "", "4o6-subnet": ""},
+        "pools": {},
+    },
+    6: {
+        "client-classes": {},
+        "shared-networks": {"relay": {"ip-addresses": []}, "rapid-commit": False},
+        "subnet6": {"rapid-commit": False},
+        "pools": {},
+        "pd-pools": {},
     },
 }
 

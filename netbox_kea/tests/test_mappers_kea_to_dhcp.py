@@ -88,6 +88,51 @@ class TestParseDhcpConfigPools(SimpleTestCase):
         conf = {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": ""}, "garbage", {}]}]}
         self.assertEqual(parse_dhcp_config(conf, 4).subnets[0].pools, ())
 
+    def test_pool_id_classes_and_ddns_settings_are_read(self):
+        pool = {
+            "pool": "10.0.0.10-10.0.0.99",
+            "pool-id": 7,
+            "client-classes": ["voip"],
+            "evaluate-additional-classes": ["late", "later"],
+            "ddns-send-updates": False,
+            "hostname-char-set": "[^A-Za-z0-9.-]",
+        }
+        conf = {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [pool]}]}
+
+        (parsed,) = parse_dhcp_config(conf, 4).subnets[0].pools
+
+        self.assertEqual(
+            (parsed.pool_id, parsed.client_classes, parsed.evaluate_additional_classes, parsed.settings),
+            (7, ("voip",), ("late", "later"), {"ddns-send-updates": False, "hostname-char-set": "[^A-Za-z0-9.-]"}),
+        )
+
+    def test_an_invalid_pool_id_or_class_list_is_dropped_and_the_rest_of_the_pool_is_read(self):
+        pool = {
+            "pool": "10.0.0.10-10.0.0.99",
+            "pool-id": True,
+            "client-classes": "voip",
+            "evaluate-additional-classes": ["late", 7],
+            "ddns-send-updates": True,
+        }
+        conf = {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [pool]}]}
+
+        result = parse_dhcp_config(conf, 4)
+
+        (parsed,) = result.subnets[0].pools
+        self.assertEqual(
+            (parsed.pool_id, parsed.client_classes, parsed.evaluate_additional_classes, parsed.settings),
+            (None, (), (), {"ddns-send-updates": True}),
+        )
+        path = "Dhcp4/subnet4[id=1]/pools[pool=10.0.0.10-10.0.0.99]"
+        self.assertEqual(
+            [(entry.kind, entry.path) for entry in result.dropped],
+            [
+                (Kind.POOL, f"{path}/pool-id"),
+                (Kind.POOL, f"{path}/client-classes"),
+                (Kind.POOL, f"{path}/evaluate-additional-classes"),
+            ],
+        )
+
 
 class TestParseDhcpConfigOptions(SimpleTestCase):
     def test_subnet_options_normalized(self):

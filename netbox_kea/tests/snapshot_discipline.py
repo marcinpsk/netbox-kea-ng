@@ -17,7 +17,6 @@ from pathlib import Path
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 MUTATORS = {
     "_update_mac_description",
-    "_apply_reservation_identifier",
 }
 
 
@@ -51,13 +50,11 @@ SITES = (
     SaveSite("sync.py", "sync_mac_address", "mac_obj", "loaded"),
     SaveSite("views/sync_jobs.py", "ServerSyncToggleView.post", "server", "loaded"),
     SaveSite("views/settings_page.py", "SettingsView.post", "instance", "loaded"),
-    SaveSite("integrations/dhcp_plugin.py", "upsert_options", "obj", "loaded", constructors=("Option",)),
-    SaveSite("integrations/dhcp_plugin.py", "_apply_global_settings", "dhcp_server", "loaded"),
-    SaveSite("integrations/dhcp_plugin.py", "upsert_client_class", "obj", "loaded", constructors=("ClientClass",)),
-    SaveSite("integrations/dhcp_plugin.py", "upsert_subnet", "existing", "loaded"),
-    SaveSite("integrations/dhcp_plugin.py", "_upsert_reservation", "obj", "loaded", constructors=("HostReservation",)),
-    SaveSite("integrations/dhcp_plugin.py", "_create_custom_option_def", "obj", "create"),
-    SaveSite("integrations/dhcp_plugin.py", "upsert_subnet", "subnet_obj", "create"),
+    SaveSite("integrations/dhcp_plugin.py", "_save_changes", "obj", "loaded"),
+    SaveSite("integrations/dhcp_plugin.py", "_move_family_options", "option", "loaded"),
+    SaveSite("integrations/dhcp_plugin.py", "_move_subnet_ids", "row", "loaded"),
+    SaveSite("integrations/dhcp_plugin.py", "_create_row", "obj", "create"),
+    SaveSite("integrations/dhcp_plugin.py", "upsert_dhcp_server", "dhcp_server", "create"),
     SaveSite("ipam_reconciliation.py", "_claim", "ip", "create"),
     SaveSite("ipam_reconciliation.py", "_store_link", "link", "plain"),
     SaveSite("ipam_reconciliation.py", "_remove_stale_link", "link", "plain"),

@@ -20,6 +20,7 @@ from netaddr import IPNetwork
 
 from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.integrations.dhcp_import_report import Kind, Outcome, Reason
+from netbox_kea.integrations.dhcp_plugin_capabilities import probe
 from netbox_kea.ipam_reconciliation import (
     DelegatedPrefixPhase,
     PoolClaim,
@@ -36,7 +37,7 @@ from netbox_kea.views.notices import Notice
 from .kea_stub import observed_configuration, stub_kea
 from .test_integration_dhcp_plugin import _reservation_snapshot
 from .test_views_dhcp_plugin import _sync_responses
-from .utils import _make_db_server
+from .utils import _make_db_server, take_reservation_name
 
 
 class ImportOwnershipTest(TestCase):
@@ -514,11 +515,11 @@ class ImportOwnershipTest(TestCase):
     def test_failed_reservation_keeps_stale_delegated_link_and_healthy_sibling_imports(self):
         self.server.sync_deprecate_prefixes_and_ranges = True
         self.server.save()
-        common = ":".join(["aa"] * 83)
-        failed = {**self.identity, "duid": common + ":01"}
+        failed = {**self.identity, "duid": "01:02:05:01"}
         self.import_hosts([{**failed, "prefixes": [self.network]}])
         before = IPAMOwnershipLink.objects.values().get(prefix=self.delegated())
-        summary = self.import_hosts([{**failed, "duid": common + ":02"}, self.identity])
+        take_reservation_name(f"{self.server.name} DHCPv6 subnet 1", "01:02:05:02")
+        summary = self.import_hosts([{**failed, "duid": "01:02:05:02"}, self.identity])
         self.assertEqual(summary.errors, 1, summary.warnings)
         self.assertEqual(summary.reservations_created, 1)
         self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix=self.delegated()), before)
@@ -530,7 +531,9 @@ class ImportOwnershipTest(TestCase):
         conf = {"subnet6": [{"id": 9, "subnet": "2001:db8:9::/64"}]}
         observation = _reservation_snapshot(conf, 6, [{**self.identity, "subnet-id": 9}])
         summary = dhcp_plugin.ImportSummary()
-        dhcp_plugin.import_reservation_snapshot(self.server, None, observation, None, summary, family=6)
+        dhcp_plugin.import_reservation_snapshot(
+            self.server, None, observation, None, summary, family=6, adoption_servers=(), capabilities=probe()
+        )
         self.assertEqual(summary.reservations_skipped, 1)
         self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix=self.delegated()), before)
 
@@ -637,11 +640,17 @@ class ImportOwnershipTest(TestCase):
 
     def test_address_pool_prefix_and_global_attachment_stay_in_server_vrf(self):
         self.config["subnet6"][0]["pools"] = [{"pool": "2001:db8:1::10-2001:db8:1::20"}]
-        for name in ("first", "second"):
+        # netbox-plugin-dhcp 0.2.0 keeps Subnet IDs unique across servers, so each Server uses a different Subnet ID.
+        for name, subnet_id in (("first", 1), ("second", 2)):
+            self.config["subnet6"][0]["id"] = subnet_id
             server = _make_db_server(name=name, sync_vrf=VRF.objects.create(name=name))
-            summary = self.import_hosts(
-                [{**self.identity, "ip-addresses": ["2001:db8:1::15"], "prefixes": [self.network]}], server=server
-            )
+            host = {
+                **self.identity,
+                "subnet-id": subnet_id,
+                "ip-addresses": ["2001:db8:1::15"],
+                "prefixes": [self.network],
+            }
+            summary = self.import_hosts([host], server=server)
             self.assertEqual(summary.errors, 0, summary.warnings)
             objects = IPAMOwnershipLink.objects.filter(server=server).select_related("ip_address", "prefix", "ip_range")
             self.assertEqual(objects.count(), 4)

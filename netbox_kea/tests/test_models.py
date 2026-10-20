@@ -10,6 +10,7 @@ import os
 import tempfile
 import uuid
 from io import StringIO
+from ipaddress import ip_network
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlparse
@@ -559,50 +560,105 @@ class TestServerSyncEnabled(TestCase):
 
 
 class TestKeaDhcpLinkIdentity(TestCase):
-    """A link row carries exactly one Kea identity kind.
+    """A link row carries the identity columns of its kind, and each identity shape is unique.
 
-    Both partial unique constraints are conditional, so a row with neither
-    identity would escape both and duplicate freely.
+    The partial unique constraints are conditional, so a row that fits no shape would escape every one of them.
     """
 
     def setUp(self):
         self.server = _make_db_server(name="kea-link-identity")
         self.object_type = ContentType.objects.get_for_model(Server)
 
-    def _link(self, **identity) -> KeaDhcpLink:
+    def _link(self, kind, object_id=None, family=4, **identity) -> KeaDhcpLink:
         return KeaDhcpLink(
             server=self.server,
-            family=4,
+            family=family,
+            kind=kind,
             object_type=self.object_type,
-            object_id=self.server.pk,
+            object_id=self.server.pk if object_id is None else object_id,
             **identity,
         )
 
-    def test_subnet_identity_alone_is_stored(self):
-        self._link(kea_subnet_id=7).save()
+    def test_each_kind_stores_its_identity_columns(self):
+        accepted = {
+            "subnet": {"kea_subnet_id": 7},
+            "pool": {"kea_subnet_id": 7, "kea_identity": "10.0.0.10-10.0.0.20"},
+            "reservation": {"kea_subnet_id": 7, "kea_identity": "hw-address:aa:bb:cc:dd:ee:ff"},
+            "shared_network": {"kea_identity": "office"},
+            "client_class": {"kea_identity": "voip"},
+            "option_definition": {"kea_identity": "dhcp4:222"},
+        }
+        for object_id, (kind, identity) in enumerate(accepted.items(), start=1):
+            with self.subTest(kind=kind):
+                self._link(kind, object_id=object_id, **identity).save()
+                stored = KeaDhcpLink.objects.get(object_id=object_id)
+                self.assertEqual(
+                    (stored.kea_subnet_id, stored.kea_identity),
+                    (identity.get("kea_subnet_id"), identity.get("kea_identity")),
+                )
+        self._link("reservation", object_id=99, kea_identity="hw-address:aa:bb:cc:dd:ee:ff").save()
+        self.assertIsNone(KeaDhcpLink.objects.get(object_id=99).kea_subnet_id)
 
-        self.assertEqual(KeaDhcpLink.objects.get().kea_subnet_id, 7)
+    def test_a_kind_without_its_identity_columns_is_rejected(self):
+        rejected = {
+            "subnet with an identity": ("subnet", {"kea_subnet_id": 7, "kea_identity": "hw-address:aa:bb"}),
+            "subnet without an ID": ("subnet", {}),
+            "pool without a range": ("pool", {"kea_subnet_id": 7}),
+            "pool without a Subnet": ("pool", {"kea_identity": "10.0.0.10-10.0.0.20"}),
+            "reservation without an identifier": ("reservation", {"kea_subnet_id": 7}),
+            "empty reservation identity": ("reservation", {"kea_identity": ""}),
+            "neither identity column": ("reservation", {}),
+            "shared network in a Subnet": ("shared_network", {"kea_subnet_id": 7, "kea_identity": "office"}),
+            "client class in a Subnet": ("client_class", {"kea_subnet_id": 7, "kea_identity": "voip"}),
+            "option definition in a Subnet": ("option_definition", {"kea_subnet_id": 7, "kea_identity": "dhcp4:222"}),
+            "empty client class name": ("client_class", {"kea_identity": ""}),
+            "unknown kind": ("server", {"kea_identity": "Dhcp4"}),
+        }
+        for label, (kind, identity) in rejected.items():
+            with self.subTest(label), self.assertRaises(IntegrityError), transaction.atomic():
+                self._link(kind, **identity).save()
 
-    def test_reservation_identity_alone_is_stored(self):
-        self._link(kea_identity="hw-address:aa:bb:cc:dd:ee:ff").save()
+    def test_each_identity_shape_is_unique_within_its_kind(self):
+        duplicates = {
+            "subnet": {"kea_subnet_id": 7},
+            "pool": {"kea_subnet_id": 7, "kea_identity": "10.0.0.10-10.0.0.20"},
+            "reservation": {"kea_identity": "duid:01:02"},
+            "client_class": {"kea_identity": "voip"},
+        }
+        for object_id, (kind, identity) in enumerate(duplicates.items(), start=1):
+            with self.subTest(kind=kind):
+                self._link(kind, object_id=object_id, **identity).save()
+                with self.assertRaises(IntegrityError), transaction.atomic():
+                    self._link(kind, object_id=object_id + 100, **identity).save()
 
-        self.assertEqual(KeaDhcpLink.objects.get().kea_identity, "hw-address:aa:bb:cc:dd:ee:ff")
+    def test_one_identity_can_map_once_per_scope_kind_and_family(self):
+        # A Global and an In-Subnet Reservation of one identifier, and one name of two kinds or families.
+        sources = [
+            ("reservation", 4, {"kea_identity": "duid:01:02"}),
+            ("reservation", 4, {"kea_subnet_id": 7, "kea_identity": "duid:01:02"}),
+            ("reservation", 4, {"kea_subnet_id": 8, "kea_identity": "duid:01:02"}),
+            ("client_class", 4, {"kea_identity": "office"}),
+            ("shared_network", 4, {"kea_identity": "office"}),
+            ("client_class", 6, {"kea_identity": "office"}),
+            ("subnet", 4, {"kea_subnet_id": 7}),
+            ("pool", 4, {"kea_subnet_id": 7, "kea_identity": "10.0.0.10-10.0.0.20"}),
+        ]
+        for object_id, (kind, family, identity) in enumerate(sources, start=1):
+            self._link(kind, object_id=object_id, family=family, **identity).save()
 
-    def test_empty_reservation_identity_is_rejected(self):
-        with self.assertRaises(IntegrityError), transaction.atomic():
-            self._link(kea_identity="").save()
+        self.assertEqual(KeaDhcpLink.objects.filter(server=self.server).count(), len(sources))
 
-    def test_both_identity_kinds_are_rejected(self):
-        with self.assertRaises(IntegrityError), transaction.atomic():
-            self._link(kea_subnet_id=7, kea_identity="hw-address:aa:bb:cc:dd:ee:ff").save()
-
-    def test_neither_identity_kind_is_rejected(self):
-        with self.assertRaises(IntegrityError), transaction.atomic():
-            self._link().save()
-
-    def test_the_longest_reservation_identity_is_stored(self):
-        """Kea accepts a 128-octet Client ID, so the column must hold the identity it forms."""
-        from netbox_kea.integrations.dhcp_import_plan import reservation_key
+    def test_the_longest_identity_of_each_kind_is_stored(self):
+        """Kea accepts a 128-octet Client ID and full-length IPv6 Pools, so the column must hold what they form."""
+        from netbox_kea.integrations.dhcp_import_plan import (
+            MAX_KEA_NAME_LENGTH,
+            MappingSource,
+            OptionDefinitionKey,
+            PoolKey,
+            reservation_key,
+        )
+        from netbox_kea.integrations.dhcp_import_report import Kind
+        from netbox_kea.pools import parse_pool
         from netbox_kea.reservations import GlobalReservationScope, IPv4Reservation, ReservationIdentity
 
         reservation = IPv4Reservation(
@@ -610,12 +666,21 @@ class TestKeaDhcpLinkIdentity(TestCase):
             identity=ReservationIdentity("client-id", "ab" * 128),
             addresses=(),
         )
-        identity = reservation_key(reservation).link_identity
-        self.assertEqual(len(identity), MAX_IDENTITY_LENGTH)
-
-        self._link(kea_identity=identity).save()
-
-        self.assertEqual(KeaDhcpLink.objects.get().kea_identity, identity)
+        pool = parse_pool(
+            "ffff:ffff:ffff:ffff:ffff:ffff:ffff:fff0-ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", ip_network("ffff::/16")
+        )
+        name = "n" * MAX_KEA_NAME_LENGTH
+        sources = [
+            reservation_key(reservation).source,
+            PoolKey(7, pool).source,
+            OptionDefinitionKey(name, 65_535).source,
+            MappingSource.named(Kind.CLIENT_CLASS, name),
+        ]
+        self.assertEqual(len(sources[0].kea_identity), MAX_IDENTITY_LENGTH)
+        for object_id, source in enumerate(sources, start=1):
+            with self.subTest(kind=source.kind):
+                self._link(object_id=object_id, **source.columns()).save()
+                self.assertEqual(KeaDhcpLink.objects.get(object_id=object_id).kea_identity, source.kea_identity)
 
 
 class TestChangeLoggedModelsInTheChangeLogApi(TestCase):
@@ -633,6 +698,7 @@ class TestChangeLoggedModelsInTheChangeLogApi(TestCase):
             link = KeaDhcpLink.objects.create(
                 server=server,
                 family=4,
+                kind="subnet",
                 kea_subnet_id=1,
                 object_type=ContentType.objects.get_for_model(Server),
                 object_id=server.pk,
@@ -837,8 +903,99 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         executor.migrate(current)
 
         link = KeaDhcpLink.objects.get(server=server)
-        self.assertEqual(link.kea_subnet_id, 7)
-        self.assertIsNone(link.kea_identity)
+        self.assertEqual((link.kind, link.kea_subnet_id, link.kea_identity), ("subnet", 7, None))
+
+    def _migrate_to(self, name):
+        """Move the netbox_kea schema to *name*, and back to the newest migration at cleanup."""
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(connection)
+        current = executor.loader.graph.leaf_nodes("netbox_kea")
+        self.assertEqual(len(current), 1, f"netbox_kea migrations must have one leaf, found {current}.")
+
+        def restore_migration_state():
+            restore = MigrationExecutor(connection)
+            restore.loader.build_graph()
+            restore.migrate(current)
+
+        self.addCleanup(restore_migration_state)
+        executor.migrate([("netbox_kea", name)])
+        return current
+
+    def test_0029_gives_each_released_mapping_the_kind_of_its_source(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        server = _make_db_server(name="released-mappings")
+        object_type = ContentType.objects.get_for_model(Server)
+        current = self._migrate_to("0028_dhcpimportrun_dhcpimportentry")
+        with connection.cursor() as cursor:
+            for object_id, subnet_id, identity in ((1, 7, None), (2, None, "duid:01:02:03")):
+                cursor.execute(
+                    "INSERT INTO netbox_kea_keadhcplink (server_id, family, kea_subnet_id, kea_identity, "
+                    "object_type_id, object_id, created, last_synced, last_updated) "
+                    "VALUES (%s, 4, %s, %s, %s, %s, NOW(), NOW(), NOW())",
+                    [server.pk, subnet_id, identity, object_type.pk, object_id],
+                )
+            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+
+        forward = MigrationExecutor(connection)
+        forward.loader.build_graph()
+        forward.migrate(current)
+
+        self.assertEqual(
+            set(KeaDhcpLink.objects.filter(server=server).values_list("object_id", "kind")),
+            {(1, "subnet"), (2, "reservation")},
+        )
+        self.assertIsNone(KeaDhcpLink.objects.get(server=server, object_id=2).kea_subnet_id)
+
+    def test_0029_reversed_removes_the_mappings_that_the_older_schema_cannot_hold(self):
+        server = _make_db_server(name="newer-mappings")
+        object_type = ContentType.objects.get_for_model(Server)
+        held = {"subnet": {"kea_subnet_id": 7}, "reservation": {"kea_identity": "duid:01:02:03"}}
+        unheld = {
+            "pool": {"kea_subnet_id": 7, "kea_identity": "10.0.0.10-10.0.0.20"},
+            "client_class": {"kea_identity": "voip"},
+        }
+        for object_id, (kind, identity) in enumerate({**held, **unheld}.items(), start=1):
+            KeaDhcpLink.objects.create(
+                server=server, family=4, kind=kind, object_type=object_type, object_id=object_id, **identity
+            )
+        # An In-Subnet Reservation sets both identity columns, which the older check constraint refuses.
+        KeaDhcpLink.objects.create(
+            server=server,
+            family=4,
+            kind="reservation",
+            kea_subnet_id=7,
+            kea_identity="duid:01:02:03",
+            object_type=object_type,
+            object_id=10,
+        )
+
+        self._migrate_to("0028_dhcpimportrun_dhcpimportentry")
+
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT object_id FROM netbox_kea_keadhcplink WHERE server_id = %s", [server.pk])
+            self.assertEqual({row[0] for row in cursor.fetchall()}, {1, 2})
+
+    def test_0031_reversed_removes_the_family_mappings_that_the_older_schema_cannot_hold(self):
+        server = _make_db_server(name="family-mappings")
+        object_type = ContentType.objects.get_for_model(Server)
+        KeaDhcpLink.objects.create(
+            server=server, family=4, kind="subnet", kea_subnet_id=7, object_type=object_type, object_id=1
+        )
+        KeaDhcpLink.objects.create(server=server, family=4, kind="server", object_type=object_type, object_id=2)
+
+        self._migrate_to("0030_dhcpimportentry_capability")
+
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT object_id FROM netbox_kea_keadhcplink WHERE server_id = %s", [server.pk])
+            self.assertEqual({row[0] for row in cursor.fetchall()}, {1})
 
     def test_an_identityless_link_is_removed_before_the_constraint_is_added(self):
         from django.db import connection

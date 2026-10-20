@@ -3,7 +3,7 @@
 """The parity ledger lists each Kea key that the DHCP Import can meet once, and agrees with a real Kea 3.2.
 
 The key lists, the deprecated keys and the merged keys come from scripts/record_kea_config_get.py (see
-test_kea_recordings.py). The agreement with the import's field maps needs netbox_dhcp.
+test_kea_recordings.py). The check of the plugin model fields needs netbox_dhcp.
 """
 
 import ipaddress
@@ -17,26 +17,23 @@ from django.core.exceptions import FieldDoesNotExist
 from django.test import SimpleTestCase, tag
 
 from netbox_kea.constants import Family
+from netbox_kea.integrations import dhcp_import_fields as fields
 from netbox_kea.integrations import dhcp_import_ledger as ledger
 from netbox_kea.integrations.dhcp_import_ledger import (
+    KEA_DEFAULTS,
     LEDGER,
     MERGED_KEYS,
-    Capability,
     Deprecated,
     Mapped,
     NotImported,
     Pending,
 )
-from netbox_kea.integrations.dhcp_import_report import Reason
+from netbox_kea.integrations.dhcp_import_report import Capability, Reason
+from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
 # The open tickets of #89 that map a key.
-_PARITY_TICKETS = frozenset({93, 94, 95, 96, 97, 98, 99, 100, 101, 104, 106, 107})
-# Keys that config-get returns with Kea's own default on an object that does not declare them.
-_KEA_DEFAULTS: dict[int, dict[str, set[str]]] = {
-    4: {"shared-networks": {"relay"}, "subnet4": {"4o6-interface", "4o6-interface-id", "4o6-subnet"}, "pools": set()},
-    6: {"shared-networks": {"relay", "rapid-commit"}, "subnet6": {"rapid-commit"}, "pools": set(), "pd-pools": set()},
-}
+_PARITY_TICKETS = frozenset({97, 98, 99, 100, 101, 104, 107})
 # Collections of child objects: an empty one in config-get is a Kea default, never a merge.
 _CHILD_COLLECTIONS = frozenset({"option-data", "option-def", "pools", "pd-pools", "reservations", "subnet4", "subnet6"})
 
@@ -172,18 +169,21 @@ def _undeclared(declared: dict, returned: dict, parent: dict, table: str, family
     return merged, undeclared - merged
 
 
-def _observed(family: Family) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """Return the merged keys and the Kea default keys of each Shared Network, Subnet, Pool and PD Pool."""
+def _observed(family: Family) -> tuple[dict[str, set[str]], dict[str, set[tuple[str, str]]]]:
+    """Return the merged keys and the Kea defaults, as (key, JSON value), of each object that the ledger states."""
     declared, returned = _declared(family), _returned(family)
-    tables = ["shared-networks", f"subnet{family}", "pools", *(["pd-pools"] if family == 6 else [])]
+    pool_tables = ["pools", *(["pd-pools"] if family == 6 else [])]
+    tables = ["client-classes", "shared-networks", f"subnet{family}", *pool_tables]
     merges: dict[str, set[str]] = {table: set() for table in tables}
-    defaults: dict[str, set[str]] = {table: set() for table in tables}
+    defaults: dict[str, set[tuple[str, str]]] = {table: set() for table in tables}
 
     def observe(table: str, obj: dict, got: dict, parent: dict) -> None:
         merged, default = _undeclared(obj, got, parent, table, family)
         merges[table] |= merged
-        defaults[table] |= default
+        defaults[table] |= {(key, json.dumps(got[key])) for key in default}
 
+    for obj, got in _paired("client-classes", family, declared["client-classes"], returned["client-classes"]):
+        observe("client-classes", obj, got, returned)
     networks = _paired("shared-networks", family, declared["shared-networks"], returned["shared-networks"])
     for obj, got in networks:
         observe("shared-networks", obj, got, returned)
@@ -198,7 +198,7 @@ def _observed(family: Family) -> tuple[dict[str, set[str]], dict[str, set[str]]]
     for subnet, got in subnets:
         network = parents[subnet["id"]]
         observe(f"subnet{family}", subnet, got, returned if network is None else returned_networks[network["name"]])
-        for table in tables[2:]:
+        for table in pool_tables:
             for pool, got_pool in _paired(table, family, subnet.get(table, []), got.get(table, [])):
                 observe(table, pool, got_pool, got)
     return merges, defaults
@@ -257,14 +257,14 @@ class LedgerEntriesTest(SimpleTestCase):
                     self.assertIn(entry.replacement, LEDGER[family][table])
                     self.assertNotIsInstance(LEDGER[family][table][entry.replacement], Deprecated)
 
-    def test_every_capability_gates_a_key_and_names_its_gap(self):
+    def test_every_capability_but_the_family_gates_a_key(self):
         named = {
             capability
             for _family, _table, _key, entry in self._entries()
             for capability in getattr(entry, "capabilities", ())
         }
-        self.assertEqual(named, set(Capability))
-        self.assertEqual(set(ledger.GAPS), set(Capability))
+        # The family of a DHCPServer is the Kea daemon itself, not a key.
+        self.assertEqual(named, set(Capability) - {Capability.SERVER_FAMILY})
 
     def test_user_context_is_gated_on_every_object_that_has_it(self):
         for family, tables in LEDGER.items():
@@ -273,6 +273,39 @@ class LedgerEntriesTest(SimpleTestCase):
                 if "user-context" in keys and table != "interfaces-config":
                     with self.subTest(family=family, table=table):
                         self.assertIn(Capability.USER_CONTEXT, keys["user-context"].capabilities)
+
+    def test_the_mapped_settings_are_the_field_maps_of_the_import(self):
+        field_maps = {
+            "Dhcp": ("DHCPServer", fields.SERVER_FIELDS),
+            "subnet": ("Subnet", fields.SUBNET_FIELDS),
+            "pools": ("Pool", fields.POOL_FIELDS),
+            "client-classes": ("ClientClass", fields.CLIENT_CLASS_FIELDS),
+        }
+        for family in LEDGER:
+            for prefix, (model, field_map) in field_maps.items():
+                table = prefix if prefix in ("pools", "client-classes") else f"{prefix}{family}"
+                keys = LEDGER[family][table]
+                with self.subTest(family=family, table=table):
+                    written = {kea_key: f"{model}.{attr}" for kea_key, attr, _transform in field_map if kea_key in keys}
+                    mapped = {
+                        key: entry.target
+                        for key, entry in keys.items()
+                        if isinstance(entry, Mapped) and key in KEA_SETTINGS_KEYS
+                    }
+                    self.assertEqual(mapped, written)
+
+    def test_every_mapped_field_of_a_model_with_managed_fields_is_managed(self):
+        # The fields that find an Option, and the name that a custom Option Definition takes when it is created.
+        identity = {"Option.definition", "OptionDefinition.name"}
+        for family, table, key, entry in self._entries():
+            if not isinstance(entry, Mapped) or "." not in entry.target or entry.target in identity:
+                continue
+            model, field = entry.target.split(".")
+            if model not in fields.MANAGED_FIELDS:
+                continue
+            with self.subTest(family=family, table=table, key=key):
+                written = {"device_interfaces", "virtual_machine_interfaces"} if field == "interfaces" else {field}
+                self.assertLessEqual(written, {managed.name for managed in fields.MANAGED_FIELDS[model]})
 
 
 class RecordedKeaBehaviourTest(SimpleTestCase):
@@ -330,11 +363,15 @@ class RecordedKeaBehaviourTest(SimpleTestCase):
             _paired("pools", 4, declared, returned)
         self.assertEqual(_paired("pools", 4, declared, returned[:1]), [(declared[0], returned[0])])
 
-    def test_every_other_undeclared_key_is_a_known_kea_default(self):
+    def test_every_other_undeclared_key_has_the_kea_default_of_the_ledger(self):
         for family in LEDGER:
             with self.subTest(family=family):
                 _merges, defaults = _observed(family)
-                self.assertEqual(defaults, _KEA_DEFAULTS[family])
+                expected = {
+                    table: {(key, json.dumps(value)) for key, value in keys.items()}
+                    for table, keys in KEA_DEFAULTS[family].items()
+                }
+                self.assertEqual(defaults, expected)
 
 
 @tag("dhcp_plugin")
@@ -351,42 +388,20 @@ class LedgerAgreesWithTheImportTest(SimpleTestCase):
         return {field.name for field in apps.get_model("netbox_dhcp", model)._meta.get_fields()}
 
     def test_every_mapped_target_is_a_plugin_model_or_field(self):
+        """A field that the installed plugin lacks is the shape that #88 proposes, behind a missing capability."""
+        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+
+        capabilities = probe()
         for family, tables in LEDGER.items():
             for table, keys in tables.items():
                 for key, entry in keys.items():
                     if isinstance(entry, Mapped):
                         with self.subTest(family=family, table=table, key=key):
                             model, _, field = entry.target.partition(".")
-                            if field:
-                                apps.get_model("netbox_dhcp", model)._meta.get_field(field)
-                            else:
-                                apps.get_model("netbox_dhcp", model)
-
-    def test_the_mapped_settings_are_the_field_maps_of_the_import(self):
-        from netbox_kea.integrations import dhcp_plugin
-        from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS
-
-        field_maps = {
-            "Dhcp": ("DHCPServer", dhcp_plugin._SERVER_FIELDS),
-            "subnet": ("Subnet", dhcp_plugin._SUBNET_FIELDS),
-            "client-classes": ("ClientClass", dhcp_plugin._COMMON_FIELDS),
-        }
-        for family in LEDGER:
-            for prefix, (model, field_map) in field_maps.items():
-                table = prefix if prefix == "client-classes" else f"{prefix}{family}"
-                keys = LEDGER[family][table]
-                with self.subTest(family=family, table=table):
-                    written = {
-                        kea_key: f"{model}.{attr}"
-                        for kea_key, attr, _transform in field_map
-                        if kea_key in keys and attr in self._field_names(model)
-                    }
-                    mapped = {
-                        key: entry.target
-                        for key, entry in keys.items()
-                        if isinstance(entry, Mapped) and key in KEA_SETTINGS_KEYS
-                    }
-                    self.assertEqual(mapped, written)
+                            plugin_model = apps.get_model("netbox_dhcp", model)
+                            if field and field not in self._field_names(model):
+                                missing = [c for c in entry.capabilities if not capabilities.has(c)]
+                                self.assertTrue(missing, f"{plugin_model.__name__} has no field {field}")
 
     def test_a_key_without_a_plugin_home_has_no_plugin_field_of_its_name(self):
         models = {"Dhcp": "DHCPServer", "subnet": "Subnet", "shared-networks": "SharedNetwork", "pools": "Pool"}

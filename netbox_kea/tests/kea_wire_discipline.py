@@ -31,6 +31,7 @@ _OWNERS = frozenset(
         "kea.py",
         "kea_paths.py",
         "integrations/dhcp_import_ledger.py",
+        "integrations/dhcp_import_fields.py",
         "server_configuration.py",
         "subnet_catalogue.py",
         "reservations.py",
@@ -74,7 +75,7 @@ def _accepted_keys() -> frozenset[str]:
     )
 
 
-# Lease, statistics and HA keys, which no configuration keyword table lists.
+# Lease, statistics and HA keys, and the server-id keys, which no recorded configuration key table lists.
 WIRE_PAYLOAD_KEYS = (
     frozenset(
         {
@@ -84,6 +85,7 @@ WIRE_PAYLOAD_KEYS = (
             "connecting-clients",
             "connection-interrupted",
             "declined-addresses",
+            "enterprise-id",
             "fqdn-fwd",
             "fqdn-rev",
             "ha-mode",

@@ -153,6 +153,8 @@ uv run python scripts/check_docs_media.py site docs/guide/assets
   change.
 - **Event-rollback job (NetBox 4.3)**: runs `test_event_scope.py` on the supported floor, where
   `event_scope.atomic()` is always a plain transaction. Keep that module free of netbox-branching fixtures.
+- **DHCP plugin job**: runs with netbox-plugin-dhcp 0.2.0. A test module that skips without `netbox_dhcp`
+  must be in its file list (or the branching job's). `test_pytest_configuration.py` fails when one is missing.
 - **Branching job**: the unit-test NetBox release with netbox-branching 1.2.1 and netbox-plugin-dhcp 0.2.0.
   It runs `test_branching.py` and `test_dhcp_mapping_recovery.py` with
   `NETBOX_KEA_REQUIRE_BRANCHING=1`, so these modules fail
@@ -168,8 +170,8 @@ uv run python scripts/check_docs_media.py site docs/guide/assets
   sends GET, HEAD, OPTIONS, POST, PUT, PATCH and DELETE to every netbox_kea URL in a provisioned
   branch, API action routes included; a new route with a parameter the guard cannot build fails
   by name, so teach `_route_arguments` the object.
-  DHCP Import Mappings follow their imported Subnet or Global Reservation through native
-  squash merge and revert. `dhcp_mapping_lifecycle.py` owns their history and writer boundaries.
+  DHCP Import Mappings follow their imported target (one netbox_dhcp model for each kind in
+  `MAPPING_KINDS`, `models.py`) through native squash merge and revert. `dhcp_mapping_lifecycle.py` owns their history and writer boundaries.
   Before changing mapping writes, target deletion or branch replay, read ADR 0008 and
   `docs/design/dhcp-import-mapping-transactions.md` for the recovery contract and lock order.
   Read `docs/design/dhcp-import-mapping-lock-scope.md` before changing which writes, deletions or
@@ -368,7 +370,10 @@ URL request
   runs subnet/lease/reservation/prefix/range sync phases, writes a per-server
   summary to the job log.
 - **DHCP Import** (`integrations/`): `dhcp_import.run_dhcp_plugin_import(server, trigger)` reads Kea for every
-  enabled family, plans each family (`dhcp_import_plan.py`) and applies each plan (`dhcp_plugin.apply_plan`). Each Kea
+  enabled family, plans each family (`dhcp_import_plan.py`) and applies each plan (`dhcp_plugin.apply_plan`). Each
+  Subnet, Pool, Reservation, client class and custom Option Definition that the apply writes has a DHCP Import Mapping
+  (`KeaDhcpLink`: a kind of `MAPPING_KINDS` and the source columns of `dhcp_import_plan.MappingSource`). `mapped_target` and `observe_mapping` in `dhcp_mapping_lifecycle.py` read and
+  write it through that source; an unmapped row that matches by structure is adopted once. Each Kea
   fact of a run is an `ImportEntry` (`dhcp_import_report.py`): a kind, a Kea path from `kea_paths.py`, an outcome and,
   for a fact that was not written, a reason from a closed set. The reason gives the outcome (`REASON_OUTCOME`).
   `ImportSummary` counts only its entries, and an unchanged row has no entry. `store_run` stores a `DhcpImportRun`
@@ -377,13 +382,14 @@ URL request
 - **Parity ledger** (`integrations/dhcp_import_ledger.py`, ADR 0013): every key that Kea accepts on an object the
   DHCP Import can meet is listed once, as mapped (with the DHCP Plugin Capability its write needs), not imported
   (with a reason), pending (with the #89 ticket that maps it) or deprecated (with the key Kea returns instead).
-  `MERGED_KEYS` lists the keys Kea merges into `config-get` from the parent object. `test_dhcp_import_ledger.py`
-  compares both with the recordings, and in the DHCP plugin job with the import's field maps and the plugin models.
+  `MERGED_KEYS` lists the keys Kea merges into `config-get` from the parent object, and `KEA_DEFAULTS` the values
+  Kea returns when no level declares a key. `test_dhcp_import_ledger.py` compares them with the recordings, and in
+  the DHCP plugin job with the import's field maps and the plugin models.
   When a change maps a key, change its entry in the same change.
   - **After a Kea upgrade:** set the new `KEA_VERSION`, run `scripts/record_kea_config_get.py`, and list each key the
     ledger test reports as missing. Remove each key that Kea no longer has. When Kea deprecates a key, set it on its
-    object in `kea-dhcp{4,6}.conf`, record again, and list it as deprecated. When a merged-key assertion fails, update
-    `MERGED_KEYS` (the Declared Value inference of #95 reads it).
+    object in `kea-dhcp{4,6}.conf`, record again, and list it as deprecated. When a merged-key or Kea-default
+    assertion fails, update `MERGED_KEYS` or `KEA_DEFAULTS` (the Declared Value inference reads both).
   - **After a netbox-plugin-dhcp upgrade:** run the DHCP plugin job. A "no plugin home" key whose name is now a plugin
     field fails; move it to pending or mapped. A mapped target that the plugin removed fails. When the upgrade ships
     a #88 change, check that the capability check matches the shipped shape, as #88 says. The entries that name the
@@ -648,7 +654,7 @@ resort, reserved for true external boundaries you cannot run locally.
   production code for Kea command names, hyphenated payload keys, and family-suffixed
   configuration keys or service names. String templates (f-strings, `.format`, `%`, `+`)
   count when they can build a wire literal. Wire owners are `kea.py`, `kea_paths.py`,
-  `integrations/dhcp_import_ledger.py`, `server_configuration.py`, `subnet_catalogue.py`, `reservations.py`,
+  `integrations/dhcp_import_ledger.py`, `integrations/dhcp_import_fields.py`, `server_configuration.py`, `subnet_catalogue.py`, `reservations.py`,
   `dhcp_options.py`, `leases.py`, and `subnet_settings.py`, relative to `netbox_kea/`. The vocabulary of hyphenated
   keys includes every key in `accepted-keys.json`.
   The checker excludes these exact modules, tests, and migrations. The transport stub

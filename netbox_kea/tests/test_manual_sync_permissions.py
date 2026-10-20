@@ -43,9 +43,9 @@ _IPAM_IMPORT_WRITES = (
 )
 _PLUGIN_IMPORT_WRITES = (
     "netbox_dhcp.add_dhcpserver, netbox_dhcp.change_dhcpserver, netbox_dhcp.add_optiondefinition, "
-    "netbox_dhcp.add_option, netbox_dhcp.change_option, netbox_dhcp.add_clientclass, netbox_dhcp.change_clientclass, "
-    "netbox_dhcp.add_subnet, netbox_dhcp.change_subnet, netbox_dhcp.add_pool, "
-    "netbox_dhcp.add_hostreservation, netbox_dhcp.change_hostreservation"
+    "netbox_dhcp.change_optiondefinition, netbox_dhcp.add_option, netbox_dhcp.change_option, "
+    "netbox_dhcp.add_clientclass, netbox_dhcp.change_clientclass, netbox_dhcp.add_subnet, netbox_dhcp.change_subnet, "
+    "netbox_dhcp.add_pool, netbox_dhcp.change_pool, netbox_dhcp.add_hostreservation, netbox_dhcp.change_hostreservation"
 )
 _IMPORT_WRITES = f"{_IPAM_IMPORT_WRITES}, {_PLUGIN_IMPORT_WRITES}"
 _PLUGIN_MODELS = ("DHCPServer", "OptionDefinition", "Option", "ClientClass", "Subnet", "Pool", "HostReservation")

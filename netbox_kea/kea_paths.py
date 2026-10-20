@@ -14,6 +14,21 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .dhcp_options import DHCPOption
 
+#: The Kea key of the free-form context that an operator attaches to a Kea object.
+USER_CONTEXT = "user-context"
+# Global keys of the daemon configuration that the DHCP Import reads by name.
+SERVER_ID = "server-id"
+HOST_RESERVATION_IDENTIFIERS = "host-reservation-identifiers"
+ALLOW_ADDRESS_REGISTRATION = "allow-address-registration"
+STASH_AGENT_OPTIONS = "stash-agent-options"
+INTERFACES_CONFIG = "interfaces-config"
+SHARED_NETWORKS = "shared-networks"
+CLIENT_CLASSES = "client-classes"
+EVALUATE_ADDITIONAL_CLASSES = "evaluate-additional-classes"
+POOL_ID = "pool-id"
+#: The ``server-id`` keys besides its type, each with the value that tells Kea to generate it.
+SERVER_ID_PARAMETERS = {"identifier": "", "enterprise-id": 0, "htype": 0, "time": 0}
+
 
 def _step(key: str, identity: str | int) -> str:
     return f"{key}[{identity}]"
@@ -24,25 +39,30 @@ def daemon(family: int) -> str:
     return f"Dhcp{family}"
 
 
+def subnet_collection(family: int) -> str:
+    """Return the key of the Subnet collection of a daemon or Shared Network of *family*."""
+    return f"subnet{family}"
+
+
 def subnet(family: int, subnet_id: int | None, cidr: str | None = None) -> str:
     """Return the path of a Subnet by its Kea subnet ID, or by its CIDR when Kea gave no ID."""
     identity = f"id={subnet_id}" if subnet_id is not None else f"subnet={cidr}"
-    return f"{daemon(family)}/{_step(f'subnet{family}', identity)}"
+    return f"{daemon(family)}/{_step(subnet_collection(family), identity)}"
 
 
 def subnet_entry(parent: str, family: int, index: int) -> str:
     """Return the path of the Subnet entry at *index* of the daemon or Shared Network at *parent*."""
-    return f"{parent}/{_step(f'subnet{family}', index)}"
+    return f"{parent}/{_step(subnet_collection(family), index)}"
 
 
 def shared_network(family: int, name: str) -> str:
     """Return the path of a Shared Network by its name."""
-    return f"{daemon(family)}/{_step('shared-networks', f'name={name}')}"
+    return f"{daemon(family)}/{_step(SHARED_NETWORKS, f'name={name}')}"
 
 
 def shared_network_entry(family: int, index: int) -> str:
     """Return the path of the Shared Network entry at *index*."""
-    return f"{daemon(family)}/{_step('shared-networks', index)}"
+    return f"{daemon(family)}/{_step(SHARED_NETWORKS, index)}"
 
 
 def pool(subnet_path: str, text: str) -> str:
@@ -62,12 +82,17 @@ def pool_entry(subnet_path: str, index: int) -> str:
 
 def client_class(family: int, name: str) -> str:
     """Return the path of a client class by its name."""
-    return f"{daemon(family)}/{_step('client-classes', f'name={name}')}"
+    return f"{daemon(family)}/{_step(CLIENT_CLASSES, f'name={name}')}"
+
+
+def class_reference(parent: str, key: str, name: str) -> str:
+    """Return the path of the class *name* in the class list *key* of the object at *parent*."""
+    return f"{parent}/{_step(key, name)}"
 
 
 def client_class_entry(family: int, index: int) -> str:
     """Return the path of the client class entry at *index*."""
-    return f"{daemon(family)}/{_step('client-classes', index)}"
+    return f"{daemon(family)}/{_step(CLIENT_CLASSES, index)}"
 
 
 def default_space(family: int) -> str:
@@ -99,6 +124,11 @@ def option(parent: str, option: DHCPOption, family: int) -> str:
     if option.client_classes:
         identity = f"{identity},client-classes={'|'.join(sorted(option.client_classes))}"
     return f"{parent}/{_step('option-data', identity)}"
+
+
+def interface(family: int, entry: str) -> str:
+    """Return the path of one entry of the interface list of a daemon."""
+    return f"{daemon(family)}/{INTERFACES_CONFIG}/{_step('interfaces', entry)}"
 
 
 def setting(parent: str, key: str) -> str:

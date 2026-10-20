@@ -108,7 +108,7 @@ def compute_drift(server: Server) -> dict:
         intent = _fetch_config_intent(server, version)
         links = {
             link.kea_subnet_id: link
-            for link in KeaDhcpLink.objects.filter(server=server, family=version, kea_subnet_id__isnull=False)
+            for link in KeaDhcpLink.objects.filter(server=server, family=version, kind=Kind.SUBNET.value)
         }
         rows = []
         # A failed read (a Notice) and a configuration that could not be parsed (None) both give no live rows.

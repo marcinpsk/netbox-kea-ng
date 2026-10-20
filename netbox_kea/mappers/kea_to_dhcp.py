@@ -33,9 +33,8 @@ logger = logging.getLogger(__name__)
 
 # Scalar Kea config keys that map onto netbox_dhcp tuning fields (lifetimes, timers,
 # lease/DDNS/BOOTP/network settings, and server-level globals).  ``config-get``
-# returns these fully defaulted+inherited at both the global and subnet scope; the
-# adapter decides which apply to which model and suppresses values inherited from
-# the parent.  Captured verbatim here (the Kea→sys4 field mapping lives in the adapter).
+# merges some of them from the parent; the plan keeps only the Declared Values.
+# Captured verbatim here (the Kea→sys4 field mapping lives in the adapter).
 KEA_SETTINGS_KEYS: tuple[str, ...] = (
     # lifetimes / timers
     "valid-lifetime",
@@ -119,10 +118,15 @@ class OptionDefIntent:
 
 @dataclass(frozen=True)
 class PoolIntent:
-    """A Kea pool string (``start-end`` range or ``CIDR``) within a subnet."""
+    """A Kea pool string (``start-end`` range or ``CIDR``) within a subnet, with its Declared Values."""
 
     pool: str
     options: tuple[DHCPOption, ...] = ()
+    pool_id: int | None = None
+    client_classes: tuple[str, ...] = ()
+    evaluate_additional_classes: tuple[str, ...] = ()
+    # Kea merges no value into a Pool, so each setting is a Declared Value.
+    settings: dict = field(default_factory=dict)
 
     @property
     def match_key(self) -> str:
@@ -150,6 +154,7 @@ class SharedNetworkIntent:
     name: str
     family: int
     options: tuple[DHCPOption, ...]
+    settings: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -163,6 +168,8 @@ class ClientClassIntent:
     only_in_additional_list: bool | None
     options: tuple[DHCPOption, ...]
     settings: dict = field(default_factory=dict)
+    # None: the class declares no user-context.
+    user_context: dict | None = None
 
 
 @dataclass
@@ -179,6 +186,10 @@ class ServerConfigIntent:
     global_options: tuple[DHCPOption, ...] = ()
     option_defs: tuple[OptionDefIntent, ...] = ()
     global_settings: dict = field(default_factory=dict)
+    # None: the configuration declares no user-context.
+    user_context: dict | None = None
+    # The entries of the interface list. None: the list is not valid, so the import leaves the links alone.
+    interfaces: tuple[str, ...] | None = ()
     # Entries that the parse dropped as invalid, each with its Kea path.
     dropped: list[DroppedEntry] = field(default_factory=list)
 
@@ -255,8 +266,38 @@ def _pools(raw_list, subnet_path: str, dropped: list[DroppedEntry]) -> tuple[Poo
             )
             continue
         path = kea_paths.pool(subnet_path, pool)
-        out.append(PoolIntent(pool=pool, options=_options(entry.get("option-data"), path, dropped)))
+        out.append(
+            PoolIntent(
+                pool=pool,
+                options=_options(entry.get("option-data"), path, dropped),
+                pool_id=_pool_id(entry.get(kea_paths.POOL_ID), path, dropped),
+                client_classes=_class_list(entry, kea_paths.CLIENT_CLASSES, path, dropped),
+                evaluate_additional_classes=_class_list(entry, kea_paths.EVALUATE_ADDITIONAL_CLASSES, path, dropped),
+                settings=_settings(entry),
+            )
+        )
     return tuple(out)
+
+
+def _pool_id(raw, path: str, dropped: list[DroppedEntry]) -> int | None:
+    """Read a Pool's ``pool-id``; drop one that is not a non-negative integer."""
+    if raw is None:
+        return None
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+        return raw
+    dropped.append(
+        DroppedEntry(Kind.POOL, kea_paths.setting(path, kea_paths.POOL_ID), "The ID is not a non-negative integer.")
+    )
+    return None
+
+
+def _class_list(raw: dict, key: str, path: str, dropped: list[DroppedEntry]) -> tuple[str, ...]:
+    """Read the class names of the list *key* of the Pool at *path*; drop a list that is not of names."""
+    names = raw.get(key, [])
+    if isinstance(names, list) and all(isinstance(name, str) and name for name in names):
+        return tuple(names)
+    dropped.append(DroppedEntry(Kind.POOL, kea_paths.setting(path, key), "The list is not a list of class names."))
+    return ()
 
 
 def _subnet_id(raw: dict) -> int | None:
@@ -310,7 +351,20 @@ def _client_class_intent(raw, family: int, path: str, dropped: list[DroppedEntry
         only_in_additional_list=only,
         options=_options(raw.get("option-data"), kea_paths.client_class(family, name), dropped),
         settings=_settings(raw),
+        user_context=raw.get(kea_paths.USER_CONTEXT),
     )
+
+
+def _interfaces(raw, family: int, dropped: list[DroppedEntry]) -> tuple[str, ...] | None:
+    """Read the interface list of ``interfaces-config``. An absent list is empty; a malformed one is dropped."""
+    if raw is None:
+        return ()
+    entries = raw.get("interfaces", []) if isinstance(raw, dict) else None
+    if not isinstance(entries, list) or not all(isinstance(entry, str) for entry in entries):
+        path = f"{kea_paths.daemon(family)}/{kea_paths.INTERFACES_CONFIG}"
+        dropped.append(DroppedEntry(Kind.SERVER, path, "The interface list is not a list of names."))
+        return None
+    return tuple(entries)
 
 
 def _config_collection(conf: dict, key: str) -> list:
@@ -344,6 +398,12 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
     result.global_options = _options(conf.get("option-data"), root, dropped)
     result.option_defs = _option_defs(conf.get("option-def"), family, dropped)
     result.global_settings = _settings(conf)
+    # Global-only keys behind a DHCP Plugin Capability.
+    for key in (kea_paths.ALLOW_ADDRESS_REGISTRATION, kea_paths.STASH_AGENT_OPTIONS):
+        if key in conf:
+            result.global_settings[key] = conf[key]
+    result.user_context = conf.get(kea_paths.USER_CONTEXT)
+    result.interfaces = _interfaces(conf.get(kea_paths.INTERFACES_CONFIG), family, dropped)
 
     for index, raw_cc in enumerate(_config_collection(conf, "client-classes")):
         cc = _client_class_intent(raw_cc, family, kea_paths.client_class_entry(family, index), dropped)
@@ -366,7 +426,10 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
         net_path = kea_paths.shared_network(family, name)
         result.shared_networks.append(
             SharedNetworkIntent(
-                name=name, family=family, options=_options(raw_net.get("option-data"), net_path, dropped)
+                name=name,
+                family=family,
+                options=_options(raw_net.get("option-data"), net_path, dropped),
+                settings=_settings(raw_net),
             )
         )
         for index, raw in enumerate(_config_collection(raw_net, subnet_key)):

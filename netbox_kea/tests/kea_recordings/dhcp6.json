@@ -16,7 +16,9 @@
           {
             "name": "printers",
             "only-in-additional-list": true,
-            "option-data": []
+            "option-data": [],
+            "preferred-lifetime": 3000,
+            "valid-lifetime": 4000
           },
           {
             "max-preferred-lifetime": 750,
@@ -669,7 +671,7 @@
         },
         "valid-lifetime": 4000
       },
-      "hash": "C6BE27D4E34B7B5298248FBE44720287BE3263059A43961E464BFAB513D03762"
+      "hash": "4ECC5B840A3351E4EB9C086048F3ADB97C424F45D0F08B52EF1220DC0C9C2551"
     },
     "result": 0
   },
@@ -678,7 +680,7 @@
     "changes": {
       "after-update": {
         "arguments": {
-          "cltt": 1792421435,
+          "cltt": 1792489713,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -706,7 +708,7 @@
       },
       "before": {
         "arguments": {
-          "cltt": 1792421435,
+          "cltt": 1792489713,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -760,7 +762,7 @@
       },
       "delegated-prefix": {
         "arguments": {
-          "cltt": 1792421435,
+          "cltt": 1792489713,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": false,
           "fqdn-rev": false,
@@ -783,7 +785,7 @@
       },
       "present": {
         "arguments": {
-          "cltt": 1792421435,
+          "cltt": 1792489713,
           "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
           "fqdn-fwd": true,
           "fqdn-rev": false,
@@ -815,7 +817,7 @@
       "arguments": {
         "leases": [
           {
-            "cltt": 1792421435,
+            "cltt": 1792489713,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": true,
             "fqdn-rev": false,
@@ -840,7 +842,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792421435,
+            "cltt": 1792489713,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -854,7 +856,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792421435,
+            "cltt": 1792489713,
             "duid": "00:00:00",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -868,7 +870,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792421435,
+            "cltt": 1792489713,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -882,7 +884,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792421435,
+            "cltt": 1792489713,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -896,7 +898,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792421435,
+            "cltt": 1792489713,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -910,7 +912,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1792421435,
+            "cltt": 1792489713,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -925,7 +927,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792421435,
+            "cltt": 1792489713,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -940,7 +942,7 @@
             "valid-lft": 4294967295
           },
           {
-            "cltt": 1792421435,
+            "cltt": 1792489713,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -955,7 +957,7 @@
             "valid-lft": 3600
           },
           {
-            "cltt": 1792421435,
+            "cltt": 1792489713,
             "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
             "fqdn-fwd": false,
             "fqdn-rev": false,
@@ -980,7 +982,7 @@
           "count": 4,
           "leases": [
             {
-              "cltt": 1792421435,
+              "cltt": 1792489713,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": true,
               "fqdn-rev": false,
@@ -1005,7 +1007,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792421435,
+              "cltt": 1792489713,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1019,7 +1021,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792421435,
+              "cltt": 1792489713,
               "duid": "00:00:00",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1033,7 +1035,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792421435,
+              "cltt": 1792489713,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1056,7 +1058,7 @@
           "count": 4,
           "leases": [
             {
-              "cltt": 1792421435,
+              "cltt": 1792489713,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1070,7 +1072,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792421435,
+              "cltt": 1792489713,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1084,7 +1086,7 @@
               "valid-lft": 4294967295
             },
             {
-              "cltt": 1792421435,
+              "cltt": 1792489713,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1099,7 +1101,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792421435,
+              "cltt": 1792489713,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1123,7 +1125,7 @@
           "count": 2,
           "leases": [
             {
-              "cltt": 1792421435,
+              "cltt": 1792489713,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,
@@ -1138,7 +1140,7 @@
               "valid-lft": 3600
             },
             {
-              "cltt": 1792421435,
+              "cltt": 1792489713,
               "duid": "00:01:00:01:2c:4f:00:01:aa:bb:cc:00:00:01",
               "fqdn-fwd": false,
               "fqdn-rev": false,

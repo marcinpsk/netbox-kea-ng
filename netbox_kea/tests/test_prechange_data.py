@@ -327,8 +327,16 @@ class DHCPImportChangeRecordTest(TestCase):
         server = _make_db_server(name="snapshot-server", ca_url="https://kea.example.invalid", dhcp6=False)
         config = {
             "valid-lifetime": 3600,
+            "option-def": [{"name": "site-code", "code": 222, "type": "uint8", "space": "dhcp4"}],
             "client-classes": [{"name": "phones", "test": "option[60].text == 'phone'", "valid-lifetime": 1800}],
-            "subnet4": [{"id": 1, "subnet": "198.18.0.0/24", "valid-lifetime": 7200}],
+            "subnet4": [
+                {
+                    "id": 1,
+                    "subnet": "198.18.0.0/24",
+                    "valid-lifetime": 7200,
+                    "pools": [{"pool": "198.18.0.10-198.18.0.20", "option-data": [{"code": 222, "data": "5"}]}],
+                }
+            ],
         }
         first = import_server_config(server, parse_dhcp_config(config, 4), _reservation_snapshot(config, 4))
         self.assertEqual(first.errors, 0, first.warnings)
@@ -337,7 +345,7 @@ class DHCPImportChangeRecordTest(TestCase):
         request = RequestFactory().post("/plugins/kea/import/")
         request.user = get_user_model().objects.create_user("import-operator")
         request.id = uuid.uuid4()
-        for model_name in ("DHCPServer", "ClientClass", "Subnet"):
+        for model_name in ("DHCPServer", "ClientClass", "Subnet", "Pool", "OptionDefinition"):
             model = apps.get_model("netbox_dhcp", model_name)
             with (
                 self.subTest(model=model_name),
@@ -355,14 +363,18 @@ class DHCPImportChangeRecordTest(TestCase):
                     ).exists()
                 )
 
-    def test_secondary_server_settings_snapshot_only_when_a_gap_is_filled(self):
+    def test_a_changed_dhcpv6_global_snapshots_the_dhcpv6_server_once(self):
         from netbox_kea.integrations.dhcp_plugin import import_server_config
 
         server = _make_db_server(name="dualstack-snapshot-server", ca_url="https://kea.example.invalid")
-        primary = {"valid-lifetime": 3600, "subnet4": []}
-        first = import_server_config(server, parse_dhcp_config(primary, 4), _reservation_snapshot(primary, 4))
-        self.assertEqual(first.errors, 0, first.warnings)
-        secondary = {"valid-lifetime": 4000, "preferred-lifetime": 3000, "subnet6": []}
+        configs = {
+            4: {"valid-lifetime": 3600, "subnet4": []},
+            6: {"valid-lifetime": 4000, "preferred-lifetime": 3000, "subnet6": []},
+        }
+        for family, conf in configs.items():
+            first = import_server_config(server, parse_dhcp_config(conf, family), _reservation_snapshot(conf, family))
+            self.assertEqual(first.errors, 0, first.warnings)
+        configs[6]["preferred-lifetime"] = 2000
         model = apps.get_model("netbox_dhcp", "DHCPServer")
         request = RequestFactory().post("/plugins/kea/import/")
         request.user = get_user_model().objects.create_user("import-operator")
@@ -371,19 +383,21 @@ class DHCPImportChangeRecordTest(TestCase):
             event_tracking(request),
             patch.object(model, "snapshot", autospec=True, side_effect=model.snapshot) as snapshots,
         ):
-            filled = import_server_config(server, parse_dhcp_config(secondary, 6), _reservation_snapshot(secondary, 6))
-        self.assertEqual(filled.errors, 0, filled.warnings)
+            changed = import_server_config(
+                server, parse_dhcp_config(configs[6], 6), _reservation_snapshot(configs[6], 6)
+            )
+        self.assertEqual(changed.errors, 0, changed.warnings)
         snapshots.assert_called_once()
         change = ObjectChange.objects.get(
             changed_object_type=ContentType.objects.get_for_model(model), request_id=request.id, action="update"
         )
-        self.assertIsNone(change.prechange_data["preferred_lifetime"])
-        self.assertEqual(change.postchange_data["preferred_lifetime"], 3000)
-        self.assertEqual(change.postchange_data["valid_lifetime"], 3600)
+        self.assertEqual(change.prechange_data["preferred_lifetime"], 3000)
+        self.assertEqual(change.postchange_data["preferred_lifetime"], 2000)
+        self.assertEqual(change.postchange_data["valid_lifetime"], 4000)
 
         with patch.object(model, "snapshot", autospec=True, side_effect=model.snapshot) as snapshots:
             unchanged = import_server_config(
-                server, parse_dhcp_config(secondary, 6), _reservation_snapshot(secondary, 6)
+                server, parse_dhcp_config(configs[6], 6), _reservation_snapshot(configs[6], 6)
             )
         self.assertEqual(unchanged.errors, 0, unchanged.warnings)
         snapshots.assert_not_called()
