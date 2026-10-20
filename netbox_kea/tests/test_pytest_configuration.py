@@ -1307,7 +1307,14 @@ def test_dhcp_plugin_ci_uses_xdist():
 #: A test that skips when the DHCP plugin is absent, as each module in this suite writes it.
 _DHCP_PLUGIN_SKIP = re.compile(r"\bnot apps\.is_installed\((?:\"netbox_dhcp\"|DHCP_PLUGIN)\)")
 #: One whole test module in a pytest command. A node ID (``module.py::Test``) runs part of it only.
-_WHOLE_TEST_MODULE = re.compile(r"netbox_kea/tests/(test_\w+\.py)(?=\s)")
+_WHOLE_TEST_MODULE = re.compile(r"netbox_kea/tests/(test_\w+\.py)(?=\s|$)")
+
+
+def test_a_whole_test_module_matches_as_the_last_token_of_a_command():
+    """A module path that ends a command runs whole; a node ID runs part of the module only."""
+    (command,) = _pytest_commands("pytest -v netbox_kea/tests/test_a.py::Test netbox_kea/tests/test_b.py\n")
+
+    assert _WHOLE_TEST_MODULE.findall(command) == ["test_b.py"]
 
 
 def test_every_module_that_needs_the_dhcp_plugin_runs_in_a_dhcp_plugin_job():
