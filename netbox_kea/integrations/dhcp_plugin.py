@@ -36,10 +36,10 @@ v1 scope (import + diff, read-only against Kea):
   server-scoped custom definition created from a Kea ``option-def``.  Options
   whose definition cannot be resolved are reported as unsupported, never fatal.
 * **Tuning fields** (lifetimes, timers, lease/DDNS/BOOTP/network settings) are
-  imported onto the ``DHCPServer`` (global) and ``Subnet``. A Subnet gets only its
-  Declared Values (:func:`.dhcp_import_plan.declared_values`), and every other field
-  is cleared to inherit. A value that a member Subnet inherits from its Shared Network
-  is reported, never copied onto the Subnet.
+  imported onto the ``DHCPServer`` (global), ``Subnet`` and ``ClientClass``. A Subnet
+  or client class gets only its Declared Values (:func:`.dhcp_import_plan.declared_values`),
+  and every other field is cleared to inherit. A value that a member Subnet inherits
+  from its Shared Network is reported, never copied onto the Subnet.
 * **Client classes** (``client-classes``) are imported as ``ClientClass`` rows
   (test/template-test, additional-list flag, BOOTP + lifetime settings, options) with
   their Kea name. While the plugin keeps class names unique across all servers, a class
@@ -61,7 +61,15 @@ if TYPE_CHECKING:
     from ..ipam_reconciliation import ClaimResult, RangeClaim, ReservationObservation, SyncReport
     from ..models import DhcpIntegrationConfig, Server
     from ..subnet_catalogue import CatalogueSnapshot
-    from .dhcp_import_plan import FamilyPlan, Planned, PlannedServer, PlannedSubnet, PoolKey, ReservationKey
+    from .dhcp_import_plan import (
+        FamilyPlan,
+        Planned,
+        PlannedClientClass,
+        PlannedServer,
+        PlannedSubnet,
+        PoolKey,
+        ReservationKey,
+    )
 
 from django.apps import apps
 from django.db.models.signals import post_delete
@@ -71,7 +79,7 @@ from ..constants import IPNetworkValue
 from ..dhcp_mapping_lifecycle import coordinated_import, mapped_target, observe_mapping, target_models
 from ..dhcp_options import DHCPOption, option_identity
 from ..kea import subnet_network
-from ..mappers.kea_to_dhcp import ClientClassIntent, OptionDefIntent, ServerConfigIntent
+from ..mappers.kea_to_dhcp import OptionDefIntent, ServerConfigIntent
 from ..published_name import reservation_published_name
 from ..reservations import FLEX_ID, TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, identity_text
 from ..subnet_catalogue import CatalogueUnavailable
@@ -648,12 +656,11 @@ def _cleared(obj, attr: str):
     return None if db_field.null else db_field.get_default()
 
 
-def _settings_fields(obj, settings: dict, field_map, summary: ImportSummary, source: _Source, parent=None) -> dict:
-    """Plan *obj*'s tuning fields from the Kea *settings*. A key that *settings* lacks clears its field to inherit.
+def _settings_fields(obj, settings: dict, field_map, summary: ImportSummary, source: _Source) -> dict:
+    """Plan *obj*'s tuning fields from its Declared Values. A key that *settings* lacks clears its field to inherit.
 
-    With a stored *parent*, an empty value or one equal to the parent's field is cleared too. The ``model_fields``
-    guard skips fields *obj* does not have, so one field map serves models with different mixins (e.g. ``Subnet``
-    vs ``ClientClass``). Return the desired fields without changing *obj*.
+    The ``model_fields`` guard skips fields *obj* does not have, so one field map serves models with different mixins
+    (e.g. ``Subnet`` vs ``ClientClass``). Return the desired fields without changing *obj*.
     """
     model_fields = {f.name for f in obj._meta.get_fields()}
     fields = {}
@@ -663,8 +670,7 @@ def _settings_fields(obj, settings: dict, field_map, summary: ImportSummary, sou
         value = (
             _transform_value(transform, settings[kea_key], kea_key, summary, source) if kea_key in settings else None
         )
-        inherited = value is None or (parent is not None and (_is_unset(value) or value == getattr(parent, attr, None)))
-        fields[attr] = _cleared(obj, attr) if inherited else value
+        fields[attr] = _cleared(obj, attr) if value is None else value
     return fields
 
 
@@ -923,9 +929,10 @@ def _released_client_class_name(server, kea_name: str) -> str:
 
 
 def _client_class_changes(
-    obj, dhcp_server, intent: ClientClassIntent, summary: ImportSummary, path: str, capabilities: PluginCapabilities
+    obj, dhcp_server, planned: PlannedClientClass, summary: ImportSummary, path: str, capabilities: PluginCapabilities
 ) -> dict:
-    """Plan the changed identity, expressions and inherited fields of one Client Class. Its name is planned apart."""
+    """Plan the changed identity, expressions and settings fields of one Client Class. Its name is planned apart."""
+    intent = planned.intent
     fields = {
         "dhcp_server_id": dhcp_server.pk,
         "test": intent.test or "",
@@ -949,7 +956,7 @@ def _client_class_changes(
             )
         )
     source = _Source(intent.family, Kind.CLIENT_CLASS, path)
-    fields.update(_settings_fields(obj, intent.settings, _COMMON_FIELDS, summary, source, dhcp_server))
+    fields.update(_settings_fields(obj, planned.settings, _COMMON_FIELDS, summary, source))
     return {name: value for name, value in fields.items() if getattr(obj, name) != value}
 
 
@@ -980,7 +987,7 @@ def _record_name_taken(
 def upsert_client_class(
     server,
     dhcp_server,
-    planned: Planned[str, ClientClassIntent],
+    planned: PlannedClientClass,
     custom_defs: CustomDefinitions,
     summary: ImportSummary,
     capabilities: PluginCapabilities,
@@ -1005,12 +1012,14 @@ def upsert_client_class(
                 return None
             if obj is None:
                 obj = ClientClass(name=planned.key, dhcp_server=dhcp_server)
-                for name, value in _client_class_changes(obj, dhcp_server, intent, summary, path, capabilities).items():
+                for name, value in _client_class_changes(
+                    obj, dhcp_server, planned, summary, path, capabilities
+                ).items():
                     setattr(obj, name, value)
                 obj.save()
                 outcome = Outcome.CREATED
             else:
-                changes = _client_class_changes(obj, dhcp_server, intent, summary, path, capabilities)
+                changes = _client_class_changes(obj, dhcp_server, planned, summary, path, capabilities)
                 if not name_taken and obj.name != planned.key:
                     changes["name"] = planned.key
                 if changes:

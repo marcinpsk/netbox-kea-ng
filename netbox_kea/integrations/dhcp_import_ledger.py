@@ -378,14 +378,17 @@ _MERGED_INTO_NETWORKS: dict[Family, frozenset[str]] = {
 }
 
 # Kea 3.2 merges into a Shared Network from the global configuration, and into a Subnet from its parent. The global
-# configuration has no relay, so only a member Subnet takes one. Kea merges nothing into Pools and PD Pools.
+# configuration has no relay, so only a member Subnet takes one. Kea merges nothing into client classes, Pools and
+# PD Pools.
 MERGED_KEYS: dict[Family, dict[str, frozenset[str]]] = {
     4: {
+        "client-classes": frozenset(),
         "shared-networks": _MERGED_INTO_NETWORKS[4],
         "subnet4": _MERGED_INTO_NETWORKS[4] | {"relay"},
         "pools": frozenset(),
     },
     6: {
+        "client-classes": frozenset(),
         "shared-networks": _MERGED_INTO_NETWORKS[6],
         "subnet6": _MERGED_INTO_NETWORKS[6] | {"relay"},
         "pools": frozenset(),
@@ -393,14 +396,17 @@ MERGED_KEYS: dict[Family, dict[str, frozenset[str]]] = {
     },
 }
 
-# The values that Kea 3.2 returns for these keys on an object that declares none and whose parent has none.
+# The values that Kea 3.2 returns for these keys on an object that declares none and into which Kea merges none.
 KEA_DEFAULTS: dict[Family, dict[str, dict[str, object]]] = {
     4: {
+        # Kea's unset next-server, not an address to bind.
+        "client-classes": {"next-server": "0.0.0.0", "server-hostname": "", "boot-file-name": ""},  # noqa: S104
         "shared-networks": {"relay": {"ip-addresses": []}},
         "subnet4": {"4o6-interface": "", "4o6-interface-id": "", "4o6-subnet": ""},
         "pools": {},
     },
     6: {
+        "client-classes": {},
         "shared-networks": {"relay": {"ip-addresses": []}, "rapid-commit": False},
         "subnet6": {"rapid-commit": False},
         "pools": {},

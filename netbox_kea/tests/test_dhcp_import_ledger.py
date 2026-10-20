@@ -168,9 +168,10 @@ def _undeclared(declared: dict, returned: dict, parent: dict, table: str, family
 
 
 def _observed(family: Family) -> tuple[dict[str, set[str]], dict[str, set[tuple[str, str]]]]:
-    """Return the merged keys and the Kea defaults, as (key, JSON value), of each Shared Network, Subnet and Pool."""
+    """Return the merged keys and the Kea defaults, as (key, JSON value), of each object that the ledger states."""
     declared, returned = _declared(family), _returned(family)
-    tables = ["shared-networks", f"subnet{family}", "pools", *(["pd-pools"] if family == 6 else [])]
+    pool_tables = ["pools", *(["pd-pools"] if family == 6 else [])]
+    tables = ["client-classes", "shared-networks", f"subnet{family}", *pool_tables]
     merges: dict[str, set[str]] = {table: set() for table in tables}
     defaults: dict[str, set[tuple[str, str]]] = {table: set() for table in tables}
 
@@ -179,6 +180,8 @@ def _observed(family: Family) -> tuple[dict[str, set[str]], dict[str, set[tuple[
         merges[table] |= merged
         defaults[table] |= {(key, json.dumps(got[key])) for key in default}
 
+    for obj, got in _paired("client-classes", family, declared["client-classes"], returned["client-classes"]):
+        observe("client-classes", obj, got, returned)
     networks = _paired("shared-networks", family, declared["shared-networks"], returned["shared-networks"])
     for obj, got in networks:
         observe("shared-networks", obj, got, returned)
@@ -193,7 +196,7 @@ def _observed(family: Family) -> tuple[dict[str, set[str]], dict[str, set[tuple[
     for subnet, got in subnets:
         network = parents[subnet["id"]]
         observe(f"subnet{family}", subnet, got, returned if network is None else returned_networks[network["name"]])
-        for table in tables[2:]:
+        for table in pool_tables:
             for pool, got_pool in _paired(table, family, subnet.get(table, []), got.get(table, [])):
                 observe(table, pool, got_pool, got)
     return merges, defaults

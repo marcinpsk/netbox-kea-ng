@@ -1403,7 +1403,7 @@ class DhcpPluginClientClassImportTest(TestCase):
         cc = ClientClass.objects.get(name="voip")
         self.assertEqual(cc.dhcp_server, imported_dhcp_server(self.server, 4))
         self.assertEqual(cc.test, "substring(option[60].hex,0,6) == 'Aastra'")
-        # BOOTP settings differ from the server baseline → stored on the class.
+        # The class declares its BOOTP settings, so they are stored on the class.
         self.assertEqual(cc.next_server, "192.0.2.254")
         self.assertEqual(cc.boot_file_name, "/dev/null")
         self.assertEqual(cc.server_hostname, "hal9000")
