@@ -705,8 +705,8 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         self.assertEqual(
             _written_sn(kea)["option-data"],
             [
-                {"name": "domain-name-servers", "space": "vendor-4491", "data": "198.18.0.99"},
                 {"code": 6, "data": "198.18.0.53"},
+                {"name": "domain-name-servers", "space": "vendor-4491", "data": "198.18.0.99"},
             ],
         )
 

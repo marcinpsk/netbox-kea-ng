@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 
 _RESERVATION_PAGE_SIZE = 100
 _RESERVATION_SEARCH_PAGE_LIMIT = 5
-_MUTATION_UNCONFIRMED = "Reservation mutation capabilities could not be confirmed."
+MUTATION_UNCONFIRMED = "Reservation mutation capabilities could not be confirmed."
 
 
 def _build_reservation_options_formset(post_data: Any) -> tuple[Any, bool]:
@@ -472,7 +472,7 @@ def present(user: Any, server: Server, read: ReservationRead, *, return_url: str
     can_mutate = capabilities is not None and capabilities.mutation_available
     reason = ""
     if read.query.mutations and not can_mutate:
-        reason = (capabilities.explanation if capabilities is not None else "") or _MUTATION_UNCONFIRMED
+        reason = (capabilities.explanation if capabilities is not None else "") or MUTATION_UNCONFIRMED
     if snapshot is not None and rows:
         _enrich_reservations_with_badges(
             rows,
@@ -707,7 +707,7 @@ def _reservation_export_response(request: HttpRequest, server: Server, version: 
     return response
 
 
-_RESERVATIONS_TAB = OptionalViewTab(
+RESERVATIONS_TAB = OptionalViewTab(
     label="Reservations", weight=1040, is_enabled=lambda server: server.dhcp4 or server.dhcp6
 )
 
@@ -720,7 +720,7 @@ class ServerReservations4View(ServerFamilyMixin, generic.ObjectView):
     dhcp_version = 4
 
     queryset = Server.objects.all()
-    tab = _RESERVATIONS_TAB
+    tab = RESERVATIONS_TAB
     template_name = "netbox_kea/server_reservations.html"
 
     def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
@@ -754,4 +754,4 @@ class ServerReservations6View(ServerFamilyMixin, generic.ObjectView):
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
         """Return the DHCPv6 typed list context and shared tab."""
-        return {**_reservation_list_context(request, instance, 6), "tab": _RESERVATIONS_TAB}
+        return {**_reservation_list_context(request, instance, 6), "tab": RESERVATIONS_TAB}

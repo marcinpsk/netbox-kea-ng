@@ -117,32 +117,10 @@ class TestReservationAddPublishedName(_PublishedNameViewTest):
         self.assertEqual(response.status_code, 302)
         return kea.bodies("reservation-add")[0]["arguments"]["reservation"]
 
-    def test_add_stores_the_hostname_that_publishes_the_entered_name(self):
+    def test_add_passes_the_entered_published_name_through_the_edit_module(self):
         for family in (4, 6):
-            for subnet_id, entered, stored, address in (
-                (21, "host.office.example.org", "host", None),
-                (21, "Host.Office.Example.org.", "Host", None),
-                (21, "web.example.com", "web.example.com.", None),
-                (21, "printer", "printer", None),
-                (21, "host.pool.example.org", "host", _IN_POOL[family]),
-                (21, "host.office.example.org", "host.office.example.org.", _IN_POOL[family]),
-                (20, "host.office.example.net", "host", None),
-                (10, "web.example.com.", "web.example.com", None),
-            ):
-                with self.subTest(family=family, subnet_id=subnet_id, entered=entered, address=address):
-                    self.assertEqual(self._add(family, subnet_id, entered, address)["hostname"], stored)
-
-    def test_a_name_without_an_address_in_a_subnet_with_a_pool_suffix_is_refused(self):
-        # Kea takes the suffix from the Pool of the dynamic lease, so no stored form is known.
-        with self.assertNoLogs("netbox_kea.views.reservation_mutations", level="ERROR"):
-            response, kea = self._post_add(4, 21, "host.office.example.org", "")
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("reservation-add", kea.commands())
-        self.assertIn("so it depends on the address.", " ".join(response.context["form"].errors["hostname"]))
-
-    def test_add_without_a_hostname_sends_none(self):
-        self.assertNotIn("hostname", self._add(4, 21, ""))
-        self.assertNotIn("hostname", self._add(4, 21, "", ""))
+            with self.subTest(family=family):
+                self.assertEqual(self._add(family, 21, "host.office.example.org")["hostname"], "host")
 
 
 class TestReservationEditPublishedName(_PublishedNameViewTest):
@@ -179,65 +157,13 @@ class TestReservationEditPublishedName(_PublishedNameViewTest):
             )
         return response, kea
 
-    def test_the_form_shows_the_published_name_of_the_stored_hostname(self):
-        for family in (4, 6):
-            for subnet_id, stored, published in (
-                (21, "host", "host.office.example.org"),
-                (21, "host.example.org", "host.example.org.office.example.org"),
-                (21, "host.example.org.", "host.example.org"),
-                (20, "host", "host.office.example.net"),
-                (10, "host", "host"),
-            ):
-                with self.subTest(family=family, subnet_id=subnet_id, stored=stored):
-                    response = self._open(family, subnet_id, stored)
-                    self.assertEqual(response.status_code, 200)
-                    self.assertEqual(response.context["form"].initial["hostname"], published)
-                    self.assertContains(response, f'value="{published}"')
-
-    def test_saving_the_shown_name_sends_the_stored_hostname_unchanged(self):
-        # A bare label and a name without a trailing dot keep their stored form until the user edits the name.
-        for family in (4, 6):
-            for subnet_id, stored in (
-                (21, "host"),
-                (21, "host.example.org"),
-                (21, "Host.office.example.org."),
-                (10, "host"),
-            ):
-                with self.subTest(family=family, subnet_id=subnet_id, stored=stored):
-                    form_page = self._open(family, subnet_id, stored)
-                    shown = form_page.context["form"].initial["hostname"]
-                    response, kea = self._save(family, subnet_id, stored, shown, form_page=form_page)
-                    self.assertEqual(response.status_code, 302)
-                    self.assertEqual(
-                        kea.bodies("reservation-update")[0]["arguments"]["reservation"]["hostname"], stored
-                    )
-
-    def test_an_edited_name_stores_the_hostname_that_publishes_it(self):
-        for family in (4, 6):
-            for entered, stored in (
-                ("db.office.example.org", "db"),
-                ("db.example.com", "db.example.com."),
-                ("db", "db"),
-            ):
-                with self.subTest(family=family, entered=entered):
-                    response, kea = self._save(family, 21, "host", entered)
-                    self.assertEqual(response.status_code, 302)
-                    sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
-                    self.assertEqual(sent["hostname"], stored)
-
-    def test_a_moved_address_stores_the_shown_name_under_the_suffix_of_its_pool(self):
-        # The shown name is what the user keeps: moving into the Pool must not change the name that clients get.
+    def test_the_edit_form_uses_the_modules_published_name_initial_values(self):
         for family in (4, 6):
             with self.subTest(family=family):
-                response, kea = self._save(family, 21, "host", "host.office.example.org", address=_IN_POOL[family])
-                self.assertEqual(response.status_code, 302)
-                sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
-                self.assertEqual(sent["hostname"], "host.office.example.org.")
-
-    def test_clearing_the_name_removes_the_hostname(self):
-        response, kea = self._save(4, 21, "host", "")
-        self.assertEqual(response.status_code, 302)
-        self.assertNotIn("hostname", kea.bodies("reservation-update")[0]["arguments"]["reservation"])
+                response = self._open(family, 21, "host")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.context["form"].initial["hostname"], "host.office.example.org")
+                self.assertContains(response, 'value="host.office.example.org"')
 
     def test_a_changed_suffix_refuses_the_save(self):
         # The form showed the name under one suffix; Kea now has another, so the shown name is stale.
@@ -266,59 +192,32 @@ class TestReservationEditPublishedName(_PublishedNameViewTest):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("reservation-update", kea.commands())
         self.assertIn(
-            "The DDNS qualifying suffix of the Subnet changed after the edit form was opened.",
+            "The qualifying suffix differs from the one shown (office.example.org. → moved.example.org). "
+            "Check the name and save again.",
             " ".join(response.context["form"].non_field_errors()),
         )
-
-    def _save_addressless(self, family: int, entered: str):
-        # A Pool of Subnet 21 sets a suffix, so the name of a Reservation without an address depends on the lease.
-        current = _stored(family, 21, "host", address="")
-        with stub_kea({**_recorded(family), "reservation-get": _res_get(current)}):
-            form_page = self.client.get(self._url(family, 21))
-        self.assertEqual(form_page.status_code, 200)
-        self.assertEqual(form_page.context["form"].initial["hostname"], "host")
+        self.assertContains(response, "The qualifying suffix differs from the one shown")
+        preview_url = reverse("plugins:netbox_kea:server_reservation4_published_name", args=[self.server.pk])
+        with stub_kea({**_recorded(4), "config-get": changed}):
+            preview = self.client.get(
+                preview_url, {"subnet_cidr": _SUBNETS[4][21], "ip_address": _ADDRESSES[4][21], "hostname": "host"}
+            )
+        self.assertEqual(preview.context["suffix"], "moved.example.org")
+        self.assertEqual(preview.context["published"], "host.moved.example.org")
+        refreshed = response.context["form"]["managed_fingerprint"].value()
         with stub_kea(
             {
-                **_recorded(family),
-                "reservation-get": queued(_res_get(current), _res_get(current), _res_get(current)),
+                **_recorded(4),
+                "config-get": changed,
+                "reservation-get": _res_get(_stored(4, 21, "host")),
                 "reservation-update": {"result": 0},
             }
-        ) as kea:
-            response = self.client.post(
-                self._url(family, 21),
-                self._form_data(
-                    family,
-                    21,
-                    entered,
-                    "",
-                    managed_fingerprint=form_page.context["form"].initial["managed_fingerprint"],
-                ),
+        ) as retry_kea:
+            retry = self.client.post(
+                self._url(4, 21), self._form_data(4, 21, "host.moved.example.org", managed_fingerprint=refreshed)
             )
-        return response, kea
-
-    def test_a_reservation_without_an_address_keeps_its_stored_hostname_under_a_pool_suffix(self):
-        for family in (4, 6):
-            with self.subTest(family=family):
-                response, kea = self._save_addressless(family, "host")
-                self.assertEqual(response.status_code, 302)
-                sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
-                self.assertEqual(sent["hostname"], "host")
-
-    def test_a_reservation_without_an_address_refuses_a_new_name_under_a_pool_suffix(self):
-        response, kea = self._save_addressless(4, "db")
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("reservation-update", kea.commands())
-        self.assertIn(
-            "Save an address first, then change the hostname.",
-            " ".join(response.context["form"].non_field_errors()),
-        )
-
-    def test_a_name_without_the_address_under_a_pool_suffix_is_refused_on_its_field(self):
-        with self.assertNoLogs("netbox_kea.views.reservation_mutations", level="ERROR"):
-            response, kea = self._save(4, 21, "host", "db", address="")
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("reservation-update", kea.commands())
-        self.assertIn("so it depends on the address.", " ".join(response.context["form"].errors["hostname"]))
+        self.assertEqual(retry.status_code, 302)
+        self.assertEqual(retry_kea.bodies("reservation-update")[0]["arguments"]["reservation"]["hostname"], "host")
 
     def _save_with_unknown_suffix(self, family: int, entered: str, address: str):
         # An invalid suffix makes the configuration of Subnet 21 unknown; its identity stays verified.
@@ -347,17 +246,6 @@ class TestReservationEditPublishedName(_PublishedNameViewTest):
             )
         return response, kea
 
-    def test_an_unknown_suffix_keeps_the_stored_hostname_when_another_field_changes(self):
-        for family, moved in ((4, "198.51.100.131"), (6, "2001:db8:3::6")):
-            with self.subTest(family=family):
-                response, kea = self._save_with_unknown_suffix(family, "host", moved)
-                self.assertEqual(response.status_code, 302)
-                sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
-                self.assertEqual(sent["hostname"], "host")
-                self.assertEqual(
-                    sent["ip-address"] if family == 4 else sent["ip-addresses"], moved if family == 4 else [moved]
-                )
-
     def test_an_unknown_suffix_refuses_a_changed_name_on_its_field(self):
         response, kea = self._save_with_unknown_suffix(4, "db", _ADDRESSES[4][21])
         self.assertEqual(response.status_code, 200)
@@ -366,6 +254,38 @@ class TestReservationEditPublishedName(_PublishedNameViewTest):
             "The DDNS qualifying suffix of Subnet 198.51.100.128/25 is unknown.",
             " ".join(response.context["form"].errors["hostname"]),
         )
+
+    def _open_with_unknown_suffix(self, stored: str):
+        unknown = {**_recorded(4), "config-get": _with_subnet_21(4, {"ddns-qualifying-suffix": 5})}
+        with stub_kea({**unknown, "reservation-get": _res_get(_stored(4, 21, stored))}):
+            form_page = self.client.get(self._url(4, 21))
+        self.assertEqual(form_page.context["form"].initial["hostname"], stored)
+        return form_page
+
+    def test_a_stored_hostname_shown_without_a_suffix_stays_unchanged_once_the_suffix_is_known(self):
+        # Kea publishes host.example.net.office.example.org; the form showed only the stored hostname.
+        form_page = self._open_with_unknown_suffix("host.example.net")
+        response, kea = self._save(
+            4, 21, "host.example.net", "host.example.net", form_page=form_page, address="198.51.100.131"
+        )
+        self.assertEqual(response.status_code, 302)
+        update = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+        self.assertEqual(update["ip-address"], "198.51.100.131")
+        self.assertEqual(update["hostname"], "host.example.net")
+
+    def test_a_changed_name_shown_without_a_suffix_refuses_the_save_once_the_suffix_is_known(self):
+        form_page = self._open_with_unknown_suffix("host.example.net")
+        response, kea = self._save(4, 21, "host.example.net", "db.example.net", form_page=form_page)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("reservation-update", kea.commands())
+        self.assertIn(
+            "The form showed the stored hostname, but the qualifying suffix is now known. "
+            "Check the name and save again.",
+            " ".join(response.context["form"].non_field_errors()),
+        )
+        refreshed = response.context["form"]["managed_fingerprint"].value()
+        self.assertNotEqual(refreshed, form_page.context["form"].initial["managed_fingerprint"])
+        self.assertEqual(response.context["form"].initial["hostname"], "host.example.net.office.example.org")
 
 
 class TestPublishedNamePreview(_PublishedNameViewTest):

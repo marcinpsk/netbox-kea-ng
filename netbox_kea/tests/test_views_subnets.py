@@ -745,6 +745,18 @@ class TestServerSubnet4EditView(_ViewTestBase):
                 self.assertEqual(post.status_code, 302)
                 self.assertEqual(self._updated_subnet(kea)["option-data"], [] if clear else options)
 
+    def test_a_replaced_dns_value_drops_csv_format_and_keeps_other_metadata(self):
+        dns = {"code": 6, "data": "198.18.0.53", "never-send": True, "csv-format": True}
+        live = {"id": 42, "subnet": "198.18.0.0/24", "pools": [], "option-data": [dns]}
+        with self._post_stub(live) as kea:
+            data = _page_data(self.client.get(self._url()))
+            data["dns_servers"] = "198.18.0.54"
+            post = self.client.post(self._url(), data)
+        self.assertEqual(post.status_code, 302)
+        self.assertEqual(
+            self._updated_subnet(kea)["option-data"], [{"code": 6, "data": "198.18.0.54", "never-send": True}]
+        )
+
     def test_hidden_options_survive_blank_form_fields(self):
         for option in (
             {"code": 6, "never-send": True},

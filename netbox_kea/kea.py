@@ -23,15 +23,14 @@ from . import constants
 from .constants import Family, IPAddressValue, IPNetworkValue, LeaseState, Persistence
 from .decimal_text import parse_decimal
 from .dhcp_options import (
-    DHCPOption,
-    InvalidAddress,
-    address_list,
+    DHCPOptionEdit,
+    OptionDefinition,
     address_list_data,
-    form_managed_entry,
     form_managed_options,
-    form_shows,
-    merge_option_form_rows,
+    form_option_edit,
+    merge_option_edit,
     parse_dhcp_options,
+    parse_option_definition,
 )
 from .leases import (
     ALL_LEASES,
@@ -67,14 +66,15 @@ from .reservations import (
     InSubnetReservationScope,
     MalformedReservation,
     Reservation,
+    ReservationChange,
     ReservationDiagnostic,
     ReservationIdentity,
     ReservationScope,
     ReservationSnapshot,
     _exact_reservation,
-    _option_data,
     _parse_reservation_page,
     _reservation_to_raw,
+    apply_reservation_change,
     reservation_identifier_types,
 )
 from .subnet_settings import setting_key
@@ -210,7 +210,6 @@ NETWORK_DEL: ByFamily = {4: KeaCommand.NETWORK4_DEL, 6: KeaCommand.NETWORK6_DEL}
 NETWORK_SUBNET_ADD: ByFamily = {4: KeaCommand.NETWORK4_SUBNET_ADD, 6: KeaCommand.NETWORK6_SUBNET_ADD}
 NETWORK_SUBNET_DEL: ByFamily = {4: KeaCommand.NETWORK4_SUBNET_DEL, 6: KeaCommand.NETWORK6_SUBNET_DEL}
 
-_MANAGED_OPTION_KEYS = frozenset({"code", "name", "space", "data", "csv-format", "always-send", "never-send"})
 
 # One exhausted host backend can legitimately answer with an empty page before the
 # cursor moves to the next source index, so allow a few before giving up.
@@ -258,38 +257,6 @@ def _reservation_scope_subnet_id(scope: ReservationScope) -> int:
     raise ValueError("Unsupported Reservation Scope.")
 
 
-def _take_matching_raw_option(
-    remaining: list[tuple[DHCPOption, dict[str, Any]]], intended_option: DHCPOption
-) -> dict[str, Any] | None:
-    """Remove and return the raw Option that *intended_option* targets.
-
-    An exact space match wins. Kea may omit the space, and such an Option matches any
-    space, so it is claimed only once no exact match is left: taking it first lets the
-    Option listed earliest absorb an intent that belongs to another space.
-    """
-    for exact_space in (True, False):
-        for index, (current_option, _raw_option) in enumerate(remaining):
-            if current_option.matches_intent(intended_option, exact_space=exact_space):
-                return remaining.pop(index)[1]
-    return None
-
-
-def _merge_reservation_options(
-    raw_options: list[dict[str, Any]],
-    current_options: tuple[DHCPOption, ...],
-    intended_options: tuple[DHCPOption, ...],
-) -> list[dict[str, Any]]:
-    """Overlay managed option facts while preserving matching Kea extension fields."""
-    remaining = list(zip(current_options, raw_options, strict=True))
-    merged_options: list[dict[str, Any]] = []
-    for intended_option in intended_options:
-        raw_option = _take_matching_raw_option(remaining, intended_option)
-        merged_option = {key: value for key, value in (raw_option or {}).items() if key not in _MANAGED_OPTION_KEYS}
-        merged_option.update(_option_data(intended_option))
-        merged_options.append(merged_option)
-    return merged_options
-
-
 # The keys of a raw Reservation that NetBox manages. An update replaces them and keeps every other key.
 _MANAGED_RESERVATION_KEYS = frozenset(
     {
@@ -316,27 +283,26 @@ class FreshReservation:
     reservation: Reservation
     raw: dict[str, Any] = dataclasses.field(repr=False, compare=False)
 
-    def updated(self, intended: Reservation) -> dict[str, Any]:
-        """Return the ``reservation-update`` record: *intended* over the raw record, with each unmanaged key kept.
-
-        Raises:
-            ValueError: If *intended* has another Scope or Identity.
-            MalformedReservation: If the raw record holds DHCP Options that are not valid.
-
-        """
-        if intended.scope != self.reservation.scope or intended.identity != self.reservation.identity:
-            raise ValueError("An update cannot change the Scope or the Identity of a Reservation.")
+    def updated(
+        self,
+        change: ReservationChange,
+        definitions: Sequence[OptionDefinition] = (),
+    ) -> tuple[Reservation, dict[str, Any]]:
+        """Merge one typed option edit and the other changed facts onto the fresh raw record."""
         raw_options = self.raw.get("option-data", [])
         if not isinstance(raw_options, list) or any(not isinstance(option, dict) for option in raw_options):
             raise MalformedReservation("invalid-options", "The Reservation contains invalid DHCP Options.")
+        options = raw_options
+        if change.options is not None:
+            options = merge_option_edit(change.options, raw_options, self.reservation.family, definitions)
+        intended = apply_reservation_change(self.reservation, dataclasses.replace(change, options=None))
+        intended = dataclasses.replace(intended, options=parse_dhcp_options(options))
         serialized = _reservation_to_raw(intended)
-        if intended.options:
-            serialized["option-data"] = _merge_reservation_options(
-                raw_options, self.reservation.options, intended.options
-            )
+        if options or (not raw_options and "option-data" in self.raw):
+            serialized["option-data"] = options
         merged = {key: value for key, value in self.raw.items() if key not in _MANAGED_RESERVATION_KEYS}
         merged.update(serialized)
-        return merged
+        return intended, merged
 
 
 class KeaResponse(TypedDict):
@@ -629,49 +595,6 @@ def subnet_network(value: Any, family: int) -> IPNetworkValue:
     return network
 
 
-def _replace_managed_option(
-    options: list[dict[str, Any]], version: int, field: str, data: str | None
-) -> list[dict[str, Any]]:
-    """Set the entry that the form field *field* manages to *data*, or remove it when *data* is empty.
-
-    The form edits the value only. Delivery flags stay as they are. An entry whose value the form cannot show
-    (empty data, binary-encoded, or a router list for the one gateway) is kept when the field is empty. Form text is
-    CSV, so a new value drops a csv-format flag that described the old encoding.
-
-    Raises:
-        MalformedConfiguration: If an entry is not a valid DHCP Option, or more than one entry fits the field.
-
-    """
-    if data is None:
-        return options
-    try:
-        parsed = parse_dhcp_options(options)
-        index = form_managed_entry(parsed, version, field)
-    except ValueError as exc:
-        raise MalformedConfiguration(str(exc)) from exc
-    kept = [option for position, option in enumerate(options) if position != index]
-    if data:
-        replacement = dict(options[index]) if index is not None else {"name": form_managed_options(version)[field].name}
-        unchanged = replacement.get("csv-format") is not False and _same_addresses(data, replacement.get("data"))
-        if not unchanged:
-            replacement.pop("csv-format", None)
-            replacement["data"] = data
-        return [*kept, replacement]
-    if index is not None and (not parsed[index].data or not form_shows(parsed[index], field)):
-        return [*kept, options[index]]
-    return kept
-
-
-def _same_addresses(data: str, old_data: Any) -> bool:
-    """Return whether *old_data* holds the addresses of *data*, in another text form or the same one."""
-    if not isinstance(old_data, str):
-        return False
-    try:
-        return address_list(data) == address_list(old_data)
-    except InvalidAddress:
-        return False
-
-
 def shared_network_description(network: dict[str, Any]) -> str | None:
     """Return the Shared Network description, which Kea keeps as ``user-context.comment``.
 
@@ -831,12 +754,16 @@ class SubnetDefinition:
         subnet.pop("metadata", None)
         fields = edit.fields
         options = subnet.get("option-data", [])
+        option_fields = {}
         if self.family == 4:
-            options = _replace_managed_option(options, 4, "gateway", fields.gateway)
-        options = _replace_managed_option(options, self.family, "dns_servers", address_list_data(fields.dns_servers))
-        subnet["option-data"] = _replace_managed_option(
-            options, self.family, "ntp_servers", address_list_data(fields.ntp_servers)
-        )
+            option_fields["gateway"] = fields.gateway
+        option_fields["dns_servers"] = address_list_data(fields.dns_servers)
+        option_fields["ntp_servers"] = address_list_data(fields.ntp_servers)
+        try:
+            option_edit = form_option_edit(parse_dhcp_options(options), self.family, option_fields)
+            subnet["option-data"] = merge_option_edit(option_edit, options, self.family)
+        except ValueError as exc:
+            raise MalformedConfiguration(str(exc)) from exc
         suffix_key = setting_key("ddns_qualifying_suffix")
         if fields.ddns_qualifying_suffix:
             subnet[suffix_key] = fields.ddns_qualifying_suffix
@@ -896,12 +823,14 @@ class CandidateConfiguration:
         self.arguments = arguments
         self._daemon = daemon
 
-    def set_global_options(self, rows: list[dict[str, Any]]) -> None:
-        """Merge the options form *rows* into the server-global DHCP Options."""
-        self._daemon["option-data"] = merge_option_form_rows(rows, _config_options(self._daemon, self.service))
+    def set_global_options(self, edit: DHCPOptionEdit) -> None:
+        """Merge the typed option *edit* into the server-global DHCP Options."""
+        self._daemon["option-data"] = merge_option_edit(
+            edit, _config_options(self._daemon, self.service), self.family, self._option_definitions()
+        )
 
-    def set_subnet_options(self, subnet_id: int, network: IPNetworkValue, rows: list[dict[str, Any]]) -> None:
-        """Merge the options form *rows* into the Subnet with *subnet_id*, only while that ID names *network*."""
+    def set_subnet_options(self, subnet_id: int, network: IPNetworkValue, edit: DHCPOptionEdit) -> None:
+        """Merge the typed option *edit* into the Subnet with *subnet_id*, only while that ID names *network*."""
         subnet_key = f"subnet{self.family}"
         subnets = list(_config_entries(self._daemon, subnet_key, self.service))
         for shared_network in _config_entries(self._daemon, "shared-networks", self.service):
@@ -917,7 +846,19 @@ class CandidateConfiguration:
             raise MalformedConfiguration(f"config-get returned Subnet {subnet_id} without a valid CIDR.") from exc
         if declared != network:
             raise CandidateTargetMissing
-        matches[0]["option-data"] = merge_option_form_rows(rows, _config_options(matches[0], self.service))
+        matches[0]["option-data"] = merge_option_edit(
+            edit, _config_options(matches[0], self.service), self.family, self._option_definitions()
+        )
+
+    def _option_definitions(self) -> tuple[OptionDefinition, ...]:
+        """Read the identity fields of the custom definitions from this live candidate."""
+        try:
+            return tuple(
+                parse_option_definition(entry, self.family)
+                for entry in _config_entries(self._daemon, "option-def", self.service)
+            )
+        except ValueError as exc:
+            raise MalformedConfiguration("config-get returned an invalid Option Definition.") from exc
 
     def add_option_definition(self, option_def: dict[str, Any]) -> None:
         """Append *option_def* to the Option Definitions."""
@@ -952,10 +893,19 @@ class CandidateConfiguration:
             network["relay"] = {"ip-addresses": list(edit.relay_addresses)}
         else:
             network.pop("relay", None)
-        options = list(_config_entries(network, "option-data", self.service))
-        options = _replace_managed_option(options, self.family, "dns_servers", address_list_data(edit.dns_servers))
-        options = _replace_managed_option(options, self.family, "ntp_servers", address_list_data(edit.ntp_servers))
-        network["option-data"] = options
+        options = _config_options(network, self.service)
+        try:
+            option_edit = form_option_edit(
+                parse_dhcp_options(options),
+                self.family,
+                {
+                    "dns_servers": address_list_data(edit.dns_servers),
+                    "ntp_servers": address_list_data(edit.ntp_servers),
+                },
+            )
+            network["option-data"] = merge_option_edit(option_edit, options, self.family)
+        except ValueError as exc:
+            raise MalformedConfiguration(str(exc)) from exc
 
 
 def _is_subnet_id(value: Any, subnet_id: int) -> bool:

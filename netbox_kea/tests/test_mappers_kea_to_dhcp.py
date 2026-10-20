@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from django.test import SimpleTestCase
 
-from netbox_kea.dhcp_options import DHCPOption
+from netbox_kea.dhcp_options import DHCPOption, DHCPOptionIdentity, option_identity
 from netbox_kea.mappers.kea_to_dhcp import (
     OptionDefIntent,
     parse_dhcp_config,
@@ -114,7 +114,7 @@ class TestParseDhcpConfigOptions(SimpleTestCase):
                 never_send=None,
             ),
         )
-        self.assertEqual(opt.match_key, ("dhcp4", 3))
+        self.assertEqual(option_identity(opt, 4), DHCPOptionIdentity("dhcp4", 3, frozenset()))
 
     def test_discarded_option_entry_is_logged(self):
         """Leave a record of an entry the mapper drops.
@@ -166,13 +166,16 @@ class TestParseDhcpConfigOptions(SimpleTestCase):
 
         self.assertEqual(options, ())
 
-    def test_option_match_key_falls_back_to_name_without_code(self):
+    def test_option_identity_falls_back_to_unknown_name_without_code(self):
         conf = {
             "subnet4": [
                 {"id": 1, "subnet": "10.0.0.0/24", "option-data": [{"name": "custom", "data": "x", "space": "dhcp4"}]}
             ]
         }
-        self.assertEqual(parse_dhcp_config(conf, 4).subnets[0].options[0].match_key, ("dhcp4", "custom"))
+        self.assertEqual(
+            option_identity(parse_dhcp_config(conf, 4).subnets[0].options[0], 4),
+            DHCPOptionIdentity("dhcp4", "custom", frozenset()),
+        )
 
     def test_shared_network_options_captured(self):
         conf = {

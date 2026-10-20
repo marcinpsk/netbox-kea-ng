@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
-from unittest.mock import patch
 from urllib.parse import urlencode
 
 import requests
@@ -65,6 +64,13 @@ _UNCONFIRMED_RESERVATION = (
 def _identity_query(identifier: str = "aa:bb:cc:dd:ee:ff", identifier_type: str = "hw-address") -> str:
     """The identity query string every reservation edit and delete route requires."""
     return urlencode({"identifier_type": identifier_type, "identifier": identifier})
+
+
+def _open_edit_token(client, url, responses, current):
+    """Open a valid form before injecting the read or capability failure under test."""
+    with stub_kea({**responses, "reservation-get": _res_get(current)}):
+        page = client.get(url)
+    return page.context["form"].initial["managed_fingerprint"]
 
 
 class TestReservationMutationViews(_ViewTestBase):
@@ -496,6 +502,7 @@ class TestReservationMutationViews(_ViewTestBase):
         # Kea applied the create, so the operator must be told it happened.
         self.assertEqual(kea.commands().count("reservation-add"), 1)
         self.assertEqual(response.status_code, 302)
+        self.assertFalse(JournalEntry.objects.filter(assigned_object_id=self.server.pk).exists())
         self.assertIn("Reservation created.", [str(message) for message in get_messages(response.wsgi_request)])
 
     def test_create_reports_failed_persistence_after_confirmed_application(self):
@@ -597,8 +604,10 @@ class TestReservationMutationViews(_ViewTestBase):
     def test_create_redirects_and_warns_when_ipam_validation_fails(self):
         from django.contrib.messages import get_messages
         from django.core.exceptions import ValidationError
+        from django.db.models.signals import pre_save
+        from ipam.models import IPAddress
 
-        def fail_sync(_server, _family, _records, *, force, catalogue):
+        def reject(sender, **kwargs):
             raise ValidationError("IPAM validation failed")
 
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
@@ -614,20 +623,22 @@ class TestReservationMutationViews(_ViewTestBase):
             }
         )
 
-        with (
-            patch("netbox_kea.views.reservation_mutations.claim", new=fail_sync),
-            stub_kea(responses) as kea,
-        ):
-            response = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
-                {
-                    "subnet_cidr": "198.18.0.0/24",
-                    "ip_address": "198.18.0.20",
-                    "identifier_type": "hw-address",
-                    "identifier": "aa:bb:cc:dd:ee:ff",
-                    "sync_to_netbox": "on",
-                },
-            )
+        pre_save.connect(reject, sender=IPAddress)
+        try:
+            with stub_kea(responses) as kea:
+                response = self.client.post(
+                    reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                    {
+                        "subnet_cidr": "198.18.0.0/24",
+                        "ip_address": "198.18.0.20",
+                        "identifier_type": "hw-address",
+                        "identifier": "aa:bb:cc:dd:ee:ff",
+                        "sync_to_netbox": "on",
+                    },
+                )
+
+        finally:
+            pre_save.disconnect(reject, sender=IPAddress)
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("reservation-add"), 1)
@@ -1066,7 +1077,10 @@ class TestReservationMutationViews(_ViewTestBase):
                     "options-INITIAL_FORMS": "1",
                     "options-MIN_NUM_FORMS": "0",
                     "options-MAX_NUM_FORMS": "1000",
-                    "options-0-name": "224",
+                    "options-0-name": "",
+                    "options-0-original_option": json.dumps(
+                        form_page.context["options_formset"].initial[0]["original_option"]
+                    ),
                     "options-0-data": "opaque-value",
                     "options-1-name": "",
                     "options-1-data": "",
@@ -1076,243 +1090,6 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
         self.assertEqual(sent["option-data"], [option])
-
-    def test_edit_preserves_each_options_metadata_when_rows_are_reordered(self):
-        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
-        first = {
-            "name": "vendor-one",
-            "code": 224,
-            "space": "vendor-example",
-            "data": "first",
-            "csv-format": False,
-            "never-send": True,
-        }
-        second = {
-            "name": "vendor-two",
-            "code": 225,
-            "space": "vendor-example",
-            "data": "second",
-            "csv-format": False,
-            "always-send": True,
-        }
-        current = {
-            "subnet-id": 20,
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "hostname": "old.example.invalid",
-            "option-data": [first, second],
-        }
-        intended = {**current, "hostname": "new.example.invalid", "option-data": [second, first]}
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
-        query = _identity_query()
-        with stub_kea({**responses, "reservation-get": _res_get(current)}):
-            form_page = self.client.get(f"{url}?{query}")
-        fingerprint = form_page.context["form"].initial["managed_fingerprint"]
-
-        with stub_kea(
-            {
-                **responses,
-                "reservation-get": queued(_res_get(current), _res_get(current), _res_get(intended)),
-                "reservation-update": {"result": 0},
-            }
-        ) as kea:
-            response = self.client.post(
-                f"{url}?{query}",
-                {
-                    "subnet_cidr": "198.18.0.0/24",
-                    "ip_address": "",
-                    "identifier_type": "hw-address",
-                    "identifier": "aa:bb:cc:dd:ee:ff",
-                    "hostname": "new.example.invalid",
-                    "managed_fingerprint": fingerprint,
-                    "options-TOTAL_FORMS": "2",
-                    "options-INITIAL_FORMS": "2",
-                    "options-MIN_NUM_FORMS": "0",
-                    "options-MAX_NUM_FORMS": "1000",
-                    "options-0-name": "vendor-two",
-                    "options-0-data": "second",
-                    "options-0-always_send": "on",
-                    "options-1-name": "vendor-one",
-                    "options-1-data": "first",
-                },
-            )
-
-        self.assertEqual(response.status_code, 302)
-        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
-        self.assertEqual(sent["option-data"], [second, first])
-
-    def test_edit_replaces_option_metadata_when_its_name_changes(self):
-        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
-        current_option = {
-            "name": "vendor-old",
-            "code": 224,
-            "space": "vendor-example",
-            "data": "old-value",
-            "csv-format": False,
-            "never-send": True,
-        }
-        replacement = {"name": "vendor-renamed", "data": "new-value"}
-        current = {
-            "subnet-id": 20,
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "option-data": [current_option],
-        }
-        intended = {**current, "option-data": [replacement]}
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
-        query = _identity_query()
-        with stub_kea({**responses, "reservation-get": _res_get(current)}):
-            form_page = self.client.get(f"{url}?{query}")
-        fingerprint = form_page.context["form"].initial["managed_fingerprint"]
-
-        with stub_kea(
-            {
-                **responses,
-                "reservation-get": queued(_res_get(current), _res_get(current), _res_get(intended)),
-                "reservation-update": {"result": 0},
-            }
-        ) as kea:
-            response = self.client.post(
-                f"{url}?{query}",
-                {
-                    "subnet_cidr": "198.18.0.0/24",
-                    "ip_address": "",
-                    "identifier_type": "hw-address",
-                    "identifier": "aa:bb:cc:dd:ee:ff",
-                    "managed_fingerprint": fingerprint,
-                    "options-TOTAL_FORMS": "1",
-                    "options-INITIAL_FORMS": "1",
-                    "options-MIN_NUM_FORMS": "0",
-                    "options-MAX_NUM_FORMS": "1000",
-                    "options-0-original_index": "0",
-                    "options-0-name": "vendor-renamed",
-                    "options-0-data": "new-value",
-                },
-            )
-
-        self.assertEqual(response.status_code, 302)
-        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
-        self.assertEqual(sent["option-data"], [replacement])
-
-    def test_edit_does_not_reuse_metadata_from_a_deleted_option(self):
-        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
-        current_option = {
-            "name": "vendor-option",
-            "code": 224,
-            "space": "vendor-example",
-            "data": "old-value",
-            "csv-format": False,
-            "never-send": True,
-        }
-        replacement = {"name": "vendor-option", "data": "new-value"}
-        current = {
-            "subnet-id": 20,
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "option-data": [current_option],
-        }
-        intended = {**current, "option-data": [replacement]}
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
-        query = _identity_query()
-        with stub_kea({**responses, "reservation-get": _res_get(current)}):
-            form_page = self.client.get(f"{url}?{query}")
-        fingerprint = form_page.context["form"].initial["managed_fingerprint"]
-
-        with stub_kea(
-            {
-                **responses,
-                "reservation-get": queued(_res_get(current), _res_get(current), _res_get(intended)),
-                "reservation-update": {"result": 0},
-            }
-        ) as kea:
-            response = self.client.post(
-                f"{url}?{query}",
-                {
-                    "subnet_cidr": "198.18.0.0/24",
-                    "ip_address": "",
-                    "identifier_type": "hw-address",
-                    "identifier": "aa:bb:cc:dd:ee:ff",
-                    "managed_fingerprint": fingerprint,
-                    "options-TOTAL_FORMS": "2",
-                    "options-INITIAL_FORMS": "1",
-                    "options-MIN_NUM_FORMS": "0",
-                    "options-MAX_NUM_FORMS": "1000",
-                    "options-0-original_index": "0",
-                    "options-0-name": "vendor-option",
-                    "options-0-data": "old-value",
-                    "options-0-DELETE": "on",
-                    "options-1-name": "vendor-option",
-                    "options-1-data": "new-value",
-                },
-            )
-
-        self.assertEqual(response.status_code, 302)
-        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
-        self.assertEqual(sent["option-data"], [replacement])
-
-    def test_edit_preserves_option_spaces_when_duplicate_names_are_reordered(self):
-        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
-        first = {
-            "name": "vendor-option",
-            "code": 224,
-            "space": "vendor-one",
-            "data": "first",
-            "csv-format": False,
-            "never-send": True,
-        }
-        second = {
-            "name": "vendor-option",
-            "code": 224,
-            "space": "vendor-two",
-            "data": "second",
-            "csv-format": False,
-            "always-send": True,
-        }
-        current = {
-            "subnet-id": 20,
-            "hw-address": "aa:bb:cc:dd:ee:ff",
-            "hostname": "old.example.invalid",
-            "option-data": [first, second],
-        }
-        intended = {**current, "hostname": "new.example.invalid", "option-data": [second, first]}
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
-        query = _identity_query()
-        with stub_kea({**responses, "reservation-get": _res_get(current)}):
-            form_page = self.client.get(f"{url}?{query}")
-        fingerprint = form_page.context["form"].initial["managed_fingerprint"]
-        self.assertContains(form_page, 'name="options-0-original_index"')
-        self.assertContains(form_page, 'name="options-1-original_index"')
-
-        with stub_kea(
-            {
-                **responses,
-                "reservation-get": queued(_res_get(current), _res_get(current), _res_get(intended)),
-                "reservation-update": {"result": 0},
-            }
-        ) as kea:
-            response = self.client.post(
-                f"{url}?{query}",
-                {
-                    "subnet_cidr": "198.18.0.0/24",
-                    "ip_address": "",
-                    "identifier_type": "hw-address",
-                    "identifier": "aa:bb:cc:dd:ee:ff",
-                    "hostname": "new.example.invalid",
-                    "managed_fingerprint": fingerprint,
-                    "options-TOTAL_FORMS": "2",
-                    "options-INITIAL_FORMS": "2",
-                    "options-MIN_NUM_FORMS": "0",
-                    "options-MAX_NUM_FORMS": "1000",
-                    "options-0-original_index": "1",
-                    "options-0-name": "vendor-option",
-                    "options-0-data": "second",
-                    "options-0-always_send": "on",
-                    "options-1-original_index": "0",
-                    "options-1-name": "vendor-option",
-                    "options-1-data": "first",
-                },
-            )
-
-        self.assertEqual(response.status_code, 302)
-        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
-        self.assertEqual(sent["option-data"], [second, first])
 
     def test_edit_rejects_a_tampered_signed_fingerprint(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
@@ -1339,7 +1116,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "invalid or expired")
-        self.assertNotIn("reservation-update", kea.commands())
+        self.assertEqual(kea.commands(), [])
 
     def test_delete_confirmation_and_post_use_canonical_identity(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
@@ -1480,10 +1257,302 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self.assertNotIn("reservation-del", kea.commands())
 
+    def test_edit_keeps_padded_duplicates_and_shows_named_option_conflicts(self):
+        for family, cidr, name in ((4, "198.18.0.0/24", "routers"), (6, "2001:db8::/64", "dns-servers")):
+            display_cache.rotate_configuration(self.server, family)
+            responses = _mutation_responses(family, 20, cidr, ["hw-address"])
+            duplicate = {
+                "name": "untouched",
+                "data": "  padded  ",
+                "csv-format": False,
+                "user-context": {"owner": "external"},
+            }
+            current = {
+                "subnet-id": 20,
+                "hw-address": "aa:bb:cc:dd:ee:ff",
+                "option-data": [duplicate, {"name": name, "data": "old"}, duplicate],
+            }
+            url = (
+                reverse(f"plugins:netbox_kea:server_reservation{family}_edit", args=[self.server.pk, 20])
+                + "?"
+                + _identity_query()
+            )
+            with stub_kea({**responses, "reservation-get": _res_get(current)}):
+                page = self.client.get(url)
+            data = {
+                "subnet_cidr": cidr,
+                "identifier_type": "hw-address",
+                "identifier": "aa:bb:cc:dd:ee:ff",
+                "managed_fingerprint": page.context["form"].initial["managed_fingerprint"],
+                "options-TOTAL_FORMS": "3",
+                "options-INITIAL_FORMS": "3",
+                "options-MIN_NUM_FORMS": "0",
+                "options-MAX_NUM_FORMS": "1000",
+            }
+            for index, row in enumerate(page.context["options_formset"].initial):
+                data.update(
+                    {
+                        f"options-{index}-name": row["name"],
+                        f"options-{index}-data": "new" if index == 1 else row["data"],
+                        f"options-{index}-original_option": json.dumps(row["original_option"]),
+                    }
+                )
+            with (
+                self.subTest(family=family),
+                stub_kea(
+                    {**responses, "reservation-get": _res_get(current), "reservation-update": {"result": 0}}
+                ) as kea,
+            ):
+                result = self.client.post(url, data)
+            self.assertEqual(result.status_code, 302)
+            self.assertEqual(
+                kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
+                [duplicate, {"name": name, "data": "new"}, duplicate],
+            )
+            added = {**current, "option-data": [*current["option-data"], {"name": "concurrent", "data": "added"}]}
+            with stub_kea({**responses, "reservation-get": _res_get(added)}) as kea:
+                conflict = self.client.post(url, data)
+            self.assertContains(conflict, "DHCP Option &#x27;concurrent&#x27; changed in Kea", html=False)
+            self.assertTrue(conflict.context["form"].is_bound)
+            self.assertNotIn("reservation-update", kea.commands())
+            self.assertNotIn("config-test", kea.commands())
+            for original in ("not-json", json.dumps({"data": "missing identity"})):
+                malformed = {**data, "options-1-original_option": original}
+                with (
+                    self.subTest(family=family, original=original),
+                    stub_kea({**responses, "reservation-get": _res_get(current)}) as kea,
+                ):
+                    refused = self.client.post(url, malformed)
+                self.assertEqual(refused.status_code, 200)
+                self.assertIn(f"DHCP Option '{name}':", BeautifulSoup(refused.content, "html.parser").get_text())
+                self.assertNotIn("reservation-update", kea.commands())
+
 
 class TestReservationDocumentImport(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
+
+    def test_import_reports_one_capped_pool_warning_by_reservation_identity(self):
+        reservations = {}
+
+        def create(body):
+            raw = body["arguments"]["reservation"]
+            reservations[raw["hw-address"]] = raw
+            return {"result": 0}
+
+        responses = {
+            **_mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"], [{"pool": "198.18.0.10-198.18.0.100"}]),
+            "reservation-add": create,
+            "reservation-get": lambda body: _res_get(reservations[body["arguments"]["identifier"]]),
+        }
+        with stub_kea(responses):
+            response = self.client.post(self._url(), {"format": "yaml", "document": _document(7)})
+        warnings = [str(message) for message in get_messages(response.wsgi_request) if message.level_tag == "warning"]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("hw-address aa:bb:cc:dd:ee:01", warnings[0])
+        self.assertIn("hw-address aa:bb:cc:dd:ee:05", warnings[0])
+        self.assertNotIn("hw-address aa:bb:cc:dd:ee:06", warnings[0])
+        self.assertIn("and 2 more", warnings[0])
+
+    def test_import_claim_failure_is_reported_for_its_entry_and_the_next_entry_is_claimed(self):
+        from django.core.exceptions import ValidationError
+        from django.db.models.signals import pre_save
+        from ipam.models import IPAddress
+
+        reservations = {}
+        attempts = []
+
+        def reject_first(sender, instance, **kwargs):
+            attempts.append(str(instance.address))
+            if str(instance.address.ip) == "198.18.0.20":
+                raise ValidationError("The first address is refused.")
+
+        def create(body):
+            raw = body["arguments"]["reservation"]
+            reservations[raw["hw-address"]] = raw
+            return {"result": 0}
+
+        responses = {
+            **_mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"]),
+            "reservation-add": create,
+            "reservation-get": lambda body: _res_get(reservations[body["arguments"]["identifier"]]),
+        }
+        pre_save.connect(reject_first, sender=IPAddress)
+        try:
+            with stub_kea(responses) as kea:
+                response = self.client.post(
+                    self._url(), {"format": "yaml", "document": _document(2), "sync_to_netbox": "on"}
+                )
+        finally:
+            pre_save.disconnect(reject_first, sender=IPAddress)
+        self.assertEqual(kea.commands().count("reservation-add"), 2)
+        self.assertEqual(attempts, ["198.18.0.20/24", "198.18.0.21/24"])
+        rows = _import_rows(response)["created"][1]
+        self.assertIn("NetBox IPAM", " ".join(rows[0][2:]))
+        self.assertEqual(rows[1][2], "")
+        self.assertEqual(str(IPAddress.objects.get().address), "198.18.0.21/24")
+
+    def test_import_sync_permission_refusal_is_a_checkbox_error_before_any_kea_request(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.contenttypes.models import ContentType
+        from users.models import ObjectPermission
+
+        limited = get_user_model().objects.create_user(username="import-without-ipam")
+        permission = ObjectPermission.objects.create(name="import-reservations", actions=["view", "change"])
+        permission.object_types.add(ContentType.objects.get_for_model(type(self.server)))
+        permission.users.add(limited)
+        self.client.force_login(limited)
+        with stub_kea({}) as kea:
+            response = self.client.post(
+                self._url(), {"format": "yaml", "document": _document(2), "sync_to_netbox": "on"}
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("sync_to_netbox", response.context["form"].errors)
+        self.assertContains(response, "Manual Sync needs unconstrained")
+        self.assertEqual(kea.commands(), [])
+
+    def test_import_sync_stops_at_an_unconfirmed_entry_without_claiming_it_or_later_entries(self):
+        from django.db.models.signals import pre_save
+        from ipam.models import IPAddress
+
+        reservations = {}
+        attempts = []
+
+        def record(sender, instance, **kwargs):
+            attempts.append(str(instance.address.ip))
+
+        def create(body):
+            raw = body["arguments"]["reservation"]
+            reservations[raw["hw-address"]] = raw
+            return {"result": 0} if len(reservations) == 1 else {"result": 1, "text": "not confirmed"}
+
+        responses = {
+            **_mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"]),
+            "reservation-add": create,
+            "reservation-get": lambda body: _res_get(reservations[body["arguments"]["identifier"]]),
+        }
+        pre_save.connect(record, sender=IPAddress)
+        try:
+            with stub_kea(responses) as kea:
+                response = self.client.post(
+                    self._url(), {"format": "yaml", "document": _document(3), "sync_to_netbox": "on"}
+                )
+        finally:
+            pre_save.disconnect(record, sender=IPAddress)
+        self.assertEqual(kea.commands().count("reservation-add"), 2)
+        self.assertEqual(attempts, ["198.18.0.20"])
+        self.assertEqual(_import_counts(response), {"created": 1, "unconfirmed": 1, "not-applied": 0, "not-sent": 1})
+
+    def test_ipv6_import_reports_partial_claim_errors_on_the_correct_entry(self):
+        from ipam.models import IPAddress
+
+        IPAddress.objects.bulk_create([IPAddress(address="2001:db8::20/64"), IPAddress(address="2001:db8::20/64")])
+        entry = {
+            "family": 6,
+            "scope": {"type": "in-subnet", "subnet": {"cidr": "2001:db8::/64"}},
+            "identity": {"type": "hw-address", "value": "02:00:00:00:00:20"},
+            "addresses": ["2001:db8::20", "2001:db8::21"],
+            "delegated_prefixes": [],
+            "hostname": "host",
+            "options": [],
+        }
+        raw = {
+            "subnet-id": 20,
+            "hw-address": "02:00:00:00:00:20",
+            "ip-addresses": entry["addresses"],
+            "hostname": "host",
+        }
+        responses = {
+            **_mutation_responses(6, 20, "2001:db8::/64", ["hw-address"]),
+            "reservation-add": {"result": 0},
+            "reservation-get": _res_get(raw),
+        }
+        with stub_kea(responses):
+            response = self.client.post(
+                reverse("plugins:netbox_kea:server_reservation6_bulk_import", args=[self.server.pk]),
+                {
+                    "format": "json",
+                    "document": json.dumps({"version": 1, "reservations": [entry]}),
+                    "sync_to_netbox": "on",
+                },
+            )
+        rows = _import_rows(response)["created"][1]
+        self.assertEqual(rows[0][2], "NetBox IPAM synchronization failed for: 2001:db8::20.")
+        self.assertTrue(IPAddress.objects.filter(address="2001:db8::21/64").exists())
+
+    def test_import_sync_option_claims_each_created_reservation(self):
+        from ipam.models import IPAddress
+
+        reservations = {}
+
+        def create(body):
+            raw = body["arguments"]["reservation"]
+            reservations[raw["hw-address"]] = raw
+            return {"result": 0}
+
+        responses = {
+            **_mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"]),
+            "reservation-add": create,
+            "reservation-get": lambda body: _res_get(reservations[body["arguments"]["identifier"]]),
+        }
+        with stub_kea(responses) as kea:
+            response = self.client.post(
+                self._url(), {"format": "yaml", "document": _document(2), "sync_to_netbox": "on"}
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands().count("reservation-add"), 2)
+        self.assertEqual(
+            sorted(str(ip.address) for ip in IPAddress.objects.all()), ["198.18.0.20/24", "198.18.0.21/24"]
+        )
+
+    def test_each_imported_reservation_signals_before_the_next_entry_is_sent(self):
+        from django.db.models.signals import pre_save
+        from ipam.models import IPAddress
+
+        from netbox_kea.signals import reservation_created
+
+        events = []
+        reservations = {}
+
+        def create(body):
+            raw = body["arguments"]["reservation"]
+            reservations[raw["hw-address"]] = raw
+            events.append(("write", raw["hw-address"]))
+            return {"result": 0}
+
+        def receiver(sender, after, **kwargs):
+            events.append(("signal", after.identity.value))
+
+        def claimed(sender, instance, **kwargs):
+            events.append(("claim", str(instance.address.ip)))
+
+        responses = {
+            **_mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"]),
+            "reservation-add": create,
+            "reservation-get": lambda body: _res_get(reservations[body["arguments"]["identifier"]]),
+        }
+        reservation_created.connect(receiver)
+        pre_save.connect(claimed, sender=IPAddress)
+        try:
+            with stub_kea(responses):
+                response = self.client.post(
+                    self._url(), {"format": "yaml", "document": _document(2), "sync_to_netbox": "on"}
+                )
+        finally:
+            reservation_created.disconnect(receiver)
+            pre_save.disconnect(claimed, sender=IPAddress)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            events,
+            [
+                ("write", "aa:bb:cc:dd:ee:01"),
+                ("signal", "aa:bb:cc:dd:ee:01"),
+                ("claim", "198.18.0.20"),
+                ("write", "aa:bb:cc:dd:ee:02"),
+                ("signal", "aa:bb:cc:dd:ee:02"),
+                ("claim", "198.18.0.21"),
+            ],
+        )
 
     def test_the_import_page_selects_the_reservations_tab(self):
         for version in (4, 6):
@@ -1710,6 +1779,8 @@ reservations:
         self.assertContains(response, "Kea did not confirm one entry, so NetBox stopped there.")
 
     def test_import_stops_at_a_rejected_entry(self):
+        from ipam.models import IPAddress
+
         first = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "198.18.0.20"}
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         responses.update(
@@ -1720,8 +1791,11 @@ reservations:
         )
 
         with stub_kea(responses) as kea:
-            response = self.client.post(self._url(), {"format": "yaml", "document": _document(3)})
+            response = self.client.post(
+                self._url(), {"format": "yaml", "document": _document(3), "sync_to_netbox": "on"}
+            )
 
+        self.assertEqual(str(IPAddress.objects.get().address), "198.18.0.20/24")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(_import_counts(response), {"created": 1, "unconfirmed": 0, "not-applied": 1, "not-sent": 1})
         self.assertEqual(kea.commands().count("reservation-add"), 2)
@@ -1735,6 +1809,8 @@ reservations:
         )
 
     def test_a_created_entry_that_kea_did_not_save_or_verify_carries_a_note(self):
+        from ipam.models import IPAddress
+
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         responses.update(
             {
@@ -1745,8 +1821,11 @@ reservations:
         )
 
         with stub_kea(responses):
-            response = self.client.post(self._url(), {"format": "yaml", "document": _document(1)})
+            response = self.client.post(
+                self._url(), {"format": "yaml", "document": _document(1), "sync_to_netbox": "on"}
+            )
 
+        self.assertEqual(str(IPAddress.objects.get().address), "198.18.0.20/24")
         _heading, rows = _import_rows(response)["created"]
         self.assertEqual(
             rows,
@@ -1839,9 +1918,10 @@ class TestReservationTargetReadFailures(_ViewTestBase):
             with self.subTest(failure=name):
                 self._fresh_client()
                 responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+                token = _open_edit_token(self.client, self._url("edit"), responses, self._CURRENT)
                 with stub_kea({**responses, "reservation-get": reply}) as kea:
                     response = self.client.post(
-                        self._url("edit"), {"hostname": "new.example.invalid", "managed_fingerprint": "unused"}
+                        self._url("edit"), {"hostname": "new.example.invalid", "managed_fingerprint": token}
                     )
                 self.assertEqual(response.status_code, 302)
                 self.assertNotIn("reservation-update", kea.commands())
@@ -1854,9 +1934,14 @@ class TestReservationTargetReadFailures(_ViewTestBase):
                 with self.subTest(action=action, method=method, failure=name):
                     self._fresh_client()
                     responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+                    data = {}
+                    if method == "post":
+                        data["managed_fingerprint"] = _open_edit_token(
+                            self.client, self._url(action), responses, self._CURRENT
+                        )
                     responses.update({"subnet4-list": reply, "reservation-get": _res_get(self._CURRENT)})
                     with stub_kea(responses) as kea:
-                        response = getattr(self.client, method)(self._url(action))
+                        response = getattr(self.client, method)(self._url(action), data)
                     self.assertEqual(response.status_code, 302)
                     self.assertNotIn("reservation-get", kea.commands())
                     self.assertEqual(self._messages(response), [HEADLINES["catalogue"], SUBNET_LIST_FAILURES[name]])
@@ -1966,6 +2051,13 @@ class TestMutationCapabilityGate(_ViewTestBase):
         return_url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
         query = _identity_query()
         responses = self._responses_without_mutation()
+        good = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        token = _open_edit_token(
+            self.client,
+            f"{url}?{query}",
+            good,
+            {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"},
+        )
 
         with stub_kea(responses) as kea:
             response = self.client.post(
@@ -1976,7 +2068,7 @@ class TestMutationCapabilityGate(_ViewTestBase):
                     "identifier_type": "hw-address",
                     "identifier": "aa:bb:cc:dd:ee:ff",
                     "hostname": "new.example.invalid",
-                    "managed_fingerprint": "stale",
+                    "managed_fingerprint": token,
                 },
                 follow=True,
             )
@@ -2042,9 +2134,145 @@ class TestReservationFormFieldHelp(_ViewTestBase):
                 self.assertEqual("The next scheduled sync run records a fixed address." in tip, enabled)
 
 
+def fail_first_ipv6_address_dispatch(events):
+    """Fail the external event pipeline after the first IPv6 claim committed."""
+    from ipam.models import IPAddress
+
+    if any(
+        event["object_type"].model == "ipaddress"
+        and IPAddress.objects.filter(pk=event["object_id"], address__net_host="2001:db8::20").exists()
+        for event in events
+    ):
+        raise RuntimeError("The first address's events could not be dispatched.")
+
+
 @with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestReservationSideEffectAfterApplied(TransactionTestCase):
     """A side effect runs after Kea applied the Reservation, so its failure never reads as a Kea failure (ADR 0012)."""
+
+    def test_import_reports_incomplete_ipv6_sync_after_one_address_commits_and_continues(self):
+        from django.contrib.auth import get_user_model
+        from django.db import connection
+        from django.db.models.signals import pre_save
+        from ipam.models import IPAddress
+
+        from netbox_kea.event_scope import _NESTED_TRACKING
+
+        if not _NESTED_TRACKING:
+            self.skipTest("Before NetBox 4.6.9 a claim row dispatches its events with the request")
+        self.assertTrue(connection.get_autocommit())
+        self.client.force_login(get_user_model().objects.create_superuser(username="import-partly-committed"))
+        server = _make_db_server()
+        reservations, attempts = {}, []
+        entries = [
+            {
+                "family": 6,
+                "scope": {"type": "in-subnet", "subnet": {"cidr": "2001:db8::/64"}},
+                "identity": {"type": "hw-address", "value": f"02:00:00:00:00:{index:02x}"},
+                "addresses": addresses,
+                "delegated_prefixes": [],
+                "hostname": "host",
+                "options": [],
+            }
+            for index, addresses in enumerate((["2001:db8::20", "2001:db8::21"], ["2001:db8::22"]), start=1)
+        ]
+
+        def create(body):
+            raw = body["arguments"]["reservation"]
+            reservations[raw["hw-address"]] = raw
+            return {"result": 0}
+
+        def attempting(sender, instance, **kwargs):
+            attempts.append(str(instance.address.ip))
+
+        responses = {
+            **_mutation_responses(6, 20, "2001:db8::/64", ["hw-address"]),
+            "reservation-add": create,
+            "reservation-get": lambda body: _res_get(reservations[body["arguments"]["identifier"]]),
+        }
+        pre_save.connect(attempting, sender=IPAddress)
+        try:
+            with (
+                override_settings(
+                    EVENTS_PIPELINE=[
+                        "netbox_kea.tests.test_reservation_mutation_views.fail_first_ipv6_address_dispatch"
+                    ]
+                ),
+                stub_kea(responses) as kea,
+            ):
+                response = self.client.post(
+                    reverse("plugins:netbox_kea:server_reservation6_bulk_import", args=[server.pk]),
+                    {
+                        "format": "json",
+                        "document": json.dumps({"version": 1, "reservations": entries}),
+                        "sync_to_netbox": "on",
+                    },
+                )
+        finally:
+            pre_save.disconnect(attempting, sender=IPAddress)
+        self.assertEqual(kea.commands().count("reservation-add"), 2)
+        self.assertEqual(attempts, ["2001:db8::20", "2001:db8::22"])
+        self.assertEqual(sorted(str(ip.address.ip) for ip in IPAddress.objects.all()), ["2001:db8::20", "2001:db8::22"])
+        self.assertTrue(
+            server.ipam_ownership_links.filter(
+                family=6, source="reservation", ip_address__address__net_host="2001:db8::22"
+            ).exists()
+        )
+        rows = _import_rows(response)["created"][1]
+        self.assertEqual(
+            rows[0][2],
+            (
+                "NetBox IPAM sync saved changes, but could not dispatch their events. "
+                "Synchronization may be incomplete; check the addresses before retrying."
+            ),
+        )
+        self.assertEqual(rows[1][2], "")
+        self.assertNotContains(response, "saved the addresses")
+
+    def test_import_reports_committed_claim_events_failures_and_continues_with_later_entries(self):
+        from django.contrib.auth import get_user_model
+        from ipam.models import IPAddress
+
+        from netbox_kea.event_scope import _NESTED_TRACKING
+
+        if not _NESTED_TRACKING:
+            self.skipTest("Before NetBox 4.6.9 a claim row dispatches its events with the request")
+        user = get_user_model().objects.create_superuser(username="import-committed-events")
+        self.client.force_login(user)
+        server = _make_db_server()
+        reservations = {}
+
+        def create(body):
+            raw = body["arguments"]["reservation"]
+            reservations[raw["hw-address"]] = raw
+            return {"result": 0}
+
+        responses = {
+            **_mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"]),
+            "reservation-add": create,
+            "reservation-get": lambda body: _res_get(reservations[body["arguments"]["identifier"]]),
+        }
+        with (
+            override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_sync_views.fail_ip_address_dispatch"]),
+            stub_kea(responses) as kea,
+        ):
+            response = self.client.post(
+                reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[server.pk]),
+                {"format": "yaml", "document": _document(2), "sync_to_netbox": "on"},
+            )
+        self.assertEqual(kea.commands().count("reservation-add"), 2)
+        self.assertEqual(IPAddress.objects.count(), 2)
+        rows = _import_rows(response)["created"][1]
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertEqual(
+                row[2],
+                (
+                    "NetBox IPAM sync saved changes, but could not dispatch their events. "
+                    "Synchronization may be incomplete; check the addresses before retrying."
+                ),
+            )
+        self.assertNotContains(response, "NetBox IPAM synchronization failed")
 
     def test_an_applied_add_whose_ipam_sync_events_fail_reports_the_reservation_and_a_separate_error(self):
         from django.contrib import messages
@@ -2060,22 +2288,24 @@ class TestReservationSideEffectAfterApplied(TransactionTestCase):
         user = get_user_model().objects.create_superuser(username="reservation-dispatch", password="dispatch-pass")
         self.client.force_login(user)
         server = _make_db_server()
-        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-addresses": ["2001:db8::20", "2001:db8::21"]}
         responses = {
-            **_mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"]),
+            **_mutation_responses(6, 20, "2001:db8::/64", ["hw-address"]),
             "reservation-add": {"result": 0},
             "reservation-get": _res_get(raw),
         }
         with (
-            override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_sync_views.fail_ip_address_dispatch"]),
+            override_settings(
+                EVENTS_PIPELINE=["netbox_kea.tests.test_reservation_mutation_views.fail_first_ipv6_address_dispatch"]
+            ),
             stub_kea(responses) as kea,
-            self.assertLogs("netbox_kea.views", "ERROR") as logs,
+            self.assertLogs("netbox_kea.reservation_edit", "ERROR") as logs,
         ):
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation4_add", args=[server.pk]),
+                reverse("plugins:netbox_kea:server_reservation6_add", args=[server.pk]),
                 {
-                    "subnet_cidr": "198.18.0.0/24",
-                    "ip_address": "198.18.0.20",
+                    "subnet_cidr": "2001:db8::/64",
+                    "ip_addresses": "2001:db8::20,2001:db8::21",
                     "identifier_type": "hw-address",
                     "identifier": "aa:bb:cc:dd:ee:ff",
                     "sync_to_netbox": "on",
@@ -2084,7 +2314,8 @@ class TestReservationSideEffectAfterApplied(TransactionTestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("reservation-add"), 1)
-        self.assertTrue(IPAddress.objects.filter(address__net_host="198.18.0.20").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="2001:db8::20").exists())
+        self.assertFalse(IPAddress.objects.filter(address__net_host="2001:db8::21").exists())
         self.assertTrue(JournalEntry.objects.filter(assigned_object_id=server.pk).exists())
         shown = [(message.level, str(message)) for message in get_messages(response.wsgi_request)]
         self.assertIn((messages.SUCCESS, "Reservation created."), shown)
@@ -2092,11 +2323,53 @@ class TestReservationSideEffectAfterApplied(TransactionTestCase):
             (
                 messages.ERROR,
                 (
-                    "Reservation created, and NetBox IPAM sync saved it, but NetBox could not dispatch the events of"
-                    " the sync; see server logs."
+                    "Reservation created. NetBox IPAM sync saved changes, but could not dispatch their events. "
+                    "Synchronization may be incomplete; check the addresses before retrying."
                 ),
             ),
             shown,
         )
         self.assertFalse(any("could not be created" in text for _level, text in shown), shown)
         self.assertIn("EventDispatchError", "\n".join(logs.output))
+
+    def test_an_applied_add_with_failed_journal_events_reports_that_the_journal_was_saved(self):
+        from django.contrib.auth import get_user_model
+        from extras.models import JournalEntry
+
+        from netbox_kea.event_scope import _NESTED_TRACKING
+
+        if not _NESTED_TRACKING:
+            self.skipTest("Before NetBox 4.6.9 nested event units are unavailable")
+        user = get_user_model().objects.create_superuser(username="reservation-journal-message")
+        self.client.force_login(user)
+        server = _make_db_server()
+        raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
+        responses = {
+            **_mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"]),
+            "reservation-add": {"result": 0},
+            "reservation-get": _res_get(raw),
+        }
+        with (
+            override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_reservation_after_apply.fail_journal_dispatch"]),
+            stub_kea(responses),
+        ):
+            response = self.client.post(
+                reverse("plugins:netbox_kea:server_reservation4_add", args=[server.pk]),
+                {
+                    "subnet_cidr": "198.18.0.0/24",
+                    "ip_address": "198.18.0.20",
+                    "identifier_type": "hw-address",
+                    "identifier": "aa:bb:cc:dd:ee:ff",
+                },
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(JournalEntry.objects.filter(assigned_object_id=server.pk).exists())
+        shown = [str(message) for message in get_messages(response.wsgi_request)]
+        self.assertIn("Reservation created.", shown)
+        self.assertIn(
+            "Kea applied the change, and the journal entry was saved, but NetBox could not dispatch its events; see server logs.",
+            shown,
+        )
+        self.assertNotIn(
+            "Kea applied the change, but NetBox could not write the journal entry; see server logs.", shown
+        )

@@ -13,7 +13,7 @@ import yaml
 from django.test import SimpleTestCase, TestCase
 
 from netbox_kea import kea, server_configuration
-from netbox_kea.dhcp_options import parse_dhcp_options
+from netbox_kea.dhcp_options import DHCPOptionChange, DHCPOptionEdit, parse_dhcp_options
 from netbox_kea.kea import KeaCommand
 from netbox_kea.reservations import (
     MAX_IDENTITY_LENGTH,
@@ -1119,6 +1119,13 @@ class TestApplyReservationChange(SimpleTestCase):
 
         self.assertEqual(applied.hostname, "")
         self.assertEqual(applied.addresses, (ip_address("2001:db8::10"),))
+
+    def test_an_option_edit_is_refused_because_only_the_raw_record_merge_keeps_live_keys(self):
+        option = parse_dhcp_options([{"name": "domain-name", "data": "example.com"}])[0]
+        change = ReservationChange(options=DHCPOptionEdit((), (DHCPOptionChange(None, option),)))
+
+        with self.assertRaisesRegex(ValueError, "FreshReservation.updated"):
+            apply_reservation_change(self._v4(), change)
 
 
 class TestSynchronizationLabel(SimpleTestCase):
