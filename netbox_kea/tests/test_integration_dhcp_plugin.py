@@ -2020,6 +2020,28 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         self.assertEqual(res.dhcp_server, imported_dhcp_server(self.server, 4))
         self.assertIsNone(res.ipv4_address)
 
+    def test_a_global_reservation_imports_with_its_adoption_servers_and_no_custom_definitions(self):
+        from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot, upsert_dhcp_server
+
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        conf = {"subnet4": []}
+        hosts = [{"subnet-id": 0, "duid": "01:02:03:04:05:06", "hostname": "global-duid-host"}]
+        dhcp_server, _ = upsert_dhcp_server(self.server, 4)
+        summary = ImportSummary()
+
+        import_reservation_snapshot(
+            self.server,
+            dhcp_server,
+            _reservation_snapshot(conf, 4, hosts),
+            None,
+            summary,
+            family=4,
+            adoption_servers=(dhcp_server.pk,),
+        )
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(HostReservation.objects.get(hostname="global-duid-host").dhcp_server, dhcp_server)
+
     def test_manually_curated_address_is_left_unchanged_but_still_linked(self):
         """The unattended import never claims a foreign IPAM row, and still points at it."""
         from ipam.models import IPAddress
@@ -2566,7 +2588,7 @@ class ImportSummaryCompletenessTest(TestCase):
             if snapshot is not None
             else None
         )
-        import_reservation_snapshot(_make_db_server(), None, observation, None, summary, family=4)
+        import_reservation_snapshot(_make_db_server(), None, observation, None, summary, family=4, adoption_servers=())
         return summary
 
     def test_absent_snapshot_reports_the_counts_as_unread(self):
@@ -2615,7 +2637,7 @@ class SkippedReservationCompletenessTest(TestCase):
         summary = ImportSummary()
 
         # No KeaDhcpLink exists for subnet-id 7, so the record cannot be imported.
-        import_reservation_snapshot(self.server, None, snapshot, None, summary, family=4)
+        import_reservation_snapshot(self.server, None, snapshot, None, summary, family=4, adoption_servers=())
 
         self.assertTrue(snapshot.snapshot.complete)
         self.assertEqual(summary.reservations_created, 0)

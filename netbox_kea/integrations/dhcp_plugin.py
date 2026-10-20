@@ -1254,6 +1254,7 @@ def _upsert_reservation(
     summary,
     claims,
     catalogue,
+    adoption_servers: tuple[int, ...],
 ):
     """Upsert one typed Reservation through its mapping while preserving its Global or In-Subnet Scope.
 
@@ -1277,7 +1278,7 @@ def _upsert_reservation(
         base = HostReservation.objects.filter(subnet=subnet_obj)
         scope_name = subnet_obj.name
     else:
-        base = HostReservation.objects.filter(dhcp_server__in=custom_defs.adoption_servers, subnet__isnull=True)
+        base = HostReservation.objects.filter(dhcp_server__in=adoption_servers, subnet__isnull=True)
         scope_name = f"{server.name} DHCPv{reservation.family}"
 
     try:
@@ -1415,8 +1416,12 @@ def import_reservation_snapshot(
     summary: ImportSummary,
     *,
     family: int,
+    adoption_servers: tuple[int, ...],
 ) -> None:
-    """Import valid typed records and report quarantined Snapshot records."""
+    """Import valid typed records and report quarantined Snapshot records.
+
+    A Global Reservation may adopt an unmapped row of a DHCP server in *adoption_servers*.
+    """
     from ..ipam_reconciliation import DelegatedPrefixPhase, claim, reconcile
 
     if observation is None:
@@ -1458,7 +1463,15 @@ def import_reservation_snapshot(
         else:
             subnet_obj = None
         upserted = _upsert_reservation(
-            planned, subnet_obj, server, dhcp_server, custom_defs, summary, claims, observation.catalogue
+            planned,
+            subnet_obj,
+            server,
+            dhcp_server,
+            custom_defs,
+            summary,
+            claims,
+            observation.catalogue,
+            adoption_servers,
         )
         if upserted is None:
             complete = False
@@ -1644,7 +1657,15 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         summary.ownership.disagreements.update(
             address for address, result in outcomes.items() if result.outcome == "disagreement"
         )
-    import_reservation_snapshot(server, dhcp_server, plan.reservations, custom_defs, summary, family=plan.family)
+    import_reservation_snapshot(
+        server,
+        dhcp_server,
+        plan.reservations,
+        custom_defs,
+        summary,
+        family=plan.family,
+        adoption_servers=adoption_servers,
+    )
     if not plan.configuration_complete:
         summary.ownership.incomplete.update({"subnet", "pool"})
     if (

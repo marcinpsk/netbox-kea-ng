@@ -530,7 +530,9 @@ class ImportOwnershipTest(TestCase):
         conf = {"subnet6": [{"id": 9, "subnet": "2001:db8:9::/64"}]}
         observation = _reservation_snapshot(conf, 6, [{**self.identity, "subnet-id": 9}])
         summary = dhcp_plugin.ImportSummary()
-        dhcp_plugin.import_reservation_snapshot(self.server, None, observation, None, summary, family=6)
+        dhcp_plugin.import_reservation_snapshot(
+            self.server, None, observation, None, summary, family=6, adoption_servers=()
+        )
         self.assertEqual(summary.reservations_skipped, 1)
         self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix=self.delegated()), before)
 

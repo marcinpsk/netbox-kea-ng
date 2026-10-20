@@ -1853,7 +1853,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
 
         def run_import():
             with connection.execute_wrapper(observe_import):
-                import_reservation_snapshot(owner, None, observation, {}, summary, family=6)
+                import_reservation_snapshot(owner, None, observation, {}, summary, family=6, adoption_servers=())
 
         self._start("delete-server", delete_server)
         try:
@@ -1870,7 +1870,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         self.assertFalse(summary.ownership.complete)
         self.assertTrue(IPAMOwnershipLink.objects.filter(server=owner, prefix=released).exists())
         retry = ImportSummary()
-        import_reservation_snapshot(owner, None, observation, {}, retry, family=6)
+        import_reservation_snapshot(owner, None, observation, {}, retry, family=6, adoption_servers=())
         self.assertEqual(retry.errors, 0)
         self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=released).exists())
         released.refresh_from_db()
@@ -1939,7 +1939,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
 
         def run_import():
             with connection.execute_wrapper(observe_import):
-                import_reservation_snapshot(owner, None, observation, {}, summary, family=6)
+                import_reservation_snapshot(owner, None, observation, {}, summary, family=6, adoption_servers=())
 
         def delete_server():
             with connection.execute_wrapper(observe_delete):
@@ -1967,7 +1967,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         self.assertFalse(summary.ownership.complete)
         self.assertTrue(IPAMOwnershipLink.objects.filter(server=owner, prefix=second).exists())
         retry = ImportSummary()
-        import_reservation_snapshot(owner, None, observation, {}, retry, family=6)
+        import_reservation_snapshot(owner, None, observation, {}, retry, family=6, adoption_servers=())
         self.assertEqual(retry.errors, 0)
 
     def test_receipt_completion_does_not_block_an_ownership_foreign_key_at_commit(self):
