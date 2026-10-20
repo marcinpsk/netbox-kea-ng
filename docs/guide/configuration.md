@@ -136,7 +136,10 @@ shows the error and lists the imported rows as unknown. Its **Latest run** link 
 run.
 
 One run of a Server runs at a time. A second run of the same Server, while one runs, is refused before it reads Kea
-and changes nothing; run it again when the first one has finished.
+and changes nothing; run it again when the first one has finished. The run holds a PostgreSQL session lock, so connect
+NetBox to PostgreSQL directly or through a pooler in session mode. A pooler in transaction mode, such as PgBouncer
+with `pool_mode = transaction`, can release the lock on a different server session, and the lock then refuses every
+later run of the Server.
 
 An object that did not change has no entry. A run that stops part way also stores its result, with an entry for the
 family that stopped. NetBox keeps the 10 latest runs of each Server and deletes the older runs
