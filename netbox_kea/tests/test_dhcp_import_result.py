@@ -587,10 +587,14 @@ class StaleRemovalTest(_ImportRunTestCase):
         url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk])
         with stub_kea(_sync_responses(config, hosts)):
             self.client.post(url)
-        return DhcpImportRun.objects.filter(server=self.server).first()
+        return DhcpImportRun.objects.filter(server=self.server)[0]
 
     def _removed(self, run: DhcpImportRun) -> set[tuple[str, str]]:
-        return set(run.entries.filter(outcome=Outcome.REMOVED.value).values_list("kind", "kea_path"))
+        return set(
+            DhcpImportEntry.objects.filter(run=run)
+            .filter(outcome=Outcome.REMOVED.value)
+            .values_list("kind", "kea_path")
+        )
 
     def _mapped(self, kind: Kind) -> list:
         from netbox_kea.models import KeaDhcpLink
@@ -680,7 +684,9 @@ class StaleRemovalTest(_ImportRunTestCase):
 
         self.assertEqual(self._removed(run), set())
         self.assertEqual(len(self._mapped(Kind.OPTION_DEFINITION)), 1)
-        entry = run.entries.get(kind=Kind.OPTION_DEFINITION.value, reason=Reason.REMOVAL_BLOCKED.value)
+        entry = DhcpImportEntry.objects.filter(run=run).get(
+            kind=Kind.OPTION_DEFINITION.value, reason=Reason.REMOVAL_BLOCKED.value
+        )
         self.assertEqual((entry.outcome, entry.kea_path), (Outcome.SKIPPED.value, "Dhcp4/option-def[code=241]"))
         self.assertEqual(entry.detail, "It is kept while 1 Option still uses it.")
 
@@ -695,18 +701,17 @@ class StaleRemovalTest(_ImportRunTestCase):
         self._sync(self.config, self.hosts)
 
         deletions = ObjectChange.objects.filter(action="delete")
-        self.assertTrue(
-            deletions.filter(
-                changed_object_type=ContentType.objects.get_for_model(subnet), changed_object_id=subnet.pk
-            ).exists()
+        target = deletions.get(
+            changed_object_type=ContentType.objects.get_for_model(subnet), changed_object_id=subnet.pk
         )
-        self.assertTrue(
-            deletions.filter(
-                changed_object_type=ContentType.objects.get_for_model(KeaDhcpLink),
-                prechange_data__kind="subnet",
-                prechange_data__kea_subnet_id=42,
-            ).exists()
+        mapping = deletions.get(
+            changed_object_type=ContentType.objects.get_for_model(KeaDhcpLink),
+            prechange_data__kind="subnet",
+            prechange_data__kea_subnet_id=42,
         )
+        # Native revert and squash group history by request (ADR 0008), so both deletions share one.
+        self.assertEqual(mapping.request_id, target.request_id)
+        self.assertEqual(mapping.prechange_data["object_id"], subnet.pk)
 
     def test_an_unmapped_pool_in_a_stale_subnet_keeps_the_subnet_and_the_run_names_it(self):
         Pool = apps.get_model(DHCP_PLUGIN, "Pool")
@@ -723,7 +728,7 @@ class StaleRemovalTest(_ImportRunTestCase):
         run = self._sync(self.config, self.hosts)
 
         self.assertEqual(self._removed(run), {("pool", "Dhcp4/subnet4[id=42]/pools[pool=198.51.100.10-198.51.100.20]")})
-        entry = run.entries.get(kind=Kind.SUBNET.value, reason=Reason.REMOVAL_BLOCKED.value)
+        entry = DhcpImportEntry.objects.filter(run=run).get(kind=Kind.SUBNET.value, reason=Reason.REMOVAL_BLOCKED.value)
         self.assertEqual(entry.kea_path, "Dhcp4/subnet4[id=42]")
         self.assertIn("operator pool", entry.detail)
         self.assertEqual(sorted(row.subnet_id for row in self._mapped(Kind.SUBNET)), [41, 42])
@@ -735,7 +740,7 @@ class StaleRemovalTest(_ImportRunTestCase):
         run = self._sync(self.config, self.hosts)
 
         self.assertEqual(self._removed(run), {("pool", _STALE_POOL)})
-        entry = run.entries.get(kind=Kind.SUBNET.value, reason=Reason.REMOVAL_BLOCKED.value)
+        entry = DhcpImportEntry.objects.filter(run=run).get(kind=Kind.SUBNET.value, reason=Reason.REMOVAL_BLOCKED.value)
         self.assertEqual(entry.kea_path, _STALE_SUBNET)
         self.assertIn("host reservation", entry.detail.lower())
         self.assertEqual(sorted(row.subnet_id for row in self._mapped(Kind.SUBNET)), [41, 42])
@@ -754,7 +759,7 @@ class StaleRemovalTest(_ImportRunTestCase):
         self.assertEqual(len(self._mapped(Kind.OPTION_DEFINITION)), 1)
         suppressed = {
             (entry.kind, entry.kea_path): entry.detail
-            for entry in run.entries.filter(reason=Reason.INCOMPLETE_OBSERVATION.value)
+            for entry in DhcpImportEntry.objects.filter(run=run).filter(reason=Reason.INCOMPLETE_OBSERVATION.value)
         }
         self.assertEqual(
             set(suppressed),
@@ -772,14 +777,17 @@ class StaleRemovalTest(_ImportRunTestCase):
             "The configuration has 1 Subnet entry that is not valid. 2 mapped Subnet rows were kept.",
         )
         self.assertEqual(
-            {entry.outcome for entry in run.entries.filter(reason=Reason.INCOMPLETE_OBSERVATION.value)},
+            {
+                entry.outcome
+                for entry in DhcpImportEntry.objects.filter(run=run).filter(reason=Reason.INCOMPLETE_OBSERVATION.value)
+            },
             {Outcome.SKIPPED.value},
         )
 
     def _assert_reservations_kept(self, run: DhcpImportRun, reason: str) -> None:
         self.assertEqual(self._removed(run), set())
         self.assertEqual(len(self._mapped(Kind.RESERVATION)), 2)
-        entry = run.entries.get(reason=Reason.INCOMPLETE_OBSERVATION.value)
+        entry = DhcpImportEntry.objects.filter(run=run).get(reason=Reason.INCOMPLETE_OBSERVATION.value)
         self.assertEqual((entry.kind, entry.kea_path), ("reservation", "Dhcp4/reservations[*]"))
         self.assertIn(reason, entry.detail)
 
@@ -788,7 +796,7 @@ class StaleRemovalTest(_ImportRunTestCase):
         with stub_kea(_sync_responses(self.config, reservations_available=False)):
             self.client.post(url)
 
-        self._assert_reservations_kept(DhcpImportRun.objects.filter(server=self.server).first(), "could not be read")
+        self._assert_reservations_kept(DhcpImportRun.objects.filter(server=self.server)[0], "could not be read")
 
     def test_a_quarantined_reservation_record_keeps_every_reservation(self):
         run = self._sync(self.config, {4: [{"subnet-id": 41, "hw-address": "not-a-mac"}]})

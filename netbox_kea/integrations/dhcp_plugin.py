@@ -65,7 +65,7 @@ import logging
 from collections import Counter
 from dataclasses import dataclass, field
 from itertools import count
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..ipam_reconciliation import ClaimResult, RangeClaim, ReservationObservation, SyncReport
@@ -1866,7 +1866,8 @@ class _StaleRow:
     """A mapped row whose Kea source the run did not observe."""
 
     source: MappingSource
-    target: object
+    # A DHCP plugin model instance; the plugin is optional, so its models have no static type here.
+    target: Any
 
 
 def _row_key(obj) -> tuple:
@@ -1950,22 +1951,28 @@ def _remove_stale_row(row: _StaleRow, removable: dict, family: int, summary: Imp
     return [row, *(removable[_row_key(obj)] for obj in cascaded)]
 
 
-def _stale_rows(server, plan: FamilyPlan, observed) -> dict[Kind, list[_StaleRow]]:
-    """Return the mapped rows of each kind whose Kea source the plan does not observe. A mapping without a row has none."""
+def mapped_rows(server, family: int) -> dict[Kind, dict[MappingSource, Any]]:
+    """Return the DHCP plugin row of each mapping of *family* whose kind a run can remove, by kind and Kea source.
+
+    A mapping whose row is gone has none.
+    """
     from ..models import KeaDhcpLink
 
-    stale: dict[Kind, list[_StaleRow]] = {}
-    links = KeaDhcpLink.objects.filter(
-        server=server, family=plan.family, kind__in=[kind.value for kind in REMOVAL_ORDER]
-    ).order_by("pk")
-    for link in links:
-        source = MappingSource(Kind(link.kind), link.kea_subnet_id, link.kea_identity)
-        if source in observed[source.kind].sources:
-            continue
-        target = link.sys4_object
-        if target is not None:
-            stale.setdefault(source.kind, []).append(_StaleRow(source, target))
-    return stale
+    rows: dict[Kind, dict[MappingSource, Any]] = {kind: {} for kind in REMOVAL_ORDER}
+    links = KeaDhcpLink.objects.filter(server=server, family=family, kind__in=[kind.value for kind in REMOVAL_ORDER])
+    for link in links.prefetch_related("sys4_object").order_by("pk"):
+        if link.sys4_object is not None:
+            source = MappingSource(Kind(link.kind), link.kea_subnet_id, link.kea_identity)
+            rows[source.kind][source] = link.sys4_object
+    return rows
+
+
+def _stale_rows(server, plan: FamilyPlan, observed) -> dict[Kind, list[_StaleRow]]:
+    """Return the mapped rows of each kind whose Kea source the plan does not observe."""
+    return {
+        kind: [_StaleRow(source, row) for source, row in rows.items() if source not in observed[kind].sources]
+        for kind, rows in mapped_rows(server, plan.family).items()
+    }
 
 
 def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> None:
