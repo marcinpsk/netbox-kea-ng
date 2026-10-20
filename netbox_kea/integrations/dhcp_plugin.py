@@ -75,6 +75,7 @@ from ..published_name import reservation_published_name
 from ..reservations import FLEX_ID, TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, identity_text
 from ..subnet_catalogue import CatalogueUnavailable
 from .dhcp_import_plan import (
+    MAX_KEA_NAME_LENGTH,
     InSubnetReservationKey,
     MappingSource,
     OptionDefinitionKey,
@@ -327,6 +328,8 @@ class CustomDefinitions:
 
     server: Server
     declared: dict[OptionDefinitionKey, OptionDefIntent]
+    # The DHCPServers whose unmapped rows of this family the import adopts (_adoption_servers).
+    adoption_servers: tuple[int, ...]
     # The row of each written definition, or why it has none.
     written: dict[OptionDefinitionKey, object] = field(default_factory=dict)
 
@@ -389,11 +392,11 @@ def _write_option_definition(
         with event_scope.atomic():
             obj = mapped_target(definitions.server, family, key.source)
             if obj is None:
-                held = OptionDefinition.objects.filter(
-                    standard=False, dhcp_server=dhcp_server, space=key.space, code=key.code
-                )
+                same_key = OptionDefinition.objects.filter(standard=False, space=key.space, code=key.code)
                 # Adopt a definition that an import created before Option Definitions had a mapping.
-                obj = _unlinked(held).first()
+                adoptable = same_key.filter(dhcp_server__in=definitions.adoption_servers, family=family)
+                obj = _unlinked(adoptable).first()
+                held = same_key.filter(dhcp_server=dhcp_server)
                 if obj is None and held.exists():
                     return _held_option_definition(held, family, key, path, summary)
             if obj is None:
@@ -809,6 +812,9 @@ def _link_interfaces(dhcp_server, entries: tuple[str, ...] | None, summary: Impo
     from virtualization.models import VMInterface
 
     names = {name: entry for entry in entries if (name := _interface_name(entry, family, summary)) is not None}
+    if "*" in entries:
+        # The DHCP plugin cannot hold "every interface", so the links that an operator made stay.
+        return False
     device = Interface.objects.filter(device=dhcp_server.device_id, name__in=names) if dhcp_server.device_id else []
     vm = (
         VMInterface.objects.filter(virtual_machine=dhcp_server.virtual_machine_id, name__in=names)
@@ -831,9 +837,35 @@ def _link_interfaces(dhcp_server, entries: tuple[str, ...] | None, summary: Impo
     return True
 
 
+def _other_family(family: int) -> int:
+    return 6 if family == 4 else 4
+
+
 def _primary_family(server) -> int:
     """Return the family whose DHCPServer an upgrade adopts: DHCPv4, or DHCPv6 on a DHCPv6-only Server."""
     return 4 if server.dhcp4 else 6
+
+
+def _adoption_servers(server, dhcp_server) -> tuple[int, ...]:
+    """Return *dhcp_server* and the DHCPServer that an import before #94 named after the Server, for both families."""
+    legacy = _model("DHCPServer").objects.filter(name=server.name).exclude(pk=dhcp_server.pk)
+    return (dhcp_server.pk, *legacy.values_list("pk", flat=True))
+
+
+def _move_family_options(dhcp_server, adoption_servers: tuple[int, ...], family: int) -> None:
+    """Move the global Options of *family* that an import before #94 wrote on the DHCPServer of both families."""
+    from django.contrib.contenttypes.models import ContentType
+
+    stale = _model("Option").objects.filter(
+        assigned_object_type=ContentType.objects.get_for_model(dhcp_server),
+        assigned_object_id__in=[pk for pk in adoption_servers if pk != dhcp_server.pk],
+        definition__family=family,
+    )
+    with event_scope.atomic():
+        for option in stale:
+            option.snapshot()
+            option.assigned_object_id = dhcp_server.pk
+            option.save()
 
 
 def upsert_dhcp_server(server, family: int):
@@ -850,9 +882,9 @@ def upsert_dhcp_server(server, family: int):
         if dhcp_server is None and family == _primary_family(server):
             dhcp_server = _unlinked(DHCPServer.objects.filter(name=server.name)).first()
         if dhcp_server is None:
-            other = mapped_target(server, 10 - family, source)
+            other = mapped_target(server, _other_family(family), source)
             dhcp_server = DHCPServer(
-                name=f"{server.name} DHCPv{family}"[:255],
+                name=_synthesized_name(server.name, f" DHCPv{family}"),
                 description="Imported from Kea by netbox-kea",
                 device_id=other.device_id if other is not None else None,
                 virtual_machine_id=other.virtual_machine_id if other is not None else None,
@@ -861,6 +893,14 @@ def upsert_dhcp_server(server, family: int):
             created = True
         observe_mapping(server, family, dhcp_server, source)
     return dhcp_server, created
+
+
+def _synthesized_name(scope: str, detail: str) -> str:
+    """Return a DHCP plugin row name: *scope* shortened so that *detail* fits, which keeps the names distinct.
+
+    A *detail* longer than a name itself is cut, so two such names can still be equal.
+    """
+    return f"{scope[: max(0, MAX_KEA_NAME_LENGTH - len(detail))]}{detail}"[:MAX_KEA_NAME_LENGTH]
 
 
 def _released_client_class_name(server, kea_name: str) -> str:
@@ -989,19 +1029,19 @@ def _subnet_name(server, planned: PlannedSubnet, network: IPNetworkValue) -> str
     """Build a globally-unique name (NetBoxDHCPModelMixin requires unique ``name``)."""
     family = planned.intent.family
     if planned.key is not None:
-        return f"{server.name} DHCPv{family} subnet {planned.key}"[:255]
-    return f"{server.name} DHCPv{family} {network}"[:255]
+        return _synthesized_name(server.name, f" DHCPv{family} subnet {planned.key}")
+    return _synthesized_name(server.name, f" DHCPv{family} {network}")
 
 
 def _pool_name(subnet_obj, pool_intent) -> str:
     """Build a unique pool name scoped to its parent subnet's (unique) name."""
-    return f"{subnet_obj.name} pool {pool_intent.pool}"[:255]
+    return _synthesized_name(subnet_obj.name, f" pool {pool_intent.pool}")
 
 
 def _reservation_name(scope_name: str, reservation: Reservation) -> str:
     """Build a unique reservation name scoped to its parent's (unique) name."""
     identity = reservation.identity
-    return f"{scope_name} {identity_text(identity.identifier_type, identity.value)}"[:255]
+    return _synthesized_name(scope_name, f" {identity_text(identity.identifier_type, identity.value)}")
 
 
 def upsert_subnet(server, dhcp_server, planned: PlannedSubnet, summary: ImportSummary, claims: ClaimResult):
@@ -1222,7 +1262,7 @@ def _upsert_reservation(
         base = HostReservation.objects.filter(subnet=subnet_obj)
         scope_name = subnet_obj.name
     else:
-        base = HostReservation.objects.filter(dhcp_server=dhcp_server, subnet__isnull=True)
+        base = HostReservation.objects.filter(dhcp_server__in=custom_defs.adoption_servers, subnet__isnull=True)
         scope_name = f"{server.name} DHCPv{reservation.family}"
 
     try:
@@ -1535,7 +1575,11 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     for dropped in plan.dropped:
         summary.record(not_written(plan.family, dropped.kind, dropped.path, Reason.INVALID_KEA_DATA, dropped.detail))
     dhcp_server, created = upsert_dhcp_server(server, plan.family)
-    custom_defs = CustomDefinitions(server, {planned.key: planned.intent for planned in plan.option_definitions})
+    adoption_servers = _adoption_servers(server, dhcp_server)
+    custom_defs = CustomDefinitions(
+        server, {planned.key: planned.intent for planned in plan.option_definitions}, adoption_servers
+    )
+    _move_family_options(dhcp_server, adoption_servers, plan.family)
 
     values = server_values(plan.server, plan.family, capabilities, summary)
     changed = _apply_global_settings(dhcp_server, values, summary, plan.family)

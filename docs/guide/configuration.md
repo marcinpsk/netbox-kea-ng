@@ -55,7 +55,8 @@ global DHCP Options, client classes and Option Definitions of its own daemon, an
 family attach to it. A global value that Kea no longer declares is cleared on the next run. The first run after an
 upgrade keeps the DHCP Server that an earlier release named after the Server, with its device, tags and comments, for
 DHCPv4 (or for DHCPv6 on a DHCPv6-only Server). A new DHCP Server takes the device or virtual machine of the Server's
-other DHCP Server; after that, the device or virtual machine is yours to change. The import links the interfaces that
+other DHCP Server when that one is already imported; after that, the device or virtual machine is yours to change.
+Rows that the earlier release wrote for the other family move to that family's DHCP Server. The import links the interfaces that
 Kea's `interfaces-config` names to the DHCP Server's device or virtual machine interfaces of those names. A name that
 matches no interface is reported, and so are `*` and the address part of an entry such as `eth0/192.0.2.1`, which
 the DHCP plugin cannot hold.

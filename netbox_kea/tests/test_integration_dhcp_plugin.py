@@ -1040,24 +1040,45 @@ class DhcpPluginServerPerFamilyTest(TestCase):
         self.assertEqual((v6.preferred_lifetime, v6.relay_supplied_options), (None, []))
 
     def test_an_upgrade_adopts_the_existing_dhcp_server_for_the_primary_family(self):
+        from django.contrib.contenttypes.models import ContentType
         from extras.models import Tag
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
 
         from netbox_kea.models import KeaDhcpLink
 
-        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
-        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        model = partial(apps.get_model, DHCP_PLUGIN)
         # The importer before #94 kept one DHCPServer, named after the Server, for both families.
         device = _device(f"{self.server.name}-device")
-        existing = DHCPServer.objects.create(
+        existing = model("DHCPServer").objects.create(
             name=self.server.name, device=device, comments="operator notes", preferred_lifetime=3000
         )
         existing.tags.add(Tag.objects.create(name="kea-family-tag", slug="kea-family-tag"))
-        self._import(4)
-        v6_subnet = Subnet.objects.get(prefix__prefix="10.60.0.0/24")
-        v6_subnet.snapshot()
-        v6_subnet.dhcp_server = existing
-        v6_subnet.save()
+        v6_subnet = model("Subnet").objects.create(
+            name=f"{self.server.name} DHCPv6 subnet 1",
+            prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:60::/64")),
+            dhcp_server=existing,
+        )
+        KeaDhcpLink.objects.create(server=self.server, family=6, kind="subnet", kea_subnet_id=1, sys4_object=v6_subnet)
+        # A custom definition and global Options of DHCPv6, which that importer wrote without a mapping.
+        definition = model("OptionDefinition").objects.create(
+            name=f"{self.server.name}-site", family=6, space="dhcp6", code=250, type="uint8", dhcp_server=existing
+        )
+        dns = model("OptionDefinition").objects.get(standard=True, space="dhcp6", code=23)
+        on_existing = {
+            "assigned_object_type": ContentType.objects.get_for_model(existing),
+            "assigned_object_id": existing.pk,
+        }
+        options = [
+            model("Option").objects.create(definition=definition, data="7", **on_existing),
+            model("Option").objects.create(definition=dns, data="2001:db8::53", **on_existing),
+        ]
+        self.conf[6] |= {
+            "option-def": [{"name": f"{self.server.name}-site", "code": 250, "type": "uint8", "space": "dhcp6"}],
+            "option-data": [{"code": 250, "space": "dhcp6", "data": "7"}, {"code": 23, "data": "2001:db8::53"}],
+        }
 
+        self._import(4)
         self._import(6)
 
         v4, v6 = imported_dhcp_server(self.server, 4), imported_dhcp_server(self.server, 6)
@@ -1069,10 +1090,45 @@ class DhcpPluginServerPerFamilyTest(TestCase):
         # DHCPv4 does not declare preferred-lifetime, so the DHCPv4 server no longer holds the DHCPv6 value.
         self.assertIsNone(v4.preferred_lifetime)
         self.assertEqual((v6.name, v6.device, v6.preferred_lifetime), (f"{self.server.name} DHCPv6", device, 3000))
-        self.assertEqual(Subnet.objects.get(prefix__prefix="2001:db8:60::/64").dhcp_server, v6)
-        self.assertEqual(DHCPServer.objects.filter(pk__in=[v4.pk, v6.pk]).count(), 2)
+        # Each DHCPv6 row moves to the DHCPv6 server: no duplicate is created.
+        self.assertEqual(model("Subnet").objects.get(pk=v6_subnet.pk).dhcp_server, v6)
+        self.assertEqual(model("OptionDefinition").objects.get(standard=False, code=250).pk, definition.pk)
+        self.assertEqual(model("OptionDefinition").objects.get(pk=definition.pk).dhcp_server, v6)
+        self.assertEqual(sorted(v6.options.values_list("pk", flat=True)), sorted(option.pk for option in options))
+        self.assertFalse(v4.options.exists())
         self.assertEqual(KeaDhcpLink.objects.filter(server=self.server, kind="server").count(), 2)
-        self.assertFalse(DHCPServer.objects.filter(name=f"{self.server.name} DHCPv4").exists())
+        self.assertFalse(model("DHCPServer").objects.filter(name=f"{self.server.name} DHCPv4").exists())
+
+    def test_the_family_names_of_a_long_server_name_differ(self):
+        self.server.name = "k" * 255
+        self.server.save()
+
+        self._import(4)
+        self._import(6)
+
+        names = [imported_dhcp_server(self.server, family).name for family in (4, 6)]
+        self.assertEqual([name[-6:] for name in names], ["DHCPv4", "DHCPv6"])
+        self.assertTrue(all(len(name) == 255 for name in names))
+
+    def test_a_wildcard_interface_list_keeps_the_interface_links(self):
+        from netbox_kea.integrations.dhcp_import_report import Reason
+
+        device = _device(f"{self.server.name}-wildcard", "eth0")
+        self._import(4)
+        v4 = imported_dhcp_server(self.server, 4)
+        v4.snapshot()
+        v4.device = device
+        v4.save()
+        v4.device_interfaces.set(device.interfaces.all())
+        self.conf[4]["interfaces-config"] = {"interfaces": ["*"]}
+
+        summary = self._import(4)
+
+        self.assertEqual(list(v4.device_interfaces.values_list("name", flat=True)), ["eth0"])
+        self.assertIn(
+            ("Dhcp4/interfaces-config/interfaces[*]", Reason.NO_PLUGIN_HOME),
+            [(entry.path, entry.reason) for entry in summary.entries],
+        )
 
     def test_a_dhcpv6_only_upgrade_adopts_the_existing_dhcp_server_for_dhcpv6(self):
         DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
@@ -1177,7 +1233,7 @@ class DhcpPluginServerPerFamilyTest(TestCase):
         v4.snapshot()
         v4.device = device
         v4.save()
-        self.conf[4]["interfaces-config"] = {"interfaces": ["eth0", "eth1/10.60.0.1", "eth9", "*"]}
+        self.conf[4]["interfaces-config"] = {"interfaces": ["eth0", "eth1/10.60.0.1", "eth9"]}
 
         summary = self._import(4)
 
@@ -1188,7 +1244,6 @@ class DhcpPluginServerPerFamilyTest(TestCase):
             {
                 "Dhcp4/interfaces-config/interfaces[eth1/10.60.0.1]": Reason.NO_PLUGIN_HOME,
                 "Dhcp4/interfaces-config/interfaces[eth9]": Reason.NO_MATCHING_INTERFACE,
-                "Dhcp4/interfaces-config/interfaces[*]": Reason.NO_PLUGIN_HOME,
             },
         )
         self.conf[4]["interfaces-config"] = {"interfaces": ["eth2"]}
