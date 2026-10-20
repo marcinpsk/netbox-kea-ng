@@ -602,17 +602,6 @@ def _not_converted(kea_key: str, error: Exception, summary: ImportSummary, sourc
     summary.warn(f"setting {kea_key}: {error}")
 
 
-def _transform_value(transform, raw, kea_key: str, summary: ImportSummary, source: _Source):
-    """Apply a field transform. A value that it cannot convert has an entry and gives ``None``."""
-    if transform is None:
-        return raw
-    try:
-        return transform(raw)
-    except Exception as exc:  # noqa: BLE001 — a bad scalar must not abort the import
-        _not_converted(kea_key, exc, summary, source)
-        return None
-
-
 def _cleared(obj, attr: str):
     """Return the value that clears field *attr* of *obj*: None when nullable, else the field's empty default."""
     db_field = obj._meta.get_field(attr)
@@ -622,24 +611,36 @@ def _cleared(obj, attr: str):
 def _settings_fields(obj, settings: dict, field_map, summary: ImportSummary, source: _Source) -> dict:
     """Plan *obj*'s settings fields from its Declared Values. A key that *settings* lacks clears its field to inherit.
 
-    A value that the plugin field refuses has an entry and leaves its field as it is. Return the desired fields
-    without changing *obj*.
+    A value that cannot be converted or that the plugin field refuses has an entry and leaves its field as it is.
+    Return the desired fields without changing *obj*.
     """
-    fields = {}
-    for kea_key, attr, transform in field_map:
-        value = (
-            _transform_value(transform, settings[kea_key], kea_key, summary, source) if kea_key in settings else None
-        )
-        if value is None:
-            fields[attr] = _cleared(obj, attr)
-            continue
-        try:
-            obj._meta.get_field(attr).clean(value, obj)
-        except ValidationError as exc:
-            _not_converted(kea_key, exc, summary, source)
-            value = getattr(obj, attr)
-        fields[attr] = value
-    return fields
+    return {
+        attr: _declared_value(obj, attr, kea_key, settings[kea_key], transform, summary, source)
+        if kea_key in settings
+        else _cleared(obj, attr)
+        for kea_key, attr, transform in field_map
+    }
+
+
+def _declared_value(obj, attr: str, kea_key: str, raw, transform, summary: ImportSummary, source: _Source):
+    """Return the value of field *attr* of *obj* for the Kea value *raw*. ``None`` clears the field.
+
+    A value that *transform* cannot convert, or that the plugin field refuses, has an entry and keeps the current
+    value of the field.
+    """
+    try:
+        value = raw if transform is None else transform(raw)
+    except Exception as exc:  # noqa: BLE001 — a bad scalar must not abort the import
+        _not_converted(kea_key, exc, summary, source)
+        return getattr(obj, attr)
+    if value is None:
+        return _cleared(obj, attr)
+    try:
+        obj._meta.get_field(attr).clean(value, obj)
+    except ValidationError as exc:
+        _not_converted(kea_key, exc, summary, source)
+        return getattr(obj, attr)
+    return value
 
 
 def _managed_changes(obj, desired: dict, capabilities: PluginCapabilities) -> dict:
@@ -1364,11 +1365,12 @@ def _upsert_pool(
     created = pool_obj is None
     if pool_obj is None:
         pool_obj = Pool(name=_pool_name(subnet_obj, intent))
+    values = _Source(family, Kind.POOL, path)
     fields = {
         "subnet_id": subnet_obj.pk,
         "ip_range_id": range_obj.pk,
-        "pool_id": intent.pool_id,
-        **_settings_fields(pool_obj, intent.settings, POOL_FIELDS, summary, _Source(family, Kind.POOL, path)),
+        "pool_id": _declared_value(pool_obj, "pool_id", kea_paths.POOL_ID, intent.pool_id, None, summary, values),
+        **_settings_fields(pool_obj, intent.settings, POOL_FIELDS, summary, values),
     }
     relations = _relation_changes(pool_obj, classes)
     changes: dict = {}

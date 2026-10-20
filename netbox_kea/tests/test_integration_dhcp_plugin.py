@@ -1136,9 +1136,11 @@ class DhcpPluginServerPerFamilyTest(TestCase):
         self.assertEqual(imported_dhcp_server(self.server, 6).relay_supplied_options, [65])
         self.assertNotIn((Kind.SERVER, Outcome.UPDATED), [(entry.kind, entry.outcome) for entry in summary.entries])
 
-    def test_a_relay_supplied_option_that_is_not_a_code_cannot_be_converted(self):
+    def test_a_relay_supplied_option_that_is_not_a_code_cannot_be_converted_and_the_field_keeps_its_value(self):
         from netbox_kea.integrations.dhcp_import_report import Reason
 
+        self.conf[6]["relay-supplied-options"] = ["65"]
+        self._import(6)
         self.conf[6]["relay-supplied-options"] = ["65", "agent"]
 
         summary = self._import(6)
@@ -1147,7 +1149,7 @@ class DhcpPluginServerPerFamilyTest(TestCase):
             ("Dhcp6/relay-supplied-options", Reason.PLUGIN_GAP),
             [(entry.path, entry.reason) for entry in summary.entries],
         )
-        self.assertEqual(imported_dhcp_server(self.server, 6).relay_supplied_options, [])
+        self.assertEqual(imported_dhcp_server(self.server, 6).relay_supplied_options, [65])
 
     def test_an_upgrade_adopts_the_existing_dhcp_server_for_the_primary_family(self):
         from django.contrib.contenttypes.models import ContentType
@@ -2830,6 +2832,21 @@ class DhcpPluginManagedFieldTest(TestCase):
         for summary in (first, second):
             self.assertEqual(self._not_written(summary, path), {path: Reason.PLUGIN_GAP})
         self.assertEqual([entry for entry in second.entries if entry.kind == Kind.POOL and entry.reason is None], [])
+
+    def test_a_pool_id_that_the_plugin_field_cannot_hold_is_unsupported_and_the_pool_keeps_its_id(self):
+        self._import()
+        kea_pool = self.conf["subnet4"][0]["pools"][0]
+        # Kea accepts a uint32 pool-id. The plugin field holds a signed 32-bit integer.
+        kea_pool |= {"pool-id": 4294967295, "ddns-ttl": 600}
+        kea_pool["option-data"][0]["data"] = "8"
+
+        summary = self._import()
+
+        pool = self._pool()
+        self.assertEqual((pool.pool_id, pool.ddns_ttl), (5, 600))
+        self.assertEqual(list(pool.options.values_list("data", flat=True)), ["8"])
+        path = f"{_OWNED_POOL}/pool-id"
+        self.assertEqual(self._not_written(summary, path), {path: Reason.PLUGIN_GAP})
 
     def test_a_subnet_value_that_the_plugin_field_cannot_hold_is_unsupported_and_the_subnet_imports(self):
         self.conf["subnet4"][0]["ddns-ttl-percent"] = 0.1234
