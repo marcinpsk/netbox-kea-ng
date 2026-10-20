@@ -49,6 +49,23 @@ stale cleanup while the switch is off.
 The DHCP Import needs netbox-plugin-dhcp 0.2.0 or later. With an older release installed, **Sync to DHCP plugin now**
 refuses before it reads Kea, names the required version, and changes nothing.
 
+Each run of **Sync to DHCP plugin now** stores its result. The **DHCP Plugin** page under Sync shows the latest run:
+the counts for each family, object kind and outcome, and one entry for each Kea fact that the run created, updated or
+did not write. An entry names its fact by a Kea path, for example `Dhcp4/subnet4[id=20]/option-data[code=150]`. A
+fact that the run did not write has a reason:
+
+- **Unsupported**: the DHCP plugin cannot hold the fact. A later DHCP plugin release can remove this limit.
+- **Not imported**: the fact is out of scope (for example a Shared Network), the Kea data is not valid, or the DHCP
+  plugin has no field for it by design.
+- **Skipped**: the parent object was not imported, IPAM ownership kept the IP Range unchanged, a write failed, or
+  Kea could not be read in full.
+
+An object that did not change has no entry. A run that stops part way also stores its result, with an entry for the
+family that stopped. NetBox keeps the 10 latest runs of each Server and deletes the older runs
+when it stores a new one. Runs are not in the change log. A user who can view the Server can see its runs. When
+NetBox cannot store a result, it logs the error and the import still completes. In a branch the import refuses and
+stores no result.
+
 Turning the switch off does not stop an import that already runs. While the switch is off, the sync can remove an
 adopted object that would otherwise wait for an import, and turning the switch on again does not bring it back. An
 import receipt that a Server already has stays valid when the switch goes on again, so the Server needs no new import.

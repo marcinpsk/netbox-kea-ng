@@ -502,10 +502,22 @@ class SummaryProblemsTest(SimpleTestCase):
     quarantine and error counts and the operator saw an incomplete picture.
     """
 
-    def _summary(self, **counts):
+    def _summary(
+        self, *, reservations_unread=False, reservations_quarantined=0, reservations_skipped=0, errors=0, **fields
+    ):
+        from netbox_kea.integrations.dhcp_import_report import Kind, Reason, not_written
         from netbox_kea.integrations.dhcp_plugin import ImportSummary
 
-        return ImportSummary(**counts)
+        summary = ImportSummary(**fields)
+        for kind, reason, count in (
+            (Kind.RESERVATION, Reason.READ_FAILED, int(reservations_unread)),
+            (Kind.RESERVATION, Reason.INVALID_KEA_DATA, reservations_quarantined),
+            (Kind.RESERVATION, Reason.PARENT_NOT_IMPORTED, reservations_skipped),
+            (Kind.SUBNET, Reason.WRITE_FAILED, errors),
+        ):
+            for index in range(count):
+                summary.record(not_written(4, kind, f"Dhcp4/{kind}[{index}]", reason))
+        return summary
 
     def test_no_problems_yields_no_notes(self):
         self.assertEqual(dps._summary_problems(self._summary()), [])

@@ -8,12 +8,19 @@ netbox_kea/tests/kea_recordings/, then writes the replies to dhcp4.json and dhcp
 The list-commands reply is the set of command names the tests accept, so the coverage
 configurations load the same hook libraries as the Compose harness.
 It also reads the keyword tables that Kea's config-test and config-set check in the same
-release, and writes the keys Kea accepts on a Shared Network and on a Subnet to
-accepted-keys.json.
+release. It writes the keys Kea accepts on each object that the DHCP Import can meet to
+accepted-keys.json: the global configuration, Shared Network, Subnet, Pool, PD Pool, host
+reservation, client class, option-def, option-data and interfaces-config. The parity ledger test compares them
+with netbox_kea/integrations/dhcp_import_ledger.py.
 The same daemons record lease replies: every lease state, an infinite lifetime, IPv6
 delegated prefixes, exact lookups, pages, the lease changes that Kea refuses, and an edit and
 deletion of a fresh lease body.
 The Kea version is the Compose harness default, so both use the same Kea.
+
+Recording notes for Kea 3.2. config-get merges inherited values into Shared Networks (from the global
+configuration) and into Subnets (from their Shared Network, else the global configuration). It merges nothing
+into Pools and PD Pools. It returns `client-class`, `require-client-classes` and `only-if-required` as their
+replacements, and moves `comment` into `user-context`. The parity ledger states both, and its test checks them.
 
 Kea 3.2 has no Control Agent, so control-agent.json comes from the last Kea release series
 that has one. The script installs that agent from ISC's signed package repository into the
@@ -39,9 +46,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RECORDINGS = REPO_ROOT / "netbox_kea" / "tests" / "kea_recordings"
 COMPOSE_OVERRIDE = REPO_ROOT / "tests" / "docker" / "docker-compose.override.yml"
 IMAGE = "docker.cloudsmith.io/isc/docker/kea-dhcp{family}:{version}"
-KEYWORD_TABLES = (
-    "https://raw.githubusercontent.com/isc-projects/kea/Kea-{version}/src/lib/dhcpsrv/parsers/simple_parser{family}.cc"
-)
+KEA_PARSERS = "https://raw.githubusercontent.com/isc-projects/kea/Kea-{version}/src/lib/dhcpsrv/parsers/{source}"
 HOST_PORT = {4: 18101, 6: 18103}
 CONTROL_AGENT_VERSION = "3.0.3"
 CONTROL_AGENT_PORT = 18105
@@ -332,18 +337,68 @@ def _table_keys(source: str, table: str) -> list[str]:
     body = re.search(rf"::{table} = \{{(.*?)^\}};", source, re.MULTILINE | re.DOTALL)
     if body is None:
         raise SystemExit(f"No {table} table in the Kea source")
-    keys = re.findall(r'^\s*\{\s*"([^"]+)",\s*Element::\w+\s*\},', body.group(1), re.MULTILINE)
-    if not keys:
-        raise SystemExit(f"No keys in the Kea {table} table")
+    keys = re.findall(r'^\s*\{\s*"([^"]+)",\s*Element::\w+\s*,?\s*\},?\s*$', body.group(1), re.MULTILINE)
+    if not keys or len(keys) != body.group(1).count("Element::"):
+        raise SystemExit(f"Could not read every key of the Kea {table} table")
     return sorted(keys)
 
 
+def _host_keys(source: str, family: int) -> list[str]:
+    """Return the keys that ``getSupportedParams4`` or ``getSupportedParams6`` accepts on a host reservation."""
+    body = re.search(rf"^getSupportedParams{family}\(.*?^\}}", source, re.MULTILINE | re.DOTALL)
+    inserts = re.findall(r"\.insert\s*\((.*?)\)", body.group(0), re.DOTALL) if body else []
+    keys = [match.group(1) for argument in inserts if (match := re.fullmatch(r'\s*"([^"]+)"\s*', argument))]
+    if not keys or len(keys) != len(inserts):
+        raise SystemExit(f"Could not read every DHCPv{family} host reservation key of the Kea source")
+    return sorted(keys)
+
+
+def _class_keys(source: str, family: int) -> list[str]:
+    """Return the keys that ``checkParametersSupported`` accepts on a client class of *family*."""
+    sets = dict(re.findall(r"static std::set<std::string> (supported_params\w*) = \{(.*?)\};", source, re.DOTALL))
+    names = ("supported_params", f"supported_params_v{family}")
+    if any(name not in sets for name in names):
+        raise SystemExit(f"No DHCPv{family} client class keys in the Kea source")
+    bodies = (re.sub(r"//[^\n]*|/\*.*?\*/", "", sets[name], flags=re.DOTALL) for name in names)
+    entries = [entry.strip() for body in bodies for entry in body.split(",")]
+    keys = [match.group(1) for entry in entries if (match := re.fullmatch(r'"([^"]+)"', entry))]
+    if len(keys) != len(entries):
+        raise SystemExit(f"Could not read every DHCPv{family} client class key of the Kea source")
+    return sorted(keys)
+
+
+def _interface_keys(source: str, family: int) -> list[str]:
+    """Return the keys that ``IfacesConfigParser::parse`` accepts in ``interfaces-config`` of *family*."""
+    keys = re.findall(r'element\.first\s*==\s*"([^"]+)"', source)
+    # One key per comparison. A split "not supported in DHCPv6" literal is out of reach.
+    if not keys or len(keys) != len(re.findall(r"element\.first\s*==", source)):
+        raise SystemExit("Could not read every interfaces-config key of the Kea source")
+    refused = set(re.findall(r'"(\S+) is not supported in DHCPv6"', source)) if family == 6 else set()
+    return sorted(set(keys) - refused)
+
+
 def _accepted_keys(family: int, version: str) -> dict[str, list[str]]:
-    source = _curl(KEYWORD_TABLES.format(version=version, family=family))
-    return {
-        "shared-networks": _table_keys(source, f"SHARED_NETWORK{family}_PARAMETERS"),
-        f"subnet{family}": _table_keys(source, f"SUBNET{family}_PARAMETERS"),
+    tables = _curl(KEA_PARSERS.format(version=version, source=f"simple_parser{family}.cc"))
+    keys = {
+        f"Dhcp{family}": _table_keys(tables, f"GLOBAL{family}_PARAMETERS"),
+        "shared-networks": _table_keys(tables, f"SHARED_NETWORK{family}_PARAMETERS"),
+        f"subnet{family}": _table_keys(tables, f"SUBNET{family}_PARAMETERS"),
+        "pools": _table_keys(tables, f"POOL{family}_PARAMETERS"),
+        "option-def": _table_keys(tables, f"OPTION{family}_DEF_PARAMETERS"),
+        "option-data": _table_keys(tables, f"OPTION{family}_PARAMETERS"),
+        "reservations": _host_keys(
+            _curl(KEA_PARSERS.format(version=version, source="host_reservation_parser.cc")), family
+        ),
+        "client-classes": _class_keys(
+            _curl(KEA_PARSERS.format(version=version, source="client_class_def_parser.cc")), family
+        ),
+        "interfaces-config": _interface_keys(
+            _curl(KEA_PARSERS.format(version=version, source="ifaces_config_parser.cc")), family
+        ),
     }
+    if family == 6:
+        keys["pd-pools"] = _table_keys(tables, "PD_POOL6_PARAMETERS")
+    return keys
 
 
 def _curl(url: str, target: Path | None = None) -> str:

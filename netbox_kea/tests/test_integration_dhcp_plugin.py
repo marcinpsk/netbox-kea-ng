@@ -23,6 +23,7 @@ from django.utils import timezone
 
 from netbox_kea import server_configuration
 from netbox_kea.dhcp_options import option_identity, parse_dhcp_option
+from netbox_kea.integrations.dhcp_import_report import Kind, Reason, not_written
 from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import ServerConfigIntent, parse_dhcp_config
 from netbox_kea.models import next_confirmation_number
@@ -450,6 +451,14 @@ class DhcpPluginAdapterTest(TestCase):
                 "pool bad in 10.95.0.0/24: unusable range, skipped",
             ],
         )
+        # One detail covers a range outside the Subnet and text that is not a range.
+        self.assertEqual(
+            {(entry.path, entry.detail) for entry in summary.entries if entry.reason == Reason.INVALID_KEA_DATA},
+            {
+                (f"Dhcp4/subnet4[id=1]/pools[pool={pool}]", "The range is not valid or not inside the Subnet.")
+                for pool in ("10.95.1.10-10.95.1.20", "bad")
+            },
+        )
         self.assertFalse(IPRange.objects.filter(start_address__net_host="10.95.1.10").exists())
         pool = Pool.objects.get()
         self.assertEqual(str(pool.ip_range.start_address), "10.95.0.128/24")
@@ -465,7 +474,17 @@ class DhcpPluginAdapterTest(TestCase):
         }
         Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
         summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
-        self.assertEqual(summary.shared_networks_deferred, 1)
+        self.assertEqual(summary.shared_networks_not_imported, 1)
+        self.assertIn(
+            not_written(
+                4,
+                Kind.SHARED_NETWORK,
+                "Dhcp4/shared-networks[name=office]",
+                Reason.NOT_IN_SCOPE,
+                "Its values and DHCP Options are not imported. Its Subnets are imported without it.",
+            ),
+            summary.entries,
+        )
         subnet = Subnet.objects.get(prefix__prefix="10.50.0.0/24")
         # Flattened onto the DHCPServer, not a (prefix-requiring) SharedNetwork.
         self.assertIsNotNone(subnet.dhcp_server)
@@ -487,6 +506,10 @@ class DhcpPluginAdapterTest(TestCase):
         # The bad subnet did not abort the import: the good one is present.
         self.assertTrue(Subnet.objects.filter(prefix__prefix="10.51.0.0/24").exists())
         self.assertEqual(summary.subnets_created, 1)
+        self.assertIn(
+            not_written(4, Kind.SUBNET, "Dhcp4/subnet4[id=1]", Reason.WRITE_FAILED, "See server logs."),
+            summary.entries,
+        )
 
     def test_reservation_database_failure_does_not_stop_healthy_sibling(self):
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
@@ -1574,7 +1597,7 @@ class ImportSummaryCompletenessTest(TestCase):
             if snapshot is not None
             else None
         )
-        import_reservation_snapshot(_make_db_server(), None, observation, None, summary)
+        import_reservation_snapshot(_make_db_server(), None, observation, None, summary, family=4)
         return summary
 
     def test_absent_snapshot_reports_the_counts_as_unread(self):
@@ -1623,11 +1646,23 @@ class SkippedReservationCompletenessTest(TestCase):
         summary = ImportSummary()
 
         # No KeaDhcpLink exists for subnet-id 7, so the record cannot be imported.
-        import_reservation_snapshot(self.server, None, snapshot, None, summary)
+        import_reservation_snapshot(self.server, None, snapshot, None, summary, family=4)
 
         self.assertTrue(snapshot.snapshot.complete)
         self.assertEqual(summary.reservations_created, 0)
         self.assertFalse(summary.reservations_unread)
         self.assertEqual(summary.reservations_skipped, 1)
+        self.assertEqual(
+            summary.entries,
+            [
+                not_written(
+                    4,
+                    Kind.RESERVATION,
+                    "Dhcp4/subnet4[id=7]/reservations[hw-address=aa:bb:cc:00:00:07]",
+                    Reason.PARENT_NOT_IMPORTED,
+                    "Subnet 7 was not imported.",
+                )
+            ],
+        )
         self.assertIn("reservation for unknown subnet-id 7 skipped", summary.warnings)
         self.assertNotIn("host_cmds", " ".join(_summary_problems(summary)))

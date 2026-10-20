@@ -29,6 +29,8 @@ _BASELINE_PATH = Path(__file__).with_name("kea_wire_discipline_baseline.txt")
 _OWNERS = frozenset(
     {
         "kea.py",
+        "kea_paths.py",
+        "integrations/dhcp_import_ledger.py",
         "server_configuration.py",
         "subnet_catalogue.py",
         "reservations.py",
@@ -64,102 +66,46 @@ def _standard_option_names() -> frozenset[str]:
     return frozenset(name for table in tables.values() for name, _code in table if "-" in name)
 
 
+# Every hyphenated key that Kea accepts in a configuration object; scripts/record_kea_config_get.py records them.
+def _accepted_keys() -> frozenset[str]:
+    recorded = json.loads((_RECORDINGS / "accepted-keys.json").read_text(encoding="utf-8"))
+    return frozenset(
+        key for family in ("dhcp4", "dhcp6") for keys in recorded[family].values() for key in keys if "-" in key
+    )
+
+
+# Lease, statistics and HA keys, which no configuration keyword table lists.
 WIRE_PAYLOAD_KEYS = (
     frozenset(
         {
-            "always-send",
             "assigned-addresses",
             "assigned-nas",
             "assigned-pds",
-            "cache-max-age",
-            "cache-threshold",
-            "calculate-tee-times",
-            "circuit-id",
-            "client-class",
-            "client-classes",
-            "client-id",
             "connecting-clients",
             "connection-interrupted",
-            "csv-format",
-            "ddns-conflict-resolution-mode",
-            "ddns-generated-prefix",
-            "ddns-override-client-update",
-            "ddns-override-no-update",
-            "ddns-qualifying-suffix",
-            "ddns-replace-client-name",
-            "ddns-send-updates",
-            "ddns-ttl",
-            "ddns-ttl-max",
-            "ddns-ttl-min",
-            "ddns-ttl-percent",
-            "ddns-update-on-renew",
-            "decline-probation-period",
             "declined-addresses",
-            "echo-client-id",
-            "evaluate-additional-classes",
-            "flex-id",
             "fqdn-fwd",
             "fqdn-rev",
             "ha-mode",
             "ha-servers",
             "high-availability",
-            "hooks-libraries",
-            "host-reservation-identifiers",
-            "hostname-char-replacement",
-            "hostname-char-set",
-            "hw-address",
             "identifier-type",
             "in-touch",
-            "ip-address",
-            "ip-addresses",
             "last-state",
-            "match-client-id",
             "max-period",
-            "max-preferred-lifetime",
-            "max-valid-lifetime",
-            "min-preferred-lifetime",
-            "min-valid-lifetime",
-            "never-send",
-            "next-server",
-            "offer-lifetime",
-            "only-if-required",
-            "only-in-additional-list",
-            "option-data",
-            "option-def",
-            "pd-allocator",
-            "pd-pools",
-            "pool-id",
             "preferred-lft",
-            "preferred-lifetime",
-            "prefix-len",
-            "rebind-timer",
-            "record-types",
-            "relay-supplied-options",
-            "renew-timer",
-            "require-client-classes",
-            "reservations-global",
-            "reservations-in-subnet",
-            "reservations-out-of-pool",
             "result-set",
-            "server-hostname",
-            "server-id",
             "shared-network-name",
-            "shared-networks",
             "source-index",
-            "store-extended-info",
             "subnet-id",
-            "t1-percent",
-            "t2-percent",
-            "template-test",
             "total-addresses",
             "total-nas",
             "unacked-clients",
             "unacked-clients-left",
-            "user-context",
             "valid-lft",
-            "valid-lifetime",
         }
     )
+    | _accepted_keys()
     | _standard_option_names()
 )
 

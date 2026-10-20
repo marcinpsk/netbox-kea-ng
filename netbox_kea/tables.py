@@ -13,7 +13,7 @@ from netbox.tables import BaseTable, BooleanColumn, NetBoxTable, ToggleColumn, c
 from netbox_kea.constants import INFINITE_LIFETIME
 from netbox_kea.utilities import format_duration
 
-from .models import Server
+from .models import DhcpImportEntry, Server
 
 SUBNET_ACTIONS = """<span class="btn-group dropdown">
   <a class="btn btn-sm btn-secondary dropdown-toggle" href="#" type="button" data-bs-toggle="dropdown">
@@ -933,3 +933,20 @@ class GlobalSharedNetworkTable(SharedNetworkTable):
     class Meta(SharedNetworkTable.Meta):
         fields = ("server", *SharedNetworkTable.Meta.fields)
         default_columns = ("server", *SharedNetworkTable.Meta.default_columns)
+
+
+class DhcpImportEntryTable(GenericTable):
+    """The entries of one stored DHCP Import run: one row per Kea fact."""
+
+    family = tables.TemplateColumn(verbose_name="Family", template_code="DHCPv{{ value }}")
+    kind = tables.Column(verbose_name="Kind")
+    outcome = tables.Column(verbose_name="Outcome")
+    reason = tables.Column(verbose_name="Reason", default="—")
+    kea_path = MonospaceColumn(verbose_name="Kea path")
+    detail = tables.Column(verbose_name="Detail", default="—")
+
+    class Meta(GenericTable.Meta):
+        model = DhcpImportEntry
+        empty_text = "This run recorded no Kea facts."
+        fields = ("family", "kind", "outcome", "reason", "kea_path", "detail")
+        default_columns = fields
