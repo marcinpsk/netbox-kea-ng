@@ -12,9 +12,9 @@ SPDX-License-Identifier: Apache-2.0
 
 Deleting an imported DHCP object through a branch can remove its main-only mapping, while revert restores
 the object without that mapping. We select branch-local DHCP Import Mappings that follow their targets
-(Shared Networks, Subnets, Pools, Reservations in both scopes, client classes and custom Option Definitions)
-through deletion, merge and revert, because the association describes the imported NetBox object and must
-remain recoverable with it. This is a specific exception to ADR 0007: Server,
+(DHCP Servers, Shared Networks, Subnets, Pools, Reservations in both scopes, client classes and custom Option
+Definitions) through deletion, merge and revert, because the association describes the imported NetBox object
+and must remain recoverable with it. This is a specific exception to ADR 0007: Server,
 settings, imports, IPAM ownership and live Kea operations retain their current main-only policy.
 
 We choose tracked target and mapping history over a separate persistent deletion receipt. The trade-off is

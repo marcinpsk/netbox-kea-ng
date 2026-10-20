@@ -63,3 +63,40 @@ def test_agent_reconciler_scopes_the_two_phase_last_link_rule_to_ip_addresses():
 
     assert "The last link of a Server to an IP address needs a complete lease phase" in reconciler
     assert "The last link of a Server needs" not in reconciler
+
+
+def test_the_mapping_kind_lists_name_every_kind_of_mapping_kinds():
+    """Every prose list of the DHCP Import Mapping kinds must follow ``MAPPING_KINDS``."""
+    from netbox_kea.integrations.dhcp_import_report import Kind
+    from netbox_kea.models import MAPPING_KINDS
+
+    terms = {
+        Kind.SERVER: "dhcp server",
+        Kind.SHARED_NETWORK: "shared network",
+        Kind.SUBNET: "subnet",
+        Kind.POOL: "pool",
+        Kind.RESERVATION: "reservation",
+        Kind.CLIENT_CLASS: "client class",
+        Kind.OPTION_DEFINITION: "option definition",
+    }
+    assert set(terms) == set(MAPPING_KINDS)
+
+    # The guides list what the import writes, and it does not write a Shared Network yet.
+    imported = [term for kind, term in terms.items() if kind != Kind.SHARED_NETWORK]
+    passages = (
+        ("docs/design/dhcp-import-mapping-branching.md", "## contract", "| operation |", terms.values()),
+        (
+            "docs/adr/0008-dhcp-import-mappings-follow-target-branch-history.md",
+            "follow their targets",
+            ")",
+            terms.values(),
+        ),
+        ("docs/guide/branching.md", "- dhcp import mappings follow", " - ", imported),
+        ("docs/guide/configuration.md", "keeps a dhcp import mapping from", ".", imported),
+    )
+    missing = {}
+    for path, start, end, expected in passages:
+        text = " ".join((REPOSITORY_ROOT / path).read_text().split()).lower()
+        passage = text.split(start, 1)[1].split(end, 1)[0]
+        missing[path] = [term for term in expected if term not in passage]
+    assert missing == {path: [] for path, *_ in passages}
