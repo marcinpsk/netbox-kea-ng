@@ -32,7 +32,7 @@ from .test_reservation_mutation_views import _mutation_responses
 from .test_sync_views import _lease_get
 from .test_views_dhcp_plugin import _sync_responses
 from .test_views_leases import _lease_stub, _reservation_stub
-from .utils import _grant, _make_db_server, with_kea_client_config, with_sync_config
+from .utils import _grant, _make_db_server, with_kea_client_config, with_sync_config, without_dhcp_plugin
 
 User = get_user_model()
 
@@ -434,6 +434,7 @@ class TestReconcilePermissions(TestCase):
         )
 
 
+@without_dhcp_plugin()
 class TestDhcpPluginSync(_PermissionTestBase):
     """The DHCP plugin import claims Prefixes, IP Ranges, IP addresses and MAC addresses."""
 

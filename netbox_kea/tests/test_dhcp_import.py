@@ -57,7 +57,7 @@ from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot, IncompleteCat
 from .kea_stub import stub_kea
 from .test_integration_dhcp_plugin import _reservation_snapshot
 from .test_kea_recordings import _RECORDINGS, _recording
-from .utils import _make_db_server, imported_dhcp_server, imported_dhcp_servers
+from .utils import _make_db_server, imported_dhcp_server, imported_dhcp_servers, without_dhcp_plugin
 
 DHCP_PLUGIN = "netbox_dhcp"
 _IN_SUBNET_MAC = "02:00:00:00:00:0a"
@@ -313,6 +313,7 @@ def _complete_observation(*diagnostics: ReservationDiagnostic, complete: bool = 
     return ReservationObservation(snapshot, observation.cutoff, complete_catalogue)
 
 
+@without_dhcp_plugin()
 class KindObservationTest(SimpleTestCase):
     """One pure rule says which Kea sources a read observed for each mapped kind, and whether it saw them all."""
 

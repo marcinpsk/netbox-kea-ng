@@ -17,6 +17,7 @@ from netbox_kea.mappers.kea_to_dhcp import (
     parse_dhcp_config,
 )
 from netbox_kea.tests.test_kea_recordings import _recording
+from netbox_kea.tests.utils import without_dhcp_plugin
 
 
 class TestParseDhcpConfigStructure(SimpleTestCase):
@@ -66,6 +67,7 @@ class TestParseDhcpConfigStructure(SimpleTestCase):
         self.assertIsNone(parse_dhcp_config(conf, 4).subnets[0].kea_subnet_id)
 
 
+@without_dhcp_plugin()
 class TestKeyedValuesThatAreNotText(SimpleTestCase):
     """A keyed name, range or CIDR that is not text is dropped, so a plan never keys an object by it."""
 
