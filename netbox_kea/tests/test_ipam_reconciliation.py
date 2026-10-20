@@ -1798,6 +1798,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         from django.db import DatabaseError
 
         from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
+        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
         from netbox_kea.ipam_reconciliation import ReservationObservation
         from netbox_kea.models import Server
         from netbox_kea.reservations import ReservationSnapshot
@@ -1853,7 +1854,16 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
 
         def run_import():
             with connection.execute_wrapper(observe_import):
-                import_reservation_snapshot(owner, None, observation, {}, summary, family=6, adoption_servers=())
+                import_reservation_snapshot(
+                    owner,
+                    None,
+                    observation,
+                    {},
+                    summary,
+                    family=6,
+                    adoption_servers=(),
+                    capabilities=PluginCapabilities(frozenset()),
+                )
 
         self._start("delete-server", delete_server)
         try:
@@ -1870,7 +1880,16 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         self.assertFalse(summary.ownership.complete)
         self.assertTrue(IPAMOwnershipLink.objects.filter(server=owner, prefix=released).exists())
         retry = ImportSummary()
-        import_reservation_snapshot(owner, None, observation, {}, retry, family=6, adoption_servers=())
+        import_reservation_snapshot(
+            owner,
+            None,
+            observation,
+            {},
+            retry,
+            family=6,
+            adoption_servers=(),
+            capabilities=PluginCapabilities(frozenset()),
+        )
         self.assertEqual(retry.errors, 0)
         self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=released).exists())
         released.refresh_from_db()
@@ -1881,6 +1900,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         from netaddr import IPNetwork
 
         from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
+        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
         from netbox_kea.ipam_reconciliation import ReservationObservation, SubnetClaim
         from netbox_kea.models import Server
         from netbox_kea.reservations import ReservationSnapshot
@@ -1939,7 +1959,16 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
 
         def run_import():
             with connection.execute_wrapper(observe_import):
-                import_reservation_snapshot(owner, None, observation, {}, summary, family=6, adoption_servers=())
+                import_reservation_snapshot(
+                    owner,
+                    None,
+                    observation,
+                    {},
+                    summary,
+                    family=6,
+                    adoption_servers=(),
+                    capabilities=PluginCapabilities(frozenset()),
+                )
 
         def delete_server():
             with connection.execute_wrapper(observe_delete):
@@ -1967,7 +1996,16 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         self.assertFalse(summary.ownership.complete)
         self.assertTrue(IPAMOwnershipLink.objects.filter(server=owner, prefix=second).exists())
         retry = ImportSummary()
-        import_reservation_snapshot(owner, None, observation, {}, retry, family=6, adoption_servers=())
+        import_reservation_snapshot(
+            owner,
+            None,
+            observation,
+            {},
+            retry,
+            family=6,
+            adoption_servers=(),
+            capabilities=PluginCapabilities(frozenset()),
+        )
         self.assertEqual(retry.errors, 0)
 
     def test_receipt_completion_does_not_block_an_ownership_foreign_key_at_commit(self):

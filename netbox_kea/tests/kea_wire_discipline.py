@@ -31,6 +31,7 @@ _OWNERS = frozenset(
         "kea.py",
         "kea_paths.py",
         "integrations/dhcp_import_ledger.py",
+        "integrations/dhcp_import_fields.py",
         "server_configuration.py",
         "subnet_catalogue.py",
         "reservations.py",

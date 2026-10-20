@@ -20,6 +20,7 @@ from netaddr import IPNetwork
 
 from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.integrations.dhcp_import_report import Kind, Outcome, Reason
+from netbox_kea.integrations.dhcp_plugin_capabilities import probe
 from netbox_kea.ipam_reconciliation import (
     DelegatedPrefixPhase,
     PoolClaim,
@@ -531,7 +532,7 @@ class ImportOwnershipTest(TestCase):
         observation = _reservation_snapshot(conf, 6, [{**self.identity, "subnet-id": 9}])
         summary = dhcp_plugin.ImportSummary()
         dhcp_plugin.import_reservation_snapshot(
-            self.server, None, observation, None, summary, family=6, adoption_servers=()
+            self.server, None, observation, None, summary, family=6, adoption_servers=(), capabilities=probe()
         )
         self.assertEqual(summary.reservations_skipped, 1)
         self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix=self.delegated()), before)

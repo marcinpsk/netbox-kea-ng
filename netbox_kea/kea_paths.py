@@ -24,6 +24,8 @@ STASH_AGENT_OPTIONS = "stash-agent-options"
 INTERFACES_CONFIG = "interfaces-config"
 SHARED_NETWORKS = "shared-networks"
 CLIENT_CLASSES = "client-classes"
+EVALUATE_ADDITIONAL_CLASSES = "evaluate-additional-classes"
+POOL_ID = "pool-id"
 #: The ``server-id`` keys besides its type, each with the value that tells Kea to generate it.
 SERVER_ID_PARAMETERS = {"identifier": "", "enterprise-id": 0, "htype": 0, "time": 0}
 
@@ -81,6 +83,11 @@ def pool_entry(subnet_path: str, index: int) -> str:
 def client_class(family: int, name: str) -> str:
     """Return the path of a client class by its name."""
     return f"{daemon(family)}/{_step(CLIENT_CLASSES, f'name={name}')}"
+
+
+def class_reference(parent: str, key: str, name: str) -> str:
+    """Return the path of the class *name* in the class list *key* of the object at *parent*."""
+    return f"{parent}/{_step(key, name)}"
 
 
 def client_class_entry(family: int, index: int) -> str:

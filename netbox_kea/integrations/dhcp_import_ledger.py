@@ -235,9 +235,9 @@ def _shared_network(family: Family) -> dict[str, Entry]:
 
 def _pool() -> dict[str, Entry]:
     return {
+        **_fields("Pool", "pool-id", *_CLASS_REFERENCES, *_DDNS),
         "pool": Mapped("Pool.ip_range"),
         "option-data": Mapped("Option"),
-        **_pending(99, "pool-id", *_CLASS_REFERENCES, *_DDNS),
         "user-context": Pending(99, _USER_CONTEXT),
         "metadata": NotImported(),
         **_DEPRECATED,
