@@ -918,6 +918,19 @@ class DhcpPluginTuningImportTest(TestCase):
         self.assertIn("DHCPServer settings", second.warnings[0])
         self.assertIn("subnet 10.43.0.0/24 (id=8)", second.warnings[1])
 
+    def test_failed_global_save_on_a_new_dhcp_server_has_only_the_failure_entry(self):
+        from netbox_kea.integrations.dhcp_import_report import Kind, Reason
+
+        # A uint32 Kea lifetime is above the PostgreSQL integer maximum, so the settings save fails in the driver.
+        summary = self.adapter.import_server_config(
+            self.server, parse_dhcp_config({"valid-lifetime": 4294967295, "subnet4": []}, 4)
+        )
+
+        self.assertEqual(
+            [(entry.path, entry.reason) for entry in summary.entries if entry.kind == Kind.SERVER],
+            [("Dhcp4", Reason.WRITE_FAILED)],
+        )
+
 
 @tag("dhcp_plugin")
 class DhcpPluginClientClassImportTest(TestCase):

@@ -588,7 +588,7 @@ def _server_values(planned: PlannedServer, model_fields: set[str], summary: Impo
 
 def _apply_global_settings(
     dhcp_server, planned: PlannedServer, summary: ImportSummary, *, primary: bool, family: int
-) -> bool:
+) -> bool | None:
     """Populate ``DHCPServer`` global tuning fields from a Kea config block.
 
     netbox_dhcp has a single ``DHCPServer`` row spanning both protocols, so one
@@ -602,7 +602,7 @@ def _apply_global_settings(
     ``preferred-lifetime``) on a dual-stack server is not re-synced, since the
     secondary family is fill-only for an already-set field.
 
-    Return whether a changed value was saved. A failed save is recorded here.
+    Return whether a changed value was saved, or ``None`` after a failed save. The failure is recorded here.
     """
     model_fields = {f.name for f in dhcp_server._meta.get_fields()}
     changed: dict = {}
@@ -633,7 +633,7 @@ def _apply_global_settings(
         summary.warn(f"DHCPServer settings: {exc}")
         # Children diff against this instance, so it must hold the persisted values.
         dhcp_server.refresh_from_db(fields=list(changed))
-        return False
+        return None
     return True
 
 
@@ -1320,7 +1320,7 @@ def apply_plan(server, plan: FamilyPlan) -> ImportSummary:
     # only enabled family) is authoritative for the shared, single DHCPServer row.
     primary = plan.family == 4 or not server.dhcp4
     changed = _apply_global_settings(dhcp_server, plan.server, summary, primary=primary, family=plan.family)
-    if created or changed:
+    if changed is not None and (created or changed):
         summary.record(written(plan.family, Kind.SERVER, root, Outcome.CREATED if created else Outcome.UPDATED))
     upsert_options(dhcp_server, plan.server.global_options, plan.family, dhcp_server, custom_defs, summary, root)
     for planned_class in plan.client_classes:
