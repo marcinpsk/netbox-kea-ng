@@ -196,7 +196,7 @@ def _subnet(family: Family) -> dict[str, Entry]:
     entries = {
         **_fields("Subnet", *_network_settings(family)),
         "subnet": Mapped("Subnet.prefix"),
-        "id": Pending(96, (Capability.SUBNET_ID_PER_SERVER,)),
+        "id": Mapped("Subnet.subnet_id", (Capability.SUBNET_ID_PER_SERVER,)),
         "relay": Mapped("Subnet.relay", (Capability.RELAY_ADDRESS_LIST,), pending=99),
         "option-data": Mapped("Option"),
         "pools": Mapped("Pool"),

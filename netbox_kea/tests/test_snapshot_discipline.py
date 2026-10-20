@@ -85,7 +85,7 @@ def test_a_model_form_bound_to_the_receiver_changes_it():
 
 
 def test_inventory_accounts_for_loaded_creates_and_bookkeeping():
-    assert sum(site.count for site in SITES if site.kind == "loaded") == 23
+    assert sum(site.count for site in SITES if site.kind == "loaded") == 24
     assert sum(site.count for site in SITES if site.kind != "loaded") == 12
     assert {site.kind for site in SITES} == {"loaded", "create", "plain", "framework"}
 
@@ -132,7 +132,7 @@ def _snapshot_sites(*, inventoried=True):
 @pytest.mark.parametrize("late", [False, True], ids=["removed", "moved-after-mutation"])
 def test_every_inventoried_direct_save_snapshot_is_load_bearing(late):
     sites = _snapshot_sites()
-    assert len(sites) == 20
+    assert len(sites) == 21
     for path, lineno, receiver in sites:
         tree = ast.parse(path.read_text())
         snapshot = next(node for node in ast.walk(tree) if isinstance(node, ast.Expr) and node.lineno == lineno)

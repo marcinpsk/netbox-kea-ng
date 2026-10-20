@@ -58,6 +58,7 @@ SITES = (
         "integrations/dhcp_plugin.py", "upsert_client_class", "obj", "loaded", count=2, constructors=("ClientClass",)
     ),
     SaveSite("integrations/dhcp_plugin.py", "upsert_subnet", "existing", "loaded"),
+    SaveSite("integrations/dhcp_plugin.py", "_move_subnet_ids", "row", "loaded"),
     SaveSite("integrations/dhcp_plugin.py", "_upsert_reservation", "obj", "loaded", constructors=("HostReservation",)),
     SaveSite(
         "integrations/dhcp_plugin.py",

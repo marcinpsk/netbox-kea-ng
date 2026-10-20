@@ -325,22 +325,46 @@ class DhcpPluginAdapterTest(TestCase):
         self.assertIsNone(res.ipv4_address)
         self.assertIn(IPAddress.objects.get(address="2001:db8:99::50/64"), res.ipv6_addresses.all())
 
-    # ── the subnet_id decoupling (decision 5) ────────────────────────────────
+    # ── Kea's subnet ID (#96) ────────────────────────────────────────────────
 
-    def test_dualstack_v4_and_v6_subnet_id_1_both_import_without_collision(self):
+    def test_dualstack_subnet_id_1_of_the_second_family_is_unsupported(self):
+        """The installed plugin keeps Subnet IDs unique across all DHCP servers, so DHCPv6 cannot take ID 1 again."""
+        from netbox_kea.integrations.dhcp_import_report import Capability
         from netbox_kea.models import KeaDhcpLink
 
         conf4 = _conf_v4()
         conf6 = _conf_v6()
         self.adapter.import_server_config(self.server, parse_dhcp_config(conf4, 4), _reservation_snapshot(conf4, 4))
-        self.adapter.import_server_config(self.server, parse_dhcp_config(conf6, 6), _reservation_snapshot(conf6, 6))
+        v6 = self.adapter.import_server_config(
+            self.server, parse_dhcp_config(conf6, 6), _reservation_snapshot(conf6, 6)
+        )
 
         link4 = KeaDhcpLink.objects.get(server=self.server, family=4, kind="subnet", kea_subnet_id=1)
-        link6 = KeaDhcpLink.objects.get(server=self.server, family=6, kind="subnet", kea_subnet_id=1)
-        # Same Kea subnet-id (1) for both families, but distinct plugin Subnets +
-        # distinct globally-unique plugin subnet_ids — no UniqueConstraint collision.
-        self.assertNotEqual(link4.object_id, link6.object_id)
-        self.assertNotEqual(link4.sys4_object.subnet_id, link6.sys4_object.subnet_id)
+        self.assertEqual(link4.sys4_object.subnet_id, 1)
+        self.assertFalse(KeaDhcpLink.objects.filter(server=self.server, family=6, kind="subnet").exists())
+        self.assertEqual(v6.errors, 0, v6.warnings)
+        self.assertEqual(
+            [
+                (entry.kind, entry.path, entry.reason, entry.capability)
+                for entry in v6.entries
+                if entry.kind in (Kind.SUBNET, Kind.POOL, Kind.RESERVATION)
+            ],
+            [
+                (Kind.SUBNET, "Dhcp6/subnet6[id=1]", Reason.SUBNET_ID_CLASH, Capability.SUBNET_ID_PER_SERVER),
+                (
+                    Kind.POOL,
+                    "Dhcp6/subnet6[id=1]/pools[pool=2001:db8:99::10-2001:db8:99::100]",
+                    Reason.SUBNET_ID_CLASH,
+                    Capability.SUBNET_ID_PER_SERVER,
+                ),
+                (
+                    Kind.RESERVATION,
+                    "Dhcp6/subnet6[id=1]/reservations[duid=01:02:03:04:05]",
+                    Reason.SUBNET_ID_CLASH,
+                    Capability.SUBNET_ID_PER_SERVER,
+                ),
+            ],
+        )
 
     # ── idempotency ──────────────────────────────────────────────────────────
 
@@ -1009,7 +1033,8 @@ class DhcpPluginServerPerFamilyTest(TestCase):
             6: {
                 "valid-lifetime": 4000,
                 "preferred-lifetime": 3000,
-                "subnet6": [{"id": 1, "subnet": "2001:db8:60::/64"}],
+                # DHCPv4 holds Subnet ID 1, and netbox-plugin-dhcp 0.2.0 keeps Subnet IDs unique across servers.
+                "subnet6": [{"id": 2, "subnet": "2001:db8:60::/64"}],
             },
         }
 
@@ -1083,11 +1108,11 @@ class DhcpPluginServerPerFamilyTest(TestCase):
         )
         existing.tags.add(Tag.objects.create(name="kea-family-tag", slug="kea-family-tag"))
         v6_subnet = model("Subnet").objects.create(
-            name=f"{self.server.name} DHCPv6 subnet 1",
+            name=f"{self.server.name} DHCPv6 subnet 2",
             prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:60::/64")),
             dhcp_server=existing,
         )
-        KeaDhcpLink.objects.create(server=self.server, family=6, kind="subnet", kea_subnet_id=1, sys4_object=v6_subnet)
+        KeaDhcpLink.objects.create(server=self.server, family=6, kind="subnet", kea_subnet_id=2, sys4_object=v6_subnet)
         # A custom definition and global Options of DHCPv6, which that importer wrote without a mapping.
         definition = model("OptionDefinition").objects.create(
             name=f"{self.server.name}-site", family=6, space="dhcp6", code=250, type="uint8", dhcp_server=existing
@@ -1963,6 +1988,295 @@ class DhcpPluginMappingImportTest(TestCase):
         )
         self.assertIn("of this DHCP server", summary.warnings[-1])
         self.assertEqual(ClientClass.objects.get(name="voip").test, "")
+
+
+def _subnet_id_conf(kea_subnet_id: int, octet: int) -> dict:
+    """Return a DHCPv4 configuration with one Subnet, its Pool and one In-Subnet Reservation."""
+    return {
+        "subnet4": [
+            {
+                "id": kea_subnet_id,
+                "subnet": f"10.94.{octet}.0/24",
+                "pools": [{"pool": f"10.94.{octet}.10-10.94.{octet}.20"}],
+                "reservations": [{"hw-address": f"aa:bb:cc:dd:94:{octet:02x}", "ip-address": f"10.94.{octet}.50"}],
+            }
+        ]
+    }
+
+
+@tag("dhcp_plugin")
+class DhcpPluginSubnetIdImportTest(TestCase):
+    """The plugin Subnet holds Kea's subnet ID. A Subnet whose ID another row holds is not imported."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def setUp(self):
+        from netbox_kea.integrations import dhcp_plugin
+
+        self.adapter = dhcp_plugin
+        self.server = _make_db_server(name=f"kea-subnet-id-{timezone.now().timestamp()}")
+        self.other = _make_db_server(name=f"kea-subnet-id-other-{timezone.now().timestamp()}")
+
+    def _import(self, server, conf: dict, capabilities=None, family: Family = 4):
+        from netbox_kea.integrations.dhcp_import_plan import plan_family
+        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+
+        plan = plan_family(parse_dhcp_config(conf, family), _reservation_snapshot(conf, family))
+        return self.adapter.apply_plan(server, plan, capabilities if capabilities is not None else probe())
+
+    @staticmethod
+    def _subnet(server, kea_subnet_id: int, family: int = 4):
+        from netbox_kea.models import KeaDhcpLink
+
+        return KeaDhcpLink.objects.get(
+            server=server, family=family, kind="subnet", kea_subnet_id=kea_subnet_id
+        ).sys4_object
+
+    @staticmethod
+    def _renumber(numbers: dict) -> None:
+        """Give each row of *numbers* (row to Subnet ID) its number, as an importer before #96 could have."""
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        for offset, row in enumerate(numbers, start=1):
+            Subnet.objects.filter(pk=row.pk).update(subnet_id=2_000_000 + offset)
+        for row, number in numbers.items():
+            Subnet.objects.filter(pk=row.pk).update(subnet_id=number)
+
+    @staticmethod
+    def _not_written(summary) -> list:
+        return [
+            (entry.kind, entry.reason, entry.capability)
+            for entry in summary.entries
+            if entry.kind in (Kind.SUBNET, Kind.POOL, Kind.RESERVATION) and entry.reason is not None
+        ]
+
+    def test_an_imported_subnet_holds_its_kea_subnet_id(self):
+        conf = {"subnet4": [{"id": 4242, "subnet": "10.94.1.0/24"}, {"id": 77, "subnet": "10.94.2.0/24"}]}
+
+        summary = self._import(self.server, conf)
+
+        self.assertEqual((summary.errors, summary.subnets_created), (0, 2), summary.warnings)
+        self.assertEqual(
+            (self._subnet(self.server, 4242).subnet_id, self._subnet(self.server, 77).subnet_id), (4242, 77)
+        )
+
+    def test_a_subnet_id_that_another_server_holds_is_unsupported_with_its_pools_and_reservations(self):
+        from netbox_kea.integrations.dhcp_import_report import Capability
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        self._import(self.other, _subnet_id_conf(9401, 1))
+        holder = self._subnet(self.other, 9401)
+
+        summary = self._import(self.server, _subnet_id_conf(9401, 2))
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        clash = (Reason.SUBNET_ID_CLASH, Capability.SUBNET_ID_PER_SERVER)
+        self.assertEqual(
+            self._not_written(summary),
+            [(Kind.SUBNET, *clash), (Kind.POOL, *clash), (Kind.RESERVATION, *clash)],
+        )
+        detail = next(entry.detail for entry in summary.entries if entry.kind == Kind.SUBNET)
+        self.assertIn("10.94.2.0/24", detail)
+        self.assertIn(holder.name, detail)
+        self.assertFalse(Subnet.objects.filter(prefix__prefix="10.94.2.0/24").exists())
+        self.assertEqual(Subnet.objects.get(pk=holder.pk).subnet_id, 9401)
+
+    def test_the_capability_probe_decides_the_clash(self):
+        """With per-server Subnet IDs the import writes the ID. The installed plugin still refuses it in the database."""
+        from netbox_kea.integrations.dhcp_import_report import Capability
+        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+
+        self._import(self.other, _subnet_id_conf(9402, 1))
+
+        summary = self._import(
+            self.server, _subnet_id_conf(9402, 2), PluginCapabilities(frozenset({Capability.SUBNET_ID_PER_SERVER}))
+        )
+
+        self.assertEqual(self._not_written(summary)[0], (Kind.SUBNET, Reason.WRITE_FAILED, None))
+
+    def test_with_per_server_subnet_ids_a_row_of_the_same_dhcp_server_is_not_taken_over(self):
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        from netbox_kea.integrations.dhcp_import_report import Capability
+        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        dhcp_server, _ = self.adapter.upsert_dhcp_server(self.server, 4)
+        hand_made = Subnet.objects.create(
+            name="hand-made",
+            subnet_id=9403,
+            prefix=Prefix.objects.create(prefix=IPNetwork("10.94.9.0/24")),
+            dhcp_server=dhcp_server,
+        )
+
+        summary = self._import(
+            self.server, _subnet_id_conf(9403, 3), PluginCapabilities(frozenset({Capability.SUBNET_ID_PER_SERVER}))
+        )
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(
+            self._not_written(summary),
+            [(kind, Reason.NOT_IN_SCOPE, None) for kind in (Kind.SUBNET, Kind.POOL, Kind.RESERVATION)],
+        )
+        self.assertEqual(Subnet.objects.get(pk=hand_made.pk).prefix.prefix, IPNetwork("10.94.9.0/24"))
+
+    def test_a_subnet_with_a_plugin_assigned_id_takes_its_kea_id_on_the_next_run(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        conf = _subnet_id_conf(9404, 4)
+        self._import(self.server, conf)
+        row = self._subnet(self.server, 9404)
+        # The importer before #96 let the plugin number the Subnet.
+        Subnet.objects.filter(pk=row.pk).update(subnet_id=9999)
+
+        summary = self._import(self.server, conf)
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(Subnet.objects.get(pk=row.pk).subnet_id, 9404)
+        self.assertEqual([entry.outcome for entry in summary.entries if entry.kind == Kind.SUBNET], [Outcome.UPDATED])
+
+    def test_subnets_with_swapped_plugin_assigned_ids_take_their_kea_ids(self):
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        conf = {"subnet4": [*_subnet_id_conf(9405, 5)["subnet4"], *_subnet_id_conf(9406, 6)["subnet4"]]}
+        self._import(self.server, conf)
+        first, second = self._subnet(self.server, 9405), self._subnet(self.server, 9406)
+        # Each holds the Kea ID of the other: neither can move before the other.
+        self._renumber({first: 9406, second: 9405})
+        # A free ID above the largest Subnet ID does not exist.
+        Subnet.objects.create(
+            name="largest-id",
+            subnet_id=4294967295,
+            prefix=Prefix.objects.create(prefix=IPNetwork("10.94.255.0/24")),
+            dhcp_server=self.adapter.upsert_dhcp_server(self.other, 4)[0],
+        )
+
+        summary = self._import(self.server, conf)
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(
+            dict(Subnet.objects.filter(pk__in=(first.pk, second.pk)).values_list("pk", "subnet_id")),
+            {first.pk: 9405, second.pk: 9406},
+        )
+        self.assertEqual(self._not_written(summary), [])
+
+    def test_dual_stack_subnets_with_each_others_plugin_assigned_ids_take_their_kea_ids(self):
+        """The rows of the other family that hold the Kea IDs of this family move to their own Kea IDs."""
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        conf4 = {"subnet4": [*_subnet_id_conf(9413, 13)["subnet4"], *_subnet_id_conf(9414, 14)["subnet4"]]}
+        conf6 = {
+            "subnet6": [
+                {"id": 9411, "subnet": "2001:db8:9411::/64"},
+                {"id": 9412, "subnet": "2001:db8:9412::/64"},
+            ]
+        }
+        self._import(self.server, conf4)
+        self._import(self.server, conf6, family=6)
+        rows = {
+            self._subnet(self.server, 9413): 9411,
+            self._subnet(self.server, 9414): 9412,
+            self._subnet(self.server, 9411, family=6): 9413,
+            self._subnet(self.server, 9412, family=6): 9414,
+        }
+        self._renumber(rows)
+
+        v4 = self._import(self.server, conf4)
+        v6 = self._import(self.server, conf6, family=6)
+
+        self.assertEqual((v4.errors, v6.errors), (0, 0), v4.warnings + v6.warnings)
+        self.assertEqual((self._not_written(v4), self._not_written(v6)), ([], []))
+        self.assertEqual(
+            dict(Subnet.objects.filter(pk__in=[row.pk for row in rows]).values_list("pk", "subnet_id")),
+            {row.pk: number for row, number in zip(rows, (9413, 9414, 9411, 9412), strict=True)},
+        )
+
+    def test_a_kea_id_that_two_mapped_rows_want_is_taken(self):
+        """Rows A and C of two Servers both want Kea ID 2, so the chain from A never frees ID 1."""
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        from netbox_kea.integrations.dhcp_import_report import Capability
+        from netbox_kea.models import KeaDhcpLink
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        third = _make_db_server(name=f"kea-subnet-id-third-{timezone.now().timestamp()}")
+        self._import(self.other, _subnet_id_conf(2, 21))
+        self._import(third, _subnet_id_conf(3, 22))
+        row_a, row_b = self._subnet(self.other, 2), self._subnet(third, 3)
+        fourth = _make_db_server(name=f"kea-subnet-id-fourth-{timezone.now().timestamp()}")
+        row_c = Subnet.objects.create(
+            name="row-c",
+            subnet_id=2_100_000,
+            prefix=Prefix.objects.create(prefix=IPNetwork("10.94.23.0/24")),
+            dhcp_server=self.adapter.upsert_dhcp_server(fourth, 4)[0],
+        )
+        KeaDhcpLink.objects.create(server=fourth, family=4, kind="subnet", kea_subnet_id=2, sys4_object=row_c)
+        self._renumber({row_a: 1, row_b: 2, row_c: 3})
+
+        summary = self._import(self.server, _subnet_id_conf(1, 24))
+
+        clash = (Reason.SUBNET_ID_CLASH, Capability.SUBNET_ID_PER_SERVER)
+        self.assertEqual(
+            self._not_written(summary), [(Kind.SUBNET, *clash), (Kind.POOL, *clash), (Kind.RESERVATION, *clash)]
+        )
+        self.assertEqual(
+            dict(Subnet.objects.filter(pk__in=(row_a.pk, row_b.pk, row_c.pk)).values_list("pk", "subnet_id")),
+            {row_a.pk: 1, row_b.pk: 2, row_c.pk: 3},
+        )
+
+    def test_when_the_subnets_cannot_take_their_kea_ids_their_reservations_are_not_imported(self):
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        conf = {"subnet4": [*_subnet_id_conf(9415, 15)["subnet4"], *_subnet_id_conf(9416, 16)["subnet4"]]}
+        self._import(self.server, conf)
+        first, second = self._subnet(self.server, 9415), self._subnet(self.server, 9416)
+        self._renumber({first: 9416, second: 9415})
+        # The plugin refuses to save a Subnet without a name, so the swap fails.
+        type(first).objects.filter(pk=first.pk).update(name="")
+        HostReservation.objects.filter(subnet__in=(first, second)).delete()
+
+        summary = self._import(self.server, conf)
+
+        self.assertEqual(
+            sorted(
+                (entry.kind.value, entry.reason.value)
+                for entry in summary.entries
+                if entry.reason is not None and entry.kind != Kind.SERVER
+            ),
+            sorted(
+                [("subnet", "write_failed")] * 2
+                + [("pool", "parent_not_imported")] * 2
+                + [("reservation", "parent_not_imported")] * 2
+            ),
+        )
+        self.assertTrue(any("Kea subnet IDs" in warning for warning in summary.warnings), summary.warnings)
+        self.assertFalse(HostReservation.objects.filter(subnet__in=(first, second)).exists())
+
+    def test_a_subnet_with_a_plugin_assigned_id_is_reported_when_another_server_holds_its_kea_id(self):
+        from netbox_kea.integrations.dhcp_import_report import Capability
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        conf = _subnet_id_conf(9407, 7)
+        self._import(self.server, conf)
+        row = self._subnet(self.server, 9407)
+        Subnet.objects.filter(pk=row.pk).update(subnet_id=9998)
+        self._import(self.other, _subnet_id_conf(9407, 8))
+
+        summary = self._import(self.server, conf)
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        clash = (Reason.SUBNET_ID_CLASH, Capability.SUBNET_ID_PER_SERVER)
+        self.assertEqual(
+            self._not_written(summary),
+            [(Kind.SUBNET, *clash), (Kind.POOL, *clash), (Kind.RESERVATION, *clash)],
+        )
+        self.assertEqual(Subnet.objects.get(pk=row.pk).subnet_id, 9998)
 
 
 @tag("dhcp_plugin")

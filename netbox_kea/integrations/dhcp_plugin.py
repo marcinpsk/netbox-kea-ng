@@ -26,10 +26,12 @@ v1 scope (import + diff, read-only against Kea):
   import as shared ``ipam.Prefix`` rows for every Scope.
 * Each imported Subnet, Pool, Reservation, client class and custom Option Definition has a DHCP Import
   Mapping (:class:`netbox_kea.models.KeaDhcpLink`) to its Kea source, and a re-import finds the row
-  through it, also after an operator renames the row. Kea's subnet-id is unique only per
-  ``(server, protocol)`` and cannot live in the plugin's globally-unique ``Subnet.subnet_id``.
-  The first import after an upgrade maps each unmapped row that matches by structure. A Subnet
-  without a Kea subnet ID, and its Pools, have no mapping identity and match by structure.
+  through it, also after an operator renames the row. The first import after an upgrade maps each
+  unmapped row that matches by structure. A Subnet without a Kea subnet ID, and its Pools, have no
+  mapping identity and match by structure.
+* A plugin Subnet holds Kea's subnet ID (:func:`settle_subnet_ids`). While the plugin keeps Subnet IDs
+  unique across all servers, a Subnet whose ID another Server or family holds is reported as unsupported,
+  with its Pools and In-Subnet Reservations.
 * DHCP **options** (``option-data``) are imported at every scope we model —
   ``DHCPServer`` (global), ``Subnet``, ``Pool``, ``HostReservation`` — binding to
   the sys4-shipped standard ``OptionDefinition`` (by space+code), or to a
@@ -55,6 +57,7 @@ import hashlib
 import ipaddress
 import logging
 from dataclasses import dataclass, field
+from itertools import count
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -91,7 +94,17 @@ from .dhcp_import_plan import (
     keyed_reservations,
     plan_family,
 )
-from .dhcp_import_report import Capability, ImportEntry, Kind, Outcome, Reason, not_written, unsupported, written
+from .dhcp_import_report import (
+    Capability,
+    ImportEntry,
+    Kind,
+    Outcome,
+    Reason,
+    not_written,
+    subnet_id_clash,
+    unsupported,
+    written,
+)
 from .dhcp_plugin_capabilities import PLUGIN_APP_LABEL, PluginCapabilities, probe
 
 logger = logging.getLogger(__name__)
@@ -1064,9 +1077,12 @@ def _reservation_name(scope_name: str, reservation: Reservation) -> str:
     return _synthesized_name(scope_name, f" {identity_text(identity.identifier_type, identity.value)}")
 
 
-def upsert_subnet(server, dhcp_server, planned: PlannedSubnet, summary: ImportSummary, claims: ClaimResult):
+def upsert_subnet(
+    server, dhcp_server, planned: PlannedSubnet, summary: ImportSummary, claims: ClaimResult, renumbered: bool
+):
     """Get/create the DHCP-plugin ``Subnet`` for *planned*, tracked via ``KeaDhcpLink`` by its key.
 
+    *renumbered* tells that :func:`settle_subnet_ids` gave the mapped row its Kea subnet ID in this run.
     Returns the ``netbox_dhcp.Subnet`` instance, or ``None`` on error.
     """
     Subnet = _model("Subnet")
@@ -1099,8 +1115,9 @@ def upsert_subnet(server, dhcp_server, planned: PlannedSubnet, summary: ImportSu
                     existing.save()
                 subnet_obj = existing
             else:
-                # Let the plugin auto-allocate its own (global) subnet_id; never write Kea's.
+                # Without a Kea subnet ID, the plugin numbers the Subnet.
                 subnet_obj = Subnet(
+                    subnet_id=planned.key,
                     name=_subnet_name(server, planned, network),
                     prefix=prefix_obj,
                     dhcp_server=dhcp_server,
@@ -1122,7 +1139,7 @@ def upsert_subnet(server, dhcp_server, planned: PlannedSubnet, summary: ImportSu
 
     if existing is None:
         summary.record(written(intent.family, Kind.SUBNET, path, Outcome.CREATED))
-    elif changed:
+    elif changed or renumbered:
         summary.record(written(intent.family, Kind.SUBNET, path, Outcome.UPDATED))
     return subnet_obj
 
@@ -1142,19 +1159,163 @@ def _report_inherited(summary: ImportSummary, planned: PlannedSubnet) -> None:
         summary.record(entry)
 
 
-def _skip_subnet_children(summary: ImportSummary, planned: PlannedSubnet) -> None:
-    """Record the DHCP Options and Pools of a Subnet that was not imported."""
+def _skip_subnet_children(summary: ImportSummary, planned: PlannedSubnet, taken: SubnetIdTaken | None = None) -> None:
+    """Record the DHCP Options and Pools of a Subnet that was not imported. A *taken* ID is also why its Pools were not."""
     family, parent_path = planned.intent.family, subnet_path(planned)
     _skip_options(summary, family, parent_path, planned.intent.options)
     for planned_pool in planned.pools:
         path = kea_paths.pool(parent_path, planned_pool.intent.pool)
-        summary.record(not_written(family, Kind.POOL, path, Reason.PARENT_NOT_IMPORTED))
+        if taken is None:
+            summary.record(not_written(family, Kind.POOL, path, Reason.PARENT_NOT_IMPORTED))
+        else:
+            summary.record(taken.entry(family, Kind.POOL, path))
         _skip_options(summary, family, path, planned_pool.intent.options)
 
 
 def subnet_path(planned: PlannedSubnet) -> str:
     """Return the Kea path of a planned Subnet."""
     return kea_paths.subnet(planned.intent.family, planned.key, planned.intent.cidr)
+
+
+@dataclass(frozen=True)
+class SubnetIdTaken:
+    """Another row holds the Kea subnet ID of a planned Subnet, in the scope where the plugin keeps IDs unique."""
+
+    detail: str
+    per_server: bool
+
+    def entry(self, family: int, kind: Kind, path: str) -> ImportEntry:
+        """Return the entry of the Subnet, or of one of its Pools or In-Subnet Reservations, at *path*."""
+        if self.per_server:
+            return not_written(family, kind, path, Reason.NOT_IN_SCOPE, self.detail)
+        return subnet_id_clash(family, kind, path, self.detail)
+
+
+@dataclass
+class SubnetIdSettlement:
+    """What :func:`settle_subnet_ids` found and did, by Kea subnet ID."""
+
+    taken: dict[int, SubnetIdTaken] = field(default_factory=dict)
+    renumbered: set[int] = field(default_factory=set)
+    # The Subnets that need a move that failed.
+    failed: set[int] = field(default_factory=set)
+
+
+def _freeing_moves(
+    key: int, requester: int | None, holds: dict[int, int], wants: dict[int, int]
+) -> dict[int, int] | None:
+    """Return the moves (row to Subnet ID) that free *key* for the row *requester*, or ``None`` when a row keeps it.
+
+    A mapped row wants the Kea subnet ID of its mapping, and frees its ID when it moves there. A chain that comes
+    back to *requester* is a cycle. A chain that comes back to another row has two rows that want one ID.
+    """
+    moves: dict[int, int] = {}
+    while (holder := holds.get(key)) is not None and holder != requester:
+        wanted = wants.get(holder)
+        if wanted is None or wanted == key or holder in moves:
+            return None
+        moves[holder] = wanted
+        key = wanted
+    return moves
+
+
+def _subnet_id_taken(planned: PlannedSubnet, holder, capabilities: PluginCapabilities) -> SubnetIdTaken:
+    claim = (
+        f"Subnet {planned.intent.cidr} needs Subnet ID {planned.key}, which Subnet {holder.name!r} ({holder.prefix})"
+    )
+    if capabilities.has(Capability.SUBNET_ID_PER_SERVER):
+        return SubnetIdTaken(f"{claim} of this DHCP server holds.", per_server=True)
+    detail = f"{claim} holds. The DHCP plugin needs each Subnet ID to be unique across all DHCP servers."
+    return SubnetIdTaken(detail, per_server=False)
+
+
+def _move_subnet_ids(rows: dict, moves: dict[int, int], holds: dict[int, int]) -> None:
+    """Give each row in *moves* (row to Subnet ID) its ID once no row in *holds* (ID to row) holds it.
+
+    When only a cycle is left, one row of it first takes an ID that no row holds or wants.
+    """
+    holds, pending, parked = dict(holds), dict(moves), set()
+    while pending:
+        pk = next((pk for pk, number in pending.items() if number not in holds), None)
+        if pk is not None:
+            number = pending.pop(pk)
+        else:
+            # Distinct targets, each held by a pending row, form cycles: parking one row of each breaks it.
+            pk = next((pk for pk in pending if pk not in parked), None)
+            if pk is None or any(holds[number] not in pending for number in pending.values()):
+                raise RuntimeError("The Subnet ID moves do not resolve")
+            parked.add(pk)
+            number = next(free for free in count(1) if free not in holds and free not in moves.values())
+        row = rows[pk]
+        if holds.get(row.subnet_id) == pk:
+            del holds[row.subnet_id]
+        row.snapshot()
+        row.subnet_id = number
+        row.save()
+        holds[number] = pk
+
+
+def settle_subnet_ids(
+    server, dhcp_server, plan: FamilyPlan, capabilities: PluginCapabilities, summary: ImportSummary
+) -> SubnetIdSettlement:
+    """Give each mapped Subnet of *plan* its Kea subnet ID, and find each planned Subnet whose ID another row keeps.
+
+    A row that an earlier importer let the plugin number moves to its Kea subnet ID. So can a mapped row of another
+    family or Server that holds the ID. The capability probe decides the scope of the plugin's uniqueness rule:
+    all DHCP servers, or *dhcp_server* only.
+    """
+    from django.contrib.contenttypes.models import ContentType
+
+    from ..models import KeaDhcpLink
+
+    Subnet = _model("Subnet")
+    planned = {subnet.key: subnet for subnet in plan.subnets if subnet.key is not None}
+    links = KeaDhcpLink.objects.filter(kind=Kind.SUBNET.value, object_type=ContentType.objects.get_for_model(Subnet))
+    wants = dict(links.values_list("object_id", "kea_subnet_id"))
+    ours = dict(
+        links.filter(server=server, family=plan.family, kea_subnet_id__in=planned).values_list(
+            "kea_subnet_id", "object_id"
+        )
+    )
+    current = dict(Subnet.objects.filter(pk__in=ours.values()).values_list("pk", "subnet_id"))
+    scope = Subnet.objects.all()
+    if capabilities.has(Capability.SUBNET_ID_PER_SERVER):
+        scope = scope.filter(dhcp_server=dhcp_server)
+    holds = dict(scope.values_list("subnet_id", "pk"))
+
+    result = SubnetIdSettlement()
+    moves: dict[int, int] = {}
+    dependent: set[int] = set()
+    # A planned Subnet keeps its ID from a mapped row of another family or Server. A new Subnet has no row yet.
+    claimed = {key: ours.get(key, -key) for key in planned}
+    for key, subnet in planned.items():
+        requester = ours[key] if ours.get(key) in current else None
+        chain = _freeing_moves(key, requester, holds, wants)
+        if chain is not None and requester is not None and current[requester] != key:
+            chain[requester] = key
+        if chain is None or any(claimed.get(number, pk) != pk for pk, number in chain.items()):
+            holder = Subnet.objects.select_related("prefix").get(pk=holds[key])
+            result.taken[key] = _subnet_id_taken(subnet, holder, capabilities)
+            continue
+        claimed.update({number: pk for pk, number in chain.items()})
+        moves.update(chain)
+        if chain:
+            dependent.add(key)
+        if requester in chain:
+            result.renumbered.add(key)
+    if not moves:
+        return result
+    try:
+        with event_scope.atomic():
+            _move_subnet_ids(Subnet.objects.in_bulk(moves), moves, holds)
+    except event_scope.EventDispatchError:
+        raise
+    except Exception as exc:
+        # The Subnets that need a move fail. The others still import.
+        logger.exception("DHCP-plugin import: the Subnets of %s could not take their Kea subnet IDs", server.name)
+        summary.warn(f"Kea Subnets {sorted(dependent)} could not take their Kea subnet IDs: {exc}")
+        result.failed, result.renumbered = dependent, set()
+    return result
 
 
 def _upsert_pool(server, family: int, subnet_obj, range_obj, planned_pool) -> tuple:
@@ -1435,10 +1596,12 @@ def import_reservation_snapshot(
     *,
     family: int,
     adoption_servers: tuple[int, ...],
+    subnet_ids: SubnetIdSettlement | None = None,
 ) -> None:
     """Import valid typed records and report quarantined Snapshot records.
 
-    A Global Reservation may adopt an unmapped row of a DHCP server in *adoption_servers*.
+    A Global Reservation may adopt an unmapped row of a DHCP server in *adoption_servers*. An In-Subnet
+    Reservation of a Subnet that *subnet_ids* reports as taken or failed is not imported.
     """
     from ..ipam_reconciliation import DelegatedPrefixPhase, claim, reconcile
 
@@ -1464,7 +1627,15 @@ def import_reservation_snapshot(
     for planned in keyed_reservations(observation):
         reservation, key = planned.intent, planned.key
         if isinstance(key, InSubnetReservationKey):
-            subnet_obj = mapped_target(server, reservation.family, MappingSource.subnet(key.subnet_id))
+            taken = subnet_ids.taken.get(key.subnet_id) if subnet_ids is not None else None
+            if taken is not None:
+                complete = False
+                summary.record(taken.entry(family, Kind.RESERVATION, reservation_path(key, family)))
+                continue
+            if subnet_ids is not None and key.subnet_id in subnet_ids.failed:
+                subnet_obj = None
+            else:
+                subnet_obj = mapped_target(server, reservation.family, MappingSource.subnet(key.subnet_id))
             if subnet_obj is None:
                 complete = False
                 summary.record(
@@ -1649,8 +1820,20 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     summary.owner_disagreements += sum(
         result.outcome == "disagreement" for result in (*prefix_claims.prefixes.values(), *pool_claims.ranges.values())
     )
+    subnet_ids = settle_subnet_ids(server, dhcp_server, plan, capabilities, summary)
     for planned_subnet in plan.subnets:
-        subnet_obj = upsert_subnet(server, dhcp_server, planned_subnet, summary, prefix_claims)
+        taken = subnet_ids.taken.get(planned_subnet.key) if planned_subnet.key is not None else None
+        if taken is not None:
+            summary.record(taken.entry(plan.family, Kind.SUBNET, subnet_path(planned_subnet)))
+            summary.warn(f"subnet {planned_subnet.intent.cidr} (id={planned_subnet.key}): {taken.detail}")
+            _skip_subnet_children(summary, planned_subnet, taken)
+            continue
+        if planned_subnet.key in subnet_ids.failed:
+            summary.record(write_failed(plan.family, Kind.SUBNET, subnet_path(planned_subnet)))
+            _skip_subnet_children(summary, planned_subnet)
+            continue
+        renumbered = planned_subnet.key in subnet_ids.renumbered
+        subnet_obj = upsert_subnet(server, dhcp_server, planned_subnet, summary, prefix_claims, renumbered)
         if subnet_obj is None:
             _skip_subnet_children(summary, planned_subnet)
             continue
@@ -1684,6 +1867,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         summary,
         family=plan.family,
         adoption_servers=adoption_servers,
+        subnet_ids=subnet_ids,
     )
     if not plan.configuration_complete:
         summary.ownership.incomplete.update({"subnet", "pool"})

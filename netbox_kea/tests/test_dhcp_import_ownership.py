@@ -639,11 +639,17 @@ class ImportOwnershipTest(TestCase):
 
     def test_address_pool_prefix_and_global_attachment_stay_in_server_vrf(self):
         self.config["subnet6"][0]["pools"] = [{"pool": "2001:db8:1::10-2001:db8:1::20"}]
-        for name in ("first", "second"):
+        # netbox-plugin-dhcp 0.2.0 keeps Subnet IDs unique across servers, so each Server uses a different Subnet ID.
+        for name, subnet_id in (("first", 1), ("second", 2)):
+            self.config["subnet6"][0]["id"] = subnet_id
             server = _make_db_server(name=name, sync_vrf=VRF.objects.create(name=name))
-            summary = self.import_hosts(
-                [{**self.identity, "ip-addresses": ["2001:db8:1::15"], "prefixes": [self.network]}], server=server
-            )
+            host = {
+                **self.identity,
+                "subnet-id": subnet_id,
+                "ip-addresses": ["2001:db8:1::15"],
+                "prefixes": [self.network],
+            }
+            summary = self.import_hosts([host], server=server)
             self.assertEqual(summary.errors, 0, summary.warnings)
             objects = IPAMOwnershipLink.objects.filter(server=server).select_related("ip_address", "prefix", "ip_range")
             self.assertEqual(objects.count(), 4)
