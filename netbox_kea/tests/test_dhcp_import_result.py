@@ -880,6 +880,24 @@ class StaleRemovalTest(_ImportRunTestCase):
                 pool = next(row for row in self._mapped(Kind.POOL) if row.subnet.subnet_id == 42)
                 self.assertEqual(f"{pool.ip_range.start_address.ip}-{pool.ip_range.end_address.ip}", new)
 
+    def test_an_older_read_never_removes_a_row_that_a_newer_import_mapped(self):
+        from netbox_kea.integrations import dhcp_plugin
+        from netbox_kea.integrations.dhcp_import import FamilyRead, read_family
+
+        # Import A reads Kea, which has no Subnet 43 yet, and pauses before its apply.
+        with stub_kea(_sync_responses(self.config, self.hosts)):
+            older = read_family(self.server, 4)
+        self.assertIsInstance(older, FamilyRead)
+        # Kea gains Subnet 43, and import B reads and imports it.
+        newer = {4: {**self.config[4], "subnet4": [*self.config[4]["subnet4"], {"id": 43, "subnet": "203.0.113.0/24"}]}}
+        self._sync(newer, self.hosts)
+        self.assertIn(43, [row.subnet_id for row in self._mapped(Kind.SUBNET)])
+
+        summary = dhcp_plugin.import_server_config(self.server, older.config, older.reservations)
+
+        self.assertEqual([entry for entry in summary.entries if entry.outcome == Outcome.REMOVED], [])
+        self.assertIn(43, [row.subnet_id for row in self._mapped(Kind.SUBNET)])
+
 
 _V6_CONFIG = {
     "subnet6": [

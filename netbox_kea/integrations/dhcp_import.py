@@ -86,6 +86,8 @@ def _fetch_config_intent(server: Server, version: Family) -> ServerConfigIntent 
     # Imported here: the views package imports this module.
     from ..views.notices import failed_load
 
+    # Taken before config-get: a mapping confirmed after it belongs to a newer read (remove_stale_objects).
+    started = timezone.now()
     read = server_configuration.for_import(server, version)
     if isinstance(read, ServerConfigurationSnapshot):
         logger.warning("DHCP-plugin sync: config-get failed for %s (v%s)", server.name, version)
@@ -98,6 +100,7 @@ def _fetch_config_intent(server: Server, version: Family) -> ServerConfigIntent 
         )
         return None
     intent.configuration_complete = not read.snapshot.subnet_diagnostics
+    intent.read_started = started
     intent.host_reservation_identifiers = read.snapshot.host_reservation_identifiers
     return intent
 

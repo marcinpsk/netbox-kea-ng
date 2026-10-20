@@ -2688,8 +2688,8 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             row.description = "branch change"
             row.save()
         request_finished.send(sender=type(self))
-        # Kea no longer reports the Subnet, and the configuration read is Complete.
-        intent.subnets, intent.configuration_complete = [], True
+        # Kea no longer reports the Subnet, and the configuration read, which starts now, is Complete.
+        intent.subnets, intent.configuration_complete, intent.read_started = [], True, timezone.now()
         with event_tracking(_change_request(self.user)):
             summary = import_server_config(server, intent, observation)
         self.assertEqual([entry.kind for entry in summary.entries if entry.outcome.value == "removed"], [Kind.SUBNET])

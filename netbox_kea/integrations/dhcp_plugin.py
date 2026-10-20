@@ -68,6 +68,8 @@ from itertools import count
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from ..ipam_reconciliation import ClaimResult, RangeClaim, ReservationObservation, SyncReport
     from ..models import DhcpIntegrationConfig, Server
     from ..subnet_catalogue import CatalogueSnapshot
@@ -1951,15 +1953,18 @@ def _remove_stale_row(row: _StaleRow, removable: dict, family: int, summary: Imp
     return [row, *(removable[_row_key(obj)] for obj in cascaded)]
 
 
-def mapped_rows(server, family: int) -> dict[Kind, dict[MappingSource, Any]]:
+def mapped_rows(server, family: int, confirmed_before: datetime | None = None) -> dict[Kind, dict[MappingSource, Any]]:
     """Return the DHCP plugin row of each mapping of *family* whose kind a run can remove, by kind and Kea source.
 
-    A mapping whose row is gone has none.
+    A mapping whose row is gone has none. With *confirmed_before*, only the mappings that an import confirmed before
+    that time count.
     """
     from ..models import KeaDhcpLink
 
     rows: dict[Kind, dict[MappingSource, Any]] = {kind: {} for kind in REMOVAL_ORDER}
     links = KeaDhcpLink.objects.filter(server=server, family=family, kind__in=[kind.value for kind in REMOVAL_ORDER])
+    if confirmed_before is not None:
+        links = links.filter(last_synced__lt=confirmed_before)
     for link in links.prefetch_related("sys4_object").order_by("pk"):
         if link.sys4_object is not None:
             source = MappingSource(Kind(link.kind), link.kea_subnet_id, link.kea_identity)
@@ -1968,10 +1973,16 @@ def mapped_rows(server, family: int) -> dict[Kind, dict[MappingSource, Any]]:
 
 
 def _stale_rows(server, plan: FamilyPlan, observed) -> dict[Kind, list[_StaleRow]]:
-    """Return the mapped rows of each kind whose Kea source the plan does not observe."""
+    """Return the mapped rows of each kind whose Kea source the plan does not observe.
+
+    A mapping that an import confirmed after this read started belongs to a newer read, so it is never stale here.
+    A plan without a read time can judge no mapping.
+    """
+    if plan.read_started is None:
+        return {}
     return {
         kind: [_StaleRow(source, row) for source, row in rows.items() if source not in observed[kind].sources]
-        for kind, rows in mapped_rows(server, plan.family).items()
+        for kind, rows in mapped_rows(server, plan.family, confirmed_before=plan.read_started).items()
     }
 
 

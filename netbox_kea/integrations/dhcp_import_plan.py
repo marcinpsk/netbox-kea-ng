@@ -36,6 +36,8 @@ from .dhcp_import_ledger import KEA_DEFAULTS, MERGED_KEYS
 from .dhcp_import_report import KIND_LABELS, Kind, counted
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from ..dhcp_options import DHCPOption
     from ..ipam_reconciliation import ReservationObservation
     from .dhcp_import_report import DroppedEntry
@@ -224,6 +226,8 @@ class FamilyPlan:
 
     family: Family
     configuration_complete: bool
+    # When the read started. A mapping confirmed later belongs to a newer read, which this plan cannot judge.
+    read_started: datetime | None
     server: PlannedServer
     option_definitions: tuple[Planned[OptionDefinitionKey, OptionDefIntent], ...]
     client_classes: tuple[PlannedClientClass, ...]
@@ -311,6 +315,7 @@ def plan_family(config: ServerConfigIntent, observation: ReservationObservation 
     return FamilyPlan(
         family=family,
         configuration_complete=config.configuration_complete,
+        read_started=config.read_started,
         server=PlannedServer(
             config.global_settings,
             config.global_options,

@@ -24,10 +24,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from .. import kea_paths
 from ..dhcp_options import DHCPOption, parse_dhcp_option, parse_option_definition
 from ..integrations.dhcp_import_report import DroppedEntry, Kind
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +182,8 @@ class ServerConfigIntent:
 
     family: int
     configuration_complete: bool = False
+    # When the read of this configuration started, before config-get. None: not known, so no mapped row is stale.
+    read_started: datetime | None = None
     # From the Server Configuration Snapshot. None: the key is absent or invalid.
     host_reservation_identifiers: tuple[str, ...] | None = None
     shared_networks: list[SharedNetworkIntent] = field(default_factory=list)
