@@ -11,8 +11,8 @@
 * :class:`Deprecated`: Kea rewrites the key to its replacement, so ``config-get`` never returns it.
 
 An entry names each DHCP Plugin Capability (#88) that its write needs, and :mod:`.dhcp_plugin_capabilities` checks
-each one. :data:`MERGED_KEYS` lists the keys that Kea merges into ``config-get`` from the parent object, for the
-Declared Value inference of #95.
+each one. :data:`MERGED_KEYS` lists the keys that Kea merges into ``config-get`` from the parent object, and
+:data:`KEA_DEFAULTS` the values that Kea gives when no level declares a key, for the Declared Value inference.
 It reads no database. ``test_dhcp_import_ledger.py`` compares it with the recordings of a real Kea.
 """
 
@@ -390,6 +390,21 @@ MERGED_KEYS: dict[Family, dict[str, frozenset[str]]] = {
         "subnet6": _MERGED_INTO_NETWORKS[6] | {"relay"},
         "pools": frozenset(),
         "pd-pools": frozenset(),
+    },
+}
+
+# The values that Kea 3.2 returns for these keys on an object that declares none and whose parent has none.
+KEA_DEFAULTS: dict[Family, dict[str, dict[str, object]]] = {
+    4: {
+        "shared-networks": {"relay": {"ip-addresses": []}},
+        "subnet4": {"4o6-interface": "", "4o6-interface-id": "", "4o6-subnet": ""},
+        "pools": {},
+    },
+    6: {
+        "shared-networks": {"relay": {"ip-addresses": []}, "rapid-commit": False},
+        "subnet6": {"rapid-commit": False},
+        "pools": {},
+        "pd-pools": {},
     },
 }
 

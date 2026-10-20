@@ -15,6 +15,7 @@ import ipaddress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Generic, TypeVar
 
+from .. import kea_paths
 from ..constants import Family, validate_family
 from ..dhcp_options import MAX_OPTION_CODE
 from ..kea import subnet_network
@@ -28,6 +29,7 @@ from ..mappers.kea_to_dhcp import (
 )
 from ..pools import Pool, parse_pool
 from ..reservations import MAX_IDENTITY_LENGTH, IdentifierType, InSubnetReservationScope, Reservation, identity_text
+from .dhcp_import_ledger import KEA_DEFAULTS, MERGED_KEYS
 from .dhcp_import_report import Kind
 
 if TYPE_CHECKING:
@@ -173,6 +175,10 @@ class PlannedSubnet:
 
     key: int | None
     intent: SubnetIntent
+    # The Declared Values of the Subnet, by Kea key.
+    settings: dict
+    # The Declared Values of its Shared Network that the Subnet does not declare: Kea applies them to the Subnet.
+    inherited: dict
     # A Pool key is None when its text is not a range inside the Subnet; the apply skips that Pool.
     pools: tuple[Planned[PoolKey | None, PoolIntent], ...]
 
@@ -210,9 +216,37 @@ def _pool_key(subnet: SubnetIntent, pool: PoolIntent) -> PoolKey | None:
         return None
 
 
-def _planned_subnet(subnet: SubnetIntent) -> PlannedSubnet:
-    pools = tuple(Planned(_pool_key(subnet, pool), pool) for pool in subnet.pools)
-    return PlannedSubnet(subnet.kea_subnet_id, subnet, pools)
+def declared_values(family: Family, table: str, settings: dict, parent: dict) -> dict:
+    """Return the Declared Values among the *settings* that ``config-get`` returned for one Kea object of *table*.
+
+    A key of :data:`MERGED_KEYS` is inherited when its value equals the value of the *parent* settings. A key of
+    :data:`KEA_DEFAULTS` is inherited when the parent has no value and the value is Kea's default.
+    """
+    merged, defaults = MERGED_KEYS[family][table], KEA_DEFAULTS[family][table]
+
+    def inherited(key: str, value) -> bool:
+        if key in merged and key in parent:
+            return value == parent[key]
+        return key not in parent and key in defaults and value == defaults[key]
+
+    return {key: value for key, value in settings.items() if not inherited(key, value)}
+
+
+def _planned_subnets(config: ServerConfigIntent, family: Family) -> tuple[PlannedSubnet, ...]:
+    """Plan each Subnet with its Declared Values. Its parent is its Shared Network, else the global configuration."""
+    networks = {network.name: network.settings for network in config.shared_networks}
+    planned = []
+    for subnet in config.subnets:
+        network = networks[subnet.shared_network] if subnet.shared_network is not None else None
+        parent = config.global_settings if network is None else network
+        settings = declared_values(family, kea_paths.subnet_collection(family), subnet.settings, parent)
+        inherited = {}
+        if network is not None:
+            from_network = declared_values(family, kea_paths.SHARED_NETWORKS, network, config.global_settings)
+            inherited = {key: value for key, value in from_network.items() if key not in settings}
+        pools = tuple(Planned(_pool_key(subnet, pool), pool) for pool in subnet.pools)
+        planned.append(PlannedSubnet(subnet.kea_subnet_id, subnet, settings, inherited, pools))
+    return tuple(planned)
 
 
 def reservation_key(reservation: Reservation) -> ReservationKey:
@@ -232,8 +266,9 @@ def keyed_reservations(observation: ReservationObservation | None) -> tuple[Plan
 
 def plan_family(config: ServerConfigIntent, observation: ReservationObservation | None) -> FamilyPlan:
     """Return the plan of one family from its parsed configuration and its Reservation observation."""
+    family = validate_family(config.family)
     return FamilyPlan(
-        family=validate_family(config.family),
+        family=family,
         configuration_complete=config.configuration_complete,
         server=PlannedServer(
             config.global_settings,
@@ -245,7 +280,7 @@ def plan_family(config: ServerConfigIntent, observation: ReservationObservation 
         option_definitions=_option_definitions(config),
         client_classes=tuple(Planned(intent.name, intent) for intent in config.client_classes),
         shared_networks=tuple(Planned(intent.name, intent) for intent in config.shared_networks),
-        subnets=tuple(_planned_subnet(subnet) for subnet in config.subnets),
+        subnets=_planned_subnets(config, family),
         reservations=observation,
         dropped=tuple(config.dropped),
     )

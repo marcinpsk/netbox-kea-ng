@@ -22,6 +22,7 @@ HOST_RESERVATION_IDENTIFIERS = "host-reservation-identifiers"
 ALLOW_ADDRESS_REGISTRATION = "allow-address-registration"
 STASH_AGENT_OPTIONS = "stash-agent-options"
 INTERFACES_CONFIG = "interfaces-config"
+SHARED_NETWORKS = "shared-networks"
 #: The ``server-id`` keys besides its type, each with the value that tells Kea to generate it.
 SERVER_ID_PARAMETERS = {"identifier": "", "enterprise-id": 0, "htype": 0, "time": 0}
 
@@ -35,25 +36,30 @@ def daemon(family: int) -> str:
     return f"Dhcp{family}"
 
 
+def subnet_collection(family: int) -> str:
+    """Return the key of the Subnet collection of a daemon or Shared Network of *family*."""
+    return f"subnet{family}"
+
+
 def subnet(family: int, subnet_id: int | None, cidr: str | None = None) -> str:
     """Return the path of a Subnet by its Kea subnet ID, or by its CIDR when Kea gave no ID."""
     identity = f"id={subnet_id}" if subnet_id is not None else f"subnet={cidr}"
-    return f"{daemon(family)}/{_step(f'subnet{family}', identity)}"
+    return f"{daemon(family)}/{_step(subnet_collection(family), identity)}"
 
 
 def subnet_entry(parent: str, family: int, index: int) -> str:
     """Return the path of the Subnet entry at *index* of the daemon or Shared Network at *parent*."""
-    return f"{parent}/{_step(f'subnet{family}', index)}"
+    return f"{parent}/{_step(subnet_collection(family), index)}"
 
 
 def shared_network(family: int, name: str) -> str:
     """Return the path of a Shared Network by its name."""
-    return f"{daemon(family)}/{_step('shared-networks', f'name={name}')}"
+    return f"{daemon(family)}/{_step(SHARED_NETWORKS, f'name={name}')}"
 
 
 def shared_network_entry(family: int, index: int) -> str:
     """Return the path of the Shared Network entry at *index*."""
-    return f"{daemon(family)}/{_step('shared-networks', index)}"
+    return f"{daemon(family)}/{_step(SHARED_NETWORKS, index)}"
 
 
 def pool(subnet_path: str, text: str) -> str:

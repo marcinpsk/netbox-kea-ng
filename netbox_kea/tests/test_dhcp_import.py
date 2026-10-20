@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -30,10 +31,10 @@ from netbox_kea.integrations.dhcp_import_plan import (
     keyed_reservations,
     plan_family,
 )
-from netbox_kea.integrations.dhcp_import_report import GAPS, Capability
+from netbox_kea.integrations.dhcp_import_report import GAPS, Capability, Reason
 from netbox_kea.integrations.dhcp_plugin_capabilities import CHECKS, probe
 from netbox_kea.ipam_reconciliation import ReservationObservation
-from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
+from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS, parse_dhcp_config
 from netbox_kea.models import KeaDhcpLink
 from netbox_kea.pools import Pool
 from netbox_kea.reservations import (
@@ -47,8 +48,8 @@ from netbox_kea.subnet_catalogue import IncompleteCatalogueSnapshot, SubnetIdent
 
 from .kea_stub import stub_kea
 from .test_integration_dhcp_plugin import _reservation_snapshot
-from .test_kea_recordings import _recording
-from .utils import _make_db_server, imported_dhcp_servers
+from .test_kea_recordings import _RECORDINGS, _recording
+from .utils import _make_db_server, imported_dhcp_server, imported_dhcp_servers
 
 DHCP_PLUGIN = "netbox_dhcp"
 _IN_SUBNET_MAC = "02:00:00:00:00:0a"
@@ -57,6 +58,11 @@ _GLOBAL_DUID = "01:02:03:04:05:06"
 
 def _recorded_config(family: int) -> dict:
     return _recording(family)["config-get"]["arguments"][f"Dhcp{family}"]
+
+
+def _recording_configuration(family: int) -> dict:
+    """Return the coverage configuration that Kea read for the recording: what each object declares."""
+    return json.loads((_RECORDINGS / f"kea-dhcp{family}.conf").read_text(encoding="utf-8"))[f"Dhcp{family}"]
 
 
 def _recorded_intent(family: int):
@@ -158,6 +164,86 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
         )
         self.assertIsNone(plan.reservations)
         self.assertEqual(keyed_reservations(plan.reservations), ())
+
+    def test_each_subnet_plans_the_values_that_the_configuration_declares(self):
+        for family in (4, 6):
+            configured = _recording_configuration(family)
+            declared = {
+                subnet["id"]: {key: subnet[key] for key in KEA_SETTINGS_KEYS if key in subnet}
+                for subnet in [
+                    *configured[f"subnet{family}"],
+                    *(
+                        member
+                        for network in configured["shared-networks"]
+                        for member in network.get(f"subnet{family}", [])
+                    ),
+                ]
+            }
+            plan = plan_family(_recorded_intent(family), None)
+            with self.subTest(family=family):
+                self.assertEqual({subnet.key: subnet.settings for subnet in plan.subnets}, declared)
+                self.assertEqual(declared[20], {})
+                self.assertEqual((declared[10]["valid-lifetime"], declared[10]["allocator"]), (3600, "random"))
+
+    def test_a_member_subnet_reports_the_values_it_inherits_from_its_shared_network(self):
+        for family, relay in ((4, ["198.51.100.2", "198.51.100.3"]), (6, ["2001:db8:ffff::2"])):
+            plan = plan_family(_recorded_intent(family), None)
+            office = {"reservations-global": True, "relay": {"ip-addresses": relay}}
+            with self.subTest(family=family):
+                self.assertEqual(
+                    {subnet.key: subnet.inherited for subnet in plan.subnets},
+                    {10: {}, 20: {**office, "ddns-qualifying-suffix": "office.example.net"}, 21: office},
+                )
+
+    def test_kea_default_counts_as_inherited_only_where_the_parent_has_no_value(self):
+        # As config-get returns it: Kea gives rapid-commit to a standalone Subnet and to each Shared Network.
+        config = {
+            "subnet6": [
+                {"id": 1, "subnet": "2001:db8:1::/64", "rapid-commit": False},
+                {"id": 2, "subnet": "2001:db8:2::/64", "rapid-commit": True},
+            ],
+            "shared-networks": [
+                {
+                    "name": "fast",
+                    "rapid-commit": True,
+                    "subnet6": [
+                        {"id": 3, "subnet": "2001:db8:3::/64", "rapid-commit": False},
+                        {"id": 4, "subnet": "2001:db8:4::/64", "rapid-commit": True},
+                        {"id": 5, "subnet": "2001:db8:5::/64"},
+                    ],
+                },
+                {
+                    "name": "default",
+                    "rapid-commit": False,
+                    "subnet6": [{"id": 6, "subnet": "2001:db8:6::/64", "rapid-commit": False}],
+                },
+            ],
+        }
+
+        plan = plan_family(parse_dhcp_config(config, 6), None)
+
+        self.assertEqual(
+            {subnet.key: subnet.settings for subnet in plan.subnets},
+            {
+                1: {},
+                2: {"rapid-commit": True},
+                3: {"rapid-commit": False},
+                4: {"rapid-commit": True},
+                5: {},
+                6: {"rapid-commit": False},
+            },
+        )
+        self.assertEqual(
+            {subnet.key: subnet.inherited for subnet in plan.subnets},
+            {1: {}, 2: {}, 3: {}, 4: {}, 5: {"rapid-commit": True}, 6: {}},
+        )
+
+    def test_a_subnet_that_only_inherited_a_changed_global_value_declares_nothing(self):
+        returned = {"valid-lifetime": 5000, "subnet4": [{"id": 1, "subnet": "192.0.2.0/24", "valid-lifetime": 5000}]}
+
+        plan = plan_family(parse_dhcp_config(returned, 4), None)
+
+        self.assertEqual(plan.subnets[0].settings, {})
 
     def test_a_pool_outside_its_subnet_has_no_key(self):
         config = {"subnet4": [{"id": 1, "subnet": "192.0.2.0/24", "pools": [{"pool": "198.51.100.1-198.51.100.9"}]}]}
@@ -424,6 +510,105 @@ class ApplyPlanWithoutKeaTest(TestCase):
         self.assertEqual(again.errors, 0, again.warnings)
         self.assertEqual([entry.path for entry in again.entries if entry.outcome.value == "created"], [])
         self.assertEqual(set(KeaDhcpLink.objects.filter(server=server).values_list("pk", "object_id")), before)
+
+    def _subnets(self, server) -> dict:
+        links = KeaDhcpLink.objects.filter(server=server, family=4, kind="subnet")
+        return {link.kea_subnet_id: link.sys4_object for link in links}
+
+    def test_apply_writes_only_the_declared_values_of_each_subnet(self):
+        server = _make_db_server(name="declared-values", ca_url="https://kea.example.invalid", dhcp6=False)
+
+        summary = dhcp_plugin.apply_plan(server, plan_family(_recorded_intent(4), None), probe())
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        subnets = self._subnets(server)
+        member = {attr: getattr(subnets[20], attr) for attr in _INHERITABLE}
+        self.assertEqual(member, dict.fromkeys(_INHERITABLE))
+        standalone = {attr: getattr(subnets[10], attr) for attr in _INHERITABLE}
+        self.assertEqual(
+            standalone,
+            {
+                **dict.fromkeys(_INHERITABLE),
+                "valid_lifetime": 3600,
+                "min_valid_lifetime": 1800,
+                "max_valid_lifetime": 7200,
+                "offer_lifetime": 60,
+                "renew_timer": 900,
+                "rebind_timer": 1800,
+                "allocator": "random",
+                "relay": "198.51.100.1",
+                "ddns_qualifying_suffix": "",
+                "reservations_in_subnet": False,
+            },
+        )
+        self.assertEqual(
+            (subnets[21].ddns_qualifying_suffix, subnets[21].ddns_ttl, subnets[21].reservations_out_of_pool),
+            ("office.example.org.", 600, True),
+        )
+        detail = "Kea applies the value of Shared Network office, which is not imported."
+        self.assertEqual(
+            sorted(
+                (entry.path, entry.detail)
+                for entry in summary.entries
+                if entry.reason == Reason.INHERITED_FROM_SHARED_NETWORK
+            ),
+            [
+                ("Dhcp4/subnet4[id=20]/ddns-qualifying-suffix", detail),
+                ("Dhcp4/subnet4[id=20]/relay", detail),
+                ("Dhcp4/subnet4[id=20]/reservations-global", detail),
+                ("Dhcp4/subnet4[id=21]/relay", detail),
+                ("Dhcp4/subnet4[id=21]/reservations-global", detail),
+            ],
+        )
+
+    def test_a_changed_global_value_leaves_a_subnet_that_only_inherited_it_without_a_value(self):
+        server = _make_db_server(name="changed-global", ca_url="https://kea.example.invalid", dhcp6=False)
+        dhcp_plugin.apply_plan(server, plan_family(_recorded_intent(4), None), probe())
+
+        # Kea merges the new global value into each Shared Network and Subnet that does not declare one.
+        changed = _with_value(_recorded_config(4), "renew-timer", 1000, 1200)
+        intent = parse_dhcp_config(changed, 4)
+        intent.configuration_complete = True
+        summary = dhcp_plugin.apply_plan(server, plan_family(intent, None), probe())
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        subnets = self._subnets(server)
+        self.assertEqual((subnets[20].renew_timer, subnets[21].renew_timer, subnets[10].renew_timer), (None, None, 900))
+        self.assertEqual(imported_dhcp_server(server, 4).renew_timer, 1200)
+
+
+# The Subnet fields that Kea's config-get fills from the parent or that the coverage configuration declares.
+_INHERITABLE = (
+    "valid_lifetime",
+    "min_valid_lifetime",
+    "max_valid_lifetime",
+    "offer_lifetime",
+    "renew_timer",
+    "rebind_timer",
+    "t1_percent",
+    "t2_percent",
+    "cache_threshold",
+    "cache_max_age",
+    "calculate_tee_times",
+    "store_extended_info",
+    "allocator",
+    "relay",
+    "ddns_qualifying_suffix",
+    "reservations_global",
+    "reservations_in_subnet",
+)
+
+
+def _with_value(config, key: str, old, new):
+    """Return a copy of *config* in which every *key* that has the value *old* has the value *new*."""
+    if isinstance(config, list):
+        return [_with_value(item, key, old, new) for item in config]
+    if not isinstance(config, dict):
+        return config
+    return {
+        name: new if name == key and value == old else _with_value(value, key, old, new)
+        for name, value in config.items()
+    }
 
 
 class PluginVersionRefusalTest(TestCase):

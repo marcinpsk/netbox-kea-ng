@@ -19,6 +19,7 @@ from django.test import SimpleTestCase, tag
 from netbox_kea.constants import Family
 from netbox_kea.integrations import dhcp_import_ledger as ledger
 from netbox_kea.integrations.dhcp_import_ledger import (
+    KEA_DEFAULTS,
     LEDGER,
     MERGED_KEYS,
     Deprecated,
@@ -30,12 +31,7 @@ from netbox_kea.integrations.dhcp_import_report import Capability, Reason
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
 # The open tickets of #89 that map a key.
-_PARITY_TICKETS = frozenset({93, 94, 95, 96, 97, 98, 99, 100, 101, 104, 106, 107})
-# Keys that config-get returns with Kea's own default on an object that does not declare them.
-_KEA_DEFAULTS: dict[int, dict[str, set[str]]] = {
-    4: {"shared-networks": {"relay"}, "subnet4": {"4o6-interface", "4o6-interface-id", "4o6-subnet"}, "pools": set()},
-    6: {"shared-networks": {"relay", "rapid-commit"}, "subnet6": {"rapid-commit"}, "pools": set(), "pd-pools": set()},
-}
+_PARITY_TICKETS = frozenset({93, 94, 96, 97, 98, 99, 100, 101, 104, 106, 107})
 # Collections of child objects: an empty one in config-get is a Kea default, never a merge.
 _CHILD_COLLECTIONS = frozenset({"option-data", "option-def", "pools", "pd-pools", "reservations", "subnet4", "subnet6"})
 
@@ -171,17 +167,17 @@ def _undeclared(declared: dict, returned: dict, parent: dict, table: str, family
     return merged, undeclared - merged
 
 
-def _observed(family: Family) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """Return the merged keys and the Kea default keys of each Shared Network, Subnet, Pool and PD Pool."""
+def _observed(family: Family) -> tuple[dict[str, set[str]], dict[str, set[tuple[str, str]]]]:
+    """Return the merged keys and the Kea defaults, as (key, JSON value), of each Shared Network, Subnet and Pool."""
     declared, returned = _declared(family), _returned(family)
     tables = ["shared-networks", f"subnet{family}", "pools", *(["pd-pools"] if family == 6 else [])]
     merges: dict[str, set[str]] = {table: set() for table in tables}
-    defaults: dict[str, set[str]] = {table: set() for table in tables}
+    defaults: dict[str, set[tuple[str, str]]] = {table: set() for table in tables}
 
     def observe(table: str, obj: dict, got: dict, parent: dict) -> None:
         merged, default = _undeclared(obj, got, parent, table, family)
         merges[table] |= merged
-        defaults[table] |= default
+        defaults[table] |= {(key, json.dumps(got[key])) for key in default}
 
     networks = _paired("shared-networks", family, declared["shared-networks"], returned["shared-networks"])
     for obj, got in networks:
@@ -329,11 +325,15 @@ class RecordedKeaBehaviourTest(SimpleTestCase):
             _paired("pools", 4, declared, returned)
         self.assertEqual(_paired("pools", 4, declared, returned[:1]), [(declared[0], returned[0])])
 
-    def test_every_other_undeclared_key_is_a_known_kea_default(self):
+    def test_every_other_undeclared_key_has_the_kea_default_of_the_ledger(self):
         for family in LEDGER:
             with self.subTest(family=family):
                 _merges, defaults = _observed(family)
-                self.assertEqual(defaults, _KEA_DEFAULTS[family])
+                expected = {
+                    table: {(key, json.dumps(value)) for key, value in keys.items()}
+                    for table, keys in KEA_DEFAULTS[family].items()
+                }
+                self.assertEqual(defaults, expected)
 
 
 @tag("dhcp_plugin")

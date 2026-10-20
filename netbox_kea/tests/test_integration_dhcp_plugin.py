@@ -806,7 +806,7 @@ class DhcpPluginOptionImportTest(TestCase):
 
 @tag("dhcp_plugin")
 class DhcpPluginTuningImportTest(TestCase):
-    """Tuning fields land on DHCPServer/Subnet with parent-diff suppression (real ORM)."""
+    """Tuning fields land on DHCPServer/Subnet, a Subnet with only its Declared Values (real ORM)."""
 
     @classmethod
     def setUpClass(cls):
@@ -938,14 +938,14 @@ class DhcpPluginTuningImportTest(TestCase):
         srv = imported_dhcp_server(self.server, 4)
         self.assertEqual(srv.valid_lifetime, 7200)
 
-    def test_failed_global_save_does_not_clear_a_subnet_override(self):
+    def test_failed_global_save_leaves_the_subnet_with_the_values_kea_declares(self):
         apps.get_model(DHCP_PLUGIN, "DHCPServer")
         Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
         conf1 = {"valid-lifetime": 3600, "subnet4": [{"id": 8, "subnet": "10.43.0.0/24", "valid-lifetime": 7200}]}
         first = self.adapter.import_server_config(self.server, parse_dhcp_config(conf1, 4))
         self.assertEqual(first.errors, 0, first.warnings)
 
-        # A uint32 Kea lifetime is above the PostgreSQL integer maximum, so both saves fail in the driver.
+        # A uint32 Kea lifetime is above the PostgreSQL integer maximum, so the global save fails in the driver.
         uint32_max = 4294967295
         conf2 = {
             "valid-lifetime": uint32_max,
@@ -955,10 +955,10 @@ class DhcpPluginTuningImportTest(TestCase):
 
         self.assertEqual(imported_dhcp_server(self.server, 4).valid_lifetime, 3600)
         subnet = Subnet.objects.get(prefix__prefix="10.43.0.0/24")
-        self.assertEqual(subnet.valid_lifetime, 7200, "subnet override was cleared to inherit the stale DB global")
-        self.assertEqual(second.errors, 2, second.warnings)
+        # The Subnet inherits the global value in Kea, whatever the DHCPServer row holds.
+        self.assertIsNone(subnet.valid_lifetime)
+        self.assertEqual(second.errors, 1, second.warnings)
         self.assertIn("DHCPServer settings", second.warnings[0])
-        self.assertIn("subnet 10.43.0.0/24 (id=8)", second.warnings[1])
 
     def test_failed_global_save_on_a_new_dhcp_server_has_only_the_failure_entry(self):
         from netbox_kea.integrations.dhcp_import_report import Kind, Reason
