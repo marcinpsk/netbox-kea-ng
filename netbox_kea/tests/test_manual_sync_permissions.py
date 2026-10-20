@@ -43,8 +43,9 @@ _IPAM_IMPORT_WRITES = (
 )
 # The removal of Stale DHCP Import Objects deletes these models.
 _PLUGIN_REMOVALS = (
-    "netbox_dhcp.delete_optiondefinition, netbox_dhcp.delete_option, netbox_dhcp.delete_clientclass, "
-    "netbox_dhcp.delete_subnet, netbox_dhcp.delete_pool, netbox_dhcp.delete_hostreservation"
+    "netbox_dhcp.delete_hostreservation, netbox_dhcp.delete_pool, netbox_dhcp.delete_subnet, "
+    "netbox_dhcp.delete_sharednetwork, netbox_dhcp.delete_clientclass, netbox_dhcp.delete_optiondefinition, "
+    "netbox_dhcp.delete_option"
 )
 _PLUGIN_IMPORT_WRITES = (
     "netbox_dhcp.add_dhcpserver, netbox_dhcp.change_dhcpserver, netbox_dhcp.add_optiondefinition, "
@@ -517,8 +518,17 @@ class TestDhcpPluginSyncWithThePlugin(_PermissionTestBase):
         self.assertEqual(response.content.decode(), _reason(_PLUGIN_REMOVALS))
         self.assertFalse(apps.get_model("netbox_dhcp", "Subnet").objects.exists())
 
+    def test_without_the_delete_grant_of_one_removable_kind_the_import_is_refused(self):
+        SharedNetwork = apps.get_model("netbox_dhcp", "SharedNetwork")
+        _grant(_plugin_models(), ["add", "change", "delete"], user=self.user)
+        _grant([SharedNetwork], ["add", "change"], user=self.user)
+        response = self._post()
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.content.decode(), _reason("netbox_dhcp.delete_sharednetwork"))
+
     def test_unconstrained_grants_import_the_config(self):
         _grant(_plugin_models(), ["add", "change", "delete"], user=self.user)
+        _grant([apps.get_model("netbox_dhcp", "SharedNetwork")], ["delete"], user=self.user)
         response = self._post()
         self.assertEqual(response.status_code, 302)
         self.assertTrue(apps.get_model("netbox_dhcp", "Subnet").objects.filter(prefix__prefix="10.88.0.0/24").exists())
@@ -557,6 +567,7 @@ class TestDhcpPluginSyncControl(_PermissionTestBase):
     def test_an_unconstrained_user_sees_the_import_form(self):
         _grant([Prefix, IPRange, IPAddress, MACAddress], ["add", "change"], user=self.user)
         _grant(_plugin_models(), ["add", "change", "delete"], user=self.user)
+        _grant([apps.get_model("netbox_dhcp", "SharedNetwork")], ["delete"], user=self.user)
         response = self._get()
         self.assertContains(response, reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk]))
         self.assertNotContains(response, "Manual Sync needs")

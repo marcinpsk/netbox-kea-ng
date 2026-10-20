@@ -2009,25 +2009,27 @@ def _kept_rows(count: int, kind: Kind) -> str:
     return f"{count} mapped {KIND_LABELS[kind]} {noun} kept."
 
 
-# The DHCP plugin writes of apply_plan: it adds and changes each model it writes, and the removal of Stale DHCP
-# Import Objects deletes the mapped models and the Options that go with them.
-_PLUGIN_WRITES = (
-    *(
-        f"{PLUGIN_APP_LABEL}.{action}_{model}"
-        for model in ("dhcpserver", "optiondefinition", "option", "clientclass", "subnet", "pool", "hostreservation")
-        for action in ("add", "change")
-    ),
-    *(
-        f"{PLUGIN_APP_LABEL}.delete_{model}"
-        for model in ("optiondefinition", "option", "clientclass", "subnet", "pool", "hostreservation")
-    ),
+# The DHCP plugin rows that apply_plan adds and changes.
+_PLUGIN_UPSERTS = tuple(
+    f"{PLUGIN_APP_LABEL}.{action}_{model}"
+    for model in ("dhcpserver", "optiondefinition", "option", "clientclass", "subnet", "pool", "hostreservation")
+    for action in ("add", "change")
 )
+
+
+def _removal_permissions() -> tuple[str, ...]:
+    """Return the delete permission of each model that a stale removal deletes, and of the Options that go with them."""
+    from ..models import MAPPING_KINDS
+
+    models = (*(MAPPING_KINDS[kind][0] for kind in REMOVAL_ORDER), "Option")
+    return tuple(f"{PLUGIN_APP_LABEL}.delete_{model.lower()}" for model in models)
 
 
 def import_permissions(server) -> tuple[str, ...]:
     """Return the IPAM, DCIM and DHCP plugin permissions that :func:`apply_plan` can use.
 
-    The import claims Subnets, Pools and Reservations, reconciles delegated Prefixes, and writes the DHCP plugin rows.
+    The import claims Subnets, Pools and Reservations, reconciles delegated Prefixes, writes the DHCP plugin rows, and
+    removes Stale DHCP Import Objects.
     """
     from ..ipam_reconciliation import (
         RESERVATION,
@@ -2039,7 +2041,8 @@ def import_permissions(server) -> tuple[str, ...]:
     )
 
     claims = claim_permissions(SubnetPhase.source, PoolPhase.source, RESERVATION)
-    return tuple(dict.fromkeys((*claims, *reconcile_permissions(server, DelegatedPrefixPhase.source), *_PLUGIN_WRITES)))
+    reconciles = reconcile_permissions(server, DelegatedPrefixPhase.source)
+    return tuple(dict.fromkeys((*claims, *reconciles, *_PLUGIN_UPSERTS, *_removal_permissions())))
 
 
 def import_server_config(
