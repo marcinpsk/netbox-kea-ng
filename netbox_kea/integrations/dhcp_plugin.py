@@ -439,11 +439,12 @@ def _resolve_option_definition(opt: DHCPOption, family: int, dhcp_server, defini
     if found is not None:
         return found
 
+    key: OptionDefinitionKey | None
     if opt.code is not None:
         key = OptionDefinitionKey(space, opt.code)
     else:
         declared = definitions.declared.items()
-        key = next((key for key, intent in declared if key.space == space and intent.name == opt.name), None)
+        key = next((each for each, intent in declared if each.space == space and intent.name == opt.name), None)
     if key is not None and key in definitions.declared:
         if key not in definitions.written:
             definitions.written[key] = _write_option_definition(definitions, key, family, dhcp_server, summary)
