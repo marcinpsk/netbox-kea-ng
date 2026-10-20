@@ -238,6 +238,29 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
             {1: {}, 2: {}, 3: {}, 4: {}, 5: {"rapid-commit": True}, 6: {}},
         )
 
+    def test_a_merged_value_that_the_shared_network_declares_is_reported_on_its_members(self):
+        # As config-get returns it: Kea merges valid-lifetime into the Shared Network and into each member.
+        config = {
+            "valid-lifetime": 4000,
+            "shared-networks": [
+                {
+                    "name": "long",
+                    "valid-lifetime": 9000,
+                    "subnet4": [
+                        {"id": 1, "subnet": "192.0.2.0/25", "valid-lifetime": 9000},
+                        {"id": 2, "subnet": "192.0.2.128/25", "valid-lifetime": 4000},
+                    ],
+                }
+            ],
+        }
+
+        plan = plan_family(parse_dhcp_config(config, 4), None)
+
+        self.assertEqual({subnet.key: subnet.settings for subnet in plan.subnets}, {1: {}, 2: {"valid-lifetime": 4000}})
+        self.assertEqual(
+            {subnet.key: subnet.inherited for subnet in plan.subnets}, {1: {"valid-lifetime": 9000}, 2: {}}
+        )
+
     def test_a_subnet_that_only_inherited_a_changed_global_value_declares_nothing(self):
         returned = {"valid-lifetime": 5000, "subnet4": [{"id": 1, "subnet": "192.0.2.0/24", "valid-lifetime": 5000}]}
 

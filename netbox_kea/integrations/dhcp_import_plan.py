@@ -237,12 +237,12 @@ def _planned_subnets(config: ServerConfigIntent, family: Family) -> tuple[Planne
     networks = {network.name: network.settings for network in config.shared_networks}
     planned = []
     for subnet in config.subnets:
-        network = networks[subnet.shared_network] if subnet.shared_network is not None else None
-        parent = config.global_settings if network is None else network
+        network_settings = networks[subnet.shared_network] if subnet.shared_network is not None else None
+        parent = config.global_settings if network_settings is None else network_settings
         settings = declared_values(family, kea_paths.subnet_collection(family), subnet.settings, parent)
         inherited = {}
-        if network is not None:
-            from_network = declared_values(family, kea_paths.SHARED_NETWORKS, network, config.global_settings)
+        if network_settings is not None:
+            from_network = declared_values(family, kea_paths.SHARED_NETWORKS, network_settings, config.global_settings)
             inherited = {key: value for key, value in from_network.items() if key not in settings}
         pools = tuple(Planned(_pool_key(subnet, pool), pool) for pool in subnet.pools)
         planned.append(PlannedSubnet(subnet.kea_subnet_id, subnet, settings, inherited, pools))
