@@ -281,9 +281,19 @@ class LedgerEntriesTest(SimpleTestCase):
             "pools": ("Pool", fields.POOL_FIELDS),
             "client-classes": ("ClientClass", fields.CLIENT_CLASS_FIELDS),
         }
+
+        def table_of(prefix: str, family: Family) -> str:
+            return prefix if prefix in ("pools", "client-classes") else f"{prefix}{family}"
+
+        for prefix, (model, field_map) in field_maps.items():
+            # One field map serves both families, so each key must be a key of at least one of them.
+            listed = set().union(*(LEDGER[family][table_of(prefix, family)] for family in LEDGER))
+            with self.subTest(model=model):
+                unlisted = {kea_key for kea_key, _attr, _transform in field_map} - listed
+                self.assertEqual(unlisted, set(), f"{model} writes Kea keys that the ledger does not list")
         for family in LEDGER:
             for prefix, (model, field_map) in field_maps.items():
-                table = prefix if prefix in ("pools", "client-classes") else f"{prefix}{family}"
+                table = table_of(prefix, family)
                 keys = LEDGER[family][table]
                 with self.subTest(family=family, table=table):
                     written = {kea_key: f"{model}.{attr}" for kea_key, attr, _transform in field_map if kea_key in keys}
