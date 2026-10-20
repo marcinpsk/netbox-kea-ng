@@ -13,6 +13,22 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.8.0 (2026-10-20)
+
+### Bug Fixes
+
+- **options**: Keep csv-format when an option row replaces its data
+  ([`80b0104`](https://github.com/marcinpsk/netbox-kea-ng/commit/80b0104a0011bb61920fb54805ce8bae3e91b8de))
+
+- **options**: Refuse an added or changed DHCP Option whose identity another entry holds
+  ([`cb1d513`](https://github.com/marcinpsk/netbox-kea-ng/commit/cb1d513b00102457ea9f571f303b8b4566ce4fd8))
+
+### Testing
+
+- **options**: Use hexadecimal data where csv-format is false
+  ([`7027533`](https://github.com/marcinpsk/netbox-kea-ng/commit/7027533dbdb0e5bde56a17a0eb1e5b722a1887d8))
+
+
 ## v3.7.0 (2026-10-18)
 
 ### Bug Fixes
