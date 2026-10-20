@@ -981,6 +981,22 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
             cursor.execute("SELECT object_id FROM netbox_kea_keadhcplink WHERE server_id = %s", [server.pk])
             self.assertEqual({row[0] for row in cursor.fetchall()}, {1, 2})
 
+    def test_0031_reversed_removes_the_family_mappings_that_the_older_schema_cannot_hold(self):
+        server = _make_db_server(name="family-mappings")
+        object_type = ContentType.objects.get_for_model(Server)
+        KeaDhcpLink.objects.create(
+            server=server, family=4, kind="subnet", kea_subnet_id=7, object_type=object_type, object_id=1
+        )
+        KeaDhcpLink.objects.create(server=server, family=4, kind="server", object_type=object_type, object_id=2)
+
+        self._migrate_to("0030_dhcpimportentry_capability")
+
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT object_id FROM netbox_kea_keadhcplink WHERE server_id = %s", [server.pk])
+            self.assertEqual({row[0] for row in cursor.fetchall()}, {1})
+
     def test_an_identityless_link_is_removed_before_the_constraint_is_added(self):
         from django.db import connection
         from django.db.migrations.executor import MigrationExecutor

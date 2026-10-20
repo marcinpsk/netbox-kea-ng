@@ -4,6 +4,13 @@
 
 from django.db import migrations, models
 
+
+def remove_family_links(apps, schema_editor):
+    """Remove the family mappings, which the schema before this migration cannot hold."""
+    KeaDhcpLink = apps.get_model("netbox_kea", "KeaDhcpLink")
+    KeaDhcpLink.objects.using(schema_editor.connection.alias).filter(kind="server").delete()
+
+
 # KeaDhcpLink follows its targets into branches (ADR 0008), but branch migrate fakes every plugin migration.
 fake_on_branch = True
 
@@ -20,6 +27,7 @@ class Migration(migrations.Migration):
             model_name='keadhcplink',
             name='keadhcplink_kind_identity',
         ),
+        migrations.RunPython(migrations.RunPython.noop, remove_family_links),
         migrations.AddConstraint(
             model_name='keadhcplink',
             constraint=models.UniqueConstraint(condition=models.Q(('kea_identity__isnull', True), ('kea_subnet_id__isnull', True)), fields=('server', 'family', 'kind'), name='keadhcplink_unique_family_source'),
