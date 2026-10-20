@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from .dhcp_plugin_capabilities import PluginCapabilities
 
 
-def decimal(value):
+def to_decimal(value):
     """Coerce a Kea numeric to ``Decimal`` via ``str`` (avoids float-precision noise)."""
     return None if value is None else Decimal(str(value))
 
@@ -60,7 +60,7 @@ DDNS_FIELDS: FieldMap = (
     ("ddns-qualifying-suffix", "ddns_qualifying_suffix", None),
     ("ddns-update-on-renew", "ddns_update_on_renew", None),
     ("ddns-conflict-resolution-mode", "ddns_conflict_resolution_mode", None),
-    ("ddns-ttl-percent", "ddns_ttl_percent", decimal),
+    ("ddns-ttl-percent", "ddns_ttl_percent", to_decimal),
     ("ddns-ttl", "ddns_ttl", None),
     ("ddns-ttl-min", "ddns_ttl_min", None),
     ("ddns-ttl-max", "ddns_ttl_max", None),
@@ -95,9 +95,9 @@ COMMON_FIELDS: FieldMap = (
     ("reservations-out-of-pool", "reservations_out_of_pool", None),
     ("reservations-in-subnet", "reservations_in_subnet", None),
     ("calculate-tee-times", "calculate_tee_times", None),
-    ("t1-percent", "t1_percent", decimal),
-    ("t2-percent", "t2_percent", decimal),
-    ("cache-threshold", "cache_threshold", decimal),
+    ("t1-percent", "t1_percent", to_decimal),
+    ("t2-percent", "t2_percent", to_decimal),
+    ("cache-threshold", "cache_threshold", to_decimal),
     ("cache-max-age", "cache_max_age", None),
     ("store-extended-info", "store_extended_info", None),
     ("allocator", "allocator", None),

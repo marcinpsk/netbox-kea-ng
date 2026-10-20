@@ -77,6 +77,7 @@ if TYPE_CHECKING:
     )
 
 from django.apps import apps
+from django.core.exceptions import ValidationError
 from django.db.models.signals import post_delete
 
 from .. import event_scope, kea_paths
@@ -171,6 +172,10 @@ def _ownership_report() -> SyncReport:
     from ..ipam_reconciliation import SyncReport
 
     return SyncReport()
+
+
+class ManagedFieldsMismatch(RuntimeError):
+    """A writer's fields are not the managed fields of its model: a programming error that fails the run."""
 
 
 def write_failed(family: int, kind: Kind, path: str) -> ImportEntry:
@@ -439,9 +444,7 @@ def _write_option_definition(
                     return _held_option_definition(held, family, key, path, summary)
             if obj is None:
                 obj = OptionDefinition(name=def_intent.name, standard=False)
-                for name, value in _managed_changes(obj, fields, capabilities).items():
-                    setattr(obj, name, value)
-                obj.save()
+                _create_row(obj, fields, capabilities)
                 outcome = Outcome.CREATED
             else:
                 changes = _managed_changes(obj, fields, capabilities)
@@ -450,6 +453,8 @@ def _write_option_definition(
                     outcome = Outcome.UPDATED
             observe_mapping(definitions.server, family, obj, key.source)
     except event_scope.EventDispatchError:
+        raise
+    except ManagedFieldsMismatch:
         raise
     except Exception as exc:  # noqa: BLE001 — a bad definition must not abort the import
         summary.record(write_failed(family, Kind.OPTION_DEFINITION, path))
@@ -504,6 +509,18 @@ def _resolve_option_definition(
     return found if found is not None else _NO_DEFINITION
 
 
+def _option_values(candidate, opt: DHCPOption) -> dict:
+    """Return the managed fields of an Option as the DHCP plugin stores them, after ``Option.clean`` on *candidate*.
+
+    The plugin's clean step normalizes some values, for example the CSV format of a binary option.
+    """
+    candidate.data = opt.data or ""
+    candidate.csv_format = opt.csv_format
+    candidate.send_option = _send_option(opt)
+    candidate.clean()
+    return {"data": candidate.data, "csv_format": candidate.csv_format, "send_option": candidate.send_option}
+
+
 def upsert_options(
     parent_obj,
     options,
@@ -533,18 +550,16 @@ def upsert_options(
             summary.record(not_written(family, Kind.OPTION, path, definition.reason, definition.detail))
             summary.warn(f"option {option_identity(opt, family)}: no matching definition, skipped")
             continue
-        desired = {"data": opt.data or "", "csv_format": opt.csv_format, "send_option": _send_option(opt)}
         outcome = None
         try:
             with event_scope.atomic():
+                new = Option(definition=definition, assigned_object_type=ct, assigned_object_id=parent_obj.pk)
+                desired = _option_values(new, opt)
                 obj = Option.objects.filter(
                     assigned_object_type=ct, assigned_object_id=parent_obj.pk, definition=definition
                 ).first()
                 if obj is None:
-                    obj = Option(definition=definition, assigned_object_type=ct, assigned_object_id=parent_obj.pk)
-                    for name, value in _managed_changes(obj, desired, capabilities).items():
-                        setattr(obj, name, value)
-                    obj.save()
+                    _create_row(new, desired, capabilities)
                     outcome = Outcome.CREATED
                 elif changes := _managed_changes(obj, desired, capabilities):
                     _save_changes(obj, changes)
@@ -552,6 +567,8 @@ def upsert_options(
             if outcome is not None:
                 summary.record(written(family, Kind.OPTION, path, outcome))
         except event_scope.EventDispatchError:
+            raise
+        except ManagedFieldsMismatch:
             raise
         except Exception as exc:  # noqa: BLE001 — one bad option must not abort the import
             summary.record(write_failed(family, Kind.OPTION, path))
@@ -577,6 +594,14 @@ class _Source:
     path: str
 
 
+def _not_converted(kea_key: str, error: Exception, summary: ImportSummary, source: _Source) -> None:
+    """Record a Kea value that the DHCP plugin field cannot hold."""
+    path = kea_paths.setting(source.path, kea_key)
+    detail = "The value cannot be converted to the DHCP plugin field."
+    summary.record(not_written(source.family, source.kind, path, Reason.PLUGIN_GAP, detail))
+    summary.warn(f"setting {kea_key}: {error}")
+
+
 def _transform_value(transform, raw, kea_key: str, summary: ImportSummary, source: _Source):
     """Apply a field transform. A value that it cannot convert has an entry and gives ``None``."""
     if transform is None:
@@ -584,10 +609,7 @@ def _transform_value(transform, raw, kea_key: str, summary: ImportSummary, sourc
     try:
         return transform(raw)
     except Exception as exc:  # noqa: BLE001 — a bad scalar must not abort the import
-        path = kea_paths.setting(source.path, kea_key)
-        detail = "The value cannot be converted to the DHCP plugin field."
-        summary.record(not_written(source.family, source.kind, path, Reason.PLUGIN_GAP, detail))
-        summary.warn(f"setting {kea_key}: {exc}")
+        _not_converted(kea_key, exc, summary, source)
         return None
 
 
@@ -600,14 +622,23 @@ def _cleared(obj, attr: str):
 def _settings_fields(obj, settings: dict, field_map, summary: ImportSummary, source: _Source) -> dict:
     """Plan *obj*'s settings fields from its Declared Values. A key that *settings* lacks clears its field to inherit.
 
-    Return the desired fields without changing *obj*.
+    A value that the plugin field refuses has an entry and leaves its field as it is. Return the desired fields
+    without changing *obj*.
     """
     fields = {}
     for kea_key, attr, transform in field_map:
         value = (
             _transform_value(transform, settings[kea_key], kea_key, summary, source) if kea_key in settings else None
         )
-        fields[attr] = _cleared(obj, attr) if value is None else value
+        if value is None:
+            fields[attr] = _cleared(obj, attr)
+            continue
+        try:
+            obj._meta.get_field(attr).clean(value, obj)
+        except ValidationError as exc:
+            _not_converted(kea_key, exc, summary, source)
+            value = getattr(obj, attr)
+        fields[attr] = value
     return fields
 
 
@@ -621,11 +652,18 @@ def _managed_changes(obj, desired: dict, capabilities: PluginCapabilities) -> di
     named = {obj._meta.get_field(key).name for key in desired}
     expected = {field.name for field in managed_fields(model, capabilities) if not field.relation}
     if named != expected or len(named) != len(desired):
-        raise RuntimeError(
+        raise ManagedFieldsMismatch(
             f"The {model} write does not match its managed fields: "
             f"missing {sorted(expected - named)}, unexpected {sorted(named - expected)}"
         )
     return {key: value for key, value in desired.items() if getattr(obj, key) != value}
+
+
+def _create_row(obj, desired: dict, capabilities: PluginCapabilities) -> None:
+    """Set the managed fields of the new row *obj* to *desired* and save it."""
+    for name, value in _managed_changes(obj, desired, capabilities).items():
+        setattr(obj, name, value)
+    obj.save()
 
 
 def _save_changes(obj, changes: dict) -> None:
@@ -683,20 +721,18 @@ def _identifier_values(
 
 
 def server_values(
-    planned: PlannedServer, family: int, capabilities: PluginCapabilities, summary: ImportSummary
+    dhcp_server, planned: PlannedServer, family: int, capabilities: PluginCapabilities, summary: ImportSummary
 ) -> dict:
     """Return the managed DHCPServer fields of one family's global configuration, by field name.
 
-    ``None`` clears a field that Kea does not declare. A gated fact whose capability is missing is not a field here:
-    it has an unsupported entry instead. The Reservation identifier types are missing when Kea's list is not valid.
+    A field that Kea does not declare is cleared (``None`` for a gated field). A value that the field of
+    *dhcp_server* refuses keeps the current value. A gated fact whose capability is missing is not a field here: it
+    has an unsupported entry instead. The Reservation identifier types are missing when Kea's list is not valid.
     """
     settings = planned.global_settings
     root = kea_paths.daemon(family)
     source = _Source(family, Kind.SERVER, root)
-    values = {
-        attr: _transform_value(transform, settings[kea_key], kea_key, summary, source) if kea_key in settings else None
-        for kea_key, attr, transform in SERVER_FIELDS
-    }
+    values = _settings_fields(dhcp_server, settings, SERVER_FIELDS, summary, source)
     values |= _server_id_values(settings.get(kea_paths.SERVER_ID), root, family, capabilities, summary)
     if planned.host_reservation_identifiers is not None:
         values["host_reservation_identifiers"] = _identifier_values(
@@ -741,6 +777,8 @@ def _apply_global_settings(
         with event_scope.atomic():
             _save_changes(dhcp_server, changed)
     except event_scope.EventDispatchError:
+        raise
+    except ManagedFieldsMismatch:
         raise
     except Exception as exc:  # noqa: BLE001
         summary.record(write_failed(family, Kind.SERVER, kea_paths.daemon(family)))
@@ -890,7 +928,7 @@ def _released_client_class_name(server, kea_name: str) -> str:
     return f"{server.name}: {kea_name}"[:255]
 
 
-def _client_class_changes(
+def _client_class_fields(
     obj,
     dhcp_server,
     planned: PlannedClientClass,
@@ -899,7 +937,7 @@ def _client_class_changes(
     capabilities: PluginCapabilities,
     name_taken: bool,
 ) -> dict:
-    """Plan the changed managed fields of one Client Class. A class whose Kea name is taken keeps its name."""
+    """Plan the managed fields of one Client Class. A class whose Kea name is taken keeps its name."""
     intent = planned.intent
     fields = {
         "name": obj.name if name_taken else planned.key,
@@ -925,7 +963,7 @@ def _client_class_changes(
         )
     source = _Source(intent.family, Kind.CLIENT_CLASS, path)
     fields.update(_settings_fields(obj, planned.settings, CLIENT_CLASS_FIELDS, summary, source))
-    return _managed_changes(obj, fields, capabilities)
+    return fields
 
 
 def _class_name_taken(name: str, obj, dhcp_server, capabilities: PluginCapabilities) -> bool:
@@ -980,19 +1018,18 @@ def upsert_client_class(
                 return None
             if obj is None:
                 obj = ClientClass()
-                for name, value in _client_class_changes(
-                    obj, dhcp_server, planned, summary, path, capabilities, name_taken=False
-                ).items():
-                    setattr(obj, name, value)
-                obj.save()
+                fields = _client_class_fields(obj, dhcp_server, planned, summary, path, capabilities, name_taken=False)
+                _create_row(obj, fields, capabilities)
                 outcome = Outcome.CREATED
             else:
-                changes = _client_class_changes(obj, dhcp_server, planned, summary, path, capabilities, name_taken)
-                if changes:
+                fields = _client_class_fields(obj, dhcp_server, planned, summary, path, capabilities, name_taken)
+                if changes := _managed_changes(obj, fields, capabilities):
                     _save_changes(obj, changes)
                     outcome = Outcome.UPDATED
             observe_mapping(server, intent.family, obj, source)
     except event_scope.EventDispatchError:
+        raise
+    except ManagedFieldsMismatch:
         raise
     except Exception as exc:  # noqa: BLE001 — one bad class must not abort the import
         summary.record(write_failed(intent.family, Kind.CLIENT_CLASS, path))
@@ -1069,17 +1106,16 @@ def upsert_subnet(
                 "subnet_id": planned.key if planned.key is not None else subnet_obj.subnet_id,
                 **_settings_fields(subnet_obj, planned.settings, SUBNET_FIELDS, summary, source),
             }
-            changes = _managed_changes(subnet_obj, fields, capabilities)
             if existing is None:
-                for name, value in changes.items():
-                    setattr(subnet_obj, name, value)
-                subnet_obj.save()
-            elif changes:
+                _create_row(subnet_obj, fields, capabilities)
+            elif changes := _managed_changes(subnet_obj, fields, capabilities):
                 _save_changes(subnet_obj, changes)
                 changed = True
             if mapping is not None:
                 observe_mapping(server, intent.family, subnet_obj, mapping)
     except event_scope.EventDispatchError:
+        raise
+    except ManagedFieldsMismatch:
         raise
     except Exception as exc:  # noqa: BLE001 — one bad subnet must not abort the import
         summary.record(write_failed(intent.family, Kind.SUBNET, path))
@@ -1269,12 +1305,13 @@ def settle_subnet_ids(
 
 @dataclass(frozen=True)
 class ClassReferences:
-    """The client classes that one family of a Server imports, for the class lists of its other Kea objects."""
+    """The client classes that this run imported for one family, for the class lists of its other Kea objects."""
 
-    server: Server
     family: int
     # The names that Kea's client-classes of this family defines.
     defined: frozenset[str]
+    # The row of each class that this run wrote, by Kea name.
+    imported: dict[str, int]
 
     def resolve(
         self, names: tuple[str, ...], parent_path: str, key: str, kind: Kind, summary: ImportSummary
@@ -1285,9 +1322,8 @@ class ClassReferences:
         """
         found = set()
         for name in names:
-            obj = mapped_target(self.server, self.family, MappingSource.named(Kind.CLIENT_CLASS, name))
-            if obj is not None:
-                found.add(obj.pk)
+            if name in self.imported:
+                found.add(self.imported[name])
                 continue
             path = kea_paths.class_reference(parent_path, key, name)
             if name in self.defined:
@@ -1316,8 +1352,10 @@ def _upsert_pool(
     source = planned_pool.key.source
     same_range = Pool.objects.filter(subnet=subnet_obj, ip_range=range_obj)
     if source is None:
-        # A Subnet without a Kea subnet ID gives its Pools no mapping identity, so they match by structure.
+        # A Subnet without a Kea subnet ID gives its Pools no mapping identity. An unmapped Pool stays as it is.
         pool_obj = same_range.first()
+        if pool_obj is not None:
+            return pool_obj, None
     else:
         pool_obj = mapped_target(server, family, source)
         if pool_obj is None:
@@ -1332,13 +1370,11 @@ def _upsert_pool(
         "pool_id": intent.pool_id,
         **_settings_fields(pool_obj, intent.settings, POOL_FIELDS, summary, _Source(family, Kind.POOL, path)),
     }
-    changes = _managed_changes(pool_obj, fields, capabilities)
     relations = _relation_changes(pool_obj, classes)
+    changes: dict = {}
     if created:
-        for name, value in changes.items():
-            setattr(pool_obj, name, value)
-        pool_obj.save()
-    elif changes:
+        _create_row(pool_obj, fields, capabilities)
+    elif changes := _managed_changes(pool_obj, fields, capabilities):
         _save_changes(pool_obj, changes)
     elif relations:
         pool_obj.snapshot()
@@ -1401,6 +1437,8 @@ def upsert_pools(
                         capabilities,
                     )
         except event_scope.EventDispatchError:
+            raise
+        except ManagedFieldsMismatch:
             raise
         except Exception as exc:  # noqa: BLE001 — one bad pool must not abort the import
             summary.record(write_failed(intent.family, Kind.POOL, path))
@@ -1524,20 +1562,18 @@ def _upsert_reservation(
             }
             if obj is None:
                 obj = HostReservation(name=_reservation_name(scope_name, reservation))
-                for name, value in _managed_changes(obj, fields, capabilities).items():
-                    setattr(obj, name, value)
-                obj.save()
+                _create_row(obj, fields, capabilities)
             else:
-                obj.snapshot()
                 changes = _managed_changes(obj, fields, capabilities)
                 if linked is None and subnet_obj is None:
                     # Newly adopted: take the family-qualified name so the other family is free
                     # to create its own row under the unique-name constraint.
                     changes["name"] = _reservation_name(scope_name, reservation)
                 if changes:
-                    for name, value in changes.items():
-                        setattr(obj, name, value)
-                    obj.save()
+                    _save_changes(obj, changes)
+                else:
+                    # The relation writes below need the state before the run.
+                    obj.snapshot()
             # An empty address list clears the previous IPv6 relations.
             wanted = {address.pk for address in ipv6_ips}
             obj.ipv6_addresses.remove(*(addresses - wanted))
@@ -1552,6 +1588,8 @@ def _upsert_reservation(
             )
             observe_mapping(server, reservation.family, obj, key.source)
     except event_scope.EventDispatchError:
+        raise
+    except ManagedFieldsMismatch:
         raise
     except Exception:
         summary.record(write_failed(reservation.family, Kind.RESERVATION, path))
@@ -1848,7 +1886,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         server, {planned.key: planned.intent for planned in plan.option_definitions}, adoption_servers
     )
 
-    values = server_values(plan.server, plan.family, capabilities, summary)
+    values = server_values(dhcp_server, plan.server, plan.family, capabilities, summary)
     changed = _apply_global_settings(dhcp_server, values, summary, plan.family, capabilities)
     linked = _link_interfaces(dhcp_server, plan.server.interfaces, summary, plan.family)
     if changed is not None and (created or changed or linked):
@@ -1856,9 +1894,13 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     upsert_options(
         dhcp_server, plan.server.global_options, plan.family, dhcp_server, custom_defs, summary, root, capabilities
     )
+    imported_classes = {}
     for planned_class in plan.client_classes:
-        upsert_client_class(server, dhcp_server, planned_class, custom_defs, summary, capabilities)
-    classes = ClassReferences(server, plan.family, frozenset(planned.key for planned in plan.client_classes))
+        row = upsert_client_class(server, dhcp_server, planned_class, custom_defs, summary, capabilities)
+        if row is not None:
+            imported_classes[planned_class.key] = row.pk
+    defined = frozenset(planned.key for planned in plan.client_classes)
+    classes = ClassReferences(plan.family, defined, imported_classes)
     for planned_network in plan.shared_networks:
         summary.record(
             not_written(

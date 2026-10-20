@@ -962,40 +962,44 @@ class DhcpPluginTuningImportTest(TestCase):
         srv = imported_dhcp_server(self.server, 4)
         self.assertEqual(srv.valid_lifetime, 7200)
 
-    def test_failed_global_save_leaves_the_subnet_with_the_values_kea_declares(self):
+    def test_a_global_value_that_the_plugin_field_cannot_hold_is_unsupported_and_the_rest_imports(self):
         apps.get_model(DHCP_PLUGIN, "DHCPServer")
         Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
         conf1 = {"valid-lifetime": 3600, "subnet4": [{"id": 8, "subnet": "10.43.0.0/24", "valid-lifetime": 7200}]}
         first = self.adapter.import_server_config(self.server, parse_dhcp_config(conf1, 4))
         self.assertEqual(first.errors, 0, first.warnings)
 
-        # A uint32 Kea lifetime is above the PostgreSQL integer maximum, so the global save fails in the driver.
+        # A uint32 Kea lifetime is above the largest value of the plugin's integer field.
         uint32_max = 4294967295
         conf2 = {
             "valid-lifetime": uint32_max,
+            "renew-timer": 900,
             "subnet4": [{"id": 8, "subnet": "10.43.0.0/24", "valid-lifetime": uint32_max}],
         }
         second = self.adapter.import_server_config(self.server, parse_dhcp_config(conf2, 4))
 
-        self.assertEqual(imported_dhcp_server(self.server, 4).valid_lifetime, 3600)
-        subnet = Subnet.objects.get(prefix__prefix="10.43.0.0/24")
+        self.assertEqual(second.errors, 0, second.warnings)
+        server = imported_dhcp_server(self.server, 4)
+        self.assertEqual((server.valid_lifetime, server.renew_timer), (3600, 900))
         # The Subnet inherits the global value in Kea, whatever the DHCPServer row holds.
-        self.assertIsNone(subnet.valid_lifetime)
-        self.assertEqual(second.errors, 1, second.warnings)
-        self.assertIn("DHCPServer settings", second.warnings[0])
+        self.assertIsNone(Subnet.objects.get(prefix__prefix="10.43.0.0/24").valid_lifetime)
+        self.assertEqual(
+            [(entry.path, entry.reason) for entry in second.entries if entry.reason == Reason.PLUGIN_GAP],
+            [("Dhcp4/valid-lifetime", Reason.PLUGIN_GAP), ("Dhcp4", Reason.PLUGIN_GAP)],
+        )
 
-    def test_failed_global_save_on_a_new_dhcp_server_has_only_the_failure_entry(self):
-        from netbox_kea.integrations.dhcp_import_report import Kind, Reason
+    def test_a_new_dhcp_server_with_a_global_value_that_the_plugin_cannot_hold_is_created(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
 
-        # A uint32 Kea lifetime is above the PostgreSQL integer maximum, so the settings save fails in the driver.
         summary = self.adapter.import_server_config(
             self.server, parse_dhcp_config({"valid-lifetime": 4294967295, "subnet4": []}, 4)
         )
 
         self.assertEqual(
-            [(entry.path, entry.reason) for entry in summary.entries if entry.kind == Kind.SERVER],
-            [("Dhcp4", Reason.PLUGIN_GAP), ("Dhcp4", Reason.WRITE_FAILED)],
+            [(entry.path, entry.reason or entry.outcome) for entry in summary.entries if entry.kind == Kind.SERVER],
+            [("Dhcp4/valid-lifetime", Reason.PLUGIN_GAP), ("Dhcp4", Reason.PLUGIN_GAP), ("Dhcp4", Outcome.CREATED)],
         )
+        self.assertIsNone(imported_dhcp_server(self.server, 4).valid_lifetime)
 
 
 def _device(name: str, *interfaces: str):
@@ -1290,7 +1294,11 @@ class DhcpPluginServerPerFamilyTest(TestCase):
         summary = self.adapter.ImportSummary()
 
         values = self.adapter.server_values(
-            plan_family(intent, None).server, 6, PluginCapabilities(frozenset(Capability)), summary
+            apps.get_model(DHCP_PLUGIN, "DHCPServer")(),
+            plan_family(intent, None).server,
+            6,
+            PluginCapabilities(frozenset(Capability)),
+            summary,
         )
 
         gated = (
@@ -2365,17 +2373,24 @@ class DhcpPluginManagedFieldTest(TestCase):
         self.server = _make_db_server(name=f"kea-owned-{timezone.now().timestamp()}")
         self.conf = _owned_conf()
 
-    def _import(self, conf: dict | None = None):
+    def _apply(self, conf: dict | None = None, family: Family = 4):
         from netbox_kea.integrations.dhcp_import_plan import plan_family
         from netbox_kea.integrations.dhcp_plugin_capabilities import probe
 
         conf = self.conf if conf is None else conf
-        intent = parse_dhcp_config(conf, 4)
+        intent = parse_dhcp_config(conf, family)
         # The read step takes the identifier types from the Server Configuration Snapshot.
         intent.host_reservation_identifiers = tuple(conf.get("host-reservation-identifiers", ())) or None
-        summary = self.adapter.apply_plan(self.server, plan_family(intent, _reservation_snapshot(conf, 4)), probe())
+        return self.adapter.apply_plan(self.server, plan_family(intent, _reservation_snapshot(conf, family)), probe())
+
+    def _import(self, conf: dict | None = None, family: Family = 4):
+        summary = self._apply(conf, family)
         self.assertEqual(summary.errors, 0, summary.warnings)
         return summary
+
+    @staticmethod
+    def _not_written(summary, prefix: str) -> dict:
+        return {entry.path: entry.reason for entry in summary.entries if entry.path.startswith(prefix) and entry.reason}
 
     def _rows(self) -> list:
         """Return each mapped row of the import, and each Option that the import wrote."""
@@ -2496,6 +2511,7 @@ class DhcpPluginManagedFieldTest(TestCase):
 
         tag = Tag.objects.create(name="operator", slug="operator")
         device = _device(f"{self.server.name}-host")
+        cluster = apps.get_model(DHCP_PLUGIN, "DHCPCluster").objects.create(name=f"{self.server.name} cluster")
         self._import()
         hand = {}
         for row in self._rows():
@@ -2506,7 +2522,7 @@ class DhcpPluginManagedFieldTest(TestCase):
             if "name" in names and type(row).__name__ != "ClientClass":
                 values["name"] = f"hand {type(row).__name__} {row.pk}"
             if type(row).__name__ == "DHCPServer":
-                values["device"] = device
+                values |= {"device": device, "dhcp_cluster": cluster}
             type(row).objects.filter(pk=row.pk).update(**values)
             row.tags.add(tag)
             hand[(type(row).__name__, row.pk)] = values
@@ -2611,6 +2627,166 @@ class DhcpPluginManagedFieldTest(TestCase):
         self.assertIn("blocked", references[f"{_OWNED_POOL}/client-classes[blocked]"][1])
         self.assertIn("does not define", references[f"{_OWNED_POOL}/client-classes[KNOWN]"][1])
         self.assertEqual(summary.pools_created, 1)
+
+    def test_a_hand_edit_of_a_dhcpv6_row_is_overwritten_with_keas_value(self):
+        model = partial(apps.get_model, DHCP_PLUGIN)
+        conf = {
+            "preferred-lifetime": 3000,
+            "subnet6": [
+                {
+                    "id": 3,
+                    "subnet": "2001:db8:93::/64",
+                    "preferred-lifetime": 2000,
+                    "reservations": [{"duid": "01:02:03:93:06", "ip-addresses": ["2001:db8:93::50"]}],
+                }
+            ],
+        }
+        self._import(conf, family=6)
+        server = imported_dhcp_server(self.server, 6)
+        subnet = model("Subnet").objects.get(prefix__prefix="2001:db8:93::/64")
+        reservation = model("HostReservation").objects.get(duid="01:02:03:93:06")
+        type(server).objects.filter(pk=server.pk).update(preferred_lifetime=1, max_preferred_lifetime=9)
+        model("Subnet").objects.filter(pk=subnet.pk).update(preferred_lifetime=1)
+        reservation.ipv6_addresses.clear()
+
+        self._import(conf, family=6)
+
+        server.refresh_from_db()
+        subnet.refresh_from_db()
+        self.assertEqual((server.preferred_lifetime, server.max_preferred_lifetime), (3000, None))
+        self.assertEqual(subnet.preferred_lifetime, 2000)
+        self.assertEqual([str(ip.address) for ip in reservation.ipv6_addresses.all()], ["2001:db8:93::50/64"])
+
+    def test_an_option_reservation_and_definition_value_that_kea_stops_declaring_is_cleared(self):
+        model = partial(apps.get_model, DHCP_PLUGIN)
+        self.conf["option-def"][0] |= {"array": True, "encapsulate": "site-space"}
+        self.conf["option-data"][0] |= {"csv-format": False, "always-send": True}
+        self._import()
+        conf = _owned_conf()
+        del conf["subnet4"][0]["reservations"][0]["hostname"]
+
+        self._import(conf)
+
+        definition = model("OptionDefinition").objects.get(standard=False, code=222)
+        self.assertEqual((definition.array, definition.encapsulate), (False, None))
+        option = imported_dhcp_server(self.server, 4).options.get()
+        self.assertEqual((option.csv_format, option.send_option), (None, None))
+        self.assertIsNone(model("HostReservation").objects.get(hw_address__mac_address="aa:bb:cc:dd:ee:93").hostname)
+
+    def test_a_pool_without_a_mapping_in_a_subnet_without_a_kea_id_is_left_alone(self):
+        from netbox_kea.integrations.dhcp_import_plan import plan_family
+        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+
+        Pool = apps.get_model(DHCP_PLUGIN, "Pool")
+        conf = {
+            "subnet4": [
+                {"subnet": "10.93.5.0/24", "pools": [{"pool": "10.93.5.10-10.93.5.20", "pool-id": 4, "ddns-ttl": 60}]}
+            ]
+        }
+        self._import(conf)
+        pool = Pool.objects.get(subnet__prefix__prefix="10.93.5.0/24")
+        Pool.objects.filter(pk=pool.pk).update(pool_id=9, ddns_ttl=None)
+        (planned_pool,) = plan_family(parse_dhcp_config(conf, 4), None).subnets[0].pools
+        summary = self.adapter.ImportSummary()
+
+        _row, outcome = self.adapter._upsert_pool(
+            self.server,
+            4,
+            pool.subnet,
+            pool.ip_range,
+            planned_pool,
+            {"client_classes": set(), "evaluate_additional_classes": set()},
+            summary,
+            "Dhcp4/subnet4[subnet=10.93.5.0/24]/pools[pool=10.93.5.10-10.93.5.20]",
+            probe(),
+        )
+
+        self.assertIsNone(outcome)
+        self.assertEqual(Pool.objects.filter(pk=pool.pk).values_list("pool_id", "ddns_ttl").get(), (9, None))
+
+    def test_a_write_that_misses_a_managed_field_fails_the_run(self):
+        from unittest import mock
+
+        from netbox_kea.integrations import dhcp_import_fields
+        from netbox_kea.integrations.dhcp_import_fields import MANAGED_FIELDS, ManagedField
+
+        listed = {"ClientClass": (*MANAGED_FIELDS["ClientClass"], ManagedField("weight"))}
+        with mock.patch.dict(dhcp_import_fields.MANAGED_FIELDS, listed):
+            with self.assertRaisesRegex(RuntimeError, "ClientClass write does not match its managed fields"):
+                self._apply()
+
+    def test_an_unchanged_binary_option_is_not_updated(self):
+        self.conf["option-def"].append({"name": "blob", "code": 223, "type": "binary", "space": "dhcp4"})
+        self.conf["option-data"].append({"code": 223, "data": "0A0B", "csv-format": True})
+        self._import()
+
+        summary = self._import()
+
+        self.assertEqual([entry for entry in summary.entries if entry.kind == Kind.OPTION and entry.reason is None], [])
+
+    def test_an_option_whose_definition_becomes_binary_takes_the_binary_csv_format(self):
+        self.conf["option-def"].append({"name": "blob", "code": 223, "type": "string", "space": "dhcp4"})
+        self.conf["option-data"].append({"code": 223, "data": "0A0B", "csv-format": True})
+        self._import()
+        option = imported_dhcp_server(self.server, 4).options.get(definition__code=223)
+        self.assertTrue(option.csv_format)
+        self.conf["option-def"][1]["type"] = "binary"
+
+        self._import()
+
+        option.refresh_from_db()
+        self.assertIs(option.csv_format, False)
+
+    def test_a_pool_class_that_kea_no_longer_defines_is_unlinked_and_reported(self):
+        self._import()
+        conf = _owned_conf()
+        del conf["client-classes"][1]
+
+        summary = self._import(conf)
+
+        self.assertEqual(self._class_names(self._pool().evaluate_additional_classes), [])
+        self.assertEqual(
+            self._not_written(summary, f"{_OWNED_POOL}/"),
+            {f"{_OWNED_POOL}/evaluate-additional-classes[printers]": Reason.NO_PLUGIN_HOME},
+        )
+
+    def test_a_pool_class_whose_import_failed_in_this_run_is_unlinked_and_reported(self):
+        self._import()
+        conf = _owned_conf()
+        # The plugin's boolean field refuses this value, so the class write fails.
+        conf["client-classes"][1]["only-in-additional-list"] = "yes"
+
+        summary = self._apply(conf)
+
+        self.assertEqual(summary.count(Kind.CLIENT_CLASS, Reason.WRITE_FAILED), 1, summary.warnings)
+        self.assertEqual(self._class_names(self._pool().evaluate_additional_classes), [])
+        self.assertEqual(
+            self._not_written(summary, f"{_OWNED_POOL}/"),
+            {f"{_OWNED_POOL}/evaluate-additional-classes[printers]": Reason.PARENT_NOT_IMPORTED},
+        )
+
+    def test_a_pool_value_that_the_plugin_field_cannot_hold_is_unsupported_and_the_pool_imports(self):
+        self.conf["subnet4"][0]["pools"][0]["ddns-ttl-percent"] = 0.1234
+        first = self._import()
+
+        second = self._import()
+
+        pool = self._pool()
+        self.assertEqual((pool.ddns_ttl_percent, pool.pool_id, pool.ddns_send_updates), (None, 5, True))
+        path = f"{_OWNED_POOL}/ddns-ttl-percent"
+        for summary in (first, second):
+            self.assertEqual(self._not_written(summary, path), {path: Reason.PLUGIN_GAP})
+        self.assertEqual([entry for entry in second.entries if entry.kind == Kind.POOL and entry.reason is None], [])
+
+    def test_a_subnet_value_that_the_plugin_field_cannot_hold_is_unsupported_and_the_subnet_imports(self):
+        self.conf["subnet4"][0]["ddns-ttl-percent"] = 0.1234
+
+        summary = self._import()
+
+        subnet = apps.get_model(DHCP_PLUGIN, "Subnet").objects.get(prefix__prefix="10.93.0.0/24")
+        self.assertEqual((subnet.ddns_ttl_percent, subnet.valid_lifetime), (None, 7200))
+        path = "Dhcp4/subnet4[id=1]/ddns-ttl-percent"
+        self.assertEqual(self._not_written(summary, path), {path: Reason.PLUGIN_GAP})
 
     def test_with_plugin_0_2_0_a_gated_field_is_unsupported_and_neither_written_nor_cleared(self):
         from netbox_kea.integrations.dhcp_import_fields import managed_fields

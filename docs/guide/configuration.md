@@ -63,26 +63,28 @@ the DHCP plugin cannot hold.
 
 The import keeps a DHCP Import Mapping from each DHCP Server, Subnet, Pool, Reservation, client class and custom
 Option Definition that it writes to its Kea source. A later run finds the object through its mapping and updates it.
-Kea owns the managed fields of a mapped object: each run sets every managed field from Kea, and clears a managed field
-that Kea does not declare, so the DHCP plugin inherits its value. A hand edit of a managed field is overwritten at the
-next run. The import does not change the other fields, such as tags, comments, description, status, weight and the
-device or virtual machine. It also does not change an object without a mapping, such as a Pool or Reservation that
-you add. A DHCP Option has no mapping of its own: the import finds it by its object and its Option Definition, so a
-DHCP Option that you add with another Option Definition stays. When you rename an object, the mapping stays and the
-import keeps your name. A client class is the exception: it keeps its Kea name, because Kea refers to a class by name. The first run after an upgrade maps each object that an earlier release
-imported, so it makes no duplicate, and renames each client class from `kea1: voip` to `voip`. The DHCP plugin keeps
-client class names unique across all DHCP Servers. So when another client class already holds the name, the class is
-unsupported: a new class is not created, and an existing class keeps its old name while its other fields still
-follow Kea. With netbox-plugin-dhcp 0.2.0, the family of a DHCP Server, the `server-id` parameters other than its
-type, a global `user-context`, the `flex-id` Reservation identifier, `allow-address-registration` (DHCPv6) and
-`stash-agent-options` (DHCPv4) are unsupported. The rest of the global configuration imports.
+Kea owns the managed fields of a mapped object. Each run sets every managed field from Kea. It clears a managed field
+that Kea does not declare, so the DHCP plugin inherits its value. The next run overwrites a hand edit of a managed
+field. The import does not change the other fields, such as tags, comments, description, status, weight, cluster and
+the device or virtual machine. It also does not change an object without a mapping, such as a Pool or Reservation that
+you add. A DHCP Option has no mapping of its own. The import finds it by its object and its Option Definition. So a DHCP
+Option that you add with another Option Definition stays. When you rename an object, the mapping stays and the import
+keeps your name. A client class is the exception: it keeps its Kea name, because Kea refers to a class by name. The
+first run after an upgrade maps each object that an earlier release imported, so it makes no duplicate. It also renames
+each client class from `kea1: voip` to `voip`. The DHCP plugin keeps client class names unique across all DHCP
+Servers. So when another client class already holds the name, the class is unsupported. A new class is not created.
+An existing class keeps its old name, and its other fields still follow Kea. With netbox-plugin-dhcp 0.2.0, these
+global facts are unsupported: the family of a DHCP Server, the `server-id` parameters other than its type, a global
+`user-context`, the `flex-id` Reservation identifier, `allow-address-registration` (DHCPv6) and `stash-agent-options`
+(DHCPv4). The rest of the global configuration imports.
 
-The managed fields of each DHCP plugin model are in the table. A field behind a DHCP Plugin Capability is managed only
-when the installed DHCP plugin has that capability. Without it, the import does not write or clear the field, and
-reports the Kea value as unsupported. A Pool's `client_classes` and `evaluate_additional_classes` refer to the client
-classes that the import wrote for the same DHCP Server. A class name without such a class is reported and left out:
-a class that Kea defines but that was not imported is skipped, and a class that Kea does not define (for example the
-built-in class `KNOWN`) is not imported.
+The table lists the managed fields of each DHCP plugin model. A field behind a DHCP Plugin Capability is managed only
+when the installed DHCP plugin has that capability. Without it, the import does not write or clear the field. It
+reports the Kea value as unsupported. A Kea value that the DHCP plugin field cannot hold is also unsupported, for
+example a percentage with four decimal places. That field keeps its value. A Pool's `client_classes` and
+`evaluate_additional_classes` refer to the client classes that the same run imported for the DHCP Server. The import
+reports a class name without such a class and leaves it out. A class that Kea defines but that was not imported is
+skipped. A class that Kea does not define, for example the built-in class `KNOWN`, is not imported.
 
 | Model | Managed fields | Fields behind a capability |
 | --- | --- | --- |
