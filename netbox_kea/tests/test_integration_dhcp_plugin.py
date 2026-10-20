@@ -1521,6 +1521,26 @@ class DhcpPluginMappingImportTest(TestCase):
             [(4, "client_class", "voip")],
         )
 
+    def test_one_class_name_in_both_families_is_not_imported_in_the_second_with_per_server_names(self):
+        """Per-server class names still collide here: both families of a Server share one DHCP server."""
+        from netbox_kea.integrations import dhcp_plugin
+        from netbox_kea.integrations.dhcp_import_plan import plan_family
+        from netbox_kea.integrations.dhcp_import_report import Capability
+        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+
+        capabilities = PluginCapabilities(frozenset({Capability.NAME_PER_SERVER}))
+        for family in (4, 6):
+            conf = {"client-classes": [{"name": "voip", "test": f"family {family}"}], f"subnet{family}": []}
+            plan = plan_family(parse_dhcp_config(conf, family), None)
+            summary = dhcp_plugin.apply_plan(self.server, plan, capabilities)
+            self.assertEqual(summary.errors, 0, summary.warnings)
+
+        self.assertEqual(
+            [(entry.path, entry.reason) for entry in summary.entries if entry.kind == Kind.CLIENT_CLASS],
+            [("Dhcp6/client-classes[name=voip]", Reason.NOT_IN_SCOPE)],
+        )
+        self.assertIn("of this DHCP server", summary.warnings[0])
+
 
 @tag("dhcp_plugin")
 class DhcpPluginReservationSnapshotImportTest(TestCase):

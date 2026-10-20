@@ -788,20 +788,30 @@ def _client_class_changes(
     return {name: value for name, value in fields.items() if getattr(obj, name) != value}
 
 
-def _class_name_taken(name: str, obj, capabilities: PluginCapabilities) -> bool:
-    """Return whether another client class holds *name* while the DHCP plugin keeps class names unique globally."""
-    if capabilities.has(Capability.NAME_PER_SERVER):
-        return False
+def _class_name_taken(name: str, obj, dhcp_server, capabilities: PluginCapabilities) -> bool:
+    """Return whether another client class holds *name* in the scope where the DHCP plugin keeps class names unique."""
     others = _model("ClientClass").objects.filter(name=name)
+    if capabilities.has(Capability.NAME_PER_SERVER):
+        others = others.filter(dhcp_server=dhcp_server)
     return (others.exclude(pk=obj.pk) if obj is not None else others).exists()
 
 
-def _record_name_taken(summary: ImportSummary, family: int, path: str, name: str) -> None:
-    detail = (
-        f"Another client class holds the name {name!r}. "
-        "The DHCP plugin needs each client class name to be unique across all DHCP servers."
-    )
-    summary.record(unsupported(family, Kind.CLIENT_CLASS, path, Capability.NAME_PER_SERVER, detail))
+def _record_name_taken(
+    summary: ImportSummary, family: int, path: str, name: str, capabilities: PluginCapabilities
+) -> None:
+    if capabilities.has(Capability.NAME_PER_SERVER):
+        detail = (
+            f"Another client class of this DHCP server holds the name {name!r}. "
+            "Both families of a Server share one DHCP server."
+        )
+        entry = not_written(family, Kind.CLIENT_CLASS, path, Reason.NOT_IN_SCOPE, detail)
+    else:
+        detail = (
+            f"Another client class holds the name {name!r}. "
+            "The DHCP plugin needs each client class name to be unique across all DHCP servers."
+        )
+        entry = unsupported(family, Kind.CLIENT_CLASS, path, Capability.NAME_PER_SERVER, detail)
+    summary.record(entry)
     summary.warn(f"client-class {name}: {detail}")
 
 
@@ -826,9 +836,9 @@ def upsert_client_class(
                 # Adopt a row that the released importer created before client classes had a mapping.
                 released = ClientClass.objects.filter(name=_released_client_class_name(server, planned.key))
                 obj = _unlinked(released).first()
-            name_taken = _class_name_taken(planned.key, obj, capabilities)
+            name_taken = _class_name_taken(planned.key, obj, dhcp_server, capabilities)
             if obj is None and name_taken:
-                _record_name_taken(summary, intent.family, path, planned.key)
+                _record_name_taken(summary, intent.family, path, planned.key, capabilities)
                 _skip_options(summary, intent.family, path, intent.options)
                 return None
             if obj is None:
@@ -857,7 +867,7 @@ def upsert_client_class(
         return None
 
     if name_taken:
-        _record_name_taken(summary, intent.family, kea_paths.setting(path, "name"), planned.key)
+        _record_name_taken(summary, intent.family, kea_paths.setting(path, "name"), planned.key, capabilities)
     if outcome is not None:
         summary.record(written(intent.family, Kind.CLIENT_CLASS, path, outcome))
     upsert_options(obj, intent.options, intent.family, dhcp_server, custom_defs, summary, path)
