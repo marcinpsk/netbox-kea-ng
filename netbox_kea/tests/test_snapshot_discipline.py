@@ -86,7 +86,7 @@ def test_a_model_form_bound_to_the_receiver_changes_it():
 
 def test_inventory_accounts_for_loaded_creates_and_bookkeeping():
     assert sum(site.count for site in SITES if site.kind == "loaded") == 22
-    assert sum(site.count for site in SITES if site.kind != "loaded") == 11
+    assert sum(site.count for site in SITES if site.kind != "loaded") == 12
     assert {site.kind for site in SITES} == {"loaded", "create", "plain", "framework"}
 
 

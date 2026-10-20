@@ -181,6 +181,10 @@ class ServerConfigIntent:
     global_options: tuple[DHCPOption, ...] = ()
     option_defs: tuple[OptionDefIntent, ...] = ()
     global_settings: dict = field(default_factory=dict)
+    # None: the configuration declares no user-context.
+    user_context: dict | None = None
+    # The entries of the interface list. None: the list is not valid, so the import leaves the links alone.
+    interfaces: tuple[str, ...] | None = ()
     # Entries that the parse dropped as invalid, each with its Kea path.
     dropped: list[DroppedEntry] = field(default_factory=list)
 
@@ -316,6 +320,18 @@ def _client_class_intent(raw, family: int, path: str, dropped: list[DroppedEntry
     )
 
 
+def _interfaces(raw, family: int, dropped: list[DroppedEntry]) -> tuple[str, ...] | None:
+    """Read the interface list of ``interfaces-config``. An absent list is empty; a malformed one is dropped."""
+    if raw is None:
+        return ()
+    entries = raw.get("interfaces", []) if isinstance(raw, dict) else None
+    if not isinstance(entries, list) or not all(isinstance(entry, str) for entry in entries):
+        path = f"{kea_paths.daemon(family)}/{kea_paths.INTERFACES_CONFIG}"
+        dropped.append(DroppedEntry(Kind.SERVER, path, "The interface list is not a list of names."))
+        return None
+    return tuple(entries)
+
+
 def _config_collection(conf: dict, key: str) -> list:
     """Read an optional config collection and reject a malformed container."""
     collection = conf.get(key, [])
@@ -347,6 +363,12 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
     result.global_options = _options(conf.get("option-data"), root, dropped)
     result.option_defs = _option_defs(conf.get("option-def"), family, dropped)
     result.global_settings = _settings(conf)
+    # Global-only keys behind a DHCP Plugin Capability.
+    for key in (kea_paths.ALLOW_ADDRESS_REGISTRATION, kea_paths.STASH_AGENT_OPTIONS):
+        if key in conf:
+            result.global_settings[key] = conf[key]
+    result.user_context = conf.get(kea_paths.USER_CONTEXT)
+    result.interfaces = _interfaces(conf.get(kea_paths.INTERFACES_CONFIG), family, dropped)
 
     for index, raw_cc in enumerate(_config_collection(conf, "client-classes")):
         cc = _client_class_intent(raw_cc, family, kea_paths.client_class_entry(family, index), dropped)

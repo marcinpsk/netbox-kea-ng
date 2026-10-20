@@ -95,6 +95,20 @@ def active_tabs(response) -> list[str]:
     return _ACTIVE_TAB.findall(response.content.decode())
 
 
+def imported_dhcp_server(server, family: int):
+    """Return the DHCP plugin DHCPServer that the DHCP Import maps to the global configuration of *family*."""
+    from netbox_kea.models import KeaDhcpLink
+
+    return KeaDhcpLink.objects.get(server=server, family=family, kind="server").sys4_object
+
+
+def imported_dhcp_servers(server) -> list[int]:
+    """Return the primary keys of the DHCPServers that the DHCP Import maps to *server*, for a filter."""
+    from netbox_kea.models import KeaDhcpLink
+
+    return list(KeaDhcpLink.objects.filter(server=server, kind="server").values_list("object_id", flat=True))
+
+
 def linked_dhcp_targets(server):
     """Create one linked target of each DHCP Import Mapping kind, with object IDs that collide across models.
 
@@ -165,6 +179,8 @@ def linked_dhcp_targets(server):
             ),
             {"kind": "option_definition", "kea_identity": "dhcp4:222"},
         ),
+        # Last: deleting the DHCPServer cascades to the targets that it holds.
+        (dhcp_server, {"kind": "server"}),
     ]
     return tuple(
         (target, KeaDhcpLink.objects.create(server=server, family=4, sys4_object=target, **source))

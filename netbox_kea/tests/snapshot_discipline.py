@@ -68,6 +68,7 @@ SITES = (
     ),
     SaveSite("integrations/dhcp_plugin.py", "_upsert_pool", "pool_obj", "loaded", count=2, constructors=("Pool",)),
     SaveSite("integrations/dhcp_plugin.py", "upsert_subnet", "subnet_obj", "create"),
+    SaveSite("integrations/dhcp_plugin.py", "upsert_dhcp_server", "dhcp_server", "create"),
     SaveSite("ipam_reconciliation.py", "_claim", "ip", "create"),
     SaveSite("ipam_reconciliation.py", "_store_link", "link", "plain"),
     SaveSite("ipam_reconciliation.py", "_remove_stale_link", "link", "plain"),
