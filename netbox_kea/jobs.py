@@ -27,6 +27,7 @@ from netbox.context_managers import event_tracking
 from netbox.jobs import JobRunner, system_job
 
 if TYPE_CHECKING:
+    from .integrations.dhcp_plugin import ImportSummary
     from .models import Server
 
 # Runtime imports: get_type_hints() resolves this module's annotations, so a
@@ -45,6 +46,17 @@ _DEFAULT_INTERVAL = 5
 #: tells an operator nothing about which manually-curated IPs the sync left alone.
 _CONFLICT_SAMPLE_SIZE = 20
 _SYNC_USER = "netbox-kea-sync"
+
+
+def _failed_facts(summary: ImportSummary) -> int:
+    """Return the facts of one family that the DHCP Import could not read or write, and its IPAM reconciliation errors.
+
+    ``ImportSummary.errors`` leaves out failed reads and failed Option writes, so the job counts them here.
+    """
+    from .integrations.dhcp_import_report import Reason
+
+    failed = (Reason.READ_FAILED, Reason.WRITE_FAILED)
+    return sum(entry.reason in failed for entry in summary.entries) + summary.ownership_errors
 
 
 class _SyncJobRequest(HttpRequest):
@@ -527,8 +539,13 @@ class KeaIpamSyncJob(JobRunner):
                     f"{outcome.value}={sum(entry.outcome == outcome for entry in result.entries)}"
                     for outcome in Outcome
                 )
-                self.logger.info(f"{run}, DHCPv{family}: {counts} errors={result.errors}")
-                succeeded = succeeded and not result.errors
+                failed = _failed_facts(result)
+                line = f"{run}, DHCPv{family}: {counts} failed={failed}"
+                if failed:
+                    self.logger.error(line)
+                    succeeded = False
+                else:
+                    self.logger.info(line)
             else:
                 self.logger.error(f"{run}, DHCPv{family}: {' '.join(result.lines)}")
                 succeeded = False

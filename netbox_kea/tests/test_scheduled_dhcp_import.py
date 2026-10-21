@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
+import re
 import unittest
-from contextlib import suppress
 from unittest.mock import MagicMock, patch
 
 from core.exceptions import JobFailed
@@ -24,17 +24,28 @@ from .test_event_scope import _FAILING_PIPELINE, NESTED_TRACKING
 from .test_jobs import _make_job
 from .test_kea_recordings import _recording
 from .test_views_dhcp_plugin import _sync_responses
-from .utils import _make_db_server, imported_dhcp_server, with_dhcp_integration_config, without_dhcp_plugin
+from .utils import (
+    _make_db_server,
+    imported_dhcp_server,
+    with_dhcp_integration_config,
+    with_sync_config,
+    without_dhcp_plugin,
+)
 
 DHCP_PLUGIN = "netbox_dhcp"
 
 
-def _kea() -> dict:
-    """Answer the import reads of each Server with the recorded DHCPv4 replies, and the IPAM sync with no lease."""
-    responses = _sync_responses({4: _recorded_config(4)})
-    responses["subnet4-list"] = _recording(4)["subnet4-list"]
-    responses["lease4-get-page"] = lease_pages([])
+def _kea(**options) -> dict:
+    """Answer the import reads of each Server with the recorded replies of both families, and the IPAM sync with no lease."""
+    responses = _sync_responses({4: _recorded_config(4), 6: _recorded_config(6)}, **options)
+    for family in (4, 6):
+        responses[f"subnet{family}-list"] = _recording(family)[f"subnet{family}-list"]
+        responses[f"lease{family}-get-page"] = lease_pages([])
     return responses
+
+
+#: A per-family result line that counts at least one failed fact.
+_FAILED_FAMILY = re.compile(r"DHCPv4: .* failed=[1-9]")
 
 
 def _server(name: str, **fields):
@@ -81,10 +92,17 @@ class _ScheduledImportTestCase(TestCase):
         super().setUpClass()
 
     def _run(self, **kwargs) -> MagicMock:
-        """Run the job once and return the job stand-in; a failed job raises JobFailed, which this keeps quiet."""
+        """Run the job once and return the job stand-in. A failed job raises JobFailed, so the test fails."""
         job = _make_job()
-        with suppress(JobFailed), stub_kea(_kea()):
+        with stub_kea(_kea()):
             KeaIpamSyncJob(job).run(**kwargs)
+        return job
+
+    def _run_failed(self, responses: dict) -> MagicMock:
+        """Run the job once with *responses*, require it to fail, and return the job stand-in."""
+        job = _make_job()
+        with stub_kea(responses), self.assertRaises(JobFailed):
+            KeaIpamSyncJob(job).run()
         return job
 
 
@@ -247,6 +265,78 @@ class ScheduledImportTest(_ScheduledImportTestCase):
                 for line in _scheduled_lines(job)
             )
         )
+
+    @with_sync_config(sync_enabled=False)
+    def test_the_ipam_sync_kill_switch_does_not_stop_the_scheduled_import(self):
+        server = _server("kill-switch", sync_enabled=True)
+
+        self._run()
+
+        self.assertEqual(DhcpImportRun.objects.get(server=server).trigger, DhcpImportTrigger.SCHEDULED)
+
+    @with_sync_config(
+        sync_leases_enabled=False,
+        sync_reservations_enabled=False,
+        sync_prefixes_enabled=False,
+        sync_ip_ranges_enabled=False,
+    )
+    def test_the_scheduled_import_runs_with_every_ipam_sync_type_off(self):
+        server = _server("no-types", sync_enabled=True)
+
+        self._run()
+
+        self.assertEqual(DhcpImportRun.objects.get(server=server).trigger, DhcpImportTrigger.SCHEDULED)
+
+    def test_a_dual_family_server_imports_both_families(self):
+        server = _server("dual", dhcp6=True)
+
+        job = self._run()
+
+        self.assertIsNotNone(imported_dhcp_server(server, 4))
+        self.assertIsNotNone(imported_dhcp_server(server, 6))
+        families = {
+            entry[:5] for entry in DhcpImportRun.objects.get(server=server).entries.values_list("kea_path", flat=True)
+        }
+        self.assertEqual(families, {"Dhcp4", "Dhcp6"})
+        lines = _scheduled_lines(job)
+        for family in (4, 6):
+            self.assertTrue(
+                any(
+                    line.startswith(f"Scheduled DHCP Import of Server dual, DHCPv{family}: created=") for line in lines
+                ),
+                lines,
+            )
+
+    def test_a_failed_reservation_read_fails_the_server_and_the_job(self):
+        server = _server("no-reservations")
+
+        job = self._run_failed(_kea(reservations_available=False))
+
+        run = DhcpImportRun.objects.get(server=server)
+        self.assertIn(("reservation", "read_failed"), set(run.entries.values_list("kind", "reason")))
+        lines = _scheduled_lines(job)
+        self.assertTrue(any(_FAILED_FAMILY.search(line) for line in lines), lines)
+        self.assertEqual(lines[-1], "Scheduled DHCP Import complete: servers=1 failed=1")
+
+    def test_an_option_definition_write_failure_fails_the_server_and_the_job(self):
+        server = _server("clash")
+        dhcp_server = apps.get_model(DHCP_PLUGIN, "DHCPServer").objects.create(name=server.name)
+        # The plugin keeps definition names unique per DHCP server, so Kea's code 231 with this name fails.
+        apps.get_model(DHCP_PLUGIN, "OptionDefinition").objects.create(
+            name="site-opt", family=4, space="dhcp4", code=230, type="string", standard=False, dhcp_server=dhcp_server
+        )
+        config = {
+            "option-def": [{"name": "site-opt", "code": 231, "type": "string", "space": "dhcp4"}],
+            "subnet4": [{"id": 1, "subnet": "198.18.1.0/24"}],
+        }
+
+        job = self._run_failed(_sync_responses({4: config}))
+
+        run = DhcpImportRun.objects.get(server=server)
+        self.assertIn(("option_definition", "write_failed"), set(run.entries.values_list("kind", "reason")))
+        lines = _scheduled_lines(job)
+        self.assertTrue(any(_FAILED_FAMILY.search(line) for line in lines), lines)
+        self.assertEqual(lines[-1], "Scheduled DHCP Import complete: servers=1 failed=1")
 
     def test_an_unsupported_plugin_version_is_logged_and_fails_the_job(self):
         _server("old-plugin")
