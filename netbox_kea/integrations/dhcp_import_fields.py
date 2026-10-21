@@ -224,9 +224,17 @@ MANAGED_FIELDS: dict[str, tuple[ManagedField, ...]] = {
         ),
         *_relations("ipv6_addresses", "ipv6_prefixes"),
     ),
-    "Option": _scalars("data", "csv_format", "send_option"),
-    "OptionDefinition": _scalars(
-        "space", "code", "family", "type", "array", "record_types", "encapsulate", "dhcp_server", "client_class"
+    "Option": (
+        *_scalars("data", "csv_format", "send_option"),
+        *_scalars("space", "code", capability=Capability.OPTION_WITHOUT_DEFINITION),
+        ManagedField("user_context", Capability.USER_CONTEXT),
+        *_relations("client_classes"),
+    ),
+    "OptionDefinition": (
+        *_scalars(
+            "space", "code", "family", "type", "array", "record_types", "encapsulate", "dhcp_server", "client_class"
+        ),
+        ManagedField("user_context", Capability.USER_CONTEXT),
     ),
     "ClientClass": (
         *_scalars("name", "dhcp_server", "test", "template_test", "only_in_additional_list"),

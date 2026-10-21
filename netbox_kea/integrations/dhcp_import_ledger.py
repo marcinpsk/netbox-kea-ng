@@ -151,7 +151,7 @@ def _global(family: Family) -> dict[str, Entry]:
             "DHCPServer.host_reservation_identifiers", (Capability.FLEX_ID_IDENTIFIER,)
         ),
         "option-data": Mapped("Option"),
-        "option-def": Mapped("OptionDefinition", pending=100),
+        "option-def": Mapped("OptionDefinition"),
         "client-classes": Mapped("ClientClass"),
         f"subnet{family}": Mapped("Subnet"),
         "reservations": Mapped("HostReservation"),
@@ -294,7 +294,7 @@ def _client_class(family: Family) -> dict[str, Entry]:
         "only-if-required": Deprecated("only-in-additional-list"),
     }
     if family == 4:
-        entries |= {**_fields("ClientClass", *_BOOT_FIELDS), "option-def": Pending(100)}
+        entries |= {**_fields("ClientClass", *_BOOT_FIELDS), "option-def": Mapped("OptionDefinition.client_class")}
     else:
         entries |= _fields("ClientClass", *_PREFERRED_LIFETIMES)
     return entries
@@ -305,7 +305,7 @@ def _option_definition(family: Family) -> dict[str, Entry]:
         **_fields("OptionDefinition", "name", "type", "array", "record-types", "encapsulate"),
         "code": Mapped("OptionDefinition.code", _code_capabilities(family)),
         "space": Mapped("OptionDefinition.space", (Capability.OPTION_SPACES,)),
-        "user-context": Pending(100, _USER_CONTEXT),
+        "user-context": Mapped("OptionDefinition.user_context", _USER_CONTEXT),
         "metadata": NotImported(),
         "comment": _DEPRECATED["comment"],
     }
@@ -320,8 +320,8 @@ def _option(family: Family) -> dict[str, Entry]:
         "csv-format": Mapped("Option.csv_format"),
         "always-send": Mapped("Option.send_option"),
         "never-send": Mapped("Option.send_option"),
-        "client-classes": Pending(100),
-        "user-context": Pending(100, _USER_CONTEXT),
+        "client-classes": Mapped("Option.client_classes"),
+        "user-context": Mapped("Option.user_context", _USER_CONTEXT),
         "metadata": NotImported(),
         "comment": _DEPRECATED["comment"],
     }

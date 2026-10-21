@@ -137,8 +137,13 @@ class StoredResultTest(_ImportRunTestCase):
         self.assertEqual(_entries(run), _FIRST_RUN)
         self.assertEqual(DhcpImportEntry.objects.filter(run=run).count(), len(_FIRST_RUN))
         self.assertEqual(
-            DhcpImportEntry.objects.get(run=run, kea_path=f"{_SUBNET}/option-data[space=vendor-x,code=1]").detail,
-            "No matching Option Definition.",
+            DhcpImportEntry.objects.filter(run=run, kea_path=f"{_SUBNET}/option-data[space=vendor-x,code=1]")
+            .values_list("detail", "capability")
+            .get(),
+            (
+                "The DHCP plugin has no Option Definition for it and cannot hold an option without one.",
+                Capability.OPTION_WITHOUT_DEFINITION.value,
+            ),
         )
 
     def test_a_second_run_of_unchanged_data_records_no_written_fact(self):

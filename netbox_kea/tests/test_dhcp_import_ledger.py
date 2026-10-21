@@ -33,7 +33,7 @@ from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
 # The open tickets of #89 that map a key.
-_PARITY_TICKETS = frozenset({97, 98, 99, 100, 101, 104, 107})
+_PARITY_TICKETS = frozenset({97, 98, 99, 101, 104, 107})
 # Collections of child objects: an empty one in config-get is a Kea default, never a merge.
 _CHILD_COLLECTIONS = frozenset({"option-data", "option-def", "pools", "pd-pools", "reservations", "subnet4", "subnet6"})
 

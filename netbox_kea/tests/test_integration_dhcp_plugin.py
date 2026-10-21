@@ -792,6 +792,7 @@ class DhcpPluginOptionImportTest(TestCase):
             "client-classes": ["voip"],
         }
         conf = {
+            "client-classes": [{"name": "voip"}],
             "subnet4": [
                 {
                     "id": 1,

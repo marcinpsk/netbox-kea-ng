@@ -25,6 +25,8 @@ INTERFACES_CONFIG = "interfaces-config"
 SHARED_NETWORKS = "shared-networks"
 CLIENT_CLASSES = "client-classes"
 EVALUATE_ADDITIONAL_CLASSES = "evaluate-additional-classes"
+#: The custom Option Definitions of the daemon or of a client class.
+OPTION_DEF = "option-def"
 POOL_ID = "pool-id"
 #: The Subnet key that names the interface of its directly connected clients.
 INTERFACE = "interface"
@@ -108,20 +110,28 @@ def default_space(family: int) -> str:
     return f"dhcp{family}"
 
 
-def option_definition(family: int, space: str, code: int) -> str:
-    """Return the path of a custom Option Definition by its space and code. The default space is left out."""
+def _definition_parent(family: int, class_name: str | None) -> str:
+    """Return the path of the object that declares an Option Definition: the daemon, or the client class."""
+    return daemon(family) if class_name is None else client_class(family, class_name)
+
+
+def option_definition(family: int, space: str, code: int, class_name: str | None = None) -> str:
+    """Return the path of a custom Option Definition of the daemon or of the client class *class_name*.
+
+    The default space is left out.
+    """
     identity = f"code={code}" if space == default_space(family) else f"space={space},code={code}"
-    return f"{daemon(family)}/{_step('option-def', identity)}"
+    return f"{_definition_parent(family, class_name)}/{_step(OPTION_DEF, identity)}"
 
 
-def option_definition_collection(family: int) -> str:
-    """Return the path of the Option Definition collection."""
-    return f"{daemon(family)}/option-def"
+def option_definition_collection(family: int, class_name: str | None = None) -> str:
+    """Return the path of the Option Definition collection of the daemon or of the client class *class_name*."""
+    return f"{_definition_parent(family, class_name)}/{OPTION_DEF}"
 
 
-def option_definition_entry(family: int, index: int) -> str:
-    """Return the path of the Option Definition entry at *index*."""
-    return f"{daemon(family)}/{_step('option-def', index)}"
+def option_definition_entry(family: int, index: int, class_name: str | None = None) -> str:
+    """Return the path of the Option Definition entry at *index* of the daemon or of the client class *class_name*."""
+    return f"{_definition_parent(family, class_name)}/{_step(OPTION_DEF, index)}"
 
 
 def option(parent: str, option: DHCPOption, family: int) -> str:
