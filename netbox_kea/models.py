@@ -537,6 +537,11 @@ class DhcpIntegrationConfig(SettingsSingleton):
             "Global switch. Clear it to stop the DHCP plugin integration for all Servers, whatever the Server setting."
         ),
     )
+    scheduled_import_enabled: models.BooleanField = models.BooleanField(
+        verbose_name="Scheduled Import",
+        default=False,
+        help_text="The periodic sync job also runs the DHCP Import of each Server that has 'Sync to DHCP plugin' on.",
+    )
 
     class Meta:
         app_label = "netbox_kea"
