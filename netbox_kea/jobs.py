@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 # Runtime imports: get_type_hints() resolves this module's annotations, so a
 # TYPE_CHECKING-only Family or SyncReport would raise NameError.
-from . import branching
+from . import branching, event_scope
 from .constants import Family
 from .ipam_reconciliation import SyncReport, complete_job_observation, upgrade_counts
 
@@ -408,6 +408,8 @@ class KeaIpamSyncJob(JobRunner):
                         effective_ip_ranges,
                         max_leases,
                     )
+                except event_scope.EventDispatchError:
+                    raise
                 except Exception as exc:
                     # The job log keeps only the message, so the traceback goes to the module logger.
                     logger.exception("Unhandled error syncing server %s", server.name)
@@ -501,7 +503,6 @@ class KeaIpamSyncJob(JobRunner):
 
         The import stores its own result with the trigger "scheduled", also when it fails after its first read.
         """
-        from . import event_scope
         from .dhcp_mapping_lifecycle import MetadataBusy
         from .integrations.dhcp_import import (
             ImportRunning,

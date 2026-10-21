@@ -13,11 +13,12 @@ from django.apps import apps
 from django.db import connection
 from django.test import TestCase, TransactionTestCase, override_settings
 
+from netbox_kea import event_scope
 from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK, ImportEventsNotDispatched
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import DhcpImportEntry, DhcpImportRun, DhcpImportTrigger, DhcpIntegrationConfig
 
-from .kea_stub import lease_pages, stub_kea
+from .kea_stub import complete_lease, lease_pages, stub_kea
 from .test_dhcp_import import _recorded_config
 from .test_dhcp_import_result import _held_elsewhere, _lock_key, _new_session
 from .test_event_scope import _FAILING_PIPELINE, NESTED_TRACKING
@@ -405,3 +406,18 @@ class ScheduledImportEventsTest(TransactionTestCase):
             "Scheduled DHCP Import of Server a-first saved its changes, but NetBox could not dispatch their events."
             " The job stops.",
         )
+
+    @with_dhcp_integration_config(scheduled_import_enabled=True)
+    def test_events_of_the_ipam_sync_that_cannot_be_dispatched_stop_the_job_before_the_import(self):
+        _server("ipam-events", sync_enabled=True)
+        conf = {4: {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}
+        responses = _sync_responses(conf)
+        lease = {"ip-address": "10.0.0.1", "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "host1", "subnet-id": 1}
+        responses["lease4-get-page"] = lease_pages([complete_lease(lease)])
+
+        job = _make_job()
+        with stub_kea(responses), self.assertRaises(event_scope.EventDispatchError):
+            KeaIpamSyncJob(job).run()
+
+        self.assertFalse(DhcpImportRun.objects.exists())
+        self.assertEqual(_scheduled_lines(job), [])
