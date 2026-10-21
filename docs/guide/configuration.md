@@ -80,7 +80,10 @@ Kea owns the managed fields of a mapped object. Each run sets every managed fiel
 that Kea does not declare, so the DHCP plugin inherits its value. The next run overwrites a hand edit of a managed
 field. The import does not change the other fields, such as tags, comments, description, status, weight, cluster and
 the device or virtual machine. It also does not change an object without a mapping, such as a Pool or Reservation that
-you add. A DHCP Option has no mapping of its own. The import finds it by its object, the option space and code of its
+you add, or its DHCP Options. A Kea Subnet without a subnet ID has no mapping, and neither have its Pools and
+delegated-prefix Pools. The import creates them, but a later run that finds a row without a mapping in their place
+leaves that row, its DHCP Options and its Pools as they are, and reports the Kea object as not imported. A DHCP Option
+has no mapping of its own. The import finds it by its object, the option space and code of its
 Option Definition and its client classes. When no Option has the same client classes, the import takes an Option of the
 same object, space and code that no other Kea option took, for example one that an earlier release wrote without
 classes. When the definition of an option moves, for example from the global `option-def` to a client class, the
