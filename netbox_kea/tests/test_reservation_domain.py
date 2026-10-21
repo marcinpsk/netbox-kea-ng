@@ -32,6 +32,7 @@ from netbox_kea.reservations import (
     ReservationSynchronizationState,
     SetValue,
     SynchronizationLabel,
+    _reservation_to_raw,
     apply_reservation_change,
     reservation_fingerprint,
     reservation_identifier_types,
@@ -1598,6 +1599,15 @@ class TestWidenedReservationKeys(SimpleTestCase):
         self.assertNotEqual(
             reservation_fingerprint(replace(v6, excluded_prefixes=(moved,))), reservation_fingerprint(v6)
         )
+
+    def test_an_update_replaces_each_key_that_the_serializer_writes(self):
+        # An update keeps every key outside the managed set, so a written key missing from it could never be cleared.
+        for family, cidr in ((4, "198.51.100.128/25"), (6, "2001:db8:3::/64")):
+            reservation = self._read(family, recorded_host(family), cidr)
+            with self.subTest(family=family):
+                self.assertLessEqual(
+                    set(_reservation_to_raw(reservation)) - {"user-context"}, kea._MANAGED_RESERVATION_KEYS
+                )
 
     def test_the_model_refuses_values_that_kea_refuses(self):
         v4 = self._read(4, recorded_host(4), "198.51.100.128/25")

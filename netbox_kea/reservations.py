@@ -709,6 +709,26 @@ def parse_next_server(value: Any) -> ipaddress.IPv4Address:
     return address
 
 
+#: The text boot fields of a DHCPv4 Reservation, with their label and the longest value that Kea accepts.
+_BOOT_TEXTS: dict[str, tuple[str, int]] = {
+    "server_hostname": ("server hostname", MAX_SERVER_HOSTNAME_LENGTH),
+    "boot_file_name": ("boot file name", MAX_BOOT_FILE_NAME_LENGTH),
+}
+
+
+def boot_text_problem(field_name: str, value: Any, family: Family | None) -> str | None:
+    """Return why Kea refuses *value* as the server hostname or boot file name of a host, or None.
+
+    A DHCPv6 host has neither; an empty value is none.
+    """
+    label, limit = _BOOT_TEXTS[field_name]
+    if family == 6:
+        return None if value == "" else f"A DHCPv6 Reservation has no {label}."
+    if not isinstance(value, str) or len(value) > limit:
+        return f"The {label} must be a string of at most {limit} characters."
+    return None
+
+
 def parse_client_classes(value: Any) -> tuple[str, ...]:
     """Return the client class names of a Reservation in the form that Kea stores them.
 
@@ -1036,23 +1056,14 @@ def _validate_reservation_value(reservation: Reservation) -> None:
 
 def _validate_boot_fields(reservation: Reservation) -> None:
     """Refuse a DHCPv4 boot field that Kea 3.2 refuses on a host, and every boot field of a DHCPv6 Reservation."""
-    next_server, server_hostname, boot_file_name = (
-        reservation.next_server,
-        reservation.server_hostname,
-        reservation.boot_file_name,
-    )
-    if not isinstance(server_hostname, str) or not isinstance(boot_file_name, str):
-        raise ValueError("The server hostname and the boot file name must be strings.")
-    if reservation.family == 6:
-        if next_server is not None or server_hostname or boot_file_name:
-            raise ValueError("A DHCPv6 Reservation has no next server, server hostname or boot file name.")
-        return
+    for field_name in _BOOT_TEXTS:
+        if problem := boot_text_problem(field_name, getattr(reservation, field_name), reservation.family):
+            raise ValueError(problem)
+    next_server = reservation.next_server
     if next_server is not None:
+        if reservation.family == 6:
+            raise ValueError("A DHCPv6 Reservation has no next server.")
         parse_next_server(str(next_server) if isinstance(next_server, ipaddress.IPv4Address) else None)
-    if len(server_hostname) > MAX_SERVER_HOSTNAME_LENGTH:
-        raise ValueError(f"The server hostname must not exceed {MAX_SERVER_HOSTNAME_LENGTH} characters.")
-    if len(boot_file_name) > MAX_BOOT_FILE_NAME_LENGTH:
-        raise ValueError(f"The boot file name must not exceed {MAX_BOOT_FILE_NAME_LENGTH} characters.")
 
 
 def _validate_excluded_prefixes(reservation: Reservation) -> None:
@@ -1147,13 +1158,11 @@ def apply_reservation_change(reservation: Reservation, change: ReservationChange
     excluded = _change_value(change.excluded_prefixes, reservation.excluded_prefixes, ())
     if change.options is not None:
         raise ValueError("Merge DHCP Option edits onto the raw record through FreshReservation.updated.")
-    shared: dict[str, Any] = {
-        "hostname": _change_value(change.hostname, reservation.hostname, ""),
-        "client_classes": _change_value(change.client_classes, reservation.client_classes, ()),
-        "next_server": _change_value(change.next_server, reservation.next_server, None),
-        "server_hostname": _change_value(change.server_hostname, reservation.server_hostname, ""),
-        "boot_file_name": _change_value(change.boot_file_name, reservation.boot_file_name, ""),
-    }
+    hostname = _change_value(change.hostname, reservation.hostname, "")
+    client_classes = _change_value(change.client_classes, reservation.client_classes, ())
+    next_server = _change_value(change.next_server, reservation.next_server, None)
+    server_hostname = _change_value(change.server_hostname, reservation.server_hostname, "")
+    boot_file_name = _change_value(change.boot_file_name, reservation.boot_file_name, "")
     # One ReservationChange serves both families, so narrow before replace(). Each cast
     # reaches __post_init__, which rejects a value the other family cannot hold.
     if isinstance(reservation, IPv4Reservation):
@@ -1162,14 +1171,22 @@ def apply_reservation_change(reservation: Reservation, change: ReservationChange
             addresses=cast("tuple[ipaddress.IPv4Address, ...]", addresses),
             delegated_prefixes=cast("tuple[()]", prefixes),
             excluded_prefixes=cast("tuple[()]", excluded),
-            **shared,
+            hostname=hostname,
+            client_classes=client_classes,
+            next_server=next_server,
+            server_hostname=server_hostname,
+            boot_file_name=boot_file_name,
         )
     return replace(
         reservation,
         addresses=cast("tuple[ipaddress.IPv6Address, ...]", addresses),
         delegated_prefixes=prefixes,
         excluded_prefixes=excluded,
-        **shared,
+        hostname=hostname,
+        client_classes=client_classes,
+        next_server=cast(None, next_server),
+        server_hostname=server_hostname,
+        boot_file_name=boot_file_name,
     )
 
 
@@ -1429,13 +1446,10 @@ def _boot_fields(raw: dict[str, Any], family: Family) -> tuple[ipaddress.IPv4Add
                 "invalid-boot-field", "The Reservation next server is invalid.", "next-server"
             ) from exc
     texts: list[str] = []
-    for key, limit in (
-        ("server-hostname", 0 if family == 6 else MAX_SERVER_HOSTNAME_LENGTH),
-        ("boot-file-name", 0 if family == 6 else MAX_BOOT_FILE_NAME_LENGTH),
-    ):
+    for key, field_name in (("server-hostname", "server_hostname"), ("boot-file-name", "boot_file_name")):
         text = raw.get(key, "")
-        if not isinstance(text, str) or len(text) > limit:
-            raise MalformedReservation("invalid-boot-field", f"The Reservation {key} is invalid.", key)
+        if problem := boot_text_problem(field_name, text, family):
+            raise MalformedReservation("invalid-boot-field", problem, key)
         texts.append(text)
     return next_server, texts[0], texts[1]
 
