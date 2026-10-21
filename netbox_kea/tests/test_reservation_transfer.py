@@ -16,6 +16,7 @@ from netbox_kea.reservation_transfer import (
     resolve_import_proposal,
 )
 from netbox_kea.reservations import (
+    ExcludedPrefix,
     GlobalReservationScope,
     InSubnetReservationScope,
     IPv4Reservation,
@@ -23,6 +24,15 @@ from netbox_kea.reservations import (
     ReservationIdentity,
 )
 from netbox_kea.subnet_catalogue import SubnetIdentity
+
+_WIDENED_FIELDS = (
+    "client_classes",
+    "next_server",
+    "server_hostname",
+    "boot_file_name",
+    "excluded_prefixes",
+    "user_context",
+)
 
 
 class TestReservationTransfer(SimpleTestCase):
@@ -521,9 +531,8 @@ reservations:
             options[1]["client_classes"] = second_classes
             result = parse_reservation_document(json.dumps(document), "json")
             with self.subTest(classes=(first_classes, second_classes)):
-                self.assertEqual([item.code for item in result.diagnostics].count("unknown-field"), 2)
-                self.assertEqual("duplicate-option" in [item.code for item in result.diagnostics], duplicate)
-                self.assertEqual(result.proposals, ())
+                self.assertEqual([item.code for item in result.diagnostics], ["duplicate-option"] if duplicate else [])
+                self.assertEqual(len(result.proposals), 0 if duplicate else 1)
 
     def test_duplicate_dhcp_options_are_not_retained(self):
         diagnostics = []
@@ -619,6 +628,7 @@ reservations:
                     "csv_format": None,
                     "always_send": None,
                     "never_send": None,
+                    "client_classes": [],
                 }
             ],
         )
@@ -716,3 +726,187 @@ class TestReservationTransferDocumentBounds(SimpleTestCase):
 
         self.assertEqual([d.code for d in result.diagnostics], ["duplicate-address"])
         self.assertEqual(result.diagnostics[0].source_position, "reservations[0].addresses[2]")
+
+
+_DELEGATED = (ip_network("2001:db8:500::/56"), ip_network("2001:db8:600::/56"))
+
+
+def _widened_records():
+    """Return a DHCPv4 and a DHCPv6 In-Subnet Reservation that set every widened fact."""
+    return (
+        IPv4Reservation(
+            scope=InSubnetReservationScope(SubnetIdentity(20, ip_network("198.18.0.0/24"))),
+            identity=ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:ff"),
+            addresses=(ip_address("198.18.0.20"),),
+            options=(DHCPOption(15, "domain-name", "dhcp4", "lab.example.org", True, False, False, ("lab", "voip")),),
+            client_classes=("voip", "boot"),
+            next_server=ip_address("192.0.2.5"),
+            server_hostname="boot.example.org",
+            boot_file_name="host.efi",
+            user_context={"asset": 42, "tags": ["a", None]},
+        ),
+        IPv6Reservation(
+            scope=InSubnetReservationScope(SubnetIdentity(10, ip_network("2001:db8::/64"))),
+            identity=ReservationIdentity("duid", "00:01:02:03"),
+            addresses=(),
+            delegated_prefixes=_DELEGATED,
+            client_classes=("voip",),
+            excluded_prefixes=(ExcludedPrefix(_DELEGATED[1], ip_network("2001:db8:600:ff::/64")),),
+            user_context=["opaque"],
+        ),
+    )
+
+
+def _record(family, **fields):
+    """Return a minimal document record of *family* without any widened field, with *fields*."""
+    record = {
+        "family": family,
+        "scope": {"type": "in-subnet", "subnet": {"cidr": "198.18.0.0/24" if family == 4 else "2001:db8::/64"}},
+        "identity": {"type": "hw-address", "value": "aa:bb:cc:dd:ee:01"},
+        "addresses": [],
+        "delegated_prefixes": [],
+        "hostname": "",
+        "options": [],
+    }
+    return {**record, **fields}
+
+
+class TestWidenedTransferDocument(SimpleTestCase):
+    """The Transfer Document exports every widened fact and creates the editable ones and the user context."""
+
+    def test_export_writes_each_widened_field(self):
+        exported = json.loads(export_reservation_document(_widened_records(), "json"))["reservations"]
+
+        self.assertEqual(
+            {key: exported[0][key] for key in _WIDENED_FIELDS},
+            {
+                "client_classes": ["voip", "boot"],
+                "next_server": "192.0.2.5",
+                "server_hostname": "boot.example.org",
+                "boot_file_name": "host.efi",
+                "excluded_prefixes": [],
+                "user_context": {"asset": 42, "tags": ["a", None]},
+            },
+        )
+        self.assertEqual(exported[0]["options"][0]["client_classes"], ["lab", "voip"])
+        self.assertEqual(
+            {key: exported[1][key] for key in _WIDENED_FIELDS},
+            {
+                "client_classes": ["voip"],
+                "next_server": None,
+                "server_hostname": "",
+                "boot_file_name": "",
+                "excluded_prefixes": [
+                    {"delegated_prefix": "2001:db8:600::/56", "excluded_prefix": "2001:db8:600:ff::/64"}
+                ],
+                "user_context": ["opaque"],
+            },
+        )
+
+    def test_an_exported_document_creates_the_same_reservations(self):
+        records = _widened_records()
+        for format_name in ("yaml", "json"):
+            parsed = parse_reservation_document(export_reservation_document(records, format_name), format_name)
+            with self.subTest(format=format_name):
+                self.assertEqual(parsed.diagnostics, ())
+                created = tuple(
+                    resolve_import_proposal(proposal, record.scope.subnet)
+                    for proposal, record in zip(parsed.proposals, records, strict=True)
+                )
+                self.assertEqual(created, records)
+                self.assertEqual([record.user_context for record in created], [r.user_context for r in records])
+
+    def test_a_document_without_the_widened_fields_still_validates(self):
+        for family in (4, 6):
+            record = _record(family, identity={"type": "hw-address", "value": "aa:bb:cc:dd:ee:01"})
+            parsed = parse_reservation_document(json.dumps({"version": 1, "reservations": [record]}), "json")
+            with self.subTest(family=family):
+                self.assertEqual(parsed.diagnostics, ())
+                reservation = resolve_import_proposal(
+                    parsed.proposals[0], SubnetIdentity(20, ip_network(record["scope"]["subnet"]["cidr"]))
+                )
+                self.assertEqual(
+                    (reservation.client_classes, reservation.next_server, reservation.excluded_prefixes),
+                    ((), None, ()),
+                )
+                self.assertIsNone(reservation.user_context)
+
+    def test_reports_each_invalid_widened_field_before_any_proposal(self):
+        prefix = {"delegated_prefixes": ["2001:db8:500::/56"]}
+        cases = (
+            (_record(4, client_classes="voip"), "invalid-client-classes", "client_classes"),
+            (_record(4, client_classes=["voip", "voip"]), "invalid-client-classes", "client_classes"),
+            (_record(4, next_server="0.0.0.0"), "invalid-boot-field", "next_server"),  # noqa: S104
+            (_record(4, next_server="2001:db8::1"), "invalid-boot-field", "next_server"),
+            (_record(4, server_hostname="s" * 64), "invalid-boot-field", "server_hostname"),
+            (_record(4, boot_file_name=["pxe.efi"]), "invalid-boot-field", "boot_file_name"),
+            (_record(6, next_server="192.0.2.5"), "invalid-boot-field", "next_server"),
+            (_record(6, boot_file_name="pxe.efi"), "invalid-boot-field", "boot_file_name"),
+            (
+                _record(
+                    4, excluded_prefixes=[{"delegated_prefix": "2001:db8::/56", "excluded_prefix": "2001:db8::/64"}]
+                ),
+                "invalid-excluded-prefixes",
+                "excluded_prefixes",
+            ),
+            (_record(6, excluded_prefixes={}, **prefix), "invalid-excluded-prefixes", "excluded_prefixes"),
+            (
+                _record(
+                    6,
+                    excluded_prefixes=[
+                        {"delegated_prefix": "2001:db8:600::/56", "excluded_prefix": "2001:db8:600:ff::/64"}
+                    ],
+                    **prefix,
+                ),
+                "invalid-excluded-prefix",
+                "excluded_prefixes[0]",
+            ),
+            (
+                _record(
+                    6,
+                    excluded_prefixes=[
+                        {"delegated_prefix": "2001:db8:500::/56", "excluded_prefix": "2001:db8:500::/48"}
+                    ],
+                    **prefix,
+                ),
+                "invalid-excluded-prefix",
+                "excluded_prefixes[0]",
+            ),
+            (
+                _record(6, excluded_prefixes=[{"delegated_prefix": "2001:db8:500::/56"}], **prefix),
+                "invalid-excluded-prefix",
+                "excluded_prefixes[0]",
+            ),
+            (
+                _record(
+                    6,
+                    excluded_prefixes=[
+                        {"delegated_prefix": "2001:db8:500::/56", "excluded_prefix": "2001:db8:500:ff::/64"},
+                        {"delegated_prefix": "2001:db8:500::/56", "excluded_prefix": "2001:db8:500:fe::/64"},
+                    ],
+                    **prefix,
+                ),
+                "duplicate-excluded-prefix",
+                "excluded_prefixes[1]",
+            ),
+        )
+        for record, code, position in cases:
+            document = json.dumps({"version": 1, "reservations": [record]})
+            with self.subTest(code=code, position=position):
+                parsed = parse_reservation_document(document, "json")
+                self.assertEqual(
+                    [(item.code, item.source_position) for item in parsed.diagnostics],
+                    [(code, f"reservations[0].{position}")],
+                )
+                self.assertEqual(parsed.proposals, ())
+
+    def test_a_user_context_must_be_json_data(self):
+        for value in ("2026-10-22", "!!set {a: null}", ".nan", "{1: one}"):
+            document = f"version: 1\nreservations:\n- {json.dumps(_record(4))}\n"
+            document = document.replace('"options": []', f'"options": [], "user_context": {value}')
+            with self.subTest(value=value):
+                parsed = parse_reservation_document(document, "yaml")
+                self.assertEqual(
+                    [(item.code, item.source_position) for item in parsed.diagnostics],
+                    [("invalid-user-context", "reservations[0].user_context")],
+                )

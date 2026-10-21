@@ -192,6 +192,17 @@ def _recorded_lease_templates() -> dict[int, dict[str, Any]]:
     return templates
 
 
+def recorded_host(family: int) -> dict[str, Any]:
+    """Return the In-Subnet host of the coverage configuration of *family*, as Kea returned it, in Subnet 21.
+
+    The host sets every key that the typed Reservation reads. reservation-get returns the host of config-get with
+    its subnet-id.
+    """
+    recording = json.loads((_RECORDINGS / f"dhcp{family}.json").read_text())
+    office = recording["config-get"]["arguments"][f"Dhcp{family}"]["shared-networks"][1]
+    return {**office[f"subnet{family}"][1]["reservations"][0], "subnet-id": 21}
+
+
 def lease_record(address: str, *, drop: Sequence[str] = (), **changes: Any) -> dict[str, Any]:
     """Return a Current Kea lease record of the family of *address*, copied from a recorded real reply.
 

@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import ast
 import itertools
-import json
 from dataclasses import replace
 from datetime import datetime, timezone
 from fnmatch import fnmatch
@@ -57,6 +56,7 @@ from .kea_stub import (
     lease_record,
     observed_configuration,
     queued,
+    recorded_host,
     stub_kea,
     typed_lease,
 )
@@ -1442,14 +1442,6 @@ class TestReservationMatchContract(SimpleTestCase):
             reservation_match(self._lease, self._subnet, None, None, global_reservation=global_reservation)
 
 
-def _recorded_host(family: Family) -> dict:
-    """Return the In-Subnet host that the coverage configuration of *family* reserves, as Kea 3.2 returned it."""
-    recording = json.loads((Path(__file__).with_name("kea_recordings") / f"dhcp{family}.json").read_text())
-    office = recording["config-get"]["arguments"][f"Dhcp{family}"]["shared-networks"][1]
-    # reservation-get returns the host of config-get with its subnet-id.
-    return {**office[f"subnet{family}"][1]["reservations"][0], "subnet-id": 21}
-
-
 #: Kea's next-server of a host that sets none, not an address to bind.
 _UNSET_NEXT_SERVER = "0.0.0.0"  # noqa: S104
 
@@ -1470,7 +1462,7 @@ class TestWidenedReservationKeys(SimpleTestCase):
             return self.kea.reservation_by_identity(family, catalogue, scope, identity)
 
     def test_the_recorded_dhcpv4_host_keeps_its_classes_boot_fields_and_user_context(self):
-        reservation = self._read(4, _recorded_host(4), "198.51.100.128/25")
+        reservation = self._read(4, recorded_host(4), "198.51.100.128/25")
 
         self.assertEqual(reservation.client_classes, ("voip",))
         self.assertEqual(reservation.next_server, ip_address("192.0.2.5"))
@@ -1479,7 +1471,7 @@ class TestWidenedReservationKeys(SimpleTestCase):
         self.assertEqual(reservation.user_context, {"asset": 42})
 
     def test_the_unset_boot_fields_that_kea_returns_are_empty(self):
-        raw = {**_recorded_host(4), "next-server": _UNSET_NEXT_SERVER, "server-hostname": "", "boot-file-name": ""}
+        raw = {**recorded_host(4), "next-server": _UNSET_NEXT_SERVER, "server-hostname": "", "boot-file-name": ""}
         raw.pop("user-context")
 
         reservation = self._read(4, raw, "198.51.100.128/25")
@@ -1489,7 +1481,7 @@ class TestWidenedReservationKeys(SimpleTestCase):
         self.assertIsNone(reservation.user_context)
 
     def test_the_recorded_dhcpv6_host_pairs_its_excluded_prefix_with_its_delegated_prefix(self):
-        reservation = self._read(6, _recorded_host(6), "2001:db8:3::/64")
+        reservation = self._read(6, recorded_host(6), "2001:db8:3::/64")
 
         self.assertEqual(reservation.client_classes, ("voip",))
         self.assertEqual(
@@ -1501,7 +1493,7 @@ class TestWidenedReservationKeys(SimpleTestCase):
     def test_an_empty_entry_is_a_delegated_prefix_without_an_excluded_prefix(self):
         # Kea 3.2 returns one entry for each prefix, and an empty one for a prefix that excludes nothing.
         raw = {
-            **_recorded_host(6),
+            **recorded_host(6),
             "prefixes": ["2001:db8:500::/56", "2001:db8:600::/56"],
             "excluded-prefixes": ["", "2001:db8:600:ff::/64"],
         }
@@ -1514,7 +1506,7 @@ class TestWidenedReservationKeys(SimpleTestCase):
         )
 
     def test_records_that_kea_would_refuse_are_quarantined(self):
-        v4, v6 = _recorded_host(4), _recorded_host(6)
+        v4, v6 = recorded_host(4), recorded_host(6)
         cases = (
             (4, {**v4, "client-classes": "voip"}, "client-classes"),
             (4, {**v4, "client-classes": ["voip", "voip"]}, "client-classes"),
@@ -1590,7 +1582,7 @@ class TestWidenedReservationKeys(SimpleTestCase):
             self.assertEqual(kea.bodies("reservation-add")[0]["arguments"]["reservation"], expected)
 
     def test_the_fingerprint_covers_each_editable_key_and_not_the_user_context(self):
-        recorded = self._read(4, _recorded_host(4), "198.51.100.128/25")
+        recorded = self._read(4, recorded_host(4), "198.51.100.128/25")
         fingerprint = reservation_fingerprint(recorded)
         for changed in (
             {"client_classes": ("voip", "boot")},
@@ -1601,15 +1593,15 @@ class TestWidenedReservationKeys(SimpleTestCase):
             with self.subTest(changed=changed):
                 self.assertNotEqual(reservation_fingerprint(replace(recorded, **changed)), fingerprint)
         self.assertEqual(reservation_fingerprint(replace(recorded, user_context={"asset": 43})), fingerprint)
-        v6 = self._read(6, _recorded_host(6), "2001:db8:3::/64")
+        v6 = self._read(6, recorded_host(6), "2001:db8:3::/64")
         moved = ExcludedPrefix(v6.delegated_prefixes[0], ip_network("2001:db8:400:100:fe::/80"))
         self.assertNotEqual(
             reservation_fingerprint(replace(v6, excluded_prefixes=(moved,))), reservation_fingerprint(v6)
         )
 
     def test_the_model_refuses_values_that_kea_refuses(self):
-        v4 = self._read(4, _recorded_host(4), "198.51.100.128/25")
-        v6 = self._read(6, _recorded_host(6), "2001:db8:3::/64")
+        v4 = self._read(4, recorded_host(4), "198.51.100.128/25")
+        v6 = self._read(6, recorded_host(6), "2001:db8:3::/64")
         other = ExcludedPrefix(ip_network("2001:db8:900::/56"), ip_network("2001:db8:900:ff::/64"))
         for reservation, changed in (
             (v4, {"client_classes": ("voip", "voip")}),

@@ -685,8 +685,28 @@ ReservationScope = GlobalReservationScope | InSubnetReservationScope
 #: The longest server-hostname and boot-file-name that Kea 3.2 accepts on a host.
 MAX_SERVER_HOSTNAME_LENGTH = 63
 MAX_BOOT_FILE_NAME_LENGTH = 127
+NEXT_SERVER_RULE = "The next server must be an IPv4 address other than 0.0.0.0 and 255.255.255.255."
+_BROADCAST = ipaddress.IPv4Address("255.255.255.255")
+# Kea returns this next-server for a host that sets none.
+_UNSET_NEXT_SERVER = ipaddress.IPv4Address(0)
 # Kea removes these characters from both ends of a client class name of a host.
 _KEA_TRIMMED = " \t\n\r"
+
+
+def parse_next_server(value: Any) -> ipaddress.IPv4Address:
+    """Return the next server of a DHCPv4 Reservation from its text.
+
+    Raises:
+        ValueError: If *value* is not an IPv4 address that Kea accepts as the next server of a host.
+
+    """
+    try:
+        address = ipaddress.IPv4Address(value) if isinstance(value, str) else None
+    except ValueError:
+        address = None
+    if address is None or address in (_UNSET_NEXT_SERVER, _BROADCAST):
+        raise ValueError(NEXT_SERVER_RULE)
+    return address
 
 
 def parse_client_classes(value: Any) -> tuple[str, ...]:
@@ -803,9 +823,20 @@ def reservation_record_data(reservation: Reservation, *, include_subnet_id: bool
                 "csv_format": option.csv_format,
                 "always_send": option.always_send,
                 "never_send": option.never_send,
+                "client_classes": list(option.client_classes),
             }
             for option in reservation.options
         ],
+        "client_classes": list(reservation.client_classes),
+        "next_server": None if reservation.next_server is None else str(reservation.next_server),
+        "server_hostname": reservation.server_hostname,
+        "boot_file_name": reservation.boot_file_name,
+        "excluded_prefixes": [
+            {"delegated_prefix": str(pair.delegated), "excluded_prefix": str(pair.excluded)}
+            for pair in reservation.excluded_prefixes
+        ],
+        # Read-only and opaque: the value that Kea holds, or None.
+        "user_context": reservation.user_context,
     }
 
 
@@ -1016,17 +1047,12 @@ def _validate_boot_fields(reservation: Reservation) -> None:
         if next_server is not None or server_hostname or boot_file_name:
             raise ValueError("A DHCPv6 Reservation has no next server, server hostname or boot file name.")
         return
-    if next_server is not None and (
-        not isinstance(next_server, ipaddress.IPv4Address) or next_server.is_unspecified or next_server == _BROADCAST
-    ):
-        raise ValueError("The next server must be an IPv4 address other than 0.0.0.0 and 255.255.255.255.")
+    if next_server is not None:
+        parse_next_server(str(next_server) if isinstance(next_server, ipaddress.IPv4Address) else None)
     if len(server_hostname) > MAX_SERVER_HOSTNAME_LENGTH:
         raise ValueError(f"The server hostname must not exceed {MAX_SERVER_HOSTNAME_LENGTH} characters.")
     if len(boot_file_name) > MAX_BOOT_FILE_NAME_LENGTH:
         raise ValueError(f"The boot file name must not exceed {MAX_BOOT_FILE_NAME_LENGTH} characters.")
-
-
-_BROADCAST = ipaddress.IPv4Address("255.255.255.255")
 
 
 def _validate_excluded_prefixes(reservation: Reservation) -> None:
@@ -1393,15 +1419,15 @@ def _boot_fields(raw: dict[str, Any], family: Family) -> tuple[ipaddress.IPv4Add
     """Return the next server, server hostname and boot file name of a host; Kea returns 0.0.0.0 and "" for none."""
     next_server: ipaddress.IPv4Address | None = None
     value = raw.get("next-server")
-    if value is not None:
-        invalid = MalformedReservation("invalid-boot-field", "The Reservation next server is invalid.", "next-server")
+    if value is not None and value != str(_UNSET_NEXT_SERVER):
         try:
-            parsed = ipaddress.IPv4Address(value) if isinstance(value, str) else None
+            if family == 6:
+                raise ValueError("A DHCPv6 host has no next server.")
+            next_server = parse_next_server(value)
         except ValueError as exc:
-            raise invalid from exc
-        if parsed is None or parsed == _BROADCAST or (family == 6 and not parsed.is_unspecified):
-            raise invalid
-        next_server = None if parsed.is_unspecified else parsed
+            raise MalformedReservation(
+                "invalid-boot-field", "The Reservation next server is invalid.", "next-server"
+            ) from exc
     texts: list[str] = []
     for key, limit in (
         ("server-hostname", 0 if family == 6 else MAX_SERVER_HOSTNAME_LENGTH),
