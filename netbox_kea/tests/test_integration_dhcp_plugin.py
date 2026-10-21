@@ -3225,6 +3225,142 @@ class DhcpPluginPDPoolImportTest(TestCase):
         self.assertEqual(model_to_dict(self.PDPool.objects.get(pk=hand.pk)), before)
 
 
+_UNMAPPED_SUBNET = "Dhcp6/subnet6[subnet=2001:db8:9::/64]"
+
+
+def _unmapped_conf() -> dict:
+    """Return a DHCPv6 Subnet without a Kea subnet ID, with a Pool, a PD Pool and one DHCP Option on each."""
+    kea_option = [{"code": 23, "data": "2001:db8::54"}]
+    return {
+        "subnet6": [
+            {
+                "subnet": "2001:db8:9::/64",
+                "option-data": kea_option,
+                "pools": [{"pool": "2001:db8:9::10-2001:db8:9::20", "option-data": kea_option}],
+                "pd-pools": [
+                    {"prefix": "2001:db8:900::", "prefix-len": 48, "delegated-len": 56, "option-data": kea_option}
+                ],
+            }
+        ]
+    }
+
+
+@tag("dhcp_plugin")
+class DhcpPluginUnmappedRowTest(TestCase):
+    """A Kea object without a mapping identity that matches an unmapped row leaves that row and its children alone.
+
+    Kea gives no ID to the Subnet, so no Subnet, Pool or PD Pool of it has a DHCP Import Mapping (ADR 0013).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def setUp(self):
+        from ipam.models import IPRange, Prefix
+        from netaddr import IPNetwork
+
+        from netbox_kea.integrations import dhcp_plugin
+
+        self.adapter = dhcp_plugin
+        self.server = _make_db_server(name=f"kea-unmapped-{timezone.now().timestamp()}", dhcp4=False)
+        self._apply({"subnet6": []})
+        self.dhcp_server = imported_dhcp_server(self.server, 6)
+        model = partial(apps.get_model, DHCP_PLUGIN)
+        # An operator's rows: no marker on the IPAM objects, no mapping on the DHCP plugin rows.
+        self.subnet = model("Subnet").objects.create(
+            name="operator subnet",
+            dhcp_server=self.dhcp_server,
+            prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:9::/64")),
+        )
+        ip_range = IPRange.objects.create(
+            start_address=IPNetwork("2001:db8:9::10/64"), end_address=IPNetwork("2001:db8:9::20/64")
+        )
+        self.pool = model("Pool").objects.create(name="operator pool", subnet=self.subnet, ip_range=ip_range)
+        self.pd_pool = model("PDPool").objects.create(
+            name="operator pd pool",
+            subnet=self.subnet,
+            prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:900::/48")),
+            delegated_length=56,
+        )
+        dns = model("OptionDefinition").objects.get(standard=True, space="dhcp6", code=23)
+        for row in (self.subnet, self.pool, self.pd_pool):
+            model("Option").objects.create(definition=dns, assigned_object=row, data="2001:db8::53")
+        self.before = self._operator_state()
+
+    def _apply(self, conf: dict):
+        from netbox_kea.integrations.dhcp_import_plan import plan_family
+        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+
+        intent = parse_dhcp_config(conf, 6)
+        intent.configuration_complete = True
+        summary = self.adapter.apply_plan(self.server, plan_family(intent, None), probe())
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        return summary
+
+    def _operator_state(self) -> dict:
+        from django.forms.models import model_to_dict
+
+        model = partial(apps.get_model, DHCP_PLUGIN)
+        rows = {
+            "subnets": model("Subnet").objects.filter(dhcp_server=self.dhcp_server),
+            "pools": model("Pool").objects.filter(subnet=self.subnet),
+            "pd pools": model("PDPool").objects.filter(subnet=self.subnet),
+            "options": model("Option").objects.filter(data__startswith="2001:db8::5"),
+        }
+        return {name: [model_to_dict(row) for row in queryset.order_by("pk")] for name, queryset in rows.items()}
+
+    @staticmethod
+    def _written(summary) -> list[str]:
+        return [entry.path for entry in summary.entries if entry.path.startswith(_UNMAPPED_SUBNET) and not entry.reason]
+
+    def test_an_import_leaves_an_unmapped_subnet_and_its_options_pools_and_pd_pools_alone(self):
+        summary = self._apply(_unmapped_conf())
+
+        self.assertEqual(self._operator_state(), self.before)
+        self.assertEqual(self._written(summary), [])
+        reported = {entry.path: entry.reason for entry in summary.entries if entry.path.startswith(_UNMAPPED_SUBNET)}
+        pd_pool = f"{_UNMAPPED_SUBNET}/pd-pools[prefix=2001:db8:900::/48,delegated-len=56]"
+        pool = f"{_UNMAPPED_SUBNET}/pools[pool=2001:db8:9::10-2001:db8:9::20]"
+        self.assertEqual(
+            reported,
+            {
+                _UNMAPPED_SUBNET: Reason.NOT_IN_SCOPE,
+                f"{_UNMAPPED_SUBNET}/option-data[code=23]": Reason.PARENT_NOT_IMPORTED,
+                pool: Reason.PARENT_NOT_IMPORTED,
+                f"{pool}/option-data[code=23]": Reason.PARENT_NOT_IMPORTED,
+                pd_pool: Reason.PARENT_NOT_IMPORTED,
+                f"{pd_pool}/option-data[code=23]": Reason.PARENT_NOT_IMPORTED,
+            },
+        )
+
+    def test_the_pool_and_pd_pool_writers_leave_an_unmapped_row_and_its_options_alone(self):
+        from netbox_kea.integrations.dhcp_import_plan import plan_family
+        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+
+        plan = plan_family(parse_dhcp_config(_unmapped_conf(), 6), None)
+        (planned,) = plan.subnets
+        summary = self.adapter.ImportSummary()
+        capabilities = probe()
+        references, _classes = self.adapter._import_definitions_and_classes(
+            self.server, self.dhcp_server, plan, (self.dhcp_server.pk,), summary, capabilities
+        )
+        _subnets, pool_claims, pd_pool_claims = self.adapter._claim_config_networks(self.server, plan)
+
+        self.adapter.upsert_pools(self.server, self.subnet, planned, summary, references, pool_claims, capabilities)
+        self.adapter.upsert_pd_pools(
+            self.server, self.subnet, planned, summary, references, pd_pool_claims, capabilities
+        )
+
+        self.assertEqual(self._operator_state(), self.before)
+        self.assertEqual(self._written(summary), [])
+        kept = {entry.kind: entry.reason for entry in summary.entries if entry.kind in (Kind.POOL, Kind.PD_POOL)}
+        self.assertEqual(kept, {Kind.POOL: Reason.NOT_IN_SCOPE, Kind.PD_POOL: Reason.NOT_IN_SCOPE})
+        self.assertEqual(summary.count(Kind.OPTION, Reason.PARENT_NOT_IMPORTED), 2)
+
+
 @tag("dhcp_plugin")
 class DhcpPluginReservationSnapshotImportTest(TestCase):
     """Typed Reservation Snapshots import into the matching plugin scope."""

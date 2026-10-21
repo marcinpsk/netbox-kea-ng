@@ -33,7 +33,8 @@ v1 scope (import + diff, read-only against Kea):
   through it, also after an operator renames the row. The first import after an upgrade maps each
   unmapped row that matches by structure. No release imported delegated-prefix Pools before, so an unmapped PD Pool
   is an operator's row and stays. A Subnet without a Kea subnet ID, and its Pools and PD Pools, have no
-  mapping identity and match by structure.
+  mapping identity. The import creates them, but an unmapped row that matches one by structure is not its own: the
+  writer returns no row (:func:`_keep_unmapped`), so the import writes no field, DHCP Option or child of it.
 * A plugin Subnet holds Kea's subnet ID (:func:`settle_subnet_ids`). While the plugin keeps Subnet IDs
   unique across all servers, a Subnet whose ID another Server or family holds is reported as unsupported,
   with its Pools, delegated-prefix Pools and In-Subnet Reservations.
@@ -209,6 +210,18 @@ class ManagedFieldsMismatch(RuntimeError):
 def write_failed(family: int, kind: Kind, path: str) -> ImportEntry:
     """Return the entry of a fact whose write failed. The log holds the error."""
     return not_written(family, kind, path, Reason.WRITE_FAILED, "See server logs.")
+
+
+def _keep_unmapped(summary: ImportSummary, family: int, kind: Kind, path: str) -> None:
+    """Record a Kea object without a mapping identity that matched an unmapped DHCP plugin row by structure.
+
+    The import does not own that row, so its writer returns no row, and the caller writes no child of it (ADR 0013).
+    """
+    detail = (
+        "Its Kea Subnet has no subnet ID, so it has no DHCP Import Mapping. The unmapped row that matches it stays as "
+        "it is, with its DHCP Options and its children."
+    )
+    summary.record(not_written(family, kind, path, Reason.NOT_IN_SCOPE, detail))
 
 
 def _skip_options(summary: ImportSummary, family: int, parent_path: str, options) -> None:
@@ -1311,7 +1324,7 @@ def upsert_subnet(
     """Get/create the DHCP-plugin ``Subnet`` for *planned*, tracked via ``KeaDhcpLink`` by its key.
 
     *renumbered* tells that :func:`settle_subnet_ids` gave the mapped row its Kea subnet ID in this run.
-    Returns the ``netbox_dhcp.Subnet`` instance, or ``None`` on error.
+    Returns the ``netbox_dhcp.Subnet`` instance, or ``None`` on error or for an unmapped row that it keeps.
     """
     Subnet = _model("Subnet")
     intent = planned.intent
@@ -1332,11 +1345,13 @@ def upsert_subnet(
             prefix_obj = result.prefix
             if result.outcome in {"conflict", "disagreement"}:
                 summary.warn(f"subnet {network}: IPAM ownership {result.outcome}, Prefix left unchanged")
-            if mapping is None:
+            if (
+                mapping is None
+                and _unlinked(Subnet.objects.filter(dhcp_server=dhcp_server, prefix=prefix_obj)).exists()
+            ):
                 # A Subnet without a Kea subnet ID has no mapping identity. An unmapped Subnet stays as it is.
-                unmapped = _unlinked(Subnet.objects.filter(dhcp_server=dhcp_server, prefix=prefix_obj)).first()
-                if unmapped is not None:
-                    return unmapped
+                _keep_unmapped(summary, intent.family, Kind.SUBNET, path)
+                return None
             subnet_obj = existing if existing is not None else Subnet(name=_subnet_name(server, planned, network))
             fields = {
                 "prefix_id": prefix_obj.pk,
@@ -1678,16 +1693,20 @@ def _upsert_pool(
     path: str,
     capabilities: PluginCapabilities,
 ) -> tuple:
-    """Get or create one Pool and set its managed fields. Return it with its outcome (``None`` when unchanged)."""
+    """Get or create one Pool and set its managed fields. Return it with its outcome (``None`` when unchanged).
+
+    The row is ``None`` for an unmapped Pool that it keeps (:func:`_keep_unmapped`).
+    """
     Pool = _model("Pool")
     intent = planned_pool.intent
     source = planned_pool.key.source
     same_range = Pool.objects.filter(subnet=subnet_obj, ip_range=range_obj)
     if source is None:
-        # A Subnet without a Kea subnet ID gives its Pools no mapping identity. An unmapped Pool stays as it is.
-        pool_obj = same_range.first()
-        if pool_obj is not None:
-            return pool_obj, None
+        if same_range.exists():
+            # A Subnet without a Kea subnet ID gives its Pools no mapping identity. An unmapped Pool stays as it is.
+            _keep_unmapped(summary, family, Kind.POOL, path)
+            return None, None
+        pool_obj = None
     else:
         pool_obj = mapped_target(server, family, source)
         if pool_obj is None:
@@ -1776,6 +1795,9 @@ def upsert_pools(
             summary.record(_unusable_pool(intent.family, path, planned_pool.key, result))
             summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: unusable range, skipped")
             continue
+        if pool_obj is None:
+            _skip_options(summary, intent.family, path, pool_intent.options)
+            continue
         if outcome is not None:
             summary.record(written(intent.family, Kind.POOL, path, outcome))
         upsert_options(pool_obj, pool_intent.options, intent.family, references, summary, path, capabilities)
@@ -1813,19 +1835,21 @@ def _upsert_pd_pool(
 ) -> tuple:
     """Get or create one PD Pool and set its managed fields. Return it with its outcome (``None`` when unchanged).
 
-    It adopts no unmapped row: no release imported PD Pools before, so such a row is an operator's. The DHCP plugin
-    checks the row when it saves it, so a PD Pool that the plugin cannot hold raises ``ValidationError``.
+    It adopts no unmapped row: no release imported PD Pools before, so such a row is an operator's. The row is
+    ``None`` for an unmapped PD Pool that it keeps (:func:`_keep_unmapped`). The DHCP plugin checks the row when it
+    saves it, so a PD Pool that the plugin cannot hold raises ``ValidationError``.
     """
     PDPool = _model("PDPool")
     key, intent = planned.key, planned.intent
     prefix_obj, excluded_obj = prefixes
     source = key.source
     if source is None:
-        # A Subnet without a Kea subnet ID gives its PD Pools no mapping identity. An unmapped PD Pool stays as it is.
         same = PDPool.objects.filter(subnet=subnet_obj, prefix=prefix_obj, delegated_length=key.delegated_length)
-        row = same.first()
-        if row is not None:
-            return row, None
+        if same.exists():
+            # A Subnet without a Kea subnet ID gives its PD Pools no mapping identity. An unmapped one stays as it is.
+            _keep_unmapped(summary, family, Kind.PD_POOL, path)
+            return None, None
+        row = None
     else:
         row = mapped_target(server, family, source)
     created = row is None
@@ -1883,6 +1907,9 @@ def upsert_pd_pools(
         except Exception as exc:  # noqa: BLE001 — one bad PD Pool must not abort the import
             summary.record(write_failed(family, Kind.PD_POOL, path))
             summary.warn(f"pd pool {key.prefix} in {planned.intent.cidr}: {exc}")
+            _skip_options(summary, family, path, intent.options)
+            continue
+        if row is None:
             _skip_options(summary, family, path, intent.options)
             continue
         if outcome is not None:
