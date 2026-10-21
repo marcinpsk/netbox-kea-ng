@@ -152,7 +152,7 @@ class TestParseDhcpConfigPools(SimpleTestCase):
         (parsed,) = result.subnets[0].pools
         self.assertEqual(
             (parsed.pool_id, parsed.client_classes, parsed.evaluate_additional_classes, parsed.settings),
-            (None, (), (), {"ddns-send-updates": True}),
+            (None, None, None, {"ddns-send-updates": True}),
         )
         path = "Dhcp4/subnet4[id=1]/pools[pool=10.0.0.10-10.0.0.99]"
         self.assertEqual(

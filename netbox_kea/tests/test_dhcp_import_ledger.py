@@ -275,9 +275,12 @@ class LedgerEntriesTest(SimpleTestCase):
                         self.assertIn(Capability.USER_CONTEXT, keys["user-context"].capabilities)
 
     def test_the_mapped_settings_are_the_field_maps_of_the_import(self):
+        gated_subnet = tuple((key, attr, transform) for key, attr, transform, _cap in fields.GATED_SUBNET_FIELDS)
+        # The Subnet interface is a relation to a DHCP server interface, written apart from the field maps.
+        interface = (("interface", "server_interfaces", None),)
         field_maps = {
             "Dhcp": ("DHCPServer", fields.SERVER_FIELDS),
-            "subnet": ("Subnet", fields.SUBNET_FIELDS),
+            "subnet": ("Subnet", (*fields.SUBNET_FIELDS, *gated_subnet, *interface)),
             "pools": ("Pool", fields.POOL_FIELDS),
             "client-classes": ("ClientClass", fields.CLIENT_CLASS_FIELDS),
         }

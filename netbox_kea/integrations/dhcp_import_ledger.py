@@ -92,6 +92,7 @@ _LEASE = (
     "cache-max-age",
     "store-extended-info",
     "allocator",
+    "adaptive-lease-time-threshold",
     "reservations-global",
     "reservations-in-subnet",
     "reservations-out-of-pool",
@@ -155,7 +156,6 @@ def _global(family: Family) -> dict[str, Entry]:
         f"subnet{family}": Mapped("Subnet"),
         "reservations": Mapped("HostReservation"),
         "shared-networks": Pending(107, (Capability.SHARED_NETWORK_OPTIONAL_PREFIX,)),
-        "adaptive-lease-time-threshold": Pending(99),
         "user-context": Mapped("DHCPServer.user_context", _USER_CONTEXT),
         "comment": _DEPRECATED["comment"],
         # The interface list links DHCPServer interfaces; the other keys are Kea socket settings.
@@ -197,18 +197,22 @@ def _subnet(family: Family) -> dict[str, Entry]:
         **_fields("Subnet", *_network_settings(family)),
         "subnet": Mapped("Subnet.prefix"),
         "id": Mapped("Subnet.subnet_id", (Capability.SUBNET_ID_PER_SERVER,)),
-        "relay": Mapped("Subnet.relay", (Capability.RELAY_ADDRESS_LIST,), pending=99),
+        "relay": Mapped("Subnet.relay", (Capability.RELAY_ADDRESS_LIST,)),
         "option-data": Mapped("Option"),
         "pools": Mapped("Pool"),
         "reservations": Mapped("HostReservation"),
-        **_pending(99, *_CLASS_REFERENCES, "adaptive-lease-time-threshold", "interface"),
-        "user-context": Pending(99, _USER_CONTEXT),
+        **_fields("Subnet", *_CLASS_REFERENCES),
+        "interface": Mapped("Subnet.server_interfaces"),
+        "user-context": Mapped("Subnet.user_context", _USER_CONTEXT),
         "metadata": NotImported(),
         **_DEPRECATED,
     }
     if family == 4:
         gated = (Capability.DHCP4O6_SUBNET_SELECTION,)
-        entries |= {key: Pending(99, gated) for key in ("4o6-interface", "4o6-interface-id", "4o6-subnet")}
+        entries |= {
+            key: Mapped(f"Subnet.dhcp{key.replace('-', '_')}", gated)
+            for key in ("4o6-interface", "4o6-interface-id", "4o6-subnet")
+        }
     else:
         entries["pd-pools"] = Pending(101)
     return entries
@@ -220,7 +224,6 @@ def _shared_network(family: Family) -> dict[str, Entry]:
             107,
             *_network_settings(family),
             *_CLASS_REFERENCES,
-            "adaptive-lease-time-threshold",
             "interface",
             "option-data",
         ),
@@ -238,7 +241,7 @@ def _pool() -> dict[str, Entry]:
         **_fields("Pool", "pool-id", *_CLASS_REFERENCES, *_DDNS),
         "pool": Mapped("Pool.ip_range"),
         "option-data": Mapped("Option"),
-        "user-context": Pending(99, _USER_CONTEXT),
+        "user-context": Mapped("Pool.user_context", _USER_CONTEXT),
         "metadata": NotImported(),
         **_DEPRECATED,
     }

@@ -69,7 +69,7 @@ with further bypasses. The final scope uses a small explicit persistence invento
 and checks the current direct patterns. It accepts the alias and dynamic limits
 above. The runtime snapshot fix and its real ObjectChange tests remain intact.
 
-The tree has 19 runtime snapshots. Each of the 15 inventoried loaded-save
+The tree has 20 runtime snapshots. Each of the 15 inventoried loaded-save
 snapshots is removed and moved after mutation in memory. All 30 variants must
 produce a snapshot or mutation diagnostic. Nearby controls cover early, missing,
 late, conditional and wrong-receiver snapshots, the mutation helpers, new saves

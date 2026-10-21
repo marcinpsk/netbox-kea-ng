@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 from .. import kea_paths
 from ..dhcp_options import DHCPOption, parse_dhcp_option, parse_option_definition
+from ..integrations.dhcp_import_fields import GATED_SUBNET_FIELDS
 from ..integrations.dhcp_import_report import DroppedEntry, Kind
 
 if TYPE_CHECKING:
@@ -36,7 +37,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Scalar Kea config keys that map onto netbox_dhcp tuning fields (lifetimes, timers,
-# lease/DDNS/BOOTP/network settings, and server-level globals).  ``config-get``
+# lease/DDNS/BOOTP/network settings, and server-level globals), and the Subnet interface.  ``config-get``
 # merges some of them from the parent; the plan keeps only the Declared Values.
 # Captured verbatim here (the Kea→sys4 field mapping lives in the adapter).
 KEA_SETTINGS_KEYS: tuple[str, ...] = (
@@ -64,6 +65,7 @@ KEA_SETTINGS_KEYS: tuple[str, ...] = (
     "store-extended-info",
     "allocator",
     "pd-allocator",
+    kea_paths.ADAPTIVE_LEASE_TIME_THRESHOLD,
     # DDNS
     "ddns-send-updates",
     "ddns-override-no-update",
@@ -84,9 +86,11 @@ KEA_SETTINGS_KEYS: tuple[str, ...] = (
     "server-hostname",
     "boot-file-name",
     # network (subnet)
-    "relay",
+    kea_paths.INTERFACE,
     "interface-id",
     "rapid-commit",
+    # relay and the DHCPv4-over-DHCPv6 keys
+    *(key for key, _attr, _transform, _capability in GATED_SUBNET_FIELDS),
     # server-level globals
     "decline-probation-period",
     "echo-client-id",
@@ -127,10 +131,13 @@ class PoolIntent:
     pool: str
     options: tuple[DHCPOption, ...] = ()
     pool_id: int | None = None
-    client_classes: tuple[str, ...] = ()
-    evaluate_additional_classes: tuple[str, ...] = ()
+    # A class list is None when it is not valid, so the import keeps the class links.
+    client_classes: tuple[str, ...] | None = ()
+    evaluate_additional_classes: tuple[str, ...] | None = ()
     # Kea merges no value into a Pool, so each setting is a Declared Value.
     settings: dict = field(default_factory=dict)
+    # None: the Pool declares no user-context.
+    user_context: dict | None = None
 
     @property
     def match_key(self) -> str:
@@ -149,6 +156,11 @@ class SubnetIntent:
     pools: tuple[PoolIntent, ...]
     options: tuple[DHCPOption, ...]
     settings: dict = field(default_factory=dict)
+    # A class list is None when it is not valid, so the import keeps the class links.
+    client_classes: tuple[str, ...] | None = ()
+    evaluate_additional_classes: tuple[str, ...] | None = ()
+    # None: the Subnet declares no user-context.
+    user_context: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -273,9 +285,12 @@ def _pools(raw_list, subnet_path: str, dropped: list[DroppedEntry]) -> tuple[Poo
                 pool=pool,
                 options=_options(entry.get("option-data"), path, dropped),
                 pool_id=_pool_id(entry.get(kea_paths.POOL_ID), path, dropped),
-                client_classes=_class_list(entry, kea_paths.CLIENT_CLASSES, path, dropped),
-                evaluate_additional_classes=_class_list(entry, kea_paths.EVALUATE_ADDITIONAL_CLASSES, path, dropped),
+                client_classes=_class_list(entry, kea_paths.CLIENT_CLASSES, Kind.POOL, path, dropped),
+                evaluate_additional_classes=_class_list(
+                    entry, kea_paths.EVALUATE_ADDITIONAL_CLASSES, Kind.POOL, path, dropped
+                ),
                 settings=_settings(entry),
+                user_context=entry.get(kea_paths.USER_CONTEXT),
             )
         )
     return tuple(out)
@@ -293,13 +308,13 @@ def _pool_id(raw, path: str, dropped: list[DroppedEntry]) -> int | None:
     return None
 
 
-def _class_list(raw: dict, key: str, path: str, dropped: list[DroppedEntry]) -> tuple[str, ...]:
-    """Read the class names of the list *key* of the Pool at *path*; drop a list that is not of names."""
+def _class_list(raw: dict, key: str, kind: Kind, path: str, dropped: list[DroppedEntry]) -> tuple[str, ...] | None:
+    """Read the class names of the list *key* of the *kind* at *path*; drop a list that is not of names (``None``)."""
     names = raw.get(key, [])
     if isinstance(names, list) and all(isinstance(name, str) and name for name in names):
         return tuple(names)
-    dropped.append(DroppedEntry(Kind.POOL, kea_paths.setting(path, key), "The list is not a list of class names."))
-    return ()
+    dropped.append(DroppedEntry(kind, kea_paths.setting(path, key), "The list is not a list of class names."))
+    return None
 
 
 def _subnet_id(raw: dict) -> int | None:
@@ -334,6 +349,11 @@ def _subnet_intent(
         pools=_pools(raw.get("pools", []), subnet_path, dropped),
         options=_options(raw.get("option-data"), subnet_path, dropped),
         settings=_settings(raw),
+        client_classes=_class_list(raw, kea_paths.CLIENT_CLASSES, Kind.SUBNET, subnet_path, dropped),
+        evaluate_additional_classes=_class_list(
+            raw, kea_paths.EVALUATE_ADDITIONAL_CLASSES, Kind.SUBNET, subnet_path, dropped
+        ),
+        user_context=raw.get(kea_paths.USER_CONTEXT),
     )
 
 
