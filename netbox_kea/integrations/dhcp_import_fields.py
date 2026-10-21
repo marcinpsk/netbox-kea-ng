@@ -208,8 +208,11 @@ MANAGED_FIELDS: dict[str, tuple[ManagedField, ...]] = {
         ManagedField("user_context", Capability.USER_CONTEXT),
         *_relations("client_classes", "evaluate_additional_classes"),
     ),
-    # marcinpsk/netbox-kea-ng#101 imports delegated-prefix Pools.
-    "PDPool": (),
+    "PDPool": (
+        *_scalars("subnet", "prefix", "delegated_length", "excluded_prefix", "pool_id"),
+        ManagedField("user_context", Capability.USER_CONTEXT),
+        *_relations("client_classes", "evaluate_additional_classes"),
+    ),
     "HostReservation": (
         *_scalars(
             "subnet",

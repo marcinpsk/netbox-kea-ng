@@ -73,8 +73,9 @@ Kea's `interfaces-config` names to the DHCP Server's device or virtual machine i
 matches no interface is reported, and so are `*` and the address part of an entry such as `eth0/192.0.2.1`, which
 the DHCP plugin cannot hold.
 
-The import keeps a DHCP Import Mapping from each DHCP Server, Subnet, Pool, Reservation, client class and custom
-Option Definition that it writes to its Kea source. A later run finds the object through its mapping and updates it.
+The import keeps a DHCP Import Mapping from each DHCP Server, Subnet, Pool, delegated-prefix Pool, Reservation,
+client class and custom Option Definition that it writes to its Kea source. A later run finds the object through
+its mapping and updates it.
 Kea owns the managed fields of a mapped object. Each run sets every managed field from Kea. It clears a managed field
 that Kea does not declare, so the DHCP plugin inherits its value. The next run overwrites a hand edit of a managed
 field. The import does not change the other fields, such as tags, comments, description, status, weight, cluster and
@@ -93,9 +94,20 @@ An existing class keeps its old name, and its other fields still follow Kea. Wit
 global facts are unsupported: the family of a DHCP Server, the `server-id` parameters other than its type, a global
 `user-context`, the `flex-id` Reservation identifier, `allow-address-registration` (DHCPv6) and `stash-agent-options`
 (DHCPv4). The rest of the global configuration imports. On a Subnet, the relay address list, `user-context` and the
-DHCPv4-over-DHCPv6 keys (`4o6-subnet`, `4o6-interface`, `4o6-interface-id`) are unsupported, and so is a Pool's
-`user-context`. The rest of the Subnet and the Pool imports. The DHCP plugin 0.2.0 keeps the relay as free text, which
-the import does not write, so a value that you enter there stays.
+DHCPv4-over-DHCPv6 keys (`4o6-subnet`, `4o6-interface`, `4o6-interface-id`) are unsupported, and so is the
+`user-context` of a Pool or a delegated-prefix Pool. The rest of the Subnet, the Pool and the delegated-prefix Pool
+imports. The DHCP plugin 0.2.0 keeps the relay as free text, which the import does not write, so a value that you
+enter there stays.
+
+The import writes each DHCPv6 delegated-prefix Pool (`pd-pools`) as a Prefix Delegation Pool in its Subnet, with its
+delegated length, `pool-id`, client classes, additional classes and DHCP Options. Its prefix and its excluded prefix
+are NetBox Prefixes in the Server's `sync_vrf`. The import creates or links them as it does the Prefix of a Subnet,
+under the IPAM source `pd-pool` and the marker `[kea-sync: pd pool]` (see [IPAM sync](ipam-sync.md)). The Subnet ID,
+the prefix and the delegated length identify a delegated-prefix Pool, so a changed prefix or delegated length is a
+new Pool. The DHCP plugin checks each Pool when the import saves it. When it refuses one, for example a delegated
+length shorter than the prefix, the Pool is unsupported with the reason of the plugin, its DHCP Options are skipped,
+and the run goes on. A delegated-prefix Pool that you add stays as it is, also when Kea has a Pool with the same
+prefix: the import writes its own.
 
 The import writes every custom Option Definition that Kea declares, also one that no option uses, before it writes
 any DHCP Option. A definition of the global `option-def` belongs to the DHCP Server. A definition of a client class
@@ -113,9 +125,10 @@ The table lists the managed fields of each DHCP plugin model. A field behind a D
 when the installed DHCP plugin has that capability. Without it, the import does not write or clear the field. It
 reports the Kea value as unsupported. A Kea value that the DHCP plugin field cannot hold is also unsupported, for
 example a percentage with four decimal places. That field keeps its value. The `client_classes` and
-`evaluate_additional_classes` of a Subnet or a Pool refer to the client classes that the same run imported for the
-DHCP Server. The import reports a class name without such a class and leaves it out. A class that Kea defines but that
-was not imported is skipped. A class that Kea does not define, for example the built-in class `KNOWN`, is not imported.
+`evaluate_additional_classes` of a Subnet, a Pool or a delegated-prefix Pool refer to the client classes that the same
+run imported for the DHCP Server. The import reports a class name without such a class and leaves it out. A class
+that Kea defines but that was not imported is skipped. A class that Kea does not define, for example the built-in
+class `KNOWN`, is not imported.
 The DHCP plugin keeps these relations unordered, so Kea's evaluation order of `evaluate-additional-classes` is lost.
 A Subnet's `interface` links the Subnet to the DHCP Server interface of that name. The DHCP Server has that interface
 when Kea's `interfaces-config` names it, or when you link it while Kea serves every interface (`*`). Otherwise the
@@ -131,7 +144,7 @@ Kea, and the import reports it as inherited.
 | `SharedNetwork` | None. The import does not write Shared Networks yet. | |
 | `Subnet` | `prefix`, `dhcp_server`, `shared_network`, `subnet_id`, `valid_lifetime`, `min_valid_lifetime`, `max_valid_lifetime`, `preferred_lifetime`, `min_preferred_lifetime`, `max_preferred_lifetime`, `offer_lifetime`, `renew_timer`, `rebind_timer`, `match_client_id`, `authoritative`, `reservations_global`, `reservations_out_of_pool`, `reservations_in_subnet`, `calculate_tee_times`, `t1_percent`, `t2_percent`, `cache_threshold`, `cache_max_age`, `store_extended_info`, `allocator`, `pd_allocator`, `adaptive_lease_time_threshold`, `ddns_send_updates`, `ddns_override_no_update`, `ddns_override_client_update`, `ddns_replace_client_name`, `ddns_generated_prefix`, `ddns_qualifying_suffix`, `ddns_update_on_renew`, `ddns_conflict_resolution_mode`, `ddns_ttl_percent`, `ddns_ttl`, `ddns_ttl_min`, `ddns_ttl_max`, `hostname_char_set`, `hostname_char_replacement`, `next_server`, `server_hostname`, `boot_file_name`, `interface_id`, `rapid_commit`, `client_classes`, `evaluate_additional_classes`, `server_interfaces` | `relay` (`relay_address_list`), `dhcp4o6_subnet` (`dhcp4o6_subnet_selection`), `dhcp4o6_interface` (`dhcp4o6_subnet_selection`), `dhcp4o6_interface_id` (`dhcp4o6_subnet_selection`), `user_context` (`user_context`) |
 | `Pool` | `subnet`, `ip_range`, `pool_id`, `ddns_send_updates`, `ddns_override_no_update`, `ddns_override_client_update`, `ddns_replace_client_name`, `ddns_generated_prefix`, `ddns_qualifying_suffix`, `ddns_update_on_renew`, `ddns_conflict_resolution_mode`, `ddns_ttl_percent`, `ddns_ttl`, `ddns_ttl_min`, `ddns_ttl_max`, `hostname_char_set`, `hostname_char_replacement`, `client_classes`, `evaluate_additional_classes` | `user_context` (`user_context`) |
-| `PDPool` | None. The import does not write delegated-prefix Pools yet. | |
+| `PDPool` | `subnet`, `prefix`, `delegated_length`, `excluded_prefix`, `pool_id`, `client_classes`, `evaluate_additional_classes` | `user_context` (`user_context`) |
 | `HostReservation` | `subnet`, `dhcp_server`, `hostname`, `hw_address`, `duid`, `circuit_id`, `client_id`, `flex_id`, `ipv4_address`, `ipv6_addresses`, `ipv6_prefixes` | |
 | `Option` | `definition`, `data`, `csv_format`, `send_option`, `client_classes` | `space` (`option_without_definition`), `code` (`option_without_definition`), `user_context` (`user_context`) |
 | `OptionDefinition` | `space`, `code`, `family`, `type`, `array`, `record_types`, `encapsulate`, `dhcp_server`, `client_class` | `user_context` (`user_context`) |
@@ -140,7 +153,8 @@ Kea, and the import reports it as inherited.
 Each imported Subnet holds Kea's subnet ID. A Subnet that an earlier release imported takes its Kea subnet ID on the
 next run. netbox-plugin-dhcp 0.2.0 keeps Subnet IDs unique across all DHCP Servers, but Kea numbers the Subnets of
 each daemon on its own. So when another DHCP Server already holds the ID, for example the DHCPv4 Subnet 1 of a
-dual-stack Server, the Subnet is unsupported, together with its Pools and In-Subnet Reservations. The entry names the
+dual-stack Server, the Subnet is unsupported, together with its Pools, delegated-prefix Pools and In-Subnet
+Reservations. The entry names the
 Subnet that holds the ID. The import never gives a Subnet another ID.
 
 Each run of **Sync to DHCP plugin now** stores its result. The **DHCP Plugin** page under Sync shows the latest run:
@@ -157,9 +171,10 @@ fact that the run did not write has a reason:
 - **Skipped**: the parent object was not imported, IPAM ownership kept the IP Range unchanged, a write failed,
   Kea could not be read in full, or the run kept a stale object (see below).
 
-A run removes each Stale DHCP Import Object: a mapped Subnet, Pool, Reservation, client class or custom Option
-Definition whose Kea source Kea no longer reports. A Pool whose range changes in Kea is a new Pool, so the run removes
-the old row and creates a new one. The run removes an object only after it read every Kea object of that kind. When
+A run removes each Stale DHCP Import Object: a mapped Subnet, Pool, delegated-prefix Pool, Reservation, client class
+or custom Option Definition whose Kea source Kea no longer reports. A Pool whose range changes in Kea is a new Pool,
+and so is a delegated-prefix Pool whose prefix or delegated length changes, so the run removes the old row and creates
+a new one. The run removes an object only after it read every Kea object of that kind. When
 the Server Configuration or the Reservation Snapshot was not read in full, the run keeps the objects of the kinds that
 the read covers, and one skipped entry for each kind tells why and how many objects it kept. The run also keeps an
 object when its removal would remove a DHCP plugin row that the run keeps, for example a Pool that an operator added

@@ -34,7 +34,7 @@ from ..integrations.dhcp_import import (
     read_family,
     run_dhcp_plugin_import,
 )
-from ..integrations.dhcp_import_plan import REMOVAL_ORDER, MappingSource, observations, plan_family
+from ..integrations.dhcp_import_plan import MappingSource, mapped_kinds, observations, plan_family
 from ..integrations.dhcp_import_report import KIND_LABELS, OUTCOME_LABELS, Kind, Outcome
 from ..models import DhcpImportTrigger, Server
 from ..sync_permissions import sync_gate
@@ -93,6 +93,33 @@ def _summary_problems(summary) -> list[str]:
     if summary.errors:
         problems.append(f"{summary.errors} errors occurred. See the logs.")
     return problems
+
+
+def _summary_text(version: int, summary) -> str:
+    """Return the counts of one family's import, with a note for each other non-zero count."""
+    text = (
+        f"DHCPv{version}: {summary.subnets_created} subnets created, "
+        f"{summary.subnets_updated} updated, {summary.pools_created} pools, "
+        f"{summary.reservations_created} reservations created, "
+        f"{summary.reservations_updated} updated, "
+        f"{summary.options_created} options created, {summary.options_updated} updated, "
+        f"{summary.client_classes_created} client classes created, "
+        f"{summary.client_classes_updated} updated, "
+        f"{summary.removed} stale objects removed"
+    )
+    notes = []
+    if summary.option_defs_created:
+        notes.append(f"{summary.option_defs_created} custom option definition(s) created")
+    if summary.pd_pools_created:
+        notes.append(f"{summary.pd_pools_created} delegated-prefix Pool(s) created")
+    if summary.options_skipped:
+        notes.append(f"{summary.options_skipped} option(s) skipped (unresolved/invalid)")
+    if summary.shared_networks_not_imported:
+        notes.append(
+            f"{summary.shared_networks_not_imported} Shared Network(s) not imported; "
+            "their Subnets were imported without them"
+        )
+    return f"{text} ({'; '.join(notes)})" if notes else text
 
 
 _SHOWN_OBJECTS = 50
@@ -193,7 +220,7 @@ def family_drift(server: Server, family: Family, user) -> FamilyDrift:
         drift.objects = _viewable_targets(drift.objects, user)
         return drift
     observed = observations(plan_family(read.config, read.reservations))
-    for kind in REMOVAL_ORDER:
+    for kind in mapped_kinds(family):
         observation, rows = observed[kind], mapped[kind]
         missing = dict.fromkeys(observation.sources - rows.keys())
         unobserved = {source: row for source, row in rows.items() if source not in observation.sources}
@@ -377,28 +404,7 @@ class ServerDhcpPluginSyncNowView(View):
                 for line in summary.lines:
                     messages.add_message(request, summary.level, f"DHCPv{version}: {line}")
                 continue
-            text = (
-                f"DHCPv{version}: {summary.subnets_created} subnets created, "
-                f"{summary.subnets_updated} updated, {summary.pools_created} pools, "
-                f"{summary.reservations_created} reservations created, "
-                f"{summary.reservations_updated} updated, "
-                f"{summary.options_created} options created, {summary.options_updated} updated, "
-                f"{summary.client_classes_created} client classes created, "
-                f"{summary.client_classes_updated} updated, "
-                f"{summary.removed} stale objects removed"
-            )
-            notes = []
-            if summary.option_defs_created:
-                notes.append(f"{summary.option_defs_created} custom option definition(s) created")
-            if summary.options_skipped:
-                notes.append(f"{summary.options_skipped} option(s) skipped (unresolved/invalid)")
-            if summary.shared_networks_not_imported:
-                notes.append(
-                    f"{summary.shared_networks_not_imported} Shared Network(s) not imported; "
-                    "their Subnets were imported without them"
-                )
-            if notes:
-                text += f" ({'; '.join(notes)})"
+            text = _summary_text(version, summary)
             problems = _summary_problems(summary)
             if problems:
                 messages.warning(request, f"{text}. {' '.join(problems)}")

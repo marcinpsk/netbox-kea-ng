@@ -455,8 +455,8 @@ def _effective_sources(
         imported = frozenset(
             (family, source)
             for family in families
-            for source in ("reservation", "subnet", "pool", "delegated-prefix")
-            if source != "delegated-prefix" or family == 6
+            for source in ("reservation", "subnet", "pool", "delegated-prefix", PD_POOL)
+            if source not in ("delegated-prefix", PD_POOL) or family == 6
         )
     return {"job": job, "import": imported}
 

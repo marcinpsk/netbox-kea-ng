@@ -12,10 +12,14 @@ only rule that decides whether the integration runs for a Server.
 v1 scope (import + diff, read-only against Kea):
 
 * Imports the **data tier** of a Kea ``config-get`` into ``netbox_dhcp`` rows —
-  ``DHCPServer``, ``Subnet``, ``Pool``, ``HostReservation`` — reusing netbox-kea's
+  ``DHCPServer``, ``Subnet``, ``Pool``, ``PDPool``, ``HostReservation`` — reusing netbox-kea's
   IPAM ownership claims so the DHCP-plugin rows **share** the same
   ``ipam.Prefix``/``IPRange``/``IPAddress`` and ``dcim.MACAddress`` objects the
   IPAM sync maintains.
+* **Delegated-prefix Pools** (DHCPv6 ``pd-pools``) import as ``PDPool`` rows in their Subnet. Their prefix and
+  excluded prefix are NetBox Prefixes that the import owns through the IPAM source ``pd-pool`` (ADR 0006). The
+  ``pd-pool`` phase runs after the removal of Stale DHCP Import Objects, so it can deprecate a Prefix that only a
+  removed PD Pool used. A PD Pool that the plugin refuses (``PDPool.clean``) is unsupported, and the run goes on.
 * **One DHCPServer per Server and family** (Kea runs one daemon per family). It holds only its daemon's global
   configuration, maps to it, and links the interfaces that ``interfaces-config`` names.
 * **Host reservations** come from the shared typed Reservation Snapshot. The
@@ -24,19 +28,20 @@ v1 scope (import + diff, read-only against Kea):
   IPAM sync, so the import creates no address rows for it and reports every reserved
   address it could not attach.  Delegated prefixes carry their own length, so they
   import as shared ``ipam.Prefix`` rows for every Scope.
-* Each imported Subnet, Pool, Reservation, client class and custom Option Definition has a DHCP Import
-  Mapping (:class:`netbox_kea.models.KeaDhcpLink`) to its Kea source, and a re-import finds the row
+* Each imported Subnet, Pool, delegated-prefix Pool, Reservation, client class and custom Option Definition has a
+  DHCP Import Mapping (:class:`netbox_kea.models.KeaDhcpLink`) to its Kea source, and a re-import finds the row
   through it, also after an operator renames the row. The first import after an upgrade maps each
-  unmapped row that matches by structure. A Subnet without a Kea subnet ID, and its Pools, have no
+  unmapped row that matches by structure. No release imported delegated-prefix Pools before, so an unmapped PD Pool
+  is an operator's row and stays. A Subnet without a Kea subnet ID, and its Pools and PD Pools, have no
   mapping identity and match by structure.
 * A plugin Subnet holds Kea's subnet ID (:func:`settle_subnet_ids`). While the plugin keeps Subnet IDs
   unique across all servers, a Subnet whose ID another Server or family holds is reported as unsupported,
-  with its Pools and In-Subnet Reservations.
+  with its Pools, delegated-prefix Pools and In-Subnet Reservations.
 * Every custom **Option Definition** that Kea declares is written before any DHCP Option, used or not: a global
   ``option-def`` to the ``DHCPServer``, and a client class ``option-def`` to its ``ClientClass``, each through its
   own mapping. A space or a code that the plugin cannot hold is unsupported (:mod:`.dhcp_plugin_capabilities`).
 * DHCP **options** (``option-data``) are imported at every scope we model: ``DHCPServer`` (global),
-  ``ClientClass``, ``Subnet``, ``Pool``, ``HostReservation``. Each binds to the sys4-shipped standard
+  ``ClientClass``, ``Subnet``, ``Pool``, ``PDPool``, ``HostReservation``. Each binds to the sys4-shipped standard
   ``OptionDefinition`` (by space+code), or to a custom definition of its class or of the daemon. An Option keeps its
   Kea ``client-classes``, so the same definition with other classes is another Option. An option whose definition
   the plugin cannot hold is unsupported with the capability it needs, and an option whose class has no row is
@@ -48,8 +53,8 @@ v1 scope (import + diff, read-only against Kea):
   from its Shared Network is reported, never copied onto the Subnet.
 * **Ownership.** Every writer sets exactly the managed fields of :mod:`.dhcp_import_fields` on a mapped row, and
   :func:`_managed_changes` refuses a write that names another set. Unmanaged fields and unmapped rows stay.
-* A Subnet and a Pool link the client classes of their class lists that the same run imported. A Subnet links the
-  DHCP server interface that its Kea ``interface`` names, and reports a name that matches none.
+* A Subnet, a Pool and a PD Pool link the client classes of their class lists that the same run imported. A Subnet
+  links the DHCP server interface that its Kea ``interface`` names, and reports a name that matches none.
 * **Client classes** (``client-classes``) are imported as ``ClientClass`` rows
   (test/template-test, additional-list flag, BOOTP + lifetime settings, options) with
   their Kea name. While the plugin keeps class names unique across all servers, a class
@@ -81,6 +86,7 @@ if TYPE_CHECKING:
     from ..subnet_catalogue import CatalogueSnapshot
     from .dhcp_import_plan import (
         FamilyPlan,
+        PDPoolKey,
         Planned,
         PlannedClientClass,
         PlannedServer,
@@ -99,7 +105,7 @@ from ..constants import IPNetworkValue
 from ..dhcp_mapping_lifecycle import coordinated_import, mapped_target, observe_mapping, target_models
 from ..dhcp_options import MAX_ONE_OCTET_OPTION_CODE, DHCPOption, option_identity
 from ..kea import subnet_network
-from ..mappers.kea_to_dhcp import OptionDefIntent, ServerConfigIntent
+from ..mappers.kea_to_dhcp import OptionDefIntent, PDPoolIntent, ServerConfigIntent
 from ..published_name import reservation_published_name
 from ..reservations import FLEX_ID, TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, identity_text
 from ..subnet_catalogue import CatalogueUnavailable
@@ -122,6 +128,7 @@ from .dhcp_import_plan import (
     OptionDefinitionKey,
     keyed_reservations,
     kind_path,
+    mapped_kinds,
     observations,
     plan_family,
 )
@@ -244,6 +251,7 @@ class ImportSummary:
     subnets_created = _Count(Kind.SUBNET, Outcome.CREATED)
     subnets_updated = _Count(Kind.SUBNET, Outcome.UPDATED)
     pools_created = _Count(Kind.POOL, Outcome.CREATED)
+    pd_pools_created = _Count(Kind.PD_POOL, Outcome.CREATED)
     reservations_created = _Count(Kind.RESERVATION, Outcome.CREATED)
     reservations_updated = _Count(Kind.RESERVATION, Outcome.UPDATED)
     reservations_quarantined = _Count(Kind.RESERVATION, Reason.INVALID_KEA_DATA)
@@ -1279,6 +1287,11 @@ def _pool_name(subnet_obj, pool_intent) -> str:
     return _synthesized_name(subnet_obj.name, f" pool {pool_intent.pool}")
 
 
+def _pd_pool_name(subnet_obj, key: PDPoolKey) -> str:
+    """Build a unique PD Pool name scoped to its parent subnet's (unique) name."""
+    return _synthesized_name(subnet_obj.name, f" pd pool {key.prefix} delegated /{key.delegated_length}")
+
+
 def _reservation_name(scope_name: str, reservation: Reservation) -> str:
     """Build a unique reservation name scoped to its parent's (unique) name."""
     identity = reservation.identity
@@ -1422,21 +1435,32 @@ def _report_inherited(summary: ImportSummary, planned: PlannedSubnet) -> None:
 
 
 def _skip_subnet_children(summary: ImportSummary, planned: PlannedSubnet, taken: SubnetIdTaken | None = None) -> None:
-    """Record the DHCP Options and Pools of a Subnet that was not imported. A *taken* ID is also why its Pools were not."""
+    """Record the DHCP Options, Pools and PD Pools of a Subnet that was not imported.
+
+    A *taken* ID is also why its Pools and PD Pools were not.
+    """
     family, parent_path = planned.intent.family, subnet_path(planned)
     _skip_options(summary, family, parent_path, planned.intent.options)
-    for planned_pool in planned.pools:
-        path = kea_paths.pool(parent_path, planned_pool.intent.pool)
+    children = [
+        (Kind.POOL, kea_paths.pool(parent_path, pool.intent.pool), pool.intent.options) for pool in planned.pools
+    ]
+    children += [(Kind.PD_POOL, pd_pool_path(parent_path, pool.key), pool.intent.options) for pool in planned.pd_pools]
+    for kind, path, options in children:
         if taken is None:
-            summary.record(not_written(family, Kind.POOL, path, Reason.PARENT_NOT_IMPORTED))
+            summary.record(not_written(family, kind, path, Reason.PARENT_NOT_IMPORTED))
         else:
-            summary.record(taken.entry(family, Kind.POOL, path))
-        _skip_options(summary, family, path, planned_pool.intent.options)
+            summary.record(taken.entry(family, kind, path))
+        _skip_options(summary, family, path, options)
 
 
 def subnet_path(planned: PlannedSubnet) -> str:
     """Return the Kea path of a planned Subnet."""
     return kea_paths.subnet(planned.intent.family, planned.key, planned.intent.cidr)
+
+
+def pd_pool_path(parent_path: str, key: PDPoolKey) -> str:
+    """Return the Kea path of a planned delegated-prefix Pool of the Subnet at *parent_path*."""
+    return kea_paths.pd_pool(parent_path, str(key.prefix), key.delegated_length)
 
 
 @dataclass(frozen=True)
@@ -1680,21 +1704,27 @@ def _upsert_pool(
         **_settings_fields(pool_obj, intent.settings, POOL_FIELDS, summary, values),
         **_user_context_fields(pool_obj, intent.user_context, capabilities, summary, values, "Pool"),
     }
-    relations = _relation_changes(pool_obj, classes)
-    changes: dict = {}
-    if created:
-        _create_row(pool_obj, fields, capabilities)
-    elif changes := _managed_changes(pool_obj, fields, capabilities):
-        _save_changes(pool_obj, changes)
-    elif relations:
-        pool_obj.snapshot()
-    for name, pks in relations.items():
-        getattr(pool_obj, name).set(pks)
+    outcome = _write_child(pool_obj, created, fields, classes, capabilities)
     if source is not None:
         observe_mapping(server, family, pool_obj, source)
+    return pool_obj, outcome
+
+
+def _write_child(row, created: bool, fields: dict, classes: dict[str, set[int]], capabilities) -> Outcome | None:
+    """Write the managed fields and class relations of a Pool or PD Pool *row*. Return its outcome, ``None`` if same."""
+    relations = _relation_changes(row, classes)
+    changes: dict = {}
     if created:
-        return pool_obj, Outcome.CREATED
-    return pool_obj, Outcome.UPDATED if changes or relations else None
+        _create_row(row, fields, capabilities)
+    elif changes := _managed_changes(row, fields, capabilities):
+        _save_changes(row, changes)
+    elif relations:
+        row.snapshot()
+    for name, pks in relations.items():
+        getattr(row, name).set(pks)
+    if created:
+        return Outcome.CREATED
+    return Outcome.UPDATED if changes or relations else None
 
 
 def upsert_pools(
@@ -1749,6 +1779,115 @@ def upsert_pools(
         if outcome is not None:
             summary.record(written(intent.family, Kind.POOL, path, outcome))
         upsert_options(pool_obj, pool_intent.options, intent.family, references, summary, path, capabilities)
+
+
+def _pd_pool_prefixes(claims: ClaimResult, planned: Planned[PDPoolKey, PDPoolIntent], summary: ImportSummary) -> tuple:
+    """Return the claimed NetBox Prefixes of a PD Pool: its prefix and its excluded prefix (``None`` without one).
+
+    Raise when a claim gave no Prefix.
+    """
+    found: list = []
+    for network in (planned.key.prefix, planned.intent.excluded_prefix):
+        if network is None:
+            found.append(None)
+            continue
+        result = claims.prefixes[str(network)]
+        if result.prefix is None:
+            raise RuntimeError(f"The Prefix {network} could not be claimed")
+        if result.outcome in {"conflict", "disagreement"}:
+            summary.warn(f"pd pool prefix {network}: IPAM ownership {result.outcome}, Prefix left unchanged")
+        found.append(result.prefix)
+    return tuple(found)
+
+
+def _upsert_pd_pool(
+    server,
+    family: int,
+    subnet_obj,
+    prefixes: tuple,
+    planned: Planned[PDPoolKey, PDPoolIntent],
+    classes: dict[str, set[int]],
+    summary: ImportSummary,
+    path: str,
+    capabilities: PluginCapabilities,
+) -> tuple:
+    """Get or create one PD Pool and set its managed fields. Return it with its outcome (``None`` when unchanged).
+
+    It adopts no unmapped row: no release imported PD Pools before, so such a row is an operator's. The DHCP plugin
+    checks the row when it saves it, so a PD Pool that the plugin cannot hold raises ``ValidationError``.
+    """
+    PDPool = _model("PDPool")
+    key, intent = planned.key, planned.intent
+    prefix_obj, excluded_obj = prefixes
+    source = key.source
+    if source is None:
+        # A Subnet without a Kea subnet ID gives its PD Pools no mapping identity. An unmapped PD Pool stays as it is.
+        same = PDPool.objects.filter(subnet=subnet_obj, prefix=prefix_obj, delegated_length=key.delegated_length)
+        row = same.first()
+        if row is not None:
+            return row, None
+    else:
+        row = mapped_target(server, family, source)
+    created = row is None
+    if row is None:
+        row = PDPool(name=_pd_pool_name(subnet_obj, key))
+    values = _Source(family, Kind.PD_POOL, path)
+    fields = {
+        "subnet_id": subnet_obj.pk,
+        "prefix_id": prefix_obj.pk,
+        "delegated_length": key.delegated_length,
+        "excluded_prefix_id": excluded_obj.pk if excluded_obj is not None else None,
+        "pool_id": _declared_value(row, "pool_id", kea_paths.POOL_ID, intent.pool_id, None, summary, values),
+        **_user_context_fields(row, intent.user_context, capabilities, summary, values, "delegated-prefix Pool"),
+    }
+    outcome = _write_child(row, created, fields, classes, capabilities)
+    if source is not None:
+        observe_mapping(server, family, row, source)
+    return row, outcome
+
+
+def upsert_pd_pools(
+    server,
+    subnet_obj,
+    planned: PlannedSubnet,
+    summary: ImportSummary,
+    references: OptionReferences,
+    claims: ClaimResult,
+    capabilities: PluginCapabilities,
+) -> None:
+    """Get/create DHCP-plugin ``PDPool`` rows (and their options) for each planned delegated-prefix Pool of *planned*.
+
+    A PD Pool that the DHCP plugin refuses is unsupported with the plugin's reason, and its options are skipped.
+    """
+    family, parent_path = planned.intent.family, subnet_path(planned)
+    for planned_pd_pool in planned.pd_pools:
+        key, intent = planned_pd_pool.key, planned_pd_pool.intent
+        path = pd_pool_path(parent_path, key)
+        try:
+            with event_scope.atomic():
+                prefixes = _pd_pool_prefixes(claims, planned_pd_pool, summary)
+                classes = references.classes.relations(intent, path, Kind.PD_POOL, summary)
+                row, outcome = _upsert_pd_pool(
+                    server, family, subnet_obj, prefixes, planned_pd_pool, classes, summary, path, capabilities
+                )
+        except event_scope.EventDispatchError:
+            raise
+        except ManagedFieldsMismatch:
+            raise
+        except ValidationError as exc:
+            detail = f"The DHCP plugin refuses the delegated-prefix Pool: {' '.join(exc.messages)}"
+            summary.record(not_written(family, Kind.PD_POOL, path, Reason.PLUGIN_GAP, detail))
+            summary.warn(f"pd pool {key.prefix} in {planned.intent.cidr}: {detail}")
+            _skip_options(summary, family, path, intent.options)
+            continue
+        except Exception as exc:  # noqa: BLE001 — one bad PD Pool must not abort the import
+            summary.record(write_failed(family, Kind.PD_POOL, path))
+            summary.warn(f"pd pool {key.prefix} in {planned.intent.cidr}: {exc}")
+            _skip_options(summary, family, path, intent.options)
+            continue
+        if outcome is not None:
+            summary.record(written(family, Kind.PD_POOL, path, outcome))
+        upsert_options(row, intent.options, family, references, summary, path, capabilities)
 
 
 def _unusable_pool(family: int, path: str, key: PoolKey | None, result: RangeClaim | None) -> ImportEntry:
@@ -2115,8 +2254,8 @@ def _reservation_identifier_values(reservation: Reservation, mac_obj) -> dict:
 
 
 def _claim_config_networks(server, plan: FamilyPlan):
-    """Group every planned Subnet and Pool before claiming either source."""
-    from ..ipam_reconciliation import PoolClaim, SubnetClaim, claim
+    """Group every planned Subnet, Pool and delegated-prefix Pool prefix before claiming any of the three sources."""
+    from ..ipam_reconciliation import PDPoolClaim, PoolClaim, SubnetClaim, claim
 
     subnets: list[SubnetClaim] = []
     pools: list[PoolClaim] = []
@@ -2127,7 +2266,39 @@ def _claim_config_networks(server, plan: FamilyPlan):
             continue
         subnets.append(SubnetClaim(network))
         pools.extend(PoolClaim(pool.key.range, network) for pool in planned.pools if pool.key is not None)
-    return claim(server, plan.family, subnets, force=False), claim(server, plan.family, pools, force=False)
+    prefixes = [PDPoolClaim(prefix) for prefix in pd_pool_prefixes(plan)]
+    return (
+        claim(server, plan.family, subnets, force=False),
+        claim(server, plan.family, pools, force=False),
+        claim(server, plan.family, prefixes, force=False),
+    )
+
+
+def pd_pool_prefixes(plan: FamilyPlan) -> list:
+    """Return the prefix and the excluded prefix of each planned delegated-prefix Pool, each once, in plan order."""
+    networks = (
+        network
+        for subnet in plan.subnets
+        for pd_pool in subnet.pd_pools
+        for network in (pd_pool.key.prefix, pd_pool.intent.excluded_prefix)
+        if network is not None
+    )
+    return list(dict.fromkeys(networks))
+
+
+def reconcile_pd_pool_prefixes(server, plan: FamilyPlan, summary: ImportSummary) -> None:
+    """Link the Prefixes of every planned delegated-prefix Pool again, and drop the stale ``pd-pool`` links (ADR 0006).
+
+    It runs after :func:`remove_stale_objects`: a removed PD Pool no longer uses its Prefix, so the cleanup can
+    deprecate it. Only a Complete observation of delegated-prefix Pools, with a cutoff, drops a link.
+    """
+    from ..ipam_reconciliation import PDPoolPhase, reconcile
+
+    complete = observations(plan)[Kind.PD_POOL].complete
+    report = reconcile(server, plan.family, [PDPoolPhase(pd_pool_prefixes(plan), plan.ipam_cutoff, complete)])
+    summary.ownership.merge(report)
+    summary.ownership_errors += report.errors + report.prefix_errors
+    summary.owner_disagreements += len(report.disagreements)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2391,8 +2562,8 @@ def mapped_rows(server, family: int, confirmed_before: datetime | None = None) -
     """
     from ..models import KeaDhcpLink
 
-    rows: dict[Kind, dict[MappingSource, Any]] = {kind: {} for kind in REMOVAL_ORDER}
-    links = KeaDhcpLink.objects.filter(server=server, family=family, kind__in=[kind.value for kind in REMOVAL_ORDER])
+    rows: dict[Kind, dict[MappingSource, Any]] = {kind: {} for kind in mapped_kinds(family)}
+    links = KeaDhcpLink.objects.filter(server=server, family=family, kind__in=[kind.value for kind in rows])
     if confirmed_before is not None:
         links = links.filter(last_synced__lt=confirmed_before)
     for link in links.prefetch_related("sys4_object").order_by("pk"):
@@ -2429,7 +2600,7 @@ def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> No
     observed = observations(plan)
     stale = _stale_rows(server, plan, observed)
     removable: dict[tuple, _StaleRow] = {}
-    for kind in REMOVAL_ORDER:
+    for kind in mapped_kinds(plan.family):
         rows = stale.get(kind, [])
         if observed[kind].complete:
             removable.update((_row_key(row.target), row) for row in rows)
@@ -2479,7 +2650,16 @@ def _record_kept(row: _StaleRow, detail: str, family: int, summary: ImportSummar
 # The DHCP plugin rows that apply_plan adds and changes.
 _PLUGIN_UPSERTS = tuple(
     f"{PLUGIN_APP_LABEL}.{action}_{model}"
-    for model in ("dhcpserver", "optiondefinition", "option", "clientclass", "subnet", "pool", "hostreservation")
+    for model in (
+        "dhcpserver",
+        "optiondefinition",
+        "option",
+        "clientclass",
+        "subnet",
+        "pool",
+        "pdpool",
+        "hostreservation",
+    )
     for action in ("add", "change")
 )
 
@@ -2495,20 +2675,21 @@ def _removal_permissions() -> tuple[str, ...]:
 def import_permissions(server) -> tuple[str, ...]:
     """Return the IPAM, DCIM and DHCP plugin permissions that :func:`apply_plan` can use.
 
-    The import claims Subnets, Pools and Reservations, reconciles delegated Prefixes, writes the DHCP plugin rows, and
-    removes Stale DHCP Import Objects.
+    The import claims Subnets, Pools, delegated-prefix Pool Prefixes and Reservations, reconciles the delegated Prefixes
+    and the delegated-prefix Pool Prefixes, writes the DHCP plugin rows, and removes Stale DHCP Import Objects.
     """
     from ..ipam_reconciliation import (
         RESERVATION,
         DelegatedPrefixPhase,
+        PDPoolPhase,
         PoolPhase,
         SubnetPhase,
         claim_permissions,
         reconcile_permissions,
     )
 
-    claims = claim_permissions(SubnetPhase.source, PoolPhase.source, RESERVATION)
-    reconciles = reconcile_permissions(server, DelegatedPrefixPhase.source)
+    claims = claim_permissions(SubnetPhase.source, PoolPhase.source, PDPoolPhase.source, RESERVATION)
+    reconciles = reconcile_permissions(server, DelegatedPrefixPhase.source, PDPoolPhase.source)
     return tuple(dict.fromkeys((*claims, *reconciles, *_PLUGIN_UPSERTS, *_removal_permissions())))
 
 
@@ -2583,7 +2764,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
             )
         )
 
-    prefix_claims, pool_claims = _claim_config_networks(server, plan)
+    prefix_claims, pool_claims, pd_pool_claims = _claim_config_networks(server, plan)
     summary.owner_disagreements += sum(
         result.outcome == "disagreement" for result in (*prefix_claims.prefixes.values(), *pool_claims.ranges.values())
     )
@@ -2617,6 +2798,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
             capabilities,
         )
         upsert_pools(server, subnet_obj, planned_subnet, summary, references, pool_claims, capabilities)
+        upsert_pd_pools(server, subnet_obj, planned_subnet, summary, references, pd_pool_claims, capabilities)
     for source, outcomes in (("subnet", prefix_claims.prefixes), ("pool", pool_claims.ranges)):
         if any(result.outcome == "error" for result in outcomes.values()):
             summary.ownership.incomplete.add(source)
@@ -2640,6 +2822,8 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         subnet_ids=subnet_ids,
     )
     remove_stale_objects(server, plan, summary)
+    if plan.family == 6:
+        reconcile_pd_pool_prefixes(server, plan, summary)
     if not plan.configuration_complete:
         summary.ownership.incomplete.update({"subnet", "pool"})
     if (
@@ -2670,15 +2854,18 @@ def sys4_referenced_ip_ids() -> set[int]:
 
 
 def sys4_referenced_prefix_ids() -> set[int]:
-    """PKs of ``ipam.Prefix`` rows referenced by DHCP-plugin subnets/shared-networks/reservations."""
+    """PKs of ``ipam.Prefix`` rows referenced by DHCP-plugin subnets/shared-networks/PD pools/reservations."""
     if not is_available():
         return set()
     Subnet = _model("Subnet")
     SharedNetwork = _model("SharedNetwork")
+    PDPool = _model("PDPool")
     HostReservation = _model("HostReservation")
     ids: set[int] = set()
     ids.update(Subnet.objects.values_list("prefix_id", flat=True))
     ids.update(SharedNetwork.objects.values_list("prefix_id", flat=True))
+    ids.update(PDPool.objects.values_list("prefix_id", flat=True))
+    ids.update(PDPool.objects.values_list("excluded_prefix_id", flat=True))
     ids.update(HostReservation.objects.values_list("ipv6_prefixes__id", flat=True))
     ids.update(HostReservation.objects.values_list("excluded_ipv6_prefixes__id", flat=True))
     ids.discard(None)

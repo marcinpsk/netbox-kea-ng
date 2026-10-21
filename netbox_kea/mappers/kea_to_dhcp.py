@@ -214,6 +214,8 @@ class ServerConfigIntent:
     configuration_complete: bool = False
     # When the read of this configuration started, before config-get. None: not known, so no mapped row is stale.
     read_started: datetime | None = None
+    # The IPAM confirmation number taken before config-get. None: not known, so no IPAM link of the read is stale.
+    ipam_cutoff: int | None = None
     # From the Server Configuration Snapshot. None: the key is absent or invalid.
     host_reservation_identifiers: tuple[str, ...] | None = None
     shared_networks: list[SharedNetworkIntent] = field(default_factory=list)
@@ -362,10 +364,9 @@ def _pd_pool_intent(raw, subnet_path: str, dropped: list[DroppedEntry]) -> PDPoo
     entry = raw if isinstance(raw, dict) else {}
     prefix = _ipv6_prefix(entry.get(kea_paths.PREFIX), entry.get(kea_paths.PREFIX_LEN))
     delegated = entry.get(kea_paths.DELEGATED_LEN)
-    valid_length = (
-        isinstance(delegated, int) and not isinstance(delegated, bool) and 0 <= delegated <= ipaddress.IPV6LENGTH
-    )
-    if prefix is None or not valid_length:
+    if prefix is None or isinstance(delegated, bool) or not isinstance(delegated, int):
+        return None
+    if not 0 <= delegated <= ipaddress.IPV6LENGTH:
         return None
     path = kea_paths.pd_pool(subnet_path, str(prefix), delegated)
     return PDPoolIntent(

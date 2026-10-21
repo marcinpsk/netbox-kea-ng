@@ -75,6 +75,7 @@ def test_the_mapping_kind_lists_name_every_kind_of_mapping_kinds():
         Kind.SHARED_NETWORK: "shared network",
         Kind.SUBNET: "subnet",
         Kind.POOL: "pool",
+        Kind.PD_POOL: "delegated-prefix pool",
         Kind.RESERVATION: "reservation",
         Kind.CLIENT_CLASS: "client class",
         Kind.OPTION_DEFINITION: "option definition",

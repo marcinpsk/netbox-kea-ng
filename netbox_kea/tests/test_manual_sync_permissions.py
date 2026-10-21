@@ -43,7 +43,8 @@ _IPAM_IMPORT_WRITES = (
 )
 # The removal of Stale DHCP Import Objects deletes these models.
 _PLUGIN_REMOVALS = (
-    "netbox_dhcp.delete_hostreservation, netbox_dhcp.delete_pool, netbox_dhcp.delete_subnet, "
+    "netbox_dhcp.delete_hostreservation, netbox_dhcp.delete_pool, netbox_dhcp.delete_pdpool, "
+    "netbox_dhcp.delete_subnet, "
     "netbox_dhcp.delete_sharednetwork, netbox_dhcp.delete_clientclass, netbox_dhcp.delete_optiondefinition, "
     "netbox_dhcp.delete_option"
 )
@@ -51,11 +52,21 @@ _PLUGIN_IMPORT_WRITES = (
     "netbox_dhcp.add_dhcpserver, netbox_dhcp.change_dhcpserver, netbox_dhcp.add_optiondefinition, "
     "netbox_dhcp.change_optiondefinition, netbox_dhcp.add_option, netbox_dhcp.change_option, "
     "netbox_dhcp.add_clientclass, netbox_dhcp.change_clientclass, netbox_dhcp.add_subnet, netbox_dhcp.change_subnet, "
-    "netbox_dhcp.add_pool, netbox_dhcp.change_pool, netbox_dhcp.add_hostreservation, netbox_dhcp.change_hostreservation, "
+    "netbox_dhcp.add_pool, netbox_dhcp.change_pool, netbox_dhcp.add_pdpool, netbox_dhcp.change_pdpool, "
+    "netbox_dhcp.add_hostreservation, netbox_dhcp.change_hostreservation, "
     f"{_PLUGIN_REMOVALS}"
 )
 _IMPORT_WRITES = f"{_IPAM_IMPORT_WRITES}, {_PLUGIN_IMPORT_WRITES}"
-_PLUGIN_MODELS = ("DHCPServer", "OptionDefinition", "Option", "ClientClass", "Subnet", "Pool", "HostReservation")
+_PLUGIN_MODELS = (
+    "DHCPServer",
+    "OptionDefinition",
+    "Option",
+    "ClientClass",
+    "Subnet",
+    "Pool",
+    "PDPool",
+    "HostReservation",
+)
 _CONSTRAINT = {"vrf__name": "lab"}
 
 

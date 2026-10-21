@@ -39,6 +39,7 @@ from netbox_kea.integrations.dhcp_import_plan import (
     PoolKey,
     keyed_reservations,
     kind_path,
+    mapped_kinds,
     observations,
     plan_family,
 )
@@ -463,8 +464,8 @@ class KindObservationTest(SimpleTestCase):
     def test_a_complete_read_observes_every_mapped_kind_in_full(self):
         observed = observations(plan_family(_recorded_intent(4), _complete_observation()))
 
-        self.assertEqual(list(observed), list(REMOVAL_ORDER))
-        self.assertEqual({kind: o.incomplete for kind, o in observed.items()}, dict.fromkeys(REMOVAL_ORDER, ""))
+        self.assertEqual(list(observed), list(mapped_kinds(4)))
+        self.assertEqual({kind: o.incomplete for kind, o in observed.items()}, dict.fromkeys(mapped_kinds(4), ""))
         self.assertEqual(
             observed[Kind.SUBNET].sources,
             {MappingSource.subnet(10), MappingSource.subnet(20), MappingSource.subnet(21)},
@@ -527,6 +528,55 @@ class KindObservationTest(SimpleTestCase):
 
         self.assertEqual({kind for kind, o in observed.items() if not o.complete}, {Kind.SUBNET, Kind.POOL})
         self.assertIn("1 Subnet entry", observed[Kind.SUBNET].incomplete)
+
+    def test_a_dhcpv6_read_observes_its_pd_pools_and_a_dhcpv4_read_has_none(self):
+        observed = observations(plan_family(_recorded_intent(6), None))
+
+        self.assertEqual(list(mapped_kinds(6)), list(REMOVAL_ORDER))
+        self.assertNotIn(Kind.PD_POOL, mapped_kinds(4))
+        self.assertTrue(observed[Kind.PD_POOL].complete)
+        self.assertEqual(
+            observed[Kind.PD_POOL].sources,
+            {
+                MappingSource(Kind.PD_POOL, 10, "2001:db8:100::/48/56"),
+                MappingSource(Kind.PD_POOL, 10, "2001:db8:200::/48/64"),
+                MappingSource(Kind.PD_POOL, 21, "2001:db8:300::/48/64"),
+            },
+        )
+        self.assertEqual(kind_path(6, Kind.PD_POOL), "Dhcp6/subnet6[*]/pd-pools[*]")
+
+    def test_a_pd_pool_entry_that_is_not_valid_makes_pd_pools_incomplete_only(self):
+        intent = parse_dhcp_config(_pd_pool_config({"prefix": "2001:db8:100::"}), 6)
+        intent.configuration_complete = True
+
+        observed = observations(plan_family(intent, None))
+
+        self.assertEqual({kind for kind, o in observed.items() if not o.complete}, {Kind.PD_POOL, Kind.RESERVATION})
+        self.assertIn("1 Delegated-prefix Pool entry that is not valid", observed[Kind.PD_POOL].incomplete)
+
+    def test_an_invalid_dhcpv6_subnet_entry_hides_its_pd_pools(self):
+        intent = parse_dhcp_config({"subnet6": [{"id": 1, "subnet": "2001:db8:1::/64"}, {"id": 2}]}, 6)
+        intent.configuration_complete = True
+
+        observed = observations(plan_family(intent, None))
+
+        self.assertIn("hides its delegated-prefix Pools", observed[Kind.PD_POOL].incomplete)
+
+    def test_a_pd_pool_of_a_subnet_without_a_kea_id_makes_pd_pools_incomplete(self):
+        config = {
+            "subnet6": [
+                {
+                    "subnet": "2001:db8:1::/64",
+                    "pd-pools": [{"prefix": "2001:db8:100::", "prefix-len": 48, "delegated-len": 56}],
+                }
+            ]
+        }
+        intent = parse_dhcp_config(config, 6)
+        intent.configuration_complete = True
+
+        observed = observations(plan_family(intent, None))
+
+        self.assertIn("1 delegated-prefix Pool has no mapping identity.", observed[Kind.PD_POOL].incomplete)
 
     def test_a_pool_without_a_valid_range_makes_pools_incomplete(self):
         config = {"subnet4": [{"id": 1, "subnet": "192.0.2.0/24", "pools": [{"pool": "198.51.100.1-198.51.100.9"}]}]}
@@ -1351,6 +1401,107 @@ class SubnetCoverageTest(TestCase):
             (self._names(subnet.client_classes), self._names(subnet.evaluate_additional_classes)),
             (["voip"], ["printers"]),
         )
+
+
+_PD_SUBNET = "Dhcp6/subnet6[id=10]"
+_PD_COVERED = f"{_PD_SUBNET}/pd-pools[prefix=2001:db8:100::/48,delegated-len=56]"
+
+
+class PDPoolCoverageTest(TestCase):
+    """The recorded DHCPv6 configuration imports each delegated-prefix Pool as a plugin PD Pool (#101)."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def setUp(self):
+        self.server = _make_db_server(name="pd-coverage", ca_url="https://kea.example.invalid", dhcp4=False)
+
+    def _apply(self):
+        intent = _recorded_intent(6)
+        summary = dhcp_plugin.apply_plan(self.server, plan_family(intent, None), probe())
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        return summary
+
+    def _mapped(self, kind: str, subnet_id: int, identity: str | None = None):
+        return KeaDhcpLink.objects.get(
+            server=self.server, family=6, kind=kind, kea_subnet_id=subnet_id, kea_identity=identity
+        ).sys4_object
+
+    @staticmethod
+    def _names(relation) -> list[str]:
+        return sorted(relation.values_list("name", flat=True))
+
+    def test_a_pd_pool_is_imported_in_its_subnet_with_its_prefix_lengths_and_excluded_prefix(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        summary = self._apply()
+
+        pd_pool = self._mapped("pd_pool", 10, "2001:db8:100::/48/56")
+        self.assertEqual(pd_pool.subnet, self._mapped("subnet", 10))
+        self.assertEqual(
+            (str(pd_pool.prefix.prefix), pd_pool.delegated_length, str(pd_pool.excluded_prefix.prefix)),
+            ("2001:db8:100::/48", 56, "2001:db8:100:ff::/64"),
+        )
+        for prefix in (pd_pool.prefix, pd_pool.excluded_prefix):
+            with self.subTest(prefix=str(prefix.prefix)):
+                self.assertEqual((prefix.description, prefix.status), ("[kea-sync: pd pool]", "active"))
+                self.assertEqual(
+                    list(IPAMOwnershipLink.objects.filter(prefix=prefix).values_list("server", "family", "source")),
+                    [(self.server.pk, 6, "pd-pool")],
+                )
+        other = self._mapped("pd_pool", 10, "2001:db8:200::/48/64")
+        self.assertEqual(
+            (str(other.prefix.prefix), other.delegated_length, other.excluded_prefix), ("2001:db8:200::/48", 64, None)
+        )
+        created = [entry.path for entry in summary.entries if entry.kind == Kind.PD_POOL and entry.reason is None]
+        self.assertEqual(
+            created,
+            [
+                _PD_COVERED,
+                f"{_PD_SUBNET}/pd-pools[prefix=2001:db8:200::/48,delegated-len=64]",
+                "Dhcp6/subnet6[id=21]/pd-pools[prefix=2001:db8:300::/48,delegated-len=64]",
+            ],
+        )
+        self.assertEqual(summary.pd_pools_created, 3)
+
+    def test_a_pd_pool_takes_its_classes_its_pool_id_and_its_options(self):
+        self._apply()
+
+        pd_pool = self._mapped("pd_pool", 10, "2001:db8:100::/48/56")
+        self.assertEqual(
+            (pd_pool.pool_id, self._names(pd_pool.client_classes), self._names(pd_pool.evaluate_additional_classes)),
+            (3, ["voip"], ["printers"]),
+        )
+        self.assertEqual(
+            [(option.definition.code, option.data) for option in pd_pool.options.all()], [(23, "2001:db8:100::53")]
+        )
+        # Kea returns the deprecated client-class and require-client-classes of this PD Pool as their replacements.
+        member = self._mapped("pd_pool", 21, "2001:db8:300::/48/64")
+        self.assertEqual(
+            (member.pool_id, self._names(member.client_classes), self._names(member.evaluate_additional_classes)),
+            (None, ["voip"], ["printers"]),
+        )
+
+    def test_with_plugin_0_2_0_the_user_context_of_a_pd_pool_is_unsupported_and_the_pd_pool_imports(self):
+        summary = self._apply()
+
+        reported = {
+            entry.path: (entry.outcome, entry.capability)
+            for entry in summary.entries
+            if entry.kind == Kind.PD_POOL and entry.reason is not None
+        }
+        unsupported = (Outcome.UNSUPPORTED, Capability.USER_CONTEXT)
+        self.assertEqual(
+            reported,
+            {
+                f"{_PD_COVERED}/user-context": unsupported,
+                "Dhcp6/subnet6[id=21]/pd-pools[prefix=2001:db8:300::/48,delegated-len=64]/user-context": unsupported,
+            },
+        )
+        self.assertEqual(self._mapped("pd_pool", 10, "2001:db8:100::/48/56").delegated_length, 56)
 
 
 def _class_chain(prefix: str, length: int) -> list[dict]:

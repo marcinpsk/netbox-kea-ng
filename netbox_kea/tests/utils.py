@@ -138,8 +138,8 @@ def imported_dhcp_servers(server) -> list[int]:
 def linked_dhcp_targets(server):
     """Create one linked target of each DHCP Import Mapping kind, with object IDs that collide across models.
 
-    The Pool and the In-Subnet Reservation sit in a Subnet that has no mapping, so deleting a linked Subnet
-    reaches no other target.
+    The Pool, the PD Pool and the In-Subnet Reservation sit in Subnets that have no mapping, so deleting a linked
+    Subnet reaches no other target.
     """
     from django.apps import apps
     from ipam.models import IPRange, Prefix
@@ -162,6 +162,14 @@ def linked_dhcp_targets(server):
     ]
     ip_range = IPRange.objects.create(
         start_address=IPNetwork("198.18.2.10/24"), end_address=IPNetwork("198.18.2.20/24")
+    )
+    # The DHCP plugin holds a PD Pool only in a DHCPv6 Subnet.
+    subnet6 = model("Subnet").objects.create(
+        pk=103,
+        name="linked-subnet-6",
+        subnet_id=103,
+        dhcp_server=dhcp_server,
+        prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:18::/64")),
     )
     shared_prefix = Prefix.objects.create(prefix=IPNetwork("198.18.10.0/24"))
     reservation_model = model("HostReservation")
@@ -189,6 +197,16 @@ def linked_dhcp_targets(server):
             {"kind": "reservation", "kea_subnet_id": 3, "kea_identity": "duid:04"},
         ),
         (
+            model("PDPool").objects.create(
+                pk=100,
+                name="linked-pd-pool",
+                subnet=subnet6,
+                prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:1800::/48")),
+                delegated_length=56,
+            ),
+            {"kind": "pd_pool", "family": 6, "kea_subnet_id": 4, "kea_identity": "2001:db8:1800::/48/56"},
+        ),
+        (
             model("ClientClass").objects.create(pk=100, name="linked-client-class", dhcp_server=dhcp_server),
             {"kind": "client_class", "kea_identity": "voip"},
         ),
@@ -209,7 +227,7 @@ def linked_dhcp_targets(server):
         (dhcp_server, {"kind": "server"}),
     ]
     return tuple(
-        (target, KeaDhcpLink.objects.create(server=server, family=4, sys4_object=target, **source))
+        (target, KeaDhcpLink.objects.create(server=server, sys4_object=target, **{"family": 4, **source}))
         for target, source in targets
     )
 

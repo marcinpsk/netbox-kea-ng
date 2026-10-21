@@ -845,7 +845,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertIsNone(current_request.get())
 
     def _mapped_kinds(self, family, suffix):
-        """Create one mapped target of each kind; the Pool and the In-Subnet Reservation are in the Subnet."""
+        """Create one mapped target of each kind of *family*; its Pools and In-Subnet Reservation are in the Subnet."""
         from ipam.models import IPRange, Prefix
         from netaddr import IPNetwork
         from netbox_dhcp.models import (
@@ -853,6 +853,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             DHCPServer,
             HostReservation,
             OptionDefinition,
+            PDPool,
             Pool,
             SharedNetwork,
             Subnet,
@@ -904,6 +905,13 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                     dhcp_server=parent,
                 ),
             }
+            if family == 6:
+                targets[MappingSource(Kind.PD_POOL, 40, "2001:db8:4000::/48/56")] = PDPool.objects.create(
+                    name=f"mapping-{suffix}-pd-pool",
+                    subnet=subnet,
+                    prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:4000::/48")),
+                    delegated_length=56,
+                )
             mappings = {source: observe_mapping(server, family, target, source) for source, target in targets.items()}
         request_finished.send(sender=type(self))
         return targets, mappings
@@ -918,9 +926,9 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 branch = _provisioned_branch(self, f"mapping-every-kind-{family}")
                 branch.merge_strategy = "squash"
                 branch.save(provision=False)
-                # The Subnet delete also deletes its Pool and its In-Subnet Reservation.
+                # The Subnet delete also deletes its Pools and its In-Subnet Reservation.
                 for source, target in targets.items():
-                    if source.kind not in (Kind.POOL, Kind.RESERVATION):
+                    if source.kind not in (Kind.POOL, Kind.PD_POOL, Kind.RESERVATION):
                         self._delete(branch, target)
                 with activate_branch(branch):
                     for source, target in targets.items():

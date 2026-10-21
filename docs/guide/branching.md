@@ -11,9 +11,10 @@ NetBox 4.7 with netbox-branching 1.2.1. List `netbox_branching` last in `PLUGINS
 
 - Kea Servers, sync settings and IPAM ownership links stay in main. A branch has
   no copy of them, so it shows main's values.
-- DHCP Import Mappings follow their imported DHCP Servers, Subnets, Pools, Reservations, client classes
-  and custom Option Definitions in a fresh branch. Deleting a target removes its branch mapping
-  (a Subnet also removes the mappings of its Pools and Reservations) while main retains both. Discard
+- DHCP Import Mappings follow their imported DHCP Servers, Subnets, Pools, delegated-prefix Pools,
+  Reservations, client classes and custom Option Definitions in a fresh branch. Deleting a target removes its
+  branch mapping (a Subnet also removes the mappings of its Pools, delegated-prefix Pools and Reservations)
+  while main retains both. Discard
   preserves main.
   Squash merge deletes the matching main pair; revert restores both original identities, so reimport
   updates the restored object. This applies to IPv4, IPv6, instance deletion and queryset deletion.

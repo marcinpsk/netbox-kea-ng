@@ -215,7 +215,7 @@ def _subnet(family: Family) -> dict[str, Entry]:
             for key in ("4o6-interface", "4o6-interface-id", "4o6-subnet")
         }
     else:
-        entries["pd-pools"] = Pending(101)
+        entries["pd-pools"] = Mapped("PDPool")
     return entries
 
 
@@ -250,18 +250,15 @@ def _pool() -> dict[str, Entry]:
 
 def _pd_pool() -> dict[str, Entry]:
     return {
-        **_pending(
-            101,
-            "prefix",
-            "prefix-len",
-            "delegated-len",
-            "excluded-prefix",
-            "excluded-prefix-len",
-            "pool-id",
-            *_CLASS_REFERENCES,
-            "option-data",
-        ),
-        "user-context": Pending(101, _USER_CONTEXT),
+        **_fields("PDPool", "pool-id", *_CLASS_REFERENCES),
+        # Kea gives each prefix as an address and a length; the plugin holds one NetBox Prefix.
+        "prefix": Mapped("PDPool.prefix"),
+        "prefix-len": Mapped("PDPool.prefix"),
+        "delegated-len": Mapped("PDPool.delegated_length"),
+        "excluded-prefix": Mapped("PDPool.excluded_prefix"),
+        "excluded-prefix-len": Mapped("PDPool.excluded_prefix"),
+        "option-data": Mapped("Option"),
+        "user-context": Mapped("PDPool.user_context", _USER_CONTEXT),
         "metadata": NotImported(),
         **_DEPRECATED,
     }

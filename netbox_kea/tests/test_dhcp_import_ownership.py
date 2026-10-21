@@ -64,6 +64,22 @@ class ImportOwnershipTest(TestCase):
         self.assertIsNotNone(self.server.ipam_first_complete_at)
         self.assertIn("import", self.server.ipam_initial_observations)
 
+    def test_a_dhcpv6_import_that_did_not_read_every_pd_pool_records_no_receipt(self):
+        self.server.sync_enabled = False
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        config = {"subnet6": [{"id": 1, "subnet": "2001:db8:1::/64", "pd-pools": [{"prefix": "2001:db8:100::"}]}]}
+
+        with stub_kea(_sync_responses({6: config}, {6: []})):
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+
+        summary = results[0][1]
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(summary.ownership.incomplete, {"pd-pool"})
+        self.server.refresh_from_db()
+        self.assertIsNone(self.server.ipam_first_complete_at)
+        self.assertEqual(self.server.ipam_initial_observations, {})
+
     def test_global_option_diagnostics_do_not_block_network_import_completion(self):
 
         prefix = Prefix.objects.create(prefix="2001:db8:1::/64", description="[kea-sync: subnet]")
@@ -1049,6 +1065,20 @@ class PDPoolOwnershipTest(TestCase):
             reconcile(self.server, 4, [PDPoolPhase([self.network], next_confirmation_number(), True)])
         self.assertFalse(Prefix.objects.exists())
         self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+    def test_a_dhcpv6_import_owns_the_pd_pool_source(self):
+        from netbox_kea.ipam_reconciliation import effective_sources
+
+        if not dhcp_plugin.is_available():
+            self.skipTest("The import scope needs netbox_dhcp")
+        self.server.dhcp4 = True
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+
+        scope = effective_sources(self.server)["import"]
+
+        self.assertIn((6, "pd-pool"), scope)
+        self.assertNotIn((4, "pd-pool"), scope)
 
 
 class AdapterOwnershipBoundaryTest(SimpleTestCase):

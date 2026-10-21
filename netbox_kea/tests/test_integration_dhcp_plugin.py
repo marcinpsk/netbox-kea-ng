@@ -2944,6 +2944,287 @@ class DhcpPluginManagedFieldTest(TestCase):
                 self.assertLessEqual(names, plugin_fields)
 
 
+def _pd_conf() -> dict:
+    """Return a DHCPv6 configuration with one Subnet and one delegated-prefix Pool that sets every managed field."""
+    return {
+        "client-classes": [
+            {"name": "voip", "test": "option[16].exists"},
+            {"name": "printers", "test": "option[1].exists"},
+        ],
+        "subnet6": [
+            {
+                "id": 7,
+                "subnet": "2001:db8:7::/64",
+                "pd-pools": [
+                    {
+                        "prefix": "2001:db8:700::",
+                        "prefix-len": 48,
+                        "delegated-len": 56,
+                        "excluded-prefix": "2001:db8:700:ff::",
+                        "excluded-prefix-len": 64,
+                        "pool-id": 4,
+                        "client-classes": ["voip"],
+                        "evaluate-additional-classes": ["printers"],
+                        "option-data": [{"code": 23, "data": "2001:db8:700::53"}],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+_PD_POOL = "Dhcp6/subnet6[id=7]/pd-pools[prefix=2001:db8:700::/48,delegated-len=56]"
+
+
+@tag("dhcp_plugin")
+class DhcpPluginPDPoolImportTest(TestCase):
+    """Each DHCPv6 delegated-prefix Pool imports as a PD Pool through its mapping, and Kea owns its managed fields."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def setUp(self):
+        from netbox_kea.integrations import dhcp_plugin
+
+        self.adapter = dhcp_plugin
+        self.server = _make_db_server(
+            name=f"kea-pd-{timezone.now().timestamp()}", dhcp4=False, sync_dhcp_plugin_enabled=True
+        )
+        self.conf = _pd_conf()
+        self.PDPool = apps.get_model(DHCP_PLUGIN, "PDPool")
+
+    def _apply(self, conf: dict | None = None, server=None):
+        from netbox_kea.integrations.dhcp_import_plan import plan_family
+        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+
+        conf = self.conf if conf is None else conf
+        intent = parse_dhcp_config(conf, 6)
+        intent.configuration_complete = True
+        plan = plan_family(intent, _reservation_snapshot(conf, 6))
+        return self.adapter.apply_plan(server or self.server, plan, probe())
+
+    def _import(self, conf: dict | None = None):
+        summary = self._apply(conf)
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        return summary
+
+    def _run(self):
+        """Run the whole import, the read step included, against a Kea that returns ``self.conf``."""
+        from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
+        from netbox_kea.models import DhcpImportTrigger
+
+        from .test_views_dhcp_plugin import _sync_responses
+
+        with stub_kea(_sync_responses({6: self.conf}, {6: []})):
+            ((_family, summary),) = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        return summary
+
+    def _pd_pool(self):
+        from netbox_kea.models import KeaDhcpLink
+
+        return KeaDhcpLink.objects.get(server=self.server, kind="pd_pool").sys4_object
+
+    @staticmethod
+    def _names(relation) -> list[str]:
+        return sorted(relation.values_list("name", flat=True))
+
+    @staticmethod
+    def _entries(summary, kind: Kind) -> list[tuple]:
+        return [(entry.path, entry.outcome, entry.reason) for entry in summary.entries if entry.kind == kind]
+
+    def test_a_second_run_updates_the_same_pd_pool_through_its_mapping_after_a_rename(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+        from netbox_kea.models import KeaDhcpLink
+
+        self._import()
+        pd_pool = self._pd_pool()
+        self.PDPool.objects.filter(pk=pd_pool.pk).update(name="operator name")
+        kea = self.conf["subnet6"][0]["pd-pools"][0]
+        kea |= {"pool-id": 9, "client-classes": ["printers"]}
+        for key in ("evaluate-additional-classes", "excluded-prefix", "excluded-prefix-len"):
+            del kea[key]
+
+        summary = self._import()
+
+        again = self._pd_pool()
+        self.assertEqual((again.pk, again.name), (pd_pool.pk, "operator name"))
+        self.assertEqual((again.pool_id, again.excluded_prefix), (9, None))
+        self.assertEqual(
+            (self._names(again.client_classes), self._names(again.evaluate_additional_classes)), (["printers"], [])
+        )
+        self.assertEqual(self._entries(summary, Kind.PD_POOL), [(_PD_POOL, Outcome.UPDATED, None)])
+        self.assertEqual(self.PDPool.objects.filter(subnet=again.subnet).count(), 1)
+        self.assertEqual(KeaDhcpLink.objects.filter(server=self.server, kind="pd_pool").count(), 1)
+        self.assertEqual(self._entries(self._import(), Kind.PD_POOL), [])
+
+    def test_a_hand_edit_of_each_managed_field_is_overwritten_with_keas_value(self):
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        from netbox_kea.integrations.dhcp_import_fields import managed_fields
+        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+
+        self._import()
+        spare = apps.get_model(DHCP_PLUGIN, "DHCPServer").objects.create(name=f"{self.server.name} spare")
+        apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
+            name=f"{self.server.name} spare",
+            dhcp_server=spare,
+            prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:77::/64")),
+        )
+        pd_pool = self._pd_pool()
+        fields = [pd_pool._meta.get_field(managed.name) for managed in managed_fields("PDPool", probe())]
+        scalars = [field for field in fields if not field.many_to_many]
+        self.assertEqual(
+            {field.name for field in fields},
+            {
+                "subnet",
+                "prefix",
+                "delegated_length",
+                "excluded_prefix",
+                "pool_id",
+                "client_classes",
+                "evaluate_additional_classes",
+            },
+        )
+        imported = {field.attname: getattr(pd_pool, field.attname) for field in scalars}
+        edits = {field.attname: _hand_edited(field, imported[field.attname]) for field in scalars}
+        self.PDPool.objects.filter(pk=pd_pool.pk).update(**edits)
+        pd_pool.client_classes.clear()
+        pd_pool.evaluate_additional_classes.clear()
+        edited = self.PDPool.objects.get(pk=pd_pool.pk)
+        self.assertEqual([name for name, value in imported.items() if getattr(edited, name) == value], [])
+
+        self._import()
+
+        again = self.PDPool.objects.get(pk=pd_pool.pk)
+        self.assertEqual({name: getattr(again, name) for name in imported}, imported)
+        self.assertEqual(
+            (self._names(again.client_classes), self._names(again.evaluate_additional_classes)),
+            (["voip"], ["printers"]),
+        )
+
+    def test_a_pd_pool_that_the_plugin_refuses_is_reported_and_the_run_goes_on(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
+        self._import()
+        pd_pools = self.conf["subnet6"][0]["pd-pools"]
+        # Kea refuses both, but the DHCP plugin decides what it holds: a shorter delegated length, and an excluded
+        # prefix outside the prefix of the existing PD Pool.
+        pd_pools.append(
+            {
+                "prefix": "2001:db8:800::",
+                "prefix-len": 48,
+                "delegated-len": 40,
+                "option-data": [{"code": 23, "data": "2001:db8:800::53"}],
+            }
+        )
+        pd_pools[0]["excluded-prefix"] = "2001:db8:900::"
+        refused = "Dhcp6/subnet6[id=7]/pd-pools[prefix=2001:db8:800::/48,delegated-len=40]"
+
+        summary = self._apply()
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(
+            self._entries(summary, Kind.PD_POOL),
+            [(_PD_POOL, Outcome.UNSUPPORTED, Reason.PLUGIN_GAP), (refused, Outcome.UNSUPPORTED, Reason.PLUGIN_GAP)],
+        )
+        details = {entry.path: entry.detail for entry in summary.entries if entry.kind == Kind.PD_POOL}
+        self.assertIn("Delegated length must not be shorter than the length of the prefix", details[refused])
+        self.assertIn("Excluded prefix must be a sub-prefix of the prefix", details[_PD_POOL])
+        self.assertIn(
+            (f"{refused}/option-data[code=23]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+            self._entries(summary, Kind.OPTION),
+        )
+        pd_pool = self._pd_pool()
+        self.assertEqual(str(pd_pool.excluded_prefix.prefix), "2001:db8:700:ff::/64")
+        self.assertEqual(self.PDPool.objects.filter(subnet=pd_pool.subnet).count(), 1)
+
+    def test_a_pd_pool_of_a_subnet_whose_id_another_server_holds_is_unsupported_with_its_options(self):
+        from netbox_kea.integrations.dhcp_import_report import Capability, Outcome
+
+        other = _make_db_server(name=f"kea-pd-other-{timezone.now().timestamp()}", dhcp4=False)
+        self.assertEqual(self._apply(server=other).errors, 0)
+        conf = _pd_conf()
+        conf["subnet6"][0]["subnet"] = "2001:db8:8::/64"
+
+        summary = self._apply(conf)
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        clash = [entry for entry in summary.entries if entry.path.startswith(_PD_POOL)]
+        self.assertEqual(
+            [(entry.path, entry.outcome, entry.reason, entry.capability) for entry in clash],
+            [
+                (_PD_POOL, Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH, Capability.SUBNET_ID_PER_SERVER),
+                (f"{_PD_POOL}/option-data[code=23]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED, None),
+            ],
+        )
+
+    def test_a_pd_pool_that_kea_no_longer_reports_is_removed_and_its_prefixes_follow_the_opt_in(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+        from netbox_kea.models import IPAMOwnershipLink, KeaDhcpLink
+
+        self.server.sync_deprecate_prefixes_and_ranges = True
+        self.server.save()
+        self._run()
+        pd_pool = self._pd_pool()
+        prefixes = (pd_pool.prefix, pd_pool.excluded_prefix)
+        self.conf["subnet6"][0]["pd-pools"] = []
+
+        summary = self._run()
+
+        self.assertEqual(self._entries(summary, Kind.PD_POOL), [(_PD_POOL, Outcome.REMOVED, None)])
+        self.assertFalse(self.PDPool.objects.filter(pk=pd_pool.pk).exists())
+        self.assertFalse(KeaDhcpLink.objects.filter(server=self.server, kind="pd_pool").exists())
+        self.assertIn("pd-pool", summary.ownership.completed_sources)
+        for prefix in prefixes:
+            with self.subTest(prefix=str(prefix.prefix)):
+                prefix.refresh_from_db()
+                # The removal of the PD Pool comes first, so no DHCP plugin row still references the Prefix.
+                self.assertEqual(prefix.status, "deprecated")
+                self.assertEqual(
+                    list(IPAMOwnershipLink.objects.filter(prefix=prefix).values_list("source", flat=True)), ["pd-pool"]
+                )
+
+    def test_a_pd_pool_whose_delegated_length_changes_is_a_new_pd_pool(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
+        self._run()
+        old = self._pd_pool()
+        self.conf["subnet6"][0]["pd-pools"][0]["delegated-len"] = 60
+
+        summary = self._run()
+
+        new = self._pd_pool()
+        self.assertNotEqual(new.pk, old.pk)
+        self.assertEqual((new.delegated_length, new.prefix_id), (60, old.prefix_id))
+        self.assertFalse(self.PDPool.objects.filter(pk=old.pk).exists())
+        changed = "Dhcp6/subnet6[id=7]/pd-pools[prefix=2001:db8:700::/48,delegated-len=60]"
+        self.assertEqual(
+            sorted(self._entries(summary, Kind.PD_POOL)),
+            [(_PD_POOL, Outcome.REMOVED, None), (changed, Outcome.CREATED, None)],
+        )
+        self.assertEqual(new.prefix.status, "active")
+
+    def test_a_pd_pool_without_a_mapping_survives_every_run(self):
+        from django.forms.models import model_to_dict
+
+        self._run()
+        subnet = self._pd_pool().subnet
+        hand = self.PDPool.objects.create(
+            name="hand pd pool", subnet=subnet, prefix=self._pd_pool().prefix, delegated_length=64, pool_id=12
+        )
+        before = model_to_dict(hand)
+
+        for _run in range(2):
+            self._run()
+
+        self.assertEqual(model_to_dict(self.PDPool.objects.get(pk=hand.pk)), before)
+
+
 @tag("dhcp_plugin")
 class DhcpPluginReservationSnapshotImportTest(TestCase):
     """Typed Reservation Snapshots import into the matching plugin scope."""

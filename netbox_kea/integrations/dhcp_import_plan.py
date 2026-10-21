@@ -264,6 +264,8 @@ class FamilyPlan:
     configuration_complete: bool
     # When the read started. A mapping confirmed later belongs to a newer read, which this plan cannot judge.
     read_started: datetime | None
+    # The IPAM confirmation number taken before the read; None: the delegated-prefix Pool phase removes no link.
+    ipam_cutoff: int | None
     server: PlannedServer
     option_definitions: tuple[Planned[OptionDefinitionKey, OptionDefIntent], ...]
     client_classes: tuple[PlannedClientClass, ...]
@@ -364,6 +366,7 @@ def plan_family(config: ServerConfigIntent, observation: ReservationObservation 
         family=family,
         configuration_complete=config.configuration_complete,
         read_started=config.read_started,
+        ipam_cutoff=config.ipam_cutoff,
         server=PlannedServer(
             config.global_settings,
             config.global_options,
@@ -384,12 +387,18 @@ def plan_family(config: ServerConfigIntent, observation: ReservationObservation 
 REMOVAL_ORDER: tuple[Kind, ...] = (
     Kind.RESERVATION,
     Kind.POOL,
+    Kind.PD_POOL,
     Kind.SUBNET,
     Kind.SHARED_NETWORK,
     Kind.CLIENT_CLASS,
     Kind.OPTION_DEFINITION,
 )
 _CONFIGURATION_KINDS = frozenset(REMOVAL_ORDER) - {Kind.RESERVATION}
+
+
+def mapped_kinds(family: int) -> tuple[Kind, ...]:
+    """Return the kinds of :data:`REMOVAL_ORDER` that *family* has: only DHCPv6 has delegated-prefix Pools."""
+    return tuple(kind for kind in REMOVAL_ORDER if family == 6 or kind != Kind.PD_POOL)
 
 
 @dataclass(frozen=True)
@@ -423,6 +432,7 @@ def _configuration_gaps(plan: FamilyPlan) -> dict[Kind, list[str]]:
             reasons.append(f"The configuration has {entries} not valid.")
     if dropped[Kind.SUBNET]:
         gaps[Kind.POOL].append("A Subnet entry that is not valid hides its Pools.")
+        gaps[Kind.PD_POOL].append("A Subnet entry that is not valid hides its delegated-prefix Pools.")
     if dropped[Kind.CLIENT_CLASS]:
         gaps[Kind.OPTION_DEFINITION].append("A client class entry that is not valid hides its Option Definitions.")
     unkeyed_subnets = sum(subnet.key is None for subnet in plan.subnets)
@@ -431,6 +441,10 @@ def _configuration_gaps(plan: FamilyPlan) -> dict[Kind, list[str]]:
     unkeyed_pools = sum(pool.key is None or pool.key.source is None for subnet in plan.subnets for pool in subnet.pools)
     if unkeyed_pools:
         gaps[Kind.POOL].append(f"{counted(unkeyed_pools, 'Pool has', 'Pools have')} no mapping identity.")
+    unkeyed_pd_pools = sum(pd_pool.key.source is None for subnet in plan.subnets for pd_pool in subnet.pd_pools)
+    if unkeyed_pd_pools:
+        pd_pools = counted(unkeyed_pd_pools, "delegated-prefix Pool has", "delegated-prefix Pools have")
+        gaps[Kind.PD_POOL].append(f"{pd_pools} no mapping identity.")
     return gaps
 
 
@@ -464,6 +478,12 @@ def _observed_sources(plan: FamilyPlan) -> dict[Kind, frozenset[MappingSource]]:
             for pool in subnet.pools
             if pool.key is not None and pool.key.source is not None
         ),
+        Kind.PD_POOL: frozenset(
+            pd_pool.key.source
+            for subnet in plan.subnets
+            for pd_pool in subnet.pd_pools
+            if pd_pool.key.source is not None
+        ),
         Kind.SUBNET: frozenset(MappingSource.subnet(subnet.key) for subnet in plan.subnets if subnet.key is not None),
         Kind.SHARED_NETWORK: frozenset(
             MappingSource.named(Kind.SHARED_NETWORK, planned.key) for planned in plan.shared_networks
@@ -476,14 +496,14 @@ def _observed_sources(plan: FamilyPlan) -> dict[Kind, frozenset[MappingSource]]:
 
 
 def observations(plan: FamilyPlan) -> dict[Kind, KindObservation]:
-    """Return the observation of each kind of :data:`REMOVAL_ORDER` that one family of a read gives.
+    """Return the observation of each mapped kind of the family (:func:`mapped_kinds`) that one family of a read gives.
 
     The global configuration of a family has no observation: a family that was not read gives no plan.
     """
     sources = _observed_sources(plan)
     gaps = {kind: " ".join(reasons) for kind, reasons in _configuration_gaps(plan).items()}
     gaps[Kind.RESERVATION] = _reservation_gap(plan.reservations)
-    return {kind: KindObservation(sources[kind], gaps[kind]) for kind in REMOVAL_ORDER}
+    return {kind: KindObservation(sources[kind], gaps[kind]) for kind in mapped_kinds(plan.family)}
 
 
 def kind_path(family: int, kind: Kind) -> str:
@@ -493,6 +513,7 @@ def kind_path(family: int, kind: Kind) -> str:
     collections = {
         Kind.RESERVATION: kea_paths.reservations(family),
         Kind.POOL: kea_paths.pool_collection(subnets),
+        Kind.PD_POOL: kea_paths.pd_pool_collection(subnets),
         Kind.SHARED_NETWORK: kea_paths.setting(daemon, kea_paths.SHARED_NETWORKS),
         Kind.CLIENT_CLASS: kea_paths.setting(daemon, kea_paths.CLIENT_CLASSES),
         Kind.OPTION_DEFINITION: kea_paths.option_definition_collection(family),

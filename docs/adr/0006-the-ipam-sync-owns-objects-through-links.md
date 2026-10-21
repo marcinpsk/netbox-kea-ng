@@ -178,8 +178,9 @@ Prefixes. With the source `subnet`, each complete Subnet phase of the job would 
 import would link them again. With the source `delegated-prefix`, their cleanup would depend on the Reservation
 Snapshot, and a failed Reservation read would keep the stale links of the configuration. The `pd-pool` phase takes
 its cutoff before the import reads the configuration, and it is complete only when that read is Complete for
-delegated-prefix Pools. When a Prefix has more than one live source, the `subnet` marker wins over `pd pool`, and
-`pd pool` wins over `delegated prefix`.
+delegated-prefix Pools. The import runs the phase after it removes the Stale DHCP Import Objects, so the DHCP plugin
+reference guard does not keep a Prefix that only a removed delegated-prefix Pool used. When a Prefix has more than
+one live source, the `subnet` marker wins over `pd pool`, and `pd pool` wins over `delegated prefix`.
 
 ### Interface
 
