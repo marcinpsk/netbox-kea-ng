@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import dataclasses
 import ipaddress
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -10,6 +11,8 @@ from typing import Any
 
 #: The largest DHCP Option code: DHCPv6 codes are 16 bits.
 MAX_OPTION_CODE = 65_535
+#: The largest one-octet DHCP Option code: every DHCPv4 code, and the limit of a plugin without 16-bit codes.
+MAX_ONE_OCTET_OPTION_CODE = 255
 
 # Kea standard option definitions (name, code) for the dhcp4 and dhcp6 spaces, which also back the option-name
 # suggestion list. Source: isc-projects/kea src/lib/dhcp/std_option_defs.h at tag Kea-3.2.0.
@@ -297,6 +300,8 @@ class DHCPOption:
     always_send: bool | None
     never_send: bool | None
     client_classes: tuple[str, ...] = ()
+    # Kea's user-context, which no option edit changes: it is not part of the value that edits compare.
+    user_context: dict | None = dataclasses.field(default=None, compare=False)
 
     def form_initial(self) -> dict[str, Any]:
         """Return editable values, and the identity and value that the operator saw for this existing row."""
@@ -559,6 +564,7 @@ def parse_dhcp_option(entry: Any) -> DHCPOption:
         always_send=flags[1],
         never_send=flags[2],
         client_classes=client_classes,
+        user_context=entry.get("user-context"),
     )
 
 

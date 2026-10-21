@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..constants import Family
+from ..kea_paths import OPTION_DEF
 from .dhcp_import_report import Capability, Reason
 
 
@@ -151,7 +152,7 @@ def _global(family: Family) -> dict[str, Entry]:
             "DHCPServer.host_reservation_identifiers", (Capability.FLEX_ID_IDENTIFIER,)
         ),
         "option-data": Mapped("Option"),
-        "option-def": Mapped("OptionDefinition", pending=100),
+        OPTION_DEF: Mapped("OptionDefinition"),
         "client-classes": Mapped("ClientClass"),
         f"subnet{family}": Mapped("Subnet"),
         "reservations": Mapped("HostReservation"),
@@ -294,7 +295,7 @@ def _client_class(family: Family) -> dict[str, Entry]:
         "only-if-required": Deprecated("only-in-additional-list"),
     }
     if family == 4:
-        entries |= {**_fields("ClientClass", *_BOOT_FIELDS), "option-def": Pending(100)}
+        entries |= {**_fields("ClientClass", *_BOOT_FIELDS), OPTION_DEF: Mapped("OptionDefinition.client_class")}
     else:
         entries |= _fields("ClientClass", *_PREFERRED_LIFETIMES)
     return entries
@@ -305,7 +306,7 @@ def _option_definition(family: Family) -> dict[str, Entry]:
         **_fields("OptionDefinition", "name", "type", "array", "record-types", "encapsulate"),
         "code": Mapped("OptionDefinition.code", _code_capabilities(family)),
         "space": Mapped("OptionDefinition.space", (Capability.OPTION_SPACES,)),
-        "user-context": Pending(100, _USER_CONTEXT),
+        "user-context": Mapped("OptionDefinition.user_context", _USER_CONTEXT),
         "metadata": NotImported(),
         "comment": _DEPRECATED["comment"],
     }
@@ -320,8 +321,8 @@ def _option(family: Family) -> dict[str, Entry]:
         "csv-format": Mapped("Option.csv_format"),
         "always-send": Mapped("Option.send_option"),
         "never-send": Mapped("Option.send_option"),
-        "client-classes": Pending(100),
-        "user-context": Pending(100, _USER_CONTEXT),
+        "client-classes": Mapped("Option.client_classes"),
+        "user-context": Mapped("Option.user_context", _USER_CONTEXT),
         "metadata": NotImported(),
         "comment": _DEPRECATED["comment"],
     }
@@ -351,7 +352,7 @@ def _family(family: Family) -> dict[str, dict[str, Entry]]:
         "pools": _pool(),
         "reservations": _reservation(family),
         "client-classes": _client_class(family),
-        "option-def": _option_definition(family),
+        OPTION_DEF: _option_definition(family),
         "option-data": _option(family),
         "interfaces-config": _interfaces(family),
     }

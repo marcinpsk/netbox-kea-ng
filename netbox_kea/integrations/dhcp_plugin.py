@@ -32,11 +32,15 @@ v1 scope (import + diff, read-only against Kea):
 * A plugin Subnet holds Kea's subnet ID (:func:`settle_subnet_ids`). While the plugin keeps Subnet IDs
   unique across all servers, a Subnet whose ID another Server or family holds is reported as unsupported,
   with its Pools and In-Subnet Reservations.
-* DHCP **options** (``option-data``) are imported at every scope we model —
-  ``DHCPServer`` (global), ``Subnet``, ``Pool``, ``HostReservation`` — binding to
-  the sys4-shipped standard ``OptionDefinition`` (by space+code), or to a
-  server-scoped custom definition created from a Kea ``option-def``.  Options
-  whose definition cannot be resolved are reported as unsupported, never fatal.
+* Every custom **Option Definition** that Kea declares is written before any DHCP Option, used or not: a global
+  ``option-def`` to the ``DHCPServer``, and a client class ``option-def`` to its ``ClientClass``, each through its
+  own mapping. A space or a code that the plugin cannot hold is unsupported (:mod:`.dhcp_plugin_capabilities`).
+* DHCP **options** (``option-data``) are imported at every scope we model: ``DHCPServer`` (global),
+  ``ClientClass``, ``Subnet``, ``Pool``, ``HostReservation``. Each binds to the sys4-shipped standard
+  ``OptionDefinition`` (by space+code), or to a custom definition of its class or of the daemon. An Option keeps its
+  Kea ``client-classes``, so the same definition with other classes is another Option. An option whose definition
+  the plugin cannot hold is unsupported with the capability it needs, and an option whose class has no row is
+  skipped. Neither is fatal.
 * **Tuning fields** (lifetimes, timers, lease/DDNS/BOOTP/network settings) are
   imported onto the ``DHCPServer`` (global), ``Subnet``, ``Pool`` (DDNS) and ``ClientClass``. A Subnet
   or client class gets only its Declared Values (:func:`.dhcp_import_plan.declared_values`),
@@ -53,7 +57,7 @@ v1 scope (import + diff, read-only against Kea):
 * **Removal.** A mapped row whose Kea source a Complete observation of its kind no longer reports is a Stale DHCP
   Import Object (:func:`remove_stale_objects`). The run removes it, children first, and reports it. An Incomplete
   observation keeps every row of its kind. A row whose delete would also delete a DHCP plugin row that the run keeps,
-  or that an Option still uses, stays. IPAM objects stay: ADR 0006 ownership decides them.
+  that an Option still uses, or that a kept row names in a client class relation, stays. IPAM objects stay: ADR 0006 ownership decides them.
 * **Deferred** (reported, not imported): shared-network grouping (the plugin's
   ``SharedNetwork`` requires a prefix Kea does not model — member subnets are
   flattened onto the ``DHCPServer``).
@@ -93,7 +97,7 @@ from django.db.models.signals import post_delete
 from .. import event_scope, kea_paths
 from ..constants import IPNetworkValue
 from ..dhcp_mapping_lifecycle import coordinated_import, mapped_target, observe_mapping, target_models
-from ..dhcp_options import DHCPOption, option_identity
+from ..dhcp_options import MAX_ONE_OCTET_OPTION_CODE, DHCPOption, option_identity
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import OptionDefIntent, ServerConfigIntent
 from ..published_name import reservation_published_name
@@ -384,7 +388,10 @@ def _send_option(opt: DHCPOption) -> str | None:
 
 @dataclass
 class CustomDefinitions:
-    """The custom Option Definitions that one family of a Server declares, each written at most once a run."""
+    """The custom Option Definitions that one family of a Server declares, each written once a run before any Option.
+
+    *declared* holds the definitions of the daemon and of each client class.
+    """
 
     server: Server
     declared: dict[OptionDefinitionKey, OptionDefIntent]
@@ -395,19 +402,61 @@ class CustomDefinitions:
 
 
 @dataclass(frozen=True)
+class OptionReferences:
+    """What the DHCP Options of one family can reference: the custom Option Definitions and the client classes."""
+
+    definitions: CustomDefinitions
+    classes: ClassReferences
+
+
+@dataclass(frozen=True)
 class _Unresolved:
-    """Why an Option has no Option Definition: the reason and the detail of its entry."""
+    """Why an Option has no Option Definition that the DHCP plugin holds: its reason, detail and capability."""
 
     reason: Reason
     detail: str
+    capability: Capability | None = None
+
+    def entry(self, family: int, kind: Kind, path: str) -> ImportEntry:
+        """Return the entry of the fact at *path* that this reason stops."""
+        if self.capability is not None:
+            return unsupported(family, kind, path, self.capability, self.detail)
+        return not_written(family, kind, path, self.reason, self.detail)
 
 
-_NO_DEFINITION = _Unresolved(Reason.PLUGIN_GAP, "No matching Option Definition.")
 _DEFINITION_NOT_WRITTEN = _Unresolved(Reason.PARENT_NOT_IMPORTED, "See server logs.")
 
 
-def _option_definition_fields(def_intent: OptionDefIntent, family: int, dhcp_server) -> dict:
-    """Return the managed fields of a custom Option Definition: all but its name, which stays as created or renamed."""
+def _code_and_space_gap(space: str, code: int, family: int, capabilities: PluginCapabilities) -> _Unresolved | None:
+    """Return why the DHCP plugin cannot hold an option *code* in *space*, in the order of the parity ledger."""
+    if family == 6 and code > MAX_ONE_OCTET_OPTION_CODE and not capabilities.has(Capability.OPTION_CODE_16_BIT):
+        detail = (
+            f"The installed DHCP plugin cannot hold the option code {code}, which is above {MAX_ONE_OCTET_OPTION_CODE}."
+        )
+        return _Unresolved(Reason.PLUGIN_GAP, detail, Capability.OPTION_CODE_16_BIT)
+    if not capabilities.holds_space(space):
+        detail = f"The installed DHCP plugin cannot hold the option space {space}."
+        return _Unresolved(Reason.PLUGIN_GAP, detail, Capability.OPTION_SPACES)
+    return None
+
+
+def _without_definition(opt: DHCPOption, space: str, family: int, capabilities: PluginCapabilities):
+    """Return why the DHCP plugin cannot hold *opt*, which has no Option Definition, or ``None`` when it can."""
+    if not capabilities.has(Capability.OPTION_WITHOUT_DEFINITION):
+        detail = "The DHCP plugin has no Option Definition for it and cannot hold an option without one."
+        return _Unresolved(Reason.PLUGIN_GAP, detail, Capability.OPTION_WITHOUT_DEFINITION)
+    if opt.code is None:
+        return _Unresolved(Reason.INVALID_KEA_DATA, "No Option Definition gives its name a code.")
+    return _code_and_space_gap(space, opt.code, family, capabilities)
+
+
+def _option_definition_fields(
+    obj, def_intent: OptionDefIntent, family: int, parent_field: dict, capabilities: PluginCapabilities, summary, source
+) -> dict:
+    """Return the managed fields of a custom Option Definition: all but its name, which stays as created or renamed.
+
+    *parent_field* sets its parent: the DHCPServer or the client class. The plugin refuses a definition with both.
+    """
     return {
         "space": def_intent.space,
         "code": def_intent.code,
@@ -416,14 +465,15 @@ def _option_definition_fields(def_intent: OptionDefIntent, family: int, dhcp_ser
         "array": def_intent.array,
         "record_types": list(def_intent.record_types) or None,
         "encapsulate": def_intent.encapsulate,
-        "dhcp_server_id": dhcp_server.pk,
-        # The plugin refuses a definition with both parents.
+        "dhcp_server_id": None,
         "client_class_id": None,
+        **parent_field,
+        **_user_context_fields(obj, def_intent.user_context, capabilities, summary, source, "Option Definition"),
     }
 
 
 def _held_option_definition(held, family: int, key: OptionDefinitionKey, path: str, summary: ImportSummary):
-    """Report a definition that another mapping holds on this DHCPServer, which the plugin cannot hold twice."""
+    """Report a definition that another mapping holds on this parent, which the plugin cannot hold twice."""
     from django.contrib.contenttypes.models import ContentType
 
     holder = (
@@ -431,7 +481,8 @@ def _held_option_definition(held, family: int, key: OptionDefinitionKey, path: s
         .objects.filter(object_type=ContentType.objects.get_for_model(held.model), object_id__in=held.values("pk"))
         .first()
     )
-    limit = "The DHCP plugin holds one custom Option Definition for each space and code of a DHCP server"
+    parent = "DHCP server" if key.client_class is None else "client class"
+    limit = f"The DHCP plugin holds one custom Option Definition for each space and code of a {parent}"
     holder_text = f"the DHCPv{holder.family} import holds it" if holder is not None else "another row holds it"
     detail = f"{limit}, and {holder_text}."
     summary.record(not_written(family, Kind.OPTION_DEFINITION, path, Reason.PLUGIN_GAP, detail))
@@ -443,42 +494,52 @@ def _write_option_definition(
     definitions: CustomDefinitions,
     key: OptionDefinitionKey,
     family: int,
-    dhcp_server,
+    parent,
     summary: ImportSummary,
     capabilities: PluginCapabilities,
 ):
-    """Write the custom Option Definition of *key* through its mapping. Return the row, or why it has none."""
+    """Write the custom Option Definition of *key* to *parent*, a DHCPServer or a client class, through its mapping.
+
+    Return the row, or why it has none. A space or code that the plugin cannot hold is unsupported.
+    """
     OptionDefinition = _model("OptionDefinition")
     def_intent = definitions.declared[key]
-    path = kea_paths.option_definition(family, key.space, key.code)
-    fields = _option_definition_fields(def_intent, family, dhcp_server)
+    path = key.source.path(family)
+    gap = _code_and_space_gap(key.space, key.code, family, capabilities)
+    if gap is not None:
+        summary.record(gap.entry(family, Kind.OPTION_DEFINITION, path))
+        return _Unresolved(gap.reason, f"Its Option Definition is not imported. {gap.detail}", gap.capability)
+    in_class = key.client_class is not None
+    parent_field = {"client_class_id": parent.pk} if in_class else {"dhcp_server_id": parent.pk}
+    source = _Source(family, Kind.OPTION_DEFINITION, path)
     outcome = None
     try:
         with event_scope.atomic():
             obj = mapped_target(definitions.server, family, key.source)
             if obj is None:
                 same_key = OptionDefinition.objects.filter(standard=False, space=key.space, code=key.code)
+                held = same_key.filter(client_class=parent) if in_class else same_key.filter(dhcp_server=parent)
                 # Adopt a definition that an import created before Option Definitions had a mapping.
-                adoptable = same_key.filter(dhcp_server__in=definitions.adoption_servers, family=family)
-                obj = _unlinked(adoptable).first()
-                held = same_key.filter(dhcp_server=dhcp_server)
+                adoptable = held if in_class else same_key.filter(dhcp_server__in=definitions.adoption_servers)
+                obj = _unlinked(adoptable.filter(family=family)).first()
                 if obj is None and held.exists():
                     return _held_option_definition(held, family, key, path, summary)
-            if obj is None:
+            created = obj is None
+            if created:
                 obj = OptionDefinition(name=def_intent.name, standard=False)
+            fields = _option_definition_fields(obj, def_intent, family, parent_field, capabilities, summary, source)
+            if created:
                 _create_row(obj, fields, capabilities)
                 outcome = Outcome.CREATED
-            else:
-                changes = _managed_changes(obj, fields, capabilities)
-                if changes:
-                    _save_changes(obj, changes)
-                    outcome = Outcome.UPDATED
+            elif changes := _managed_changes(obj, fields, capabilities):
+                _save_changes(obj, changes)
+                outcome = Outcome.UPDATED
             observe_mapping(definitions.server, family, obj, key.source)
     except event_scope.EventDispatchError:
         raise
     except ManagedFieldsMismatch:
         raise
-    except Exception as exc:  # noqa: BLE001 — a bad definition must not abort the import
+    except Exception as exc:  # noqa: BLE001 (a bad definition must not abort the import)
         summary.record(write_failed(family, Kind.OPTION_DEFINITION, path))
         summary.warn(f"option-def code={key.code}: {exc}")
         return _DEFINITION_NOT_WRITTEN
@@ -487,18 +548,59 @@ def _write_option_definition(
     return obj
 
 
-def _resolve_option_definition(
-    opt: DHCPOption, family: int, dhcp_server, definitions: CustomDefinitions, summary, capabilities: PluginCapabilities
-):
-    """Find (or write) the ``OptionDefinition`` a Kea ``option-data`` entry refers to.
+def _class_not_imported(name: str) -> str:
+    """Return the detail of a fact whose client class *name* Kea defines but this run did not import."""
+    return f"Client class {name} was not imported."
 
-    Prefers the sys4-shipped **standard** definition (by space+code, else space+name). Then a custom definition
-    that this family declares in ``option-def``, written through its mapping. Then another custom definition of
-    the DHCPServer. Returns why the option has no definition when it cannot be resolved: the DHCP plugin has
-    none, or the custom definition could not be written.
+
+def _skip_class_definitions(
+    definitions: CustomDefinitions, planned: PlannedClientClass, summary: ImportSummary
+) -> None:
+    """Record each custom Option Definition of a client class that was not imported."""
+    for planned_definition in planned.option_definitions:
+        reason = _Unresolved(Reason.PARENT_NOT_IMPORTED, _class_not_imported(planned.key))
+        definitions.written[planned_definition.key] = reason
+        path = planned_definition.key.source.path(planned.intent.family)
+        summary.record(reason.entry(planned.intent.family, Kind.OPTION_DEFINITION, path))
+
+
+def _declared_key(opt: DHCPOption, space: str, owner: str | None, definitions: CustomDefinitions):
+    """Return the key of the custom Option Definition of *opt* that *owner* declares (``None``: the daemon), if any."""
+    if opt.code is not None:
+        key = OptionDefinitionKey(space, opt.code, owner)
+        return key if key in definitions.declared else None
+    return next(
+        (
+            each
+            for each, intent in definitions.declared.items()
+            if each.client_class == owner and each.space == space and intent.name == opt.name
+        ),
+        None,
+    )
+
+
+def _resolve_option_definition(
+    opt: DHCPOption,
+    family: int,
+    definitions: CustomDefinitions,
+    capabilities: PluginCapabilities,
+    class_name: str | None,
+):
+    """Find the ``OptionDefinition`` a Kea ``option-data`` entry refers to.
+
+    As in Kea, a custom definition comes first: one that the client class *class_name* of the option declares, then
+    one that the daemon declares. A declared definition that the import could not write stays the answer. Then the
+    sys4-shipped **standard** definition (by space+code, else space+name). A custom definition that Kea does not
+    declare is never used. Returns ``None`` for an option that the plugin holds without a definition, or why the
+    option cannot be imported.
     """
     OptionDefinition = _model("OptionDefinition")
     space = opt.space or kea_paths.default_space(family)
+    owners = (None,) if class_name is None else (class_name, None)
+    for owner in owners:
+        key = _declared_key(opt, space, owner, definitions)
+        if key is not None:
+            return definitions.written[key]
 
     standard = OptionDefinition.objects.filter(standard=True, space=space)
     if opt.code is not None:
@@ -507,94 +609,167 @@ def _resolve_option_definition(
         found = standard.filter(name=opt.name).first()
     else:
         found = None
-    if found is not None:
-        return found
-
-    key: OptionDefinitionKey | None
-    if opt.code is not None:
-        key = OptionDefinitionKey(space, opt.code)
-    else:
-        declared = definitions.declared.items()
-        key = next((each for each, intent in declared if each.space == space and intent.name == opt.name), None)
-    if key is not None and key in definitions.declared:
-        if key not in definitions.written:
-            definitions.written[key] = _write_option_definition(
-                definitions, key, family, dhcp_server, summary, capabilities
-            )
-        return definitions.written[key]
-
-    custom = OptionDefinition.objects.filter(standard=False, dhcp_server=dhcp_server, space=space)
-    if opt.code is not None:
-        found = custom.filter(code=opt.code).first()
-    elif opt.name:
-        found = custom.filter(name=opt.name).first()
-    return found if found is not None else _NO_DEFINITION
+    return found if found is not None else _without_definition(opt, space, family, capabilities)
 
 
-def _option_values(candidate, opt: DHCPOption) -> dict:
+def option_values(
+    candidate, opt: DHCPOption, family: int, capabilities: PluginCapabilities, summary, source: _Source
+) -> dict:
     """Return the managed fields of an Option as the DHCP plugin stores them, after ``Option.clean`` on *candidate*.
 
-    The plugin's clean step normalizes some values, for example the CSV format of a binary option.
+    The plugin's clean step normalizes some values, for example the CSV format of a binary option. An option
+    without an Option Definition keeps its Kea space and code (gap 9).
     """
     candidate.data = opt.data or ""
     candidate.csv_format = opt.csv_format
     candidate.send_option = _send_option(opt)
+    own: dict = {}
+    if capabilities.has(Capability.OPTION_WITHOUT_DEFINITION):
+        definition = candidate.definition
+        own = {
+            "space": opt.space or kea_paths.default_space(family),
+            "code": definition.code if definition is not None else opt.code,
+        }
+        for name, value in own.items():
+            setattr(candidate, name, value)
     candidate.clean()
-    return {"data": candidate.data, "csv_format": candidate.csv_format, "send_option": candidate.send_option}
+    return {
+        "definition_id": candidate.definition_id,
+        "data": candidate.data,
+        "csv_format": candidate.csv_format,
+        "send_option": candidate.send_option,
+        **own,
+        **_user_context_fields(candidate, opt.user_context, capabilities, summary, source, "DHCP Option"),
+    }
+
+
+@dataclass(frozen=True)
+class _PlannedOption:
+    """A Kea option that the DHCP plugin can hold: its path, space, code, Option Definition (``None``: none) and classes."""
+
+    option: DHCPOption
+    path: str
+    space: str
+    code: int | None
+    definition: Any
+    classes: frozenset[int]
+
+
+def _option_code(row) -> tuple:
+    """Return the space and code of the Option *row*: from its definition, or its own fields without one (gap 9)."""
+    if row.definition_id is not None:
+        return row.definition.space, row.definition.code
+    return row.space, row.code
+
+
+def _paired_rows(planned: list[_PlannedOption], rows: list) -> list:
+    """Return the existing Option of each planned option, or ``None``.
+
+    First a row with the same definition and the same client classes, then an unpaired row with the same definition,
+    in order. A row pairs by space and code, not by its definition row, so a definition that moves between the daemon
+    and a client class keeps the Option. A row that an import wrote before options had classes is updated, not
+    duplicated.
+    """
+    classes = {row.pk: {each.pk for each in row.client_classes.all()} for row in rows}
+    codes = {row.pk: _option_code(row) for row in rows}
+    free = list(rows)
+    paired: list = [None] * len(planned)
+    for exact in (True, False):
+        for index, item in enumerate(planned):
+            if paired[index] is not None:
+                continue
+            row = next(
+                (
+                    row
+                    for row in free
+                    if codes[row.pk] == (item.space, item.code) and (not exact or classes[row.pk] == item.classes)
+                ),
+                None,
+            )
+            if row is not None:
+                paired[index] = row
+                free.remove(row)
+    return paired
+
+
+def _write_option(item: _PlannedOption, row, parent_obj, ct, family: int, summary, capabilities) -> None:
+    """Create the Option of *item* on *parent_obj*, or update its paired *row*, with its client classes."""
+    Option = _model("Option")
+    source = _Source(family, Kind.OPTION, item.path)
+    outcome = None
+    try:
+        with event_scope.atomic():
+            new = Option(definition=item.definition, assigned_object_type=ct, assigned_object_id=parent_obj.pk)
+            desired = option_values(new, item.option, family, capabilities, summary, source)
+            obj = new if row is None else row
+            relations = _relation_changes(obj, {"client_classes": set(item.classes)})
+            changes: dict = {}
+            if row is None:
+                _create_row(new, desired, capabilities)
+                outcome = Outcome.CREATED
+            elif changes := _managed_changes(row, desired, capabilities):
+                _save_changes(row, changes)
+            elif relations:
+                row.snapshot()
+            for name, pks in relations.items():
+                getattr(obj, name).set(pks)
+            if row is not None and (changes or relations):
+                outcome = Outcome.UPDATED
+        if outcome is not None:
+            summary.record(written(family, Kind.OPTION, item.path, outcome))
+    except event_scope.EventDispatchError:
+        raise
+    except ManagedFieldsMismatch:
+        raise
+    except Exception as exc:  # noqa: BLE001 (one bad option must not abort the import)
+        summary.record(write_failed(family, Kind.OPTION, item.path))
+        summary.warn(f"option {option_identity(item.option, family)}: {exc}")
 
 
 def upsert_options(
     parent_obj,
     options,
     family: int,
-    dhcp_server,
-    custom_defs: CustomDefinitions,
+    references: OptionReferences,
     summary: ImportSummary,
     parent_path: str,
     capabilities: PluginCapabilities,
+    class_name: str | None = None,
 ) -> None:
     """Upsert DHCP-plugin ``Option`` rows for *options* assigned to *parent_obj*, the Kea object at *parent_path*.
 
-    Idempotent: one Option per ``(parent, definition)``. An Option whose definition cannot be resolved, or whose
-    data the plugin refuses, is reported and does not stop the import. An Option whose values did not change has
-    no entry.
+    One Option per Kea option: the same definition with other client classes is another Option. The options of the
+    client class *class_name* also resolve its own Option Definitions. An Option whose definition cannot be
+    resolved, whose class has no row, or whose data the plugin refuses, is reported and does not stop the import.
+    An Option whose values did not change has no entry.
     """
     if not options:
         return
     from django.contrib.contenttypes.models import ContentType
 
-    Option = _model("Option")
     ct = ContentType.objects.get_for_model(type(parent_obj))
+    planned: list[_PlannedOption] = []
     for opt in options:
         path = kea_paths.option(parent_path, opt, family)
-        definition = _resolve_option_definition(opt, family, dhcp_server, custom_defs, summary, capabilities)
+        definition = _resolve_option_definition(opt, family, references.definitions, capabilities, class_name)
         if isinstance(definition, _Unresolved):
-            summary.record(not_written(family, Kind.OPTION, path, definition.reason, definition.detail))
-            summary.warn(f"option {option_identity(opt, family)}: no matching definition, skipped")
+            summary.record(definition.entry(family, Kind.OPTION, path))
+            summary.warn(f"option {option_identity(opt, family)}: skipped. {definition.detail}")
             continue
-        outcome = None
-        try:
-            with event_scope.atomic():
-                new = Option(definition=definition, assigned_object_type=ct, assigned_object_id=parent_obj.pk)
-                desired = _option_values(new, opt)
-                obj = Option.objects.filter(
-                    assigned_object_type=ct, assigned_object_id=parent_obj.pk, definition=definition
-                ).first()
-                if obj is None:
-                    _create_row(new, desired, capabilities)
-                    outcome = Outcome.CREATED
-                elif changes := _managed_changes(obj, desired, capabilities):
-                    _save_changes(obj, changes)
-                    outcome = Outcome.UPDATED
-            if outcome is not None:
-                summary.record(written(family, Kind.OPTION, path, outcome))
-        except event_scope.EventDispatchError:
-            raise
-        except ManagedFieldsMismatch:
-            raise
-        except Exception as exc:  # noqa: BLE001 — one bad option must not abort the import
-            summary.record(write_failed(family, Kind.OPTION, path))
-            summary.warn(f"option {option_identity(opt, family)}: {exc}")
+        classes = references.classes.option_classes(opt.client_classes, path, summary)
+        if classes is not None:
+            space = opt.space or kea_paths.default_space(family)
+            code = definition.code if definition is not None else opt.code
+            planned.append(_PlannedOption(opt, path, space, code, definition, classes))
+    rows = list(
+        _model("Option")
+        .objects.filter(assigned_object_type=ct, assigned_object_id=parent_obj.pk)
+        .select_related("definition")
+        .prefetch_related("client_classes")
+        .order_by("pk")
+    )
+    for item, row in zip(planned, _paired_rows(planned, rows), strict=True):
+        _write_option(item, row, parent_obj, ct, family, summary, capabilities)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1032,11 +1207,14 @@ def upsert_client_class(
     server,
     dhcp_server,
     planned: PlannedClientClass,
-    custom_defs: CustomDefinitions,
+    definitions: CustomDefinitions,
     summary: ImportSummary,
     capabilities: PluginCapabilities,
 ):
-    """Get/create the DHCP-plugin ``ClientClass`` for *planned* through its mapping. The row takes the Kea name."""
+    """Get/create the DHCP-plugin ``ClientClass`` for *planned* through its mapping, with its Option Definitions.
+
+    The row takes the Kea name. Its DHCP Options are written after every class row exists (:func:`apply_plan`).
+    """
     ClientClass = _model("ClientClass")
     intent = planned.intent
     path = kea_paths.client_class(intent.family, planned.key)
@@ -1053,6 +1231,7 @@ def upsert_client_class(
             if obj is None and name_taken:
                 _record_name_taken(summary, intent.family, path, planned.key, capabilities)
                 _skip_options(summary, intent.family, path, intent.options)
+                _skip_class_definitions(definitions, planned, summary)
                 return None
             if obj is None:
                 obj = ClientClass()
@@ -1073,13 +1252,17 @@ def upsert_client_class(
         summary.record(write_failed(intent.family, Kind.CLIENT_CLASS, path))
         summary.warn(f"client-class {intent.name}: {exc}")
         _skip_options(summary, intent.family, path, intent.options)
+        _skip_class_definitions(definitions, planned, summary)
         return None
 
     if name_taken:
         _record_name_taken(summary, intent.family, kea_paths.setting(path, "name"), planned.key, capabilities)
     if outcome is not None:
         summary.record(written(intent.family, Kind.CLIENT_CLASS, path, outcome))
-    upsert_options(obj, intent.options, intent.family, dhcp_server, custom_defs, summary, path, capabilities)
+    for planned_definition in planned.option_definitions:
+        definitions.written[planned_definition.key] = _write_option_definition(
+            definitions, planned_definition.key, intent.family, obj, summary, capabilities
+        )
     return obj
 
 
@@ -1421,12 +1604,28 @@ class ClassReferences:
                 continue
             path = kea_paths.class_reference(parent_path, key, name)
             if name in self.defined:
-                detail = f"Client class {name} was not imported."
+                detail = _class_not_imported(name)
                 summary.record(not_written(self.family, kind, path, Reason.PARENT_NOT_IMPORTED, detail))
             else:
                 detail = f"The DHCP plugin has no row for {name}, a class that Kea's client-classes does not define."
                 summary.record(not_written(self.family, kind, path, Reason.NO_PLUGIN_HOME, detail))
         return found
+
+    def option_classes(self, names: tuple[str, ...], path: str, summary: ImportSummary) -> frozenset[int] | None:
+        """Return the imported client class of each name of the DHCP Option at *path*, or ``None`` to skip it.
+
+        An option whose class has no row is not imported: without the class it would reach more clients.
+        """
+        missing = next((name for name in names if name not in self.imported), None)
+        if missing is None:
+            return frozenset(self.imported[name] for name in names)
+        if missing in self.defined:
+            cause = _class_not_imported(missing)
+        else:
+            cause = f"The DHCP plugin has no row for {missing}, a class that Kea's client-classes does not define."
+        detail = f"{cause} Without the class the option would reach more clients."
+        summary.record(not_written(self.family, Kind.OPTION, path, Reason.PARENT_NOT_IMPORTED, detail))
+        return None
 
     def relations(self, intent, parent_path: str, kind: Kind, summary: ImportSummary) -> dict[str, set[int]]:
         """Return the imported client classes of the class lists of the Subnet or Pool *intent*, by relation.
@@ -1503,10 +1702,8 @@ def upsert_pools(
     subnet_obj,
     planned: PlannedSubnet,
     summary: ImportSummary,
-    dhcp_server,
-    custom_defs,
+    references: OptionReferences,
     claims,
-    classes: ClassReferences,
     capabilities: PluginCapabilities,
 ) -> None:
     """Get/create DHCP-plugin ``Pool`` rows (and their options) for each planned Pool of *planned*."""
@@ -1525,14 +1722,14 @@ def upsert_pools(
                 if result is not None and result.outcome in {"conflict", "disagreement"}:
                     summary.warn(f"pool {pool_intent.pool}: IPAM ownership {result.outcome}, IP Range left unchanged")
                 if range_obj is not None:
-                    references = classes.relations(pool_intent, path, Kind.POOL, summary)
+                    classes = references.classes.relations(pool_intent, path, Kind.POOL, summary)
                     pool_obj, outcome = _upsert_pool(
                         server,
                         intent.family,
                         subnet_obj,
                         range_obj,
                         planned_pool,
-                        references,
+                        classes,
                         summary,
                         path,
                         capabilities,
@@ -1551,9 +1748,7 @@ def upsert_pools(
             continue
         if outcome is not None:
             summary.record(written(intent.family, Kind.POOL, path, outcome))
-        upsert_options(
-            pool_obj, pool_intent.options, intent.family, dhcp_server, custom_defs, summary, path, capabilities
-        )
+        upsert_options(pool_obj, pool_intent.options, intent.family, references, summary, path, capabilities)
 
 
 def _unusable_pool(family: int, path: str, key: PoolKey | None, result: RangeClaim | None) -> ImportEntry:
@@ -1604,7 +1799,7 @@ def _upsert_reservation(
     subnet_obj,
     server,
     dhcp_server,
-    custom_defs,
+    references,
     summary,
     claims,
     catalogue,
@@ -1698,7 +1893,7 @@ def _upsert_reservation(
         summary.warn(f"reservation {reservation.identity.value} in {scope} could not be imported. See server logs.")
         _skip_options(summary, reservation.family, path, reservation.options)
         return None
-    upsert_options(obj, reservation.options, reservation.family, dhcp_server, custom_defs, summary, path, capabilities)
+    upsert_options(obj, reservation.options, reservation.family, references, summary, path, capabilities)
     return obj, before
 
 
@@ -1776,7 +1971,7 @@ def import_reservation_snapshot(
     server,
     dhcp_server,
     observation: ReservationObservation | None,
-    custom_defs,
+    references,
     summary: ImportSummary,
     *,
     family: int,
@@ -1842,7 +2037,7 @@ def import_reservation_snapshot(
             subnet_obj,
             server,
             dhcp_server,
-            custom_defs,
+            references,
             summary,
             claims,
             observation.catalogue,
@@ -1966,57 +2161,226 @@ def _counted_rows(rows: list) -> str:
     )
 
 
-def _removal_footprint(target, removable: dict) -> tuple[list, list]:
-    """Return the rows that a delete of *target* also deletes: the stale rows of this run, and the rows that block it.
+class _FootprintCollector(Collector):
+    """A delete collector that leaves out the Options that the removal deletes before its row."""
 
-    A row blocks the delete when it is a DHCP plugin row that the run does not remove. Raises ``ProtectedError`` when a
-    row still uses one of the rows.
-    """
-    # The same alias as the delete, so the check sees the rows that the delete would remove.
-    collector = Collector(using=target._state.db)
-    collector.collect([target])
+    def __init__(self, using: str, deleted_first: frozenset[int]) -> None:
+        super().__init__(using=using)
+        self.deleted_first = deleted_first
+
+    def related_objects(self, related_model, related_fields, objs):
+        """Return the related rows of *objs*, without the Options that go first."""
+        rows = super().related_objects(related_model, related_fields, objs)
+        return rows.exclude(pk__in=self.deleted_first) if related_model is _model("Option") else rows
+
+
+def _collected(collector: Collector) -> list:
     rows = [obj for objects in collector.data.values() for obj in objects]
     rows.extend(obj for queryset in collector.fast_deletes for obj in queryset)
+    return rows
+
+
+def _owner_key(option) -> tuple:
+    """Return the row key of the object that *option* is assigned to."""
+    return option.assigned_object_type.model_class()._meta.concrete_model, option.assigned_object_id
+
+
+def _class_relation_rows(target) -> list:
+    """Return the DHCP plugin rows that name *target* in a many-to-many relation, such as ``client_classes``."""
+    rows: dict[tuple, Any] = {}
+    for model in apps.get_app_config(PLUGIN_APP_LABEL).get_models():
+        for relation in model._meta.many_to_many:
+            if relation.related_model is target._meta.concrete_model:
+                rows.update((_row_key(row), row) for row in model.objects.filter(**{relation.name: target}))
+    return list(rows.values())
+
+
+@dataclass(frozen=True)
+class _RemovalPlan:
+    """The read-only plan of the delete of one stale row, with its evidence as row keys."""
+
+    # The Options to delete before the row: each uses a definition that the delete removes, and its owner goes too.
+    options_first: tuple = ()
+    # The other stale rows that the delete removes.
+    cascaded: frozenset = frozenset()
+    # The other stale rows that must go too, or the delete would remove or change a kept row: the rows that it
+    # removes, the rows that name it in a class relation, and the owners of the Options that go with it.
+    relies_on: frozenset = frozenset()
+    # Why the row stays whatever else the run removes, for its entry. Empty when only kept stale rows can block it.
+    blocked: str = ""
+
+
+def _removal_plan(target, stale: dict) -> _RemovalPlan:
+    """Plan the delete of the stale row *target* against every *stale* row of the run. It writes nothing.
+
+    A row outside *stale* is kept: when the delete would remove it, when it uses a row that the delete removes, or when
+    it names the row in a many-to-many relation (without it, that row would reach more clients), the row stays. Each
+    stale row with such a part is evidence in ``relies_on``. An Option goes with the object that it is assigned to.
+    """
+    Option = _model("Option")
     own = _row_key(target)
-    cascaded = [obj for obj in rows if _row_key(obj) != own and _row_key(obj) in removable]
-    blocking = [
+    first: dict[int, Any] = {}
+    while True:
+        collector = _FootprintCollector(target._state.db, frozenset(first))
+        try:
+            collector.collect([target])
+            break
+        except ProtectedError as error:
+            removed = {own, *(_row_key(obj) for obj in _collected(collector)), *stale}
+            protected = list(error.protected_objects)
+            going = [obj for obj in protected if isinstance(obj, Option) and _owner_key(obj) in removed]
+            if len(going) < len(protected):
+                users = [obj for obj in protected if obj not in going]
+                return _RemovalPlan(blocked=f"It is kept while it is in use by {_counted_rows(users)}.")
+            first.update((obj.pk, obj) for obj in going)
+    rows = _collected(collector)
+    footprint = {own, *(_row_key(obj) for obj in rows)}
+    # Counts only: any viewer of the Server reads the run, without permission on the rows.
+    kept = [
         obj
         for obj in rows
-        if _row_key(obj) != own and _row_key(obj) not in removable and not _goes_with_parent(obj._meta.concrete_model)
+        if _row_key(obj) not in stale and _row_key(obj) != own and not _goes_with_parent(obj._meta.concrete_model)
     ]
-    return cascaded, blocking
+    if kept:
+        return _RemovalPlan(blocked=f"It is kept because its removal would also remove {_counted_rows(kept)}.")
+    cascaded = frozenset(_row_key(obj) for obj in rows if _row_key(obj) != own and _row_key(obj) in stale)
+    relies_on = {*cascaded, *(_owner_key(obj) for obj in first.values())}
+    users = []
+    for obj in _class_relation_rows(target):
+        goes_with = _owner_key(obj) if isinstance(obj, Option) else _row_key(obj)
+        if goes_with in stale or goes_with in footprint:
+            relies_on.add(goes_with)
+        else:
+            users.append(obj)
+    if users:
+        return _RemovalPlan(blocked=f"It is kept while a class list of {_counted_rows(users)} names it.")
+    return _RemovalPlan(tuple(first.values()), cascaded, frozenset(relies_on & stale.keys() - {own}))
 
 
-def _remove_stale_row(row: _StaleRow, removable: dict, family: int, summary: ImportSummary) -> list[_StaleRow]:
-    """Delete one stale row through the ORM, so the lifecycle guards, the mapping cleanup and the change log run.
+def _keep_dependents(start: tuple, dependents: dict, alive: set, kept: dict, detail: str) -> list[tuple]:
+    """Keep every row of *alive* that relies on the row *start*, directly or through other rows, with *detail*.
 
-    Return the stale rows that the delete removed, *row* first. A row that the run keeps leaves *removable*.
+    Return the rows that it kept, in the order that it found them.
     """
-    path = row.source.path(family)
+    found: list[tuple] = []
+    work = [start]
+    while work:
+        for key in dependents.get(work.pop(), ()):
+            if key in alive:
+                alive.discard(key)
+                kept[key] = detail
+                found.append(key)
+                work.append(key)
+    return found
+
+
+def _dependents(plans: dict[tuple, _RemovalPlan]) -> dict[tuple, set[tuple]]:
+    """Return the rows whose plan relies on each row: the reverse index of ``relies_on``."""
+    index: dict[tuple, set[tuple]] = {}
+    for key, plan in plans.items():
+        for each in plan.relies_on:
+            index.setdefault(each, set()).add(key)
+    return index
+
+
+def _relied_on_detail(row: _StaleRow, what: str) -> str:
+    return f"It is kept because its removal relies on the removal of {_counted_rows([row.target])}, which {what}."
+
+
+def _removal_set(stale: dict[tuple, _StaleRow]) -> tuple[dict[tuple, _RemovalPlan], dict[tuple, str]]:
+    """Return the largest subset of stale rows whose deletion removes or changes no kept row.
+
+    Return the plan of each row of that subset, and why each other stale row stays. Each plan is read once; a row that
+    stays keeps every row that relies on it, through the reverse index.
+    """
+    plans = {key: _removal_plan(row.target, stale) for key, row in stale.items()}
+    kept = {key: plan.blocked for key, plan in plans.items() if plan.blocked}
+    alive = set(plans) - kept.keys()
+    dependents = _dependents(plans)
+    for key in list(kept):
+        _keep_dependents(key, dependents, alive, kept, _relied_on_detail(stale[key], "is kept"))
+    return {key: plan for key, plan in plans.items() if key in alive}, kept
+
+
+def _components(plans: dict[tuple, _RemovalPlan]) -> list[list[tuple]]:
+    """Return the strongly connected components of the ``relies_on`` graph, each after every component it relies on.
+
+    Rows that rely on each other form one component. Tarjan's algorithm, without recursion, gives the components in
+    this order. The rows and edges follow the order of *plans*, so the result does not change between runs.
+    """
+    order = {key: position for position, key in enumerate(plans)}
+
+    def edges(key: tuple):
+        return iter(sorted(plans[key].relies_on & plans.keys(), key=order.__getitem__))
+
+    index: dict[tuple, int] = {}
+    low: dict[tuple, int] = {}
+    stack: list[tuple] = []
+    on_stack: set[tuple] = set()
+    components: list[list[tuple]] = []
+
+    def visit(key: tuple) -> None:
+        index[key] = low[key] = len(index)
+        stack.append(key)
+        on_stack.add(key)
+
+    for root in plans:
+        if root in index:
+            continue
+        visit(root)
+        work = [(root, edges(root))]
+        while work:
+            key, successors = work[-1]
+            for successor in successors:
+                if successor not in index:
+                    visit(successor)
+                    work.append((successor, edges(successor)))
+                    break
+                if successor in on_stack:
+                    low[key] = min(low[key], index[successor])
+            else:
+                work.pop()
+                if work:
+                    low[work[-1][0]] = min(low[work[-1][0]], low[key])
+                if low[key] == index[key]:
+                    component = []
+                    while (member := stack.pop()) != key:
+                        on_stack.discard(member)
+                        component.append(member)
+                    on_stack.discard(key)
+                    components.append(sorted([*component, key], key=order.__getitem__))
+    return components
+
+
+def _delete_component(
+    keys: list[tuple], plans: dict, removable: dict, removed: set, family: int, summary: ImportSummary
+) -> tuple[list[tuple], tuple | None]:
+    """Delete the rows of one component in one transaction, all or nothing, through the ORM.
+
+    The ORM delete runs the guards, the mapping cleanup and the change log. Return the rows that the component
+    removed, and ``None``; or no rows and the row whose delete failed, which has a write-failed entry.
+    """
+    gone: list[tuple] = []
+    current = keys[0]
     try:
         with event_scope.atomic():
-            cascaded, blocking = _removal_footprint(row.target, removable)
-            if not blocking:
-                row.target.delete()
+            for current in keys:
+                if current in removed or current in gone:
+                    continue
+                plan = plans[current]
+                # An Option that the delete of its own owner already removed is gone.
+                for option in _model("Option").objects.filter(pk__in=[option.pk for option in plan.options_first]):
+                    option.delete()
+                removable[current].target.delete()
+                gone += [current, *(each for each in plan.cascaded if each not in removed and each not in gone)]
     except event_scope.EventDispatchError:
         raise
-    except ProtectedError as error:
-        removable.pop(_row_key(row.target))
-        detail = f"It is kept while it is in use by {_counted_rows(list(error.protected_objects))}."
-        summary.record(not_written(family, row.source.kind, path, Reason.REMOVAL_BLOCKED, detail))
-        return []
     except Exception as exc:  # noqa: BLE001 (one failed removal must not abort the import)
-        removable.pop(_row_key(row.target))
-        summary.record(write_failed(family, row.source.kind, path))
-        summary.warn(f"stale {row.source.kind.value} {path}: {exc}")
-        return []
-    if blocking:
-        removable.pop(_row_key(row.target))
-        # Counts only: any viewer of the Server reads the run, without permission on the rows.
-        detail = f"It is kept because its removal would also remove {_counted_rows(blocking)}."
-        summary.record(not_written(family, row.source.kind, path, Reason.REMOVAL_BLOCKED, detail))
-        return []
-    return [row, *(removable[_row_key(obj)] for obj in cascaded)]
+        source = removable[current].source
+        summary.record(write_failed(family, source.kind, source.path(family)))
+        summary.warn(f"stale {source.kind.value} {source.path(family)}: {exc}")
+        return [], current
+    return gone, None
 
 
 def mapped_rows(server, family: int, confirmed_before: datetime | None = None) -> dict[Kind, dict[MappingSource, Any]]:
@@ -2056,9 +2420,11 @@ def _stale_rows(server, plan: FamilyPlan, observed) -> dict[Kind, list[_StaleRow
 def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> None:
     """Remove each Stale DHCP Import Object of one family, children first, and report it.
 
-    An Incomplete observation of a kind keeps every row of that kind, with one entry that says why. A row whose delete
-    would also delete a DHCP plugin row that the run keeps, or that a row still uses, is kept and reported. IPAM
-    objects stay: the DHCP plugin rows only reference them.
+    An Incomplete observation of a kind keeps every row of that kind, with one entry that says why. Before any write,
+    :func:`_removal_set` finds the stale rows whose deletion removes or changes no kept row; each other stale row is
+    kept and reported. Rows that rely on each other form one component, which goes in one transaction, all or nothing,
+    after every component that it relies on. When a component fails, every pending row that relies on it, directly or
+    through other rows, is kept too. IPAM objects stay: the DHCP plugin rows only reference them.
     """
     observed = observations(plan)
     stale = _stale_rows(server, plan, observed)
@@ -2073,14 +2439,41 @@ def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> No
             summary.record(
                 not_written(plan.family, kind, kind_path(plan.family, kind), Reason.INCOMPLETE_OBSERVATION, detail)
             )
+    plans, staying = _removal_set(removable)
+    for key, detail in staying.items():
+        _record_kept(removable[key], detail, plan.family, summary)
+    # A deleted instance has no pk, so every key comes from before the deletes.
+    dependents = _dependents(plans)
+    pending = set(plans)
     removed: set[tuple] = set()
-    for kind in REMOVAL_ORDER:
-        for row in stale.get(kind, []) if observed[kind].complete else ():
-            if _row_key(row.target) in removed:
-                continue
-            for gone in _remove_stale_row(row, removable, plan.family, summary):
-                removed.add(_row_key(gone.target))
-                summary.record(written(plan.family, gone.source.kind, gone.source.path(plan.family), Outcome.REMOVED))
+    for component in _components(plans):
+        if not pending.issuperset(component):
+            # A failed component that it relies on keeps it.
+            continue
+        pending.difference_update(component)
+        gone, failed = _delete_component(component, plans, removable, removed, plan.family, summary)
+        if failed is None:
+            removed.update(gone)
+            for source in (removable[each].source for each in gone):
+                summary.record(written(plan.family, source.kind, source.path(plan.family), Outcome.REMOVED))
+            continue
+        together = _together_detail(removable[failed])
+        for key in component:
+            if key != failed:
+                _record_kept(removable[key], together, plan.family, summary)
+        relied_on: dict[tuple, str] = {}
+        for key in component:
+            detail = _relied_on_detail(removable[key], "failed" if key == failed else "is kept")
+            for each in _keep_dependents(key, dependents, pending, relied_on, detail):
+                _record_kept(removable[each], detail, plan.family, summary)
+
+
+def _together_detail(row: _StaleRow) -> str:
+    return f"It is kept because it is removed together with {_counted_rows([row.target])}, whose removal failed."
+
+
+def _record_kept(row: _StaleRow, detail: str, family: int, summary: ImportSummary) -> None:
+    summary.record(not_written(family, row.source.kind, row.source.path(family), Reason.REMOVAL_BLOCKED, detail))
 
 
 # The DHCP plugin rows that apply_plan adds and changes.
@@ -2128,6 +2521,29 @@ def import_server_config(
     return apply_plan(server, plan_family(config, reservation_observation), probe())
 
 
+def _import_definitions_and_classes(
+    server, dhcp_server, plan: FamilyPlan, adoption_servers: tuple[int, ...], summary, capabilities
+) -> tuple[OptionReferences, dict]:
+    """Write every custom Option Definition and client class of *plan*, before any DHCP Option references them.
+
+    Return what the Options can reference, and the row of each imported client class by Kea name.
+    """
+    declared = {planned.key: planned.intent for planned in plan.every_option_definition}
+    definitions = CustomDefinitions(server, declared, adoption_servers)
+    for planned in plan.option_definitions:
+        definitions.written[planned.key] = _write_option_definition(
+            definitions, planned.key, plan.family, dhcp_server, summary, capabilities
+        )
+    rows = {}
+    for planned_class in plan.client_classes:
+        row = upsert_client_class(server, dhcp_server, planned_class, definitions, summary, capabilities)
+        if row is not None:
+            rows[planned_class.key] = row
+    defined = frozenset(planned.key for planned in plan.client_classes)
+    classes = ClassReferences(plan.family, defined, {name: row.pk for name, row in rows.items()})
+    return OptionReferences(definitions, classes), rows
+
+
 @coordinated_import
 def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> ImportSummary:
     """Apply the plan of one ``(server, family)`` to the DHCP plugin, writing a gated fact only with its *capabilities*.
@@ -2141,25 +2557,21 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         summary.record(not_written(plan.family, dropped.kind, dropped.path, Reason.INVALID_KEA_DATA, dropped.detail))
     dhcp_server, created = upsert_dhcp_server(server, plan.family)
     adoption_servers = _adoption_servers(server, dhcp_server)
-    custom_defs = CustomDefinitions(
-        server, {planned.key: planned.intent for planned in plan.option_definitions}, adoption_servers
-    )
 
     values = server_values(dhcp_server, plan.server, plan.family, capabilities, summary)
     changed = _apply_global_settings(dhcp_server, values, summary, plan.family, capabilities)
     linked = _link_interfaces(dhcp_server, plan.server.interfaces, summary, plan.family)
     if changed is not None and (created or changed or linked):
         summary.record(written(plan.family, Kind.SERVER, root, Outcome.CREATED if created else Outcome.UPDATED))
-    upsert_options(
-        dhcp_server, plan.server.global_options, plan.family, dhcp_server, custom_defs, summary, root, capabilities
+    references, class_rows = _import_definitions_and_classes(
+        server, dhcp_server, plan, adoption_servers, summary, capabilities
     )
-    imported_classes = {}
-    for planned_class in plan.client_classes:
-        row = upsert_client_class(server, dhcp_server, planned_class, custom_defs, summary, capabilities)
-        if row is not None:
-            imported_classes[planned_class.key] = row.pk
-    defined = frozenset(planned.key for planned in plan.client_classes)
-    classes = ClassReferences(plan.family, defined, imported_classes)
+    row_options = {planned.key: planned.intent.options for planned in plan.client_classes}
+    upsert_options(dhcp_server, plan.server.global_options, plan.family, references, summary, root, capabilities)
+    for name, row in class_rows.items():
+        options = row_options[name]
+        path = kea_paths.client_class(plan.family, name)
+        upsert_options(row, options, plan.family, references, summary, path, capabilities, class_name=name)
     for planned_network in plan.shared_networks:
         summary.record(
             not_written(
@@ -2189,7 +2601,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
             continue
         renumbered = planned_subnet.key in subnet_ids.renumbered
         subnet_obj = upsert_subnet(
-            server, dhcp_server, planned_subnet, summary, prefix_claims, renumbered, capabilities, classes
+            server, dhcp_server, planned_subnet, summary, prefix_claims, renumbered, capabilities, references.classes
         )
         if subnet_obj is None:
             _skip_subnet_children(summary, planned_subnet)
@@ -2199,15 +2611,12 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
             subnet_obj,
             planned_subnet.intent.options,
             plan.family,
-            dhcp_server,
-            custom_defs,
+            references,
             summary,
             subnet_path(planned_subnet),
             capabilities,
         )
-        upsert_pools(
-            server, subnet_obj, planned_subnet, summary, dhcp_server, custom_defs, pool_claims, classes, capabilities
-        )
+        upsert_pools(server, subnet_obj, planned_subnet, summary, references, pool_claims, capabilities)
     for source, outcomes in (("subnet", prefix_claims.prefixes), ("pool", pool_claims.ranges)):
         if any(result.outcome == "error" for result in outcomes.values()):
             summary.ownership.incomplete.add(source)
@@ -2223,7 +2632,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         server,
         dhcp_server,
         plan.reservations,
-        custom_defs,
+        references,
         summary,
         family=plan.family,
         adoption_servers=adoption_servers,

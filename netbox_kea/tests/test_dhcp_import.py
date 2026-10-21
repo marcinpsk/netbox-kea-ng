@@ -23,9 +23,12 @@ from django.test import SimpleTestCase, TestCase
 from django.test.utils import isolate_apps
 from django.urls import reverse
 
+from netbox_kea import kea_paths
 from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.integrations.dhcp_import_ledger import KEA_DEFAULTS
 from netbox_kea.integrations.dhcp_import_plan import (
+    MAX_KEA_NAME_LENGTH,
+    MAX_MAPPING_IDENTITY_LENGTH,
     REMOVAL_ORDER,
     FamilyPlan,
     GlobalReservationKey,
@@ -134,6 +137,7 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
                 OptionDefinitionKey("dhcp4", 224),
                 OptionDefinitionKey("dhcp4", 225),
                 OptionDefinitionKey("dhcp4", 226),
+                OptionDefinitionKey("dhcp4", 227),
                 OptionDefinitionKey("vendor-sub", 1),
             ],
         )
@@ -160,6 +164,35 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
         self.assertIs(plan.reservations, observation)
         self.assertEqual(plan.server.global_settings["valid-lifetime"], 4000)
         self.assertEqual(len(plan.server.global_options), len(_recorded_config(4)["option-data"]))
+
+    def test_a_class_level_option_definition_is_planned_with_its_class(self):
+        plan = plan_family(_recorded_intent(4), None)
+
+        classes = {planned.key: planned for planned in plan.client_classes}
+        (definition,) = classes["boot"].option_definitions
+        self.assertEqual(definition.key, OptionDefinitionKey("dhcp4", 231, "boot"))
+        self.assertEqual(definition.intent.user_context, {"comment": "Class definition"})
+        self.assertEqual(definition.key.source, MappingSource(Kind.OPTION_DEFINITION, None, "boot:dhcp4:231"))
+        self.assertEqual(definition.key.source.path(4), "Dhcp4/client-classes[name=boot]/option-def[code=231]")
+        self.assertEqual(classes["voip"].option_definitions, ())
+        self.assertNotIn(definition.key, [planned.key for planned in plan.option_definitions])
+
+    def test_the_mapping_identity_holds_the_longest_class_level_option_definition(self):
+        source = OptionDefinitionKey("s" * MAX_KEA_NAME_LENGTH, 65535, "c" * MAX_KEA_NAME_LENGTH).source
+
+        self.assertEqual(len(source.kea_identity), MAX_MAPPING_IDENTITY_LENGTH)
+        self.assertEqual(KeaDhcpLink._meta.get_field("kea_identity").max_length, MAX_MAPPING_IDENTITY_LENGTH)
+
+    def test_a_class_level_option_definition_that_is_not_valid_is_dropped_with_its_class_path(self):
+        config = {"client-classes": [{"name": "boot", "option-def": [{"name": "no-code", "type": "uint8"}]}]}
+
+        plan = plan_family(parse_dhcp_config(config, 4), None)
+
+        self.assertEqual(plan.client_classes[0].option_definitions, ())
+        self.assertEqual(
+            [(entry.kind, entry.path) for entry in plan.dropped],
+            [(Kind.OPTION_DEFINITION, "Dhcp4/client-classes[name=boot]/option-def[0]")],
+        )
 
     def test_the_dhcpv6_plan_keys_subnets_and_pools_and_plans_no_reservation_without_a_read(self):
         plan = plan_family(_recorded_intent(6), None)
@@ -343,6 +376,26 @@ class KindObservationTest(SimpleTestCase):
             },
         )
 
+    def test_the_option_definition_observation_holds_the_class_level_definitions(self):
+        observed = observations(plan_family(_recorded_intent(4), _complete_observation()))
+
+        self.assertIn(
+            MappingSource(Kind.OPTION_DEFINITION, None, "boot:dhcp4:231"), observed[Kind.OPTION_DEFINITION].sources
+        )
+        self.assertEqual(len(observed[Kind.OPTION_DEFINITION].sources), 6)
+
+    def test_a_client_class_entry_that_is_not_valid_hides_its_option_definitions(self):
+        config = {"client-classes": [{"name": "boot"}, {"test": "member('KNOWN')"}]}
+        intent = parse_dhcp_config(config, 4)
+        intent.configuration_complete = True
+
+        observed = observations(plan_family(intent, _complete_observation()))
+
+        self.assertEqual(
+            {kind for kind, o in observed.items() if not o.complete}, {Kind.CLIENT_CLASS, Kind.OPTION_DEFINITION}
+        )
+        self.assertIn("hides its Option Definitions", observed[Kind.OPTION_DEFINITION].incomplete)
+
     def test_subnet_diagnostics_make_every_configuration_kind_incomplete_and_leave_reservations_complete(self):
         intent = _recorded_intent(4)
         intent.configuration_complete = False
@@ -409,6 +462,9 @@ class KindObservationTest(SimpleTestCase):
             MappingSource.named(Kind.CLIENT_CLASS, "voip"): "Dhcp4/client-classes[name=voip]",
             MappingSource(Kind.OPTION_DEFINITION, None, "dhcp4:222"): "Dhcp4/option-def[code=222]",
             MappingSource(Kind.OPTION_DEFINITION, None, "vendor-x:1"): "Dhcp4/option-def[space=vendor-x,code=1]",
+            MappingSource(Kind.OPTION_DEFINITION, None, "a:b:vendor-x:1"): (
+                "Dhcp4/client-classes[name=a:b]/option-def[space=vendor-x,code=1]"
+            ),
             MappingSource.named(Kind.SHARED_NETWORK, "office"): "Dhcp4/shared-networks[name=office]",
         }
         for source, path in sources.items():
@@ -446,6 +502,36 @@ class CapabilityProbeTest(SimpleTestCase):
         }
         capabilities = probe()
         self.assertEqual({capability: capabilities.has(capability) for capability in Capability}, expected)
+
+    def test_netbox_dhcp_0_2_0_holds_the_option_spaces_of_its_choices_only(self):
+        if not apps.is_installed(DHCP_PLUGIN):
+            self.skipTest(f"{DHCP_PLUGIN} not installed")
+        capabilities = probe()
+
+        self.assertEqual(capabilities.option_spaces, {"dhcp4", "dhcp6", "vendor-specific-options-space"})
+        self.assertTrue(capabilities.holds_space("vendor-specific-options-space"))
+        for space in ("vendor-sub", "vendor-encapsulated-options-space", "vendor-4491"):
+            with self.subTest(space=space):
+                self.assertFalse(capabilities.holds_space(space))
+
+    @isolate_apps("netbox_kea")
+    def test_a_plugin_without_a_closed_space_choice_set_holds_every_space(self):
+        capabilities = probe(_proposed_plugin_models().__getitem__)
+
+        self.assertEqual(capabilities.option_spaces, frozenset())
+        self.assertTrue(capabilities.holds_space("vendor-4491"))
+
+    @isolate_apps("netbox_kea")
+    def test_an_option_definition_without_a_user_context_lacks_the_capability(self):
+        plugin = _proposed_plugin_models()
+        plugin["OptionDefinition"] = _probe_model("ContextlessOptionDefinition", space=models.CharField(max_length=255))
+        self.assertFalse(probe(plugin.__getitem__).has(Capability.USER_CONTEXT))
+
+    @isolate_apps("netbox_kea")
+    def test_an_option_without_a_user_context_lacks_the_capability(self):
+        plugin = _proposed_plugin_models()
+        plugin["Option"] = _probe_model("ContextlessOption")
+        self.assertFalse(probe(plugin.__getitem__).has(Capability.USER_CONTEXT))
 
     @isolate_apps("netbox_kea")
     def test_a_plugin_with_the_proposed_shapes_has_every_capability(self):
@@ -609,6 +695,7 @@ def _proposed_plugin_models() -> dict[str, type[models.Model]]:
         "OptionDefinition",
         space=models.CharField(max_length=255),
         code=models.PositiveIntegerField(validators=[MaxValueValidator(65535)]),
+        user_context=models.JSONField(null=True),
     )
 
     def parent() -> models.ForeignKey:
@@ -655,8 +742,67 @@ def _proposed_plugin_models() -> dict[str, type[models.Model]]:
             definition=models.ForeignKey(definition, on_delete=models.PROTECT, null=True),
             space=models.CharField(max_length=255),
             code=models.PositiveIntegerField(),
+            user_context=user_context(),
         ),
     }
+
+
+@without_dhcp_plugin()
+class OptionValuesTest(SimpleTestCase):
+    """With its capability an option without a definition keeps its space and code, and a user-context is planned."""
+
+    def _values(self, candidate, opt, capabilities: frozenset):
+        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+
+        summary = dhcp_plugin.ImportSummary()
+        source = dhcp_plugin._Source(6, Kind.OPTION, "Dhcp6/option-data[code=1003]")
+        values = dhcp_plugin.option_values(candidate, opt, 6, PluginCapabilities(capabilities), summary, source)
+        return values, {(entry.path, entry.capability) for entry in summary.entries}
+
+    @isolate_apps("netbox_kea")
+    def test_with_the_capabilities_an_option_without_a_definition_keeps_its_space_code_and_user_context(self):
+        from netbox_kea.dhcp_options import parse_dhcp_option
+
+        opt = parse_dhcp_option({"code": 1003, "data": "C0000245", "csv-format": False, "user-context": {"a": 1}})
+
+        values, entries = self._values(_proposed_plugin_models()["Option"](definition=None), opt, frozenset(Capability))
+
+        self.assertEqual(
+            values,
+            {
+                "definition_id": None,
+                "data": "C0000245",
+                "csv_format": False,
+                "send_option": None,
+                "space": "dhcp6",
+                "code": 1003,
+                "user_context": {"a": 1},
+            },
+        )
+        self.assertEqual(entries, set())
+
+    @isolate_apps("netbox_kea")
+    def test_with_a_definition_the_option_takes_the_code_of_its_definition(self):
+        from netbox_kea.dhcp_options import parse_dhcp_option
+
+        plugin = _proposed_plugin_models()
+        definition = plugin["OptionDefinition"](space="dhcp6", code=1000)
+        opt = parse_dhcp_option({"name": "tftp-list", "data": "2001:db8::69"})
+
+        values, _entries = self._values(plugin["Option"](definition=definition), opt, frozenset(Capability))
+
+        self.assertEqual((values["space"], values["code"], values["user_context"]), ("dhcp6", 1000, None))
+
+    @isolate_apps("netbox_kea")
+    def test_without_the_capabilities_a_declared_user_context_is_unsupported(self):
+        from netbox_kea.dhcp_options import parse_dhcp_option
+
+        opt = parse_dhcp_option({"code": 1003, "data": "x", "user-context": {"comment": "Kea comment"}})
+
+        values, entries = self._values(_proposed_plugin_models()["Option"](definition=None), opt, frozenset())
+
+        self.assertEqual(set(values), {"definition_id", "data", "csv_format", "send_option"})
+        self.assertEqual(entries, {("Dhcp6/option-data[code=1003]/user-context", Capability.USER_CONTEXT)})
 
 
 class ApplyPlanWithoutKeaTest(TestCase):
@@ -714,7 +860,7 @@ class ApplyPlanWithoutKeaTest(TestCase):
                     standard=False, dhcp_server__in=imported_dhcp_servers(server)
                 ).values_list("space", "code")
             ),
-            {("dhcp4", 224), ("dhcp4", 225), ("dhcp4", 226)},
+            {("dhcp4", 224), ("dhcp4", 225), ("dhcp4", 226), ("dhcp4", 227)},
         )
         record = OptionDefinition.objects.get(dhcp_server__in=imported_dhcp_servers(server), code=225)
         self.assertEqual(record.record_types, ["uint8", "string"])
@@ -732,14 +878,15 @@ class ApplyPlanWithoutKeaTest(TestCase):
             *HostReservation.objects.filter(dhcp_server__in=imported_dhcp_servers(server), subnet__isnull=True),
             *ClientClass.objects.filter(dhcp_server__in=imported_dhcp_servers(server)),
             *OptionDefinition.objects.filter(standard=False, dhcp_server__in=imported_dhcp_servers(server)),
+            *OptionDefinition.objects.filter(client_class__dhcp_server__in=imported_dhcp_servers(server)),
         ]
         mapped = KeaDhcpLink.objects.filter(server=server, family=4).exclude(kind__in=["subnet", "server"])
         self.assertCountEqual(
             mapped.values_list("object_type__model", "object_id"),
             [(row._meta.model_name, row.pk) for row in rows],
         )
-        # Four Pools, two Reservations, four client classes and three custom Option Definitions.
-        self.assertEqual(mapped.count(), 13)
+        # Four Pools, two Reservations, four client classes and five custom Option Definitions, one of them in a class.
+        self.assertEqual(mapped.count(), 15)
         before = set(KeaDhcpLink.objects.filter(server=server).values_list("pk", "object_id"))
 
         again = dhcp_plugin.apply_plan(server, plan, probe())
@@ -1096,6 +1243,562 @@ class SubnetCoverageTest(TestCase):
         )
 
 
+def _class_chain(prefix: str, length: int) -> list[dict]:
+    """Return *length* client classes, each with an Option that names the class before it."""
+    names = [f"{prefix}{index}" for index in range(length)]
+    return [
+        {
+            "name": name,
+            "test": f"option[60].hex == '{name}'",
+            "option-data": [{"code": 15, "data": f"{name}.example.org", "client-classes": [names[index - 1]]}]
+            if index
+            else [],
+        }
+        for index, name in enumerate(names)
+    ]
+
+
+_BOOT = "Dhcp4/client-classes[name=boot]"
+
+
+class OptionCoverageTest(TestCase):
+    """The coverage configuration imports option client classes and every declared Option Definition."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def setUp(self):
+        self.server = _make_db_server(name="option-coverage", ca_url="https://kea.example.invalid")
+
+    def _apply(self, config: dict | None = None, family: int = 4):
+        intent = parse_dhcp_config(_recorded_config(family) if config is None else config, family)
+        intent.configuration_complete = True
+        summary = dhcp_plugin.apply_plan(self.server, plan_family(intent, None), probe())
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        return summary
+
+    def _options(self, parent, code: int) -> list[tuple]:
+        from django.contrib.contenttypes.models import ContentType
+
+        rows = apps.get_model(DHCP_PLUGIN, "Option").objects.filter(
+            assigned_object_type=ContentType.objects.get_for_model(parent),
+            assigned_object_id=parent.pk,
+            definition__code=code,
+        )
+        return sorted((row.data, tuple(row.client_classes.values_list("name", flat=True))) for row in rows)
+
+    @staticmethod
+    def _entries(summary, kind: Kind) -> dict:
+        return {entry.path: (entry.outcome, entry.capability) for entry in summary.entries if entry.kind == kind}
+
+    def _mapped_definition(self, identity: str, family: int = 4):
+        return KeaDhcpLink.objects.get(
+            server=self.server, family=family, kind="option_definition", kea_identity=identity
+        ).sys4_object
+
+    def test_the_classed_and_the_unclassed_routers_are_two_options_of_the_dhcp_server(self):
+        summary = self._apply()
+
+        dhcp_server = imported_dhcp_server(self.server, 4)
+        self.assertEqual(self._options(dhcp_server, 3), [("192.0.2.1", ("voip",)), ("192.0.2.254", ())])
+        options = self._entries(summary, Kind.OPTION)
+        self.assertEqual(options["Dhcp4/option-data[code=3,client-classes=voip]"], (Outcome.CREATED, None))
+        self.assertEqual(options["Dhcp4/option-data[code=3]"], (Outcome.CREATED, None))
+
+    def test_an_unused_custom_option_definition_is_imported_for_the_dhcp_server(self):
+        summary = self._apply()
+
+        definition = self._mapped_definition("dhcp4:227")
+        self.assertEqual(
+            (definition.name, definition.dhcp_server, definition.client_class, definition.options.count()),
+            ("unused-flag", imported_dhcp_server(self.server, 4), None, 0),
+        )
+        entries = self._entries(summary, Kind.OPTION_DEFINITION)
+        self.assertEqual(entries["Dhcp4/option-def[code=227]"], (Outcome.CREATED, None))
+        # Kea's comment is a user-context, which plugin 0.2.0 cannot hold.
+        self.assertEqual(
+            entries["Dhcp4/option-def[code=227]/user-context"], (Outcome.UNSUPPORTED, Capability.USER_CONTEXT)
+        )
+
+    def test_the_class_level_definition_is_scoped_to_its_class_and_the_class_option_uses_it(self):
+        summary = self._apply()
+
+        boot = KeaDhcpLink.objects.get(server=self.server, family=4, kind="client_class", kea_identity="boot")
+        definition = self._mapped_definition("boot:dhcp4:231")
+        self.assertEqual(
+            (definition.name, definition.client_class, definition.dhcp_server), ("boot-flag", boot.sys4_object, None)
+        )
+        self.assertEqual(list(definition.options.values_list("data", "assigned_object_id")), [("1", boot.object_id)])
+        self.assertEqual(
+            {path: value for path, value in self._entries(summary, Kind.OPTION_DEFINITION).items() if _BOOT in path},
+            {
+                f"{_BOOT}/option-def[code=231]": (Outcome.CREATED, None),
+                f"{_BOOT}/option-def[code=231]/user-context": (Outcome.UNSUPPORTED, Capability.USER_CONTEXT),
+            },
+        )
+        self.assertEqual(
+            {path: value for path, value in self._entries(summary, Kind.OPTION).items() if _BOOT in path},
+            {
+                f"{_BOOT}/option-data[code=231]": (Outcome.CREATED, None),
+                f"{_BOOT}/option-data[code=231]/user-context": (Outcome.UNSUPPORTED, Capability.USER_CONTEXT),
+            },
+        )
+
+    def test_with_plugin_0_2_0_each_fact_without_its_capability_is_unsupported_with_its_options(self):
+        self.server.dhcp6 = True
+        self.server.save()
+        spaces, code, no_definition = (
+            Capability.OPTION_SPACES,
+            Capability.OPTION_CODE_16_BIT,
+            Capability.OPTION_WITHOUT_DEFINITION,
+        )
+        expected = {
+            4: {
+                "Dhcp4/option-def[space=vendor-sub,code=1]": spaces,
+                "Dhcp4/option-data[space=vendor-sub,code=1]": spaces,
+                "Dhcp4/option-data[code=150]": no_definition,
+            },
+            6: {
+                "Dhcp6/option-def[code=1000]": code,
+                "Dhcp6/option-def[code=1001]": code,
+                "Dhcp6/option-def[code=1002]": code,
+                "Dhcp6/option-def[space=vendor-sub,code=1]": spaces,
+                "Dhcp6/option-data[code=1000]": code,
+                "Dhcp6/option-data[code=1001]": code,
+                "Dhcp6/option-data[code=1002]": code,
+                "Dhcp6/option-data[space=vendor-sub,code=1]": spaces,
+                # The first missing capability in the order of the parity ledger: an option code needs a definition.
+                "Dhcp6/option-data[code=1003]": no_definition,
+            },
+        }
+        for family, paths in expected.items():
+            with self.subTest(family=family):
+                summary = self._apply(family=family)
+                unsupported = {
+                    entry.path: entry.capability
+                    for entry in summary.entries
+                    if entry.kind in (Kind.OPTION, Kind.OPTION_DEFINITION)
+                    and entry.outcome == Outcome.UNSUPPORTED
+                    and entry.capability != Capability.USER_CONTEXT
+                }
+                self.assertEqual(unsupported, paths)
+        self.assertEqual(self._mapped_definition("dhcp6:250", 6).name, "unused-flag")
+
+    def test_a_second_run_keeps_every_option_and_definition_and_changes_nothing(self):
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        OptionDefinition = apps.get_model(DHCP_PLUGIN, "OptionDefinition")
+        self._apply()
+        options = set(Option.objects.values_list("pk", flat=True))
+        definitions = set(OptionDefinition.objects.filter(standard=False).values_list("pk", flat=True))
+
+        again = self._apply()
+
+        written = (Outcome.CREATED, Outcome.UPDATED)
+        self.assertEqual(
+            [entry.path for entry in again.entries if entry.outcome in written and entry.kind != Kind.SERVER], []
+        )
+        self.assertEqual(set(Option.objects.values_list("pk", flat=True)), options)
+        self.assertEqual(set(OptionDefinition.objects.filter(standard=False).values_list("pk", flat=True)), definitions)
+
+    def test_an_option_that_an_older_import_wrote_without_classes_is_adopted(self):
+        config = _recorded_config(4)
+        options = config["option-data"]
+        unclassed = next(o for o in options if o.get("code") == 3 and "client-classes" not in o)
+        options.remove(unclassed)
+        classed = next(o for o in options if o.get("code") == 3)
+        older = json.loads(json.dumps(config))
+        del next(o for o in older["option-data"] if o.get("code") == 3)["client-classes"]
+        self._apply(older)
+        dhcp_server = imported_dhcp_server(self.server, 4)
+        self.assertEqual(self._options(dhcp_server, 3), [(classed["data"], ())])
+        before = set(apps.get_model(DHCP_PLUGIN, "Option").objects.values_list("pk", flat=True))
+
+        summary = self._apply(config)
+
+        self.assertEqual(self._options(dhcp_server, 3), [(classed["data"], ("voip",))])
+        self.assertEqual(set(apps.get_model(DHCP_PLUGIN, "Option").objects.values_list("pk", flat=True)), before)
+        self.assertEqual(
+            self._entries(summary, Kind.OPTION)["Dhcp4/option-data[code=3,client-classes=voip]"],
+            (Outcome.UPDATED, None),
+        )
+
+    def test_a_stale_class_level_definition_is_removed_through_its_own_mapping(self):
+        config = _recorded_config(4)
+        boot = next(c for c in config["client-classes"] if c["name"] == "boot")
+        boot["option-def"].append({"name": "spare", "code": 232, "space": "dhcp4", "type": "uint8"})
+        self._apply(config)
+        spare = self._mapped_definition("boot:dhcp4:232")
+        intent = _recorded_intent(4)
+        intent.read_started = datetime.now(timezone.utc)
+
+        summary = dhcp_plugin.apply_plan(self.server, plan_family(intent, None), probe())
+
+        OptionDefinition = apps.get_model(DHCP_PLUGIN, "OptionDefinition")
+        self.assertFalse(OptionDefinition.objects.filter(pk=spare.pk).exists())
+        self.assertEqual(
+            self._entries(summary, Kind.OPTION_DEFINITION)[f"{_BOOT}/option-def[code=232]"], (Outcome.REMOVED, None)
+        )
+        self.assertTrue(OptionDefinition.objects.filter(pk=self._mapped_definition("boot:dhcp4:231").pk).exists())
+
+    def _apply_read(self, config: dict, errors: int = 0):
+        """Apply a Complete read of *config* that started now, so a mapping that it does not report is stale."""
+        intent = parse_dhcp_config(config, 4)
+        intent.configuration_complete = True
+        intent.read_started = datetime.now(timezone.utc)
+        summary = dhcp_plugin.apply_plan(self.server, plan_family(intent, None), probe())
+        self.assertEqual(summary.errors, errors, summary.warnings)
+        return summary
+
+    def test_a_stale_client_class_goes_with_its_own_definition_and_options(self):
+        self._apply()
+        boot = KeaDhcpLink.objects.get(server=self.server, family=4, kind="client_class", kea_identity="boot")
+        definition = self._mapped_definition("boot:dhcp4:231")
+        options = list(definition.options.values_list("pk", flat=True))
+        self.assertEqual(len(options), 1)
+        config = _recorded_config(4)
+        config["client-classes"] = [c for c in config["client-classes"] if c["name"] != "boot"]
+
+        summary = self._apply_read(config)
+
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "ClientClass").objects.filter(pk=boot.object_id).exists())
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "OptionDefinition").objects.filter(pk=definition.pk).exists())
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "Option").objects.filter(pk__in=options).exists())
+        self.assertFalse(
+            KeaDhcpLink.objects.filter(server=self.server, kea_identity__in=["boot", "boot:dhcp4:231"]).exists()
+        )
+        removed = {entry.path for entry in summary.entries if entry.outcome == Outcome.REMOVED}
+        self.assertEqual(removed, {_BOOT, f"{_BOOT}/option-def[code=231]"})
+
+    def test_a_stale_client_class_that_an_option_still_names_is_kept(self):
+        self._apply()
+        voip = KeaDhcpLink.objects.get(server=self.server, family=4, kind="client_class", kea_identity="voip")
+        config = _without_class(_recorded_config(4), "voip")
+        config["option-data"] = [o for o in config["option-data"] if o.get("client-classes") != []]
+
+        summary = self._apply_read(config)
+
+        dhcp_server = imported_dhcp_server(self.server, 4)
+        # Kea no longer declares the classed routers, so its Option stays unpaired and keeps its class.
+        self.assertEqual(self._options(dhcp_server, 3), [("192.0.2.1", ("voip",)), ("192.0.2.254", ())])
+        self.assertTrue(apps.get_model(DHCP_PLUGIN, "ClientClass").objects.filter(pk=voip.object_id).exists())
+        (entry,) = [e for e in summary.entries if e.path == "Dhcp4/client-classes[name=voip]"]
+        self.assertEqual(entry.reason, Reason.REMOVAL_BLOCKED)
+        self.assertIn("1 Option", entry.detail)
+
+    def test_a_class_local_definition_wins_over_the_standard_definition_of_its_code(self):
+        config = _recorded_config(4)
+        config["client-classes"].append(
+            {
+                "name": "vendor-x",
+                "test": "option[60].hex == 'x'",
+                "option-def": [{"name": "vendor-text", "code": 43, "space": "dhcp4", "type": "string"}],
+                "option-data": [{"code": 43, "name": "vendor-text", "space": "dhcp4", "data": "hello"}],
+            }
+        )
+
+        summary = self._apply(config)
+
+        definition = self._mapped_definition("vendor-x:dhcp4:43")
+        self.assertEqual(definition.type, "string")
+        self.assertEqual(list(definition.options.values_list("data", flat=True)), ["hello"])
+        path = "Dhcp4/client-classes[name=vendor-x]/option-data[code=43]"
+        self.assertEqual(self._entries(summary, Kind.OPTION)[path], (Outcome.CREATED, None))
+
+    def test_an_option_does_not_bind_to_a_custom_definition_that_kea_does_not_declare(self):
+        OptionDefinition = apps.get_model(DHCP_PLUGIN, "OptionDefinition")
+        self._apply()
+        operator = OptionDefinition.objects.create(
+            name="operator-flag",
+            space="dhcp4",
+            code=228,
+            type="uint8",
+            family=4,
+            dhcp_server=imported_dhcp_server(self.server, 4),
+        )
+        config = _recorded_config(4)
+        config["option-data"].append({"code": 228, "space": "dhcp4", "data": "1"})
+
+        summary = self._apply(config)
+
+        self.assertEqual(
+            self._entries(summary, Kind.OPTION)["Dhcp4/option-data[code=228]"],
+            (Outcome.UNSUPPORTED, Capability.OPTION_WITHOUT_DEFINITION),
+        )
+        self.assertFalse(operator.options.exists())
+
+    def test_an_option_whose_class_was_not_imported_in_this_run_is_skipped(self):
+        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        other = DHCPServer.objects.create(name="option-coverage other server")
+        # Plugin 0.2.0 keeps class names unique across all DHCP servers, so this run cannot write voip.
+        apps.get_model(DHCP_PLUGIN, "ClientClass").objects.create(name="voip", dhcp_server=other)
+
+        summary = self._apply()
+
+        (entry,) = [e for e in summary.entries if e.path == "Dhcp4/option-data[code=3,client-classes=voip]"]
+        self.assertEqual(entry.reason, Reason.PARENT_NOT_IMPORTED)
+        self.assertTrue(entry.detail.startswith("Client class voip was not imported."), entry.detail)
+        self.assertEqual(self._options(imported_dhcp_server(self.server, 4), 3), [("192.0.2.254", ())])
+
+    def test_an_option_keeps_its_row_when_its_class_declares_the_definition_of_its_code(self):
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        config = _recorded_config(4)
+        boot = next(c for c in config["client-classes"] if c["name"] == "boot")
+        # First the daemon declares the definition that the class option uses.
+        config["option-def"].extend(boot.pop("option-def"))
+        self._apply(config)
+        (before,) = Option.objects.filter(definition__code=231)
+
+        summary = self._apply()
+
+        (after,) = Option.objects.filter(definition__code=231)
+        self.assertEqual(after.pk, before.pk)
+        self.assertEqual(after.definition, self._mapped_definition("boot:dhcp4:231"))
+        self.assertEqual(self._entries(summary, Kind.OPTION)[f"{_BOOT}/option-data[code=231]"], (Outcome.UPDATED, None))
+
+    def test_a_stale_client_class_that_a_kept_row_evaluates_is_kept(self):
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        self._apply()
+        printers = KeaDhcpLink.objects.get(server=self.server, family=4, kind="client_class", kea_identity="printers")
+        operator = apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
+            name="operator subnet",
+            prefix=Prefix.objects.create(prefix=IPNetwork("203.0.113.0/24")),
+            dhcp_server=imported_dhcp_server(self.server, 4),
+        )
+        operator.evaluate_additional_classes.set([printers.object_id])
+
+        summary = self._apply_read(_without_class(_recorded_config(4), "printers"))
+
+        self.assertEqual(list(operator.evaluate_additional_classes.values_list("pk", flat=True)), [printers.object_id])
+        (entry,) = [e for e in summary.entries if e.path == "Dhcp4/client-classes[name=printers]"]
+        self.assertEqual(
+            (entry.reason, entry.detail),
+            (Reason.REMOVAL_BLOCKED, "It is kept while a class list of 1 Subnet names it."),
+        )
+
+    def test_a_stale_class_stays_when_the_stale_owner_of_an_option_that_names_it_stays(self):
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        config = _recorded_config(4)
+        config["client-classes"] += [
+            {"name": "a", "test": "option[60].hex == 'a'"},
+            {
+                "name": "b",
+                "test": "option[60].hex == 'b'",
+                "option-data": [{"code": 15, "data": "b.example.org", "client-classes": ["a"]}],
+            },
+        ]
+        self._apply(config)
+        b = KeaDhcpLink.objects.get(server=self.server, family=4, kind="client_class", kea_identity="b")
+        operator = apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
+            name="operator subnet",
+            prefix=Prefix.objects.create(prefix=IPNetwork("203.0.113.0/24")),
+            dhcp_server=imported_dhcp_server(self.server, 4),
+        )
+        operator.evaluate_additional_classes.set([b.object_id])
+
+        summary = self._apply_read(_recorded_config(4))
+
+        # The kept Subnet keeps b, so b's Option stays, and removing a would take its class away.
+        blocked = {entry.path for entry in summary.entries if entry.reason == Reason.REMOVAL_BLOCKED}
+        self.assertEqual(blocked, {"Dhcp4/client-classes[name=a]", "Dhcp4/client-classes[name=b]"})
+        option = apps.get_model(DHCP_PLUGIN, "Option").objects.get(data="b.example.org")
+        self.assertEqual(list(option.client_classes.values_list("name", flat=True)), ["a"])
+
+    def test_a_stale_row_that_depends_on_a_failed_removal_stays(self):
+        from django.db.models.signals import pre_delete
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        self._apply()
+        printers = KeaDhcpLink.objects.get(server=self.server, family=4, kind="client_class", kea_identity="printers")
+        subnet = KeaDhcpLink.objects.get(server=self.server, family=4, kind="subnet", kea_subnet_id=10).sys4_object
+        config = _without_class(_recorded_config(4), "printers")
+        config["subnet4"] = []
+
+        def refuse(sender, instance, **kwargs):
+            if instance.pk == subnet.pk:
+                raise RuntimeError("the Subnet delete fails")
+
+        pre_delete.connect(refuse, sender=Subnet, weak=False)
+        try:
+            summary = self._apply_read(config, errors=1)
+        finally:
+            pre_delete.disconnect(refuse, sender=Subnet)
+
+        entries = {entry.path: entry.reason for entry in summary.entries if entry.reason is not None}
+        self.assertEqual(entries[_SUBNET_10], Reason.WRITE_FAILED)
+        self.assertEqual(entries["Dhcp4/client-classes[name=printers]"], Reason.REMOVAL_BLOCKED)
+        # The kept Subnet still evaluates printers: the class removal would have taken it away.
+        self.assertEqual(
+            list(Subnet.objects.get(pk=subnet.pk).evaluate_additional_classes.values_list("pk", flat=True)),
+            [printers.object_id],
+        )
+
+    def test_a_failed_removal_keeps_every_stale_row_that_relies_on_it(self):
+        from django.db.models.signals import pre_delete
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        config = _recorded_config(4)
+        config["client-classes"] += [
+            {"name": "a", "test": "option[60].hex == 'a'"},
+            {
+                "name": "b",
+                "test": "option[60].hex == 'b'",
+                "option-data": [{"code": 15, "data": "b.example.org", "client-classes": ["a"]}],
+            },
+        ]
+        config["subnet4"].append({"id": 30, "subnet": "203.0.113.0/24", "evaluate-additional-classes": ["b"]})
+        self._apply(config)
+        subnet = KeaDhcpLink.objects.get(server=self.server, family=4, kind="subnet", kea_subnet_id=30).sys4_object
+
+        def refuse(sender, instance, **kwargs):
+            if instance.pk == subnet.pk:
+                raise RuntimeError("the Subnet delete fails")
+
+        pre_delete.connect(refuse, sender=Subnet, weak=False)
+        try:
+            summary = self._apply_read(_recorded_config(4), errors=1)
+        finally:
+            pre_delete.disconnect(refuse, sender=Subnet)
+
+        entries = {entry.path: entry.reason for entry in summary.entries if entry.reason is not None}
+        self.assertEqual(entries["Dhcp4/subnet4[id=30]"], Reason.WRITE_FAILED)
+        # b relies on the Subnet, and a relies on b: the removal of a would take the class from b's Option.
+        self.assertEqual(entries["Dhcp4/client-classes[name=b]"], Reason.REMOVAL_BLOCKED)
+        self.assertEqual(entries["Dhcp4/client-classes[name=a]"], Reason.REMOVAL_BLOCKED)
+        option = apps.get_model(DHCP_PLUGIN, "Option").objects.get(data="b.example.org")
+        self.assertEqual(list(option.client_classes.values_list("name", flat=True)), ["a"])
+
+    def _classes_naming(self, names: dict[str, list[str]]) -> dict:
+        """Return the recorded configuration with one class per name, each with an Option restricted to its list."""
+        config = _recorded_config(4)
+        config["client-classes"] += [
+            {
+                "name": name,
+                "test": f"option[60].hex == '{name}'",
+                "option-data": [{"code": 15, "data": f"{name}.example.org", "client-classes": named}] if named else [],
+            }
+            for name, named in names.items()
+        ]
+        return config
+
+    def _read_failing(self, name: str, errors: int):
+        """Apply a Complete read of the recorded configuration while the delete of class *name* fails."""
+        from django.db.models.signals import pre_delete
+
+        ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
+
+        def refuse(sender, instance, **kwargs):
+            if instance.name == name:
+                raise RuntimeError(f"the delete of {name} fails")
+
+        pre_delete.connect(refuse, sender=ClientClass, weak=False)
+        try:
+            return self._apply_read(_recorded_config(4), errors=errors)
+        finally:
+            pre_delete.disconnect(refuse, sender=ClientClass)
+
+    @staticmethod
+    def _class_entries(summary, *names: str) -> dict:
+        paths = {f"Dhcp4/client-classes[name={name}]": name for name in names}
+        return {paths[entry.path]: entry.reason or entry.outcome for entry in summary.entries if entry.path in paths}
+
+    def _option_classes(self, name: str) -> list[str]:
+        option = apps.get_model(DHCP_PLUGIN, "Option").objects.get(data=f"{name}.example.org")
+        return sorted(option.client_classes.values_list("name", flat=True))
+
+    def test_two_classes_that_name_each_other_stay_together_when_one_delete_fails(self):
+        self._apply(self._classes_naming({"a": ["b"], "b": ["a"]}))
+
+        summary = self._read_failing("b", errors=1)
+
+        self.assertEqual(
+            self._class_entries(summary, "a", "b"), {"a": Reason.REMOVAL_BLOCKED, "b": Reason.WRITE_FAILED}
+        )
+        self.assertEqual((self._option_classes("a"), self._option_classes("b")), (["b"], ["a"]))
+
+    def test_a_class_that_relies_on_a_failed_cycle_stays(self):
+        # a relies on b (b's Option names a); b and c rely on each other.
+        self._apply(self._classes_naming({"a": [], "b": ["a", "c"], "c": ["b"]}))
+
+        summary = self._read_failing("c", errors=1)
+
+        self.assertEqual(
+            self._class_entries(summary, "a", "b", "c"),
+            {"a": Reason.REMOVAL_BLOCKED, "b": Reason.REMOVAL_BLOCKED, "c": Reason.WRITE_FAILED},
+        )
+        self.assertEqual((self._option_classes("b"), self._option_classes("c")), (["a", "c"], ["b"]))
+
+    def test_a_class_that_relies_on_a_cycle_is_removed_after_it(self):
+        self._apply(self._classes_naming({"a": [], "b": ["a", "c"], "c": ["b"]}))
+
+        summary = self._apply_read(_recorded_config(4))
+
+        removed = [entry.path for entry in summary.entries if entry.outcome == Outcome.REMOVED]
+        names = [path.removeprefix("Dhcp4/client-classes[name=").removesuffix("]") for path in removed]
+        self.assertEqual(sorted(names), ["a", "b", "c"])
+        self.assertEqual(names[-1], "a")
+
+    def test_two_stale_client_classes_whose_options_name_each_other_are_both_removed(self):
+        config = _recorded_config(4)
+        config["client-classes"] += [
+            {
+                "name": "a",
+                "test": "option[60].hex == 'a'",
+                "option-data": [{"code": 15, "data": "a.example.org", "client-classes": ["b"]}],
+            },
+            {
+                "name": "b",
+                "test": "option[60].hex == 'b'",
+                "option-data": [{"code": 15, "data": "b.example.org", "client-classes": ["a"]}],
+            },
+        ]
+        self._apply(config)
+
+        summary = self._apply_read(_recorded_config(4))
+
+        removed = {entry.path for entry in summary.entries if entry.outcome == Outcome.REMOVED}
+        self.assertEqual(removed, {"Dhcp4/client-classes[name=a]", "Dhcp4/client-classes[name=b]"})
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        self.assertFalse(Option.objects.filter(data__in=["a.example.org", "b.example.org"]).exists())
+
+    def test_an_option_that_names_a_class_without_a_plugin_row_is_skipped(self):
+        config = _recorded_config(4)
+        config["option-data"].append(
+            {"code": 15, "name": "domain-name", "data": "known.example.org", "client-classes": ["KNOWN"]}
+        )
+
+        summary = self._apply(config)
+
+        (entry,) = [e for e in summary.entries if e.path == "Dhcp4/option-data[code=15,client-classes=KNOWN]"]
+        self.assertEqual(entry.reason, Reason.PARENT_NOT_IMPORTED)
+        self.assertIn("KNOWN", entry.detail)
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "Option").objects.filter(data="known.example.org").exists())
+
+
+def _without_class(config: dict, name: str) -> dict:
+    """Return a copy of *config* without the client class *name*, and with *name* left out of every class list."""
+
+    def strip(value):
+        if isinstance(value, list):
+            return [strip(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        lists = (kea_paths.CLIENT_CLASSES, kea_paths.EVALUATE_ADDITIONAL_CLASSES)
+        return {
+            key: [each for each in item if each != name] if key in lists and isinstance(item, list) else strip(item)
+            for key, item in value.items()
+        }
+
+    classes = [entry for entry in config[kea_paths.CLIENT_CLASSES] if entry["name"] != name]
+    return strip({**config, kea_paths.CLIENT_CLASSES: []}) | {kea_paths.CLIENT_CLASSES: classes}
+
+
 # The Subnet fields that Kea's config-get fills from the parent or that the coverage configuration declares.
 _INHERITABLE = (
     "valid_lifetime",
@@ -1139,6 +1842,56 @@ def _with_value(config, key: str, old, new):
         name: new if name == key and value == old else _with_value(value, key, old, new)
         for name, value in config.items()
     }
+
+
+class StaleRemovalQueryCountTest(TestCase):
+    """The removal decision reads each stale row once, so its queries grow linearly with the stale rows."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def _stale_chain_queries(self, prefix: str, length: int, network: str) -> int:
+        """Import a chain of classes, keep its last class through an operator Subnet, and count a Complete read."""
+        from django.db import connection
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        server = _make_db_server(name=f"chain-{prefix}", ca_url="https://kea.example.invalid", dhcp6=False)
+        intent = parse_dhcp_config({"client-classes": _class_chain(prefix, length)}, 4)
+        intent.configuration_complete = True
+        self.assertEqual(dhcp_plugin.apply_plan(server, plan_family(intent, None), probe()).errors, 0)
+        last = KeaDhcpLink.objects.get(server=server, kind="client_class", kea_identity=f"{prefix}{length - 1}")
+        operator = apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
+            name=f"chain-{prefix} operator",
+            prefix=Prefix.objects.create(prefix=IPNetwork(network)),
+            dhcp_server=imported_dhcp_server(server, 4),
+        )
+        operator.evaluate_additional_classes.set([last.object_id])
+        empty = parse_dhcp_config({}, 4)
+        empty.configuration_complete, empty.read_started = True, datetime.now(timezone.utc)
+        executed = []
+
+        def count(execute, sql, params, many, context):
+            executed.append(sql)
+            return execute(sql, params, many, context)
+
+        # An execute wrapper counts every query: CaptureQueriesContext keeps only the last 9000.
+        with connection.execute_wrapper(count):
+            summary = dhcp_plugin.apply_plan(server, plan_family(empty, None), probe())
+
+        blocked = [entry for entry in summary.entries if entry.reason == Reason.REMOVAL_BLOCKED]
+        self.assertEqual(len(blocked), length)
+        return len(executed)
+
+    def test_a_chain_of_stale_classes_that_a_kept_row_holds_costs_queries_linear_in_its_length(self):
+        short = self._stale_chain_queries("short", 50, "203.0.113.0/24")
+        long = self._stale_chain_queries("long", 300, "198.51.100.0/24")
+
+        # One plan reads one class in a bounded number of queries; a plan for every row on every pass is quadratic.
+        self.assertLess((long - short) / 250, 60, (short, long))
 
 
 class PluginVersionRefusalTest(TestCase):

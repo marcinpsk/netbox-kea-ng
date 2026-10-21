@@ -117,11 +117,8 @@ class OptionDefIntent:
     array: bool
     record_types: tuple[str, ...]
     encapsulate: str | None
-
-    @property
-    def match_key(self) -> tuple:
-        """Identity: (space, code)."""
-        return (self.space, self.code)
+    # None: the definition declares no user-context.
+    user_context: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +183,8 @@ class ClientClassIntent:
     settings: dict = field(default_factory=dict)
     # None: the class declares no user-context.
     user_context: dict | None = None
+    # The custom Option Definitions that the class declares (DHCPv4 only).
+    option_defs: tuple[OptionDefIntent, ...] = ()
 
 
 @dataclass
@@ -250,17 +249,23 @@ def _option_def_intent(raw, family: int, path: str, dropped: list[DroppedEntry])
         array=definition.array,
         record_types=definition.record_types,
         encapsulate=definition.encapsulate,
+        user_context=raw.get(kea_paths.USER_CONTEXT),
     )
 
 
-def _option_defs(raw_list, family: int, dropped: list[DroppedEntry]) -> tuple[OptionDefIntent, ...]:
-    """Normalize an ``option-def`` list, dropping invalid entries. An explicit null is not a list, so it is dropped."""
+def _option_defs(
+    raw_list, family: int, dropped: list[DroppedEntry], class_name: str | None = None
+) -> tuple[OptionDefIntent, ...]:
+    """Normalize the ``option-def`` list of the daemon or of the client class *class_name*, dropping invalid entries.
+
+    An explicit null is not a list, so it is dropped.
+    """
     if not isinstance(raw_list, list):
-        path = kea_paths.option_definition_collection(family)
+        path = kea_paths.option_definition_collection(family, class_name)
         dropped.append(DroppedEntry(Kind.OPTION_DEFINITION, path, "The collection is not a list."))
         return ()
     out = [
-        _option_def_intent(raw, family, kea_paths.option_definition_entry(family, index), dropped)
+        _option_def_intent(raw, family, kea_paths.option_definition_entry(family, index, class_name), dropped)
         for index, raw in enumerate(raw_list)
     ]
     return tuple(o for o in out if o is not None)
@@ -376,6 +381,7 @@ def _client_class_intent(raw, family: int, path: str, dropped: list[DroppedEntry
         options=_options(raw.get("option-data"), kea_paths.client_class(family, name), dropped),
         settings=_settings(raw),
         user_context=raw.get(kea_paths.USER_CONTEXT),
+        option_defs=_option_defs(raw.get(kea_paths.OPTION_DEF, []), family, dropped, name),
     )
 
 
@@ -420,7 +426,7 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
     root = kea_paths.daemon(family)
     dropped = result.dropped
     result.global_options = _options(conf.get("option-data"), root, dropped)
-    result.option_defs = _option_defs(conf.get("option-def", []), family, dropped)
+    result.option_defs = _option_defs(conf.get(kea_paths.OPTION_DEF, []), family, dropped)
     result.global_settings = _settings(conf)
     # Global-only keys behind a DHCP Plugin Capability.
     for key in (kea_paths.ALLOW_ADDRESS_REGISTRATION, kea_paths.STASH_AGENT_OPTIONS):

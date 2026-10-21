@@ -18,6 +18,7 @@ from django.apps import apps
 from django.core.exceptions import FieldDoesNotExist, ValidationError
 from django.db import models
 
+from ..dhcp_options import MAX_OPTION_CODE
 from ..reservations import FLEX_ID
 from .dhcp_import_report import Capability
 
@@ -27,11 +28,19 @@ PLUGIN_APP_LABEL = "netbox_dhcp"
 ModelLookup = Callable[[str], type[models.Model]]
 
 # The models that hold a Kea object with a user-context, and the models that hold a Kea name.
-_KEA_OBJECT_MODELS = ("DHCPServer", "SharedNetwork", "Subnet", "Pool", "PDPool", "HostReservation", "ClientClass")
+_KEA_OBJECT_MODELS = (
+    "DHCPServer",
+    "SharedNetwork",
+    "Subnet",
+    "Pool",
+    "PDPool",
+    "HostReservation",
+    "ClientClass",
+    "OptionDefinition",
+    "Option",
+)
 _KEA_NAME_MODELS = ("ClientClass", "SharedNetwork")
 _NETWORK_MODELS = ("Subnet", "SharedNetwork")
-# The largest DHCPv6 option code (RFC 9915: 16 bits).
-_MAX_DHCP6_CODE = 65535
 
 
 def _field(model: type[models.Model], name: str):
@@ -99,7 +108,7 @@ def _option_code_16_bit(model: ModelLookup) -> bool:
     if field is None:
         return False
     try:
-        field.run_validators(_MAX_DHCP6_CODE)
+        field.run_validators(MAX_OPTION_CODE)
     except ValidationError:
         return False
     return True
@@ -157,9 +166,12 @@ CHECKS: dict[Capability, Check] = {
         f"Each of {', '.join(_KEA_OBJECT_MODELS)} has a JSON field user_context that is nullable or has a default.",
         _user_context,
     ),
-    Capability.OPTION_SPACES: Check("OptionDefinition.space has no closed set of choices.", _option_spaces),
+    Capability.OPTION_SPACES: Check(
+        "OptionDefinition.space has no closed set of choices. Without it, a space that is one of the choices is held.",
+        _option_spaces,
+    ),
     Capability.OPTION_CODE_16_BIT: Check(
-        f"The validators of OptionDefinition.code accept {_MAX_DHCP6_CODE}.", _option_code_16_bit
+        f"The validators of OptionDefinition.code accept {MAX_OPTION_CODE}.", _option_code_16_bit
     ),
     Capability.OPTION_WITHOUT_DEFINITION: Check(
         "Option.definition is nullable, and Option has the fields space and code.", _option_without_definition
@@ -194,19 +206,34 @@ CHECKS: dict[Capability, Check] = {
 
 @dataclass(frozen=True)
 class PluginCapabilities:
-    """The DHCP Plugin Capabilities that the installed netbox_dhcp has."""
+    """The DHCP Plugin Capabilities that the installed netbox_dhcp has.
+
+    Without :attr:`Capability.OPTION_SPACES` the plugin holds only the option spaces of its closed choice set.
+    """
 
     present: frozenset[Capability]
+    # The choices of OptionDefinition.space.
+    option_spaces: frozenset[str] = frozenset()
 
     def has(self, capability: Capability) -> bool:
         """Return whether the installed plugin has *capability*."""
         return capability in self.present
+
+    def holds_space(self, space: str) -> bool:
+        """Return whether the installed plugin holds an Option Definition in the Kea option space *space*."""
+        return self.has(Capability.OPTION_SPACES) or space in self.option_spaces
 
 
 def _plugin_model(name: str) -> type[models.Model]:
     return apps.get_model(PLUGIN_APP_LABEL, name)
 
 
+def _space_choices(model: ModelLookup) -> frozenset[str]:
+    field = _field(model("OptionDefinition"), "space")
+    return frozenset(_choice_values(field)) if field is not None and field.choices else frozenset()
+
+
 def probe(model: ModelLookup = _plugin_model) -> PluginCapabilities:
     """Return the capabilities of the plugin models that *model* looks up: by default, the installed netbox_dhcp."""
-    return PluginCapabilities(frozenset(capability for capability, check in CHECKS.items() if check.holds(model)))
+    present = frozenset(capability for capability, check in CHECKS.items() if check.holds(model))
+    return PluginCapabilities(present, _space_choices(model))

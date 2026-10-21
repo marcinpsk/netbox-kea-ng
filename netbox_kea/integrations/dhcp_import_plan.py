@@ -62,7 +62,8 @@ MAX_KEA_NAME_LENGTH = 255
 MAX_MAPPING_IDENTITY_LENGTH = max(
     MAX_IDENTITY_LENGTH,  # A Reservation: "identifier-type:value".
     2 * _MAX_ADDRESS_TEXT + len("-"),  # A Pool: "start-end".
-    MAX_KEA_NAME_LENGTH + len(":") + len(str(MAX_OPTION_CODE)),  # An Option Definition: "space:code".
+    # An Option Definition: "space:code", or "class:space:code" in a client class.
+    2 * (MAX_KEA_NAME_LENGTH + len(":")) + len(str(MAX_OPTION_CODE)),
     MAX_KEA_NAME_LENGTH,  # A Shared Network or a client class: its name.
 )
 
@@ -111,8 +112,10 @@ class MappingSource:
             identifier_type, _, value = identity.partition(":")
             return kea_paths.reservation(family, self.kea_subnet_id, identifier_type, value)
         if self.kind == Kind.OPTION_DEFINITION:
-            space, _, code = identity.rpartition(":")
-            return kea_paths.option_definition(family, space, int(code))
+            # A space name has no colon, so the last two colons end the class name and the space.
+            rest, _, code = identity.rpartition(":")
+            class_name, separator, space = rest.rpartition(":")
+            return kea_paths.option_definition(family, space, int(code), class_name if separator else None)
         if self.kind == Kind.CLIENT_CLASS:
             return kea_paths.client_class(family, identity)
         if self.kind == Kind.SHARED_NETWORK:
@@ -124,15 +127,19 @@ class MappingSource:
 
 @dataclass(frozen=True)
 class OptionDefinitionKey:
-    """A custom Option Definition by option space and code."""
+    """A custom Option Definition by option space and code, in the daemon or in the client class *client_class*."""
 
     space: str
     code: int
+    client_class: str | None = None
 
     @property
     def source(self) -> MappingSource:
         """Return the DHCP Import Mapping source of the definition."""
-        return MappingSource(Kind.OPTION_DEFINITION, kea_identity=f"{self.space}:{self.code}")
+        identity = f"{self.space}:{self.code}"
+        if self.client_class is not None:
+            identity = f"{self.client_class}:{identity}"
+        return MappingSource(Kind.OPTION_DEFINITION, kea_identity=identity)
 
 
 @dataclass(frozen=True)
@@ -204,6 +211,8 @@ class PlannedClientClass:
     intent: ClientClassIntent
     # The Declared Values of the class, by Kea key.
     settings: dict
+    # The custom Option Definitions of the class, written scoped to its row.
+    option_definitions: tuple[Planned[OptionDefinitionKey, OptionDefIntent], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -239,12 +248,20 @@ class FamilyPlan:
     # The configuration entries that the parse dropped as invalid.
     dropped: tuple[DroppedEntry, ...]
 
+    @property
+    def every_option_definition(self) -> tuple[Planned[OptionDefinitionKey, OptionDefIntent], ...]:
+        """Return the custom Option Definitions of the daemon, then those of each client class."""
+        in_classes = (definition for planned in self.client_classes for definition in planned.option_definitions)
+        return (*self.option_definitions, *in_classes)
 
-def _option_definitions(config: ServerConfigIntent) -> tuple[Planned[OptionDefinitionKey, OptionDefIntent], ...]:
-    """Key each custom Option Definition. A later definition of the same key replaces an earlier one."""
+
+def _option_definitions(
+    definitions: tuple[OptionDefIntent, ...], class_name: str | None = None
+) -> tuple[Planned[OptionDefinitionKey, OptionDefIntent], ...]:
+    """Key each custom Option Definition of the daemon or of a client class. A later one of the same key wins."""
     index: dict[OptionDefinitionKey, OptionDefIntent] = {}
-    for definition in config.option_defs:
-        index[OptionDefinitionKey(definition.space, definition.code)] = definition
+    for definition in definitions:
+        index[OptionDefinitionKey(definition.space, definition.code, class_name)] = definition
     return tuple(Planned(key, definition) for key, definition in index.items())
 
 
@@ -274,7 +291,7 @@ def declared_values(family: Family, table: str, settings: dict, parent: dict) ->
 def _planned_client_class(intent: ClientClassIntent, family: Family) -> PlannedClientClass:
     # Kea merges no value into a client class, so the class has no parent values.
     settings = declared_values(family, kea_paths.CLIENT_CLASSES, intent.settings, {})
-    return PlannedClientClass(intent.name, intent, settings)
+    return PlannedClientClass(intent.name, intent, settings, _option_definitions(intent.option_defs, intent.name))
 
 
 def _planned_subnets(config: ServerConfigIntent, family: Family) -> tuple[PlannedSubnet, ...]:
@@ -323,7 +340,7 @@ def plan_family(config: ServerConfigIntent, observation: ReservationObservation 
             config.user_context,
             config.interfaces,
         ),
-        option_definitions=_option_definitions(config),
+        option_definitions=_option_definitions(config.option_defs),
         client_classes=tuple(_planned_client_class(intent, family) for intent in config.client_classes),
         shared_networks=tuple(Planned(intent.name, intent) for intent in config.shared_networks),
         subnets=_planned_subnets(config, family),
@@ -375,6 +392,8 @@ def _configuration_gaps(plan: FamilyPlan) -> dict[Kind, list[str]]:
             reasons.append(f"The configuration has {entries} not valid.")
     if dropped[Kind.SUBNET]:
         gaps[Kind.POOL].append("A Subnet entry that is not valid hides its Pools.")
+    if dropped[Kind.CLIENT_CLASS]:
+        gaps[Kind.OPTION_DEFINITION].append("A client class entry that is not valid hides its Option Definitions.")
     unkeyed_subnets = sum(subnet.key is None for subnet in plan.subnets)
     if unkeyed_subnets:
         gaps[Kind.SUBNET].append(f"{counted(unkeyed_subnets, 'Subnet has', 'Subnets have')} no Kea subnet ID.")
@@ -421,7 +440,7 @@ def _observed_sources(plan: FamilyPlan) -> dict[Kind, frozenset[MappingSource]]:
         Kind.CLIENT_CLASS: frozenset(
             MappingSource.named(Kind.CLIENT_CLASS, planned.key) for planned in plan.client_classes
         ),
-        Kind.OPTION_DEFINITION: frozenset(planned.key.source for planned in plan.option_definitions),
+        Kind.OPTION_DEFINITION: frozenset(planned.key.source for planned in plan.every_option_definition),
     }
 
 

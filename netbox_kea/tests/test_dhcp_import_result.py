@@ -8,6 +8,7 @@ The runs go through the real "Sync to DHCP plugin now" view with Kea stubbed at 
 from __future__ import annotations
 
 import contextlib
+import copy
 import threading
 import unittest
 from datetime import timedelta
@@ -19,7 +20,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.messages import ERROR, get_messages
 from django.db import DatabaseError, connection, connections, transaction
-from django.test import SimpleTestCase, TestCase, TransactionTestCase
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -40,7 +41,7 @@ from netbox_kea.models import DhcpImportEntry, DhcpImportRun, DhcpImportTrigger,
 
 from .kea_stub import _subnet_list, stub_kea
 from .test_views_dhcp_plugin import _sync_responses
-from .utils import _grant, _make_db_server
+from .utils import DISPATCHED_EVENTS, _grant, _make_db_server
 
 DHCP_PLUGIN = "netbox_dhcp"
 
@@ -137,8 +138,13 @@ class StoredResultTest(_ImportRunTestCase):
         self.assertEqual(_entries(run), _FIRST_RUN)
         self.assertEqual(DhcpImportEntry.objects.filter(run=run).count(), len(_FIRST_RUN))
         self.assertEqual(
-            DhcpImportEntry.objects.get(run=run, kea_path=f"{_SUBNET}/option-data[space=vendor-x,code=1]").detail,
-            "No matching Option Definition.",
+            DhcpImportEntry.objects.filter(run=run, kea_path=f"{_SUBNET}/option-data[space=vendor-x,code=1]")
+            .values_list("detail", "capability")
+            .get(),
+            (
+                "The DHCP plugin has no Option Definition for it and cannot hold an option without one.",
+                Capability.OPTION_WITHOUT_DEFINITION.value,
+            ),
         )
 
     def test_a_second_run_of_unchanged_data_records_no_written_fact(self):
@@ -825,6 +831,36 @@ class StaleRemovalTest(_ImportRunTestCase):
         )
         self.assertEqual((entry.outcome, entry.kea_path), (Outcome.SKIPPED.value, "Dhcp4/option-def[code=241]"))
         self.assertEqual(entry.detail, "It is kept while it is in use by 1 Option.")
+
+    @override_settings(EVENTS_PIPELINE=["netbox_kea.tests.utils.record_dispatched_events"])
+    def test_a_blocked_class_removal_dispatches_no_event_for_the_options_of_the_class(self):
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        boot = {
+            "name": "boot",
+            "test": "option[93].hex == 0x0007",
+            "option-def": [{"name": "boot-flag", "code": 231, "space": "dhcp4", "type": "uint8"}],
+            "option-data": [{"code": 231, "data": "1"}],
+        }
+        with_boot = copy.deepcopy(self.config)
+        with_boot[4]["client-classes"].append(boot)
+        with_boot[4]["option-data"] = [{"code": 15, "data": "boot.example.org", "client-classes": ["boot"]}]
+        self._sync(with_boot, self.hosts)
+        own = Option.objects.get(definition__code=231)
+        DISPATCHED_EVENTS.clear()
+        self.addCleanup(DISPATCHED_EVENTS.clear)
+
+        # Kea drops the class and the option that names it, so the unpaired global Option keeps the class.
+        run = self._sync(self.config, self.hosts)
+
+        entry = DhcpImportEntry.objects.get(run=run, kea_path="Dhcp4/client-classes[name=boot]")
+        self.assertEqual(entry.reason, Reason.REMOVAL_BLOCKED.value)
+        self.assertTrue(Option.objects.filter(pk=own.pk).exists())
+        deleted = [
+            (event["object_type"].app_label, event["object_type"].model, event["object_id"])
+            for event in DISPATCHED_EVENTS
+            if event["event_type"] == "object_deleted"
+        ]
+        self.assertNotIn((DHCP_PLUGIN, "option", own.pk), deleted)
 
     def test_a_removal_is_change_logged_for_the_target_and_its_mapping(self):
         from core.models import ObjectChange

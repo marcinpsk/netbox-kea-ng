@@ -792,6 +792,7 @@ class DhcpPluginOptionImportTest(TestCase):
             "client-classes": ["voip"],
         }
         conf = {
+            "client-classes": [{"name": "voip"}],
             "subnet4": [
                 {
                     "id": 1,
@@ -2535,15 +2536,22 @@ class DhcpPluginManagedFieldTest(TestCase):
             {"DHCPServer", "Subnet", "Pool", "HostReservation", "Option", "OptionDefinition", "ClientClass"},
         )
         for row in rows:
+            # An Option pairs by the space and code of its definition: a definition of another code is another Option.
             edits = {
                 row._meta.get_field(name).attname: _hand_edited(row._meta.get_field(name), value)
                 for name, value in self._managed(row).items()
+                if (type(row).__name__, name) != ("Option", "definition")
             }
             type(row).objects.filter(pk=row.pk).update(**edits)
             with self.subTest(model=type(row).__name__, pk=row.pk):
                 edited = self._managed(type(row).objects.get(pk=row.pk))
                 self.assertEqual(
-                    [name for name, value in edited.items() if value == imported[(type(row).__name__, row.pk)][name]],
+                    [
+                        name
+                        for name, value in edited.items()
+                        if value == imported[(type(row).__name__, row.pk)][name]
+                        and row._meta.get_field(name).attname in edits
+                    ],
                     [],
                 )
         # The hand edit moved the Pool to another Subnet, so find it by its key.

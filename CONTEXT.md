@@ -70,7 +70,8 @@ An association between a Kea source object and its imported NetBox DHCP object. 
 Import has one: the global configuration of one address family, a Shared Network, a Subnet, a Pool, a
 delegated-prefix Pool, a Reservation, a client class, and a custom Option Definition. The source identity includes
 the Server, address family, and the Kea identity of the object: a Shared Network name, a Kea subnet ID, a Pool within
-its Subnet, a Reservation Identity, a client class name, or an Option Definition's space and code. A DHCP Option is identified within the object that
+its Subnet, a Reservation Identity, a client class name, or an Option Definition's space and code (with the name of
+its client class, for a definition that a client class declares). A DHCP Option is identified within the object that
 assigns it.
 _Avoid_: DHCP Link, ownership link
 
@@ -194,7 +195,8 @@ _Avoid_: Identity fallback
 **Option Definition**:
 A declaration that gives a DHCP Option its code, name, option space, and data type. A standard definition is built
 into Kea for the default DHCPv4 or DHCPv6 space. A custom definition comes from `option-def` in the Server
-Configuration. It defines an option. It does not assign a value.
+Configuration, or in a DHCPv4 client class, where it defines options for that class only. It defines an option. It
+does not assign a value.
 _Avoid_: option-def, custom option
 
 **Server Configuration**:

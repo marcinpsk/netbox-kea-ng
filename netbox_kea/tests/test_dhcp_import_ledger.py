@@ -29,13 +29,14 @@ from netbox_kea.integrations.dhcp_import_ledger import (
     Pending,
 )
 from netbox_kea.integrations.dhcp_import_report import Capability, Reason
+from netbox_kea.kea_paths import OPTION_DEF
 from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
 # The open tickets of #89 that map a key.
-_PARITY_TICKETS = frozenset({97, 98, 99, 100, 101, 104, 107})
+_PARITY_TICKETS = frozenset({97, 98, 99, 101, 104, 107})
 # Collections of child objects: an empty one in config-get is a Kea default, never a merge.
-_CHILD_COLLECTIONS = frozenset({"option-data", "option-def", "pools", "pd-pools", "reservations", "subnet4", "subnet6"})
+_CHILD_COLLECTIONS = frozenset({"option-data", OPTION_DEF, "pools", "pd-pools", "reservations", "subnet4", "subnet6"})
 
 
 def _accepted_keys() -> dict[Family, dict[str, set[str]]]:
@@ -89,7 +90,7 @@ def _identity(table: str, family: Family, obj: dict):
         # Kea returns a client-id without colons and in upper case.
         kind = next(key for key in _IDENTIFIERS if key in obj)
         return (kind, obj[kind].replace(":", "").lower())
-    if table == "option-def":
+    if table == OPTION_DEF:
         return (obj.get("space", f"dhcp{family}"), obj["code"])
     return obj["id"] if table == f"subnet{family}" else obj.get("name", table)
 
@@ -116,7 +117,7 @@ def _objects(daemon: dict, family: Family) -> dict[str, list[tuple[tuple, dict]]
     def visit(table: str, obj: dict, scope: tuple) -> tuple:
         found[table].append((scope, obj))
         here = (*scope, (table, _identity(table, family, obj)))
-        for child in ("option-data", "option-def"):
+        for child in ("option-data", OPTION_DEF):
             for entry in obj.get(child, []):
                 found[child].append((here, entry))
         return here
@@ -225,7 +226,7 @@ class LedgerKeysTest(SimpleTestCase):
 
     def test_a_ledger_table_that_kea_no_longer_has_fails(self):
         recorded = _accepted_keys()
-        del recorded[4]["option-def"]
+        del recorded[4][OPTION_DEF]
 
         self.assertEqual(ledger.differences(recorded), ["option-def (DHCPv4): Kea has no such object"])
 
@@ -419,7 +420,7 @@ class LedgerAgreesWithTheImportTest(SimpleTestCase):
     def test_a_key_without_a_plugin_home_has_no_plugin_field_of_its_name(self):
         models = {"Dhcp": "DHCPServer", "subnet": "Subnet", "shared-networks": "SharedNetwork", "pools": "Pool"}
         models |= {"pd-pools": "PDPool", "reservations": "HostReservation", "client-classes": "ClientClass"}
-        models |= {"option-def": "OptionDefinition", "option-data": "Option", "interfaces-config": "DHCPServer"}
+        models |= {OPTION_DEF: "OptionDefinition", "option-data": "Option", "interfaces-config": "DHCPServer"}
         for family, tables in LEDGER.items():
             for table, keys in tables.items():
                 model = models[table.rstrip("46")]

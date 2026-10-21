@@ -67,7 +67,11 @@ Kea owns the managed fields of a mapped object. Each run sets every managed fiel
 that Kea does not declare, so the DHCP plugin inherits its value. The next run overwrites a hand edit of a managed
 field. The import does not change the other fields, such as tags, comments, description, status, weight, cluster and
 the device or virtual machine. It also does not change an object without a mapping, such as a Pool or Reservation that
-you add. A DHCP Option has no mapping of its own. The import finds it by its object and its Option Definition. So a DHCP
+you add. A DHCP Option has no mapping of its own. The import finds it by its object, the option space and code of its
+Option Definition and its client classes. When no Option has the same client classes, the import takes an Option of the
+same object, space and code that no other Kea option took, for example one that an earlier release wrote without
+classes. When the definition of an option moves, for example from the global `option-def` to a client class, the
+Option keeps its row and binds to the new definition. So a DHCP
 Option that you add with another Option Definition stays. When you rename an object, the mapping stays and the import
 keeps your name. A client class is the exception: it keeps its Kea name, because Kea refers to a class by name. The
 first run after an upgrade maps each object that an earlier release imported, so it makes no duplicate. It also renames
@@ -80,6 +84,18 @@ global facts are unsupported: the family of a DHCP Server, the `server-id` param
 DHCPv4-over-DHCPv6 keys (`4o6-subnet`, `4o6-interface`, `4o6-interface-id`) are unsupported, and so is a Pool's
 `user-context`. The rest of the Subnet and the Pool imports. The DHCP plugin 0.2.0 keeps the relay as free text, which
 the import does not write, so a value that you enter there stays.
+
+The import writes every custom Option Definition that Kea declares, also one that no option uses, before it writes
+any DHCP Option. A definition of the global `option-def` belongs to the DHCP Server. A definition of a client class
+(`client-classes[].option-def`, DHCPv4 only) belongs to that client class and has its own mapping. The `user-context`
+of a definition or a DHCP Option (Kea returns a `comment` as `user-context`) is unsupported with
+netbox-plugin-dhcp 0.2.0. So are a definition in an option space other than `dhcp4`, `dhcp6` and
+`vendor-specific-options-space` (for example `vendor-encapsulated-options-space` or `vendor-4491`), a DHCPv6 code
+above 255, and a DHCP Option without an Option Definition that the DHCP plugin knows. A DHCP Option that needs an
+unsupported definition is unsupported for the same reason. A DHCP Option keeps its Kea `client-classes` in its
+`client_classes`. Two Kea options with the same code and other client classes are two DHCP Options. When a class of
+the list has no client class that the same run imported, the DHCP Option is skipped: without the class, the DHCP
+plugin would send the option to more clients.
 
 The table lists the managed fields of each DHCP plugin model. A field behind a DHCP Plugin Capability is managed only
 when the installed DHCP plugin has that capability. Without it, the import does not write or clear the field. It
@@ -105,8 +121,8 @@ Kea, and the import reports it as inherited.
 | `Pool` | `subnet`, `ip_range`, `pool_id`, `ddns_send_updates`, `ddns_override_no_update`, `ddns_override_client_update`, `ddns_replace_client_name`, `ddns_generated_prefix`, `ddns_qualifying_suffix`, `ddns_update_on_renew`, `ddns_conflict_resolution_mode`, `ddns_ttl_percent`, `ddns_ttl`, `ddns_ttl_min`, `ddns_ttl_max`, `hostname_char_set`, `hostname_char_replacement`, `client_classes`, `evaluate_additional_classes` | `user_context` (`user_context`) |
 | `PDPool` | None. The import does not write delegated-prefix Pools yet. | |
 | `HostReservation` | `subnet`, `dhcp_server`, `hostname`, `hw_address`, `duid`, `circuit_id`, `client_id`, `flex_id`, `ipv4_address`, `ipv6_addresses`, `ipv6_prefixes` | |
-| `Option` | `data`, `csv_format`, `send_option` | |
-| `OptionDefinition` | `space`, `code`, `family`, `type`, `array`, `record_types`, `encapsulate`, `dhcp_server`, `client_class` | |
+| `Option` | `definition`, `data`, `csv_format`, `send_option`, `client_classes` | `space` (`option_without_definition`), `code` (`option_without_definition`), `user_context` (`user_context`) |
+| `OptionDefinition` | `space`, `code`, `family`, `type`, `array`, `record_types`, `encapsulate`, `dhcp_server`, `client_class` | `user_context` (`user_context`) |
 | `ClientClass` | `name`, `dhcp_server`, `test`, `template_test`, `only_in_additional_list`, `valid_lifetime`, `min_valid_lifetime`, `max_valid_lifetime`, `preferred_lifetime`, `min_preferred_lifetime`, `max_preferred_lifetime`, `next_server`, `server_hostname`, `boot_file_name` | `user_context` (`user_context`) |
 
 Each imported Subnet holds Kea's subnet ID. A Subnet that an earlier release imported takes its Kea subnet ID on the
@@ -135,8 +151,13 @@ the old row and creates a new one. The run removes an object only after it read 
 the Server Configuration or the Reservation Snapshot was not read in full, the run keeps the objects of the kinds that
 the read covers, and one skipped entry for each kind tells why and how many objects it kept. The run also keeps an
 object when its removal would remove a DHCP plugin row that the run keeps, for example a Pool that an operator added
-to a stale Subnet, or when an Option still uses a stale Option Definition. A removal deletes the DHCP plugin row with
-its DHCP Options. It never deletes an IP address, a Prefix or an IP Range. The change log records each removal, and
+to a stale Subnet, when an Option still uses a stale Option Definition, or when a row that the run keeps names a
+stale client class in its `client_classes` or `evaluate_additional_classes` (without the class, that row would reach
+more clients). A DHCP Option of an object that the run removes goes with that object and keeps nothing. Before it
+writes anything, the run finds the stale objects whose removal removes or changes no object that it keeps, so a kept
+object leaves no change behind. Stale objects whose removals rely on each other are removed together or not at all. When a removal fails,
+each stale object whose removal relies on it, directly or through other objects, is kept too. A removal deletes
+the DHCP plugin row with its DHCP Options. It never deletes an IP address, a Prefix or an IP Range. The change log records each removal, and
 the import needs the delete permission of each DHCP plugin model that it can remove.
 
 The **Drift** card of the same page reads Kea after the page opens and compares it with the imported rows of each

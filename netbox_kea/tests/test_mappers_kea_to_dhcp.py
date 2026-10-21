@@ -330,7 +330,6 @@ class TestParseDhcpConfigOptionDefs(SimpleTestCase):
                 encapsulate=None,
             ),
         )
-        self.assertEqual(defs[0].match_key, ("dhcp4", 222))
 
     def test_record_types_are_read_from_the_recorded_kea_string(self):
         conf = _recording(4)["config-get"]["arguments"]["Dhcp4"]
@@ -513,3 +512,32 @@ class TestParseDhcpConfigDroppedEntries(SimpleTestCase):
             [(entry.kind, entry.path) for entry in parse_dhcp_config(conf, 4).dropped],
             [(Kind.OPTION_DEFINITION, "Dhcp4/option-def"), (Kind.POOL, "Dhcp4/subnet4[id=1]/pools")],
         )
+
+
+class TestOptionUserContext(SimpleTestCase):
+    """An option keeps Kea's user-context for the import, and option edits neither compare nor write it."""
+
+    _LIVE = {"code": 15, "name": "domain-name", "data": "example.org", "user-context": {"comment": "Kea comment"}}
+
+    def test_the_import_reads_the_user_context_of_an_option(self):
+        (option,) = parse_dhcp_config({"option-data": [self._LIVE]}, 4).global_options
+
+        self.assertEqual(option.user_context, {"comment": "Kea comment"})
+
+    def test_a_user_context_does_not_make_two_option_values_differ(self):
+        from netbox_kea.dhcp_options import parse_dhcp_option
+
+        without = {key: value for key, value in self._LIVE.items() if key != "user-context"}
+        self.assertEqual(parse_dhcp_option(self._LIVE), parse_dhcp_option(without))
+
+    def test_an_option_edit_keeps_the_live_user_context(self):
+        from dataclasses import replace
+
+        from netbox_kea.dhcp_options import DHCPOptionChange, DHCPOptionEdit, merge_option_edit, parse_dhcp_option
+
+        seen = parse_dhcp_option(self._LIVE)
+        edit = DHCPOptionEdit((seen,), (DHCPOptionChange(seen, replace(seen, data="example.net")),))
+
+        (merged,) = merge_option_edit(edit, [dict(self._LIVE)], 4)
+
+        self.assertEqual((merged["data"], merged["user-context"]), ("example.net", {"comment": "Kea comment"}))
