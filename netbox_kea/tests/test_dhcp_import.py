@@ -770,6 +770,7 @@ class OptionValuesTest(SimpleTestCase):
         self.assertEqual(
             values,
             {
+                "definition_id": None,
                 "data": "C0000245",
                 "csv_format": False,
                 "send_option": None,
@@ -800,7 +801,7 @@ class OptionValuesTest(SimpleTestCase):
 
         values, entries = self._values(_proposed_plugin_models()["Option"](definition=None), opt, frozenset())
 
-        self.assertEqual(set(values), {"data", "csv_format", "send_option"})
+        self.assertEqual(set(values), {"definition_id", "data", "csv_format", "send_option"})
         self.assertEqual(entries, {("Dhcp6/option-data[code=1003]/user-context", Capability.USER_CONTEXT)})
 
 
@@ -1525,6 +1526,22 @@ class OptionCoverageTest(TestCase):
         self.assertEqual(entry.reason, Reason.PARENT_NOT_IMPORTED)
         self.assertTrue(entry.detail.startswith("Client class voip was not imported."), entry.detail)
         self.assertEqual(self._options(imported_dhcp_server(self.server, 4), 3), [("192.0.2.254", ())])
+
+    def test_an_option_keeps_its_row_when_its_class_declares_the_definition_of_its_code(self):
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        config = _recorded_config(4)
+        boot = next(c for c in config["client-classes"] if c["name"] == "boot")
+        # First the daemon declares the definition that the class option uses.
+        config["option-def"].extend(boot.pop("option-def"))
+        self._apply(config)
+        (before,) = Option.objects.filter(definition__code=231)
+
+        summary = self._apply()
+
+        (after,) = Option.objects.filter(definition__code=231)
+        self.assertEqual(after.pk, before.pk)
+        self.assertEqual(after.definition, self._mapped_definition("boot:dhcp4:231"))
+        self.assertEqual(self._entries(summary, Kind.OPTION)[f"{_BOOT}/option-data[code=231]"], (Outcome.UPDATED, None))
 
     def test_a_stale_client_class_that_a_kept_row_evaluates_is_kept(self):
         from ipam.models import Prefix

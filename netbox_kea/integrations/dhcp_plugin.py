@@ -634,6 +634,7 @@ def option_values(
             setattr(candidate, name, value)
     candidate.clean()
     return {
+        "definition_id": candidate.definition_id,
         "data": candidate.data,
         "csv_format": candidate.csv_format,
         "send_option": candidate.send_option,
@@ -644,28 +645,33 @@ def option_values(
 
 @dataclass(frozen=True)
 class _PlannedOption:
-    """A Kea option that the DHCP plugin can hold: its path, Option Definition (``None``: none) and client classes."""
+    """A Kea option that the DHCP plugin can hold: its path, space, code, Option Definition (``None``: none) and classes."""
 
     option: DHCPOption
     path: str
     space: str
+    code: int | None
     definition: Any
     classes: frozenset[int]
 
-    def same_definition(self, row) -> bool:
-        """Return whether the Option *row* has the definition of this option, or its space and code without one."""
-        if self.definition is not None:
-            return row.definition_id == self.definition.pk
-        return row.definition_id is None and (row.space, row.code) == (self.space, self.option.code)
+
+def _option_code(row) -> tuple:
+    """Return the space and code of the Option *row*: from its definition, or its own fields without one (gap 9)."""
+    if row.definition_id is not None:
+        return row.definition.space, row.definition.code
+    return row.space, row.code
 
 
 def _paired_rows(planned: list[_PlannedOption], rows: list) -> list:
     """Return the existing Option of each planned option, or ``None``.
 
     First a row with the same definition and the same client classes, then an unpaired row with the same definition,
-    in order. So a row that an import wrote before options had classes is updated, not duplicated.
+    in order. A row pairs by space and code, not by its definition row, so a definition that moves between the daemon
+    and a client class keeps the Option. A row that an import wrote before options had classes is updated, not
+    duplicated.
     """
     classes = {row.pk: {each.pk for each in row.client_classes.all()} for row in rows}
+    codes = {row.pk: _option_code(row) for row in rows}
     free = list(rows)
     paired: list = [None] * len(planned)
     for exact in (True, False):
@@ -673,7 +679,11 @@ def _paired_rows(planned: list[_PlannedOption], rows: list) -> list:
             if paired[index] is not None:
                 continue
             row = next(
-                (row for row in free if item.same_definition(row) and (not exact or classes[row.pk] == item.classes)),
+                (
+                    row
+                    for row in free
+                    if codes[row.pk] == (item.space, item.code) and (not exact or classes[row.pk] == item.classes)
+                ),
                 None,
             )
             if row is not None:
@@ -749,10 +759,12 @@ def upsert_options(
         classes = references.classes.option_classes(opt.client_classes, path, summary)
         if classes is not None:
             space = opt.space or kea_paths.default_space(family)
-            planned.append(_PlannedOption(opt, path, space, definition, classes))
+            code = definition.code if definition is not None else opt.code
+            planned.append(_PlannedOption(opt, path, space, code, definition, classes))
     rows = list(
         _model("Option")
         .objects.filter(assigned_object_type=ct, assigned_object_id=parent_obj.pk)
+        .select_related("definition")
         .prefetch_related("client_classes")
         .order_by("pk")
     )
