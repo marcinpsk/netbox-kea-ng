@@ -1674,6 +1674,76 @@ class OptionCoverageTest(TestCase):
         option = apps.get_model(DHCP_PLUGIN, "Option").objects.get(data="b.example.org")
         self.assertEqual(list(option.client_classes.values_list("name", flat=True)), ["a"])
 
+    def _classes_naming(self, names: dict[str, list[str]]) -> dict:
+        """Return the recorded configuration with one class per name, each with an Option restricted to its list."""
+        config = _recorded_config(4)
+        config["client-classes"] += [
+            {
+                "name": name,
+                "test": f"option[60].hex == '{name}'",
+                "option-data": [{"code": 15, "data": f"{name}.example.org", "client-classes": named}] if named else [],
+            }
+            for name, named in names.items()
+        ]
+        return config
+
+    def _read_failing(self, name: str, errors: int):
+        """Apply a Complete read of the recorded configuration while the delete of class *name* fails."""
+        from django.db.models.signals import pre_delete
+
+        ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
+
+        def refuse(sender, instance, **kwargs):
+            if instance.name == name:
+                raise RuntimeError(f"the delete of {name} fails")
+
+        pre_delete.connect(refuse, sender=ClientClass, weak=False)
+        try:
+            return self._apply_read(_recorded_config(4), errors=errors)
+        finally:
+            pre_delete.disconnect(refuse, sender=ClientClass)
+
+    @staticmethod
+    def _class_entries(summary, *names: str) -> dict:
+        paths = {f"Dhcp4/client-classes[name={name}]": name for name in names}
+        return {paths[entry.path]: entry.reason or entry.outcome for entry in summary.entries if entry.path in paths}
+
+    def _option_classes(self, name: str) -> list[str]:
+        option = apps.get_model(DHCP_PLUGIN, "Option").objects.get(data=f"{name}.example.org")
+        return sorted(option.client_classes.values_list("name", flat=True))
+
+    def test_two_classes_that_name_each_other_stay_together_when_one_delete_fails(self):
+        self._apply(self._classes_naming({"a": ["b"], "b": ["a"]}))
+
+        summary = self._read_failing("b", errors=1)
+
+        self.assertEqual(
+            self._class_entries(summary, "a", "b"), {"a": Reason.REMOVAL_BLOCKED, "b": Reason.WRITE_FAILED}
+        )
+        self.assertEqual((self._option_classes("a"), self._option_classes("b")), (["b"], ["a"]))
+
+    def test_a_class_that_relies_on_a_failed_cycle_stays(self):
+        # a relies on b (b's Option names a); b and c rely on each other.
+        self._apply(self._classes_naming({"a": [], "b": ["a", "c"], "c": ["b"]}))
+
+        summary = self._read_failing("c", errors=1)
+
+        self.assertEqual(
+            self._class_entries(summary, "a", "b", "c"),
+            {"a": Reason.REMOVAL_BLOCKED, "b": Reason.REMOVAL_BLOCKED, "c": Reason.WRITE_FAILED},
+        )
+        self.assertEqual((self._option_classes("b"), self._option_classes("c")), (["a", "c"], ["b"]))
+
+    def test_a_class_that_relies_on_a_cycle_is_removed_after_it(self):
+        self._apply(self._classes_naming({"a": [], "b": ["a", "c"], "c": ["b"]}))
+
+        summary = self._apply_read(_recorded_config(4))
+
+        removed = [entry.path for entry in summary.entries if entry.outcome == Outcome.REMOVED]
+        names = [path.removeprefix("Dhcp4/client-classes[name=").removesuffix("]") for path in removed]
+        self.assertEqual(sorted(names), ["a", "b", "c"])
+        self.assertEqual(names[-1], "a")
+
     def test_two_stale_client_classes_whose_options_name_each_other_are_both_removed(self):
         config = _recorded_config(4)
         config["client-classes"] += [

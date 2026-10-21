@@ -2299,34 +2299,88 @@ def _removal_set(stale: dict[tuple, _StaleRow]) -> tuple[dict[tuple, _RemovalPla
     dependents = _dependents(plans)
     for key in list(kept):
         _keep_dependents(key, dependents, alive, kept, _relied_on_detail(stale[key], "is kept"))
-    return {key: plans[key] for key in alive}, kept
+    return {key: plan for key, plan in plans.items() if key in alive}, kept
 
 
-def _delete_planned(row: _StaleRow, plan: _RemovalPlan, family: int, summary: ImportSummary) -> bool:
-    """Delete one row of the removal set through the ORM, so the guards, the mapping cleanup and the change log run.
+def _components(plans: dict[tuple, _RemovalPlan]) -> list[list[tuple]]:
+    """Return the strongly connected components of the ``relies_on`` graph, each after every component it relies on.
 
-    Return whether the delete succeeded. A failed delete changes nothing and has a write-failed entry.
+    Rows that rely on each other form one component. Tarjan's algorithm, without recursion, gives the components in
+    this order. The rows and edges follow the order of *plans*, so the result does not change between runs.
     """
+    order = {key: position for position, key in enumerate(plans)}
+
+    def edges(key: tuple):
+        return iter(sorted(plans[key].relies_on & plans.keys(), key=order.__getitem__))
+
+    index: dict[tuple, int] = {}
+    low: dict[tuple, int] = {}
+    stack: list[tuple] = []
+    on_stack: set[tuple] = set()
+    components: list[list[tuple]] = []
+
+    def visit(key: tuple) -> None:
+        index[key] = low[key] = len(index)
+        stack.append(key)
+        on_stack.add(key)
+
+    for root in plans:
+        if root in index:
+            continue
+        visit(root)
+        work = [(root, edges(root))]
+        while work:
+            key, successors = work[-1]
+            for successor in successors:
+                if successor not in index:
+                    visit(successor)
+                    work.append((successor, edges(successor)))
+                    break
+                if successor in on_stack:
+                    low[key] = min(low[key], index[successor])
+            else:
+                work.pop()
+                if work:
+                    low[work[-1][0]] = min(low[work[-1][0]], low[key])
+                if low[key] == index[key]:
+                    component = []
+                    while (member := stack.pop()) != key:
+                        on_stack.discard(member)
+                        component.append(member)
+                    on_stack.discard(key)
+                    components.append(sorted([*component, key], key=order.__getitem__))
+    return components
+
+
+def _delete_component(
+    keys: list[tuple], plans: dict, removable: dict, removed: set, family: int, summary: ImportSummary
+) -> tuple[list[tuple], tuple | None]:
+    """Delete the rows of one component in one transaction, all or nothing, through the ORM.
+
+    The ORM delete runs the guards, the mapping cleanup and the change log. Return the rows that the component
+    removed, and ``None``; or no rows and the row whose delete failed, which has a write-failed entry.
+    """
+    gone: list[tuple] = []
+    current = keys[0]
     try:
         with event_scope.atomic():
-            # An Option that the delete of its own owner already removed is gone.
-            for option in _model("Option").objects.filter(pk__in=[option.pk for option in plan.options_first]):
-                option.delete()
-            row.target.delete()
+            for current in keys:
+                if current in removed or current in gone:
+                    continue
+                plan = plans[current]
+                # An Option that the delete of its own owner already removed is gone.
+                for option in _model("Option").objects.filter(pk__in=[option.pk for option in plan.options_first]):
+                    option.delete()
+                removable[current].target.delete()
+                gone += [current, *(each for each in plan.cascaded if each not in removed and each not in gone)]
     except event_scope.EventDispatchError:
         raise
     except Exception as exc:  # noqa: BLE001 (one failed removal must not abort the import)
-        path = row.source.path(family)
-        summary.record(write_failed(family, row.source.kind, path))
-        summary.warn(f"stale {row.source.kind.value} {path}: {exc}")
-        return False
-    return True
-
-
-def _next_deletion(pending: set, plans: dict, position: dict) -> tuple:
-    """Return the next row to delete: the first in REMOVAL_ORDER whose relied-on rows are gone, else the first."""
-    ready = [key for key in pending if not plans[key].relies_on & pending]
-    return min(ready or pending, key=position.__getitem__)
+        source = removable[current].source
+        summary.record(write_failed(family, source.kind, source.path(family)))
+        summary.warn(f"stale {source.kind.value} {source.path(family)}: {exc}")
+        return [], current
+    return gone, None
 
 
 def mapped_rows(server, family: int, confirmed_before: datetime | None = None) -> dict[Kind, dict[MappingSource, Any]]:
@@ -2368,9 +2422,9 @@ def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> No
 
     An Incomplete observation of a kind keeps every row of that kind, with one entry that says why. Before any write,
     :func:`_removal_set` finds the stale rows whose deletion removes or changes no kept row; each other stale row is
-    kept and reported. The deletes follow REMOVAL_ORDER, and a row goes after the rows that it relies on when it can.
-    When a delete fails, every pending row that relies on it, directly or through other rows, is kept too. IPAM objects
-    stay: the DHCP plugin rows only reference them.
+    kept and reported. Rows that rely on each other form one component, which goes in one transaction, all or nothing,
+    after every component that it relies on. When a component fails, every pending row that relies on it, directly or
+    through other rows, is kept too. IPAM objects stay: the DHCP plugin rows only reference them.
     """
     observed = observations(plan)
     stale = _stale_rows(server, plan, observed)
@@ -2389,25 +2443,33 @@ def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> No
     for key, detail in staying.items():
         _record_kept(removable[key], detail, plan.family, summary)
     # A deleted instance has no pk, so every key comes from before the deletes.
-    position = {key: index for index, key in enumerate(removable)}
     dependents = _dependents(plans)
     pending = set(plans)
     removed: set[tuple] = set()
-    while pending:
-        key = _next_deletion(pending, plans, position)
-        pending.discard(key)
-        row = removable[key]
-        if not _delete_planned(row, plans[key], plan.family, summary):
-            failed: dict[tuple, str] = {}
-            detail = _relied_on_detail(row, "failed")
-            for each in _keep_dependents(key, dependents, pending, failed, detail):
-                _record_kept(removable[each], detail, plan.family, summary)
+    for component in _components(plans):
+        if not pending.issuperset(component):
+            # A failed component that it relies on keeps it.
             continue
-        gone = [key, *sorted(plans[key].cascaded - removed, key=position.__getitem__)]
-        removed.update(gone)
-        pending.difference_update(gone)
-        for source in (removable[each].source for each in gone):
-            summary.record(written(plan.family, source.kind, source.path(plan.family), Outcome.REMOVED))
+        pending.difference_update(component)
+        gone, failed = _delete_component(component, plans, removable, removed, plan.family, summary)
+        if failed is None:
+            removed.update(gone)
+            for source in (removable[each].source for each in gone):
+                summary.record(written(plan.family, source.kind, source.path(plan.family), Outcome.REMOVED))
+            continue
+        together = _together_detail(removable[failed])
+        for key in component:
+            if key != failed:
+                _record_kept(removable[key], together, plan.family, summary)
+        relied_on: dict[tuple, str] = {}
+        for key in component:
+            detail = _relied_on_detail(removable[key], "failed" if key == failed else "is kept")
+            for each in _keep_dependents(key, dependents, pending, relied_on, detail):
+                _record_kept(removable[each], detail, plan.family, summary)
+
+
+def _together_detail(row: _StaleRow) -> str:
+    return f"It is kept because it is removed together with {_counted_rows([row.target])}, whose removal failed."
 
 
 def _record_kept(row: _StaleRow, detail: str, family: int, summary: ImportSummary) -> None:

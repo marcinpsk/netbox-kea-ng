@@ -155,8 +155,8 @@ to a stale Subnet, when an Option still uses a stale Option Definition, or when 
 stale client class in its `client_classes` or `evaluate_additional_classes` (without the class, that row would reach
 more clients). A DHCP Option of an object that the run removes goes with that object and keeps nothing. Before it
 writes anything, the run finds the stale objects whose removal removes or changes no object that it keeps, so a kept
-object leaves no change behind. When one removal fails, each stale object whose removal relies on it, directly or through other objects,
-is kept too. A removal deletes
+object leaves no change behind. Stale objects whose removals rely on each other are removed together or not at all. When a removal fails,
+each stale object whose removal relies on it, directly or through other objects, is kept too. A removal deletes
 the DHCP plugin row with its DHCP Options. It never deletes an IP address, a Prefix or an IP Range. The change log records each removal, and
 the import needs the delete permission of each DHCP plugin model that it can remove.
 
