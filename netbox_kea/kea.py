@@ -302,8 +302,7 @@ class FreshReservation:
             options = merge_option_edit(change.options, raw_options, self.reservation.family, definitions)
         intended = apply_reservation_change(self.reservation, dataclasses.replace(change, options=None))
         intended = dataclasses.replace(intended, options=parse_dhcp_options(options))
-        # The live user-context stays as Kea returned it: no edit changes it.
-        serialized = _reservation_to_raw(dataclasses.replace(intended, user_context=None))
+        serialized = _reservation_to_raw(intended)
         if options or (not raw_options and "option-data" in self.raw):
             serialized["option-data"] = options
         merged = {key: value for key, value in self.raw.items() if key not in _MANAGED_RESERVATION_KEYS}

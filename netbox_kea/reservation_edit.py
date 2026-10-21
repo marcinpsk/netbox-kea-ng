@@ -34,6 +34,7 @@ from .published_name import published_name, stored_hostname
 from .reservation_transfer import ReservationImportProposal, resolve_import_proposal
 from .reservations import (
     ClearValue,
+    ExcludedPrefix,
     FieldChange,
     InSubnetReservationScope,
     IPv4Reservation,
@@ -106,16 +107,68 @@ class OptionRow:
     always_send: bool = False
     delete: bool = False
     original_option: DHCPOption | None = None
+    client_classes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class SubmittedValues:
-    """Parsed allocation, Published Name and option rows submitted by the operator."""
+    """Parsed allocation, Published Name, DHCPv4 boot fields, client classes and option rows of the operator.
+
+    *excluded_prefixes* are the submitted excluded prefixes; the build pairs each with the delegated prefix that holds it.
+    """
 
     addresses: tuple[IPAddressValue, ...] = ()
     delegated_prefixes: tuple[ipaddress.IPv6Network, ...] = ()
     hostname: str = ""
     option_rows: tuple[OptionRow, ...] = ()
+    client_classes: tuple[str, ...] = ()
+    next_server: ipaddress.IPv4Address | None = None
+    server_hostname: str = ""
+    boot_file_name: str = ""
+    excluded_prefixes: tuple[ipaddress.IPv6Network, ...] = ()
+
+
+def class_text(classes: tuple[str, ...]) -> str:
+    """Return the text of a client class field: the names, separated by commas."""
+    return ", ".join(classes)
+
+
+def class_names(text: str) -> tuple[str, ...]:
+    """Return the names of a client class field, without the empty ones."""
+    return tuple(name for name in (part.strip() for part in text.split(",")) if name)
+
+
+def _shown_classes(live: tuple[str, ...], submitted: tuple[str, ...]) -> tuple[str, ...]:
+    """Keep the live names while the field holds the text that showed them, also for a name with a comma."""
+    return live if submitted == class_names(class_text(live)) else submitted
+
+
+def excluded_prefix_pairs(
+    delegated: tuple[ipaddress.IPv6Network, ...], excluded: tuple[ipaddress.IPv6Network, ...]
+) -> tuple[ExcludedPrefix, ...]:
+    """Pair each excluded prefix with the one delegated prefix that holds it, in the order of *delegated*.
+
+    Raises:
+        EditConflict: If an excluded prefix is in no delegated prefix or in more than one, or a delegated prefix
+            would exclude two prefixes.
+
+    """
+    paired: dict[ipaddress.IPv6Network, ipaddress.IPv6Network] = {}
+    for prefix in excluded:
+        holders = [held for held in delegated if prefix.prefixlen > held.prefixlen and prefix.subnet_of(held)]
+        if len(holders) != 1:
+            where = "is not inside a delegated prefix" if not holders else "is inside more than one delegated prefix"
+            raise EditConflict(
+                f"The excluded prefix {prefix} {where} of this Reservation. "
+                "Each excluded prefix must be a longer prefix inside exactly one delegated prefix.",
+                field="excluded_prefixes",
+            )
+        if holders[0] in paired:
+            raise EditConflict(
+                f"The delegated prefix {holders[0]} can exclude one prefix only.", field="excluded_prefixes"
+            )
+        paired[holders[0]] = prefix
+    return tuple(ExcludedPrefix(held, paired[held]) for held in delegated if held in paired)
 
 
 @dataclass(frozen=True)
@@ -176,9 +229,12 @@ def _option_edit(rows: tuple[OptionRow, ...], snapshot: tuple[DHCPOption, ...]) 
         elif seen is None:
             if not row.name:
                 continue
-            intended = DHCPOption(None, row.name, None, row.data, None, True if row.always_send else None, None)
+            intended = DHCPOption(
+                None, row.name, None, row.data, None, True if row.always_send else None, None, row.client_classes
+            )
         else:
-            intended = replace(seen, name=row.name or None, data=row.data)
+            classes = _shown_classes(seen.client_classes, row.client_classes)
+            intended = replace(seen, name=row.name or None, data=row.data, client_classes=classes)
             if bool(seen.always_send) != row.always_send:
                 intended = replace(intended, always_send=row.always_send)
         if seen != intended:
@@ -308,12 +364,20 @@ def form_state(reservation: Reservation, catalogue: CatalogueSnapshot) -> FormSt
         "hostname": reservation.hostname if suffix is None else published_name(reservation.hostname, suffix),
         "managed_fingerprint": _signed_fingerprint(reservation, suffix),
     }
+    initial["client_classes"] = class_text(reservation.client_classes)
     if reservation.family == 4:
         initial["ip_address"] = str(reservation.addresses[0]) if reservation.addresses else ""
+        initial["next_server"] = "" if reservation.next_server is None else str(reservation.next_server)
+        initial["server_hostname"] = reservation.server_hostname
+        initial["boot_file_name"] = reservation.boot_file_name
     else:
         initial["ip_addresses"] = ",".join(str(address) for address in reservation.addresses)
         initial["prefixes"] = ",".join(str(prefix) for prefix in reservation.delegated_prefixes)
-    return FormState(initial, tuple(option.form_initial() for option in reservation.options))
+        initial["excluded_prefixes"] = ",".join(str(pair.excluded) for pair in reservation.excluded_prefixes)
+    options = tuple(
+        {**option.form_initial(), "client_classes": class_text(option.client_classes)} for option in reservation.options
+    )
+    return FormState(initial, options)
 
 
 def build_add(
@@ -331,6 +395,7 @@ def build_add(
     except (DHCPOptionConflict, DHCPOptionNameChange) as exc:
         raise EditConflict(exc.message) from exc
     hostname = _stored_for(catalogue, subnet, values.hostname, values.addresses)
+    excluded = excluded_prefix_pairs(values.delegated_prefixes, values.excluded_prefixes)
     if family == 4:
         return IPv4Reservation(
             scope=scope,
@@ -338,6 +403,10 @@ def build_add(
             addresses=tuple(ipaddress.IPv4Address(address) for address in values.addresses),
             hostname=hostname,
             options=options,
+            client_classes=values.client_classes,
+            next_server=values.next_server,
+            server_hostname=values.server_hostname,
+            boot_file_name=values.boot_file_name,
         )
     return IPv6Reservation(
         scope=scope,
@@ -346,6 +415,8 @@ def build_add(
         delegated_prefixes=values.delegated_prefixes,
         hostname=hostname,
         options=options,
+        client_classes=values.client_classes,
+        excluded_prefixes=excluded,
     )
 
 
@@ -367,11 +438,19 @@ def build_edit(
         raise EditConflict(exc.message) from exc
     options = _option_edit(values.option_rows, shown.options)
     prefixes = current.delegated_prefixes if current.family == 4 else values.delegated_prefixes
+    excluded = excluded_prefix_pairs(prefixes, values.excluded_prefixes)
     return ReservationChange(
         addresses=_change(current.addresses, values.addresses, ()),
         delegated_prefixes=_change(current.delegated_prefixes, prefixes, ()),
         hostname=_hostname_change(current, values.hostname, values.addresses, shown.qualifying_suffix, catalogue),
         options=options,
+        client_classes=_change(
+            current.client_classes, _shown_classes(current.client_classes, values.client_classes), ()
+        ),
+        next_server=_change(current.next_server, values.next_server, None),
+        server_hostname=_change(current.server_hostname, values.server_hostname, ""),
+        boot_file_name=_change(current.boot_file_name, values.boot_file_name, ""),
+        excluded_prefixes=_change(current.excluded_prefixes, excluded, ()),
     )
 
 

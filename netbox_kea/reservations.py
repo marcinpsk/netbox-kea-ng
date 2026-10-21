@@ -841,6 +841,11 @@ class ReservationChange:
     delegated_prefixes: FieldChange[tuple[ipaddress.IPv6Network, ...]] = UNCHANGED
     hostname: FieldChange[str] = UNCHANGED
     options: DHCPOptionEdit | None = None
+    client_classes: FieldChange[tuple[str, ...]] = UNCHANGED
+    next_server: FieldChange[ipaddress.IPv4Address | None] = UNCHANGED
+    server_hostname: FieldChange[str] = UNCHANGED
+    boot_file_name: FieldChange[str] = UNCHANGED
+    excluded_prefixes: FieldChange[tuple[ExcludedPrefix, ...]] = UNCHANGED
 
 
 @dataclass(frozen=True)
@@ -1113,10 +1118,16 @@ def apply_reservation_change(reservation: Reservation, change: ReservationChange
     """Apply explicit mutable-field changes without changing Identity or Scope."""
     addresses = _change_value(change.addresses, reservation.addresses, ())
     prefixes = _change_value(change.delegated_prefixes, reservation.delegated_prefixes, ())
-    hostname = _change_value(change.hostname, reservation.hostname, "")
+    excluded = _change_value(change.excluded_prefixes, reservation.excluded_prefixes, ())
     if change.options is not None:
         raise ValueError("Merge DHCP Option edits onto the raw record through FreshReservation.updated.")
-    options = reservation.options
+    shared: dict[str, Any] = {
+        "hostname": _change_value(change.hostname, reservation.hostname, ""),
+        "client_classes": _change_value(change.client_classes, reservation.client_classes, ()),
+        "next_server": _change_value(change.next_server, reservation.next_server, None),
+        "server_hostname": _change_value(change.server_hostname, reservation.server_hostname, ""),
+        "boot_file_name": _change_value(change.boot_file_name, reservation.boot_file_name, ""),
+    }
     # One ReservationChange serves both families, so narrow before replace(). Each cast
     # reaches __post_init__, which rejects a value the other family cannot hold.
     if isinstance(reservation, IPv4Reservation):
@@ -1124,15 +1135,15 @@ def apply_reservation_change(reservation: Reservation, change: ReservationChange
             reservation,
             addresses=cast("tuple[ipaddress.IPv4Address, ...]", addresses),
             delegated_prefixes=cast("tuple[()]", prefixes),
-            hostname=hostname,
-            options=options,
+            excluded_prefixes=cast("tuple[()]", excluded),
+            **shared,
         )
     return replace(
         reservation,
         addresses=cast("tuple[ipaddress.IPv6Address, ...]", addresses),
         delegated_prefixes=prefixes,
-        hostname=hostname,
-        options=options,
+        excluded_prefixes=excluded,
+        **shared,
     )
 
 
