@@ -612,7 +612,9 @@ class TestKeaDhcpLinkIdentity(TestCase):
             "client class in a Subnet": ("client_class", {"kea_subnet_id": 7, "kea_identity": "voip"}),
             "option definition in a Subnet": ("option_definition", {"kea_subnet_id": 7, "kea_identity": "dhcp4:222"}),
             "empty client class name": ("client_class", {"kea_identity": ""}),
-            "unknown kind": ("server", {"kea_identity": "Dhcp4"}),
+            "server with an identity": ("server", {"kea_identity": "Dhcp4"}),
+            "server in a Subnet": ("server", {"kea_subnet_id": 7}),
+            "unknown kind": ("not_a_kind", {"kea_identity": "Dhcp4"}),
         }
         for label, (kind, identity) in rejected.items():
             with self.subTest(label), self.assertRaises(IntegrityError), transaction.atomic():
