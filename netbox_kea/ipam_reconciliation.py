@@ -828,9 +828,8 @@ def claim(
     """Claim one source's records in the Server's VRF, with per-object outcomes and no stale cleanup.
 
     A call contains one source: address leases, delegated-prefix leases, Reservations, Subnets, Pools or the prefixes
-    of delegated-prefix Pools. All records
-    are validated and grouped before any write. Lease masks and the Subnet IDs of delegated prefixes come from a live
-    complete Kea Subnet Catalogue; a delegated prefix is claimed as a Prefix. Reservations carry their verified
+    of delegated-prefix Pools. All records are validated and grouped before any write. Lease masks and the Subnet IDs
+    of delegated prefixes come from a live complete Kea Subnet Catalogue; a delegated prefix is claimed as a Prefix. Reservations carry their verified
     Subnet mask, and *catalogue*, the catalogue that verified them, gives their published names; only a Reservation
     claim takes it. Network records carry their own canonical network and Pool bounds.
     """

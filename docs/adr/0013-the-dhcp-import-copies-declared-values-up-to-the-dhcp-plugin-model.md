@@ -50,7 +50,7 @@ share no enclosing Prefix. A reverse direction from the plugin to Kea must stay 
   - Shared Network, by name
   - Subnet, by Kea subnet ID
   - Pool, by Subnet and range
-  - delegated-prefix Pool
+  - delegated-prefix Pool, by Subnet, prefix and delegated length
   - Reservation in either scope, by Reservation Identity
   - client class, by name
   - custom Option Definition, by space and code
