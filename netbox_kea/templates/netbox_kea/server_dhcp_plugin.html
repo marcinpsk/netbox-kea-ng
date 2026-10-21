@@ -144,60 +144,11 @@
         {% endif %}
       </div>
 
-      <div class="card">
-        <h5 class="card-header">Drift &mdash; live Kea vs. imported records</h5>
-        <div class="card-body p-0">
-          {% if drift.kea_unreachable %}
-            <div class="alert alert-warning m-3" role="alert">
-              <i class="mdi mdi-alert-outline" aria-hidden="true"></i>
-              Could not read live configuration from Kea for one or more versions; showing last-imported records where available.
-            </div>
-          {% endif %}
-          {% if drift.versions %}
-            <div class="table-responsive">
-              <table class="table table-hover align-middle mb-0 drift-table">
-                <thead>
-                  <tr>
-                    <th scope="col">Kea subnet-id</th>
-                    <th scope="col">Prefix</th>
-                    <th scope="col">Status</th>
-                    <th scope="col">Pools</th>
-                    <th scope="col">Reservations</th>
-                  </tr>
-                </thead>
-                {% for v in drift.versions %}
-                <tbody>
-                  <tr class="table-secondary">
-                    <th colspan="5" scope="rowgroup" class="px-3 py-2">DHCPv{{ v.version }}</th>
-                  </tr>
-                  {% for row in v.rows %}
-                    <tr>
-                      <td>{{ row.kea_subnet_id|placeholder }}</td>
-                      <td>{{ row.cidr|placeholder }}</td>
-                      <td>
-                        {% if row.status == "imported" %}
-                          <span class="badge text-bg-success">Imported</span>
-                        {% elif row.status == "new" %}
-                          <span class="badge text-bg-info">New in Kea</span>
-                        {% elif row.status == "orphaned" %}
-                          <span class="badge text-bg-warning">Orphaned (gone from Kea)</span>
-                        {% else %}
-                          <span class="badge text-bg-secondary">Unknown</span>
-                        {% endif %}
-                      </td>
-                      <td>{{ row.pools }}</td>
-                      <td>{{ row.reservations }}</td>
-                    </tr>
-                  {% empty %}
-                    <tr><td colspan="5" class="text-muted">No subnets.</td></tr>
-                  {% endfor %}
-                </tbody>
-                {% endfor %}
-              </table>
-            </div>
-          {% else %}
-            <p class="text-muted p-3 mb-0">No DHCP versions enabled on this server.</p>
-          {% endif %}
+      {% url 'plugins:netbox_kea:server_dhcp_plugin_drift' object.pk as drift_url %}
+      <div class="card" id="dhcp-import-drift" hx-get="{{ drift_url }}" hx-trigger="load" hx-swap="innerHTML">
+        {% include "netbox_kea/inc/dhcp_plugin_drift_header.html" %}
+        <div class="card-body">
+          <p class="text-muted mb-0" role="status">Reading Kea&hellip;</p>
         </div>
       </div>
 

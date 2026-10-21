@@ -76,6 +76,9 @@ variant on its actual write alias. Contention raises a clear retry refusal. It c
 an unknown caller's row locks, including locks on another alias. Reentrant acquisition succeeds inside
 the same transaction. This preserves ordinary main autocommit saves and avoids row-lock inversion.
 
+Amendment (#98): the outermost lock of a DHCP Import is a per-Server session advisory lock, taken before its first
+Kea read and released after its stored result; a run that finds it held is refused before it reads Kea.
+
 Amendment: `dhcp-import-mapping-lock-scope.md` (ratified r6) changes who takes this lock. A closure
 deletion whose native effect reaches no target or mapping takes no lock and runs under a row fence. A Tag
 write takes no lock; replay reads the Tags it validates `FOR KEY SHARE` instead.

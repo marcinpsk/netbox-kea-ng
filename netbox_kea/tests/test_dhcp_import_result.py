@@ -7,16 +7,18 @@ The runs go through the real "Sync to DHCP plugin now" view with Kea stubbed at 
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import unittest
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 
 from bs4 import BeautifulSoup
 from django.apps import apps
 from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
 from django.contrib.messages import ERROR, get_messages
-from django.db import connection, connections
+from django.db import DatabaseError, connection, connections, transaction
 from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from django.urls import reverse
 from django.utils import timezone
@@ -526,6 +528,141 @@ class StoppedRunTest(_ImportRunTestCase):
         self.assertIn("stopped", DhcpImportEntry.objects.get(run=run).detail)
 
 
+def _new_session():
+    """Open a second database session, outside the test transaction, for the other side of a lock."""
+    return cast(Any, connection).Database.connect(**connection.get_connection_params())
+
+
+def _lock_key(server: Server) -> tuple[int, int]:
+    from netbox_kea.integrations.dhcp_import import IMPORT_LOCK_CLASS
+
+    return IMPORT_LOCK_CLASS, server.pk
+
+
+def _held_elsewhere(server: Server) -> bool:
+    """Return whether another session holds the import lock of *server*: take it from a new session, then release it."""
+    other = _new_session()
+    try:
+        with other.cursor() as cursor:
+            cursor.execute("SELECT pg_try_advisory_lock(%s, %s)", _lock_key(server))
+            (taken,) = cursor.fetchone()
+            if taken:
+                cursor.execute("SELECT pg_advisory_unlock(%s, %s)", _lock_key(server))
+    finally:
+        other.close()
+    return not taken
+
+
+class ServerImportLockTest(_ImportRunTestCase):
+    """Two DHCP Imports of one Server never interleave: a run holds a Server lock from its first Kea read to its result."""
+
+    def _key(self) -> tuple[int, int]:
+        return _lock_key(self.server)
+
+    def _held_elsewhere(self) -> bool:
+        return _held_elsewhere(self.server)
+
+    def test_a_run_while_another_run_holds_the_lock_is_refused_before_any_kea_read(self):
+        from netbox_kea.models import KeaDhcpLink
+
+        holder = _new_session()
+        try:
+            with holder.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_lock(%s, %s)", self._key())
+            url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk])
+            with stub_kea(_kea()) as kea:
+                response = self.client.post(url)
+        finally:
+            holder.close()
+
+        self.assertEqual(kea.commands(), [])
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)],
+            ["Another DHCP Import of this Server is running. Nothing changed. Retry this operation."],
+        )
+        self.assertFalse(DhcpImportRun.objects.filter(server=self.server).exists())
+        self.assertFalse(KeaDhcpLink.objects.filter(server=self.server).exists())
+        self.assertFalse(self._held_elsewhere())
+
+    def test_a_run_releases_the_lock(self):
+        self._run()
+
+        self.assertTrue(DhcpImportRun.objects.filter(server=self.server).exists())
+        self.assertFalse(self._held_elsewhere())
+
+    def test_a_run_that_raises_releases_the_lock(self):
+        from unittest.mock import patch
+
+        from netbox_kea.integrations import dhcp_plugin
+
+        with patch.object(dhcp_plugin, "import_server_config", autospec=True, side_effect=RuntimeError("boom")):
+            response = self._run()
+
+        self.assertIn(ERROR, [message.level for message in get_messages(response.wsgi_request)])
+        self.assertFalse(self._held_elsewhere())
+
+    def test_a_run_holds_the_lock_after_its_read_so_a_second_run_cannot_interleave(self) -> None:
+        from netbox_kea.dhcp_mapping_lifecycle import MetadataBusy
+        from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
+
+        refusals: list[str] = []
+        responses = _kea()
+        read_config = responses["config-get"]
+
+        def second_run():
+            try:
+                run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+            except MetadataBusy as error:
+                refusals.append(error.message)
+            finally:
+                connections.close_all()
+
+        def config_get(body):
+            # Run A has started its read; run B tries to start now, as in a read-then-apply interleaving.
+            if not refusals:
+                thread = threading.Thread(target=second_run)
+                thread.start()
+                thread.join()
+            return read_config(body)
+
+        responses["config-get"] = config_get
+        url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk])
+        with stub_kea(responses):
+            self.client.post(url)
+
+        self.assertEqual(
+            refusals, ["Another DHCP Import of this Server is running. Nothing changed. Retry this operation."]
+        )
+        self.assertEqual(DhcpImportRun.objects.filter(server=self.server).count(), 1)
+        self.assertFalse(self._held_elsewhere())
+
+
+class ImportLockReleaseTest(TransactionTestCase):
+    """The import lock is released, and the error of the run kept, also when the transaction of the run failed."""
+
+    def test_a_failed_transaction_keeps_the_error_of_the_run_and_releases_the_lock(self):
+        from netbox_kea.integrations.dhcp_import import _server_import_lock
+
+        server = _make_db_server(name="lock-release")
+        with self.assertRaisesMessage(RuntimeError, "the run failed"):
+            with transaction.atomic(), _server_import_lock(server):
+                with connection.cursor() as cursor, contextlib.suppress(DatabaseError):
+                    cursor.execute("SELECT 1 / 0")
+                raise RuntimeError("the run failed")
+
+        self.assertFalse(_held_elsewhere(server))
+
+    def test_a_lock_that_is_not_held_at_release_is_logged(self):
+        from netbox_kea.integrations.dhcp_import import _server_import_lock
+
+        server = _make_db_server(name="lock-lost")
+        with self.assertLogs("netbox_kea.integrations.dhcp_import", "ERROR") as logs:
+            with _server_import_lock(server), connection.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_unlock(%s, %s)", _lock_key(server))
+
+        self.assertIn("was not held at release", logs.output[0])
+
+
 class SettingEntryTest(_ImportRunTestCase):
     """A Kea value that the import cannot convert to its DHCP plugin field has an entry."""
 
@@ -544,3 +681,429 @@ class SettingEntryTest(_ImportRunTestCase):
             ),
             summary.entries,
         )
+
+
+_STALE_SUBNET = "Dhcp4/subnet4[id=41]"
+_STALE_POOL = f"{_STALE_SUBNET}/pools[pool=192.0.2.10-192.0.2.20]"
+_STALE_IN_SUBNET = f"{_STALE_SUBNET}/reservations[hw-address=02:00:00:00:00:41]"
+_STALE_GLOBAL = "Dhcp4/reservations[duid=01:02:03:04:41]"
+
+
+def _stale_config() -> dict[int, dict[str, Any]]:
+    """Return a DHCPv4 configuration with one mapped row of each kind that a run can remove."""
+    return {
+        4: {
+            "option-def": [{"name": "site-code", "code": 241, "type": "uint8", "space": "dhcp4"}],
+            "client-classes": [{"name": "voip", "test": "option[60].hex == 'voip'"}],
+            "subnet4": [
+                {
+                    "id": 41,
+                    "subnet": "192.0.2.0/24",
+                    "pools": [{"pool": "192.0.2.10-192.0.2.20", "option-data": [{"code": 241, "data": "5"}]}],
+                },
+                {"id": 42, "subnet": "198.51.100.0/24", "pools": [{"pool": "198.51.100.10-198.51.100.20"}]},
+            ],
+        }
+    }
+
+
+def _stale_hosts() -> dict[int, list[dict[str, Any]]]:
+    return {
+        4: [
+            {"subnet-id": 41, "hw-address": "02:00:00:00:00:41", "ip-address": "192.0.2.50"},
+            {"subnet-id": 0, "duid": "01:02:03:04:41"},
+        ]
+    }
+
+
+class StaleRemovalTest(_ImportRunTestCase):
+    """A Complete run removes each mapped row whose Kea source it no longer observes, and reports it."""
+
+    def _sync(self, config: dict, hosts: dict) -> DhcpImportRun:
+        url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk])
+        with stub_kea(_sync_responses(config, hosts)):
+            self.client.post(url)
+        return DhcpImportRun.objects.filter(server=self.server)[0]
+
+    def _removed(self, run: DhcpImportRun) -> set[tuple[str, str]]:
+        return set(
+            DhcpImportEntry.objects.filter(run=run)
+            .filter(outcome=Outcome.REMOVED.value)
+            .values_list("kind", "kea_path")
+        )
+
+    def _mapped(self, kind: Kind) -> list:
+        from netbox_kea.models import KeaDhcpLink
+
+        return [link.sys4_object for link in KeaDhcpLink.objects.filter(server=self.server, kind=kind.value)]
+
+    def setUp(self):
+        super().setUp()
+        self.config, self.hosts = _stale_config(), _stale_hosts()
+        first = self._sync(self.config, self.hosts)
+        self.assertFalse(first.entries.filter(reason=Reason.WRITE_FAILED.value).exists())
+        self.assertEqual(len(self._mapped(Kind.RESERVATION)), 2)
+
+    def test_a_subnet_that_kea_no_longer_reports_is_removed_with_its_pool_and_the_ipam_objects_stay(self):
+        from ipam.models import IPRange, Prefix
+
+        subnet = next(row for row in self._mapped(Kind.SUBNET) if row.subnet_id == 42)
+        prefix, ip_range = subnet.prefix_id, subnet.child_pools.get().ip_range_id
+        del self.config[4]["subnet4"][1]
+
+        run = self._sync(self.config, self.hosts)
+
+        self.assertEqual(
+            self._removed(run),
+            {
+                ("subnet", "Dhcp4/subnet4[id=42]"),
+                ("pool", "Dhcp4/subnet4[id=42]/pools[pool=198.51.100.10-198.51.100.20]"),
+            },
+        )
+        self.assertEqual([row.subnet_id for row in self._mapped(Kind.SUBNET)], [41])
+        self.assertEqual(len(self._mapped(Kind.POOL)), 1)
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "Subnet").objects.filter(pk=subnet.pk).exists())
+        self.assertTrue(Prefix.objects.filter(pk=prefix).exists())
+        self.assertTrue(IPRange.objects.filter(pk=ip_range).exists())
+
+    def test_a_pool_whose_range_changed_is_removed_and_the_new_pool_is_created(self):
+        from ipam.models import IPRange
+
+        old = next(row for row in self._mapped(Kind.POOL) if row.subnet.subnet_id == 42)
+        self.config[4]["subnet4"][1]["pools"] = [{"pool": "198.51.100.30-198.51.100.40"}]
+
+        run = self._sync(self.config, self.hosts)
+
+        subnet = "Dhcp4/subnet4[id=42]"
+        self.assertEqual(self._removed(run), {("pool", f"{subnet}/pools[pool=198.51.100.10-198.51.100.20]")})
+        self.assertIn(("pool", "created", "", f"{subnet}/pools[pool=198.51.100.30-198.51.100.40]"), _entries(run))
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "Pool").objects.filter(pk=old.pk).exists())
+        self.assertTrue(IPRange.objects.filter(pk=old.ip_range_id).exists())
+        self.assertEqual(len(self._mapped(Kind.POOL)), 2)
+
+    def test_reservations_that_kea_no_longer_reports_are_removed_and_their_addresses_stay(self):
+        from ipam.models import IPAddress
+
+        in_subnet = next(row for row in self._mapped(Kind.RESERVATION) if row.subnet_id is not None)
+        address = in_subnet.ipv4_address_id
+        self.assertIsNotNone(address)
+
+        run = self._sync(self.config, {4: []})
+
+        self.assertEqual(self._removed(run), {("reservation", _STALE_IN_SUBNET), ("reservation", _STALE_GLOBAL)})
+        self.assertEqual(self._mapped(Kind.RESERVATION), [])
+        self.assertTrue(IPAddress.objects.filter(pk=address).exists())
+
+    def test_a_client_class_that_kea_no_longer_defines_is_removed(self):
+        self.config[4]["client-classes"] = []
+
+        run = self._sync(self.config, self.hosts)
+
+        self.assertEqual(self._removed(run), {("client_class", "Dhcp4/client-classes[name=voip]")})
+        self.assertEqual(self._mapped(Kind.CLIENT_CLASS), [])
+
+    def test_an_option_definition_is_removed_once_the_removal_of_its_pool_removes_the_last_option(self):
+        self.config[4]["option-def"] = []
+        self.config[4]["subnet4"][0]["pools"] = [{"pool": "192.0.2.30-192.0.2.40"}]
+
+        run = self._sync(self.config, self.hosts)
+
+        self.assertEqual(
+            self._removed(run), {("pool", _STALE_POOL), ("option_definition", "Dhcp4/option-def[code=241]")}
+        )
+        self.assertEqual(self._mapped(Kind.OPTION_DEFINITION), [])
+
+    def test_an_option_definition_that_an_option_still_uses_is_kept_and_reported(self):
+        self.config[4]["option-def"] = []
+
+        run = self._sync(self.config, self.hosts)
+
+        self.assertEqual(self._removed(run), set())
+        self.assertEqual(len(self._mapped(Kind.OPTION_DEFINITION)), 1)
+        entry = DhcpImportEntry.objects.filter(run=run).get(
+            kind=Kind.OPTION_DEFINITION.value, reason=Reason.REMOVAL_BLOCKED.value
+        )
+        self.assertEqual((entry.outcome, entry.kea_path), (Outcome.SKIPPED.value, "Dhcp4/option-def[code=241]"))
+        self.assertEqual(entry.detail, "It is kept while it is in use by 1 Option.")
+
+    def test_a_removal_is_change_logged_for_the_target_and_its_mapping(self):
+        from core.models import ObjectChange
+
+        from netbox_kea.models import KeaDhcpLink
+
+        subnet = next(row for row in self._mapped(Kind.SUBNET) if row.subnet_id == 42)
+        del self.config[4]["subnet4"][1]
+
+        self._sync(self.config, self.hosts)
+
+        deletions = ObjectChange.objects.filter(action="delete")
+        target = deletions.get(
+            changed_object_type=ContentType.objects.get_for_model(subnet), changed_object_id=subnet.pk
+        )
+        mapping = deletions.get(
+            changed_object_type=ContentType.objects.get_for_model(KeaDhcpLink),
+            prechange_data__kind="subnet",
+            prechange_data__kea_subnet_id=42,
+        )
+        # Native revert and squash group history by request (ADR 0008), so both deletions share one.
+        self.assertEqual(mapping.request_id, target.request_id)
+        self.assertEqual(mapping.prechange_data["object_id"], subnet.pk)
+
+    def test_an_unmapped_pool_in_a_stale_subnet_keeps_the_subnet_and_the_run_counts_it(self):
+        Pool = apps.get_model(DHCP_PLUGIN, "Pool")
+        mapped = next(row for row in self._mapped(Kind.POOL) if row.subnet.subnet_id == 42)
+        from ipam.models import IPRange
+        from netaddr import IPNetwork
+
+        operator_range = IPRange.objects.create(
+            start_address=IPNetwork("198.51.100.200/24"), end_address=IPNetwork("198.51.100.210/24")
+        )
+        Pool.objects.create(name="operator pool", subnet=mapped.subnet, ip_range=operator_range)
+        del self.config[4]["subnet4"][1]
+
+        run = self._sync(self.config, self.hosts)
+
+        self.assertEqual(self._removed(run), {("pool", "Dhcp4/subnet4[id=42]/pools[pool=198.51.100.10-198.51.100.20]")})
+        entry = DhcpImportEntry.objects.filter(run=run).get(kind=Kind.SUBNET.value, reason=Reason.REMOVAL_BLOCKED.value)
+        self.assertEqual(entry.kea_path, "Dhcp4/subnet4[id=42]")
+        self.assertEqual(entry.detail, "It is kept because its removal would also remove 1 Pool.")
+        self.assertEqual(sorted(row.subnet_id for row in self._mapped(Kind.SUBNET)), [41, 42])
+        # A Server viewer reads the run, and may not view the Pool, so the run must not name it.
+        viewer = get_user_model().objects.create_user("stale-removal-viewer")
+        _grant([Server], ["view"], user=viewer)
+        self.client.force_login(viewer)
+        page = self.client.get(reverse("plugins:netbox_kea:server_dhcp_plugin", args=[self.server.pk]))
+        self.assertContains(page, "would also remove 1 Pool")
+        self.assertNotContains(page, "operator pool")
+
+    def test_a_stale_subnet_keeps_a_mapped_reservation_that_an_incomplete_observation_cannot_judge(self):
+        del self.config[4]["subnet4"][0]
+
+        # The Reservation of Subnet 41 now names a Subnet that Kea does not have, so the Snapshot quarantines it.
+        run = self._sync(self.config, self.hosts)
+
+        self.assertEqual(self._removed(run), {("pool", _STALE_POOL)})
+        entry = DhcpImportEntry.objects.filter(run=run).get(kind=Kind.SUBNET.value, reason=Reason.REMOVAL_BLOCKED.value)
+        self.assertEqual(entry.kea_path, _STALE_SUBNET)
+        self.assertIn("host reservation", entry.detail.lower())
+        self.assertEqual(sorted(row.subnet_id for row in self._mapped(Kind.SUBNET)), [41, 42])
+        self.assertEqual(len(self._mapped(Kind.RESERVATION)), 2)
+
+    def test_an_incomplete_configuration_keeps_every_configuration_row_and_reports_the_suppression(self):
+        # A Subnet without a CIDR is a Subnet diagnostic, and the Subnet Catalogue cannot verify it either.
+        self.config[4] = {"subnet4": [{"id": 43}]}
+
+        run = self._sync(self.config, self.hosts)
+
+        self.assertEqual(self._removed(run), set())
+        self.assertEqual(len(self._mapped(Kind.SUBNET)), 2)
+        self.assertEqual(len(self._mapped(Kind.POOL)), 2)
+        self.assertEqual(len(self._mapped(Kind.CLIENT_CLASS)), 1)
+        self.assertEqual(len(self._mapped(Kind.OPTION_DEFINITION)), 1)
+        suppressed = {
+            (entry.kind, entry.kea_path): entry.detail
+            for entry in DhcpImportEntry.objects.filter(run=run).filter(reason=Reason.INCOMPLETE_OBSERVATION.value)
+        }
+        self.assertEqual(
+            set(suppressed),
+            {
+                ("subnet", "Dhcp4/subnet4[*]"),
+                ("pool", "Dhcp4/subnet4[*]/pools[*]"),
+                ("client_class", "Dhcp4/client-classes[*]"),
+                ("option_definition", "Dhcp4/option-def[*]"),
+                ("reservation", "Dhcp4/reservations[*]"),
+            },
+        )
+        self.assertEqual(
+            suppressed[("subnet", "Dhcp4/subnet4[*]")],
+            "The Server Configuration was not read in full. "
+            "The configuration has 1 Subnet entry that is not valid. 2 mapped Subnet rows were kept.",
+        )
+        self.assertEqual(
+            {
+                entry.outcome
+                for entry in DhcpImportEntry.objects.filter(run=run).filter(reason=Reason.INCOMPLETE_OBSERVATION.value)
+            },
+            {Outcome.SKIPPED.value},
+        )
+
+    def _assert_reservations_kept(self, run: DhcpImportRun, reason: str) -> None:
+        self.assertEqual(self._removed(run), set())
+        self.assertEqual(len(self._mapped(Kind.RESERVATION)), 2)
+        entry = DhcpImportEntry.objects.filter(run=run).get(reason=Reason.INCOMPLETE_OBSERVATION.value)
+        self.assertEqual((entry.kind, entry.kea_path), ("reservation", "Dhcp4/reservations[*]"))
+        self.assertIn(reason, entry.detail)
+
+    def test_a_failed_reservation_read_keeps_every_reservation(self):
+        url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk])
+        with stub_kea(_sync_responses(self.config, reservations_available=False)):
+            self.client.post(url)
+
+        self._assert_reservations_kept(DhcpImportRun.objects.filter(server=self.server)[0], "could not be read")
+
+    def test_an_incomplete_subnet_catalogue_keeps_every_reservation(self):
+        responses = _sync_responses(self.config)
+        # subnet4-list and config-get disagree on the CIDR of Subnet 41, so the Catalogue is not consistent.
+        responses["subnet4-list"] = _subnet_list(
+            4, [{"id": 41, "subnet": "203.0.113.0/24"}, self.config[4]["subnet4"][1]]
+        )
+        url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk])
+        with stub_kea(responses):
+            self.client.post(url)
+
+        # The read step refuses an Incomplete Catalogue before it reads the Reservation Snapshot.
+        self._assert_reservations_kept(DhcpImportRun.objects.filter(server=self.server)[0], "could not be read")
+
+    def test_a_quarantined_reservation_record_keeps_every_reservation(self):
+        run = self._sync(self.config, {4: [{"subnet-id": 41, "hw-address": "not-a-mac"}]})
+
+        self._assert_reservations_kept(run, "1 Reservation record could not be parsed")
+
+    def _assert_kept_with_suppression(self, run: DhcpImportRun, kind: Kind, count: int) -> None:
+        self.assertEqual(self._removed(run), set())
+        self.assertEqual(len(self._mapped(kind)), count)
+        entry = DhcpImportEntry.objects.filter(run=run).get(kind=kind.value, reason=Reason.INCOMPLETE_OBSERVATION.value)
+        self.assertEqual(entry.outcome, Outcome.SKIPPED.value)
+
+    def test_a_null_option_definition_collection_keeps_the_mapped_definitions(self):
+        # The Pool that holds the Option goes, so only the Incomplete collection keeps the definition.
+        self.config[4]["option-def"] = None
+        self.config[4]["subnet4"][0]["pools"] = [{"pool": "192.0.2.10-192.0.2.20"}]
+        del self.config[4]["subnet4"][1]["pools"]
+
+        run = self._sync(self.config, self.hosts)
+
+        self.assertEqual(len(self._mapped(Kind.OPTION_DEFINITION)), 1)
+        entry = DhcpImportEntry.objects.filter(run=run).get(
+            kind=Kind.OPTION_DEFINITION.value, reason=Reason.INCOMPLETE_OBSERVATION.value
+        )
+        self.assertEqual(entry.kea_path, "Dhcp4/option-def[*]")
+
+    def test_a_null_pool_collection_keeps_the_mapped_pools(self):
+        self.config[4]["subnet4"][1]["pools"] = None
+
+        run = self._sync(self.config, self.hosts)
+
+        self._assert_kept_with_suppression(run, Kind.POOL, 2)
+
+    def test_a_client_class_whose_name_is_not_text_keeps_the_mapped_classes(self):
+        self.config[4]["client-classes"] = [{"name": ["bad"]}]
+
+        run = self._sync(self.config, self.hosts)
+
+        self._assert_kept_with_suppression(run, Kind.CLIENT_CLASS, 1)
+        self.assertTrue(
+            DhcpImportEntry.objects.filter(
+                run=run, kind=Kind.CLIENT_CLASS.value, reason=Reason.INVALID_KEA_DATA.value
+            ).exists()
+        )
+
+    def test_a_null_client_class_collection_imports_nothing_and_removes_nothing(self):
+        self.config[4]["client-classes"] = None
+
+        run = self._sync(self.config, self.hosts)
+
+        self.assertEqual(self._removed(run), set())
+        self.assertEqual(len(self._mapped(Kind.CLIENT_CLASS)), 1)
+        self.assertEqual(_entries(run), {("server", "not_imported", "invalid_kea_data", "Dhcp4")})
+
+    def test_a_pool_range_that_overlaps_the_old_one_replaces_the_old_pool(self):
+        subnet = "Dhcp4/subnet4[id=42]"
+        for new in ("198.51.100.10-198.51.100.30", "198.51.100.15-198.51.100.25"):
+            with self.subTest(new=new):
+                old = next(row for row in self._mapped(Kind.POOL) if row.subnet.subnet_id == 42)
+                old_text = f"{old.ip_range.start_address.ip}-{old.ip_range.end_address.ip}"
+                self.config[4]["subnet4"][1]["pools"] = [{"pool": new}]
+
+                run = self._sync(self.config, self.hosts)
+
+                self.assertEqual(self._removed(run), {("pool", f"{subnet}/pools[pool={old_text}]")})
+                self.assertIn(("pool", "created", "", f"{subnet}/pools[pool={new}]"), _entries(run))
+                self.assertFalse(DhcpImportEntry.objects.filter(run=run, kind="pool", outcome="skipped").exists())
+                pool = next(row for row in self._mapped(Kind.POOL) if row.subnet.subnet_id == 42)
+                self.assertEqual(f"{pool.ip_range.start_address.ip}-{pool.ip_range.end_address.ip}", new)
+
+    def test_an_older_read_never_removes_a_row_that_a_newer_import_mapped(self):
+        from netbox_kea.integrations import dhcp_plugin
+        from netbox_kea.integrations.dhcp_import import FamilyRead, read_family
+
+        # Import A reads Kea, which has no Subnet 43 yet, and pauses before its apply.
+        with stub_kea(_sync_responses(self.config, self.hosts)):
+            older = read_family(self.server, 4)
+        self.assertIsInstance(older, FamilyRead)
+        # Kea gains Subnet 43, and import B reads and imports it.
+        newer = {4: {**self.config[4], "subnet4": [*self.config[4]["subnet4"], {"id": 43, "subnet": "203.0.113.0/24"}]}}
+        self._sync(newer, self.hosts)
+        self.assertIn(43, [row.subnet_id for row in self._mapped(Kind.SUBNET)])
+
+        summary = dhcp_plugin.import_server_config(self.server, older.config, older.reservations)
+
+        self.assertEqual([entry for entry in summary.entries if entry.outcome == Outcome.REMOVED], [])
+        self.assertIn(43, [row.subnet_id for row in self._mapped(Kind.SUBNET)])
+
+
+_V6_CONFIG = {
+    "subnet6": [
+        {"id": 61, "subnet": "2001:db8:61::/64", "pools": [{"pool": "2001:db8:61::10-2001:db8:61::20"}]},
+        {"id": 62, "subnet": "2001:db8:62::/64"},
+    ]
+}
+_V6_HOSTS = [{"subnet-id": 61, "duid": "01:02:03:04:61", "ip-addresses": ["2001:db8:61::50"]}]
+
+
+class StaleRemovalScopeTest(_ImportRunTestCase):
+    """A run removes only the stale rows of its own Server and family."""
+
+    def _sync(self, server: Server, config: dict, hosts: dict) -> DhcpImportRun:
+        url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[server.pk])
+        with stub_kea(_sync_responses(config, hosts)):
+            self.client.post(url)
+        return DhcpImportRun.objects.filter(server=server)[0]
+
+    def _mapped(self, server: Server, family: int) -> set[tuple[str, int | None, str | None]]:
+        from netbox_kea.models import KeaDhcpLink
+
+        links = KeaDhcpLink.objects.filter(server=server, family=family).exclude(kind=Kind.SERVER.value)
+        return set(links.values_list("kind", "kea_subnet_id", "kea_identity"))
+
+    def setUp(self):
+        super().setUp()
+        Server.objects.filter(pk=self.server.pk).update(dhcp6=True)
+        self.server.refresh_from_db()
+        self.v4 = {"subnet4": [{"id": 71, "subnet": "192.0.2.0/24", "pools": [{"pool": "192.0.2.10-192.0.2.20"}]}]}
+        self._sync(self.server, {4: self.v4, 6: _V6_CONFIG}, {4: [], 6: _V6_HOSTS})
+        self.other = _make_db_server(name="import-result-other", sync_dhcp_plugin_enabled=True, dhcp6=False)
+        other_v4 = {"subnet4": [{"id": 81, "subnet": "198.51.100.0/24"}]}
+        self._sync(self.other, {4: other_v4}, {4: []})
+        self.before = {family: self._mapped(self.server, family) for family in (4, 6)}
+        self.other_before = self._mapped(self.other, 4)
+        self.assertEqual(len(self.before[6]), 4)
+
+    def test_a_dhcpv6_subnet_that_kea_no_longer_reports_is_removed_with_its_pool_and_reservation(self):
+        run = self._sync(self.server, {4: self.v4, 6: {"subnet6": _V6_CONFIG["subnet6"][1:]}}, {4: [], 6: []})
+
+        subnet = "Dhcp6/subnet6[id=61]"
+        self.assertEqual(
+            set(DhcpImportEntry.objects.filter(run=run, outcome="removed").values_list("family", "kind", "kea_path")),
+            {
+                (6, "subnet", subnet),
+                (6, "pool", f"{subnet}/pools[pool=2001:db8:61::10-2001:db8:61::20]"),
+                (6, "reservation", f"{subnet}/reservations[duid=01:02:03:04:61]"),
+            },
+        )
+        self.assertEqual(self._mapped(self.server, 6), {("subnet", 62, None)})
+        self.assertEqual(self._mapped(self.server, 4), self.before[4])
+        self.assertEqual(self._mapped(self.other, 4), self.other_before)
+
+    def test_a_dhcpv4_run_removes_nothing_of_dhcpv6_or_of_another_server(self):
+        Server.objects.filter(pk=self.server.pk).update(dhcp6=False)
+
+        run = self._sync(self.server, {4: {"subnet4": []}}, {4: []})
+
+        self.assertEqual(
+            set(DhcpImportEntry.objects.filter(run=run, outcome="removed").values_list("family", "kind")),
+            {(4, "subnet"), (4, "pool")},
+        )
+        self.assertEqual(self._mapped(self.server, 4), set())
+        self.assertEqual(self._mapped(self.server, 6), self.before[6])
+        self.assertEqual(self._mapped(self.other, 4), self.other_before)

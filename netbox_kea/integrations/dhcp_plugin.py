@@ -48,6 +48,10 @@ v1 scope (import + diff, read-only against Kea):
   (test/template-test, additional-list flag, BOOTP + lifetime settings, options) with
   their Kea name. While the plugin keeps class names unique across all servers, a class
   whose name another row holds is reported as unsupported (:mod:`.dhcp_plugin_capabilities`).
+* **Removal.** A mapped row whose Kea source a Complete observation of its kind no longer reports is a Stale DHCP
+  Import Object (:func:`remove_stale_objects`). The run removes it, children first, and reports it. An Incomplete
+  observation keeps every row of its kind. A row whose delete would also delete a DHCP plugin row that the run keeps,
+  or that an Option still uses, stays. IPAM objects stay: ADR 0006 ownership decides them.
 * **Deferred** (reported, not imported): shared-network grouping (the plugin's
   ``SharedNetwork`` requires a prefix Kea does not model — member subnets are
   flattened onto the ``DHCPServer``).
@@ -58,11 +62,14 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from itertools import count
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from ..ipam_reconciliation import ClaimResult, RangeClaim, ReservationObservation, SyncReport
     from ..models import DhcpIntegrationConfig, Server
     from ..subnet_catalogue import CatalogueSnapshot
@@ -78,6 +85,7 @@ if TYPE_CHECKING:
 
 from django.apps import apps
 from django.core.exceptions import ValidationError
+from django.db.models.deletion import Collector, ProtectedError
 from django.db.models.signals import post_delete
 
 from .. import event_scope, kea_paths
@@ -100,18 +108,23 @@ from .dhcp_import_fields import (
 )
 from .dhcp_import_plan import (
     MAX_KEA_NAME_LENGTH,
+    REMOVAL_ORDER,
     InSubnetReservationKey,
     MappingSource,
     OptionDefinitionKey,
     keyed_reservations,
+    kind_path,
+    observations,
     plan_family,
 )
 from .dhcp_import_report import (
+    KIND_LABELS,
     Capability,
     ImportEntry,
     Kind,
     Outcome,
     Reason,
+    counted,
     not_written,
     subnet_id_clash,
     unsupported,
@@ -234,6 +247,11 @@ class ImportSummary:
     client_classes_created = _Count(Kind.CLIENT_CLASS, Outcome.CREATED)
     client_classes_updated = _Count(Kind.CLIENT_CLASS, Outcome.UPDATED)
     shared_networks_not_imported = _Count(Kind.SHARED_NETWORK, Outcome.NOT_IMPORTED)
+
+    @property
+    def removed(self) -> int:
+        """Return the number of Stale DHCP Import Objects that the run removed."""
+        return sum(entry.outcome == Outcome.REMOVED for entry in self.entries)
 
     def record(self, entry: ImportEntry) -> None:
         """Add the entry of one Kea fact."""
@@ -1841,18 +1859,175 @@ def _claim_config_networks(server, plan: FamilyPlan):
     return claim(server, plan.family, subnets, force=False), claim(server, plan.family, pools, force=False)
 
 
-# The DHCP plugin writes of apply_plan: it adds and changes each model it writes.
-_PLUGIN_WRITES = tuple(
+# ─────────────────────────────────────────────────────────────────────────────
+# Stale DHCP Import Objects: removal after a Complete observation of their kind
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class _StaleRow:
+    """A mapped row whose Kea source the run did not observe."""
+
+    source: MappingSource
+    # A DHCP plugin model instance; the plugin is optional, so its models have no static type here.
+    target: Any
+
+
+def _row_key(obj) -> tuple:
+    return obj._meta.concrete_model, obj.pk
+
+
+def _goes_with_parent(model) -> bool:
+    """Return whether rows of *model* go with a deleted parent: models outside the DHCP plugin, Options, through rows."""
+    return model._meta.app_label != PLUGIN_APP_LABEL or model._meta.auto_created or model is _model("Option")
+
+
+def _counted_rows(rows: list) -> str:
+    """Return the number of *rows* of each model, for the detail of an entry."""
+    models = Counter(row._meta.concrete_model for row in rows)
+    return ", ".join(
+        counted(count, model._meta.verbose_name, model._meta.verbose_name_plural) for model, count in models.items()
+    )
+
+
+def _removal_footprint(target, removable: dict) -> tuple[list, list]:
+    """Return the rows that a delete of *target* also deletes: the stale rows of this run, and the rows that block it.
+
+    A row blocks the delete when it is a DHCP plugin row that the run does not remove. Raises ``ProtectedError`` when a
+    row still uses one of the rows.
+    """
+    # The same alias as the delete, so the check sees the rows that the delete would remove.
+    collector = Collector(using=target._state.db)
+    collector.collect([target])
+    rows = [obj for objects in collector.data.values() for obj in objects]
+    rows.extend(obj for queryset in collector.fast_deletes for obj in queryset)
+    own = _row_key(target)
+    cascaded = [obj for obj in rows if _row_key(obj) != own and _row_key(obj) in removable]
+    blocking = [
+        obj
+        for obj in rows
+        if _row_key(obj) != own and _row_key(obj) not in removable and not _goes_with_parent(obj._meta.concrete_model)
+    ]
+    return cascaded, blocking
+
+
+def _remove_stale_row(row: _StaleRow, removable: dict, family: int, summary: ImportSummary) -> list[_StaleRow]:
+    """Delete one stale row through the ORM, so the lifecycle guards, the mapping cleanup and the change log run.
+
+    Return the stale rows that the delete removed, *row* first. A row that the run keeps leaves *removable*.
+    """
+    path = row.source.path(family)
+    try:
+        with event_scope.atomic():
+            cascaded, blocking = _removal_footprint(row.target, removable)
+            if not blocking:
+                row.target.delete()
+    except event_scope.EventDispatchError:
+        raise
+    except ProtectedError as error:
+        removable.pop(_row_key(row.target))
+        detail = f"It is kept while it is in use by {_counted_rows(list(error.protected_objects))}."
+        summary.record(not_written(family, row.source.kind, path, Reason.REMOVAL_BLOCKED, detail))
+        return []
+    except Exception as exc:  # noqa: BLE001 (one failed removal must not abort the import)
+        removable.pop(_row_key(row.target))
+        summary.record(write_failed(family, row.source.kind, path))
+        summary.warn(f"stale {row.source.kind.value} {path}: {exc}")
+        return []
+    if blocking:
+        removable.pop(_row_key(row.target))
+        # Counts only: any viewer of the Server reads the run, without permission on the rows.
+        detail = f"It is kept because its removal would also remove {_counted_rows(blocking)}."
+        summary.record(not_written(family, row.source.kind, path, Reason.REMOVAL_BLOCKED, detail))
+        return []
+    return [row, *(removable[_row_key(obj)] for obj in cascaded)]
+
+
+def mapped_rows(server, family: int, confirmed_before: datetime | None = None) -> dict[Kind, dict[MappingSource, Any]]:
+    """Return the DHCP plugin row of each mapping of *family* whose kind a run can remove, by kind and Kea source.
+
+    A mapping whose row is gone has none. With *confirmed_before*, only the mappings that an import confirmed before
+    that time count.
+    """
+    from ..models import KeaDhcpLink
+
+    rows: dict[Kind, dict[MappingSource, Any]] = {kind: {} for kind in REMOVAL_ORDER}
+    links = KeaDhcpLink.objects.filter(server=server, family=family, kind__in=[kind.value for kind in REMOVAL_ORDER])
+    if confirmed_before is not None:
+        links = links.filter(last_synced__lt=confirmed_before)
+    for link in links.prefetch_related("sys4_object").order_by("pk"):
+        if link.sys4_object is not None:
+            source = MappingSource(Kind(link.kind), link.kea_subnet_id, link.kea_identity)
+            rows[source.kind][source] = link.sys4_object
+    return rows
+
+
+def _stale_rows(server, plan: FamilyPlan, observed) -> dict[Kind, list[_StaleRow]]:
+    """Return the mapped rows of each kind whose Kea source the plan does not observe.
+
+    A mapping that an import confirmed after this read started belongs to a newer read, so it is never stale here.
+    The import lock keeps two runs of one Server apart; this cutoff covers the other writers, such as an ADR 0008
+    merge or revert replay in main. A plan without a read time can judge no mapping.
+    """
+    if plan.read_started is None:
+        return {}
+    return {
+        kind: [_StaleRow(source, row) for source, row in rows.items() if source not in observed[kind].sources]
+        for kind, rows in mapped_rows(server, plan.family, confirmed_before=plan.read_started).items()
+    }
+
+
+def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> None:
+    """Remove each Stale DHCP Import Object of one family, children first, and report it.
+
+    An Incomplete observation of a kind keeps every row of that kind, with one entry that says why. A row whose delete
+    would also delete a DHCP plugin row that the run keeps, or that a row still uses, is kept and reported. IPAM
+    objects stay: the DHCP plugin rows only reference them.
+    """
+    observed = observations(plan)
+    stale = _stale_rows(server, plan, observed)
+    removable: dict[tuple, _StaleRow] = {}
+    for kind in REMOVAL_ORDER:
+        rows = stale.get(kind, [])
+        if observed[kind].complete:
+            removable.update((_row_key(row.target), row) for row in rows)
+        elif rows:
+            kept = counted(len(rows), f"mapped {KIND_LABELS[kind]} row was", f"mapped {KIND_LABELS[kind]} rows were")
+            detail = f"{observed[kind].incomplete} {kept} kept."
+            summary.record(
+                not_written(plan.family, kind, kind_path(plan.family, kind), Reason.INCOMPLETE_OBSERVATION, detail)
+            )
+    removed: set[tuple] = set()
+    for kind in REMOVAL_ORDER:
+        for row in stale.get(kind, []) if observed[kind].complete else ():
+            if _row_key(row.target) in removed:
+                continue
+            for gone in _remove_stale_row(row, removable, plan.family, summary):
+                removed.add(_row_key(gone.target))
+                summary.record(written(plan.family, gone.source.kind, gone.source.path(plan.family), Outcome.REMOVED))
+
+
+# The DHCP plugin rows that apply_plan adds and changes.
+_PLUGIN_UPSERTS = tuple(
     f"{PLUGIN_APP_LABEL}.{action}_{model}"
     for model in ("dhcpserver", "optiondefinition", "option", "clientclass", "subnet", "pool", "hostreservation")
     for action in ("add", "change")
 )
 
 
+def _removal_permissions() -> tuple[str, ...]:
+    """Return the delete permission of each model that a stale removal deletes, and of the Options that go with them."""
+    from ..models import MAPPING_KINDS
+
+    models = (*(MAPPING_KINDS[kind][0] for kind in REMOVAL_ORDER), "Option")
+    return tuple(f"{PLUGIN_APP_LABEL}.delete_{model.lower()}" for model in models)
+
+
 def import_permissions(server) -> tuple[str, ...]:
     """Return the IPAM, DCIM and DHCP plugin permissions that :func:`apply_plan` can use.
 
-    The import claims Subnets, Pools and Reservations, reconciles delegated Prefixes, and writes the DHCP plugin rows.
+    The import claims Subnets, Pools and Reservations, reconciles delegated Prefixes, writes the DHCP plugin rows, and
+    removes Stale DHCP Import Objects.
     """
     from ..ipam_reconciliation import (
         RESERVATION,
@@ -1864,7 +2039,8 @@ def import_permissions(server) -> tuple[str, ...]:
     )
 
     claims = claim_permissions(SubnetPhase.source, PoolPhase.source, RESERVATION)
-    return tuple(dict.fromkeys((*claims, *reconcile_permissions(server, DelegatedPrefixPhase.source), *_PLUGIN_WRITES)))
+    reconciles = reconcile_permissions(server, DelegatedPrefixPhase.source)
+    return tuple(dict.fromkeys((*claims, *reconciles, *_PLUGIN_UPSERTS, *_removal_permissions())))
 
 
 def import_server_config(
@@ -1978,6 +2154,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         capabilities=capabilities,
         subnet_ids=subnet_ids,
     )
+    remove_stale_objects(server, plan, summary)
     if not plan.configuration_complete:
         summary.ownership.incomplete.update({"subnet", "pool"})
     if (

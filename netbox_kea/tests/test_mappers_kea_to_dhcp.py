@@ -17,6 +17,7 @@ from netbox_kea.mappers.kea_to_dhcp import (
     parse_dhcp_config,
 )
 from netbox_kea.tests.test_kea_recordings import _recording
+from netbox_kea.tests.utils import without_dhcp_plugin
 
 
 class TestParseDhcpConfigStructure(SimpleTestCase):
@@ -64,6 +65,36 @@ class TestParseDhcpConfigStructure(SimpleTestCase):
     def test_unparseable_subnet_id_becomes_none(self):
         conf = {"subnet4": [{"id": "abc", "subnet": "10.0.0.0/24"}]}
         self.assertIsNone(parse_dhcp_config(conf, 4).subnets[0].kea_subnet_id)
+
+
+@without_dhcp_plugin()
+class TestKeyedValuesThatAreNotText(SimpleTestCase):
+    """A keyed name, range or CIDR that is not text is dropped, so a plan never keys an object by it."""
+
+    def test_each_keyed_value_that_is_not_text_is_dropped(self):
+        conf = {
+            "option-def": None,
+            "client-classes": [{"name": ["bad"]}],
+            "shared-networks": [{"name": {"bad": 1}}],
+            "subnet4": [
+                {"id": True, "subnet": "10.0.0.0/24", "pools": [{"pool": ["10.0.0.10", "10.0.0.20"]}]},
+                {"id": 2, "subnet": ["10.0.1.0/24"]},
+            ],
+        }
+
+        result = parse_dhcp_config(conf, 4)
+
+        self.assertEqual((result.client_classes, result.shared_networks, result.option_defs), ([], [], ()))
+        self.assertEqual([(subnet.kea_subnet_id, subnet.pools) for subnet in result.subnets], [(None, ())])
+        self.assertEqual(
+            {entry.kind for entry in result.dropped},
+            {Kind.OPTION_DEFINITION, Kind.CLIENT_CLASS, Kind.SHARED_NETWORK, Kind.POOL, Kind.SUBNET},
+        )
+
+    def test_an_absent_option_definition_collection_is_empty_and_drops_nothing(self):
+        result = parse_dhcp_config({"subnet4": []}, 4)
+
+        self.assertEqual((result.option_defs, result.dropped), ((), []))
 
 
 class TestParseDhcpConfigPools(SimpleTestCase):

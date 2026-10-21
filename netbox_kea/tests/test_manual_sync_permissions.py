@@ -32,7 +32,7 @@ from .test_reservation_mutation_views import _mutation_responses
 from .test_sync_views import _lease_get
 from .test_views_dhcp_plugin import _sync_responses
 from .test_views_leases import _lease_stub, _reservation_stub
-from .utils import _grant, _make_db_server, with_kea_client_config, with_sync_config
+from .utils import _grant, _make_db_server, with_kea_client_config, with_sync_config, without_dhcp_plugin
 
 User = get_user_model()
 
@@ -41,11 +41,18 @@ _IPAM_IMPORT_WRITES = (
     "ipam.add_prefix, ipam.change_prefix, ipam.add_iprange, ipam.change_iprange, "
     "ipam.add_ipaddress, ipam.change_ipaddress, dcim.add_macaddress, dcim.change_macaddress"
 )
+# The removal of Stale DHCP Import Objects deletes these models.
+_PLUGIN_REMOVALS = (
+    "netbox_dhcp.delete_hostreservation, netbox_dhcp.delete_pool, netbox_dhcp.delete_subnet, "
+    "netbox_dhcp.delete_sharednetwork, netbox_dhcp.delete_clientclass, netbox_dhcp.delete_optiondefinition, "
+    "netbox_dhcp.delete_option"
+)
 _PLUGIN_IMPORT_WRITES = (
     "netbox_dhcp.add_dhcpserver, netbox_dhcp.change_dhcpserver, netbox_dhcp.add_optiondefinition, "
     "netbox_dhcp.change_optiondefinition, netbox_dhcp.add_option, netbox_dhcp.change_option, "
     "netbox_dhcp.add_clientclass, netbox_dhcp.change_clientclass, netbox_dhcp.add_subnet, netbox_dhcp.change_subnet, "
-    "netbox_dhcp.add_pool, netbox_dhcp.change_pool, netbox_dhcp.add_hostreservation, netbox_dhcp.change_hostreservation"
+    "netbox_dhcp.add_pool, netbox_dhcp.change_pool, netbox_dhcp.add_hostreservation, netbox_dhcp.change_hostreservation, "
+    f"{_PLUGIN_REMOVALS}"
 )
 _IMPORT_WRITES = f"{_IPAM_IMPORT_WRITES}, {_PLUGIN_IMPORT_WRITES}"
 _PLUGIN_MODELS = ("DHCPServer", "OptionDefinition", "Option", "ClientClass", "Subnet", "Pool", "HostReservation")
@@ -427,6 +434,7 @@ class TestReconcilePermissions(TestCase):
         )
 
 
+@without_dhcp_plugin()
 class TestDhcpPluginSync(_PermissionTestBase):
     """The DHCP plugin import claims Prefixes, IP Ranges, IP addresses and MAC addresses."""
 
@@ -498,14 +506,30 @@ class TestDhcpPluginSyncWithThePlugin(_PermissionTestBase):
             return self.client.post(reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk]))
 
     def test_a_constrained_dhcp_plugin_grant_is_refused(self):
-        _grant(_plugin_models(), ["add", "change"], user=self.user, constraints={"name": "lab"})
+        _grant(_plugin_models(), ["add", "change", "delete"], user=self.user, constraints={"name": "lab"})
         response = self._post()
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.content.decode(), _reason(_PLUGIN_IMPORT_WRITES))
         self.assertFalse(apps.get_model("netbox_dhcp", "Subnet").objects.exists())
 
-    def test_unconstrained_grants_import_the_config(self):
+    def test_without_the_delete_grants_of_a_stale_removal_the_import_is_refused(self):
         _grant(_plugin_models(), ["add", "change"], user=self.user)
+        response = self._post()
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.content.decode(), _reason(_PLUGIN_REMOVALS))
+        self.assertFalse(apps.get_model("netbox_dhcp", "Subnet").objects.exists())
+
+    def test_without_the_delete_grant_of_one_removable_kind_the_import_is_refused(self):
+        SharedNetwork = apps.get_model("netbox_dhcp", "SharedNetwork")
+        _grant(_plugin_models(), ["add", "change", "delete"], user=self.user)
+        _grant([SharedNetwork], ["add", "change"], user=self.user)
+        response = self._post()
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.content.decode(), _reason("netbox_dhcp.delete_sharednetwork"))
+
+    def test_unconstrained_grants_import_the_config(self):
+        _grant(_plugin_models(), ["add", "change", "delete"], user=self.user)
+        _grant([apps.get_model("netbox_dhcp", "SharedNetwork")], ["delete"], user=self.user)
         response = self._post()
         self.assertEqual(response.status_code, 302)
         self.assertTrue(apps.get_model("netbox_dhcp", "Subnet").objects.filter(prefix__prefix="10.88.0.0/24").exists())
@@ -542,7 +566,9 @@ class TestDhcpPluginSyncControl(_PermissionTestBase):
         self.assertNotContains(response, reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk]))
 
     def test_an_unconstrained_user_sees_the_import_form(self):
-        _grant([Prefix, IPRange, IPAddress, MACAddress, *_plugin_models()], ["add", "change"], user=self.user)
+        _grant([Prefix, IPRange, IPAddress, MACAddress], ["add", "change"], user=self.user)
+        _grant(_plugin_models(), ["add", "change", "delete"], user=self.user)
+        _grant([apps.get_model("netbox_dhcp", "SharedNetwork")], ["delete"], user=self.user)
         response = self._get()
         self.assertContains(response, reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk]))
         self.assertNotContains(response, "Manual Sync needs")

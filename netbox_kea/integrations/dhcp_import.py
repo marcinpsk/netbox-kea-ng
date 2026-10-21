@@ -9,20 +9,23 @@ DHCP plugin and holds the mapping lock once per family. Each run then stores its
 
 from __future__ import annotations
 
+import hashlib
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 import requests
 from django.apps import apps
-from django.db import DatabaseError
+from django.db import DatabaseError, connection
 from django.utils import timezone
 from packaging.version import InvalidVersion, Version
 
 from .. import event_scope, kea_paths, server_configuration
 from ..constants import Family
-from ..dhcp_mapping_lifecycle import ImportEventsNotDispatched
+from ..dhcp_mapping_lifecycle import ImportEventsNotDispatched, MetadataBusy
 from ..ipam_reconciliation import complete_import_observation
 from ..kea import KeaException
 from ..mappers.kea_to_dhcp import ServerConfigIntent, parse_dhcp_config
@@ -38,6 +41,15 @@ if TYPE_CHECKING:
     from ..views.notices import Notice
 
 logger = logging.getLogger(__name__)
+
+
+def _int4(text: str) -> int:
+    return int.from_bytes(hashlib.sha256(text.encode()).digest()[:4], "big", signed=True)
+
+
+#: The first key of the two-key advisory lock that serializes the DHCP Imports of one Server; the Server is the second.
+IMPORT_LOCK_CLASS = _int4("netbox_kea.dhcp_import")
+_IMPORT_RUNNING = "Another DHCP Import of this Server is running. Nothing changed. Retry this operation."
 
 #: The oldest netbox-plugin-dhcp release that the DHCP Import supports.
 REQUIRED_PLUGIN_VERSION = "0.2.0"
@@ -86,6 +98,8 @@ def _fetch_config_intent(server: Server, version: Family) -> ServerConfigIntent 
     # Imported here: the views package imports this module.
     from ..views.notices import failed_load
 
+    # Taken before config-get: a mapping confirmed after it belongs to a newer read (remove_stale_objects).
+    started = timezone.now()
     read = server_configuration.for_import(server, version)
     if isinstance(read, ServerConfigurationSnapshot):
         logger.warning("DHCP-plugin sync: config-get failed for %s (v%s)", server.name, version)
@@ -98,6 +112,7 @@ def _fetch_config_intent(server: Server, version: Family) -> ServerConfigIntent 
         )
         return None
     intent.configuration_complete = not read.snapshot.subnet_diagnostics
+    intent.read_started = started
     intent.host_reservation_identifiers = read.snapshot.host_reservation_identifiers
     return intent
 
@@ -136,6 +151,37 @@ def read_family(server: Server, version: Family) -> FamilyRead | Notice | None:
     return FamilyRead(config, _read_reservation_observation(server, version))
 
 
+@contextmanager
+def _server_import_lock(server: Server) -> Iterator[None]:
+    """Hold the import lock of *server* for one run, or refuse when another run holds it.
+
+    A session lock, so the run holds no transaction open across its Kea reads.
+
+    Raises:
+        MetadataBusy: Another session holds the lock.
+
+    """
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_try_advisory_lock(%s, %s)", [IMPORT_LOCK_CLASS, server.pk])
+        (taken,) = cursor.fetchone()
+    if not taken:
+        raise MetadataBusy(_IMPORT_RUNNING)
+    try:
+        yield
+    finally:
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_unlock(%s, %s)", [IMPORT_LOCK_CLASS, server.pk])
+                (released,) = cursor.fetchone()
+        except DatabaseError:
+            # A failed transaction refuses the unlock; ending the session releases the lock.
+            logger.exception("DHCP-plugin sync: could not release the import lock of %s", server.name)
+            connection.close()
+        else:
+            if not released:
+                logger.error("DHCP-plugin sync: the import lock of %s was not held at release", server.name)
+
+
 def run_dhcp_plugin_import(
     server: Server, trigger: DhcpImportTrigger
 ) -> list[tuple[Family, dhcp_plugin.ImportSummary | Notice]]:
@@ -145,11 +191,21 @@ def run_dhcp_plugin_import(
     version whose configuration Kea did not give. A version whose configuration could not be parsed is left out.
     The stored result has an entry for each of them.
 
+    One run of a Server at a time: the run holds the import lock of the Server from before its first Kea read to the
+    stored result, so the read of one run and the apply of another cannot interleave.
+
     Raises:
         UnsupportedPluginVersion: Before any Kea read, when the installed netbox-plugin-dhcp is too old.
+        MetadataBusy: Before any Kea read, when another run of the Server holds the lock.
 
     """
     require_supported_plugin()
+    with _server_import_lock(server):
+        return _run_locked(server, trigger)
+
+
+def _run_locked(server: Server, trigger: DhcpImportTrigger) -> list[tuple[Family, dhcp_plugin.ImportSummary | Notice]]:
+    """Run the import of every enabled family of *server* while the run holds the import lock of the Server."""
     started = timezone.now()
     results: list[tuple[Family, dhcp_plugin.ImportSummary | Notice]] = []
     entries: list[ImportEntry] = []

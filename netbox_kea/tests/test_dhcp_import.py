@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 import ipaddress
 import json
 import unittest
+from dataclasses import fields
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -24,15 +26,19 @@ from django.urls import reverse
 from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.integrations.dhcp_import_ledger import KEA_DEFAULTS
 from netbox_kea.integrations.dhcp_import_plan import (
+    REMOVAL_ORDER,
     FamilyPlan,
     GlobalReservationKey,
     InSubnetReservationKey,
+    MappingSource,
     OptionDefinitionKey,
     PoolKey,
     keyed_reservations,
+    kind_path,
+    observations,
     plan_family,
 )
-from netbox_kea.integrations.dhcp_import_report import GAPS, Capability, Reason
+from netbox_kea.integrations.dhcp_import_report import GAPS, Capability, Kind, Reason
 from netbox_kea.integrations.dhcp_plugin_capabilities import CHECKS, probe
 from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS, parse_dhcp_config
@@ -42,15 +48,16 @@ from netbox_kea.reservations import (
     GlobalReservationScope,
     InSubnetReservationScope,
     IPv4Reservation,
+    ReservationDiagnostic,
     ReservationIdentity,
     ReservationSnapshot,
 )
-from netbox_kea.subnet_catalogue import IncompleteCatalogueSnapshot, SubnetIdentity
+from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot, IncompleteCatalogueSnapshot, SubnetIdentity
 
 from .kea_stub import stub_kea
 from .test_integration_dhcp_plugin import _reservation_snapshot
 from .test_kea_recordings import _RECORDINGS, _recording
-from .utils import _make_db_server, imported_dhcp_server, imported_dhcp_servers
+from .utils import _make_db_server, imported_dhcp_server, imported_dhcp_servers, without_dhcp_plugin
 
 DHCP_PLUGIN = "netbox_dhcp"
 _IN_SUBNET_MAC = "02:00:00:00:00:0a"
@@ -295,6 +302,118 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
         (pool,) = plan.subnets[0].pools
         self.assertIsNone(pool.key)
         self.assertEqual(pool.intent.pool, "198.51.100.1-198.51.100.9")
+
+
+def _complete_observation(*diagnostics: ReservationDiagnostic, complete: bool = True) -> ReservationObservation:
+    """Return the Reservations of :func:`_observation` read against a Complete Catalogue Snapshot."""
+    observation = _observation()
+    catalogue = observation.catalogue
+    complete_catalogue = CompleteCatalogueSnapshot(**{f.name: getattr(catalogue, f.name) for f in fields(catalogue)})
+    snapshot = dataclasses.replace(observation.snapshot, diagnostics=diagnostics, complete=complete)
+    return ReservationObservation(snapshot, observation.cutoff, complete_catalogue)
+
+
+@without_dhcp_plugin()
+class KindObservationTest(SimpleTestCase):
+    """One pure rule says which Kea sources a read observed for each mapped kind, and whether it saw them all."""
+
+    def test_a_complete_read_observes_every_mapped_kind_in_full(self):
+        observed = observations(plan_family(_recorded_intent(4), _complete_observation()))
+
+        self.assertEqual(list(observed), list(REMOVAL_ORDER))
+        self.assertEqual({kind: o.incomplete for kind, o in observed.items()}, dict.fromkeys(REMOVAL_ORDER, ""))
+        self.assertEqual(
+            observed[Kind.SUBNET].sources,
+            {MappingSource.subnet(10), MappingSource.subnet(20), MappingSource.subnet(21)},
+        )
+        self.assertIn(MappingSource(Kind.POOL, 10, "192.0.2.10-192.0.2.20"), observed[Kind.POOL].sources)
+        self.assertEqual(len(observed[Kind.POOL].sources), 4)
+        self.assertEqual(
+            observed[Kind.CLIENT_CLASS].sources,
+            {MappingSource.named(Kind.CLIENT_CLASS, name) for name in ("voip", "printers", "boot", "per-client")},
+        )
+        self.assertIn(
+            MappingSource(Kind.OPTION_DEFINITION, None, "vendor-sub:1"), observed[Kind.OPTION_DEFINITION].sources
+        )
+        self.assertEqual(
+            observed[Kind.RESERVATION].sources,
+            {
+                MappingSource(Kind.RESERVATION, 10, f"hw-address:{_IN_SUBNET_MAC}"),
+                MappingSource(Kind.RESERVATION, None, f"duid:{_GLOBAL_DUID}"),
+            },
+        )
+
+    def test_subnet_diagnostics_make_every_configuration_kind_incomplete_and_leave_reservations_complete(self):
+        intent = _recorded_intent(4)
+        intent.configuration_complete = False
+
+        observed = observations(plan_family(intent, _complete_observation()))
+
+        for kind in (Kind.OPTION_DEFINITION, Kind.CLIENT_CLASS, Kind.SHARED_NETWORK, Kind.SUBNET, Kind.POOL):
+            with self.subTest(kind=kind):
+                self.assertFalse(observed[kind].complete)
+                self.assertIn("not read in full", observed[kind].incomplete)
+        self.assertTrue(observed[Kind.RESERVATION].complete)
+
+    def test_an_invalid_subnet_entry_makes_subnets_and_pools_incomplete_only(self):
+        config = {"subnet4": [{"id": 1, "subnet": "192.0.2.0/24"}, {"id": 2}]}
+        intent = parse_dhcp_config(config, 4)
+        intent.configuration_complete = True
+
+        observed = observations(plan_family(intent, _complete_observation()))
+
+        self.assertEqual({kind for kind, o in observed.items() if not o.complete}, {Kind.SUBNET, Kind.POOL})
+        self.assertIn("1 Subnet entry", observed[Kind.SUBNET].incomplete)
+
+    def test_a_pool_without_a_valid_range_makes_pools_incomplete(self):
+        config = {"subnet4": [{"id": 1, "subnet": "192.0.2.0/24", "pools": [{"pool": "198.51.100.1-198.51.100.9"}]}]}
+        intent = parse_dhcp_config(config, 4)
+        intent.configuration_complete = True
+
+        observed = observations(plan_family(intent, _complete_observation()))
+
+        self.assertEqual({kind for kind, o in observed.items() if not o.complete}, {Kind.POOL})
+
+    def test_each_reservation_gap_makes_the_reservation_observation_incomplete(self):
+        quarantined = ReservationDiagnostic("invalid-identifier", "bad", "hosts[3]")
+        truncated = ReservationDiagnostic("page-fetch-failed", "stopped", "pages[1]")
+        cases = {
+            "read failed": (None, "could not be read"),
+            "catalogue incomplete": (_observation(), "Subnet Catalogue"),
+            "quarantined record": (_complete_observation(quarantined, complete=False), "1 Reservation record"),
+            "truncated walk": (_complete_observation(truncated), "every page"),
+        }
+        for name, (observation, reason) in cases.items():
+            with self.subTest(name):
+                observed = observations(plan_family(_recorded_intent(4), observation))[Kind.RESERVATION]
+                self.assertFalse(observed.complete)
+                self.assertIn(reason, observed.incomplete)
+
+    def test_a_kind_without_a_path_refuses_instead_of_naming_the_daemon(self):
+        with self.assertRaises(ValueError):
+            MappingSource(Kind.OPTION).path(4)
+        with self.assertRaises(ValueError):
+            kind_path(4, Kind.SERVER)
+        self.assertEqual(MappingSource.server().path(4), "Dhcp4")
+
+    def test_a_mapping_source_names_its_kea_path(self):
+        sources = {
+            MappingSource.subnet(20): "Dhcp4/subnet4[id=20]",
+            MappingSource(
+                Kind.POOL, 20, "192.0.2.10-192.0.2.20"
+            ): "Dhcp4/subnet4[id=20]/pools[pool=192.0.2.10-192.0.2.20]",
+            MappingSource(Kind.RESERVATION, 20, "hw-address:02:00:00:00:00:01"): (
+                "Dhcp4/subnet4[id=20]/reservations[hw-address=02:00:00:00:00:01]"
+            ),
+            MappingSource(Kind.RESERVATION, None, "duid:01:02"): "Dhcp4/reservations[duid=01:02]",
+            MappingSource.named(Kind.CLIENT_CLASS, "voip"): "Dhcp4/client-classes[name=voip]",
+            MappingSource(Kind.OPTION_DEFINITION, None, "dhcp4:222"): "Dhcp4/option-def[code=222]",
+            MappingSource(Kind.OPTION_DEFINITION, None, "vendor-x:1"): "Dhcp4/option-def[space=vendor-x,code=1]",
+            MappingSource.named(Kind.SHARED_NETWORK, "office"): "Dhcp4/shared-networks[name=office]",
+        }
+        for source, path in sources.items():
+            with self.subTest(source=source):
+                self.assertEqual(source.path(4), path)
 
 
 class CapabilityProbeTest(SimpleTestCase):

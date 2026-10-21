@@ -46,7 +46,7 @@ from netbox_branching.utilities import activate_branch
 from utilities.exceptions import AbortRequest
 
 from netbox_kea.integrations.dhcp_import_plan import MappingSource
-from netbox_kea.integrations.dhcp_import_report import Reason
+from netbox_kea.integrations.dhcp_import_report import Kind, Reason
 from netbox_kea.integrations.dhcp_plugin import import_server_config
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.models import KeaDhcpLink, Server
@@ -859,7 +859,6 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         )
 
         from netbox_kea.dhcp_mapping_lifecycle import observe_mapping
-        from netbox_kea.integrations.dhcp_import_report import Kind
 
         server = _make_db_server(name=f"mapping-{suffix}", ca_url="https://kea.example.invalid")
         network, shared, start, end = (
@@ -1049,13 +1048,17 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         branch = _provisioned_branch(self, "mapping-fresh-tab")
         self.client.force_login(self.user)
         self.client.cookies[COOKIE_NAME] = branch.schema_id
-        with stub_kea(_recorded_kea()), CaptureQueriesContext(connections["default"]) as queries:
-            response = self.client.get(reverse("plugins:netbox_kea:server_dhcp_plugin", args=[server.pk]))
-        self.assertEqual(response.status_code, 200)
-        self.assertNotContains(response, "Create a fresh branch")
-        catalog = [query for query in queries.captured_queries if "pg_attribute" in query["sql"]]
-        # compute_drift, the guarded KeaDhcpLink query of each family, and the sources header: one round each.
-        self.assertEqual(len(catalog), 4 * (1 + len(target_models())))
+        rounds = 1 + len(target_models())
+        # Each reply: its mapping check and the sources header. The drift card also: the guarded KeaDhcpLink query of
+        # each family. One round each.
+        for name, expected in (("server_dhcp_plugin", 2 * rounds), ("server_dhcp_plugin_drift", 4 * rounds)):
+            with self.subTest(name), stub_kea(_recorded_kea()):
+                with CaptureQueriesContext(connections["default"]) as queries:
+                    response = self.client.get(reverse(f"plugins:netbox_kea:{name}", args=[server.pk]))
+                self.assertEqual(response.status_code, 200)
+                self.assertNotContains(response, "Create a fresh branch")
+                catalog = [query for query in queries.captured_queries if "pg_attribute" in query["sql"]]
+                self.assertEqual(len(catalog), expected)
 
     def test_affected_iterative_merge_refuses_before_mutation(self):
         _, _, _, target, link = self._imported("subnet", 4, "iterative")
@@ -2673,6 +2676,31 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertTrue(VRF.objects.filter(pk=unrelated.pk).exists())
         self.assertEqual(type(target).objects.get(pk=target.pk).description, "main retained change")
         self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+
+    def test_a_main_import_removal_of_a_target_that_a_branch_changed_refuses_the_whole_merge(self):
+        server, intent, observation, target, link = self._imported("subnet", 4, "removal-branch-change")
+        branch = _provisioned_branch(self, "mapping-removal-branch-change")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        with activate_branch(branch), event_tracking(_change_request(self.user)):
+            row = type(target).objects.get(pk=target.pk)
+            row.snapshot()
+            row.description = "branch change"
+            row.save()
+        request_finished.send(sender=type(self))
+        # Kea no longer reports the Subnet, and the configuration read, which starts now, is Complete.
+        intent.subnets, intent.configuration_complete, intent.read_started = [], True, timezone.now()
+        with event_tracking(_change_request(self.user)):
+            summary = import_server_config(server, intent, observation)
+        self.assertEqual([entry.kind for entry in summary.entries if entry.outcome.value == "removed"], [Kind.SUBNET])
+        # ADR 0008: the merge refuses atomically and keeps the newer main state, the removal.
+        with self.assertRaisesMessage(AbortRequest, "A main DHCP mapping from the selected branch is missing."):
+            branch.merge(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "ready")
+        self.assertFalse(branch.applied_changes.exists())
+        self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
+        self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
 
     def test_revert_refuses_a_reused_target_primary_key(self):
         _, _, _, target, link = self._imported("subnet", 6, "reused-target")
