@@ -134,6 +134,7 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
                 OptionDefinitionKey("dhcp4", 224),
                 OptionDefinitionKey("dhcp4", 225),
                 OptionDefinitionKey("dhcp4", 226),
+                OptionDefinitionKey("dhcp4", 227),
                 OptionDefinitionKey("vendor-sub", 1),
             ],
         )
