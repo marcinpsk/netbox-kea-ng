@@ -92,8 +92,10 @@ The DHCP plugin keeps these relations unordered, so Kea's evaluation order of `e
 A Subnet's `interface` links the Subnet to the DHCP Server interface of that name. The DHCP Server has that interface
 when Kea's `interfaces-config` names it, or when you link it while Kea serves every interface (`*`). Otherwise the
 interface is reported, with the reason: the DHCP Server has no device or virtual machine, it does not list the
-interface, or its device or virtual machine has no interface of that name. The import creates no interface. A member
-Subnet of a Shared Network takes the interface of its Shared Network in Kea, and the import reports it as inherited.
+interface, or its device or virtual machine has no interface of that name. The Subnet then has no interface link, as
+Kea owns the link. The import creates no interface. A Subnet or Pool class list that is not valid is reported, and
+its class links stay as they are. A member Subnet of a Shared Network takes the interface of its Shared Network in
+Kea, and the import reports it as inherited.
 
 | Model | Managed fields | Fields behind a capability |
 | --- | --- | --- |

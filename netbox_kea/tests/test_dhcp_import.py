@@ -480,6 +480,12 @@ class CapabilityProbeTest(SimpleTestCase):
         self.assertFalse(probe(plugin.__getitem__).has(Capability.NAME_PER_SERVER))
 
     @isolate_apps("netbox_kea")
+    def test_a_relay_list_that_cannot_be_cleared_lacks_the_capability(self):
+        plugin = _proposed_plugin_models()
+        plugin["Subnet"] = _probe_model("RequiredRelaySubnet", relay=ArrayField(models.GenericIPAddressField()))
+        self.assertFalse(probe(plugin.__getitem__).has(Capability.RELAY_ADDRESS_LIST))
+
+    @isolate_apps("netbox_kea")
     def test_a_user_context_that_cannot_be_cleared_lacks_the_capability(self):
         plugin = _proposed_plugin_models()
         plugin["Pool"] = _probe_model("RequiredContextPool", user_context=models.JSONField())
@@ -490,14 +496,12 @@ class CapabilityProbeTest(SimpleTestCase):
 class GatedValuesTest(SimpleTestCase):
     """With its capability a gated Kea value is planned on the plugin field that #88 proposes; without it, reported."""
 
-    def _plan(self, model, field_map, settings: dict, capabilities: frozenset):
+    def _plan(self, obj, field_map, settings: dict, capabilities: frozenset):
         from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
         summary = dhcp_plugin.ImportSummary()
         source = dhcp_plugin._Source(4, Kind.SUBNET, "Dhcp4/subnet4[id=10]")
-        values = dhcp_plugin.gated_values(
-            model(), settings, field_map, PluginCapabilities(capabilities), summary, source
-        )
+        values = dhcp_plugin.gated_values(obj, settings, field_map, PluginCapabilities(capabilities), summary, source)
         return values, {(entry.path, entry.capability) for entry in summary.entries}
 
     @isolate_apps("netbox_kea")
@@ -507,7 +511,7 @@ class GatedValuesTest(SimpleTestCase):
         settings = {"relay": {"ip-addresses": ["198.51.100.1", "2001:db8::1"]}, "4o6-subnet": "2001:db8::/64"}
 
         values, entries = self._plan(
-            _proposed_plugin_models()["Subnet"], GATED_SUBNET_FIELDS, settings, frozenset(Capability)
+            _proposed_plugin_models()["Subnet"](), GATED_SUBNET_FIELDS, settings, frozenset(Capability)
         )
 
         self.assertEqual(
@@ -526,29 +530,35 @@ class GatedValuesTest(SimpleTestCase):
     def test_with_the_capability_a_relay_list_that_the_field_refuses_keeps_the_field(self):
         from netbox_kea.integrations.dhcp_import_fields import GATED_SUBNET_FIELDS
 
-        subnet = _proposed_plugin_models()["Subnet"]
+        subnet = _proposed_plugin_models()["Subnet"](relay=["198.51.100.9"])
         values, entries = self._plan(
             subnet, GATED_SUBNET_FIELDS, {"relay": {"ip-addresses": ["relay.example"]}}, frozenset(Capability)
         )
 
-        self.assertNotIn("relay", {key for key, value in values.items() if value})
+        self.assertEqual(values["relay"], ["198.51.100.9"])
         self.assertEqual(entries, {("Dhcp4/subnet4[id=10]/relay", None)})
 
     @isolate_apps("netbox_kea")
     def test_without_the_capabilities_a_declared_value_is_unsupported_and_an_empty_relay_is_not(self):
-        from netbox_kea.integrations.dhcp_import_fields import GATED_SERVER_FIELDS, GATED_SUBNET_FIELDS
+        from netbox_kea.integrations.dhcp_import_fields import GATED_SUBNET_FIELDS
 
-        plugin = _proposed_plugin_models()
-        values, entries = self._plan(
-            plugin["Subnet"], GATED_SUBNET_FIELDS, {"relay": {"ip-addresses": []}, "4o6-interface": "eth1"}, frozenset()
-        )
+        settings = {"relay": {"ip-addresses": []}, "4o6-interface": "eth1"}
+        values, entries = self._plan(_proposed_plugin_models()["Subnet"](), GATED_SUBNET_FIELDS, settings, frozenset())
+
         self.assertEqual(
             (values, entries),
             ({}, {("Dhcp4/subnet4[id=10]/4o6-interface", Capability.DHCP4O6_SUBNET_SELECTION)}),
         )
+
+    @isolate_apps("netbox_kea")
+    def test_with_the_capabilities_a_gated_global_is_planned_and_an_undeclared_one_is_cleared(self):
+        from netbox_kea.integrations.dhcp_import_fields import GATED_SERVER_FIELDS
+
+        server = _proposed_plugin_models()["DHCPServer"](stash_agent_options=True)
         values, _entries = self._plan(
-            plugin["DHCPServer"], GATED_SERVER_FIELDS, {"allow-address-registration": True}, frozenset(Capability)
+            server, GATED_SERVER_FIELDS, {"allow-address-registration": True}, frozenset(Capability)
         )
+
         self.assertEqual(values, {"allow_address_registration": True, "stash_agent_options": None})
 
 
@@ -615,7 +625,7 @@ def _proposed_plugin_models() -> dict[str, type[models.Model]]:
             dhcp_server=parent(),
             name=models.CharField(max_length=255),
             prefix=models.ForeignKey(_probe_model("Prefix"), on_delete=models.PROTECT, null=True),
-            relay=ArrayField(models.GenericIPAddressField()),
+            relay=ArrayField(models.GenericIPAddressField(), null=True),
             user_context=user_context(),
         ),
         "Subnet": _probe_model(
@@ -623,7 +633,7 @@ def _proposed_plugin_models() -> dict[str, type[models.Model]]:
             "subnet_id",
             dhcp_server=parent(),
             subnet_id=models.PositiveIntegerField(),
-            relay=ArrayField(models.GenericIPAddressField()),
+            relay=ArrayField(models.GenericIPAddressField(), null=True),
             dhcp4o6_subnet=models.CharField(max_length=64),
             dhcp4o6_interface=models.CharField(max_length=64),
             dhcp4o6_interface_id=models.CharField(max_length=64),
@@ -1046,6 +1056,29 @@ class SubnetCoverageTest(TestCase):
         self.assertEqual(self._names(self._subnet().evaluate_additional_classes), [])
         self.assertIn((_SUBNET_10, Outcome.UPDATED), [(entry.path, entry.outcome) for entry in summary.entries])
         self.assertEqual([entry.path for entry in self._apply(config).entries if entry.path == _SUBNET_10], [])
+
+    def test_a_class_list_that_is_not_valid_keeps_the_class_links(self):
+        self._apply()
+        config = _recorded_config(4)
+        config["subnet4"][0]["client-classes"] = ["voip", 7]
+        config["subnet4"][0]["pools"][0]["evaluate-additional-classes"] = ["printers", None]
+
+        summary = self._apply(config)
+
+        pool = apps.get_model(DHCP_PLUGIN, "Pool").objects.get(subnet=self._subnet(), pool_id=7)
+        self.assertEqual(
+            (self._names(self._subnet().client_classes), self._names(pool.evaluate_additional_classes)),
+            (["voip"], ["printers"]),
+        )
+        pool_path = f"{_SUBNET_10}/pools[pool=192.0.2.10-192.0.2.20]"
+        self.assertEqual(
+            self._entries(summary, f"{_SUBNET_10}/client-classes")
+            | self._entries(summary, f"{pool_path}/evaluate-additional-classes"),
+            {
+                f"{_SUBNET_10}/client-classes": (Reason.INVALID_KEA_DATA, None),
+                f"{pool_path}/evaluate-additional-classes": (Reason.INVALID_KEA_DATA, None),
+            },
+        )
 
     def test_dhcpv6_imports_the_global_adaptive_threshold_and_subnet_classes(self):
         from decimal import Decimal

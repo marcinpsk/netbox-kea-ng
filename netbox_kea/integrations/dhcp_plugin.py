@@ -669,7 +669,7 @@ def _declares(raw, transform) -> bool:
     """Return whether the Kea value *raw* holds a value after *transform*. A value it cannot convert counts."""
     try:
         return not _is_unset(raw if transform is None else transform(raw))
-    except Exception:  # noqa: BLE001 — the value is reported, not converted
+    except Exception:  # noqa: BLE001 (the value is reported, not converted)
         return True
 
 
@@ -877,8 +877,8 @@ def _link_interfaces(dhcp_server, entries: tuple[str, ...] | None, summary: Impo
     matched = {i.name for i in device} | {i.name for i in vm}
     for name, entry in names.items():
         if name not in matched:
-            detail = f"The DHCP server's device or virtual machine has no interface {name}."
             path = kea_paths.interface(family, entry)
+            detail = _no_interface_detail(dhcp_server, name)
             summary.record(not_written(family, Kind.SERVER, path, Reason.NO_MATCHING_INTERFACE, detail))
     if "*" in entries:
         # The DHCP plugin cannot hold "every interface", so the links that an operator made stay.
@@ -1429,12 +1429,18 @@ class ClassReferences:
         return found
 
     def relations(self, intent, parent_path: str, kind: Kind, summary: ImportSummary) -> dict[str, set[int]]:
-        """Return the imported client classes of both class lists of the Subnet or Pool *intent*, by relation."""
+        """Return the imported client classes of the class lists of the Subnet or Pool *intent*, by relation.
+
+        A list that is not valid (``None``) is left out, so its relation stays as it is.
+        """
+        lists = (
+            ("client_classes", kea_paths.CLIENT_CLASSES, intent.client_classes),
+            ("evaluate_additional_classes", kea_paths.EVALUATE_ADDITIONAL_CLASSES, intent.evaluate_additional_classes),
+        )
         return {
-            "client_classes": self.resolve(intent.client_classes, parent_path, kea_paths.CLIENT_CLASSES, kind, summary),
-            "evaluate_additional_classes": self.resolve(
-                intent.evaluate_additional_classes, parent_path, kea_paths.EVALUATE_ADDITIONAL_CLASSES, kind, summary
-            ),
+            relation: self.resolve(names, parent_path, key, kind, summary)
+            for relation, key, names in lists
+            if names is not None
         }
 
 

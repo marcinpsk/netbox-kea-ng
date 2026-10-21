@@ -112,8 +112,14 @@ def _option_without_definition(model: ModelLookup) -> bool:
 
 
 def _relay_address_list(model: ModelLookup) -> bool:
-    bases = [getattr(_field(model(name), "relay"), "base_field", None) for name in _NETWORK_MODELS]
-    return all(base is not None and "IPAddress" in base.get_internal_type() for base in bases)
+    fields = [_field(model(name), "relay") for name in _NETWORK_MODELS]
+    # The import clears an undeclared relay, so the field must be nullable or have a default.
+    return all(
+        (base := getattr(field, "base_field", None)) is not None
+        and "IPAddress" in base.get_internal_type()
+        and (field.null or field.has_default())
+        for field in fields
+    )
 
 
 def _shared_network_optional_prefix(model: ModelLookup) -> bool:
@@ -169,7 +175,8 @@ CHECKS: dict[Capability, Check] = {
         ),
     ),
     Capability.RELAY_ADDRESS_LIST: Check(
-        "Subnet.relay and SharedNetwork.relay are arrays of IP addresses.", _relay_address_list
+        "Subnet.relay and SharedNetwork.relay are arrays of IP addresses that are nullable or have a default.",
+        _relay_address_list,
     ),
     Capability.DHCP4O6_SUBNET_SELECTION: Check(
         "Subnet has dhcp4o6_subnet, dhcp4o6_interface and dhcp4o6_interface_id.",

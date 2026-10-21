@@ -131,8 +131,9 @@ class PoolIntent:
     pool: str
     options: tuple[DHCPOption, ...] = ()
     pool_id: int | None = None
-    client_classes: tuple[str, ...] = ()
-    evaluate_additional_classes: tuple[str, ...] = ()
+    # A class list is None when it is not valid, so the import keeps the class links.
+    client_classes: tuple[str, ...] | None = ()
+    evaluate_additional_classes: tuple[str, ...] | None = ()
     # Kea merges no value into a Pool, so each setting is a Declared Value.
     settings: dict = field(default_factory=dict)
     # None: the Pool declares no user-context.
@@ -155,8 +156,9 @@ class SubnetIntent:
     pools: tuple[PoolIntent, ...]
     options: tuple[DHCPOption, ...]
     settings: dict = field(default_factory=dict)
-    client_classes: tuple[str, ...] = ()
-    evaluate_additional_classes: tuple[str, ...] = ()
+    # A class list is None when it is not valid, so the import keeps the class links.
+    client_classes: tuple[str, ...] | None = ()
+    evaluate_additional_classes: tuple[str, ...] | None = ()
     # None: the Subnet declares no user-context.
     user_context: dict | None = None
 
@@ -306,13 +308,13 @@ def _pool_id(raw, path: str, dropped: list[DroppedEntry]) -> int | None:
     return None
 
 
-def _class_list(raw: dict, key: str, kind: Kind, path: str, dropped: list[DroppedEntry]) -> tuple[str, ...]:
-    """Read the class names of the list *key* of the *kind* at *path*; drop a list that is not of names."""
+def _class_list(raw: dict, key: str, kind: Kind, path: str, dropped: list[DroppedEntry]) -> tuple[str, ...] | None:
+    """Read the class names of the list *key* of the *kind* at *path*; drop a list that is not of names (``None``)."""
     names = raw.get(key, [])
     if isinstance(names, list) and all(isinstance(name, str) and name for name in names):
         return tuple(names)
     dropped.append(DroppedEntry(kind, kea_paths.setting(path, key), "The list is not a list of class names."))
-    return ()
+    return None
 
 
 def _subnet_id(raw: dict) -> int | None:
