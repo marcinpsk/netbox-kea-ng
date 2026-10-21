@@ -23,6 +23,7 @@ from django.test import SimpleTestCase, TestCase
 from django.test.utils import isolate_apps
 from django.urls import reverse
 
+from netbox_kea import kea_paths
 from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.integrations.dhcp_import_ledger import KEA_DEFAULTS
 from netbox_kea.integrations.dhcp_import_plan import (
@@ -1449,6 +1450,22 @@ class OptionCoverageTest(TestCase):
         removed = {entry.path for entry in summary.entries if entry.outcome == Outcome.REMOVED}
         self.assertEqual(removed, {_BOOT, f"{_BOOT}/option-def[code=231]"})
 
+    def test_a_stale_client_class_that_an_option_still_names_is_kept(self):
+        self._apply()
+        voip = KeaDhcpLink.objects.get(server=self.server, family=4, kind="client_class", kea_identity="voip")
+        config = _without_class(_recorded_config(4), "voip")
+        config["option-data"] = [o for o in config["option-data"] if o.get("client-classes") != []]
+
+        summary = self._apply_read(config)
+
+        dhcp_server = imported_dhcp_server(self.server, 4)
+        # Kea no longer declares the classed routers, so its Option stays unpaired and keeps its class.
+        self.assertEqual(self._options(dhcp_server, 3), [("192.0.2.1", ("voip",)), ("192.0.2.254", ())])
+        self.assertTrue(apps.get_model(DHCP_PLUGIN, "ClientClass").objects.filter(pk=voip.object_id).exists())
+        (entry,) = [e for e in summary.entries if e.path == "Dhcp4/client-classes[name=voip]"]
+        self.assertEqual(entry.reason, Reason.REMOVAL_BLOCKED)
+        self.assertIn("1 Option", entry.detail)
+
     def test_an_option_that_names_a_class_without_a_plugin_row_is_skipped(self):
         config = _recorded_config(4)
         config["option-data"].append(
@@ -1461,6 +1478,24 @@ class OptionCoverageTest(TestCase):
         self.assertEqual(entry.reason, Reason.PARENT_NOT_IMPORTED)
         self.assertIn("KNOWN", entry.detail)
         self.assertFalse(apps.get_model(DHCP_PLUGIN, "Option").objects.filter(data="known.example.org").exists())
+
+
+def _without_class(config: dict, name: str) -> dict:
+    """Return a copy of *config* without the client class *name*, and with *name* left out of every class list."""
+
+    def strip(value):
+        if isinstance(value, list):
+            return [strip(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        lists = (kea_paths.CLIENT_CLASSES, kea_paths.EVALUATE_ADDITIONAL_CLASSES)
+        return {
+            key: [each for each in item if each != name] if key in lists and isinstance(item, list) else strip(item)
+            for key, item in value.items()
+        }
+
+    classes = [entry for entry in config[kea_paths.CLIENT_CLASSES] if entry["name"] != name]
+    return strip({**config, kea_paths.CLIENT_CLASSES: []}) | {kea_paths.CLIENT_CLASSES: classes}
 
 
 # The Subnet fields that Kea's config-get fills from the parent or that the coverage configuration declares.

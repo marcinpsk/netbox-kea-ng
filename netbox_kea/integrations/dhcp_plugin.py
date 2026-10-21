@@ -90,7 +90,7 @@ if TYPE_CHECKING:
     )
 
 from django.apps import apps
-from django.core.exceptions import ValidationError
+from django.core.exceptions import FieldDoesNotExist, ValidationError
 from django.db.models.deletion import Collector, ProtectedError
 from django.db.models.signals import post_delete
 
@@ -2155,11 +2155,11 @@ def _counted_rows(rows: list) -> str:
     )
 
 
-def _removal_footprint(target, removable: dict) -> tuple[list, list]:
+def _removal_footprint(target, removable: dict) -> tuple[list, list, set]:
     """Return the rows that a delete of *target* also deletes: the stale rows of this run, and the rows that block it.
 
-    A row blocks the delete when it is a DHCP plugin row that the run does not remove. Raises ``ProtectedError`` when a
-    row still uses one of the rows.
+    Also return the key of each row that the delete removes. A row blocks the delete when it is a DHCP plugin row that
+    the run does not remove. Raises ``ProtectedError`` when a row still uses one of the rows.
     """
     # The same alias as the delete, so the check sees the rows that the delete would remove.
     collector = Collector(using=target._state.db)
@@ -2173,7 +2173,7 @@ def _removal_footprint(target, removable: dict) -> tuple[list, list]:
         for obj in rows
         if _row_key(obj) != own and _row_key(obj) not in removable and not _goes_with_parent(obj._meta.concrete_model)
     ]
-    return cascaded, blocking
+    return cascaded, blocking, {own, *(_row_key(obj) for obj in rows)}
 
 
 def _assigned_key(option) -> tuple:
@@ -2195,6 +2195,22 @@ def _protecting_own_options(target) -> list:
     return []
 
 
+def _class_users(target, removed: set) -> list:
+    """Return the DHCP plugin rows that the delete of *target* keeps and that name it in their ``client_classes``.
+
+    Such a row would lose the class, and its DHCP Option or object would then reach more clients.
+    """
+    users = []
+    for model in apps.get_app_config(PLUGIN_APP_LABEL).get_models():
+        try:
+            relation = model._meta.get_field("client_classes")
+        except FieldDoesNotExist:
+            continue
+        if relation.many_to_many and relation.related_model is target._meta.concrete_model:
+            users.extend(row for row in model.objects.filter(client_classes=target) if _row_key(row) not in removed)
+    return users
+
+
 class _RemovalBlocked(Exception):
     """Other rows depend on a stale row: raised inside its removal transaction, so that nothing of it stays."""
 
@@ -2213,10 +2229,12 @@ def _remove_stale_row(row: _StaleRow, removable: dict, family: int, summary: Imp
         with event_scope.atomic():
             for option in _protecting_own_options(row.target):
                 option.delete()
-            cascaded, blocking = _removal_footprint(row.target, removable)
+            cascaded, blocking, removed = _removal_footprint(row.target, removable)
             if blocking:
                 # Counts only: any viewer of the Server reads the run, without permission on the rows.
                 raise _RemovalBlocked(f"It is kept because its removal would also remove {_counted_rows(blocking)}.")
+            if users := _class_users(row.target, removed):
+                raise _RemovalBlocked(f"It is kept while {_counted_rows(users)} name it in client_classes.")
             row.target.delete()
     except event_scope.EventDispatchError:
         raise
