@@ -20,7 +20,7 @@
           <ul class="mb-0 mt-2">
             <li>Use a subnet CIDR. The import resolves its current Kea subnet ID from the live Subnet Catalogue.</li>
             <li>Each record needs exactly one native Kea identity.</li>
-            <li>Optional fields: <code>client_classes</code>, {% if dhcp_version == 4 %}<code>next_server</code>, <code>server_hostname</code>, <code>boot_file_name</code>{% else %}<code>excluded_prefixes</code>{% endif %} and <code>user_context</code>. An export writes each of them.</li>
+            <li>Optional fields: <code>client_classes</code>, {% if dhcp_version == 4 %}<code>next_server</code>, <code>server_hostname</code>, <code>boot_file_name</code>{% else %}<code>excluded_prefixes</code>{% endif %} and <code>user_context</code>. An export writes each of them. The import does not send <code>user_context</code>, which is read-only.</li>
             <li>Global scope is valid in exports, but import currently supports only <code>in-subnet</code>.</li>
             <li>Any validation error stops the complete import. NetBox then sends nothing.</li>
             <li>NetBox creates the Reservations one at a time. An entry that Kea does not apply or does not confirm stops the import.</li>

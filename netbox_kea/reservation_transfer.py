@@ -2,10 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-import dataclasses
 import ipaddress
 import json
-import math
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
@@ -21,8 +19,6 @@ from .dhcp_options import (
     parse_option_client_classes,
 )
 from .reservations import (
-    MAX_BOOT_FILE_NAME_LENGTH,
-    MAX_SERVER_HOSTNAME_LENGTH,
     NEXT_SERVER_RULE,
     ExcludedPrefix,
     IdentifierType,
@@ -31,6 +27,7 @@ from .reservations import (
     IPv6Reservation,
     Reservation,
     ReservationIdentity,
+    boot_text_problem,
     parse_client_classes,
     parse_next_server,
     reservation_identifier_types,
@@ -54,6 +51,7 @@ _RECORD_FIELDS = frozenset(
         "server_hostname",
         "boot_file_name",
         "excluded_prefixes",
+        # Read-only: an export writes it, and an import accepts it but does not send it to Kea.
         "user_context",
     }
 )
@@ -64,7 +62,8 @@ _IDENTITY_FIELDS = frozenset({"type", "value"})
 _OPTION_FIELDS = frozenset(
     {"code", "name", "space", "data", "csv_format", "always_send", "never_send", "client_classes"}
 )
-_EXCLUDED_PREFIX_FIELDS = frozenset({"delegated_prefix", "excluded_prefix"})
+_EXCLUDED_PREFIX_KEYS = ("delegated_prefix", "excluded_prefix")
+_EXCLUDED_PREFIX_FIELDS = frozenset(_EXCLUDED_PREFIX_KEYS)
 
 #: Largest transfer document the parser reads. Every caller is bounded by this,
 #: not only the file upload the import form accepts.
@@ -100,8 +99,6 @@ class ReservationImportProposal:
     server_hostname: str = ""
     boot_file_name: str = ""
     excluded_prefixes: tuple[ExcludedPrefix, ...] = ()
-    # The document copies the opaque user-context of an exported Reservation; it is not part of the compared value.
-    user_context: Any = dataclasses.field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -134,7 +131,6 @@ def resolve_import_proposal(proposal: ReservationImportProposal, subnet: SubnetI
             next_server=proposal.next_server,
             server_hostname=proposal.server_hostname,
             boot_file_name=proposal.boot_file_name,
-            user_context=proposal.user_context,
         )
     return IPv6Reservation(
         scope=scope,
@@ -145,7 +141,6 @@ def resolve_import_proposal(proposal: ReservationImportProposal, subnet: SubnetI
         options=proposal.options,
         client_classes=proposal.client_classes,
         excluded_prefixes=proposal.excluded_prefixes,
-        user_context=proposal.user_context,
     )
 
 
@@ -489,20 +484,12 @@ def _parse_boot_fields(
             diagnostics.append(_diagnostic("invalid-boot-field", message, f"{base}.next_server"))
             valid = False
     texts: list[str] = []
-    for key, label, limit in (
-        ("server_hostname", "server hostname", MAX_SERVER_HOSTNAME_LENGTH),
-        ("boot_file_name", "boot file name", MAX_BOOT_FILE_NAME_LENGTH),
-    ):
+    for key in ("server_hostname", "boot_file_name"):
         text = raw.get(key, "")
-        if family == 6 and text != "":
-            message = f"DHCPv6 Reservations have no {label}."
-        elif not isinstance(text, str) or len(text) > limit:
-            message = f"The {label} must be a string of at most {limit} characters."
-        else:
-            texts.append(text)
-            continue
-        diagnostics.append(_diagnostic("invalid-boot-field", message, f"{base}.{key}"))
-        valid = False
+        if problem := boot_text_problem(key, text, family):
+            diagnostics.append(_diagnostic("invalid-boot-field", problem, f"{base}.{key}"))
+            valid = False
+        texts.append(text)
     return (next_server, texts[0], texts[1]) if valid else None
 
 
@@ -514,8 +501,6 @@ def _parse_excluded_prefixes(
     diagnostics: list[ReservationTransferDiagnostic],
 ) -> tuple[ExcludedPrefix, ...] | None:
     """Return the excluded prefix of each delegated prefix that has one, in the order of the delegated prefixes."""
-    if value is None:
-        return ()
     if not isinstance(value, list) or (family == 4 and value):
         message = "Excluded prefixes must be a list." if family != 4 else "DHCPv4 does not support excluded prefixes."
         diagnostics.append(_diagnostic("invalid-excluded-prefixes", message, position))
@@ -527,10 +512,13 @@ def _parse_excluded_prefixes(
         if isinstance(entry, dict):
             _report_unknown_fields(entry, _EXCLUDED_PREFIX_FIELDS, entry_position, diagnostics)
         try:
-            texts = [entry.get(key) if isinstance(entry, dict) else None for key in sorted(_EXCLUDED_PREFIX_FIELDS)]
-            if not all(isinstance(text, str) for text in texts):
+            delegated, excluded = (entry.get(key) if isinstance(entry, dict) else None for key in _EXCLUDED_PREFIX_KEYS)
+            if not isinstance(delegated, str) or not isinstance(excluded, str):
                 raise ValueError("An excluded prefix entry needs two prefixes.")
-            pair = ExcludedPrefix(*(ipaddress.IPv6Network(text, strict=True) for text in texts))
+            pair = ExcludedPrefix(
+                delegated=ipaddress.IPv6Network(delegated, strict=True),
+                excluded=ipaddress.IPv6Network(excluded, strict=True),
+            )
             if prefixes is not None and pair.delegated not in prefixes:
                 raise ValueError("The delegated prefix is not one of the Reservation.")
         except ValueError:
@@ -555,25 +543,6 @@ def _parse_excluded_prefixes(
     if not valid or prefixes is None:
         return None
     return tuple(pairs[prefix] for prefix in prefixes if prefix in pairs)
-
-
-def _is_json_data(value: Any) -> bool:
-    """Return whether *value* is JSON data that Kea can store; YAML can also hold dates, sets and other keys."""
-    pending = [value]
-    while pending:
-        item = pending.pop()
-        if isinstance(item, dict):
-            if not all(isinstance(key, str) for key in item):
-                return False
-            pending.extend(item.values())
-        elif isinstance(item, list):
-            pending.extend(item)
-        elif isinstance(item, float):
-            if not math.isfinite(item):
-                return False
-        elif item is not None and not isinstance(item, str | int):
-            return False
-    return True
 
 
 def _parse_record(
@@ -608,13 +577,8 @@ def _parse_record(
     client_classes = _parse_client_classes(raw.get("client_classes", []), f"{base}.client_classes", diagnostics)
     boot = _parse_boot_fields(raw, family, base, diagnostics)
     excluded = _parse_excluded_prefixes(
-        raw.get("excluded_prefixes"), family, prefixes, f"{base}.excluded_prefixes", diagnostics
+        raw.get("excluded_prefixes", []), family, prefixes, f"{base}.excluded_prefixes", diagnostics
     )
-    user_context = raw.get("user_context")
-    if not _is_json_data(user_context):
-        diagnostics.append(
-            _diagnostic("invalid-user-context", "The user context must be JSON data.", f"{base}.user_context")
-        )
     duplicate_key = (
         (family, subnet_cidr, identity.identifier_type, identity.value)
         if family is not None and subnet_cidr is not None and identity is not None
@@ -647,7 +611,6 @@ def _parse_record(
             server_hostname=boot[1],
             boot_file_name=boot[2],
             excluded_prefixes=excluded,
-            user_context=user_context,
         ),
         duplicate_key,
     )

@@ -88,7 +88,6 @@ _NON_WIRE_HYPHENATED = {
     "invalid-subnet-collection": "Configuration validation diagnostic",
     "invalid-subnet-id": "Configuration validation diagnostic",
     "invalid-type": "Lease validation diagnostic",
-    "invalid-user-context": "Transfer validation diagnostic",
     "invalid-version": "Transfer validation diagnostic",
     "lease-prefix": "IPAM Ownership source (ADR 0006)",
     "pd-pool": "IPAM Ownership source (ADR 0006)",

@@ -814,7 +814,8 @@ class TestWidenedTransferDocument(SimpleTestCase):
                     for proposal, record in zip(parsed.proposals, records, strict=True)
                 )
                 self.assertEqual(created, records)
-                self.assertEqual([record.user_context for record in created], [r.user_context for r in records])
+                # The user context is read-only: a document carries it, and a create does not set it.
+                self.assertEqual([record.user_context for record in created], [None, None])
 
     def test_a_document_without_the_widened_fields_still_validates(self):
         for family in (4, 6):
@@ -900,13 +901,22 @@ class TestWidenedTransferDocument(SimpleTestCase):
                 )
                 self.assertEqual(parsed.proposals, ())
 
-    def test_a_user_context_must_be_json_data(self):
-        for value in ("2026-10-22", "!!set {a: null}", ".nan", "{1: one}"):
+    def test_a_document_user_context_is_accepted_and_never_created(self):
+        # YAML can hold values that are not JSON data; the import does not send the field, so any value is accepted.
+        for value in ('{"asset": 42}', "2026-10-22", "!!set {a: null}", ".nan", "null"):
             document = f"version: 1\nreservations:\n- {json.dumps(_record(4))}\n"
             document = document.replace('"options": []', f'"options": [], "user_context": {value}')
             with self.subTest(value=value):
                 parsed = parse_reservation_document(document, "yaml")
-                self.assertEqual(
-                    [(item.code, item.source_position) for item in parsed.diagnostics],
-                    [("invalid-user-context", "reservations[0].user_context")],
+                self.assertEqual(parsed.diagnostics, ())
+                reservation = resolve_import_proposal(
+                    parsed.proposals[0], SubnetIdentity(20, ip_network("198.18.0.0/24"))
                 )
+                self.assertIsNone(reservation.user_context)
+
+    def test_an_optional_list_field_refuses_null(self):
+        for field in ("client_classes", "excluded_prefixes"):
+            record = _record(6, **{field: None})
+            parsed = parse_reservation_document(json.dumps({"version": 1, "reservations": [record]}), "json")
+            with self.subTest(field=field):
+                self.assertEqual([item.source_position for item in parsed.diagnostics], [f"reservations[0].{field}"])

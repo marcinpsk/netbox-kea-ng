@@ -270,7 +270,7 @@ class ReservationImportTests(TestCase):
                         sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
                         self.assertEqual(sent.get("hostname", ""), hostname)
 
-    def test_a_document_creates_each_widened_fact_and_its_user_context(self):
+    def test_a_document_creates_each_widened_fact_but_not_its_user_context(self):
         delegated = (ip_network("2001:db8:500::/56"), ip_network("2001:db8:600::/56"))
         records = {
             4: IPv4Reservation(
@@ -299,13 +299,13 @@ class ReservationImportTests(TestCase):
                 "next-server": "192.0.2.5",
                 "server-hostname": "boot.example.org",
                 "boot-file-name": "host.efi",
-                "user-context": {"asset": 42},
+                "user-context": None,
             },
             6: {
                 "client-classes": ["voip"],
                 "prefixes": ["2001:db8:500::/56", "2001:db8:600::/56"],
                 "excluded-prefixes": ["2001:db8:500:ff::/64", ""],
-                "user-context": ["opaque"],
+                "user-context": None,
             },
         }
         for family, record in records.items():
