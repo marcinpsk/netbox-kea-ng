@@ -434,6 +434,15 @@ class DhcpImportEventTest(_Recorded, TransactionTestCase):
             response = self._post_import(server, conf)
 
         self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)],
+            [
+                (
+                    "The DHCP-plugin import saved its changes, but NetBox could not dispatch their events, "
+                    "and the import stopped. See the server logs."
+                )
+            ],
+        )
         self.assertTrue(apps.get_model("netbox_dhcp", "Subnet").objects.filter(prefix__prefix="10.79.0.0/24").exists())
         stored = set(DhcpImportEntry.objects.filter(run__server=server).values_list("kind", "outcome", "kea_path"))
         self.assertIn(("subnet", "created", "Dhcp4/subnet4[id=1]"), stored)

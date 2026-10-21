@@ -21,7 +21,7 @@ from django.views import View
 from netbox.views import generic
 from utilities.views import register_model_view
 
-from ..dhcp_mapping_lifecycle import MetadataBusy
+from ..dhcp_mapping_lifecycle import ImportEventsNotDispatched, MetadataBusy
 from ..integrations import dhcp_plugin
 from ..integrations.dhcp_import import (
     UnsupportedPluginVersion,
@@ -250,6 +250,14 @@ class ServerDhcpPluginSyncNowView(View):
             results = run_dhcp_plugin_import(server, DhcpImportTrigger.MANUAL)
         except (MetadataBusy, UnsupportedPluginVersion) as error:
             messages.error(request, error.message)
+            return redirect
+        except ImportEventsNotDispatched:
+            logger.exception("The events of the DHCP-plugin import for server %s could not be dispatched", server.name)
+            messages.error(
+                request,
+                "The DHCP-plugin import saved its changes, but NetBox could not dispatch their events, "
+                "and the import stopped. See the server logs.",
+            )
             return redirect
         except Exception:
             # The import writes NetBox and DHCP plugin rows; a failure of any of them ends the import.
