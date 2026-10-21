@@ -503,7 +503,12 @@ class KeaIpamSyncJob(JobRunner):
         """
         from . import event_scope
         from .dhcp_mapping_lifecycle import MetadataBusy
-        from .integrations.dhcp_import import UnsupportedPluginVersion, enabled_versions, run_dhcp_plugin_import
+        from .integrations.dhcp_import import (
+            ImportRunning,
+            UnsupportedPluginVersion,
+            enabled_versions,
+            run_dhcp_plugin_import,
+        )
         from .integrations.dhcp_import_report import Outcome
         from .integrations.dhcp_plugin import ImportSummary
         from .models import DhcpImportTrigger
@@ -513,11 +518,11 @@ class KeaIpamSyncJob(JobRunner):
         trigger = cast("DhcpImportTrigger", DhcpImportTrigger.SCHEDULED)
         try:
             results = run_dhcp_plugin_import(server, trigger)
-        except MetadataBusy as error:
+        except ImportRunning as error:
             self.logger.warning(f"{run} skipped: {error.message}")
             return True
-        except UnsupportedPluginVersion as error:
-            self.logger.error(f"{run} failed: {error.message}")  # noqa: TRY400 - a refusal before any read, no traceback
+        except (MetadataBusy, UnsupportedPluginVersion) as error:
+            self.logger.error(f"{run} failed: {error.message}")  # noqa: TRY400 - a typed refusal, no traceback
             return False
         except event_scope.EventDispatchError:
             self.logger.error(  # noqa: TRY400 - NetBox records the traceback of the raised error

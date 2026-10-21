@@ -13,7 +13,7 @@ from django.apps import apps
 from django.db import connection
 from django.test import TestCase, TransactionTestCase, override_settings
 
-from netbox_kea.dhcp_mapping_lifecycle import ImportEventsNotDispatched
+from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK, ImportEventsNotDispatched
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import DhcpImportEntry, DhcpImportRun, DhcpImportTrigger, DhcpIntegrationConfig
 
@@ -336,6 +336,25 @@ class ScheduledImportTest(_ScheduledImportTestCase):
         self.assertIn(("option_definition", "write_failed"), set(run.entries.values_list("kind", "reason")))
         lines = _scheduled_lines(job)
         self.assertTrue(any(_FAILED_FAMILY.search(line) for line in lines), lines)
+        self.assertEqual(lines[-1], "Scheduled DHCP Import complete: servers=1 failed=1")
+
+    def test_a_mapping_lock_refusal_after_the_reads_fails_the_server_and_the_job(self):
+        server = _server("mapping-busy")
+        holder = _new_session()
+        try:
+            with holder.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_lock(%s, %s)", _METADATA_LOCK)
+            job = self._run_failed(_kea())
+        finally:
+            holder.close()
+
+        run = DhcpImportRun.objects.get(server=server)
+        self.assertEqual(
+            set(run.entries.values_list("kind", "outcome", "reason", "kea_path")),
+            {("server", "skipped", "write_failed", "Dhcp4")},
+        )
+        lines = _scheduled_lines(job)
+        self.assertTrue(any(line.startswith("Scheduled DHCP Import of Server mapping-busy failed: ") for line in lines))
         self.assertEqual(lines[-1], "Scheduled DHCP Import complete: servers=1 failed=1")
 
     def test_an_unsupported_plugin_version_is_logged_and_fails_the_job(self):
