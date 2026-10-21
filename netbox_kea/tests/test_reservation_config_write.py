@@ -269,13 +269,13 @@ class ReservationEditTests(TestCase):
         )
 
     def test_an_update_keeps_unknown_fields_and_applies_each_clear_and_set(self):
-        current = {**_RAW, "user-context": {"owner": "external-system"}, "client-classes": ["external-class"]}
+        # Since #102 user-context is the only host key that NetBox does not manage.
+        current = {**_RAW, "user-context": {"owner": "external-system"}}
         intended = {
             "subnet-id": 20,
             "hw-address": "aa:bb:cc:dd:ee:ff",
             "ip-address": "198.18.0.21",
             "user-context": {"owner": "external-system"},
-            "client-classes": ["external-class"],
         }
         change = ReservationChange(
             addresses=SetValue((ip_address("198.18.0.21"),)),

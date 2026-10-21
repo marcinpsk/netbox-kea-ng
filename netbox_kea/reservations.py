@@ -6,7 +6,7 @@ import hashlib
 import ipaddress
 import json
 from collections.abc import Collection, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
@@ -682,6 +682,48 @@ class InSubnetReservationScope:
 ReservationScope = GlobalReservationScope | InSubnetReservationScope
 
 
+#: The longest server-hostname and boot-file-name that Kea 3.2 accepts on a host.
+MAX_SERVER_HOSTNAME_LENGTH = 63
+MAX_BOOT_FILE_NAME_LENGTH = 127
+# Kea removes these characters from both ends of a client class name of a host.
+_KEA_TRIMMED = " \t\n\r"
+
+
+def parse_client_classes(value: Any) -> tuple[str, ...]:
+    """Return the client class names of a Reservation in the form that Kea stores them.
+
+    Raises:
+        ValueError: If *value* is not a list of unique, non-empty names without surrounding whitespace.
+
+    """
+    if (
+        not isinstance(value, list | tuple)
+        or not all(isinstance(name, str) and name and name == name.strip(_KEA_TRIMMED) for name in value)
+        or len(set(value)) != len(value)
+    ):
+        raise ValueError("Client classes must be unique, non-empty names without surrounding whitespace.")
+    return tuple(value)
+
+
+@dataclass(frozen=True)
+class ExcludedPrefix:
+    """The prefix that Kea excludes from one delegated prefix of a DHCPv6 Reservation (RFC 6603)."""
+
+    delegated: ipaddress.IPv6Network
+    excluded: ipaddress.IPv6Network
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.delegated, ipaddress.IPv6Network) or not isinstance(
+            self.excluded, ipaddress.IPv6Network
+        ):
+            raise ValueError("An excluded prefix and its delegated prefix must be IPv6 prefixes.")
+        if self.excluded.prefixlen <= self.delegated.prefixlen or not self.excluded.subnet_of(self.delegated):
+            raise ValueError(
+                f"The excluded prefix {self.excluded} must be a longer prefix inside "
+                f"the delegated prefix {self.delegated}."
+            )
+
+
 @dataclass(frozen=True)
 class IPv4Reservation:
     """One immutable DHCPv4 Reservation."""
@@ -693,6 +735,14 @@ class IPv4Reservation:
     hostname: str = ""
     options: tuple[DHCPOption, ...] = ()
     family: Literal[4] = 4
+    client_classes: tuple[str, ...] = ()
+    #: ``None`` is Kea's unset value, 0.0.0.0.
+    next_server: ipaddress.IPv4Address | None = None
+    server_hostname: str = ""
+    boot_file_name: str = ""
+    excluded_prefixes: tuple[()] = ()
+    # Kea's user-context, read-only and opaque: no edit changes it, so it is not part of the compared value.
+    user_context: Any = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         _validate_reservation_value(self)
@@ -709,6 +759,14 @@ class IPv6Reservation:
     hostname: str = ""
     options: tuple[DHCPOption, ...] = ()
     family: Literal[6] = 6
+    client_classes: tuple[str, ...] = ()
+    #: One entry for each delegated prefix that excludes a prefix, in the order of ``delegated_prefixes``.
+    excluded_prefixes: tuple[ExcludedPrefix, ...] = ()
+    next_server: None = None
+    server_hostname: str = ""
+    boot_file_name: str = ""
+    # Kea's user-context, read-only and opaque: no edit changes it, so it is not part of the compared value.
+    user_context: Any = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         _validate_reservation_value(self)
@@ -935,6 +993,49 @@ def _validate_reservation_value(reservation: Reservation) -> None:
             raise ValueError("A DHCPv6 Reservation requires IPv6 delegated prefixes.")
     if any(not isinstance(option, DHCPOption) for option in reservation.options):
         raise ValueError("Reservation options must be DHCPOption values.")
+    parse_client_classes(reservation.client_classes)
+    _validate_boot_fields(reservation)
+    _validate_excluded_prefixes(reservation)
+
+
+def _validate_boot_fields(reservation: Reservation) -> None:
+    """Refuse a DHCPv4 boot field that Kea 3.2 refuses on a host, and every boot field of a DHCPv6 Reservation."""
+    next_server, server_hostname, boot_file_name = (
+        reservation.next_server,
+        reservation.server_hostname,
+        reservation.boot_file_name,
+    )
+    if not isinstance(server_hostname, str) or not isinstance(boot_file_name, str):
+        raise ValueError("The server hostname and the boot file name must be strings.")
+    if reservation.family == 6:
+        if next_server is not None or server_hostname or boot_file_name:
+            raise ValueError("A DHCPv6 Reservation has no next server, server hostname or boot file name.")
+        return
+    if next_server is not None and (
+        not isinstance(next_server, ipaddress.IPv4Address) or next_server.is_unspecified or next_server == _BROADCAST
+    ):
+        raise ValueError("The next server must be an IPv4 address other than 0.0.0.0 and 255.255.255.255.")
+    if len(server_hostname) > MAX_SERVER_HOSTNAME_LENGTH:
+        raise ValueError(f"The server hostname must not exceed {MAX_SERVER_HOSTNAME_LENGTH} characters.")
+    if len(boot_file_name) > MAX_BOOT_FILE_NAME_LENGTH:
+        raise ValueError(f"The boot file name must not exceed {MAX_BOOT_FILE_NAME_LENGTH} characters.")
+
+
+_BROADCAST = ipaddress.IPv4Address("255.255.255.255")
+
+
+def _validate_excluded_prefixes(reservation: Reservation) -> None:
+    """Refuse an excluded prefix that is not paired with one delegated prefix, in the order of the delegated ones."""
+    excluded = reservation.excluded_prefixes
+    if any(not isinstance(pair, ExcludedPrefix) for pair in excluded):
+        raise ValueError("Excluded prefixes must be ExcludedPrefix values.")
+    delegated = [pair.delegated for pair in excluded]
+    order = [prefix for prefix in reservation.delegated_prefixes if prefix in delegated]
+    if delegated != order:
+        raise ValueError(
+            "Each excluded prefix must belong to one delegated prefix of the Reservation, "
+            "at most one for each delegated prefix."
+        )
 
 
 def _reservation_to_raw(reservation: Reservation) -> dict[str, Any]:
@@ -954,6 +1055,20 @@ def _reservation_to_raw(reservation: Reservation) -> dict[str, Any]:
         raw["hostname"] = reservation.hostname
     if reservation.options:
         raw["option-data"] = [option_data(option) for option in reservation.options]
+    if reservation.client_classes:
+        raw["client-classes"] = list(reservation.client_classes)
+    if reservation.next_server is not None:
+        raw["next-server"] = str(reservation.next_server)
+    if reservation.server_hostname:
+        raw["server-hostname"] = reservation.server_hostname
+    if reservation.boot_file_name:
+        raw["boot-file-name"] = reservation.boot_file_name
+    if reservation.excluded_prefixes:
+        excluded = {pair.delegated: str(pair.excluded) for pair in reservation.excluded_prefixes}
+        # Kea pairs the lists by position, and an empty entry excludes nothing.
+        raw["excluded-prefixes"] = [excluded.get(prefix, "") for prefix in reservation.delegated_prefixes]
+    if reservation.user_context is not None:
+        raw["user-context"] = reservation.user_context
     return raw
 
 
@@ -981,7 +1096,7 @@ def reservation_matches_intent(
 def reservation_fingerprint(reservation: Reservation) -> str:
     """Return a stable fingerprint of managed facts only."""
     encoded = json.dumps(
-        _reservation_to_raw(replace(reservation, options=())), sort_keys=True, separators=(",", ":")
+        _reservation_to_raw(replace(reservation, options=(), user_context=None)), sort_keys=True, separators=(",", ":")
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -1195,6 +1310,12 @@ def _parse_reservation(raw: Any, family: Family, catalogue: CatalogueSnapshot) -
         raise MalformedReservation(
             "invalid-options", "The Reservation contains invalid DHCP Options.", "option-data"
         ) from exc
+    try:
+        client_classes = parse_client_classes(raw.get("client-classes", []))
+    except ValueError as exc:
+        raise MalformedReservation("invalid-client-classes", str(exc), "client-classes") from exc
+    excluded = _excluded_prefixes(raw, family, prefixes)
+    next_server, server_hostname, boot_file_name = _boot_fields(raw, family)
     if family == 4:
         return IPv4Reservation(
             scope=scope,
@@ -1202,6 +1323,11 @@ def _parse_reservation(raw: Any, family: Family, catalogue: CatalogueSnapshot) -
             addresses=cast(tuple[ipaddress.IPv4Address, ...], addresses),
             hostname=hostname,
             options=options,
+            client_classes=client_classes,
+            next_server=next_server,
+            server_hostname=server_hostname,
+            boot_file_name=boot_file_name,
+            user_context=raw.get("user-context"),
         )
     return IPv6Reservation(
         scope=scope,
@@ -1210,7 +1336,71 @@ def _parse_reservation(raw: Any, family: Family, catalogue: CatalogueSnapshot) -
         delegated_prefixes=prefixes,
         hostname=hostname,
         options=options,
+        client_classes=client_classes,
+        excluded_prefixes=excluded,
+        user_context=raw.get("user-context"),
     )
+
+
+def _excluded_prefixes(
+    raw: dict[str, Any], family: Family, prefixes: tuple[ipaddress.IPv6Network, ...]
+) -> tuple[ExcludedPrefix, ...]:
+    """Pair each entry of Kea's excluded-prefixes with the delegated prefix at its position; empty excludes none."""
+    values = raw.get("excluded-prefixes")
+    if family == 4:
+        if values not in (None, []):
+            raise MalformedReservation(
+                "invalid-excluded-prefixes", "DHCPv4 does not support excluded prefixes.", "excluded-prefixes"
+            )
+        return ()
+    if values is None:
+        return ()
+    if not isinstance(values, list) or len(values) != len(prefixes):
+        raise MalformedReservation(
+            "invalid-excluded-prefixes",
+            "Excluded prefixes must pair one to one with the delegated prefixes.",
+            "excluded-prefixes",
+        )
+    pairs: list[ExcludedPrefix] = []
+    for index, (prefix, value) in enumerate(zip(prefixes, values, strict=True)):
+        if value == "":
+            continue
+        try:
+            if not isinstance(value, str):
+                raise TypeError("An excluded prefix must be a string.")
+            pairs.append(ExcludedPrefix(prefix, ipaddress.IPv6Network(value, strict=True)))
+        except (TypeError, ValueError) as exc:
+            raise MalformedReservation(
+                "invalid-excluded-prefix",
+                "The Reservation contains an invalid excluded prefix.",
+                f"excluded-prefixes[{index}]",
+            ) from exc
+    return tuple(pairs)
+
+
+def _boot_fields(raw: dict[str, Any], family: Family) -> tuple[ipaddress.IPv4Address | None, str, str]:
+    """Return the next server, server hostname and boot file name of a host; Kea returns 0.0.0.0 and "" for none."""
+    next_server: ipaddress.IPv4Address | None = None
+    value = raw.get("next-server")
+    if value is not None:
+        invalid = MalformedReservation("invalid-boot-field", "The Reservation next server is invalid.", "next-server")
+        try:
+            parsed = ipaddress.IPv4Address(value) if isinstance(value, str) else None
+        except ValueError as exc:
+            raise invalid from exc
+        if parsed is None or parsed == _BROADCAST or (family == 6 and not parsed.is_unspecified):
+            raise invalid
+        next_server = None if parsed.is_unspecified else parsed
+    texts: list[str] = []
+    for key, limit in (
+        ("server-hostname", 0 if family == 6 else MAX_SERVER_HOSTNAME_LENGTH),
+        ("boot-file-name", 0 if family == 6 else MAX_BOOT_FILE_NAME_LENGTH),
+    ):
+        text = raw.get(key, "")
+        if not isinstance(text, str) or len(text) > limit:
+            raise MalformedReservation("invalid-boot-field", f"The Reservation {key} is invalid.", key)
+        texts.append(text)
+    return next_server, texts[0], texts[1]
 
 
 def _exact_reservation(raw: Any, family: int, catalogue: CatalogueSnapshot) -> Reservation:
