@@ -478,7 +478,12 @@ A Subnet or a Reservation that is gone, a changed fingerprint and result 3 on `r
 `unknown`, with no read after it. The persist step runs after `applied` and `unknown`, and the verification read only
 after `applied`. `KeaClient` keeps the single commands (`reservation_add`, `reservation_update`, `reservation_del`,
 sent through `_config_mutation_command`, so a display read during the write is not kept), the reads and the raw
-record handling (`FreshReservation.updated` keeps each Kea field that NetBox does not manage). The OpenGrep rule
+record handling (`FreshReservation.updated` keeps each Kea field that NetBox does not manage: since #102 only
+`user-context`). The typed Reservation carries client classes, the DHCPv4 boot fields, the DHCPv6 excluded prefixes
+(`ExcludedPrefix` pairs each with its delegated prefix; the serializer builds Kea's positional list) and the read-only
+`user_context`. The managed-fact fingerprint covers every field except the options and `user_context`.
+`reservation_edit.excluded_prefix_pairs` pairs the excluded prefixes of the form by containment; the DHCPv6 form calls
+it before any Kea read, and the build calls it again under the lock. The OpenGrep rule
 `kea-reservation-write-outside-config-write` refuses a call to these write primitives outside `config_write`. The
 bulk Reservation import calls `reservation_edit.save_import` for each entry through
 `_run_change_loop(..., stop_on_rejection=True)`, so an unknown or a rejected entry stops it. The import checks the
