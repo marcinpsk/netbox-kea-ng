@@ -23,6 +23,7 @@ from netbox_kea.tests.kea_stub import (
     _typed_reservation,
     kea_client,
     queued,
+    recorded_host,
     stub_kea,
 )
 
@@ -273,3 +274,21 @@ def test_config_writes_carry_only_keys_a_real_kea_returns(family):
         with pytest.raises(AssertionError, match=r"sends \['description'\]"):
             stub("https://kea.example.invalid/", json={"command": "config-test", "arguments": arguments})
         del entry["description"]
+
+
+@pytest.mark.parametrize("family", [4, 6])
+@pytest.mark.parametrize("command", ["reservation-add", "reservation-update"])
+def test_host_writes_carry_only_keys_and_pairs_a_real_kea_takes(family, command):
+    stub = KeaHttpStub({command: {"result": 0}})
+    host = recorded_host(family)
+
+    def send(reservation):
+        return stub(
+            "https://kea.example.invalid/", json={"command": command, "arguments": {"reservation": reservation}}
+        )
+
+    assert send(host).ok
+    with pytest.raises(AssertionError, match=r"sends \['excluded_prefixes'\] in a host"):
+        send({**host, "excluded_prefixes": []})
+    with pytest.raises(AssertionError, match="do not pair one to one"):
+        send({**host, "prefixes": ["2001:db8:500::/56"], "excluded-prefixes": ["", ""]})

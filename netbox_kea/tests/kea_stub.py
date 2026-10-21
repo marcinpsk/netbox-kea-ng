@@ -336,6 +336,27 @@ def _assert_kea_would_accept(body: dict[str, Any]) -> None:
                 )
 
 
+def _assert_kea_would_accept_host(body: dict[str, Any]) -> None:
+    """Fail on a host key that Kea's host reservation parser refuses, or on an excluded-prefixes count it refuses."""
+    arguments = body.get("arguments")
+    host = arguments.get("reservation") if isinstance(arguments, dict) else None
+    if not isinstance(host, dict):
+        return
+    # host_cmds takes subnet-id inside the host; the configuration parser has no such key.
+    known = {"subnet-id"} | _accepted_keys(4)["reservations"] | _accepted_keys(6)["reservations"]
+    unknown = set(host) - known
+    if unknown:
+        raise AssertionError(
+            f"KeaHttpStub: {body.get('command')} sends {sorted(unknown)} in a host, which the host reservation "
+            "keyword tables in kea_recordings/accepted-keys.json do not accept."
+        )
+    if "excluded-prefixes" in host and len(host["excluded-prefixes"]) != len(host.get("prefixes", [])):
+        raise AssertionError(
+            f"KeaHttpStub: {body.get('command')} sends excluded-prefixes that do not pair one to one with prefixes, "
+            "which Kea refuses."
+        )
+
+
 def _assert_kea_has(commands: Any, verb: str) -> None:
     """Fail on a command name that the harness Kea's list-commands reply does not contain."""
     unknown = sorted(str(command) for command in set(commands) - WIRE_COMMANDS)
@@ -390,6 +411,8 @@ class KeaHttpStub:
             _assert_kea_has([cmd], "receives")
             if cmd in ("config-test", "config-set"):
                 _assert_kea_would_accept(body)
+            if cmd in ("reservation-add", "reservation-update"):
+                _assert_kea_would_accept_host(body)
             if cmd not in self._responses:
                 raise AssertionError(f"KeaHttpStub: no response registered for command {cmd!r} (url={url})")
             spec = self._responses[cmd]
