@@ -3189,6 +3189,59 @@ class DhcpPluginPDPoolImportTest(TestCase):
                     list(IPAMOwnershipLink.objects.filter(prefix=prefix).values_list("source", flat=True)), ["pd-pool"]
                 )
 
+    def test_without_the_opt_in_a_removed_pd_pool_leaves_its_prefixes_active_and_unlinked(self):
+        from netbox_kea.models import IPAMOwnershipLink
+
+        self._run()
+        pd_pool = self._pd_pool()
+        prefixes = (pd_pool.prefix, pd_pool.excluded_prefix)
+        self.conf["subnet6"][0]["pd-pools"] = []
+
+        summary = self._run()
+
+        self.assertIn("pd-pool", summary.ownership.completed_sources)
+        for prefix in prefixes:
+            with self.subTest(prefix=str(prefix.prefix)):
+                prefix.refresh_from_db()
+                self.assertEqual((prefix.status, prefix.description), ("active", "[kea-sync: pd pool]"))
+                self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=prefix).exists())
+
+    def test_a_pd_pool_link_that_a_claim_confirms_during_the_read_survives_a_read_without_it(self):
+        from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
+        from netbox_kea.ipam_reconciliation import PDPoolClaim, claim
+        from netbox_kea.models import DhcpImportTrigger, IPAMOwnershipLink
+
+        from .test_views_dhcp_plugin import _sync_responses
+
+        self.server.sync_deprecate_prefixes_and_ranges = True
+        self.server.save()
+        self._run()
+        prefix = self._pd_pool().prefix
+        self.conf["subnet6"][0]["pd-pools"] = []
+        responses = _sync_responses({6: self.conf}, {6: []})
+        config_get = responses["config-get"]
+        confirmations = []
+
+        def confirm(body):
+            # Another writer confirms the link during the configuration read: after its cutoff. The later Reservation
+            # read also sends config-get, and must not confirm the link again.
+            if not confirmations:
+                claim(self.server, 6, [PDPoolClaim(ipaddress.ip_network(str(prefix.prefix)))], force=False)
+                confirmations.append(IPAMOwnershipLink.objects.get(prefix=prefix, source="pd-pool").confirmation)
+            return config_get(body)
+
+        responses["config-get"] = confirm
+        with stub_kea(responses):
+            ((_family, summary),) = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(len(confirmations), 1)
+        self.assertFalse(self.PDPool.objects.filter(prefix=prefix).exists())
+        link = IPAMOwnershipLink.objects.get(prefix=prefix, source="pd-pool")
+        self.assertEqual((link.confirmation, link.stale_mark), (confirmations[0], None))
+        prefix.refresh_from_db()
+        self.assertEqual(prefix.status, "active")
+
     def test_a_pd_pool_whose_delegated_length_changes_is_a_new_pd_pool(self):
         from netbox_kea.integrations.dhcp_import_report import Outcome
 

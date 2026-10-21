@@ -953,6 +953,60 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                     self.assertEqual(restored.created, mappings[source].created, source)
                     self.assertEqual(type(target).objects.get(pk=target.pk).created, target.created, source)
 
+    def test_squash_restores_an_imported_pd_pool_and_reimport_creates_none(self):
+        from netbox_dhcp.models import PDPool, Subnet
+
+        from netbox_kea.dhcp_mapping_lifecycle import mapping_identity
+
+        # netbox-plugin-dhcp 0.2.0 keeps Subnet IDs unique across all DHCP servers.
+        subnet_id = next(n for n in count(7) if not Subnet.objects.filter(subnet_id=n).exists())
+        pd_pool = {
+            "prefix": "2001:db8:700::",
+            "prefix-len": 48,
+            "delegated-len": 56,
+            "excluded-prefix": "2001:db8:700:ff::",
+            "excluded-prefix-len": 64,
+        }
+        conf = {"subnet6": [{"id": subnet_id, "subnet": "2001:db8:7::/64", "pd-pools": [pd_pool]}]}
+        server = _make_db_server(name="mapping-imported-pd-pool", ca_url="https://kea.example.invalid", dhcp4=False)
+        intent, observation = parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6)
+        with event_tracking(_change_request(self.user)):
+            summary = import_server_config(server, intent, observation)
+        self.assertEqual(summary.errors, 0, summary.warnings)
+
+        def links():
+            return KeaDhcpLink.objects.filter(server=server)
+
+        mappings = {link.pk: (mapping_identity(link), link.created) for link in links()}
+        targets = {(type(link.sys4_object), link.object_id): link.sys4_object.created for link in links()}
+        self.assertEqual(sorted(links().values_list("kind", flat=True)), ["pd_pool", "server", "subnet"])
+        dhcp_server = links().get(kind="server").sys4_object
+        branch = _provisioned_branch(self, "mapping-imported-pd-pool")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        # The Subnet takes its PD Pool; the DHCPServer goes last.
+        for target in (Subnet.objects.get(dhcp_server=dhcp_server), dhcp_server):
+            self._delete(branch, target)
+        with activate_branch(branch):
+            self.assertEqual(list(links().values_list("kind", flat=True)), [])
+            self.assertFalse(PDPool.objects.exists())
+
+        branch.merge(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertEqual(list(links().values_list("kind", flat=True)), [])
+
+        branch.revert(user=self.user)
+        self.assertEqual({link.pk: (mapping_identity(link), link.created) for link in links()}, mappings)
+        for (model, pk), created in targets.items():
+            self.assertEqual(model.objects.get(pk=pk).created, created, model)
+
+        with event_tracking(_change_request(self.user)):
+            again = import_server_config(server, intent, observation)
+        self.assertEqual(again.errors, 0, again.warnings)
+        self.assertEqual([entry.path for entry in again.entries if entry.outcome.value == "created"], [])
+        self.assertEqual(set(links().values_list("pk", flat=True)), set(mappings))
+
     def test_squash_restores_imported_rows_of_every_kind_and_reimport_creates_none(self):
         from netbox_dhcp.models import ClientClass, OptionDefinition, Subnet
 
