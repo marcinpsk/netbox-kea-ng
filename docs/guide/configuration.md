@@ -149,8 +149,9 @@ the old row and creates a new one. The run removes an object only after it read 
 the Server Configuration or the Reservation Snapshot was not read in full, the run keeps the objects of the kinds that
 the read covers, and one skipped entry for each kind tells why and how many objects it kept. The run also keeps an
 object when its removal would remove a DHCP plugin row that the run keeps, for example a Pool that an operator added
-to a stale Subnet, or when an Option still uses a stale Option Definition. A removal deletes the DHCP plugin row with
-its DHCP Options. It never deletes an IP address, a Prefix or an IP Range. The change log records each removal, and
+to a stale Subnet, when an Option still uses a stale Option Definition, or when a row that the run keeps names a
+stale client class in its `client_classes` (without the class, that row would reach more clients). A removal deletes
+the DHCP plugin row with its DHCP Options. It never deletes an IP address, a Prefix or an IP Range. The change log records each removal, and
 the import needs the delete permission of each DHCP plugin model that it can remove.
 
 The **Drift** card of the same page reads Kea after the page opens and compares it with the imported rows of each
