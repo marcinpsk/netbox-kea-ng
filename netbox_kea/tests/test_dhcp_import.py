@@ -1485,6 +1485,28 @@ class OptionCoverageTest(TestCase):
         path = "Dhcp4/client-classes[name=vendor-x]/option-data[code=43]"
         self.assertEqual(self._entries(summary, Kind.OPTION)[path], (Outcome.CREATED, None))
 
+    def test_an_option_does_not_bind_to_a_custom_definition_that_kea_does_not_declare(self):
+        OptionDefinition = apps.get_model(DHCP_PLUGIN, "OptionDefinition")
+        self._apply()
+        operator = OptionDefinition.objects.create(
+            name="operator-flag",
+            space="dhcp4",
+            code=228,
+            type="uint8",
+            family=4,
+            dhcp_server=imported_dhcp_server(self.server, 4),
+        )
+        config = _recorded_config(4)
+        config["option-data"].append({"code": 228, "space": "dhcp4", "data": "1"})
+
+        summary = self._apply(config)
+
+        self.assertEqual(
+            self._entries(summary, Kind.OPTION)["Dhcp4/option-data[code=228]"],
+            (Outcome.UNSUPPORTED, Capability.OPTION_WITHOUT_DEFINITION),
+        )
+        self.assertFalse(operator.options.exists())
+
     def test_an_option_that_names_a_class_without_a_plugin_row_is_skipped(self):
         config = _recorded_config(4)
         config["option-data"].append(

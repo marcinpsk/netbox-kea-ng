@@ -577,7 +577,6 @@ def _declared_key(opt: DHCPOption, space: str, owner: str | None, definitions: C
 def _resolve_option_definition(
     opt: DHCPOption,
     family: int,
-    dhcp_server,
     definitions: CustomDefinitions,
     capabilities: PluginCapabilities,
     class_name: str | None,
@@ -586,9 +585,9 @@ def _resolve_option_definition(
 
     As in Kea, a custom definition comes first: one that the client class *class_name* of the option declares, then
     one that the daemon declares. A declared definition that the import could not write stays the answer. Then the
-    sys4-shipped **standard** definition (by space+code, else space+name), then another custom definition of the
-    DHCPServer. Returns ``None`` for an option that the plugin holds without a definition, or why the option cannot
-    be imported.
+    sys4-shipped **standard** definition (by space+code, else space+name). A custom definition that Kea does not
+    declare is never used. Returns ``None`` for an option that the plugin holds without a definition, or why the
+    option cannot be imported.
     """
     OptionDefinition = _model("OptionDefinition")
     space = opt.space or kea_paths.default_space(family)
@@ -605,14 +604,6 @@ def _resolve_option_definition(
         found = standard.filter(name=opt.name).first()
     else:
         found = None
-    if found is not None:
-        return found
-
-    custom = OptionDefinition.objects.filter(standard=False, dhcp_server=dhcp_server, space=space)
-    if opt.code is not None:
-        found = custom.filter(code=opt.code).first()
-    elif opt.name:
-        found = custom.filter(name=opt.name).first()
     return found if found is not None else _without_definition(opt, space, family, capabilities)
 
 
@@ -724,7 +715,6 @@ def upsert_options(
     parent_obj,
     options,
     family: int,
-    dhcp_server,
     references: OptionReferences,
     summary: ImportSummary,
     parent_path: str,
@@ -746,9 +736,7 @@ def upsert_options(
     planned: list[_PlannedOption] = []
     for opt in options:
         path = kea_paths.option(parent_path, opt, family)
-        definition = _resolve_option_definition(
-            opt, family, dhcp_server, references.definitions, capabilities, class_name
-        )
+        definition = _resolve_option_definition(opt, family, references.definitions, capabilities, class_name)
         if isinstance(definition, _Unresolved):
             summary.record(definition.entry(family, Kind.OPTION, path))
             summary.warn(f"option {option_identity(opt, family)}: skipped. {definition.detail}")
@@ -1697,7 +1685,6 @@ def upsert_pools(
     subnet_obj,
     planned: PlannedSubnet,
     summary: ImportSummary,
-    dhcp_server,
     references: OptionReferences,
     claims,
     capabilities: PluginCapabilities,
@@ -1744,9 +1731,7 @@ def upsert_pools(
             continue
         if outcome is not None:
             summary.record(written(intent.family, Kind.POOL, path, outcome))
-        upsert_options(
-            pool_obj, pool_intent.options, intent.family, dhcp_server, references, summary, path, capabilities
-        )
+        upsert_options(pool_obj, pool_intent.options, intent.family, references, summary, path, capabilities)
 
 
 def _unusable_pool(family: int, path: str, key: PoolKey | None, result: RangeClaim | None) -> ImportEntry:
@@ -1891,7 +1876,7 @@ def _upsert_reservation(
         summary.warn(f"reservation {reservation.identity.value} in {scope} could not be imported. See server logs.")
         _skip_options(summary, reservation.family, path, reservation.options)
         return None
-    upsert_options(obj, reservation.options, reservation.family, dhcp_server, references, summary, path, capabilities)
+    upsert_options(obj, reservation.options, reservation.family, references, summary, path, capabilities)
     return obj, before
 
 
@@ -2414,13 +2399,11 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         server, dhcp_server, plan, adoption_servers, summary, capabilities
     )
     row_options = {planned.key: planned.intent.options for planned in plan.client_classes}
-    upsert_options(
-        dhcp_server, plan.server.global_options, plan.family, dhcp_server, references, summary, root, capabilities
-    )
+    upsert_options(dhcp_server, plan.server.global_options, plan.family, references, summary, root, capabilities)
     for name, row in class_rows.items():
         options = row_options[name]
         path = kea_paths.client_class(plan.family, name)
-        upsert_options(row, options, plan.family, dhcp_server, references, summary, path, capabilities, class_name=name)
+        upsert_options(row, options, plan.family, references, summary, path, capabilities, class_name=name)
     for planned_network in plan.shared_networks:
         summary.record(
             not_written(
@@ -2460,13 +2443,12 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
             subnet_obj,
             planned_subnet.intent.options,
             plan.family,
-            dhcp_server,
             references,
             summary,
             subnet_path(planned_subnet),
             capabilities,
         )
-        upsert_pools(server, subnet_obj, planned_subnet, summary, dhcp_server, references, pool_claims, capabilities)
+        upsert_pools(server, subnet_obj, planned_subnet, summary, references, pool_claims, capabilities)
     for source, outcomes in (("subnet", prefix_claims.prefixes), ("pool", pool_claims.ranges)):
         if any(result.outcome == "error" for result in outcomes.values()):
             summary.ownership.incomplete.add(source)
