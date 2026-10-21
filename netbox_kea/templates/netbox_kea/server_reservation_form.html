@@ -51,6 +51,16 @@
           </div>
           {% endif %}
           {% endfor %}
+          {% if user_context is not None %}
+          {# Read-only: no field edits the user context, and an edit keeps the value that Kea holds. #}
+          <div class="row mb-3">
+            <div class="col-sm-3 col-form-label text-lg-end">User Context</div>
+            <div class="col">
+              <pre class="bg-body-tertiary border rounded p-2 mb-0 small" id="reservation-user-context">{{ user_context }}</pre>
+              <div class="form-text">Read-only. Kea keeps this value when you save.</div>
+            </div>
+          </div>
+          {% endif %}
           {# Advisory NetBox IPAM conflict check (Add mode only) — populated on IP blur. #}
           <div id="netbox-ip-check"></div>
 
@@ -97,7 +107,7 @@
           {% endif %}
           <table class="table table-sm" id="options-table">
             <thead>
-              <tr><th>Option Name</th><th>Value</th><th>Always Send</th><th>Delete</th></tr>
+              <tr><th>Option Name</th><th>Value</th><th>Client Classes</th><th>Always Send</th><th>Delete</th></tr>
             </thead>
             <tbody id="formset-rows">
               {% for opt_form in options_formset %}
@@ -109,6 +119,7 @@
                     {% for err in opt_form.non_field_errors %}<div class="text-danger small">DHCP Option '{{ opt_form.name.value|default:"shown option" }}': {{ err }}</div>{% endfor %}
                   </td>
                   <td>{{ opt_form.data }}{% for err in opt_form.data.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}</td>
+                  <td>{{ opt_form.client_classes }}{% for err in opt_form.client_classes.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}</td>
                   <td class="text-center">{{ opt_form.always_send }}</td>
                   <td class="text-center">{{ opt_form.DELETE }}</td>
                 </tr>

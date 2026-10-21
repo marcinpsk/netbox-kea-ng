@@ -35,10 +35,15 @@ from .leases import (
 )
 from .models import Server
 from .pools import Pool, parse_pool
+from .reservation_edit import EditConflict, class_names, excluded_prefix_pairs
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES
 from .reservations import (
+    MAX_BOOT_FILE_NAME_LENGTH,
+    MAX_SERVER_HOSTNAME_LENGTH,
     ReservationCapabilities,
     ReservationIdentity,
+    parse_client_classes,
+    parse_next_server,
     reservation_identifier_choices,
     reservation_identifier_types,
 )
@@ -856,6 +861,24 @@ class _SyncToNetBoxForm(forms.Form):
         )
 
 
+def _clean_client_classes(value: str) -> str:
+    """Validate a comma-separated client class list and return it in its shown form."""
+    try:
+        return ", ".join(parse_client_classes(class_names(value or "")))
+    except ValueError as exc:
+        raise ValidationError("Enter each client class name once.") from exc
+
+
+def _client_classes_field(help_text: str) -> forms.CharField:
+    return forms.CharField(label="Client Classes", required=False, help_text=help_text)
+
+
+_RESERVATION_CLASSES_HELP = (
+    "Comma-separated client classes that Kea assigns to this client, for example <code>voip, printers</code>."
+    " Leave blank for none."
+)
+
+
 class _ReservationForm(_SyncToNetBoxForm):
     """The fields and live capabilities that the DHCPv4 and DHCPv6 Reservation forms share."""
 
@@ -910,8 +933,40 @@ class Reservation4Form(_ReservationForm):
         required=False,
         help_text=_RESERVATION_HOSTNAME_HELP,
     )
+    client_classes = _client_classes_field(_RESERVATION_CLASSES_HELP)
+    next_server = forms.CharField(
+        label="Next Server",
+        required=False,
+        help_text="IPv4 address of the boot server (the BOOTP <code>siaddr</code> field). Leave blank for none.",
+    )
+    server_hostname = forms.CharField(
+        label="Server Hostname",
+        required=False,
+        max_length=MAX_SERVER_HOSTNAME_LENGTH,
+        help_text="Name of the boot server (the BOOTP <code>sname</code> field). Leave blank for none.",
+    )
+    boot_file_name = forms.CharField(
+        label="Boot File Name",
+        required=False,
+        max_length=MAX_BOOT_FILE_NAME_LENGTH,
+        help_text="Boot file that the client loads (the BOOTP <code>file</code> field). Leave blank for none.",
+    )
     sync_to_netbox = forms.BooleanField(label="Sync to NetBox IPAM", required=False)
     managed_fingerprint = forms.CharField(required=False, widget=forms.HiddenInput())
+
+    def clean_client_classes(self) -> str:
+        """Validate the client class names."""
+        return _clean_client_classes(self.cleaned_data.get("client_classes", ""))
+
+    def clean_next_server(self) -> str:
+        """Validate the next server, or blank for none."""
+        value = (self.cleaned_data.get("next_server") or "").strip()
+        if not value:
+            return ""
+        try:
+            return str(parse_next_server(value))
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
 
     def clean_subnet_cidr(self) -> str:
         """Validate the value is a valid IPv4 subnet CIDR.
@@ -986,6 +1041,14 @@ class Reservation6Form(_ReservationForm):
             " Leave blank to remove any that are set."
         ),
     )
+    excluded_prefixes = forms.CharField(
+        label="Excluded Prefixes",
+        required=False,
+        help_text=(
+            "Comma-separated prefixes that Kea excludes from the delegated prefixes (RFC 6603)."
+            " Each one must be a longer prefix inside one delegated prefix, at most one for each. Leave blank for none."
+        ),
+    )
     identifier_type = forms.ChoiceField(
         label="Identifier Type",
         choices=_IDENTIFIER_TYPE_CHOICES_V6,
@@ -999,8 +1062,21 @@ class Reservation6Form(_ReservationForm):
         required=False,
         help_text=_RESERVATION_HOSTNAME_HELP,
     )
+    client_classes = _client_classes_field(_RESERVATION_CLASSES_HELP)
     sync_to_netbox = forms.BooleanField(label="Sync to NetBox IPAM", required=False)
     managed_fingerprint = forms.CharField(required=False, widget=forms.HiddenInput())
+
+    def clean_client_classes(self) -> str:
+        """Validate the client class names."""
+        return _clean_client_classes(self.cleaned_data.get("client_classes", ""))
+
+    def clean_excluded_prefixes(self) -> str:
+        """Validate each excluded prefix; ``clean`` pairs them with the delegated prefixes."""
+        try:
+            prefixes = parse_delegated_prefixes(self.cleaned_data.get("excluded_prefixes") or "")
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        return ",".join(prefixes)
 
     def clean_subnet_cidr(self) -> str:
         """Validate the value is a valid IPv6 subnet CIDR.
@@ -1048,10 +1124,11 @@ class Reservation6Form(_ReservationForm):
         return ",".join(prefixes)
 
     def clean(self) -> dict[str, Any] | None:
-        """Cross-validate identifier value against identifier_type."""
+        """Cross-validate identifier value against identifier_type, and pair the excluded prefixes."""
         cleaned = super().clean()
         if not cleaned:
             return cleaned
+        self._pair_excluded_prefixes(cleaned)
         capabilities = self.reservation_capabilities
         if capabilities is None or not capabilities.mutation_available:
             raise forms.ValidationError("Reservation mutation capabilities are unavailable.")
@@ -1068,6 +1145,18 @@ class Reservation6Form(_ReservationForm):
         except ValueError as exc:
             self.add_error("identifier", str(exc))
         return cleaned
+
+    def _pair_excluded_prefixes(self, cleaned: dict[str, Any]) -> None:
+        """Refuse excluded prefixes that the edit module cannot pair, before any Kea read."""
+        if "prefixes" not in cleaned or "excluded_prefixes" not in cleaned:
+            return
+        try:
+            excluded_prefix_pairs(
+                tuple(ipaddress.IPv6Network(value) for value in cleaned["prefixes"].split(",") if value),
+                tuple(ipaddress.IPv6Network(value) for value in cleaned["excluded_prefixes"].split(",") if value),
+            )
+        except EditConflict as exc:
+            self.add_error("excluded_prefixes", exc.message)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1686,7 +1775,13 @@ SubnetOptionsFormSet = forms.formset_factory(ConfigurationOptionsForm, extra=1, 
 
 
 class ReservationOptionsForm(ConfigurationOptionsForm):
-    """One Reservation option row with its complete shown DHCP Option."""
+    """One Reservation option row with its complete shown DHCP Option and its client classes."""
+
+    client_classes = _client_classes_field("Comma-separated client classes that receive this option.")
+
+    def clean_client_classes(self) -> str:
+        """Validate the client class names."""
+        return _clean_client_classes(self.cleaned_data.get("client_classes", ""))
 
 
 ReservationOptionsFormSet = forms.formset_factory(ReservationOptionsForm, extra=1, can_delete=True)

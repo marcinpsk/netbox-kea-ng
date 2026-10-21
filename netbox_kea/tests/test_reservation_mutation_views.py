@@ -2373,3 +2373,209 @@ class TestReservationSideEffectAfterApplied(TransactionTestCase):
         self.assertNotIn(
             "Kea applied the change, but NetBox could not write the journal entry; see server logs.", shown
         )
+
+
+_WIDENED = {
+    4: {
+        "subnet-id": 20,
+        "hw-address": "aa:bb:cc:dd:ee:ff",
+        "ip-address": "198.18.0.20",
+        "client-classes": ["voip", "boot"],
+        "next-server": "192.0.2.5",
+        "server-hostname": "boot.example.org",
+        "boot-file-name": "host.efi",
+        "option-data": [{"name": "domain-name", "data": "lab.example.org", "client-classes": ["lab"]}],
+        "user-context": {"asset": 42},
+    },
+    6: {
+        "subnet-id": 20,
+        "duid": "00:01:02:03",
+        "prefixes": ["2001:db8:500::/56", "2001:db8:600::/56"],
+        "excluded-prefixes": ["2001:db8:500:ff::/64", ""],
+        "client-classes": ["voip"],
+        "user-context": {"asset": 42},
+    },
+}
+_WIDENED_CIDR = {4: "198.18.0.0/24", 6: "2001:db8::/64"}
+_WIDENED_IDENTIFIER = {4: "hw-address", 6: "duid"}
+
+
+class TestWidenedReservationForms(_ViewTestBase):
+    """The Reservation add and edit pages show, set and clear each widened fact through the real forms."""
+
+    def _responses(self, family, current=None, final=None):
+        responses = _mutation_responses(family, 20, _WIDENED_CIDR[family], [_WIDENED_IDENTIFIER[family]])
+        responses["reservation-add"] = {"result": 0}
+        responses["reservation-update"] = {"result": 0}
+        reads = [_res_get(record) for record in (current, final) if record is not None]
+        if reads:
+            responses["reservation-get"] = queued(*reads)
+        return responses
+
+    def _edit_url(self, family):
+        url = reverse(f"plugins:netbox_kea:server_reservation{family}_edit", args=[self.server.pk, 20])
+        identifier = _WIDENED[family][_WIDENED_IDENTIFIER[family]]
+        return f"{url}?{_identity_query(identifier, _WIDENED_IDENTIFIER[family])}"
+
+    def _form_data(self, page):
+        """Return what the browser submits for the shown edit page, without a change."""
+        soup = BeautifulSoup(page.content, "html.parser")
+        form = soup.find("form", id="reservation-form")
+        data = {}
+        for field in form.find_all(["input", "select", "textarea"]):
+            name = field.get("name")
+            if not name or field.has_attr("disabled"):
+                continue
+            if field.name == "select":
+                selected = field.find("option", selected=True)
+                data[name] = selected["value"] if selected else ""
+            elif field.get("type") == "checkbox":
+                if field.has_attr("checked"):
+                    data[name] = "on"
+            else:
+                data[name] = field.get("value", field.text if field.name == "textarea" else "")
+        return data
+
+    def test_the_edit_page_shows_each_widened_fact_and_the_read_only_user_context(self):
+        for family in (4, 6):
+            with self.subTest(family=family), stub_kea(self._responses(family, _WIDENED[family])):
+                page = self.client.get(self._edit_url(family))
+            self.assertEqual(page.status_code, 200)
+            initial = page.context["form"].initial
+            self.assertEqual(initial["client_classes"], ", ".join(_WIDENED[family]["client-classes"]))
+            if family == 4:
+                self.assertEqual(
+                    (initial["next_server"], initial["server_hostname"], initial["boot_file_name"]),
+                    ("192.0.2.5", "boot.example.org", "host.efi"),
+                )
+                self.assertEqual(page.context["options_formset"].initial[0]["client_classes"], "lab")
+            else:
+                self.assertEqual(initial["excluded_prefixes"], "2001:db8:500:ff::/64")
+            soup = BeautifulSoup(page.content, "html.parser")
+            context = soup.find(id="reservation-user-context")
+            self.assertEqual(json.loads(context.get_text()), {"asset": 42})
+            self.assertIsNone(soup.find(attrs={"name": "user_context"}))
+
+    def test_an_unchanged_edit_sends_every_widened_key_back(self):
+        for family in (4, 6):
+            current = _WIDENED[family]
+            with stub_kea(self._responses(family, current)):
+                page = self.client.get(self._edit_url(family))
+            data = self._form_data(page)
+            with self.subTest(family=family), stub_kea(self._responses(family, current, current)) as kea:
+                response = self.client.post(self._edit_url(family), data)
+            self.assertEqual(response.status_code, 302)
+            sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+            self.assertEqual({key: sent[key] for key in current}, current)
+
+    def test_the_edit_form_sets_and_clears_each_widened_field(self):
+        changes = {
+            4: (
+                {
+                    "client_classes": "printers",
+                    "next_server": "192.0.2.9",
+                    "server_hostname": "tftp.example.org",
+                    "boot_file_name": "pxe.efi",
+                    "options-0-client_classes": "lab, voip",
+                },
+                {
+                    "client-classes": ["printers"],
+                    "next-server": "192.0.2.9",
+                    "server-hostname": "tftp.example.org",
+                    "boot-file-name": "pxe.efi",
+                },
+            ),
+            6: (
+                {"client_classes": "printers", "excluded_prefixes": "2001:db8:600:ff::/64"},
+                {"client-classes": ["printers"], "excluded-prefixes": ["", "2001:db8:600:ff::/64"]},
+            ),
+        }
+        for family, (submitted, expected) in changes.items():
+            current = _WIDENED[family]
+            with stub_kea(self._responses(family, current)):
+                page = self.client.get(self._edit_url(family))
+            shown = self._form_data(page)
+            for label, data, sent_keys, absent in (
+                ("set", {**shown, **submitted}, expected, ()),
+                ("clear", {**shown, **dict.fromkeys(submitted, "")}, {}, tuple(expected)),
+            ):
+                with (
+                    self.subTest(family=family, change=label),
+                    stub_kea(self._responses(family, current, current)) as kea,
+                ):
+                    response = self.client.post(self._edit_url(family), data)
+                    self.assertEqual(response.status_code, 302)
+                    sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+                    self.assertEqual({key: sent[key] for key in sent_keys}, sent_keys)
+                    self.assertEqual([key for key in absent if key in sent], [])
+                    self.assertEqual(sent["user-context"], {"asset": 42})
+                    if family == 4:
+                        classes = sent["option-data"][0].get("client-classes")
+                        self.assertEqual(classes, ["lab", "voip"] if label == "set" else None)
+
+    def test_the_add_form_sets_each_widened_field(self):
+        cases = (
+            (
+                4,
+                {
+                    "ip_address": "198.18.0.20",
+                    "identifier": "aa:bb:cc:dd:ee:ff",
+                    "client_classes": "voip, boot",
+                    "next_server": "192.0.2.5",
+                    "server_hostname": "boot.example.org",
+                    "boot_file_name": "host.efi",
+                    "options-TOTAL_FORMS": "1",
+                    "options-INITIAL_FORMS": "0",
+                    "options-0-name": "domain-name",
+                    "options-0-data": "lab.example.org",
+                    "options-0-client_classes": "lab",
+                },
+            ),
+            (
+                6,
+                {
+                    "identifier": "00:01:02:03",
+                    "prefixes": "2001:db8:500::/56,2001:db8:600::/56",
+                    "excluded_prefixes": "2001:db8:500:ff::/64",
+                    "client_classes": "voip",
+                },
+            ),
+        )
+        for family, submitted in cases:
+            data = {
+                "subnet_cidr": _WIDENED_CIDR[family],
+                "identifier_type": _WIDENED_IDENTIFIER[family],
+                **submitted,
+            }
+            expected = {key: value for key, value in _WIDENED[family].items() if key != "user-context"}
+            with self.subTest(family=family), stub_kea(self._responses(family, expected)) as kea:
+                response = self.client.post(
+                    reverse(f"plugins:netbox_kea:server_reservation{family}_add", args=[self.server.pk]), data
+                )
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(kea.bodies("reservation-add")[0]["arguments"]["reservation"], expected)
+
+    def test_invalid_widened_fields_are_form_errors_before_any_kea_write(self):
+        cases = (
+            (4, {"next_server": "255.255.255.255"}, "next_server"),
+            (4, {"next_server": "2001:db8::1"}, "next_server"),
+            (4, {"server_hostname": "s" * 64}, "server_hostname"),
+            (4, {"boot_file_name": "b" * 128}, "boot_file_name"),
+            (4, {"client_classes": "voip, voip"}, "client_classes"),
+            (6, {"prefixes": "2001:db8:600::/56", "excluded_prefixes": "2001:db8:500:ff::/64"}, "excluded_prefixes"),
+            (6, {"excluded_prefixes": "2001:db8:500:ff::/64"}, "excluded_prefixes"),
+        )
+        for family, submitted, field in cases:
+            data = {
+                "subnet_cidr": _WIDENED_CIDR[family],
+                "identifier_type": _WIDENED_IDENTIFIER[family],
+                "identifier": _WIDENED[family][_WIDENED_IDENTIFIER[family]],
+                **submitted,
+            }
+            with self.subTest(field=field, submitted=submitted), stub_kea(self._responses(family)) as kea:
+                response = self.client.post(
+                    reverse(f"plugins:netbox_kea:server_reservation{family}_add", args=[self.server.pk]), data
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.context["form"].errors.get(field), response.context["form"].errors)
+                self.assertNotIn("reservation-add", kea.commands())

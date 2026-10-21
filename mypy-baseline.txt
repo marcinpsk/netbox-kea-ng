@@ -51,10 +51,6 @@ netbox_kea/tables.py:0: note: Superclass:
 netbox_kea/tables.py:0: note: def render(self, value: int) -> Any
 netbox_kea/tables.py:0: note: Subclass:
 netbox_kea/tables.py:0: note: def render(self, value: int, record: dict[Any, Any]) -> Any
-netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, ... <9 more items>]", base class "Meta" defined the type as "tuple[str, str, str, str, str, str, str, str, str, str]")  [assignment]
-netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, str, str, str, str, str, str, str]", base class "Meta" defined the type as "tuple[str, str, str, str, str, str, str, str]")  [assignment]
-netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, ... <10 more items>]", base class "Meta" defined the type as "tuple[str, str, ... <9 more items>]")  [assignment]
-netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, str, str, str, str, str, str, str, str]", base class "Meta" defined the type as "tuple[str, str, str, str, str, str, str, str, str]")  [assignment]
 netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, str, str, str, str, str, str]", base class "Meta" defined the type as "tuple[str, str, str, str, str, str, str]")  [assignment]
 netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, str, str, str, str, str]", base class "Meta" defined the type as "tuple[str, str, str, str, str, str]")  [assignment]
 netbox_kea/tables.py:0: error: Incompatible types in assignment (expression has type "tuple[str, str, str, str, str, str]", base class "Meta" defined the type as "tuple[str, str, str, str, str]")  [assignment]

@@ -629,10 +629,42 @@ _RESERVATION_ADDRESSES_CELL = (
     "{% endif %}"
 )
 
+#: Each delegated prefix with the prefix that Kea excludes from it, if any.
 _RESERVATION_PREFIXES_CELL = (
     "{% for prefix in record.prefixes %}"
-    '<span class="font-monospace">{{ prefix }}</span>{% if not forloop.last %}<br>{% endif %}'
+    '<span class="font-monospace">{{ prefix.delegated }}</span>'
+    "{% if prefix.excluded %}"
+    ' <span class="text-muted small">excludes</span> <span class="font-monospace">{{ prefix.excluded }}</span>'
+    "{% endif %}"
+    "{% if not forloop.last %}<br>{% endif %}"
     "{% endfor %}"
+)
+
+_RESERVATION_CLIENT_CLASSES_CELL = (
+    '{% for name in record.client_classes %}<span class="badge text-bg-secondary">{{ name }}</span> {% endfor %}'
+)
+
+#: The DHCPv4 boot fields of a Reservation; Kea sends them in the BOOTP siaddr, sname and file fields.
+_RESERVATION_BOOT_CELL = (
+    "{% if record.next_server %}"
+    '<span class="text-muted small">Next server</span> <span class="font-monospace">{{ record.next_server }}</span>'
+    "{% if record.server_hostname or record.boot_file_name %}<br>{% endif %}"
+    "{% endif %}"
+    "{% if record.server_hostname %}"
+    '<span class="text-muted small">Server hostname</span> {{ record.server_hostname }}'
+    "{% if record.boot_file_name %}<br>{% endif %}"
+    "{% endif %}"
+    "{% if record.boot_file_name %}"
+    '<span class="text-muted small">Boot file name</span> <span class="font-monospace">{{ record.boot_file_name }}</span>'
+    "{% endif %}"
+)
+
+#: The opaque user context, read-only, folded so that a long value does not widen the table.
+_RESERVATION_USER_CONTEXT_CELL = (
+    "{% if record.user_context %}"
+    '<details><summary class="small">JSON</summary>'
+    '<pre class="small mb-0 text-break">{{ record.user_context }}</pre></details>'
+    "{% endif %}"
 )
 
 _RESERVATION_SCOPE_CELL = (
@@ -656,7 +688,8 @@ _RESERVATION_OPTIONS_CELL = (
     '<span class="font-monospace">Code {{ option.code }}</span>'
     "{% endif %}"
     ": {{ option.data }}"
-    "{% if option.csv_format is not None or option.always_send is not None or option.never_send is not None %}"
+    "{% if option.csv_format is not None or option.always_send is not None or option.never_send is not None"
+    " or option.client_classes %}"
     '<br><span class="text-muted small">'
     "{% if option.csv_format is not None %}"
     "<span class=\"me-2\">CSV format: {{ option.csv_format|yesno:'Yes,No' }}</span>"
@@ -665,7 +698,10 @@ _RESERVATION_OPTIONS_CELL = (
     "<span class=\"me-2\">Always send: {{ option.always_send|yesno:'Yes,No' }}</span>"
     "{% endif %}"
     "{% if option.never_send is not None %}"
-    "<span>Never send: {{ option.never_send|yesno:'Yes,No' }}</span>"
+    "<span class=\"me-2\">Never send: {{ option.never_send|yesno:'Yes,No' }}</span>"
+    "{% endif %}"
+    "{% if option.client_classes %}"
+    '<span>Client classes: {{ option.client_classes|join:", " }}</span>'
     "{% endif %}"
     "</span>"
     "{% endif %}"
@@ -674,6 +710,20 @@ _RESERVATION_OPTIONS_CELL = (
     '<span class="text-muted">None</span>'
     "{% endfor %}"
 )
+
+
+def _client_classes_column() -> tables.TemplateColumn:
+    """Create a Client Classes column; a table class cannot share a column instance."""
+    return tables.TemplateColumn(
+        verbose_name="Client Classes", orderable=False, template_code=_RESERVATION_CLIENT_CLASSES_CELL
+    )
+
+
+def _user_context_column() -> tables.TemplateColumn:
+    """Create a User Context column; a table class cannot share a column instance."""
+    return tables.TemplateColumn(
+        verbose_name="User Context", orderable=False, template_code=_RESERVATION_USER_CONTEXT_CELL
+    )
 
 
 class ReservationTable4(GenericTable):
@@ -697,9 +747,12 @@ class ReservationTable4(GenericTable):
         template_code=_RESERVATION_ADDRESS_CELL,
     )
     hostname = tables.Column(verbose_name="Hostname")
+    client_classes = _client_classes_column()
+    boot = tables.TemplateColumn(verbose_name="Boot", orderable=False, template_code=_RESERVATION_BOOT_CELL)
     options = tables.TemplateColumn(
         verbose_name="DHCP Options", orderable=False, template_code=_RESERVATION_OPTIONS_CELL
     )
+    user_context = _user_context_column()
     lease_status = tables.TemplateColumn(
         verbose_name="Lease",
         orderable=False,
@@ -714,26 +767,32 @@ class ReservationTable4(GenericTable):
 
     class Meta(GenericTable.Meta):
         empty_text = "No reservations found."
-        fields = (
+        fields: tuple[str, ...] = (
             "scope",
             "subnet_id",
             "hw_address",
             "identifier",
             "ip_address",
             "hostname",
+            "client_classes",
+            "boot",
             "options",
+            "user_context",
             "lease_status",
             "netbox_ip",
             "actions",
         )
         # ``identifier`` replaces ``hw_address`` by default: it shows the same value
         # for a MAC-keyed host and an actual value for every other identifier type.
-        default_columns = (
+        default_columns: tuple[str, ...] = (
             "scope",
             "identifier",
             "ip_address",
             "hostname",
+            "client_classes",
+            "boot",
             "options",
+            "user_context",
             "lease_status",
             "netbox_ip",
             "actions",
@@ -767,9 +826,11 @@ class ReservationTable6(GenericTable):
         template_code=_RESERVATION_PREFIXES_CELL,
     )
     hostname = tables.Column(verbose_name="Hostname")
+    client_classes = _client_classes_column()
     options = tables.TemplateColumn(
         verbose_name="DHCP Options", orderable=False, template_code=_RESERVATION_OPTIONS_CELL
     )
+    user_context = _user_context_column()
     lease_status = tables.TemplateColumn(
         verbose_name="Lease",
         orderable=False,
@@ -784,7 +845,7 @@ class ReservationTable6(GenericTable):
 
     class Meta(GenericTable.Meta):
         empty_text = "No reservations found."
-        fields = (
+        fields: tuple[str, ...] = (
             "scope",
             "subnet_id",
             "duid",
@@ -792,20 +853,24 @@ class ReservationTable6(GenericTable):
             "ip_addresses",
             "prefixes",
             "hostname",
+            "client_classes",
             "options",
+            "user_context",
             "lease_status",
             "netbox_ip",
             "actions",
         )
         # ``identifier`` replaces ``duid`` by default for the same reason as v4, and
         # ``prefixes`` is the only thing a prefix-delegation-only host reserves.
-        default_columns = (
+        default_columns: tuple[str, ...] = (
             "scope",
             "identifier",
             "ip_addresses",
             "prefixes",
             "hostname",
+            "client_classes",
             "options",
+            "user_context",
             "lease_status",
             "netbox_ip",
             "actions",
