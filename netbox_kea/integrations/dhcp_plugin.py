@@ -2197,23 +2197,24 @@ def _class_relation_rows(target) -> list:
 
 @dataclass(frozen=True)
 class _RemovalPlan:
-    """The read-only preflight of the removal of one stale row: what the delete removes, or why the row stays."""
+    """The read-only plan of the delete of one stale row: what it removes, or why the row stays."""
 
-    # The Options to delete before the row: each goes with a removed row and uses a definition that the delete removes.
+    # The Options to delete before the row: each uses a definition that the delete removes, and its owner goes too.
     options_first: tuple = ()
-    # The other stale rows of this run that the delete removes.
+    # The other candidate rows that the delete removes.
     cascaded: tuple = ()
+    # The candidate rows outside the delete whose removal it relies on.
+    depends_on: frozenset = frozenset()
     # Why the row stays, for its entry. Empty when nothing blocks the delete.
     blocked: str = ""
 
 
-def _removal_plan(target, removable: dict) -> _RemovalPlan:
-    """Plan the delete of the stale row *target* and find every reason to keep it, before any write.
+def _removal_plan(target, candidates: dict) -> _RemovalPlan:
+    """Plan the delete of the stale row *target* while the run also removes the rows in *candidates*. It writes nothing.
 
-    The row stays when its delete would also remove a DHCP plugin row that the run keeps, when a row that the run keeps
+    Every other row is kept. The row stays when its delete would also remove a kept DHCP plugin row, when a kept row
     uses a row that the delete removes, or when a kept row names it in a many-to-many relation (without it, that row
-    would reach more clients). An Option goes with the object that it is assigned to: an Option of a removed row, or
-    of another stale row of this run, keeps nothing.
+    would reach more clients). An Option goes with the object that it is assigned to.
     """
     Option = _model("Option")
     own = _row_key(target)
@@ -2224,58 +2225,74 @@ def _removal_plan(target, removable: dict) -> _RemovalPlan:
             collector.collect([target])
             break
         except ProtectedError as error:
-            removed = {own, *(_row_key(obj) for obj in _collected(collector))}
+            removed = {own, *(_row_key(obj) for obj in _collected(collector)), *candidates}
             protected = list(error.protected_objects)
-            own_options = [obj for obj in protected if isinstance(obj, Option) and _owner_key(obj) in removed]
-            if len(own_options) < len(protected):
-                users = [obj for obj in protected if obj not in own_options]
+            going = [obj for obj in protected if isinstance(obj, Option) and _owner_key(obj) in removed]
+            if len(going) < len(protected):
+                users = [obj for obj in protected if obj not in going]
                 return _RemovalPlan(blocked=f"It is kept while it is in use by {_counted_rows(users)}.")
-            first.update((obj.pk, obj) for obj in own_options)
+            first.update((obj.pk, obj) for obj in going)
     rows = _collected(collector)
+    footprint = {own, *(_row_key(obj) for obj in rows)}
     # Counts only: any viewer of the Server reads the run, without permission on the rows.
-    kept = [obj for obj in rows if _row_key(obj) not in removable and not _goes_with_parent(obj._meta.concrete_model)]
-    kept = [obj for obj in kept if _row_key(obj) != own]
+    kept = [
+        obj
+        for obj in rows
+        if _row_key(obj) not in candidates and _row_key(obj) != own and not _goes_with_parent(obj._meta.concrete_model)
+    ]
     if kept:
         return _RemovalPlan(blocked=f"It is kept because its removal would also remove {_counted_rows(kept)}.")
-    removed = {own, *(_row_key(obj) for obj in rows), *(_row_key(obj) for obj in first.values())}
-    stale = removed | set(removable)
-    users = [
-        obj
-        for obj in _class_relation_rows(target)
-        if _row_key(obj) not in removed and not (isinstance(obj, Option) and _owner_key(obj) in stale)
-    ]
+    depends = {_owner_key(obj) for obj in first.values()} - footprint
+    users = []
+    for obj in _class_relation_rows(target):
+        goes_with = _owner_key(obj) if isinstance(obj, Option) else _row_key(obj)
+        if goes_with in candidates or goes_with in footprint:
+            depends.add(goes_with)
+        else:
+            users.append(obj)
     if users:
         return _RemovalPlan(blocked=f"It is kept while a class list of {_counted_rows(users)} names it.")
-    cascaded = tuple(obj for obj in rows if _row_key(obj) != own and _row_key(obj) in removable)
-    return _RemovalPlan(tuple(first.values()), cascaded)
+    cascaded = tuple(obj for obj in rows if _row_key(obj) != own and _row_key(obj) in candidates)
+    return _RemovalPlan(tuple(first.values()), cascaded, frozenset(depends - footprint))
 
 
-def _remove_stale_row(row: _StaleRow, removable: dict, family: int, summary: ImportSummary) -> list[_StaleRow]:
-    """Delete one stale row through the ORM, so the lifecycle guards, the mapping cleanup and the change log run.
+def _removal_set(stale: dict[tuple, _StaleRow]) -> tuple[dict[tuple, _RemovalPlan], dict[tuple, str]]:
+    """Return the largest subset of stale rows whose deletion removes or changes no kept row.
 
-    :func:`_removal_plan` reads every reason to keep the row first, so a kept row has no write and queues no event.
-    Return the stale rows that the delete removed, *row* first. A row that the run keeps leaves *removable*.
+    Return the plan of each row of that subset, and why each other stale row stays. A row that stays is kept, so a
+    candidate whose plan relies on it stays too: the search repeats until no candidate drops out.
     """
-    path = row.source.path(family)
+    candidates = dict(stale)
+    blocked: dict[tuple, str] = {}
+    while True:
+        plans = {key: _removal_plan(row.target, candidates) for key, row in candidates.items()}
+        dropped = {key: plan.blocked for key, plan in plans.items() if plan.blocked}
+        if not dropped:
+            return plans, blocked
+        blocked |= dropped
+        for key in dropped:
+            del candidates[key]
+
+
+def _delete_planned(row: _StaleRow, plan: _RemovalPlan, family: int, summary: ImportSummary) -> bool:
+    """Delete one row of the removal set through the ORM, so the guards, the mapping cleanup and the change log run.
+
+    Return whether the delete succeeded. A failed delete changes nothing and has a write-failed entry.
+    """
     try:
-        plan = _removal_plan(row.target, removable)
-        if not plan.blocked:
-            with event_scope.atomic():
-                for option in plan.options_first:
-                    option.delete()
-                row.target.delete()
+        with event_scope.atomic():
+            # An Option that the delete of its own owner already removed is gone.
+            for option in _model("Option").objects.filter(pk__in=[option.pk for option in plan.options_first]):
+                option.delete()
+            row.target.delete()
     except event_scope.EventDispatchError:
         raise
     except Exception as exc:  # noqa: BLE001 (one failed removal must not abort the import)
-        removable.pop(_row_key(row.target))
+        path = row.source.path(family)
         summary.record(write_failed(family, row.source.kind, path))
         summary.warn(f"stale {row.source.kind.value} {path}: {exc}")
-        return []
-    if plan.blocked:
-        removable.pop(_row_key(row.target))
-        summary.record(not_written(family, row.source.kind, path, Reason.REMOVAL_BLOCKED, plan.blocked))
-        return []
-    return [row, *(removable[_row_key(obj)] for obj in plan.cascaded)]
+        return False
+    return True
 
 
 def mapped_rows(server, family: int, confirmed_before: datetime | None = None) -> dict[Kind, dict[MappingSource, Any]]:
@@ -2315,9 +2332,10 @@ def _stale_rows(server, plan: FamilyPlan, observed) -> dict[Kind, list[_StaleRow
 def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> None:
     """Remove each Stale DHCP Import Object of one family, children first, and report it.
 
-    An Incomplete observation of a kind keeps every row of that kind, with one entry that says why. A row whose delete
-    would also delete a DHCP plugin row that the run keeps, or that a row still uses, is kept and reported. IPAM
-    objects stay: the DHCP plugin rows only reference them.
+    An Incomplete observation of a kind keeps every row of that kind, with one entry that says why. Before any write,
+    :func:`_removal_set` finds the stale rows whose deletion removes or changes no kept row; each other stale row is
+    kept and reported. A row whose removal relies on a delete that failed is kept too. IPAM objects stay: the DHCP
+    plugin rows only reference them.
     """
     observed = observations(plan)
     stale = _stale_rows(server, plan, observed)
@@ -2332,14 +2350,30 @@ def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> No
             summary.record(
                 not_written(plan.family, kind, kind_path(plan.family, kind), Reason.INCOMPLETE_OBSERVATION, detail)
             )
+    plans, blocked = _removal_set(removable)
     removed: set[tuple] = set()
+    failed: set[tuple] = set()
     for kind in REMOVAL_ORDER:
         for row in stale.get(kind, []) if observed[kind].complete else ():
-            if _row_key(row.target) in removed:
+            key = _row_key(row.target)
+            path = row.source.path(plan.family)
+            if key in removed:
                 continue
-            for gone in _remove_stale_row(row, removable, plan.family, summary):
-                removed.add(_row_key(gone.target))
-                summary.record(written(plan.family, gone.source.kind, gone.source.path(plan.family), Outcome.REMOVED))
+            detail = blocked.get(key, "")
+            if not detail and plans[key].depends_on & failed:
+                detail = "It is kept because the removal of a row that its removal relies on failed."
+            if detail:
+                failed.add(key)
+                summary.record(not_written(plan.family, kind, path, Reason.REMOVAL_BLOCKED, detail))
+                continue
+            if not _delete_planned(row, plans[key], plan.family, summary):
+                failed.add(key)
+                continue
+            # A deleted instance has no pk, so the keys come from the plan.
+            gone = [key, *(_row_key(obj) for obj in plans[key].cascaded if _row_key(obj) not in removed)]
+            removed.update(gone)
+            for source in (removable[each].source for each in gone):
+                summary.record(written(plan.family, source.kind, source.path(plan.family), Outcome.REMOVED))
 
 
 # The DHCP plugin rows that apply_plan adds and changes.

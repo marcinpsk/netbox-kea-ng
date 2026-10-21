@@ -1428,13 +1428,13 @@ class OptionCoverageTest(TestCase):
         )
         self.assertTrue(OptionDefinition.objects.filter(pk=self._mapped_definition("boot:dhcp4:231").pk).exists())
 
-    def _apply_read(self, config: dict):
+    def _apply_read(self, config: dict, errors: int = 0):
         """Apply a Complete read of *config* that started now, so a mapping that it does not report is stale."""
         intent = parse_dhcp_config(config, 4)
         intent.configuration_complete = True
         intent.read_started = datetime.now(timezone.utc)
         summary = dhcp_plugin.apply_plan(self.server, plan_family(intent, None), probe())
-        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(summary.errors, errors, summary.warnings)
         return summary
 
     def test_a_stale_client_class_goes_with_its_own_definition_and_options(self):
@@ -1563,6 +1563,65 @@ class OptionCoverageTest(TestCase):
         self.assertEqual(
             (entry.reason, entry.detail),
             (Reason.REMOVAL_BLOCKED, "It is kept while a class list of 1 Subnet names it."),
+        )
+
+    def test_a_stale_class_stays_when_the_stale_owner_of_an_option_that_names_it_stays(self):
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        config = _recorded_config(4)
+        config["client-classes"] += [
+            {"name": "a", "test": "option[60].hex == 'a'"},
+            {
+                "name": "b",
+                "test": "option[60].hex == 'b'",
+                "option-data": [{"code": 15, "data": "b.example.org", "client-classes": ["a"]}],
+            },
+        ]
+        self._apply(config)
+        b = KeaDhcpLink.objects.get(server=self.server, family=4, kind="client_class", kea_identity="b")
+        operator = apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
+            name="operator subnet",
+            prefix=Prefix.objects.create(prefix=IPNetwork("203.0.113.0/24")),
+            dhcp_server=imported_dhcp_server(self.server, 4),
+        )
+        operator.evaluate_additional_classes.set([b.object_id])
+
+        summary = self._apply_read(_recorded_config(4))
+
+        # The kept Subnet keeps b, so b's Option stays, and removing a would take its class away.
+        blocked = {entry.path for entry in summary.entries if entry.reason == Reason.REMOVAL_BLOCKED}
+        self.assertEqual(blocked, {"Dhcp4/client-classes[name=a]", "Dhcp4/client-classes[name=b]"})
+        option = apps.get_model(DHCP_PLUGIN, "Option").objects.get(data="b.example.org")
+        self.assertEqual(list(option.client_classes.values_list("name", flat=True)), ["a"])
+
+    def test_a_stale_row_that_depends_on_a_failed_removal_stays(self):
+        from django.db.models.signals import pre_delete
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        self._apply()
+        printers = KeaDhcpLink.objects.get(server=self.server, family=4, kind="client_class", kea_identity="printers")
+        subnet = KeaDhcpLink.objects.get(server=self.server, family=4, kind="subnet", kea_subnet_id=10).sys4_object
+        config = _without_class(_recorded_config(4), "printers")
+        config["subnet4"] = []
+
+        def refuse(sender, instance, **kwargs):
+            if instance.pk == subnet.pk:
+                raise RuntimeError("the Subnet delete fails")
+
+        pre_delete.connect(refuse, sender=Subnet, weak=False)
+        try:
+            summary = self._apply_read(config, errors=1)
+        finally:
+            pre_delete.disconnect(refuse, sender=Subnet)
+
+        entries = {entry.path: entry.reason for entry in summary.entries if entry.reason is not None}
+        self.assertEqual(entries[_SUBNET_10], Reason.WRITE_FAILED)
+        self.assertEqual(entries["Dhcp4/client-classes[name=printers]"], Reason.REMOVAL_BLOCKED)
+        # The kept Subnet still evaluates printers: the class removal would have taken it away.
+        self.assertEqual(
+            list(Subnet.objects.get(pk=subnet.pk).evaluate_additional_classes.values_list("pk", flat=True)),
+            [printers.object_id],
         )
 
     def test_two_stale_client_classes_whose_options_name_each_other_are_both_removed(self):
