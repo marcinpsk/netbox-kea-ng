@@ -1526,6 +1526,51 @@ class OptionCoverageTest(TestCase):
         self.assertTrue(entry.detail.startswith("Client class voip was not imported."), entry.detail)
         self.assertEqual(self._options(imported_dhcp_server(self.server, 4), 3), [("192.0.2.254", ())])
 
+    def test_a_stale_client_class_that_a_kept_row_evaluates_is_kept(self):
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        self._apply()
+        printers = KeaDhcpLink.objects.get(server=self.server, family=4, kind="client_class", kea_identity="printers")
+        operator = apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
+            name="operator subnet",
+            prefix=Prefix.objects.create(prefix=IPNetwork("203.0.113.0/24")),
+            dhcp_server=imported_dhcp_server(self.server, 4),
+        )
+        operator.evaluate_additional_classes.set([printers.object_id])
+
+        summary = self._apply_read(_without_class(_recorded_config(4), "printers"))
+
+        self.assertEqual(list(operator.evaluate_additional_classes.values_list("pk", flat=True)), [printers.object_id])
+        (entry,) = [e for e in summary.entries if e.path == "Dhcp4/client-classes[name=printers]"]
+        self.assertEqual(
+            (entry.reason, entry.detail),
+            (Reason.REMOVAL_BLOCKED, "It is kept while a class list of 1 Subnet names it."),
+        )
+
+    def test_two_stale_client_classes_whose_options_name_each_other_are_both_removed(self):
+        config = _recorded_config(4)
+        config["client-classes"] += [
+            {
+                "name": "a",
+                "test": "option[60].hex == 'a'",
+                "option-data": [{"code": 15, "data": "a.example.org", "client-classes": ["b"]}],
+            },
+            {
+                "name": "b",
+                "test": "option[60].hex == 'b'",
+                "option-data": [{"code": 15, "data": "b.example.org", "client-classes": ["a"]}],
+            },
+        ]
+        self._apply(config)
+
+        summary = self._apply_read(_recorded_config(4))
+
+        removed = {entry.path for entry in summary.entries if entry.outcome == Outcome.REMOVED}
+        self.assertEqual(removed, {"Dhcp4/client-classes[name=a]", "Dhcp4/client-classes[name=b]"})
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        self.assertFalse(Option.objects.filter(data__in=["a.example.org", "b.example.org"]).exists())
+
     def test_an_option_that_names_a_class_without_a_plugin_row_is_skipped(self):
         config = _recorded_config(4)
         config["option-data"].append(

@@ -90,7 +90,7 @@ if TYPE_CHECKING:
     )
 
 from django.apps import apps
-from django.core.exceptions import FieldDoesNotExist, ValidationError
+from django.core.exceptions import ValidationError
 from django.db.models.deletion import Collector, ProtectedError
 from django.db.models.signals import post_delete
 
@@ -2149,104 +2149,121 @@ def _counted_rows(rows: list) -> str:
     )
 
 
-def _removal_footprint(target, removable: dict) -> tuple[list, list, set]:
-    """Return the rows that a delete of *target* also deletes: the stale rows of this run, and the rows that block it.
+class _FootprintCollector(Collector):
+    """A delete collector that leaves out the Options that the removal deletes before its row."""
 
-    Also return the key of each row that the delete removes. A row blocks the delete when it is a DHCP plugin row that
-    the run does not remove. Raises ``ProtectedError`` when a row still uses one of the rows.
-    """
-    # The same alias as the delete, so the check sees the rows that the delete would remove.
-    collector = Collector(using=target._state.db)
-    collector.collect([target])
+    def __init__(self, using: str, deleted_first: frozenset[int]) -> None:
+        super().__init__(using=using)
+        self.deleted_first = deleted_first
+
+    def related_objects(self, related_model, related_fields, objs):
+        """Return the related rows of *objs*, without the Options that go first."""
+        rows = super().related_objects(related_model, related_fields, objs)
+        return rows.exclude(pk__in=self.deleted_first) if related_model is _model("Option") else rows
+
+
+def _collected(collector: Collector) -> list:
     rows = [obj for objects in collector.data.values() for obj in objects]
     rows.extend(obj for queryset in collector.fast_deletes for obj in queryset)
-    own = _row_key(target)
-    cascaded = [obj for obj in rows if _row_key(obj) != own and _row_key(obj) in removable]
-    blocking = [
-        obj
-        for obj in rows
-        if _row_key(obj) != own and _row_key(obj) not in removable and not _goes_with_parent(obj._meta.concrete_model)
-    ]
-    return cascaded, blocking, {own, *(_row_key(obj) for obj in rows)}
+    return rows
 
 
-def _assigned_key(option) -> tuple:
+def _owner_key(option) -> tuple:
+    """Return the row key of the object that *option* is assigned to."""
     return option.assigned_object_type.model_class()._meta.concrete_model, option.assigned_object_id
 
 
-def _protecting_own_options(target) -> list:
-    """Return the Options that go with a delete of *target* but protect an Option Definition that it also deletes.
-
-    A client class deletes its own definitions, which the Options of the class use.
-    """
-    collector = Collector(using=target._state.db)
-    try:
-        collector.collect([target])
-    except ProtectedError as error:
-        removed = {_row_key(obj) for objects in collector.data.values() for obj in objects} | {_row_key(target)}
-        Option = _model("Option")
-        return [obj for obj in error.protected_objects if isinstance(obj, Option) and _assigned_key(obj) in removed]
-    return []
-
-
-def _class_users(target, removed: set) -> list:
-    """Return the DHCP plugin rows that the delete of *target* keeps and that name it in their ``client_classes``.
-
-    Such a row would lose the class, and its DHCP Option or object would then reach more clients.
-    """
-    users: list = []
+def _class_relation_rows(target) -> list:
+    """Return the DHCP plugin rows that name *target* in a many-to-many relation, such as ``client_classes``."""
+    rows: dict[tuple, Any] = {}
     for model in apps.get_app_config(PLUGIN_APP_LABEL).get_models():
+        for relation in model._meta.many_to_many:
+            if relation.related_model is target._meta.concrete_model:
+                rows.update((_row_key(row), row) for row in model.objects.filter(**{relation.name: target}))
+    return list(rows.values())
+
+
+@dataclass(frozen=True)
+class _RemovalPlan:
+    """The read-only preflight of the removal of one stale row: what the delete removes, or why the row stays."""
+
+    # The Options to delete before the row: each goes with a removed row and uses a definition that the delete removes.
+    options_first: tuple = ()
+    # The other stale rows of this run that the delete removes.
+    cascaded: tuple = ()
+    # Why the row stays, for its entry. Empty when nothing blocks the delete.
+    blocked: str = ""
+
+
+def _removal_plan(target, removable: dict) -> _RemovalPlan:
+    """Plan the delete of the stale row *target* and find every reason to keep it, before any write.
+
+    The row stays when its delete would also remove a DHCP plugin row that the run keeps, when a row that the run keeps
+    uses a row that the delete removes, or when a kept row names it in a many-to-many relation (without it, that row
+    would reach more clients). An Option goes with the object that it is assigned to: an Option of a removed row, or
+    of another stale row of this run, keeps nothing.
+    """
+    Option = _model("Option")
+    own = _row_key(target)
+    first: dict[int, Any] = {}
+    while True:
+        collector = _FootprintCollector(target._state.db, frozenset(first))
         try:
-            relation = model._meta.get_field("client_classes")
-        except FieldDoesNotExist:
-            continue
-        if relation.many_to_many and relation.related_model is target._meta.concrete_model:
-            users.extend(row for row in model.objects.filter(client_classes=target) if _row_key(row) not in removed)
-    return users
-
-
-class _RemovalBlocked(Exception):
-    """Other rows depend on a stale row: raised inside its removal transaction, so that nothing of it stays."""
-
-    def __init__(self, detail: str) -> None:
-        super().__init__(detail)
-        self.detail = detail
+            collector.collect([target])
+            break
+        except ProtectedError as error:
+            removed = {own, *(_row_key(obj) for obj in _collected(collector))}
+            protected = list(error.protected_objects)
+            own_options = [obj for obj in protected if isinstance(obj, Option) and _owner_key(obj) in removed]
+            if len(own_options) < len(protected):
+                users = [obj for obj in protected if obj not in own_options]
+                return _RemovalPlan(blocked=f"It is kept while it is in use by {_counted_rows(users)}.")
+            first.update((obj.pk, obj) for obj in own_options)
+    rows = _collected(collector)
+    # Counts only: any viewer of the Server reads the run, without permission on the rows.
+    kept = [obj for obj in rows if _row_key(obj) not in removable and not _goes_with_parent(obj._meta.concrete_model)]
+    kept = [obj for obj in kept if _row_key(obj) != own]
+    if kept:
+        return _RemovalPlan(blocked=f"It is kept because its removal would also remove {_counted_rows(kept)}.")
+    removed = {own, *(_row_key(obj) for obj in rows), *(_row_key(obj) for obj in first.values())}
+    stale = removed | set(removable)
+    users = [
+        obj
+        for obj in _class_relation_rows(target)
+        if _row_key(obj) not in removed and not (isinstance(obj, Option) and _owner_key(obj) in stale)
+    ]
+    if users:
+        return _RemovalPlan(blocked=f"It is kept while a class list of {_counted_rows(users)} names it.")
+    cascaded = tuple(obj for obj in rows if _row_key(obj) != own and _row_key(obj) in removable)
+    return _RemovalPlan(tuple(first.values()), cascaded)
 
 
 def _remove_stale_row(row: _StaleRow, removable: dict, family: int, summary: ImportSummary) -> list[_StaleRow]:
     """Delete one stale row through the ORM, so the lifecycle guards, the mapping cleanup and the change log run.
 
+    :func:`_removal_plan` reads every reason to keep the row first, so a kept row has no write and queues no event.
     Return the stale rows that the delete removed, *row* first. A row that the run keeps leaves *removable*.
     """
     path = row.source.path(family)
     try:
-        with event_scope.atomic():
-            for option in _protecting_own_options(row.target):
-                option.delete()
-            cascaded, blocking, removed = _removal_footprint(row.target, removable)
-            if blocking:
-                # Counts only: any viewer of the Server reads the run, without permission on the rows.
-                raise _RemovalBlocked(f"It is kept because its removal would also remove {_counted_rows(blocking)}.")
-            if users := _class_users(row.target, removed):
-                raise _RemovalBlocked(f"It is kept while {_counted_rows(users)} name it in client_classes.")
-            row.target.delete()
+        plan = _removal_plan(row.target, removable)
+        if not plan.blocked:
+            with event_scope.atomic():
+                for option in plan.options_first:
+                    option.delete()
+                row.target.delete()
     except event_scope.EventDispatchError:
         raise
-    except _RemovalBlocked as blocked:
-        removable.pop(_row_key(row.target))
-        summary.record(not_written(family, row.source.kind, path, Reason.REMOVAL_BLOCKED, blocked.detail))
-        return []
-    except ProtectedError as error:
-        removable.pop(_row_key(row.target))
-        detail = f"It is kept while it is in use by {_counted_rows(list(error.protected_objects))}."
-        summary.record(not_written(family, row.source.kind, path, Reason.REMOVAL_BLOCKED, detail))
-        return []
     except Exception as exc:  # noqa: BLE001 (one failed removal must not abort the import)
         removable.pop(_row_key(row.target))
         summary.record(write_failed(family, row.source.kind, path))
         summary.warn(f"stale {row.source.kind.value} {path}: {exc}")
         return []
-    return [row, *(removable[_row_key(obj)] for obj in cascaded)]
+    if plan.blocked:
+        removable.pop(_row_key(row.target))
+        summary.record(not_written(family, row.source.kind, path, Reason.REMOVAL_BLOCKED, plan.blocked))
+        return []
+    return [row, *(removable[_row_key(obj)] for obj in plan.cascaded)]
 
 
 def mapped_rows(server, family: int, confirmed_before: datetime | None = None) -> dict[Kind, dict[MappingSource, Any]]:
