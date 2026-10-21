@@ -57,7 +57,7 @@ v1 scope (import + diff, read-only against Kea):
 * **Removal.** A mapped row whose Kea source a Complete observation of its kind no longer reports is a Stale DHCP
   Import Object (:func:`remove_stale_objects`). The run removes it, children first, and reports it. An Incomplete
   observation keeps every row of its kind. A row whose delete would also delete a DHCP plugin row that the run keeps,
-  that an Option still uses, or that a kept row names in its client classes, stays. IPAM objects stay: ADR 0006 ownership decides them.
+  that an Option still uses, or that a kept row names in a client class relation, stays. IPAM objects stay: ADR 0006 ownership decides them.
 * **Deferred** (reported, not imported): shared-network grouping (the plugin's
   ``SharedNetwork`` requires a prefix Kea does not model — member subnets are
   flattened onto the ``DHCPServer``).

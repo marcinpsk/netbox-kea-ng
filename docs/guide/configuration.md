@@ -152,7 +152,9 @@ the Server Configuration or the Reservation Snapshot was not read in full, the r
 the read covers, and one skipped entry for each kind tells why and how many objects it kept. The run also keeps an
 object when its removal would remove a DHCP plugin row that the run keeps, for example a Pool that an operator added
 to a stale Subnet, when an Option still uses a stale Option Definition, or when a row that the run keeps names a
-stale client class in its `client_classes` (without the class, that row would reach more clients). A removal deletes
+stale client class in its `client_classes` or `evaluate_additional_classes` (without the class, that row would reach
+more clients). A DHCP Option of an object that the run removes goes with that object and keeps nothing. The run
+decides each removal before it writes anything, so a kept object leaves no change behind. A removal deletes
 the DHCP plugin row with its DHCP Options. It never deletes an IP address, a Prefix or an IP Range. The change log records each removal, and
 the import needs the delete permission of each DHCP plugin model that it can remove.
 
