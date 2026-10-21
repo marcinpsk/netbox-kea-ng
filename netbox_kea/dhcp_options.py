@@ -11,6 +11,8 @@ from typing import Any
 
 #: The largest DHCP Option code: DHCPv6 codes are 16 bits.
 MAX_OPTION_CODE = 65_535
+#: The largest one-octet DHCP Option code: every DHCPv4 code, and the limit of a plugin without 16-bit codes.
+MAX_ONE_OCTET_OPTION_CODE = 255
 
 # Kea standard option definitions (name, code) for the dhcp4 and dhcp6 spaces, which also back the option-name
 # suggestion list. Source: isc-projects/kea src/lib/dhcp/std_option_defs.h at tag Kea-3.2.0.

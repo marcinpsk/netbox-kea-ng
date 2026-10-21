@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..constants import Family
+from ..kea_paths import OPTION_DEF
 from .dhcp_import_report import Capability, Reason
 
 
@@ -151,7 +152,7 @@ def _global(family: Family) -> dict[str, Entry]:
             "DHCPServer.host_reservation_identifiers", (Capability.FLEX_ID_IDENTIFIER,)
         ),
         "option-data": Mapped("Option"),
-        "option-def": Mapped("OptionDefinition"),
+        OPTION_DEF: Mapped("OptionDefinition"),
         "client-classes": Mapped("ClientClass"),
         f"subnet{family}": Mapped("Subnet"),
         "reservations": Mapped("HostReservation"),
@@ -294,7 +295,7 @@ def _client_class(family: Family) -> dict[str, Entry]:
         "only-if-required": Deprecated("only-in-additional-list"),
     }
     if family == 4:
-        entries |= {**_fields("ClientClass", *_BOOT_FIELDS), "option-def": Mapped("OptionDefinition.client_class")}
+        entries |= {**_fields("ClientClass", *_BOOT_FIELDS), OPTION_DEF: Mapped("OptionDefinition.client_class")}
     else:
         entries |= _fields("ClientClass", *_PREFERRED_LIFETIMES)
     return entries
@@ -351,7 +352,7 @@ def _family(family: Family) -> dict[str, dict[str, Entry]]:
         "pools": _pool(),
         "reservations": _reservation(family),
         "client-classes": _client_class(family),
-        "option-def": _option_definition(family),
+        OPTION_DEF: _option_definition(family),
         "option-data": _option(family),
         "interfaces-config": _interfaces(family),
     }

@@ -97,7 +97,7 @@ from django.db.models.signals import post_delete
 from .. import event_scope, kea_paths
 from ..constants import IPNetworkValue
 from ..dhcp_mapping_lifecycle import coordinated_import, mapped_target, observe_mapping, target_models
-from ..dhcp_options import DHCPOption, option_identity
+from ..dhcp_options import MAX_ONE_OCTET_OPTION_CODE, DHCPOption, option_identity
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import OptionDefIntent, ServerConfigIntent
 from ..published_name import reservation_published_name
@@ -425,14 +425,14 @@ class _Unresolved:
 
 
 _DEFINITION_NOT_WRITTEN = _Unresolved(Reason.PARENT_NOT_IMPORTED, "See server logs.")
-# The largest option code that the DHCP plugin holds without the 16-bit capability: one octet.
-_ONE_OCTET_CODE = 255
 
 
 def _code_and_space_gap(space: str, code: int, family: int, capabilities: PluginCapabilities) -> _Unresolved | None:
     """Return why the DHCP plugin cannot hold an option *code* in *space*, in the order of the parity ledger."""
-    if family == 6 and code > _ONE_OCTET_CODE and not capabilities.has(Capability.OPTION_CODE_16_BIT):
-        detail = f"The installed DHCP plugin cannot hold the option code {code}, which is above {_ONE_OCTET_CODE}."
+    if family == 6 and code > MAX_ONE_OCTET_OPTION_CODE and not capabilities.has(Capability.OPTION_CODE_16_BIT):
+        detail = (
+            f"The installed DHCP plugin cannot hold the option code {code}, which is above {MAX_ONE_OCTET_OPTION_CODE}."
+        )
         return _Unresolved(Reason.PLUGIN_GAP, detail, Capability.OPTION_CODE_16_BIT)
     if not capabilities.holds_space(space):
         detail = f"The installed DHCP plugin cannot hold the option space {space}."
@@ -451,11 +451,11 @@ def _without_definition(opt: DHCPOption, space: str, family: int, capabilities: 
 
 
 def _option_definition_fields(
-    obj, def_intent: OptionDefIntent, family: int, scope: dict, capabilities: PluginCapabilities, summary, source
+    obj, def_intent: OptionDefIntent, family: int, parent_field: dict, capabilities: PluginCapabilities, summary, source
 ) -> dict:
     """Return the managed fields of a custom Option Definition: all but its name, which stays as created or renamed.
 
-    *scope* names its parent: the DHCPServer or the client class. The plugin refuses a definition with both.
+    *parent_field* sets its parent: the DHCPServer or the client class. The plugin refuses a definition with both.
     """
     return {
         "space": def_intent.space,
@@ -467,7 +467,7 @@ def _option_definition_fields(
         "encapsulate": def_intent.encapsulate,
         "dhcp_server_id": None,
         "client_class_id": None,
-        **scope,
+        **parent_field,
         **_user_context_fields(obj, def_intent.user_context, capabilities, summary, source, "Option Definition"),
     }
 
@@ -510,7 +510,7 @@ def _write_option_definition(
         summary.record(gap.entry(family, Kind.OPTION_DEFINITION, path))
         return _Unresolved(gap.reason, f"Its Option Definition is not imported. {gap.detail}", gap.capability)
     in_class = key.client_class is not None
-    scope = {"client_class_id": parent.pk} if in_class else {"dhcp_server_id": parent.pk}
+    parent_field = {"client_class_id": parent.pk} if in_class else {"dhcp_server_id": parent.pk}
     source = _Source(family, Kind.OPTION_DEFINITION, path)
     outcome = None
     try:
@@ -524,22 +524,22 @@ def _write_option_definition(
                 obj = _unlinked(adoptable.filter(family=family)).first()
                 if obj is None and held.exists():
                     return _held_option_definition(held, family, key, path, summary)
-            if obj is None:
+            created = obj is None
+            if created:
                 obj = OptionDefinition(name=def_intent.name, standard=False)
-                fields = _option_definition_fields(obj, def_intent, family, scope, capabilities, summary, source)
+            fields = _option_definition_fields(obj, def_intent, family, parent_field, capabilities, summary, source)
+            if created:
                 _create_row(obj, fields, capabilities)
                 outcome = Outcome.CREATED
-            else:
-                fields = _option_definition_fields(obj, def_intent, family, scope, capabilities, summary, source)
-                if changes := _managed_changes(obj, fields, capabilities):
-                    _save_changes(obj, changes)
-                    outcome = Outcome.UPDATED
+            elif changes := _managed_changes(obj, fields, capabilities):
+                _save_changes(obj, changes)
+                outcome = Outcome.UPDATED
             observe_mapping(definitions.server, family, obj, key.source)
     except event_scope.EventDispatchError:
         raise
     except ManagedFieldsMismatch:
         raise
-    except Exception as exc:  # noqa: BLE001 — a bad definition must not abort the import
+    except Exception as exc:  # noqa: BLE001 (a bad definition must not abort the import)
         summary.record(write_failed(family, Kind.OPTION_DEFINITION, path))
         summary.warn(f"option-def code={key.code}: {exc}")
         return _DEFINITION_NOT_WRITTEN
@@ -548,12 +548,17 @@ def _write_option_definition(
     return obj
 
 
+def _class_not_imported(name: str) -> str:
+    """Return the detail of a fact whose client class *name* Kea defines but this run did not import."""
+    return f"Client class {name} was not imported."
+
+
 def _skip_class_definitions(
-    definitions: CustomDefinitions, planned: PlannedClientClass, summary: ImportSummary, detail: str
+    definitions: CustomDefinitions, planned: PlannedClientClass, summary: ImportSummary
 ) -> None:
     """Record each custom Option Definition of a client class that was not imported."""
     for planned_definition in planned.option_definitions:
-        reason = _Unresolved(Reason.PARENT_NOT_IMPORTED, detail)
+        reason = _Unresolved(Reason.PARENT_NOT_IMPORTED, _class_not_imported(planned.key))
         definitions.written[planned_definition.key] = reason
         path = planned_definition.key.source.path(planned.intent.family)
         summary.record(reason.entry(planned.intent.family, Kind.OPTION_DEFINITION, path))
@@ -706,7 +711,7 @@ def _write_option(item: _PlannedOption, row, parent_obj, ct, family: int, summar
         raise
     except ManagedFieldsMismatch:
         raise
-    except Exception as exc:  # noqa: BLE001 — one bad option must not abort the import
+    except Exception as exc:  # noqa: BLE001 (one bad option must not abort the import)
         summary.record(write_failed(family, Kind.OPTION, item.path))
         summary.warn(f"option {option_identity(item.option, family)}: {exc}")
 
@@ -1214,7 +1219,7 @@ def upsert_client_class(
             if obj is None and name_taken:
                 _record_name_taken(summary, intent.family, path, planned.key, capabilities)
                 _skip_options(summary, intent.family, path, intent.options)
-                _skip_class_definitions(definitions, planned, summary, f"Client class {planned.key} was not imported.")
+                _skip_class_definitions(definitions, planned, summary)
                 return None
             if obj is None:
                 obj = ClientClass()
@@ -1235,7 +1240,7 @@ def upsert_client_class(
         summary.record(write_failed(intent.family, Kind.CLIENT_CLASS, path))
         summary.warn(f"client-class {intent.name}: {exc}")
         _skip_options(summary, intent.family, path, intent.options)
-        _skip_class_definitions(definitions, planned, summary, f"Client class {planned.key} was not imported.")
+        _skip_class_definitions(definitions, planned, summary)
         return None
 
     if name_taken:
@@ -1587,7 +1592,7 @@ class ClassReferences:
                 continue
             path = kea_paths.class_reference(parent_path, key, name)
             if name in self.defined:
-                detail = f"Client class {name} was not imported."
+                detail = _class_not_imported(name)
                 summary.record(not_written(self.family, kind, path, Reason.PARENT_NOT_IMPORTED, detail))
             else:
                 detail = f"The DHCP plugin has no row for {name}, a class that Kea's client-classes does not define."
@@ -1603,7 +1608,7 @@ class ClassReferences:
         if missing is None:
             return frozenset(self.imported[name] for name in names)
         if missing in self.defined:
-            cause = f"Client class {missing} was not imported."
+            cause = _class_not_imported(missing)
         else:
             cause = f"The DHCP plugin has no row for {missing}, a class that Kea's client-classes does not define."
         detail = f"{cause} Without the class the option would reach more clients."
@@ -2189,7 +2194,7 @@ def _class_users(target, removed: set) -> list:
 
     Such a row would lose the class, and its DHCP Option or object would then reach more clients.
     """
-    users = []
+    users: list = []
     for model in apps.get_app_config(PLUGIN_APP_LABEL).get_models():
         try:
             relation = model._meta.get_field("client_classes")

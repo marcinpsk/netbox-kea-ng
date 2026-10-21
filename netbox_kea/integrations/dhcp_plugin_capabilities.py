@@ -18,6 +18,7 @@ from django.apps import apps
 from django.core.exceptions import FieldDoesNotExist, ValidationError
 from django.db import models
 
+from ..dhcp_options import MAX_OPTION_CODE
 from ..reservations import FLEX_ID
 from .dhcp_import_report import Capability
 
@@ -40,8 +41,6 @@ _KEA_OBJECT_MODELS = (
 )
 _KEA_NAME_MODELS = ("ClientClass", "SharedNetwork")
 _NETWORK_MODELS = ("Subnet", "SharedNetwork")
-# The largest DHCPv6 option code (RFC 9915: 16 bits).
-_MAX_DHCP6_CODE = 65535
 
 
 def _field(model: type[models.Model], name: str):
@@ -109,7 +108,7 @@ def _option_code_16_bit(model: ModelLookup) -> bool:
     if field is None:
         return False
     try:
-        field.run_validators(_MAX_DHCP6_CODE)
+        field.run_validators(MAX_OPTION_CODE)
     except ValidationError:
         return False
     return True
@@ -172,7 +171,7 @@ CHECKS: dict[Capability, Check] = {
         _option_spaces,
     ),
     Capability.OPTION_CODE_16_BIT: Check(
-        f"The validators of OptionDefinition.code accept {_MAX_DHCP6_CODE}.", _option_code_16_bit
+        f"The validators of OptionDefinition.code accept {MAX_OPTION_CODE}.", _option_code_16_bit
     ),
     Capability.OPTION_WITHOUT_DEFINITION: Check(
         "Option.definition is nullable, and Option has the fields space and code.", _option_without_definition
