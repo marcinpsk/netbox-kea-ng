@@ -871,9 +871,12 @@ class WidenedReservationEditTests(TestCase):
                 "2001:db8:500:ff::/64 is not inside a delegated prefix",
             ),
             (
-                "two delegated prefixes hold it",
-                {"delegated_prefixes": (IPv6Network("2001:db8:500::/48"), current.delegated_prefixes[0])},
-                "2001:db8:500:ff::/64 is inside more than one delegated prefix",
+                "two delegated prefixes hold a new one",
+                {
+                    "delegated_prefixes": (IPv6Network("2001:db8:500::/48"), current.delegated_prefixes[0]),
+                    "excluded_prefixes": (IPv6Network("2001:db8:500:fe::/64"),),
+                },
+                "2001:db8:500:fe::/64 is inside more than one delegated prefix",
             ),
             (
                 "one delegated prefix would exclude two",
@@ -947,12 +950,15 @@ class WidenedReservationEditTests(TestCase):
             [classed, {"name": "domain-name", "data": "voip.example.org", "client-classes": ["voip"]}],
         )
 
+    def test_a_class_field_drops_empty_and_repeated_names_like_kea(self):
+        self.assertEqual(reservation_edit.class_names(" voip, ,printers, voip "), ("voip", "printers"))
+
     def test_an_unchanged_class_field_keeps_live_names_that_the_text_cannot_show(self):
-        # Kea keeps a comma in a class name, and untrimmed names of an option.
+        # Kea keeps a comma in a class name, and untrimmed names of an option. "x" repeats a part of "x,y".
         option = {"name": "domain-name", "data": "lab.example.org", "client-classes": ["a,b", " c "]}
-        raw = {**_raw(), "client-classes": ["x,y", "z"], "option-data": [option]}
+        raw = {**_raw(), "client-classes": ["x,y", "x"], "option-data": [option]}
         current, state = self._shown(4, raw)
-        self.assertEqual(state.initial["client_classes"], "x,y, z")
+        self.assertEqual(state.initial["client_classes"], "x,y, x")
         self.assertEqual(state.options_initial[0]["client_classes"], "a,b,  c ")
         shown_option = current.options[0]
         row = reservation_edit.OptionRow(
@@ -968,5 +974,29 @@ class WidenedReservationEditTests(TestCase):
         )
         _outcome, kea = self._save_edit(4, raw, values)
         sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
-        self.assertEqual(sent["client-classes"], ["x,y", "z"])
+        self.assertEqual(sent["client-classes"], ["x,y", "x"])
         self.assertEqual(sent["option-data"], [{**option, "data": "changed.example.org"}])
+
+    def test_a_concurrent_change_to_the_client_classes_of_an_option_is_a_conflict(self):
+        option = {"name": "domain-name", "data": "lab.example.org", "client-classes": ["lab"]}
+        raw = {**_raw(), "option-data": [option]}
+        current, _state = self._shown(4, raw)
+        live = {**raw, "option-data": [{**option, "client-classes": ["voip"]}]}
+        row = reservation_edit.OptionRow(
+            "domain-name", "changed.example.org", original_option=current.options[0], client_classes=("lab",)
+        )
+        with self.assertRaisesRegex(ReservationConflict, "domain-name"):
+            self._save_edit(4, raw, self._values(current, option_rows=(row,)), live=live)
+
+    def test_an_edit_keeps_a_live_pair_that_two_delegated_prefixes_could_hold(self):
+        # A /48 and a /56 inside it both hold the excluded prefix; Kea pairs it with the /56 by position.
+        raw = {
+            **_raw(6),
+            "prefixes": ["2001:db8:500::/48", "2001:db8:500:100::/56"],
+            "excluded-prefixes": ["", "2001:db8:500:100:ff::/80"],
+        }
+        current, _state = self._shown(6, raw)
+        outcome, kea = self._save_edit(6, raw, self._values(current, hostname="renamed"))
+        self.assertEqual(outcome.application, "applied")
+        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+        self.assertEqual(sent["excluded-prefixes"], ["", "2001:db8:500:100:ff::/80"])

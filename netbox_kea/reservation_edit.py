@@ -134,8 +134,8 @@ def class_text(classes: tuple[str, ...]) -> str:
 
 
 def class_names(text: str) -> tuple[str, ...]:
-    """Return the names of a client class field, without the empty ones."""
-    return tuple(name for name in (part.strip() for part in text.split(",")) if name)
+    """Return the names of a client class field without the empty and the repeated ones, as Kea stores a host's."""
+    return tuple(dict.fromkeys(name for name in (part.strip() for part in text.split(",")) if name))
 
 
 def _shown_classes(live: tuple[str, ...], submitted: tuple[str, ...]) -> tuple[str, ...]:
@@ -144,18 +144,28 @@ def _shown_classes(live: tuple[str, ...], submitted: tuple[str, ...]) -> tuple[s
 
 
 def excluded_prefix_pairs(
-    delegated: tuple[ipaddress.IPv6Network, ...], excluded: tuple[ipaddress.IPv6Network, ...]
+    delegated: tuple[ipaddress.IPv6Network, ...],
+    excluded: tuple[ipaddress.IPv6Network, ...],
+    live: tuple[ExcludedPrefix, ...] = (),
 ) -> tuple[ExcludedPrefix, ...]:
-    """Pair each excluded prefix with the one delegated prefix that holds it, in the order of *delegated*.
+    """Pair each excluded prefix with the delegated prefix that holds it, in the order of *delegated*.
+
+    An excluded prefix stays with its *live* delegated prefix while that one is still delegated. Any other one pairs
+    with the one delegated prefix that holds it.
 
     Raises:
         EditConflict: If an excluded prefix is in no delegated prefix or in more than one, or a delegated prefix
             would exclude two prefixes.
 
     """
+    kept = {pair.excluded: pair.delegated for pair in live if pair.delegated in delegated}
     paired: dict[ipaddress.IPv6Network, ipaddress.IPv6Network] = {}
     for prefix in excluded:
-        holders = [held for held in delegated if prefix.prefixlen > held.prefixlen and prefix.subnet_of(held)]
+        holders = (
+            [kept[prefix]]
+            if prefix in kept
+            else [held for held in delegated if prefix.prefixlen > held.prefixlen and prefix.subnet_of(held)]
+        )
         if len(holders) != 1:
             where = "is not inside a delegated prefix" if not holders else "is inside more than one delegated prefix"
             raise EditConflict(
@@ -438,7 +448,7 @@ def build_edit(
         raise EditConflict(exc.message) from exc
     options = _option_edit(values.option_rows, shown.options)
     prefixes = current.delegated_prefixes if current.family == 4 else values.delegated_prefixes
-    excluded = excluded_prefix_pairs(prefixes, values.excluded_prefixes)
+    excluded = excluded_prefix_pairs(prefixes, values.excluded_prefixes, current.excluded_prefixes)
     return ReservationChange(
         addresses=_change(current.addresses, values.addresses, ()),
         delegated_prefixes=_change(current.delegated_prefixes, prefixes, ()),

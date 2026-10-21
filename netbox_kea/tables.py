@@ -782,6 +782,7 @@ class ReservationTable4(GenericTable):
         )
         # ``identifier`` replaces ``hw_address`` by default: it shows the same value
         # for a MAC-keyed host and an actual value for every other identifier type.
+        # ``user_context`` is opaque JSON that few hosts set, so it is not a default column.
         default_columns: tuple[str, ...] = (
             "scope",
             "identifier",
@@ -790,7 +791,6 @@ class ReservationTable4(GenericTable):
             "client_classes",
             "boot",
             "options",
-            "user_context",
             "lease_status",
             "netbox_ip",
             "actions",
@@ -868,7 +868,6 @@ class ReservationTable6(GenericTable):
             "hostname",
             "client_classes",
             "options",
-            "user_context",
             "lease_status",
             "netbox_ip",
             "actions",

@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 from django.contrib import messages as django_messages
 from django.urls import reverse
 
+from netbox_kea import tables
 from netbox_kea.views.notices import HEADLINES, Notice
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
@@ -1237,6 +1238,11 @@ class TestWidenedReservationPage(_ViewTestBase):
     """The Reservation page shows each widened fact of a Reservation as Kea 3.2 returned it."""
 
     def _row(self, family, cidr, host):
+        # User Context is not a default column, so the user selects it.
+        table = getattr(tables, f"ReservationTable{family}")
+        self.assertNotIn("user_context", table.Meta.default_columns)
+        columns = [*table.Meta.default_columns, "user_context"]
+        self.user.config.set(f"tables.ReservationTable{family}.columns", columns, commit=True)
         responses = _catalogue_responses(family, 21, cidr)
         responses["reservation-get-page"] = _res_page([host])
         no_leases = {"result": 0, "arguments": {"leases": []}}

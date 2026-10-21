@@ -155,14 +155,16 @@ Integrations that read leases from the plugin must change with the typed lease r
 - Per-reservation DHCP options. Each option row also takes the client classes that receive the option
 - Client classes of the Reservation, and for DHCPv4 the boot fields **Next Server**, **Server Hostname** and
   **Boot File Name**. Kea refuses a broadcast next server, a server hostname of more than 63 characters and a boot
-  file name of more than 127 characters, and so does the form. Kea keeps a comma in a class name; while you do not
-  change the text of a class field, the edit keeps such a name
-- DHCPv6 excluded prefixes (RFC 6603). Enter each excluded prefix; the form pairs it with the delegated prefix that
-  holds it, so you can reorder or widen the delegated prefixes. The form refuses an excluded prefix that is not a
-  longer prefix inside exactly one delegated prefix, and a second one for the same delegated prefix. The table shows
-  each delegated prefix with the prefix that it excludes
-- The user context of a Reservation shows read-only in the table (folded), in the REST API and on the edit page. An
-  edit keeps the value that Kea holds, also when another tool changed it after you opened the form
+  file name of more than 127 characters, and so does the form. A class field drops a repeated name, as Kea does.
+  Kea keeps a comma in a class name. While you do not change the text of a class field, the edit keeps such a name
+- DHCPv6 excluded prefixes (RFC 6603). Enter each excluded prefix. An excluded prefix stays with its delegated
+  prefix while you keep that one, so you can reorder the delegated prefixes. A new excluded prefix pairs with the
+  delegated prefix that holds it. The form refuses an excluded prefix that is not a longer prefix inside exactly one
+  delegated prefix, and a second one for the same delegated prefix. The table shows each delegated prefix with the
+  prefix that it excludes
+- The user context of a Reservation shows read-only on the edit page, in the REST API, and in the **User Context**
+  column of the table, which you add with **Configure Table**. An edit keeps the value that Kea holds, also when
+  another tool changed it after you opened the form
 - The hostname field takes the name that clients get. Kea adds the effective `ddns-qualifying-suffix`
   (the Pool that contains the reserved address, then the Subnet, the Shared Network and the global value) to a
   reserved hostname, except to a name that ends in a dot or already ends in the suffix. When a Pool of the
@@ -200,8 +202,8 @@ Integrations that read leases from the plugin must change with the typed lease r
 - A transfer document carries `client_classes`, `next_server`, `server_hostname` and `boot_file_name` (DHCPv4),
   `excluded_prefixes` (DHCPv6, a list of `delegated_prefix` and `excluded_prefix` pairs), `user_context`, and the
   `client_classes` of each option. Each of them is optional, so a document from an earlier release still imports.
-  An import sets each of them, the user context included. A `user_context` must be JSON data: the import refuses a
-  YAML date, set, non-text key or NaN
+  An import sets each of them except `user_context`, which is read-only: the import accepts it in the document and
+  does not send it to Kea
 - The import's **Sync to NetBox** option claims each created Reservation's addresses in NetBox IPAM. NetBox checks
   the manual Sync permissions once before it sends any entry. A missing permission refuses the import. A failed
   IPAM claim appears on that entry in the report, and the import continues with the next entry. Without this option,

@@ -2468,6 +2468,17 @@ class TestWidenedReservationForms(_ViewTestBase):
             sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
             self.assertEqual({key: sent[key] for key in current}, current)
 
+    def test_an_unchanged_boot_text_keeps_its_live_spaces(self):
+        current = {**_WIDENED[4], "server-hostname": " boot.example.org ", "boot-file-name": "host.efi "}
+        with stub_kea(self._responses(4, current)):
+            page = self.client.get(self._edit_url(4))
+        data = {**self._form_data(page), "hostname": "renamed"}
+        with stub_kea(self._responses(4, current, current)) as kea:
+            response = self.client.post(self._edit_url(4), data)
+        self.assertEqual(response.status_code, 302)
+        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+        self.assertEqual((sent["server-hostname"], sent["boot-file-name"]), (" boot.example.org ", "host.efi "))
+
     def test_the_edit_form_sets_and_clears_each_widened_field(self):
         changes = {
             4: (
@@ -2520,7 +2531,8 @@ class TestWidenedReservationForms(_ViewTestBase):
                 {
                     "ip_address": "198.18.0.20",
                     "identifier": "aa:bb:cc:dd:ee:ff",
-                    "client_classes": "voip, boot",
+                    # Kea drops a repeated class name of a host, and so does the field.
+                    "client_classes": "voip, voip, boot",
                     "next_server": "192.0.2.5",
                     "server_hostname": "boot.example.org",
                     "boot_file_name": "host.efi",
@@ -2561,7 +2573,7 @@ class TestWidenedReservationForms(_ViewTestBase):
             (4, {"next_server": "2001:db8::1"}, "next_server"),
             (4, {"server_hostname": "s" * 64}, "server_hostname"),
             (4, {"boot_file_name": "b" * 128}, "boot_file_name"),
-            (4, {"client_classes": "voip, voip"}, "client_classes"),
+            (6, {"prefixes": "2001:db8:500::/56", "excluded_prefixes": "2001:db8:500:ff::1/64"}, "excluded_prefixes"),
             (6, {"prefixes": "2001:db8:600::/56", "excluded_prefixes": "2001:db8:500:ff::/64"}, "excluded_prefixes"),
             (6, {"excluded_prefixes": "2001:db8:500:ff::/64"}, "excluded_prefixes"),
         )

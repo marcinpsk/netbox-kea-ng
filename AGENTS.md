@@ -482,8 +482,9 @@ record handling (`FreshReservation.updated` keeps each Kea field that NetBox doe
 `user-context`). The typed Reservation carries client classes, the DHCPv4 boot fields, the DHCPv6 excluded prefixes
 (`ExcludedPrefix` pairs each with its delegated prefix; the serializer builds Kea's positional list) and the read-only
 `user_context`. The managed-fact fingerprint covers every field except the options and `user_context`.
-`reservation_edit.excluded_prefix_pairs` pairs the excluded prefixes of the form by containment; the DHCPv6 form calls
-it before any Kea read, and the build calls it again under the lock. The OpenGrep rule
+`reservation_edit.excluded_prefix_pairs` pairs the excluded prefixes of the form under the lock: a live pair stays
+while its delegated prefix stays, and another excluded prefix pairs with the one delegated prefix that holds it. A
+Transfer Document import does not send `user_context`. The OpenGrep rule
 `kea-reservation-write-outside-config-write` refuses a call to these write primitives outside `config_write`. The
 bulk Reservation import calls `reservation_edit.save_import` for each entry through
 `_run_change_loop(..., stop_on_rejection=True)`, so an unknown or a rejected entry stops it. The import checks the
