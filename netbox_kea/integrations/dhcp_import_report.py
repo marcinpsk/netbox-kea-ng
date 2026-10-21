@@ -24,6 +24,7 @@ class Kind(str, Enum):
     SHARED_NETWORK = "shared_network"
     SUBNET = "subnet"
     POOL = "pool"
+    PD_POOL = "pd_pool"
     RESERVATION = "reservation"
     OPTION = "option"
 
@@ -64,6 +65,7 @@ KIND_LABELS: dict[Kind, str] = {
     Kind.SHARED_NETWORK: "Shared Network",
     Kind.SUBNET: "Subnet",
     Kind.POOL: "Pool",
+    Kind.PD_POOL: "Delegated-prefix Pool",
     Kind.RESERVATION: "Reservation",
     Kind.OPTION: "DHCP Option",
 }

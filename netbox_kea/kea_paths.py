@@ -28,6 +28,14 @@ EVALUATE_ADDITIONAL_CLASSES = "evaluate-additional-classes"
 #: The custom Option Definitions of the daemon or of a client class.
 OPTION_DEF = "option-def"
 POOL_ID = "pool-id"
+OPTION_DATA = "option-data"
+#: The DHCPv6 delegated-prefix Pools of a Subnet, and the keys of one that the DHCP Import reads by name.
+PD_POOLS = "pd-pools"
+PREFIX = "prefix"
+PREFIX_LEN = "prefix-len"
+DELEGATED_LEN = "delegated-len"
+EXCLUDED_PREFIX = "excluded-prefix"
+EXCLUDED_PREFIX_LEN = "excluded-prefix-len"
 #: The Subnet key that names the interface of its directly connected clients.
 INTERFACE = "interface"
 ADAPTIVE_LEASE_TIME_THRESHOLD = "adaptive-lease-time-threshold"
@@ -90,6 +98,21 @@ def pool_entry(subnet_path: str, index: int) -> str:
     return f"{subnet_path}/{_step('pools', index)}"
 
 
+def pd_pool(subnet_path: str, prefix: str, delegated_length: int) -> str:
+    """Return the path of a delegated-prefix Pool by its prefix and delegated length inside the Subnet at *subnet_path*."""
+    return f"{subnet_path}/{_step(PD_POOLS, f'{PREFIX}={prefix},{DELEGATED_LEN}={delegated_length}')}"
+
+
+def pd_pool_collection(subnet_path: str) -> str:
+    """Return the path of the delegated-prefix Pool collection of the Subnet at *subnet_path*."""
+    return f"{subnet_path}/{PD_POOLS}"
+
+
+def pd_pool_entry(subnet_path: str, index: int) -> str:
+    """Return the path of the delegated-prefix Pool entry at *index* of the Subnet at *subnet_path*."""
+    return f"{subnet_path}/{_step(PD_POOLS, index)}"
+
+
 def client_class(family: int, name: str) -> str:
     """Return the path of a client class by its name."""
     return f"{daemon(family)}/{_step(CLIENT_CLASSES, f'name={name}')}"
@@ -141,7 +164,7 @@ def option(parent: str, option: DHCPOption, family: int) -> str:
         identity = f"space={option.space},{identity}"
     if option.client_classes:
         identity = f"{identity},client-classes={'|'.join(sorted(option.client_classes))}"
-    return f"{parent}/{_step('option-data', identity)}"
+    return f"{parent}/{_step(OPTION_DATA, identity)}"
 
 
 def interface(family: int, entry: str) -> str:
@@ -156,12 +179,12 @@ def setting(parent: str, key: str) -> str:
 
 def option_collection(parent: str) -> str:
     """Return the path of the DHCP Option collection of the object at *parent*."""
-    return f"{parent}/option-data"
+    return f"{parent}/{OPTION_DATA}"
 
 
 def option_entry(parent: str, index: int) -> str:
     """Return the path of the DHCP Option entry at *index* of the object at *parent*."""
-    return f"{parent}/{_step('option-data', index)}"
+    return f"{parent}/{_step(OPTION_DATA, index)}"
 
 
 def reservations(family: int, subnet_id: int | None = None) -> str:

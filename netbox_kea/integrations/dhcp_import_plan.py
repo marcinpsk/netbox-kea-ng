@@ -25,6 +25,7 @@ from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import (
     ClientClassIntent,
     OptionDefIntent,
+    PDPoolIntent,
     PoolIntent,
     ServerConfigIntent,
     SharedNetworkIntent,
@@ -62,6 +63,7 @@ MAX_KEA_NAME_LENGTH = 255
 MAX_MAPPING_IDENTITY_LENGTH = max(
     MAX_IDENTITY_LENGTH,  # A Reservation: "identifier-type:value".
     2 * _MAX_ADDRESS_TEXT + len("-"),  # A Pool: "start-end".
+    _MAX_ADDRESS_TEXT + 2 * len("/128"),  # A delegated-prefix Pool: "prefix/length/delegated-length".
     # An Option Definition: "space:code", or "class:space:code" in a client class.
     2 * (MAX_KEA_NAME_LENGTH + len(":")) + len(str(MAX_OPTION_CODE)),
     MAX_KEA_NAME_LENGTH,  # A Shared Network or a client class: its name.
@@ -107,6 +109,10 @@ class MappingSource:
             return kea_paths.subnet(family, self.kea_subnet_id)
         if self.kind == Kind.POOL:
             return kea_paths.pool(kea_paths.subnet(family, self.kea_subnet_id), identity)
+        if self.kind == Kind.PD_POOL:
+            # The delegated length follows the last slash.
+            prefix, _, delegated = identity.rpartition("/")
+            return kea_paths.pd_pool(kea_paths.subnet(family, self.kea_subnet_id), prefix, int(delegated))
         if self.kind == Kind.RESERVATION:
             # An identifier type has no colon, so the first colon ends it.
             identifier_type, _, value = identity.partition(":")
@@ -155,6 +161,26 @@ class PoolKey:
         if self.subnet_id is None:
             return None
         return MappingSource(Kind.POOL, kea_subnet_id=self.subnet_id, kea_identity=self.range.range)
+
+
+@dataclass(frozen=True)
+class PDPoolKey:
+    """A delegated-prefix Pool by the Kea subnet ID of its Subnet, its prefix and its delegated length.
+
+    A Subnet without an ID gives ``None``. Another delegated length is another PD Pool.
+    """
+
+    subnet_id: int | None
+    prefix: ipaddress.IPv6Network
+    delegated_length: int
+
+    @property
+    def source(self) -> MappingSource | None:
+        """Return the DHCP Import Mapping source of the PD Pool, or ``None`` when its Subnet has no Kea subnet ID."""
+        if self.subnet_id is None:
+            return None
+        identity = f"{self.prefix}/{self.delegated_length}"
+        return MappingSource(Kind.PD_POOL, kea_subnet_id=self.subnet_id, kea_identity=identity)
 
 
 @dataclass(frozen=True)
@@ -227,6 +253,7 @@ class PlannedSubnet:
     inherited: dict
     # A Pool key is None when its text is not a range inside the Subnet; the apply skips that Pool.
     pools: tuple[Planned[PoolKey | None, PoolIntent], ...]
+    pd_pools: tuple[Planned[PDPoolKey, PDPoolIntent], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -307,7 +334,11 @@ def _planned_subnets(config: ServerConfigIntent, family: Family) -> tuple[Planne
             from_network = declared_values(family, kea_paths.SHARED_NETWORKS, network_settings, config.global_settings)
             inherited = {key: value for key, value in from_network.items() if key not in settings}
         pools = tuple(Planned(_pool_key(subnet, pool), pool) for pool in subnet.pools)
-        planned.append(PlannedSubnet(subnet.kea_subnet_id, subnet, settings, inherited, pools))
+        pd_pools = tuple(
+            Planned(PDPoolKey(subnet.kea_subnet_id, pd_pool.prefix, pd_pool.delegated_length), pd_pool)
+            for pd_pool in subnet.pd_pools
+        )
+        planned.append(PlannedSubnet(subnet.kea_subnet_id, subnet, settings, inherited, pools, pd_pools))
     return tuple(planned)
 
 

@@ -35,6 +35,7 @@ from netbox_kea.integrations.dhcp_import_plan import (
     InSubnetReservationKey,
     MappingSource,
     OptionDefinitionKey,
+    PDPoolKey,
     PoolKey,
     keyed_reservations,
     kind_path,
@@ -335,6 +336,115 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
         (pool,) = plan.subnets[0].pools
         self.assertIsNone(pool.key)
         self.assertEqual(pool.intent.pool, "198.51.100.1-198.51.100.9")
+
+
+_PD_PREFIX = ipaddress.IPv6Network("2001:db8:100::/48")
+_PD_PATH = "Dhcp6/subnet6[id=1]/pd-pools[prefix=2001:db8:100::/48,delegated-len=56]"
+
+
+def _pd_pool_config(*pd_pools) -> dict:
+    return {"subnet6": [{"id": 1, "subnet": "2001:db8:1::/64", "pd-pools": list(pd_pools)}]}
+
+
+class PDPoolPlanTest(SimpleTestCase):
+    """The plan reads the pd-pools of each DHCPv6 Subnet and keys each by its Subnet, prefix and delegated length."""
+
+    def test_the_recorded_pd_pools_are_planned_with_their_declared_values(self):
+        plan = plan_family(_recorded_intent(6), None)
+
+        pd_pools = {subnet.key: subnet.pd_pools for subnet in plan.subnets}
+        first, second = pd_pools[10]
+        self.assertEqual(first.key, PDPoolKey(10, _PD_PREFIX, 56))
+        intent = first.intent
+        self.assertEqual(intent.excluded_prefix, ipaddress.IPv6Network("2001:db8:100:ff::/64"))
+        self.assertEqual(
+            (intent.pool_id, intent.client_classes, intent.evaluate_additional_classes, intent.user_context),
+            (3, ("voip",), ("printers",), {"rack": "r2"}),
+        )
+        self.assertEqual([(option.code, option.data) for option in intent.options], [(23, "2001:db8:100::53")])
+        self.assertEqual(second.key, PDPoolKey(10, ipaddress.IPv6Network("2001:db8:200::/48"), 64))
+        self.assertEqual(
+            (second.intent.excluded_prefix, second.intent.pool_id, second.intent.options, second.intent.user_context),
+            (None, None, (), None),
+        )
+        self.assertEqual(pd_pools[20], ())
+        (member,) = pd_pools[21]
+        # Kea returns the deprecated client-class, require-client-classes and comment as their replacements.
+        self.assertEqual(
+            (member.intent.client_classes, member.intent.evaluate_additional_classes, member.intent.user_context),
+            (("voip",), ("printers",), {"comment": "Second floor delegated prefixes"}),
+        )
+        self.assertEqual(plan.dropped, ())
+
+    def test_a_dhcpv4_subnet_plans_no_pd_pool(self):
+        plan = plan_family(_recorded_intent(4), None)
+
+        self.assertEqual([subnet.pd_pools for subnet in plan.subnets], [(), (), ()])
+
+    def test_a_pd_pool_maps_by_its_subnet_prefix_and_delegated_length(self):
+        source = PDPoolKey(1, _PD_PREFIX, 56).source
+
+        self.assertEqual(source, MappingSource(Kind.PD_POOL, 1, "2001:db8:100::/48/56"))
+        self.assertEqual(source.path(6), _PD_PATH)
+        self.assertIsNone(PDPoolKey(None, _PD_PREFIX, 56).source)
+        longest = PDPoolKey(1, ipaddress.IPv6Network(f"{ipaddress.IPv6Address(2**128 - 1)}/128"), 128).source
+        self.assertLessEqual(len(longest.kea_identity), MAX_MAPPING_IDENTITY_LENGTH)
+
+    def test_a_pd_pool_entry_that_is_not_valid_is_dropped_with_its_path(self):
+        valid = {"prefix": "2001:db8:200::", "prefix-len": 48, "delegated-len": 56}
+        config = _pd_pool_config(
+            "not an object",
+            {"prefix": "2001:db8:100::", "delegated-len": 56},
+            # Kea refuses a prefix with bits set after its length.
+            {"prefix": "2001:db8:100:1::", "prefix-len": 48, "delegated-len": 56},
+            {"prefix": "2001:db8:100::", "prefix-len": 48, "delegated-len": True},
+            {"prefix": "2001:db8:100::", "prefix-len": 48, "delegated-len": 129},
+            {"prefix": "192.0.2.0", "prefix-len": 24, "delegated-len": 28},
+            valid,
+        )
+
+        plan = plan_family(parse_dhcp_config(config, 6), None)
+
+        self.assertEqual(
+            [planned.key for planned in plan.subnets[0].pd_pools],
+            [PDPoolKey(1, ipaddress.IPv6Network("2001:db8:200::/48"), 56)],
+        )
+        self.assertEqual(
+            [(entry.kind, entry.path) for entry in plan.dropped],
+            [(Kind.PD_POOL, f"Dhcp6/subnet6[id=1]/pd-pools[{index}]") for index in range(6)],
+        )
+
+    def test_a_pd_pool_collection_that_is_not_a_list_is_dropped(self):
+        config = {"subnet6": [{"id": 1, "subnet": "2001:db8:1::/64", "pd-pools": None}]}
+
+        plan = plan_family(parse_dhcp_config(config, 6), None)
+
+        self.assertEqual(plan.subnets[0].pd_pools, ())
+        self.assertEqual(
+            [(entry.kind, entry.path) for entry in plan.dropped], [(Kind.PD_POOL, "Dhcp6/subnet6[id=1]/pd-pools")]
+        )
+
+    def test_an_excluded_prefix_that_is_not_valid_is_dropped_and_the_pd_pool_is_planned_without_it(self):
+        for excluded in ({"excluded-prefix": "2001:db8:100:ff::"}, {"excluded-prefix": 7, "excluded-prefix-len": 64}):
+            with self.subTest(excluded=excluded):
+                pd_pool = {"prefix": "2001:db8:100::", "prefix-len": 48, "delegated-len": 56, **excluded}
+
+                plan = plan_family(parse_dhcp_config(_pd_pool_config(pd_pool), 6), None)
+
+                (planned,) = plan.subnets[0].pd_pools
+                self.assertEqual((planned.key, planned.intent.excluded_prefix), (PDPoolKey(1, _PD_PREFIX, 56), None))
+                self.assertEqual(
+                    [(entry.kind, entry.path) for entry in plan.dropped],
+                    [(Kind.PD_POOL, f"{_PD_PATH}/excluded-prefix")],
+                )
+
+    def test_a_delegated_length_shorter_than_the_prefix_is_planned_for_the_plugin_to_judge(self):
+        pd_pool = {"prefix": "2001:db8:100::", "prefix-len": 48, "delegated-len": 40}
+
+        plan = plan_family(parse_dhcp_config(_pd_pool_config(pd_pool), 6), None)
+
+        self.assertEqual([planned.key for planned in plan.subnets[0].pd_pools], [PDPoolKey(1, _PD_PREFIX, 40)])
+        self.assertEqual(plan.dropped, ())
 
 
 def _complete_observation(*diagnostics: ReservationDiagnostic, complete: bool = True) -> ReservationObservation:
