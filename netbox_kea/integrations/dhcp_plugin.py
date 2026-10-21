@@ -2176,6 +2176,33 @@ def _removal_footprint(target, removable: dict) -> tuple[list, list]:
     return cascaded, blocking
 
 
+def _assigned_key(option) -> tuple:
+    return option.assigned_object_type.model_class()._meta.concrete_model, option.assigned_object_id
+
+
+def _protecting_own_options(target) -> list:
+    """Return the Options that go with a delete of *target* but protect an Option Definition that it also deletes.
+
+    A client class deletes its own definitions, which the Options of the class use.
+    """
+    collector = Collector(using=target._state.db)
+    try:
+        collector.collect([target])
+    except ProtectedError as error:
+        removed = {_row_key(obj) for objects in collector.data.values() for obj in objects} | {_row_key(target)}
+        Option = _model("Option")
+        return [obj for obj in error.protected_objects if isinstance(obj, Option) and _assigned_key(obj) in removed]
+    return []
+
+
+class _RemovalBlocked(Exception):
+    """Other rows depend on a stale row: raised inside its removal transaction, so that nothing of it stays."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
 def _remove_stale_row(row: _StaleRow, removable: dict, family: int, summary: ImportSummary) -> list[_StaleRow]:
     """Delete one stale row through the ORM, so the lifecycle guards, the mapping cleanup and the change log run.
 
@@ -2184,11 +2211,19 @@ def _remove_stale_row(row: _StaleRow, removable: dict, family: int, summary: Imp
     path = row.source.path(family)
     try:
         with event_scope.atomic():
+            for option in _protecting_own_options(row.target):
+                option.delete()
             cascaded, blocking = _removal_footprint(row.target, removable)
-            if not blocking:
-                row.target.delete()
+            if blocking:
+                # Counts only: any viewer of the Server reads the run, without permission on the rows.
+                raise _RemovalBlocked(f"It is kept because its removal would also remove {_counted_rows(blocking)}.")
+            row.target.delete()
     except event_scope.EventDispatchError:
         raise
+    except _RemovalBlocked as blocked:
+        removable.pop(_row_key(row.target))
+        summary.record(not_written(family, row.source.kind, path, Reason.REMOVAL_BLOCKED, blocked.detail))
+        return []
     except ProtectedError as error:
         removable.pop(_row_key(row.target))
         detail = f"It is kept while it is in use by {_counted_rows(list(error.protected_objects))}."
@@ -2198,12 +2233,6 @@ def _remove_stale_row(row: _StaleRow, removable: dict, family: int, summary: Imp
         removable.pop(_row_key(row.target))
         summary.record(write_failed(family, row.source.kind, path))
         summary.warn(f"stale {row.source.kind.value} {path}: {exc}")
-        return []
-    if blocking:
-        removable.pop(_row_key(row.target))
-        # Counts only: any viewer of the Server reads the run, without permission on the rows.
-        detail = f"It is kept because its removal would also remove {_counted_rows(blocking)}."
-        summary.record(not_written(family, row.source.kind, path, Reason.REMOVAL_BLOCKED, detail))
         return []
     return [row, *(removable[_row_key(obj)] for obj in cascaded)]
 

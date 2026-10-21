@@ -1420,6 +1420,35 @@ class OptionCoverageTest(TestCase):
         )
         self.assertTrue(OptionDefinition.objects.filter(pk=self._mapped_definition("boot:dhcp4:231").pk).exists())
 
+    def _apply_read(self, config: dict):
+        """Apply a Complete read of *config* that started now, so a mapping that it does not report is stale."""
+        intent = parse_dhcp_config(config, 4)
+        intent.configuration_complete = True
+        intent.read_started = datetime.now(timezone.utc)
+        summary = dhcp_plugin.apply_plan(self.server, plan_family(intent, None), probe())
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        return summary
+
+    def test_a_stale_client_class_goes_with_its_own_definition_and_options(self):
+        self._apply()
+        boot = KeaDhcpLink.objects.get(server=self.server, family=4, kind="client_class", kea_identity="boot")
+        definition = self._mapped_definition("boot:dhcp4:231")
+        options = list(definition.options.values_list("pk", flat=True))
+        self.assertEqual(len(options), 1)
+        config = _recorded_config(4)
+        config["client-classes"] = [c for c in config["client-classes"] if c["name"] != "boot"]
+
+        summary = self._apply_read(config)
+
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "ClientClass").objects.filter(pk=boot.object_id).exists())
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "OptionDefinition").objects.filter(pk=definition.pk).exists())
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "Option").objects.filter(pk__in=options).exists())
+        self.assertFalse(
+            KeaDhcpLink.objects.filter(server=self.server, kea_identity__in=["boot", "boot:dhcp4:231"]).exists()
+        )
+        removed = {entry.path for entry in summary.entries if entry.outcome == Outcome.REMOVED}
+        self.assertEqual(removed, {_BOOT, f"{_BOOT}/option-def[code=231]"})
+
     def test_an_option_that_names_a_class_without_a_plugin_row_is_skipped(self):
         config = _recorded_config(4)
         config["option-data"].append(
