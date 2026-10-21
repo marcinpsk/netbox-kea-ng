@@ -522,6 +522,12 @@ class CapabilityProbeTest(SimpleTestCase):
         self.assertTrue(capabilities.holds_space("vendor-4491"))
 
     @isolate_apps("netbox_kea")
+    def test_an_option_definition_without_a_user_context_lacks_the_capability(self):
+        plugin = _proposed_plugin_models()
+        plugin["OptionDefinition"] = _probe_model("ContextlessOptionDefinition", space=models.CharField(max_length=255))
+        self.assertFalse(probe(plugin.__getitem__).has(Capability.USER_CONTEXT))
+
+    @isolate_apps("netbox_kea")
     def test_an_option_without_a_user_context_lacks_the_capability(self):
         plugin = _proposed_plugin_models()
         plugin["Option"] = _probe_model("ContextlessOption")
@@ -1506,6 +1512,19 @@ class OptionCoverageTest(TestCase):
             (Outcome.UNSUPPORTED, Capability.OPTION_WITHOUT_DEFINITION),
         )
         self.assertFalse(operator.options.exists())
+
+    def test_an_option_whose_class_was_not_imported_in_this_run_is_skipped(self):
+        DHCPServer = apps.get_model(DHCP_PLUGIN, "DHCPServer")
+        other = DHCPServer.objects.create(name="option-coverage other server")
+        # Plugin 0.2.0 keeps class names unique across all DHCP servers, so this run cannot write voip.
+        apps.get_model(DHCP_PLUGIN, "ClientClass").objects.create(name="voip", dhcp_server=other)
+
+        summary = self._apply()
+
+        (entry,) = [e for e in summary.entries if e.path == "Dhcp4/option-data[code=3,client-classes=voip]"]
+        self.assertEqual(entry.reason, Reason.PARENT_NOT_IMPORTED)
+        self.assertTrue(entry.detail.startswith("Client class voip was not imported."), entry.detail)
+        self.assertEqual(self._options(imported_dhcp_server(self.server, 4), 3), [("192.0.2.254", ())])
 
     def test_an_option_that_names_a_class_without_a_plugin_row_is_skipped(self):
         config = _recorded_config(4)
