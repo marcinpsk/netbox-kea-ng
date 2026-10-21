@@ -1274,3 +1274,19 @@ class TestWidenedReservationPage(_ViewTestBase):
         )
         self.assertEqual(json.loads(row["User Context"].find("pre").get_text()), {"asset": 42})
         self.assertNotIn("Boot", row)
+
+    def test_a_global_reservation_shows_its_widened_facts_without_a_change_action(self):
+        row = self._row(4, "198.51.100.128/25", {**recorded_host(4), "subnet-id": 0})
+
+        self.assertEqual(row["Scope"].get_text(" ", strip=True), "Global")
+        self.assertEqual(row["Client Classes"].get_text(" ", strip=True), "voip")
+        self.assertEqual(json.loads(row["User Context"].find("pre").get_text()), {"asset": 42})
+        self.assertEqual(
+            [
+                link["href"]
+                for cell in row.values()
+                for link in cell.find_all("a", href=True)
+                if "/edit" in link["href"] or "/delete" in link["href"]
+            ],
+            [],
+        )
