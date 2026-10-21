@@ -170,9 +170,10 @@ class FamilyDrift:
     unparsable: bool = False
 
     def show(self, objects: list[DriftObject]) -> None:
-        """Add up to the shown number of *objects*, and count the others as hidden."""
-        self.objects.extend(objects[:_SHOWN_OBJECTS])
-        self.hidden += max(len(objects) - _SHOWN_OBJECTS, 0)
+        """Add *objects* until the family shows the shown number, and count the others as hidden."""
+        room = max(_SHOWN_OBJECTS - len(self.objects), 0)
+        self.objects.extend(objects[:room])
+        self.hidden += max(len(objects) - room, 0)
 
 
 def family_drift(server: Server, family: Family, user) -> FamilyDrift:

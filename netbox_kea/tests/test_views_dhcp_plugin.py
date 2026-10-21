@@ -745,6 +745,20 @@ class DriftPartialTest(TestCase):
 
         self.assertEqual(stale_card_queries(range(230, 231)), stale_card_queries(range(230, 234)))
 
+    def test_the_card_shows_at_most_the_shown_number_of_objects_for_the_whole_family(self):
+        # Two lists of 40 missing objects: each is under the limit, the family is over it.
+        config = {
+            4: {
+                "option-def": [{"name": f"opt-{code}", "code": code, "type": "uint8"} for code in range(200, 240)],
+                "client-classes": [{"name": f"class-{index}"} for index in range(40)],
+            }
+        }
+
+        page = self._drift(_sync_responses(config, {4: []}))
+
+        self.assertEqual(len(page.select("tr[data-state]")), dps._SHOWN_OBJECTS)
+        self.assertIn(f"{80 - dps._SHOWN_OBJECTS} more objects are not shown.", page.get_text())
+
     def test_a_failed_read_returns_the_notice_and_lists_the_mapped_rows_as_unknown(self):
         self._import()
 
