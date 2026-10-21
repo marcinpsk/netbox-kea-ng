@@ -370,8 +370,10 @@ URL request
   runs subnet/lease/reservation/prefix/range sync phases, writes a per-server
   summary to the job log. Then, with `DhcpIntegrationConfig.scheduled_import_enabled` on, a separate pass calls
   `run_dhcp_plugin_import(server, DhcpImportTrigger.SCHEDULED)` for each Server that `integration_refusal` accepts.
-  A Run Now of one Server (`server_pk`) skips that pass. A failed Server fails the job and the pass continues;
-  an `EventDispatchError` stops the job.
+  A Run Now of one Server (`server_pk`) skips that pass. A Server fails when a family has a `READ_FAILED` or
+  `WRITE_FAILED` entry of any kind or IPAM ownership errors (`_failed_facts`; `ImportSummary.errors` counts less),
+  or when the import raises. A failed Server fails the job and the pass continues. Only `ImportRunning` (another run
+  holds the import lock) skips a Server. An `EventDispatchError` of either pass stops the job.
 - **DHCP Import** (`integrations/`): `dhcp_import.run_dhcp_plugin_import(server, trigger)` reads Kea for every
   enabled family, plans each family (`dhcp_import_plan.py`) and applies each plan (`dhcp_plugin.apply_plan`). Each
   DHCP Server, Subnet, Pool, Reservation, client class and custom Option Definition that the apply writes has a DHCP

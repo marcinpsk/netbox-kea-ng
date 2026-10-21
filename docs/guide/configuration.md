@@ -51,10 +51,12 @@ With **Scheduled Import** on, each run of the periodic sync job runs the DHCP Im
 integration runs for, after the IPAM sync of all Servers. It is the same import as **Sync to DHCP plugin now**, and it
 stores its result with the trigger Scheduled. The reserved user `netbox-kea-sync` makes its changes.
 **Sync Enabled (global)** and the IPAM sync settings do not stop it. A **Run Now** of one Server on the Sync Jobs page
-syncs IPAM only. The job log shows the counts of each family of each Server. When the import of one Server fails, the
-job records the failure, continues with the next Server, and ends as failed. When another DHCP Import of a Server is
-running, the job skips that Server. When NetBox cannot dispatch the events of an import, the job stops. While a branch
-is active in the worker, the sync job fails before it reads anything, so no import runs.
+syncs IPAM only. The job log shows the counts of each family of each Server. The import of a Server fails when Kea
+does not give its configuration, when the configuration cannot be parsed, when a read or a write of one object fails,
+or when the import stops. The job then records the failure, continues with the next Server, and ends as failed. When
+another DHCP Import of a Server is running, the job skips that Server. When NetBox cannot dispatch the events of the
+IPAM sync or of an import, the job stops. While a branch is active in the worker, the sync job fails before it reads
+anything, so no import runs.
 
 The DHCP Import needs netbox-plugin-dhcp 0.2.0 or later. With an older release installed, **Sync to DHCP plugin now**
 refuses before it reads Kea, names the required version, and changes nothing.
