@@ -2197,24 +2197,25 @@ def _class_relation_rows(target) -> list:
 
 @dataclass(frozen=True)
 class _RemovalPlan:
-    """The read-only plan of the delete of one stale row: what it removes, or why the row stays."""
+    """The read-only plan of the delete of one stale row, with its evidence as row keys."""
 
     # The Options to delete before the row: each uses a definition that the delete removes, and its owner goes too.
     options_first: tuple = ()
-    # The other candidate rows that the delete removes.
-    cascaded: tuple = ()
-    # The candidate rows outside the delete whose removal it relies on.
-    depends_on: frozenset = frozenset()
-    # Why the row stays, for its entry. Empty when nothing blocks the delete.
+    # The other stale rows that the delete removes.
+    cascaded: frozenset = frozenset()
+    # The other stale rows that must go too, or the delete would remove or change a kept row: the rows that it
+    # removes, the rows that name it in a class relation, and the owners of the Options that go with it.
+    relies_on: frozenset = frozenset()
+    # Why the row stays whatever else the run removes, for its entry. Empty when only kept stale rows can block it.
     blocked: str = ""
 
 
-def _removal_plan(target, candidates: dict) -> _RemovalPlan:
-    """Plan the delete of the stale row *target* while the run also removes the rows in *candidates*. It writes nothing.
+def _removal_plan(target, stale: dict) -> _RemovalPlan:
+    """Plan the delete of the stale row *target* against every *stale* row of the run. It writes nothing.
 
-    Every other row is kept. The row stays when its delete would also remove a kept DHCP plugin row, when a kept row
-    uses a row that the delete removes, or when a kept row names it in a many-to-many relation (without it, that row
-    would reach more clients). An Option goes with the object that it is assigned to.
+    A row outside *stale* is kept: when the delete would remove it, when it uses a row that the delete removes, or when
+    it names the row in a many-to-many relation (without it, that row would reach more clients), the row stays. Each
+    stale row with such a part is evidence in ``relies_on``. An Option goes with the object that it is assigned to.
     """
     Option = _model("Option")
     own = _row_key(target)
@@ -2225,7 +2226,7 @@ def _removal_plan(target, candidates: dict) -> _RemovalPlan:
             collector.collect([target])
             break
         except ProtectedError as error:
-            removed = {own, *(_row_key(obj) for obj in _collected(collector)), *candidates}
+            removed = {own, *(_row_key(obj) for obj in _collected(collector)), *stale}
             protected = list(error.protected_objects)
             going = [obj for obj in protected if isinstance(obj, Option) and _owner_key(obj) in removed]
             if len(going) < len(protected):
@@ -2238,40 +2239,67 @@ def _removal_plan(target, candidates: dict) -> _RemovalPlan:
     kept = [
         obj
         for obj in rows
-        if _row_key(obj) not in candidates and _row_key(obj) != own and not _goes_with_parent(obj._meta.concrete_model)
+        if _row_key(obj) not in stale and _row_key(obj) != own and not _goes_with_parent(obj._meta.concrete_model)
     ]
     if kept:
         return _RemovalPlan(blocked=f"It is kept because its removal would also remove {_counted_rows(kept)}.")
-    depends = {_owner_key(obj) for obj in first.values()} - footprint
+    cascaded = frozenset(_row_key(obj) for obj in rows if _row_key(obj) != own and _row_key(obj) in stale)
+    relies_on = {*cascaded, *(_owner_key(obj) for obj in first.values())}
     users = []
     for obj in _class_relation_rows(target):
         goes_with = _owner_key(obj) if isinstance(obj, Option) else _row_key(obj)
-        if goes_with in candidates or goes_with in footprint:
-            depends.add(goes_with)
+        if goes_with in stale or goes_with in footprint:
+            relies_on.add(goes_with)
         else:
             users.append(obj)
     if users:
         return _RemovalPlan(blocked=f"It is kept while a class list of {_counted_rows(users)} names it.")
-    cascaded = tuple(obj for obj in rows if _row_key(obj) != own and _row_key(obj) in candidates)
-    return _RemovalPlan(tuple(first.values()), cascaded, frozenset(depends - footprint))
+    return _RemovalPlan(tuple(first.values()), cascaded, frozenset(relies_on & stale.keys() - {own}))
+
+
+def _keep_dependents(start: tuple, dependents: dict, alive: set, kept: dict, detail: str) -> list[tuple]:
+    """Keep every row of *alive* that relies on the row *start*, directly or through other rows, with *detail*.
+
+    Return the rows that it kept, in the order that it found them.
+    """
+    found: list[tuple] = []
+    work = [start]
+    while work:
+        for key in dependents.get(work.pop(), ()):
+            if key in alive:
+                alive.discard(key)
+                kept[key] = detail
+                found.append(key)
+                work.append(key)
+    return found
+
+
+def _dependents(plans: dict[tuple, _RemovalPlan]) -> dict[tuple, set[tuple]]:
+    """Return the rows whose plan relies on each row: the reverse index of ``relies_on``."""
+    index: dict[tuple, set[tuple]] = {}
+    for key, plan in plans.items():
+        for each in plan.relies_on:
+            index.setdefault(each, set()).add(key)
+    return index
+
+
+def _relied_on_detail(row: _StaleRow, what: str) -> str:
+    return f"It is kept because its removal relies on the removal of {_counted_rows([row.target])}, which {what}."
 
 
 def _removal_set(stale: dict[tuple, _StaleRow]) -> tuple[dict[tuple, _RemovalPlan], dict[tuple, str]]:
     """Return the largest subset of stale rows whose deletion removes or changes no kept row.
 
-    Return the plan of each row of that subset, and why each other stale row stays. A row that stays is kept, so a
-    candidate whose plan relies on it stays too: the search repeats until no candidate drops out.
+    Return the plan of each row of that subset, and why each other stale row stays. Each plan is read once; a row that
+    stays keeps every row that relies on it, through the reverse index.
     """
-    candidates = dict(stale)
-    blocked: dict[tuple, str] = {}
-    while True:
-        plans = {key: _removal_plan(row.target, candidates) for key, row in candidates.items()}
-        dropped = {key: plan.blocked for key, plan in plans.items() if plan.blocked}
-        if not dropped:
-            return plans, blocked
-        blocked |= dropped
-        for key in dropped:
-            del candidates[key]
+    plans = {key: _removal_plan(row.target, stale) for key, row in stale.items()}
+    kept = {key: plan.blocked for key, plan in plans.items() if plan.blocked}
+    alive = set(plans) - kept.keys()
+    dependents = _dependents(plans)
+    for key in list(kept):
+        _keep_dependents(key, dependents, alive, kept, _relied_on_detail(stale[key], "is kept"))
+    return {key: plans[key] for key in alive}, kept
 
 
 def _delete_planned(row: _StaleRow, plan: _RemovalPlan, family: int, summary: ImportSummary) -> bool:
@@ -2293,6 +2321,12 @@ def _delete_planned(row: _StaleRow, plan: _RemovalPlan, family: int, summary: Im
         summary.warn(f"stale {row.source.kind.value} {path}: {exc}")
         return False
     return True
+
+
+def _next_deletion(pending: set, plans: dict, position: dict) -> tuple:
+    """Return the next row to delete: the first in REMOVAL_ORDER whose relied-on rows are gone, else the first."""
+    ready = [key for key in pending if not plans[key].relies_on & pending]
+    return min(ready or pending, key=position.__getitem__)
 
 
 def mapped_rows(server, family: int, confirmed_before: datetime | None = None) -> dict[Kind, dict[MappingSource, Any]]:
@@ -2334,8 +2368,9 @@ def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> No
 
     An Incomplete observation of a kind keeps every row of that kind, with one entry that says why. Before any write,
     :func:`_removal_set` finds the stale rows whose deletion removes or changes no kept row; each other stale row is
-    kept and reported. A row whose removal relies on a delete that failed is kept too. IPAM objects stay: the DHCP
-    plugin rows only reference them.
+    kept and reported. The deletes follow REMOVAL_ORDER, and a row goes after the rows that it relies on when it can.
+    When a delete fails, every pending row that relies on it, directly or through other rows, is kept too. IPAM objects
+    stay: the DHCP plugin rows only reference them.
     """
     observed = observations(plan)
     stale = _stale_rows(server, plan, observed)
@@ -2350,30 +2385,33 @@ def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> No
             summary.record(
                 not_written(plan.family, kind, kind_path(plan.family, kind), Reason.INCOMPLETE_OBSERVATION, detail)
             )
-    plans, blocked = _removal_set(removable)
+    plans, staying = _removal_set(removable)
+    for key, detail in staying.items():
+        _record_kept(removable[key], detail, plan.family, summary)
+    # A deleted instance has no pk, so every key comes from before the deletes.
+    position = {key: index for index, key in enumerate(removable)}
+    dependents = _dependents(plans)
+    pending = set(plans)
     removed: set[tuple] = set()
-    failed: set[tuple] = set()
-    for kind in REMOVAL_ORDER:
-        for row in stale.get(kind, []) if observed[kind].complete else ():
-            key = _row_key(row.target)
-            path = row.source.path(plan.family)
-            if key in removed:
-                continue
-            detail = blocked.get(key, "")
-            if not detail and plans[key].depends_on & failed:
-                detail = "It is kept because the removal of a row that its removal relies on failed."
-            if detail:
-                failed.add(key)
-                summary.record(not_written(plan.family, kind, path, Reason.REMOVAL_BLOCKED, detail))
-                continue
-            if not _delete_planned(row, plans[key], plan.family, summary):
-                failed.add(key)
-                continue
-            # A deleted instance has no pk, so the keys come from the plan.
-            gone = [key, *(_row_key(obj) for obj in plans[key].cascaded if _row_key(obj) not in removed)]
-            removed.update(gone)
-            for source in (removable[each].source for each in gone):
-                summary.record(written(plan.family, source.kind, source.path(plan.family), Outcome.REMOVED))
+    while pending:
+        key = _next_deletion(pending, plans, position)
+        pending.discard(key)
+        row = removable[key]
+        if not _delete_planned(row, plans[key], plan.family, summary):
+            failed: dict[tuple, str] = {}
+            detail = _relied_on_detail(row, "failed")
+            for each in _keep_dependents(key, dependents, pending, failed, detail):
+                _record_kept(removable[each], detail, plan.family, summary)
+            continue
+        gone = [key, *sorted(plans[key].cascaded - removed, key=position.__getitem__)]
+        removed.update(gone)
+        pending.difference_update(gone)
+        for source in (removable[each].source for each in gone):
+            summary.record(written(plan.family, source.kind, source.path(plan.family), Outcome.REMOVED))
+
+
+def _record_kept(row: _StaleRow, detail: str, family: int, summary: ImportSummary) -> None:
+    summary.record(not_written(family, row.source.kind, row.source.path(family), Reason.REMOVAL_BLOCKED, detail))
 
 
 # The DHCP plugin rows that apply_plan adds and changes.

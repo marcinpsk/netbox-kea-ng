@@ -1243,6 +1243,21 @@ class SubnetCoverageTest(TestCase):
         )
 
 
+def _class_chain(prefix: str, length: int) -> list[dict]:
+    """Return *length* client classes, each with an Option that names the class before it."""
+    names = [f"{prefix}{index}" for index in range(length)]
+    return [
+        {
+            "name": name,
+            "test": f"option[60].hex == '{name}'",
+            "option-data": [{"code": 15, "data": f"{name}.example.org", "client-classes": [names[index - 1]]}]
+            if index
+            else [],
+        }
+        for index, name in enumerate(names)
+    ]
+
+
 _BOOT = "Dhcp4/client-classes[name=boot]"
 
 
@@ -1624,6 +1639,41 @@ class OptionCoverageTest(TestCase):
             [printers.object_id],
         )
 
+    def test_a_failed_removal_keeps_every_stale_row_that_relies_on_it(self):
+        from django.db.models.signals import pre_delete
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        config = _recorded_config(4)
+        config["client-classes"] += [
+            {"name": "a", "test": "option[60].hex == 'a'"},
+            {
+                "name": "b",
+                "test": "option[60].hex == 'b'",
+                "option-data": [{"code": 15, "data": "b.example.org", "client-classes": ["a"]}],
+            },
+        ]
+        config["subnet4"].append({"id": 30, "subnet": "203.0.113.0/24", "evaluate-additional-classes": ["b"]})
+        self._apply(config)
+        subnet = KeaDhcpLink.objects.get(server=self.server, family=4, kind="subnet", kea_subnet_id=30).sys4_object
+
+        def refuse(sender, instance, **kwargs):
+            if instance.pk == subnet.pk:
+                raise RuntimeError("the Subnet delete fails")
+
+        pre_delete.connect(refuse, sender=Subnet, weak=False)
+        try:
+            summary = self._apply_read(_recorded_config(4), errors=1)
+        finally:
+            pre_delete.disconnect(refuse, sender=Subnet)
+
+        entries = {entry.path: entry.reason for entry in summary.entries if entry.reason is not None}
+        self.assertEqual(entries["Dhcp4/subnet4[id=30]"], Reason.WRITE_FAILED)
+        # b relies on the Subnet, and a relies on b: the removal of a would take the class from b's Option.
+        self.assertEqual(entries["Dhcp4/client-classes[name=b]"], Reason.REMOVAL_BLOCKED)
+        self.assertEqual(entries["Dhcp4/client-classes[name=a]"], Reason.REMOVAL_BLOCKED)
+        option = apps.get_model(DHCP_PLUGIN, "Option").objects.get(data="b.example.org")
+        self.assertEqual(list(option.client_classes.values_list("name", flat=True)), ["a"])
+
     def test_two_stale_client_classes_whose_options_name_each_other_are_both_removed(self):
         config = _recorded_config(4)
         config["client-classes"] += [
@@ -1722,6 +1772,56 @@ def _with_value(config, key: str, old, new):
         name: new if name == key and value == old else _with_value(value, key, old, new)
         for name, value in config.items()
     }
+
+
+class StaleRemovalQueryCountTest(TestCase):
+    """The removal decision reads each stale row once, so its queries grow linearly with the stale rows."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def _stale_chain_queries(self, prefix: str, length: int, network: str) -> int:
+        """Import a chain of classes, keep its last class through an operator Subnet, and count a Complete read."""
+        from django.db import connection
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        server = _make_db_server(name=f"chain-{prefix}", ca_url="https://kea.example.invalid", dhcp6=False)
+        intent = parse_dhcp_config({"client-classes": _class_chain(prefix, length)}, 4)
+        intent.configuration_complete = True
+        self.assertEqual(dhcp_plugin.apply_plan(server, plan_family(intent, None), probe()).errors, 0)
+        last = KeaDhcpLink.objects.get(server=server, kind="client_class", kea_identity=f"{prefix}{length - 1}")
+        operator = apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
+            name=f"chain-{prefix} operator",
+            prefix=Prefix.objects.create(prefix=IPNetwork(network)),
+            dhcp_server=imported_dhcp_server(server, 4),
+        )
+        operator.evaluate_additional_classes.set([last.object_id])
+        empty = parse_dhcp_config({}, 4)
+        empty.configuration_complete, empty.read_started = True, datetime.now(timezone.utc)
+        executed = []
+
+        def count(execute, sql, params, many, context):
+            executed.append(sql)
+            return execute(sql, params, many, context)
+
+        # An execute wrapper counts every query: CaptureQueriesContext keeps only the last 9000.
+        with connection.execute_wrapper(count):
+            summary = dhcp_plugin.apply_plan(server, plan_family(empty, None), probe())
+
+        blocked = [entry for entry in summary.entries if entry.reason == Reason.REMOVAL_BLOCKED]
+        self.assertEqual(len(blocked), length)
+        return len(executed)
+
+    def test_a_chain_of_stale_classes_that_a_kept_row_holds_costs_queries_linear_in_its_length(self):
+        short = self._stale_chain_queries("short", 50, "203.0.113.0/24")
+        long = self._stale_chain_queries("long", 300, "198.51.100.0/24")
+
+        # One plan reads one class in a bounded number of queries; a plan for every row on every pass is quadratic.
+        self.assertLess((long - short) / 250, 60, (short, long))
 
 
 class PluginVersionRefusalTest(TestCase):
