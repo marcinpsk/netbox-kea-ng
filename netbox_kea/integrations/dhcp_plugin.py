@@ -559,6 +559,21 @@ def _skip_class_definitions(
         summary.record(reason.entry(planned.intent.family, Kind.OPTION_DEFINITION, path))
 
 
+def _declared_key(opt: DHCPOption, space: str, owner: str | None, definitions: CustomDefinitions):
+    """Return the key of the custom Option Definition of *opt* that *owner* declares (``None``: the daemon), if any."""
+    if opt.code is not None:
+        key = OptionDefinitionKey(space, opt.code, owner)
+        return key if key in definitions.declared else None
+    return next(
+        (
+            each
+            for each, intent in definitions.declared.items()
+            if each.client_class == owner and each.space == space and intent.name == opt.name
+        ),
+        None,
+    )
+
+
 def _resolve_option_definition(
     opt: DHCPOption,
     family: int,
@@ -569,13 +584,19 @@ def _resolve_option_definition(
 ):
     """Find the ``OptionDefinition`` a Kea ``option-data`` entry refers to.
 
-    Prefers the sys4-shipped **standard** definition (by space+code, else space+name). Then a custom definition that
-    the client class *class_name* of the option declares, then one that the daemon declares. Then another custom
-    definition of the DHCPServer. Returns ``None`` for an option that the plugin holds without a definition, or why
-    the option cannot be imported.
+    As in Kea, a custom definition comes first: one that the client class *class_name* of the option declares, then
+    one that the daemon declares. A declared definition that the import could not write stays the answer. Then the
+    sys4-shipped **standard** definition (by space+code, else space+name), then another custom definition of the
+    DHCPServer. Returns ``None`` for an option that the plugin holds without a definition, or why the option cannot
+    be imported.
     """
     OptionDefinition = _model("OptionDefinition")
     space = opt.space or kea_paths.default_space(family)
+    owners = (None,) if class_name is None else (class_name, None)
+    for owner in owners:
+        key = _declared_key(opt, space, owner, definitions)
+        if key is not None:
+            return definitions.written[key]
 
     standard = OptionDefinition.objects.filter(standard=True, space=space)
     if opt.code is not None:
@@ -586,23 +607,6 @@ def _resolve_option_definition(
         found = None
     if found is not None:
         return found
-
-    for scope in dict.fromkeys((class_name, None)):
-        key: OptionDefinitionKey | None
-        if opt.code is not None:
-            key = OptionDefinitionKey(space, opt.code, scope)
-        else:
-            declared = definitions.declared.items()
-            key = next(
-                (
-                    each
-                    for each, intent in declared
-                    if each.client_class == scope and each.space == space and intent.name == opt.name
-                ),
-                None,
-            )
-        if key in definitions.written:
-            return definitions.written[key]
 
     custom = OptionDefinition.objects.filter(standard=False, dhcp_server=dhcp_server, space=space)
     if opt.code is not None:

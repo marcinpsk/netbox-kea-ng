@@ -1466,6 +1466,25 @@ class OptionCoverageTest(TestCase):
         self.assertEqual(entry.reason, Reason.REMOVAL_BLOCKED)
         self.assertIn("1 Option", entry.detail)
 
+    def test_a_class_local_definition_wins_over_the_standard_definition_of_its_code(self):
+        config = _recorded_config(4)
+        config["client-classes"].append(
+            {
+                "name": "vendor-x",
+                "test": "option[60].hex == 'x'",
+                "option-def": [{"name": "vendor-text", "code": 43, "space": "dhcp4", "type": "string"}],
+                "option-data": [{"code": 43, "name": "vendor-text", "space": "dhcp4", "data": "hello"}],
+            }
+        )
+
+        summary = self._apply(config)
+
+        definition = self._mapped_definition("vendor-x:dhcp4:43")
+        self.assertEqual(definition.type, "string")
+        self.assertEqual(list(definition.options.values_list("data", flat=True)), ["hello"])
+        path = "Dhcp4/client-classes[name=vendor-x]/option-data[code=43]"
+        self.assertEqual(self._entries(summary, Kind.OPTION)[path], (Outcome.CREATED, None))
+
     def test_an_option_that_names_a_class_without_a_plugin_row_is_skipped(self):
         config = _recorded_config(4)
         config["option-data"].append(
