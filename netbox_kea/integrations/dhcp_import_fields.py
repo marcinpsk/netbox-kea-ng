@@ -32,15 +32,12 @@ def norm_ddns_replace(value):
     return value.replace("-", "_") if isinstance(value, str) else value
 
 
-def relay_to_str(value):
-    """Flatten a Kea ``relay`` (``{"ip-addresses": [...]}``) to the plugin's CSV string."""
-    if isinstance(value, dict):
-        addrs = value.get("ip-addresses") or []
-    elif isinstance(value, list):
-        addrs = value
-    else:
-        return value or None
-    return ", ".join(addrs) if addrs else None
+def relay_addresses(value):
+    """Return the address list of a Kea ``relay`` (``{"ip-addresses": [...]}``). An empty list gives ``None``."""
+    addresses = value.get("ip-addresses") if isinstance(value, dict) else None
+    if not isinstance(addresses, list):
+        raise ValueError("The relay has no list of addresses.")
+    return list(addresses) or None
 
 
 def option_codes(value):
@@ -107,13 +104,13 @@ COMMON_FIELDS: FieldMap = (
     ("store-extended-info", "store_extended_info", None),
     ("allocator", "allocator", None),
     ("pd-allocator", "pd_allocator", None),
+    (kea_paths.ADAPTIVE_LEASE_TIME_THRESHOLD, "adaptive_lease_time_threshold", to_decimal),
     *DDNS_FIELDS,
     *_BOOT_FIELDS,
 )
 
 SUBNET_FIELDS: FieldMap = (
     *COMMON_FIELDS,
-    ("relay", "relay", relay_to_str),
     ("interface-id", "interface_id", None),
     ("rapid-commit", "rapid_commit", None),
 )
@@ -132,10 +129,21 @@ CLIENT_CLASS_FIELDS: FieldMap = (*_LIFETIME_FIELDS, *_BOOT_FIELDS)
 #: The settings that Kea declares on a Pool.
 POOL_FIELDS: FieldMap = DDNS_FIELDS
 
-#: The gated scalar globals of one daemon: Kea key, DHCPServer field and the capability that the field needs.
-GATED_SERVER_FIELDS: tuple[tuple[str, str, Capability], ...] = (
-    (kea_paths.ALLOW_ADDRESS_REGISTRATION, "allow_address_registration", Capability.ADDRESS_REGISTRATION),
-    (kea_paths.STASH_AGENT_OPTIONS, "stash_agent_options", Capability.STASH_AGENT_OPTIONS),
+#: One Kea setting behind a DHCP Plugin Capability: a :data:`FieldMap` row and the capability that its field needs.
+GatedFieldMap = tuple[tuple[str, str, Callable | None, Capability], ...]
+
+#: The gated scalar globals of one daemon.
+GATED_SERVER_FIELDS: GatedFieldMap = (
+    (kea_paths.ALLOW_ADDRESS_REGISTRATION, "allow_address_registration", None, Capability.ADDRESS_REGISTRATION),
+    (kea_paths.STASH_AGENT_OPTIONS, "stash_agent_options", None, Capability.STASH_AGENT_OPTIONS),
+)
+
+#: The gated settings of a Subnet. The DHCP plugin 0.2.0 keeps the relay as free text, which the import leaves alone.
+GATED_SUBNET_FIELDS: GatedFieldMap = (
+    ("relay", "relay", relay_addresses, Capability.RELAY_ADDRESS_LIST),
+    ("4o6-subnet", "dhcp4o6_subnet", None, Capability.DHCP4O6_SUBNET_SELECTION),
+    ("4o6-interface", "dhcp4o6_interface", None, Capability.DHCP4O6_SUBNET_SELECTION),
+    ("4o6-interface-id", "dhcp4o6_interface_id", None, Capability.DHCP4O6_SUBNET_SELECTION),
 )
 
 
@@ -164,6 +172,10 @@ def _settings(field_map: FieldMap) -> tuple[ManagedField, ...]:
     return _scalars(*(attr for _key, attr, _transform in field_map))
 
 
+def _gated(field_map: GatedFieldMap) -> tuple[ManagedField, ...]:
+    return tuple(ManagedField(attr, capability) for _key, attr, _transform, capability in field_map)
+
+
 def _relations(*names: str) -> tuple[ManagedField, ...]:
     return tuple(ManagedField(name, relation=True) for name in names)
 
@@ -178,15 +190,22 @@ MANAGED_FIELDS: dict[str, tuple[ManagedField, ...]] = {
         *_scalars(
             *(server_id_field(key) for key in kea_paths.SERVER_ID_PARAMETERS), capability=Capability.SERVER_ID_FIELDS
         ),
-        *(ManagedField(attr, capability) for _key, attr, capability in GATED_SERVER_FIELDS),
+        *_gated(GATED_SERVER_FIELDS),
         *_relations("device_interfaces", "virtual_machine_interfaces"),
     ),
     # marcinpsk/netbox-kea-ng#107 imports Shared Networks.
     "SharedNetwork": (),
-    "Subnet": (*_scalars("prefix", "dhcp_server", "shared_network", "subnet_id"), *_settings(SUBNET_FIELDS)),
+    "Subnet": (
+        *_scalars("prefix", "dhcp_server", "shared_network", "subnet_id"),
+        *_settings(SUBNET_FIELDS),
+        *_gated(GATED_SUBNET_FIELDS),
+        ManagedField("user_context", Capability.USER_CONTEXT),
+        *_relations("client_classes", "evaluate_additional_classes", "server_interfaces"),
+    ),
     "Pool": (
         *_scalars("subnet", "ip_range", "pool_id"),
         *_settings(POOL_FIELDS),
+        ManagedField("user_context", Capability.USER_CONTEXT),
         *_relations("client_classes", "evaluate_additional_classes"),
     ),
     # marcinpsk/netbox-kea-ng#101 imports delegated-prefix Pools.

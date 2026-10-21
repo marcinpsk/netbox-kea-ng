@@ -44,6 +44,8 @@ v1 scope (import + diff, read-only against Kea):
   from its Shared Network is reported, never copied onto the Subnet.
 * **Ownership.** Every writer sets exactly the managed fields of :mod:`.dhcp_import_fields` on a mapped row, and
   :func:`_managed_changes` refuses a write that names another set. Unmanaged fields and unmapped rows stay.
+* A Subnet and a Pool link the client classes of their class lists that the same run imported. A Subnet links the
+  DHCP server interface that its Kea ``interface`` names, and reports a name that matches none.
 * **Client classes** (``client-classes``) are imported as ``ClientClass`` rows
   (test/template-test, additional-list flag, BOOTP + lifetime settings, options) with
   their Kea name. While the plugin keeps class names unique across all servers, a class
@@ -100,9 +102,11 @@ from ..subnet_catalogue import CatalogueUnavailable
 from .dhcp_import_fields import (
     CLIENT_CLASS_FIELDS,
     GATED_SERVER_FIELDS,
+    GATED_SUBNET_FIELDS,
     POOL_FIELDS,
     SERVER_FIELDS,
     SUBNET_FIELDS,
+    GatedFieldMap,
     managed_fields,
     server_id_field,
 )
@@ -661,6 +665,45 @@ def _declared_value(obj, attr: str, kea_key: str, raw, transform, summary: Impor
     return value
 
 
+def _declares(raw, transform) -> bool:
+    """Return whether the Kea value *raw* holds a value after *transform*. A value it cannot convert counts."""
+    try:
+        return not _is_unset(raw if transform is None else transform(raw))
+    except Exception:  # noqa: BLE001 — the value is reported, not converted
+        return True
+
+
+def gated_values(
+    obj, settings: dict, field_map: GatedFieldMap, capabilities: PluginCapabilities, summary, source: _Source
+) -> dict:
+    """Plan the gated settings fields of *obj* as :func:`_settings_fields` does, for each capability the plugin has.
+
+    Without its capability a field is not planned, and a value that Kea declares for it is unsupported.
+    """
+    values: dict = {}
+    for kea_key, attr, transform, capability in field_map:
+        if capabilities.has(capability):
+            values |= _settings_fields(obj, settings, ((kea_key, attr, transform),), summary, source)
+        elif kea_key in settings and _declares(settings[kea_key], transform):
+            path = kea_paths.setting(source.path, kea_key)
+            detail = f"The installed DHCP plugin cannot hold {kea_key}."
+            summary.record(unsupported(source.family, source.kind, path, capability, detail))
+    return values
+
+
+def _user_context_fields(
+    obj, user_context: dict | None, capabilities: PluginCapabilities, summary, source: _Source, holder: str
+) -> dict:
+    """Plan the ``user_context`` field of *obj*, or report a declared user-context as unsupported without it."""
+    if capabilities.has(Capability.USER_CONTEXT):
+        return {"user_context": user_context if user_context is not None else _cleared(obj, "user_context")}
+    if user_context is not None:
+        path = kea_paths.setting(source.path, kea_paths.USER_CONTEXT)
+        detail = f"The DHCP plugin has no user-context field on a {holder}."
+        summary.record(unsupported(source.family, source.kind, path, Capability.USER_CONTEXT, detail))
+    return {}
+
+
 def _managed_changes(obj, desired: dict, capabilities: PluginCapabilities) -> dict:
     """Return the managed fields of obj whose value differs from desired.
 
@@ -762,18 +805,8 @@ def server_values(
     else:
         detail = "The DHCP plugin has no address family on a DHCP server."
         summary.record(unsupported(family, Kind.SERVER, root, Capability.SERVER_FAMILY, detail))
-    if capabilities.has(Capability.USER_CONTEXT):
-        values["user_context"] = planned.user_context
-    elif planned.user_context is not None:
-        path = kea_paths.setting(root, kea_paths.USER_CONTEXT)
-        detail = "The DHCP plugin has no user-context field on a DHCP server."
-        summary.record(unsupported(family, Kind.SERVER, path, Capability.USER_CONTEXT, detail))
-    for kea_key, attr, capability in GATED_SERVER_FIELDS:
-        if capabilities.has(capability):
-            values[attr] = settings.get(kea_key)
-        elif kea_key in settings:
-            detail = f"The DHCP plugin has no {kea_key} field."
-            summary.record(unsupported(family, Kind.SERVER, kea_paths.setting(root, kea_key), capability, detail))
+    values |= _user_context_fields(dhcp_server, planned.user_context, capabilities, summary, source, "DHCP server")
+    values |= gated_values(dhcp_server, settings, GATED_SERVER_FIELDS, capabilities, summary, source)
     return values
 
 
@@ -965,22 +998,8 @@ def _client_class_fields(
         "template_test": intent.template_test or "",
         "only_in_additional_list": intent.only_in_additional_list,
     }
-    if capabilities.has(Capability.USER_CONTEXT):
-        fields["user_context"] = (
-            intent.user_context if intent.user_context is not None else _cleared(obj, "user_context")
-        )
-    elif intent.user_context is not None:
-        detail = "The DHCP plugin has no user-context field on a client class."
-        summary.record(
-            unsupported(
-                intent.family,
-                Kind.CLIENT_CLASS,
-                kea_paths.setting(path, kea_paths.USER_CONTEXT),
-                Capability.USER_CONTEXT,
-                detail,
-            )
-        )
     source = _Source(intent.family, Kind.CLIENT_CLASS, path)
+    fields |= _user_context_fields(obj, intent.user_context, capabilities, summary, source, "client class")
     fields.update(_settings_fields(obj, planned.settings, CLIENT_CLASS_FIELDS, summary, source))
     return fields
 
@@ -1091,6 +1110,7 @@ def upsert_subnet(
     claims: ClaimResult,
     renumbered: bool,
     capabilities: PluginCapabilities,
+    classes: ClassReferences,
 ):
     """Get/create the DHCP-plugin ``Subnet`` for *planned*, tracked via ``KeaDhcpLink`` by its key.
 
@@ -1129,12 +1149,24 @@ def upsert_subnet(
                 # settle_subnet_ids gave a mapped row its Kea subnet ID. Without one, the plugin numbers a new Subnet.
                 "subnet_id": planned.key if planned.key is not None else subnet_obj.subnet_id,
                 **_settings_fields(subnet_obj, planned.settings, SUBNET_FIELDS, summary, source),
+                **gated_values(subnet_obj, planned.settings, GATED_SUBNET_FIELDS, capabilities, summary, source),
+                **_user_context_fields(subnet_obj, intent.user_context, capabilities, summary, source, "Subnet"),
             }
+            wanted = classes.relations(intent, path, Kind.SUBNET, summary)
+            wanted["server_interfaces"] = _subnet_interface(
+                dhcp_server, planned.settings.get(kea_paths.INTERFACE), path, intent.family, summary
+            )
+            relations = _relation_changes(subnet_obj, wanted)
             if existing is None:
                 _create_row(subnet_obj, fields, capabilities)
             elif changes := _managed_changes(subnet_obj, fields, capabilities):
                 _save_changes(subnet_obj, changes)
                 changed = True
+            elif relations:
+                subnet_obj.snapshot()
+            for name, pks in relations.items():
+                getattr(subnet_obj, name).set(pks)
+            changed = changed or bool(relations)
             if mapping is not None:
                 observe_mapping(server, intent.family, subnet_obj, mapping)
     except event_scope.EventDispatchError:
@@ -1151,6 +1183,44 @@ def upsert_subnet(
     elif changed or renumbered:
         summary.record(written(intent.family, Kind.SUBNET, path, Outcome.UPDATED))
     return subnet_obj
+
+
+def _subnet_interface(dhcp_server, name, path: str, family: int, summary: ImportSummary) -> set[int]:
+    """Return the DHCP server interface that the Kea ``interface`` of the Subnet at *path* names.
+
+    A name that matches no interface of *dhcp_server* has an entry. The import creates no interface.
+    """
+    if not name:
+        return set()
+    found = set(dhcp_server.interfaces.filter(name=name).values_list("pk", flat=True))
+    if not found:
+        entry = not_written(
+            family,
+            Kind.SUBNET,
+            kea_paths.setting(path, kea_paths.INTERFACE),
+            Reason.NO_MATCHING_INTERFACE,
+            _no_interface_detail(dhcp_server, name),
+        )
+        summary.record(entry)
+    return found
+
+
+def _no_interface_detail(dhcp_server, name: str) -> str:
+    """Return why *dhcp_server* has no interface *name*."""
+    from dcim.models import Interface
+    from virtualization.models import VMInterface
+
+    if dhcp_server.device_id is None and dhcp_server.virtual_machine_id is None:
+        return "The DHCP server is linked to no device or virtual machine."
+    on_device = dhcp_server.device_id is not None and (
+        Interface.objects.filter(device=dhcp_server.device_id, name=name).exists()
+    )
+    on_vm = dhcp_server.virtual_machine_id is not None and (
+        VMInterface.objects.filter(virtual_machine=dhcp_server.virtual_machine_id, name=name).exists()
+    )
+    if on_device or on_vm:
+        return f"The DHCP server does not list interface {name} of its device or virtual machine."
+    return f"The DHCP server's device or virtual machine has no interface {name}."
 
 
 def _report_inherited(summary: ImportSummary, planned: PlannedSubnet) -> None:
@@ -1358,6 +1428,15 @@ class ClassReferences:
                 summary.record(not_written(self.family, kind, path, Reason.NO_PLUGIN_HOME, detail))
         return found
 
+    def relations(self, intent, parent_path: str, kind: Kind, summary: ImportSummary) -> dict[str, set[int]]:
+        """Return the imported client classes of both class lists of the Subnet or Pool *intent*, by relation."""
+        return {
+            "client_classes": self.resolve(intent.client_classes, parent_path, kea_paths.CLIENT_CLASSES, kind, summary),
+            "evaluate_additional_classes": self.resolve(
+                intent.evaluate_additional_classes, parent_path, kea_paths.EVALUATE_ADDITIONAL_CLASSES, kind, summary
+            ),
+        }
+
 
 def _upsert_pool(
     server,
@@ -1394,6 +1473,7 @@ def _upsert_pool(
         "ip_range_id": range_obj.pk,
         "pool_id": _declared_value(pool_obj, "pool_id", kea_paths.POOL_ID, intent.pool_id, None, summary, values),
         **_settings_fields(pool_obj, intent.settings, POOL_FIELDS, summary, values),
+        **_user_context_fields(pool_obj, intent.user_context, capabilities, summary, values, "Pool"),
     }
     relations = _relation_changes(pool_obj, classes)
     changes: dict = {}
@@ -1439,17 +1519,7 @@ def upsert_pools(
                 if result is not None and result.outcome in {"conflict", "disagreement"}:
                     summary.warn(f"pool {pool_intent.pool}: IPAM ownership {result.outcome}, IP Range left unchanged")
                 if range_obj is not None:
-                    references = {
-                        relation: classes.resolve(names, path, key, Kind.POOL, summary)
-                        for relation, key, names in (
-                            ("client_classes", kea_paths.CLIENT_CLASSES, pool_intent.client_classes),
-                            (
-                                "evaluate_additional_classes",
-                                kea_paths.EVALUATE_ADDITIONAL_CLASSES,
-                                pool_intent.evaluate_additional_classes,
-                            ),
-                        )
-                    }
+                    references = classes.relations(pool_intent, path, Kind.POOL, summary)
                     pool_obj, outcome = _upsert_pool(
                         server,
                         intent.family,
@@ -2113,7 +2183,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
             continue
         renumbered = planned_subnet.key in subnet_ids.renumbered
         subnet_obj = upsert_subnet(
-            server, dhcp_server, planned_subnet, summary, prefix_claims, renumbered, capabilities
+            server, dhcp_server, planned_subnet, summary, prefix_claims, renumbered, capabilities, classes
         )
         if subnet_obj is None:
             _skip_subnet_children(summary, planned_subnet)

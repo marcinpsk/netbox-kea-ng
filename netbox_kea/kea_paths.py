@@ -26,6 +26,9 @@ SHARED_NETWORKS = "shared-networks"
 CLIENT_CLASSES = "client-classes"
 EVALUATE_ADDITIONAL_CLASSES = "evaluate-additional-classes"
 POOL_ID = "pool-id"
+#: The Subnet key that names the interface of its directly connected clients.
+INTERFACE = "interface"
+ADAPTIVE_LEASE_TIME_THRESHOLD = "adaptive-lease-time-threshold"
 #: The ``server-id`` keys besides its type, each with the value that tells Kea to generate it.
 SERVER_ID_PARAMETERS = {"identifier": "", "enterprise-id": 0, "htype": 0, "time": 0}
 

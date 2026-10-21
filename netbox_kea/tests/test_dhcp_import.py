@@ -38,7 +38,7 @@ from netbox_kea.integrations.dhcp_import_plan import (
     observations,
     plan_family,
 )
-from netbox_kea.integrations.dhcp_import_report import GAPS, Capability, Kind, Reason
+from netbox_kea.integrations.dhcp_import_report import GAPS, Capability, Kind, Outcome, Reason
 from netbox_kea.integrations.dhcp_plugin_capabilities import CHECKS, probe
 from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS, parse_dhcp_config
@@ -196,7 +196,7 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
     def test_a_member_subnet_reports_the_values_it_inherits_from_its_shared_network(self):
         for family, relay in ((4, ["198.51.100.2", "198.51.100.3"]), (6, ["2001:db8:ffff::2"])):
             plan = plan_family(_recorded_intent(family), None)
-            office = {"reservations-global": True, "relay": {"ip-addresses": relay}}
+            office = {"reservations-global": True, "relay": {"ip-addresses": relay}, "interface": "eth0"}
             with self.subTest(family=family):
                 self.assertEqual(
                     {subnet.key: subnet.inherited for subnet in plan.subnets},
@@ -486,6 +486,72 @@ class CapabilityProbeTest(SimpleTestCase):
         self.assertFalse(probe(plugin.__getitem__).has(Capability.USER_CONTEXT))
 
 
+@without_dhcp_plugin()
+class GatedValuesTest(SimpleTestCase):
+    """With its capability a gated Kea value is planned on the plugin field that #88 proposes; without it, reported."""
+
+    def _plan(self, model, field_map, settings: dict, capabilities: frozenset):
+        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+
+        summary = dhcp_plugin.ImportSummary()
+        source = dhcp_plugin._Source(4, Kind.SUBNET, "Dhcp4/subnet4[id=10]")
+        values = dhcp_plugin.gated_values(
+            model(), settings, field_map, PluginCapabilities(capabilities), summary, source
+        )
+        return values, {(entry.path, entry.capability) for entry in summary.entries}
+
+    @isolate_apps("netbox_kea")
+    def test_with_the_capabilities_the_subnet_relay_list_and_4o6_keys_are_planned(self):
+        from netbox_kea.integrations.dhcp_import_fields import GATED_SUBNET_FIELDS
+
+        settings = {"relay": {"ip-addresses": ["198.51.100.1", "2001:db8::1"]}, "4o6-subnet": "2001:db8::/64"}
+
+        values, entries = self._plan(
+            _proposed_plugin_models()["Subnet"], GATED_SUBNET_FIELDS, settings, frozenset(Capability)
+        )
+
+        self.assertEqual(
+            values,
+            {
+                "relay": ["198.51.100.1", "2001:db8::1"],
+                "dhcp4o6_subnet": "2001:db8::/64",
+                # Kea does not declare them, so they are cleared.
+                "dhcp4o6_interface": "",
+                "dhcp4o6_interface_id": "",
+            },
+        )
+        self.assertEqual(entries, set())
+
+    @isolate_apps("netbox_kea")
+    def test_with_the_capability_a_relay_list_that_the_field_refuses_keeps_the_field(self):
+        from netbox_kea.integrations.dhcp_import_fields import GATED_SUBNET_FIELDS
+
+        subnet = _proposed_plugin_models()["Subnet"]
+        values, entries = self._plan(
+            subnet, GATED_SUBNET_FIELDS, {"relay": {"ip-addresses": ["relay.example"]}}, frozenset(Capability)
+        )
+
+        self.assertNotIn("relay", {key for key, value in values.items() if value})
+        self.assertEqual(entries, {("Dhcp4/subnet4[id=10]/relay", None)})
+
+    @isolate_apps("netbox_kea")
+    def test_without_the_capabilities_a_declared_value_is_unsupported_and_an_empty_relay_is_not(self):
+        from netbox_kea.integrations.dhcp_import_fields import GATED_SERVER_FIELDS, GATED_SUBNET_FIELDS
+
+        plugin = _proposed_plugin_models()
+        values, entries = self._plan(
+            plugin["Subnet"], GATED_SUBNET_FIELDS, {"relay": {"ip-addresses": []}, "4o6-interface": "eth1"}, frozenset()
+        )
+        self.assertEqual(
+            (values, entries),
+            ({}, {("Dhcp4/subnet4[id=10]/4o6-interface", Capability.DHCP4O6_SUBNET_SELECTION)}),
+        )
+        values, _entries = self._plan(
+            plugin["DHCPServer"], GATED_SERVER_FIELDS, {"allow-address-registration": True}, frozenset(Capability)
+        )
+        self.assertEqual(values, {"allow_address_registration": True, "stash_agent_options": None})
+
+
 class _ProbeModel(models.Model):
     """A model that the probe reads; no table is created."""
 
@@ -697,7 +763,6 @@ class ApplyPlanWithoutKeaTest(TestCase):
                 "renew_timer": 900,
                 "rebind_timer": 1800,
                 "allocator": "random",
-                "relay": "198.51.100.1",
                 "ddns_qualifying_suffix": "",
                 "reservations_in_subnet": False,
             },
@@ -715,8 +780,10 @@ class ApplyPlanWithoutKeaTest(TestCase):
             ),
             [
                 ("Dhcp4/subnet4[id=20]/ddns-qualifying-suffix", detail),
+                ("Dhcp4/subnet4[id=20]/interface", detail),
                 ("Dhcp4/subnet4[id=20]/relay", detail),
                 ("Dhcp4/subnet4[id=20]/reservations-global", detail),
+                ("Dhcp4/subnet4[id=21]/interface", detail),
                 ("Dhcp4/subnet4[id=21]/relay", detail),
                 ("Dhcp4/subnet4[id=21]/reservations-global", detail),
             ],
@@ -794,6 +861,206 @@ class ApplyPlanWithoutKeaTest(TestCase):
             {"boot": (None, None), "printers": (None, None)},
         )
         self.assertEqual(classes["boot"]["next_server"], "192.0.2.5")
+
+
+_SUBNET_10 = "Dhcp4/subnet4[id=10]"
+
+
+class SubnetCoverageTest(TestCase):
+    """The coverage configuration gives Subnet 10 its classes, interface and values, and plugin 0.2.0 gaps are reported."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def setUp(self):
+        self.server = _make_db_server(name="subnet-coverage", ca_url="https://kea.example.invalid", dhcp6=False)
+
+    def _apply(self, config: dict | None = None, family: int = 4):
+        intent = parse_dhcp_config(_recorded_config(family) if config is None else config, family)
+        intent.configuration_complete = True
+        summary = dhcp_plugin.apply_plan(self.server, plan_family(intent, None), probe())
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        return summary
+
+    def _subnet(self, subnet_id: int = 10, family: int = 4):
+        return KeaDhcpLink.objects.get(
+            server=self.server, family=family, kind="subnet", kea_subnet_id=subnet_id
+        ).sys4_object
+
+    @staticmethod
+    def _names(relation) -> list[str]:
+        return sorted(relation.values_list("name", flat=True))
+
+    @staticmethod
+    def _entries(summary, prefix: str) -> dict:
+        return {
+            entry.path: (entry.reason, entry.capability)
+            for entry in summary.entries
+            if entry.path.startswith(prefix) and entry.reason is not None
+        }
+
+    def test_subnet_10_gets_its_client_classes_and_declared_values(self):
+        self._apply()
+
+        subnet = self._subnet()
+        self.assertEqual(
+            (self._names(subnet.client_classes), self._names(subnet.evaluate_additional_classes)),
+            (["voip"], ["printers"]),
+        )
+        self.assertEqual((subnet.valid_lifetime, subnet.allocator), (3600, "random"))
+        self.assertEqual(
+            (self._names(self._subnet(20).client_classes), self._names(self._subnet(21).client_classes)),
+            ([], ["voip"]),
+        )
+
+    def test_adaptive_lease_time_threshold_is_imported_where_kea_declares_it(self):
+        from decimal import Decimal
+
+        config = _recorded_config(4)
+        config["subnet4"][0]["adaptive-lease-time-threshold"] = 0.65
+
+        self._apply(config)
+
+        self.assertEqual(imported_dhcp_server(self.server, 4).adaptive_lease_time_threshold, Decimal("0.80"))
+        self.assertEqual(self._subnet().adaptive_lease_time_threshold, Decimal("0.65"))
+        # Subnet 20 inherits the global value, which Kea merges into config-get.
+        self.assertIsNone(self._subnet(20).adaptive_lease_time_threshold)
+
+    def test_with_plugin_0_2_0_the_relay_list_and_user_context_are_unsupported_and_the_rest_imports(self):
+        relay = "manually set relay"
+        self._apply()
+        apps.get_model(DHCP_PLUGIN, "Subnet").objects.filter(pk=self._subnet().pk).update(relay=relay)
+
+        summary = self._apply()
+
+        unsupported = {
+            path: capability
+            for path, (reason, capability) in self._entries(summary, _SUBNET_10).items()
+            if capability is not None
+        }
+        self.assertEqual(
+            unsupported,
+            {
+                f"{_SUBNET_10}/relay": Capability.RELAY_ADDRESS_LIST,
+                f"{_SUBNET_10}/user-context": Capability.USER_CONTEXT,
+                f"{_SUBNET_10}/pools[pool=192.0.2.10-192.0.2.20]/user-context": Capability.USER_CONTEXT,
+            },
+        )
+        subnet = self._subnet()
+        # Without the capability the free-text field is not managed, so it keeps its value.
+        self.assertEqual((subnet.relay, subnet.valid_lifetime), (relay, 3600))
+
+    def test_a_declared_4o6_subnet_selection_is_unsupported_with_plugin_0_2_0(self):
+        config = _recorded_config(4)
+        config["subnet4"][0] |= {"4o6-subnet": "2001:db8::/64", "4o6-interface": "eth1"}
+
+        summary = self._apply(config)
+
+        self.assertEqual(
+            self._entries(summary, f"{_SUBNET_10}/4o6"),
+            {
+                f"{_SUBNET_10}/4o6-subnet": (Reason.PLUGIN_GAP, Capability.DHCP4O6_SUBNET_SELECTION),
+                f"{_SUBNET_10}/4o6-interface": (Reason.PLUGIN_GAP, Capability.DHCP4O6_SUBNET_SELECTION),
+            },
+        )
+
+    def test_the_subnet_interface_links_the_dhcp_server_interface_of_that_name(self):
+        from .test_integration_dhcp_plugin import _device
+
+        self._apply()
+        dhcp_server = imported_dhcp_server(self.server, 4)
+        dhcp_server.device = _device("subnet-coverage-dev", "eth0", "eth1")
+        dhcp_server.save()
+        config = _recorded_config(4)
+        config["interfaces-config"]["interfaces"] = ["eth0", "eth1"]
+
+        summary = self._apply(config)
+
+        self.assertEqual(self._names(self._subnet().server_interfaces), ["eth0"])
+        self.assertEqual(self._entries(summary, f"{_SUBNET_10}/interface"), {})
+        self.assertIn(f"{_SUBNET_10}", [entry.path for entry in summary.entries if entry.reason is None])
+
+        config["subnet4"][0]["interface"] = "eth1"
+        self._apply(config)
+
+        self.assertEqual(self._names(self._subnet().server_interfaces), ["eth1"])
+
+    def test_a_subnet_interface_that_the_dhcp_server_does_not_have_is_reported(self):
+        from .test_integration_dhcp_plugin import _device
+
+        no_device = self._apply()
+        dhcp_server = imported_dhcp_server(self.server, 4)
+        dhcp_server.device = _device("subnet-coverage-unlisted", "eth0")
+        dhcp_server.save()
+        # Kea's interface list does not name eth0, so the DHCP server does not list it.
+        unlisted = self._apply()
+        config = _recorded_config(4)
+        config["interfaces-config"]["interfaces"] = ["eth0"]
+        config["subnet4"][0]["interface"] = "eth7"
+        missing = self._apply(config)
+
+        path = f"{_SUBNET_10}/interface"
+        for summary, detail in (
+            (no_device, "The DHCP server is linked to no device or virtual machine."),
+            (unlisted, "The DHCP server does not list interface eth0 of its device or virtual machine."),
+            (missing, "The DHCP server's device or virtual machine has no interface eth7."),
+        ):
+            with self.subTest(detail=detail):
+                (entry,) = [entry for entry in summary.entries if entry.path == path]
+                self.assertEqual((entry.reason, entry.detail), (Reason.NO_MATCHING_INTERFACE, detail))
+        self.assertEqual(self._names(self._subnet().server_interfaces), [])
+
+    def test_a_member_subnet_reports_the_interface_of_its_shared_network(self):
+        summary = self._apply()
+
+        detail = "Kea applies the value of Shared Network office, which is not imported."
+        for subnet_id in (20, 21):
+            with self.subTest(subnet_id=subnet_id):
+                (entry,) = [e for e in summary.entries if e.path == f"Dhcp4/subnet4[id={subnet_id}]/interface"]
+                self.assertEqual((entry.reason, entry.detail), (Reason.INHERITED_FROM_SHARED_NETWORK, detail))
+
+    def test_a_subnet_class_that_kea_does_not_define_is_reported_and_not_created(self):
+        config = _recorded_config(4)
+        config["subnet4"][0]["client-classes"] = ["voip", "KNOWN"]
+
+        summary = self._apply(config)
+
+        self.assertEqual(self._names(self._subnet().client_classes), ["voip"])
+        self.assertEqual(
+            self._entries(summary, f"{_SUBNET_10}/client-classes"),
+            {f"{_SUBNET_10}/client-classes[KNOWN]": (Reason.NO_PLUGIN_HOME, None)},
+        )
+        ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
+        self.assertFalse(ClientClass.objects.filter(name="KNOWN").exists())
+
+    def test_a_subnet_class_that_kea_stops_naming_is_unlinked(self):
+        self._apply()
+        config = _recorded_config(4)
+        del config["subnet4"][0]["evaluate-additional-classes"]
+
+        summary = self._apply(config)
+
+        self.assertEqual(self._names(self._subnet().evaluate_additional_classes), [])
+        self.assertIn((_SUBNET_10, Outcome.UPDATED), [(entry.path, entry.outcome) for entry in summary.entries])
+        self.assertEqual([entry.path for entry in self._apply(config).entries if entry.path == _SUBNET_10], [])
+
+    def test_dhcpv6_imports_the_global_adaptive_threshold_and_subnet_classes(self):
+        from decimal import Decimal
+
+        self.server.dhcp6 = True
+        self.server.save()
+
+        self._apply(family=6)
+
+        self.assertEqual(imported_dhcp_server(self.server, 6).adaptive_lease_time_threshold, Decimal("0.80"))
+        subnet = self._subnet(family=6)
+        self.assertEqual(
+            (self._names(subnet.client_classes), self._names(subnet.evaluate_additional_classes)),
+            (["voip"], ["printers"]),
+        )
 
 
 # The Subnet fields that Kea's config-get fills from the parent or that the coverage configuration declares.

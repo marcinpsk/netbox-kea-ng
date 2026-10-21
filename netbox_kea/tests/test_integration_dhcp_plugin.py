@@ -914,7 +914,8 @@ class DhcpPluginTuningImportTest(TestCase):
         self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
         subnet = Subnet.objects.get(prefix__prefix="10.31.0.0/24")
         self.assertEqual(subnet.valid_lifetime, 7200)  # genuine per-subnet override stored
-        self.assertEqual(subnet.relay, "10.31.0.3")  # relay dict flattened to CSV
+        # Plugin 0.2.0 keeps the relay as free text, which the import does not write.
+        self.assertIsNone(subnet.relay)
 
     def test_v6_style_decimal_does_not_raise(self):
         # 0.8 has no exact float repr; the str-based Decimal coercion must keep it clean.
@@ -1343,7 +1344,6 @@ class DhcpPluginServerPerFamilyTest(TestCase):
             "server-id": {"type": "EN", "identifier": "0102", "enterprise-id": 2495, "htype": 0, "time": 0},
             "user-context": {"site": "lab"},
             "host-reservation-identifiers": ["hw-address", "flex-id"],
-            "allow-address-registration": True,
         }
         intent = parse_dhcp_config(self.conf[6], 6)
         intent.host_reservation_identifiers = ("hw-address", "flex-id")
@@ -1353,7 +1353,10 @@ class DhcpPluginServerPerFamilyTest(TestCase):
             apps.get_model(DHCP_PLUGIN, "DHCPServer")(),
             plan_family(intent, None).server,
             6,
-            PluginCapabilities(frozenset(Capability)),
+            # GatedValuesTest plans the gated scalar globals, whose fields this plugin model lacks.
+            PluginCapabilities(
+                frozenset(Capability) - {Capability.ADDRESS_REGISTRATION, Capability.STASH_AGENT_OPTIONS}
+            ),
             summary,
         )
 
@@ -1366,7 +1369,6 @@ class DhcpPluginServerPerFamilyTest(TestCase):
             "server_id_time",
             "user_context",
             "host_reservation_identifiers",
-            "allow_address_registration",
         )
         self.assertEqual(
             {name: values[name] for name in gated},
@@ -1379,7 +1381,6 @@ class DhcpPluginServerPerFamilyTest(TestCase):
                 "server_id_time": None,
                 "user_context": {"site": "lab"},
                 "host_reservation_identifiers": ["hw-address", "flex-id"],
-                "allow_address_registration": True,
             },
         )
         self.assertEqual(summary.entries, [])
