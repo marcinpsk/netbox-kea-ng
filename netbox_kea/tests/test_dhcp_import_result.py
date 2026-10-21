@@ -288,6 +288,28 @@ class LatestRunPageTest(_ImportRunTestCase):
         )
         self.assertIn("Name unique per DHCP server (#88 gap 3)", row.get_text(" ", strip=True))
 
+    def test_the_entries_of_a_run_longer_than_one_page_are_reachable_page_by_page(self):
+        # NetBox moves a last page of at most 5 rows onto the page before it, so the last page holds 6.
+        paths = [f"Dhcp4/subnet4[id={subnet_id}]" for subnet_id in range(1, 12)]
+        store_run(
+            self.server,
+            DhcpImportTrigger.MANUAL,
+            timezone.now(),
+            [written(4, Kind.SUBNET, path, Outcome.CREATED) for path in paths],
+        )
+        url = reverse("plugins:netbox_kea:server_dhcp_plugin", args=[self.server.pk])
+
+        shown = []
+        for page_number in (1, 2):
+            with stub_kea(_kea()):
+                response = self.client.get(url, {"per_page": 5, "page": page_number})
+            card = BeautifulSoup(response.content, "html.parser").select_one("#dhcp-import-latest-run")
+            cells = {cell.get_text(strip=True) for cell in card.select("td")}
+            shown.append([path for path in paths if path in cells])
+            links = {link["href"] for link in card.select("ul.pagination a")}
+            self.assertTrue(any(f"page={3 - page_number}" in link for link in links), links)
+        self.assertEqual(shown, [paths[:5], paths[5:]])
+
     def test_the_page_says_when_no_run_is_stored(self):
         page = BeautifulSoup(self._page().content, "html.parser")
 
