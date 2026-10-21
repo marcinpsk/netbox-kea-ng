@@ -632,11 +632,10 @@ _RESERVATION_ADDRESSES_CELL = (
 #: Each delegated prefix with the prefix that Kea excludes from it, if any.
 _RESERVATION_PREFIXES_CELL = (
     "{% for prefix in record.prefixes %}"
-    '<span class="font-monospace">{{ prefix.delegated }}</span>'
+    '<div class="font-monospace">{{ prefix.delegated }}</div>'
     "{% if prefix.excluded %}"
-    ' <span class="text-muted small">excludes</span> <span class="font-monospace">{{ prefix.excluded }}</span>'
+    '<div class="small text-muted text-nowrap">excludes <span class="font-monospace">{{ prefix.excluded }}</span></div>'
     "{% endif %}"
-    "{% if not forloop.last %}<br>{% endif %}"
     "{% endfor %}"
 )
 
@@ -647,15 +646,14 @@ _RESERVATION_CLIENT_CLASSES_CELL = (
 #: The DHCPv4 boot fields of a Reservation; Kea sends them in the BOOTP siaddr, sname and file fields.
 _RESERVATION_BOOT_CELL = (
     "{% if record.next_server %}"
-    '<span class="text-muted small">Next server</span> <span class="font-monospace">{{ record.next_server }}</span>'
-    "{% if record.server_hostname or record.boot_file_name %}<br>{% endif %}"
+    '<div class="text-muted small">Next server</div><div class="font-monospace">{{ record.next_server }}</div>'
     "{% endif %}"
     "{% if record.server_hostname %}"
-    '<span class="text-muted small">Server hostname</span> {{ record.server_hostname }}'
-    "{% if record.boot_file_name %}<br>{% endif %}"
+    '<div class="text-muted small">Server hostname</div><div>{{ record.server_hostname }}</div>'
     "{% endif %}"
     "{% if record.boot_file_name %}"
-    '<span class="text-muted small">Boot file name</span> <span class="font-monospace">{{ record.boot_file_name }}</span>'
+    '<div class="text-muted small">Boot file name</div>'
+    '<div class="font-monospace text-break">{{ record.boot_file_name }}</div>'
     "{% endif %}"
 )
 
