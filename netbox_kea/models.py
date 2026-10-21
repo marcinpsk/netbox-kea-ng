@@ -820,6 +820,7 @@ class IPAMOwnershipSource(models.TextChoices):
     POOL = "pool", "Pool"
     DELEGATED_PREFIX = "delegated-prefix", "Delegated prefix"
     LEASE_PREFIX = "lease-prefix", "Delegated-prefix lease"
+    PD_POOL = "pd-pool", "Delegated-prefix Pool"
 
 
 OWNED_OBJECT_KEYS = ("ip_address", "prefix", "ip_range")

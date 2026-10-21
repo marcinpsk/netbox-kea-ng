@@ -128,8 +128,9 @@ R = TypeVar("R")
 LEASE = cast("str", IPAMOwnershipSource.LEASE)
 RESERVATION = cast("str", IPAMOwnershipSource.RESERVATION)
 LEASE_PREFIX = cast("str", IPAMOwnershipSource.LEASE_PREFIX)
+PD_POOL = cast("str", IPAMOwnershipSource.PD_POOL)
 # The sources that own Prefixes and IP Ranges; their failures count as prefix errors.
-_NETWORK_SOURCES = frozenset({"subnet", "pool", "delegated-prefix", LEASE_PREFIX})
+_NETWORK_SOURCES = frozenset({"subnet", "pool", "delegated-prefix", LEASE_PREFIX, PD_POOL})
 
 # The status of an IP address from the sources of its live links.
 _STATUSES: dict[frozenset[str], str] = {
@@ -272,7 +273,20 @@ class DelegatedPrefixPhase:
     source: ClassVar[str] = "delegated-prefix"
 
 
-Phase = LeasePhase | LeasePrefixPhase | ReservationPhase | SubnetPhase | PoolPhase | DelegatedPrefixPhase
+@dataclass(frozen=True)
+class PDPoolPhase:
+    """The prefix and excluded prefix of each DHCPv6 delegated-prefix Pool of one configuration read.
+
+    *cutoff* comes before the read; ``None``: the read took none, so the phase is not complete.
+    """
+
+    prefixes: Sequence[IPNetworkValue]
+    cutoff: int | None
+    complete: bool
+    source: ClassVar[str] = PD_POOL
+
+
+Phase = LeasePhase | LeasePrefixPhase | ReservationPhase | SubnetPhase | PoolPhase | DelegatedPrefixPhase | PDPoolPhase
 
 # The NetBox permissions that a claim of each source uses. An address claim also writes the MAC address rows.
 _ADDRESS_WRITES = ("ipam.add_ipaddress", "ipam.change_ipaddress", "dcim.add_macaddress", "dcim.change_macaddress")
@@ -284,6 +298,7 @@ _CLAIM_PERMISSIONS: dict[str, tuple[str, ...]] = {
     SubnetPhase.source: _PREFIX_WRITES,
     PoolPhase.source: ("ipam.add_iprange", "ipam.change_iprange"),
     DelegatedPrefixPhase.source: _PREFIX_WRITES,
+    PDPoolPhase.source: _PREFIX_WRITES,
 }
 
 
@@ -527,6 +542,7 @@ def _pending_adoptions() -> set[tuple[Family, str]]:
         "subnet": "prefix",
         "delegated-prefix": "prefix",
         LEASE_PREFIX: "prefix",
+        PD_POOL: "prefix",
         "pool": "ip_range",
     }
     config, switch = SyncConfig.get(), DhcpIntegrationConfig.get()
@@ -639,6 +655,17 @@ class PoolClaim:
 
     pool: Pool
     network: IPNetworkValue
+
+
+@dataclass(frozen=True)
+class PDPoolClaim:
+    """The prefix or the excluded prefix of a DHCPv6 delegated-prefix Pool, to claim without cleanup."""
+
+    prefix: IPNetworkValue
+
+
+# The source of each network record that a claim takes.
+_NETWORK_CLAIM_SOURCES: dict[type, str] = {SubnetClaim: "subnet", PoolClaim: "pool", PDPoolClaim: PD_POOL}
 
 
 @dataclass(frozen=True)
@@ -781,7 +808,7 @@ def claim(
 def claim(
     server: Server,
     family: Family,
-    records: Sequence[Lease] | Sequence[SubnetClaim] | Sequence[PoolClaim],
+    records: Sequence[Lease] | Sequence[SubnetClaim] | Sequence[PoolClaim] | Sequence[PDPoolClaim],
     force: bool,
 ) -> ClaimResult: ...
 
@@ -789,14 +816,19 @@ def claim(
 def claim(
     server: Server,
     family: Family,
-    records: Sequence[Lease] | Sequence[Reservation] | Sequence[SubnetClaim] | Sequence[PoolClaim],
+    records: Sequence[Lease]
+    | Sequence[Reservation]
+    | Sequence[SubnetClaim]
+    | Sequence[PoolClaim]
+    | Sequence[PDPoolClaim],
     force: bool,
     *,
     catalogue: CatalogueSnapshot | None = None,
 ) -> ClaimResult:
     """Claim one source's records in the Server's VRF, with per-object outcomes and no stale cleanup.
 
-    A call contains one source: address leases, delegated-prefix leases, Reservations, Subnets or Pools. All records
+    A call contains one source: address leases, delegated-prefix leases, Reservations, Subnets, Pools or the prefixes
+    of delegated-prefix Pools. All records
     are validated and grouped before any write. Lease masks and the Subnet IDs of delegated prefixes come from a live
     complete Kea Subnet Catalogue; a delegated prefix is claimed as a Prefix. Reservations carry their verified
     Subnet mask, and *catalogue*, the catalogue that verified them, gives their published names; only a Reservation
@@ -807,11 +839,12 @@ def claim(
     if not records:
         return ClaimResult()
     unexpected = TypeError("A Reservation claim takes the catalogue that verified it; another claim takes none.")
-    if isinstance(records[0], (SubnetClaim, PoolClaim)):
+    network_claims = tuple(_NETWORK_CLAIM_SOURCES)
+    if isinstance(records[0], network_claims):
         if catalogue is not None:
             raise unexpected
         return _claim_network_records(server, family, records, force=force)
-    if any(isinstance(record, (SubnetClaim, PoolClaim)) for record in records):
+    if any(isinstance(record, network_claims) for record in records):
         raise ValueError("A claim takes one homogeneous source")
     address_records = cast("Sequence[Lease | Reservation]", records)
     lease_records = isinstance(records[0], LEASE_VARIANTS)
@@ -1065,8 +1098,8 @@ def _run_phase(server: Server, family: Family, phase: Phase, report: SyncReport)
 
     The cutoff number comes before the snapshot request, so a claim that confirms a link after it keeps the link.
     """
-    if isinstance(phase, DelegatedPrefixPhase):
-        return _run_delegated_prefix_phase(server, family, phase, report)
+    if isinstance(phase, (DelegatedPrefixPhase, PDPoolPhase)):
+        return _run_imported_prefix_phase(server, family, phase, report)
     if isinstance(phase, LeasePrefixPhase):
         return _run_lease_prefix_phase(server, family, phase, report)
     if isinstance(phase, (SubnetPhase, PoolPhase)):
@@ -1715,8 +1748,12 @@ def _run_network_phase(
 
 
 def _network_marker_kind(sources: Collection[str]) -> MarkerKind:
-    """Prefer the Subnet marker when a Prefix has both live ownership sources."""
-    return "pool" if "pool" in sources else ("subnet" if "subnet" in sources else "delegated prefix")
+    """Prefer the Subnet marker, then the delegated-prefix Pool marker, when a Prefix has several live sources."""
+    if "pool" in sources:
+        return "pool"
+    if "subnet" in sources:
+        return "subnet"
+    return "pd pool" if PD_POOL in sources else "delegated prefix"
 
 
 def _claim_network(
@@ -1880,21 +1917,22 @@ def _network_result(server: Server, source: str, row: _NetworkReport, outcome: _
 def _claim_network_records(
     server: Server,
     family: Family,
-    records: Sequence[Lease | Reservation | SubnetClaim | PoolClaim],
+    records: Sequence[Lease | Reservation | SubnetClaim | PoolClaim | PDPoolClaim],
     *,
     force: bool,
 ) -> ClaimResult:
     """Validate and group one typed network source before any ownership write."""
-    source = "subnet" if isinstance(records[0], SubnetClaim) else "pool"
-    expected = SubnetClaim if source == "subnet" else PoolClaim
+    expected = type(records[0])
+    source = _NETWORK_CLAIM_SOURCES[expected]
     reports: dict[str, _NetworkReport] = {}
     for record in records:
-        if not isinstance(record, (SubnetClaim, PoolClaim)) or not isinstance(record, expected):
+        if not isinstance(record, (SubnetClaim, PoolClaim, PDPoolClaim)) or type(record) is not expected:
             raise ValueError("A claim takes one homogeneous source")
-        if record.network.version != family:
+        network = record.prefix if isinstance(record, PDPoolClaim) else record.network
+        if network.version != family:
             raise ValueError("The network does not match the claim family")
-        if isinstance(record, SubnetClaim):
-            row = _NetworkReport(str(record.network), record.network.prefixlen)
+        if not isinstance(record, PoolClaim):
+            row = _NetworkReport(str(network), network.prefixlen)
         else:
             pool = record.pool
             if pool.start not in record.network or pool.end not in record.network or int(pool.end) < int(pool.start):
@@ -1938,22 +1976,30 @@ def _claim_network_reports(
     return result
 
 
-def _run_delegated_prefix_phase(
-    server: Server, family: Family, phase: DelegatedPrefixPhase, report: SyncReport
+def _imported_prefixes(family: Family, phase: DelegatedPrefixPhase | PDPoolPhase) -> list[IPNetworkValue]:
+    """Return the Prefixes that an import phase reports, after a check of their family before any write."""
+    if isinstance(phase, PDPoolPhase):
+        if any(prefix.version != family for prefix in phase.prefixes):
+            raise ValueError("The delegated-prefix Pool prefix does not match the phase family")
+        return list(phase.prefixes)
+    if any(reservation.family != family for reservation in phase.records):
+        raise ValueError("The Reservation does not match the phase family")
+    return [prefix for reservation in phase.records for prefix in reservation.delegated_prefixes]
+
+
+def _run_imported_prefix_phase(
+    server: Server, family: Family, phase: DelegatedPrefixPhase | PDPoolPhase, report: SyncReport
 ) -> int | None:
-    """Claim successfully imported delegated Prefixes before optional stale cleanup."""
-    reports: dict[str, _NetworkReport] = {}
-    for reservation in phase.records:
-        if reservation.family != family:
-            raise ValueError("The Reservation does not match the phase family")
-        for prefix in reservation.delegated_prefixes:
-            reports[str(prefix)] = _NetworkReport(str(prefix), prefix.prefixlen)
+    """Claim the Prefixes of an import phase (Reservation delegated prefixes, or PD Pools) before stale cleanup."""
+    reports = {
+        str(prefix): _NetworkReport(str(prefix), prefix.prefixlen) for prefix in _imported_prefixes(family, phase)
+    }
     results = _claim_network_reports(server, family, phase.source, reports, report=report)
     report.prefixes.update(results.prefixes)
     for address, result in results.prefixes.items():
         if result.outcome != "error":
             _count(report, address, result.outcome)
-    if not phase.complete:
+    if not phase.complete or phase.cutoff is None:
         report.incomplete.add(phase.source)
     return None if phase.source in report.incomplete else phase.cutoff
 

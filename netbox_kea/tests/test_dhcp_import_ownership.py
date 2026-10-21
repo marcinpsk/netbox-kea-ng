@@ -957,6 +957,100 @@ class TypedNetworkClaimTest(TestCase):
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
 
+class PDPoolOwnershipTest(TestCase):
+    """The DHCP Import owns the Prefixes of delegated-prefix Pools through its own source, pd-pool (ADR 0006)."""
+
+    def setUp(self):
+        self.server = _make_db_server(name="pd-owner", dhcp4=False, sync_deprecate_prefixes_and_ranges=True)
+        self.network = ipaddress.ip_network("2001:db8:100::/48")
+
+    @staticmethod
+    def _sources(prefix) -> list[str]:
+        return sorted(IPAMOwnershipLink.objects.filter(prefix=prefix).values_list("source", flat=True))
+
+    def test_a_pd_pool_claim_creates_the_prefix_with_its_own_marker_and_source(self):
+        from netbox_kea.ipam_reconciliation import PDPoolClaim
+
+        result = claim(self.server, 6, [PDPoolClaim(self.network)], force=False)
+
+        self.assertEqual(result.prefixes[str(self.network)].outcome, "created")
+        prefix = Prefix.objects.get(prefix=str(self.network))
+        self.assertEqual((prefix.description, prefix.status), ("[kea-sync: pd pool]", "active"))
+        self.assertEqual(self._sources(prefix), ["pd-pool"])
+
+    def test_the_job_subnet_phase_leaves_a_pd_pool_link_alone(self):
+        from netbox_kea.ipam_reconciliation import PDPoolClaim, SubnetPhase, read_catalogue
+
+        from .kea_stub import _catalogue_responses_for_subnets
+
+        claim(self.server, 6, [PDPoolClaim(self.network)], force=False)
+        with stub_kea(_catalogue_responses_for_subnets(6, [])):
+            observation = read_catalogue(self.server, 6)
+
+        report = reconcile(self.server, 6, [SubnetPhase(observation)])
+
+        self.assertTrue(report.complete)
+        prefix = Prefix.objects.get(prefix=str(self.network))
+        self.assertEqual((prefix.status, self._sources(prefix)), ("active", ["pd-pool"]))
+
+    def test_a_complete_pd_pool_phase_drops_its_stale_link_and_deprecates_by_opt_in(self):
+        from netbox_kea.ipam_reconciliation import PDPoolClaim, PDPoolPhase
+
+        kept = ipaddress.ip_network("2001:db8:200::/48")
+        claim(self.server, 6, [PDPoolClaim(self.network), PDPoolClaim(kept)], force=False)
+
+        report = reconcile(self.server, 6, [PDPoolPhase([kept], next_confirmation_number(), True)])
+
+        self.assertEqual((report.errors, report.prefix_errors, report.deprecated), (0, 0, 1))
+        self.assertEqual(report.completed_sources, {"pd-pool"})
+        stale = Prefix.objects.get(prefix=str(self.network))
+        self.assertEqual(stale.status, "deprecated")
+        self.assertEqual(Prefix.objects.get(prefix=str(kept)).status, "active")
+        self.assertEqual(self._sources(Prefix.objects.get(prefix=str(kept))), ["pd-pool"])
+
+    def test_an_incomplete_pd_pool_phase_keeps_every_link(self):
+        from netbox_kea.ipam_reconciliation import PDPoolClaim, PDPoolPhase
+
+        claim(self.server, 6, [PDPoolClaim(self.network)], force=False)
+        before = IPAMOwnershipLink.objects.values().get()
+
+        for cutoff, complete in ((next_confirmation_number(), False), (None, True)):
+            with self.subTest(cutoff=cutoff, complete=complete):
+                report = reconcile(self.server, 6, [PDPoolPhase([], cutoff, complete)])
+
+                self.assertEqual(report.incomplete, {"pd-pool"})
+                self.assertEqual(IPAMOwnershipLink.objects.values().get(), before)
+                self.assertEqual(Prefix.objects.get().status, "active")
+
+    def test_a_subnet_prefix_keeps_the_subnet_marker_and_takes_the_pd_pool_marker_after_it(self):
+        from netbox_kea.ipam_reconciliation import PDPoolClaim, SubnetPhase, read_catalogue
+
+        from .kea_stub import _catalogue_responses_for_subnets
+
+        claim(self.server, 6, [SubnetClaim(self.network)], force=False)
+        claim(self.server, 6, [PDPoolClaim(self.network)], force=False)
+        prefix = Prefix.objects.get()
+        self.assertEqual((prefix.description, self._sources(prefix)), ("[kea-sync: subnet]", ["pd-pool", "subnet"]))
+        with stub_kea(_catalogue_responses_for_subnets(6, [])):
+            observation = read_catalogue(self.server, 6)
+
+        reconcile(self.server, 6, [SubnetPhase(observation)])
+
+        prefix.refresh_from_db()
+        self.assertEqual((prefix.description, prefix.status), ("[kea-sync: pd pool]", "active"))
+        self.assertEqual(self._sources(prefix), ["pd-pool"])
+
+    def test_a_pd_pool_prefix_of_another_family_fails_before_writing(self):
+        from netbox_kea.ipam_reconciliation import PDPoolClaim, PDPoolPhase
+
+        with self.assertRaisesMessage(ValueError, "network does not match"):
+            claim(self.server, 4, [PDPoolClaim(self.network)], force=False)
+        with self.assertRaisesMessage(ValueError, "prefix does not match"):
+            reconcile(self.server, 4, [PDPoolPhase([self.network], next_confirmation_number(), True)])
+        self.assertFalse(Prefix.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+
 class AdapterOwnershipBoundaryTest(SimpleTestCase):
     def test_adapter_imports_no_private_sync_helpers(self):
         source = Path(dhcp_plugin.__file__).read_text()

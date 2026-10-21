@@ -229,8 +229,8 @@ _Avoid_: Kea action, direct action, runtime write
 
 **IPAM Ownership**:
 The fact that one Server and address family synchronized a NetBox IP address, Prefix, or IP Range from one Kea
-source: an address lease, a delegated-prefix lease, a Reservation, a Subnet, a Pool, or a Reservation delegated
-prefix. Only a Current Lease is a lease source. One object can have several owners. An operator
+source: an address lease, a delegated-prefix lease, a Reservation, a Subnet, a Pool, a Reservation delegated
+prefix, or a delegated-prefix Pool. Only a Current Lease is a lease source. One object can have several owners. An operator
 ends every ownership of an object when the description no longer starts with a well-formed marker block
 (`[kea-sync: <kind>]`): the block is missing, moved or malformed. A block of another known kind still marks the
 object. Text after the block is an operator note, and the synchronization keeps it.
