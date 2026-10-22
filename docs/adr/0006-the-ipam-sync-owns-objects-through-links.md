@@ -182,6 +182,16 @@ delegated-prefix Pools. The import runs the phase after it removes the Stale DHC
 reference guard does not keep a Prefix that only a removed delegated-prefix Pool used. When a Prefix has more than
 one live source, the `subnet` marker wins over `pd pool`, and `pd pool` wins over `delegated prefix`.
 
+### Delegated and excluded prefixes of Reservations
+
+This section was added for marcinpsk/netbox-kea-ng#150. The Reservation step of the DHCP plugin import claims the
+delegated and excluded prefixes of the imported Reservations with `claim`, and attaches them in the same transaction.
+The `delegated-prefix` phase runs after the import removes the Stale DHCP Import Objects, the same as the `pd-pool`
+phase. Before, the phase ran in the Reservation step. A stale Reservation then still referenced its Prefixes, so the
+DHCP plugin reference guard dropped their links without deprecation, and the next step removed the Reservation. The
+Prefix stayed active, with no link that a later run could find. A stale Reservation that the run keeps, for example
+because its removal failed, still references its Prefixes, so the phase is then not complete and keeps every link.
+
 ### Interface
 
 One IPAM Reconciliation module owns ownership, cleanup, per-row savepoints and conflict counting:
@@ -194,7 +204,7 @@ claim(server, family, records, force) -> ClaimResult  # one or more records, lin
 The job and the bulk views call `reconcile`. The per-row Sync, lease add and the DHCP plugin import call `claim`.
 The records of one `claim` call count as one phase for the fact comparison, so the DHCP plugin import passes all
 records of one snapshot in one call. The DHCP plugin import also calls `reconcile` for its `delegated-prefix` and
-`pd-pool` phases. The job reads one Lease Snapshot per family, with one cutoff, for its `lease` and `lease-prefix`
+`pd-pool` phases, after it removes the Stale DHCP Import Objects. The job reads one Lease Snapshot per family, with one cutoff, for its `lease` and `lease-prefix`
 phases.
 
 Before `claim` and `reconcile` look up or create an object, or change its links, they take a transaction-level

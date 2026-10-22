@@ -66,7 +66,11 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
    Prefixes follow the rules of step 5. A delegated prefix never creates an IP address. The DHCP plugin import also
    owns the prefix and the excluded prefix of each DHCPv6 delegated-prefix Pool (`pd-pools`), through the source
    `pd-pool` and the marker `[kea-sync: pd pool]`. The job reads no delegated-prefix Pool, so it never drops these
-   links. The import drops them after it read every delegated-prefix Pool, with the rules of step 5
+   links. The import drops them after it read every delegated-prefix Pool, with the rules of step 5.
+   The import drops its stale `delegated-prefix` and `pd-pool` links after it removed the Stale DHCP Import Objects.
+   So a Prefix that only a removed Reservation or delegated-prefix Pool used follows the rules of step 5. When the
+   run keeps a stale Reservation, for example because its removal failed, the Reservation still uses its Prefixes,
+   and the run drops no `delegated-prefix` link.
 7. One server failing does not block others
 8. Summary logged per server and in total
 

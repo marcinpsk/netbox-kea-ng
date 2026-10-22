@@ -137,7 +137,10 @@ A boot field that Kea does not set has no value. The delegated prefixes of
 a DHCPv6 Reservation and the prefix that Kea excludes from each of them (`excluded-prefixes`) are NetBox Prefixes in
 the Server's `sync_vrf`, linked as `ipv6_prefixes` and `excluded_ipv6_prefixes`. The import creates or links both
 under the IPAM source `delegated-prefix` and the marker `[kea-sync: delegated prefix]`. When the claim of one of these
-Prefixes fails, the Host Reservation keeps the Prefixes that it had. The `user-context` of a Reservation is
+Prefixes fails, the Host Reservation keeps the Prefixes that it had. After the run removes the stale Reservations, it
+drops the `delegated-prefix` link of each Prefix that no imported Reservation reports, and deprecates the Prefix when
+the Server opts in (see [IPAM sync](ipam-sync.md)). When the run keeps a stale Reservation, it drops no such link.
+The `user-context` of a Reservation is
 unsupported with netbox-plugin-dhcp 0.2.0, and the rest of the Reservation imports.
 
 The import writes every custom Option Definition that Kea declares, also one that no option uses, before it writes
