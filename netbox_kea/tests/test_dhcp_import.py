@@ -228,6 +228,20 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
                 self.assertEqual(declared[20], {})
                 self.assertEqual((declared[10]["valid-lifetime"], declared[10]["allocator"]), (3600, "random"))
 
+    def test_each_shared_network_plans_the_values_that_the_configuration_declares(self):
+        for family in (4, 6):
+            declared = {
+                network["name"]: {key: network[key] for key in KEA_SETTINGS_KEYS if key in network}
+                for network in _recording_configuration(family)["shared-networks"]
+            }
+            plan = plan_family(_recorded_intent(family), None)
+            with self.subTest(family=family):
+                self.assertEqual({network.key: network.settings for network in plan.shared_networks}, declared)
+                self.assertEqual(
+                    {network.key: network.intent.client_classes for network in plan.shared_networks},
+                    {"office": (), "empty-network": ("voip",)},
+                )
+
     def test_a_member_subnet_reports_the_values_it_inherits_from_its_shared_network(self):
         for family, relay in ((4, ["198.51.100.2", "198.51.100.3"]), (6, ["2001:db8:ffff::2"])):
             plan = plan_family(_recorded_intent(family), None)
