@@ -82,8 +82,6 @@ def test_the_mapping_kind_lists_name_every_kind_of_mapping_kinds():
     }
     assert set(terms) == set(MAPPING_KINDS)
 
-    # The guides list what the import writes, and it does not write a Shared Network yet.
-    imported = [term for kind, term in terms.items() if kind != Kind.SHARED_NETWORK]
     passages = (
         ("docs/design/dhcp-import-mapping-branching.md", "## contract", "| operation |", terms.values()),
         (
@@ -92,9 +90,9 @@ def test_the_mapping_kind_lists_name_every_kind_of_mapping_kinds():
             ")",
             terms.values(),
         ),
-        ("docs/guide/branching.md", "- dhcp import mappings follow", " - ", imported),
-        ("docs/guide/configuration.md", "keeps a dhcp import mapping from", ".", imported),
-        ("AGENTS.md", "applies each plan (`dhcp_plugin.apply_plan`).", "that the apply writes", imported),
+        ("docs/guide/branching.md", "- dhcp import mappings follow", " - ", terms.values()),
+        ("docs/guide/configuration.md", "keeps a dhcp import mapping from", ".", terms.values()),
+        ("AGENTS.md", "applies each plan (`dhcp_plugin.apply_plan`).", "that the apply writes", terms.values()),
     )
     missing = {}
     for path, start, end, expected in passages:

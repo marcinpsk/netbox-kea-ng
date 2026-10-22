@@ -62,7 +62,13 @@ from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot, IncompleteCat
 from .kea_stub import stub_kea
 from .test_integration_dhcp_plugin import _reservation_snapshot
 from .test_kea_recordings import _RECORDINGS, _recording
-from .utils import _make_db_server, imported_dhcp_server, imported_dhcp_servers, without_dhcp_plugin
+from .utils import (
+    _make_db_server,
+    imported_dhcp_server,
+    imported_dhcp_servers,
+    optional_shared_network_prefix,
+    without_dhcp_plugin,
+)
 
 DHCP_PLUGIN = "netbox_dhcp"
 _IN_SUBNET_MAC = "02:00:00:00:00:0a"
@@ -1102,7 +1108,7 @@ class ApplyPlanWithoutKeaTest(TestCase):
             (subnets[21].ddns_qualifying_suffix, subnets[21].ddns_ttl, subnets[21].reservations_out_of_pool),
             ("office.example.org.", 600, True),
         )
-        detail = "Kea applies the value of Shared Network office, which is not imported."
+        detail = "Kea applies the value of Shared Network office, which the installed DHCP plugin cannot hold."
         self.assertEqual(
             sorted(
                 (entry.path, entry.detail)
@@ -1347,7 +1353,7 @@ class SubnetCoverageTest(TestCase):
     def test_a_member_subnet_reports_the_interface_of_its_shared_network(self):
         summary = self._apply()
 
-        detail = "Kea applies the value of Shared Network office, which is not imported."
+        detail = "Kea applies the value of Shared Network office, which the installed DHCP plugin cannot hold."
         for subnet_id in (20, 21):
             with self.subTest(subnet_id=subnet_id):
                 (entry,) = [e for e in summary.entries if e.path == f"Dhcp4/subnet4[id={subnet_id}]/interface"]
@@ -2117,6 +2123,377 @@ def _with_value(config, key: str, old, new):
         name: new if name == key and value == old else _with_value(value, key, old, new)
         for name, value in config.items()
     }
+
+
+_OFFICE = "Dhcp4/shared-networks[name=office]"
+_EMPTY_NETWORK = "Dhcp4/shared-networks[name=empty-network]"
+
+
+def _moved(config: dict, subnet_id: int, network: str | None) -> dict:
+    """Return *config* with the Subnet *subnet_id* in the Shared Network *network*, or standalone for ``None``."""
+    collections = [config["subnet4"], *(each.setdefault("subnet4", []) for each in config["shared-networks"])]
+    (subnet,) = [subnet for collection in collections for subnet in collection if subnet["id"] == subnet_id]
+    for collection in collections:
+        collection[:] = [each for each in collection if each["id"] != subnet_id]
+    # Kea merges the relay of a Shared Network into its members, so the moved Subnet takes none with it.
+    subnet.pop("relay", None)
+    if network is None:
+        config["subnet4"].append(subnet)
+    else:
+        next(each for each in config["shared-networks"] if each["name"] == network)["subnet4"].append(subnet)
+    return config
+
+
+def _without_network(config: dict, name: str) -> dict:
+    config["shared-networks"] = [each for each in config["shared-networks"] if each["name"] != name]
+    return config
+
+
+def _names(relation) -> list[str]:
+    return sorted(relation.values_list("name", flat=True))
+
+
+class _SharedNetworkTestCase(TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def setUp(self):
+        self.server = _make_db_server(name="shared-network", ca_url="https://kea.example.invalid")
+        self.capabilities = probe()
+
+    def _apply(self, config: dict | None = None, family: int = 4, errors: int = 0, capabilities=None):
+        """Apply a Complete read of *config* that started now, so a mapping that it does not report is stale."""
+        intent = parse_dhcp_config(_recorded_config(family) if config is None else config, family)
+        intent.configuration_complete = True
+        intent.read_started = datetime.now(timezone.utc)
+        plan = plan_family(intent, None)
+        summary = dhcp_plugin.apply_plan(self.server, plan, capabilities or self.capabilities)
+        self.assertEqual(summary.errors, errors, summary.warnings)
+        return summary
+
+    def _mapped(self, kind: str, family: int = 4, **source):
+        return KeaDhcpLink.objects.get(server=self.server, family=family, kind=kind, **source).sys4_object
+
+    def _network(self, name: str, family: int = 4):
+        return self._mapped("shared_network", family, kea_identity=name)
+
+    def _subnet(self, subnet_id: int, family: int = 4):
+        return self._mapped("subnet", family, kea_subnet_id=subnet_id)
+
+    @staticmethod
+    def _entries(summary, kind: Kind) -> dict:
+        return {
+            entry.path: (entry.outcome, entry.reason, entry.capability)
+            for entry in summary.entries
+            if entry.kind == kind
+        }
+
+    @staticmethod
+    def _inherited(summary) -> set[tuple[str, str]]:
+        return {
+            (entry.path, entry.detail)
+            for entry in summary.entries
+            if entry.reason == Reason.INHERITED_FROM_SHARED_NETWORK
+        }
+
+
+class SharedNetworkWithoutTheCapabilityTest(_SharedNetworkTestCase):
+    """With netbox-plugin-dhcp 0.2.0 every Shared Network is unsupported, and its Subnets import without it (#107)."""
+
+    def test_the_recorded_shared_networks_are_unsupported_and_their_members_import_without_membership(self):
+        summary = self._apply()
+
+        gap = (Outcome.UNSUPPORTED, Reason.PLUGIN_GAP, Capability.SHARED_NETWORK_OPTIONAL_PREFIX)
+        self.assertEqual(self._entries(summary, Kind.SHARED_NETWORK), {_OFFICE: gap, _EMPTY_NETWORK: gap})
+        self.assertEqual(GAPS[Capability.SHARED_NETWORK_OPTIONAL_PREFIX], 1)
+        self.assertEqual(
+            self._entries(summary, Kind.OPTION)[f"{_OFFICE}/option-data[code=6]"],
+            (Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED, None),
+        )
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "SharedNetwork")._base_manager.exists())
+        self.assertFalse(KeaDhcpLink.objects.filter(server=self.server, kind="shared_network").exists())
+        dhcp_server = imported_dhcp_server(self.server, 4)
+        for subnet_id in (20, 21):
+            subnet = self._subnet(subnet_id)
+            with self.subTest(subnet_id=subnet_id):
+                self.assertEqual((subnet.dhcp_server_id, subnet.shared_network_id), (dhcp_server.pk, None))
+                self.assertIsNone(subnet.reservations_global)
+        detail = "Kea applies the value of Shared Network office, which the installed DHCP plugin cannot hold."
+        self.assertEqual(
+            self._inherited(summary),
+            {
+                ("Dhcp4/subnet4[id=20]/ddns-qualifying-suffix", detail),
+                ("Dhcp4/subnet4[id=20]/interface", detail),
+                ("Dhcp4/subnet4[id=20]/relay", detail),
+                ("Dhcp4/subnet4[id=20]/reservations-global", detail),
+                ("Dhcp4/subnet4[id=21]/interface", detail),
+                ("Dhcp4/subnet4[id=21]/relay", detail),
+                ("Dhcp4/subnet4[id=21]/reservations-global", detail),
+            },
+        )
+
+    def test_a_shared_network_whose_members_share_no_prefix_is_unsupported_and_its_members_import(self):
+        config = {
+            "shared-networks": [
+                {
+                    "name": "campus",
+                    "subnet4": [{"id": 1, "subnet": "192.0.2.0/24"}, {"id": 2, "subnet": "203.0.113.0/24"}],
+                }
+            ]
+        }
+
+        summary = self._apply(config)
+
+        self.assertEqual(
+            self._entries(summary, Kind.SHARED_NETWORK),
+            {
+                "Dhcp4/shared-networks[name=campus]": (
+                    Outcome.UNSUPPORTED,
+                    Reason.PLUGIN_GAP,
+                    Capability.SHARED_NETWORK_OPTIONAL_PREFIX,
+                )
+            },
+        )
+        self.assertEqual(
+            {self._subnet(subnet_id).dhcp_server_id for subnet_id in (1, 2)}, {imported_dhcp_server(self.server, 4).pk}
+        )
+
+
+class SharedNetworkImportTest(_SharedNetworkTestCase):
+    """With the optional Shared Network prefix (#88 gap 1), a Shared Network imports with no Prefix (#107)."""
+
+    def setUp(self):
+        super().setUp()
+        self.capabilities = optional_shared_network_prefix(self)
+
+    def test_a_shared_network_imports_without_a_prefix_with_its_declared_values_options_and_members(self):
+        summary = self._apply()
+
+        dhcp_server = imported_dhcp_server(self.server, 4)
+        office, empty = self._network("office"), self._network("empty-network")
+        self.assertEqual((office.name, office.prefix_id, office.dhcp_server_id), ("office", None, dhcp_server.pk))
+        # The global valid-lifetime and renew-timer that Kea merges into the Shared Network are not its own.
+        self.assertEqual(
+            (office.ddns_qualifying_suffix, office.reservations_global, office.valid_lifetime, office.renew_timer),
+            ("office.example.net", True, None, None),
+        )
+        self.assertEqual(
+            (_names(empty.client_classes), _names(empty.evaluate_additional_classes)), (["voip"], ["printers"])
+        )
+        for subnet_id in (20, 21):
+            subnet = self._subnet(subnet_id)
+            with self.subTest(subnet_id=subnet_id):
+                self.assertEqual((subnet.shared_network_id, subnet.dhcp_server_id), (office.pk, None))
+                # The DHCP plugin's inheritance supplies the values of the Shared Network.
+                self.assertEqual((subnet.reservations_global, subnet.relay), (None, None))
+        self.assertEqual(
+            (self._subnet(20).ddns_qualifying_suffix, self._subnet(21).ddns_qualifying_suffix),
+            (None, "office.example.org."),
+        )
+        self.assertEqual((self._subnet(10).dhcp_server_id, self._subnet(10).shared_network_id), (dhcp_server.pk, None))
+        self.assertEqual(self._inherited(summary), set())
+        self.assertEqual(
+            self._entries(summary, Kind.SHARED_NETWORK),
+            {
+                _OFFICE: (Outcome.CREATED, None, None),
+                f"{_OFFICE}/relay": (Outcome.UNSUPPORTED, Reason.PLUGIN_GAP, Capability.RELAY_ADDRESS_LIST),
+                f"{_OFFICE}/user-context": (Outcome.UNSUPPORTED, Reason.PLUGIN_GAP, Capability.USER_CONTEXT),
+                f"{_OFFICE}/interface": (Outcome.NOT_IMPORTED, Reason.NO_MATCHING_INTERFACE, None),
+                _EMPTY_NETWORK: (Outcome.CREATED, None, None),
+                f"{_EMPTY_NETWORK}/user-context": (Outcome.UNSUPPORTED, Reason.PLUGIN_GAP, Capability.USER_CONTEXT),
+            },
+        )
+        # The DHCP Options are not checked: NetBox finds an Option's owner through the plugin's default manager, whose
+        # Prefix join hides a Shared Network without a Prefix while the model field is not nullable.
+
+    def test_a_second_run_finds_a_renamed_shared_network_through_its_mapping_and_follows_kea(self):
+        SharedNetwork = apps.get_model(DHCP_PLUGIN, "SharedNetwork")
+        self._apply()
+        office = self._network("office")
+        SharedNetwork._base_manager.filter(pk=office.pk).update(name="renamed by hand", reservations_global=False)
+
+        summary = self._apply()
+
+        again = self._network("office")
+        self.assertEqual((again.pk, again.name, again.reservations_global), (office.pk, "office", True))
+        self.assertEqual(self._entries(summary, Kind.SHARED_NETWORK)[_OFFICE], (Outcome.UPDATED, None, None))
+        self.assertEqual(SharedNetwork._base_manager.count(), 2)
+        unchanged = self._apply()
+        self.assertNotIn(_OFFICE, self._entries(unchanged, Kind.SHARED_NETWORK))
+
+    def test_a_membership_change_in_kea_moves_the_subnet(self):
+        self._apply()
+        office, empty = self._network("office"), self._network("empty-network")
+        dhcp_server = imported_dhcp_server(self.server, 4)
+
+        summary = self._apply(_moved(_moved(_recorded_config(4), 21, "empty-network"), 20, None))
+
+        self.assertEqual(
+            {
+                subnet_id: (self._subnet(subnet_id).shared_network_id, self._subnet(subnet_id).dhcp_server_id)
+                for subnet_id in (20, 21)
+            },
+            {20: (None, dhcp_server.pk), 21: (empty.pk, None)},
+        )
+        subnets = self._entries(summary, Kind.SUBNET)
+        self.assertEqual(
+            (subnets["Dhcp4/subnet4[id=20]"], subnets["Dhcp4/subnet4[id=21]"]), ((Outcome.UPDATED, None, None),) * 2
+        )
+
+        self._apply()
+
+        self.assertEqual({self._subnet(subnet_id).shared_network_id for subnet_id in (20, 21)}, {office.pk})
+
+    def test_a_shared_network_that_kea_no_longer_reports_is_removed_and_its_kept_members_stay(self):
+        SharedNetwork = apps.get_model(DHCP_PLUGIN, "SharedNetwork")
+        self._apply()
+        office = self._network("office")
+
+        summary = self._apply(_without_network(_moved(_moved(_recorded_config(4), 20, None), 21, None), "office"))
+
+        self.assertFalse(SharedNetwork._base_manager.filter(pk=office.pk).exists())
+        self.assertFalse(KeaDhcpLink.objects.filter(server=self.server, kea_identity="office").exists())
+        self.assertEqual(
+            {
+                path
+                for path, (outcome, _, _) in self._entries(summary, Kind.SHARED_NETWORK).items()
+                if outcome == Outcome.REMOVED
+            },
+            {_OFFICE},
+        )
+        dhcp_server = imported_dhcp_server(self.server, 4)
+        for subnet_id in (20, 21):
+            subnet = self._subnet(subnet_id)
+            with self.subTest(subnet_id=subnet_id):
+                self.assertEqual((subnet.shared_network_id, subnet.dhcp_server_id), (None, dhcp_server.pk))
+
+    def test_a_stale_shared_network_goes_with_its_stale_member_subnet(self):
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        self._apply()
+        member = self._subnet(21)
+
+        summary = self._apply(_without_network(_moved(_recorded_config(4), 20, None), "office"))
+
+        self.assertFalse(Subnet.objects.filter(pk=member.pk).exists())
+        self.assertEqual(
+            {entry.path for entry in summary.entries if entry.outcome == Outcome.REMOVED},
+            {_OFFICE, "Dhcp4/subnet4[id=21]", "Dhcp4/subnet4[id=21]/pools[pool=198.51.100.200-198.51.100.220]"},
+        )
+        self.assertEqual(self._subnet(20).dhcp_server_id, imported_dhcp_server(self.server, 4).pk)
+
+    def test_a_stale_shared_network_that_holds_a_subnet_the_run_keeps_is_kept(self):
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        self._apply()
+        office = self._network("office")
+        operator = Subnet.objects.create(
+            name="operator subnet",
+            subnet_id=99,
+            shared_network=office,
+            prefix=Prefix.objects.create(prefix=IPNetwork("203.0.113.0/24")),
+        )
+
+        summary = self._apply(_without_network(_moved(_moved(_recorded_config(4), 20, None), 21, None), "office"))
+
+        outcome, reason, _ = self._entries(summary, Kind.SHARED_NETWORK)[_OFFICE]
+        self.assertEqual((outcome, reason), (Outcome.SKIPPED, Reason.REMOVAL_BLOCKED))
+        (entry,) = [entry for entry in summary.entries if entry.path == _OFFICE]
+        self.assertIn("1 Subnet", entry.detail)
+        self.assertEqual(Subnet.objects.get(pk=operator.pk).shared_network_id, office.pk)
+        self.assertEqual({self._subnet(subnet_id).shared_network_id for subnet_id in (20, 21)}, {None})
+
+    def test_a_stale_shared_network_is_kept_while_a_kept_member_whose_write_failed_still_belongs_to_it(self):
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        self._apply()
+        office, member = self._network("office"), self._subnet(20)
+        config = _without_network(_moved(_moved(_recorded_config(4), 20, None), 21, None), "office")
+        next(subnet for subnet in config["subnet4"] if subnet["id"] == 20)["subnet"] = "not-a-cidr"
+
+        summary = self._apply(config, errors=1)
+
+        self.assertEqual(
+            self._entries(summary, Kind.SHARED_NETWORK)[_OFFICE][:2], (Outcome.SKIPPED, Reason.REMOVAL_BLOCKED)
+        )
+        self.assertEqual(Subnet.objects.get(pk=member.pk).shared_network_id, office.pk)
+        self.assertIsNone(self._subnet(21).shared_network_id)
+
+    def test_one_shared_network_name_in_both_families_is_unsupported_in_the_second(self):
+        def config(family: int, subnet: dict, option: dict) -> dict:
+            network = {
+                "name": "office",
+                "reservations-global": True,
+                "option-data": [option],
+                f"subnet{family}": [subnet],
+            }
+            return {"shared-networks": [network]}
+
+        self._apply(config(4, {"id": 1, "subnet": "192.0.2.0/24"}, {"code": 6, "data": "192.0.2.53"}), family=4)
+
+        summary = self._apply(
+            config(6, {"id": 2, "subnet": "2001:db8:1::/64"}, {"code": 23, "data": "2001:db8::53"}), family=6
+        )
+
+        network = "Dhcp6/shared-networks[name=office]"
+        self.assertEqual(
+            self._entries(summary, Kind.SHARED_NETWORK),
+            {network: (Outcome.UNSUPPORTED, Reason.PLUGIN_GAP, Capability.NAME_PER_SERVER)},
+        )
+        self.assertEqual(
+            self._entries(summary, Kind.OPTION)[f"{network}/option-data[code=23]"],
+            (Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED, None),
+        )
+        self.assertEqual(
+            list(
+                KeaDhcpLink.objects.filter(server=self.server, kind="shared_network").values_list("family", flat=True)
+            ),
+            [4],
+        )
+        subnet = self._subnet(2, 6)
+        self.assertEqual(
+            (subnet.dhcp_server_id, subnet.shared_network_id), (imported_dhcp_server(self.server, 6).pk, None)
+        )
+        detail = "Kea applies the value of Shared Network office, which was not imported."
+        self.assertEqual(self._inherited(summary), {("Dhcp6/subnet6[id=2]/reservations-global", detail)})
+
+    def test_a_member_subnet_without_a_kea_subnet_id_imports_again_without_an_error(self):
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        config = {"shared-networks": [{"name": "lab", "subnet4": [{"subnet": "192.0.2.0/24"}]}]}
+        self._apply(config)
+
+        self._apply(config)
+
+        (subnet,) = Subnet.objects.filter(prefix__prefix="192.0.2.0/24")
+        self.assertEqual(subnet.shared_network_id, self._network("lab").pk)
+
+    def test_with_per_server_subnet_ids_a_member_subnet_of_the_dhcp_server_holds_its_id(self):
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+
+        self._apply()
+        apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
+            name="operator member",
+            subnet_id=30,
+            shared_network=self._network("office"),
+            prefix=Prefix.objects.create(prefix=IPNetwork("203.0.113.0/24")),
+        )
+        config = _recorded_config(4)
+        config["subnet4"].append({"id": 30, "subnet": "198.18.30.0/24"})
+        per_server = PluginCapabilities(
+            self.capabilities.present | {Capability.SUBNET_ID_PER_SERVER}, self.capabilities.option_spaces
+        )
+
+        summary = self._apply(config, capabilities=per_server)
+
+        self.assertEqual(
+            self._entries(summary, Kind.SUBNET)["Dhcp4/subnet4[id=30]"][:2], (Outcome.NOT_IMPORTED, Reason.NOT_IN_SCOPE)
+        )
 
 
 class StaleRemovalQueryCountTest(TestCase):

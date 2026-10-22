@@ -293,6 +293,15 @@ class SyncNowEndToEndTest(TestCase):
         self.assertContains(resp, "1 delegated-prefix Pool(s) created")
         self.assertTrue(apps.get_model(DHCP_PLUGIN, "PDPool").objects.filter(delegated_length=56).exists())
 
+    def test_post_reports_the_shared_networks_that_the_plugin_cannot_hold(self):
+        network = {"name": "office", "subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}]}
+
+        with stub_kea(_sync_responses({4: {"shared-networks": [network]}})):
+            resp = self.client.post(self.url, follow=True)
+
+        self.assertContains(resp, "1 Shared Network(s) unsupported; their Subnets were imported without them")
+        self.assertContains(resp, "1 subnets created")
+
     def test_post_reports_the_stale_objects_that_it_removed(self):
         subnet = {"id": 2, "subnet": "10.87.0.0/24", "pools": [{"pool": "10.87.0.10-10.87.0.99"}]}
         conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}, subnet]}}

@@ -28,9 +28,9 @@ v1 scope (import + diff, read-only against Kea):
   IPAM sync, so the import creates no address rows for it and reports every reserved
   address it could not attach.  Delegated prefixes and the prefixes that they exclude carry their own length, so
   they import as shared ``ipam.Prefix`` rows for every Scope, under the IPAM source ``delegated-prefix``.
-* Each imported Subnet, Pool, delegated-prefix Pool, Reservation, client class and custom Option Definition has a
-  DHCP Import Mapping (:class:`netbox_kea.models.KeaDhcpLink`) to its Kea source, and a re-import finds the row
-  through it, also after an operator renames the row. The first import after an upgrade maps each
+* Each imported Shared Network, Subnet, Pool, delegated-prefix Pool, Reservation, client class and custom Option
+  Definition has a DHCP Import Mapping (:class:`netbox_kea.models.KeaDhcpLink`) to its Kea source, and a re-import
+  finds the row through it, also after an operator renames the row. The first import after an upgrade maps each
   unmapped row that matches by structure. No release imported delegated-prefix Pools before, so an unmapped PD Pool
   is an operator's row and stays. A Subnet without a Kea subnet ID, and its Pools and PD Pools, have no
   mapping identity. The import creates them, but an unmapped row that matches one by structure is not its own: the
@@ -51,23 +51,26 @@ v1 scope (import + diff, read-only against Kea):
   imported onto the ``DHCPServer`` (global), ``Subnet``, ``Pool`` (DDNS) and ``ClientClass``. A Subnet
   or client class gets only its Declared Values (:func:`.dhcp_import_plan.declared_values`),
   and every other field is cleared to inherit. A value that a member Subnet inherits
-  from its Shared Network is reported, never copied onto the Subnet.
+  from its Shared Network is never copied onto the Subnet, and is reported when the Shared Network was not imported.
 * **Ownership.** Every writer sets exactly the managed fields of :mod:`.dhcp_import_fields` on a mapped row, and
   :func:`_managed_changes` refuses a write that names another set. Unmanaged fields and unmapped rows stay.
-* A Subnet, a Pool, a PD Pool and a Reservation link the client classes of their class lists that the same run
-  imported. A Subnet links the DHCP server interface that its Kea ``interface`` names, and reports a name that
-  matches none.
+* A Shared Network, a Subnet, a Pool, a PD Pool and a Reservation link the client classes of their class lists that
+  the same run imported. A Shared Network and a Subnet link the DHCP server interface that their Kea ``interface``
+  names, and report a name that matches none.
 * **Client classes** (``client-classes``) are imported as ``ClientClass`` rows
   (test/template-test, additional-list flag, BOOTP + lifetime settings, options) with
   their Kea name. While the plugin keeps class names unique across all servers, a class
   whose name another row holds is reported as unsupported (:mod:`.dhcp_plugin_capabilities`).
+* **Shared Networks** (``shared-networks``) are imported as ``SharedNetwork`` rows with their Kea name, settings,
+  class lists, interface and options, before the Subnets, and never with a Prefix: a Kea Shared Network has none.
+  Each member Subnet belongs to its Shared Network instead of the DHCPServer. Without the capability for an
+  optional prefix (netbox-plugin-dhcp 0.2.0 requires one) every Shared Network is unsupported, and its member Subnets
+  import onto the DHCPServer. Names follow the same uniqueness rule as client classes.
 * **Removal.** A mapped row whose Kea source a Complete observation of its kind no longer reports is a Stale DHCP
   Import Object (:func:`remove_stale_objects`). The run removes it, children first, and reports it. An Incomplete
   observation keeps every row of its kind. A row whose delete would also delete a DHCP plugin row that the run keeps,
   that an Option still uses, or that a kept row names in a client class relation, stays. IPAM objects stay: ADR 0006 ownership decides them.
-* **Deferred** (reported, not imported): shared-network grouping (the plugin's
-  ``SharedNetwork`` requires a prefix Kea does not model — member subnets are
-  flattened onto the ``DHCPServer``).
+  The Subnet writes run first, so a kept Subnet that left a stale Shared Network no longer belongs to it.
 """
 
 from __future__ import annotations
@@ -92,6 +95,7 @@ if TYPE_CHECKING:
         Planned,
         PlannedClientClass,
         PlannedServer,
+        PlannedSharedNetwork,
         PlannedSubnet,
         PoolKey,
         ReservationKey,
@@ -99,6 +103,7 @@ if TYPE_CHECKING:
 
 from django.apps import apps
 from django.core.exceptions import ValidationError
+from django.db.models import Q
 from django.db.models.deletion import Collector, ProtectedError
 from django.db.models.signals import post_delete
 
@@ -113,6 +118,7 @@ from ..reservations import FLEX_ID, TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservat
 from ..subnet_catalogue import CatalogueUnavailable
 from .dhcp_import_fields import (
     CLIENT_CLASS_FIELDS,
+    GATED_NETWORK_FIELDS,
     GATED_SERVER_FIELDS,
     GATED_SUBNET_FIELDS,
     MANAGED_FIELDS,
@@ -277,7 +283,8 @@ class ImportSummary:
     option_defs_created = _Count(Kind.OPTION_DEFINITION, Outcome.CREATED)
     client_classes_created = _Count(Kind.CLIENT_CLASS, Outcome.CREATED)
     client_classes_updated = _Count(Kind.CLIENT_CLASS, Outcome.UPDATED)
-    shared_networks_not_imported = _Count(Kind.SHARED_NETWORK, Outcome.NOT_IMPORTED)
+    shared_networks_created = _Count(Kind.SHARED_NETWORK, Outcome.CREATED)
+    shared_networks_unsupported = _Count(Kind.SHARED_NETWORK, Outcome.UNSUPPORTED)
 
     @property
     def removed(self) -> int:
@@ -1202,28 +1209,34 @@ def _client_class_fields(
     return fields
 
 
-def _class_name_taken(name: str, obj, dhcp_server, capabilities: PluginCapabilities) -> bool:
-    """Return whether another client class holds *name* in the scope where the DHCP plugin keeps class names unique."""
-    others = _model("ClientClass").objects.filter(name=name)
+# The DHCP plugin model of each kind that keeps its Kea name.
+_NAMED_MODELS = {Kind.CLIENT_CLASS: "ClientClass", Kind.SHARED_NETWORK: "SharedNetwork"}
+
+
+def _name_taken(kind: Kind, name: str, obj, dhcp_server, capabilities: PluginCapabilities) -> bool:
+    """Return whether another row of *kind* holds *name* in the scope where the DHCP plugin keeps the names unique."""
+    # The base manager: the default manager of a Shared Network joins its Prefix.
+    others = _model(_NAMED_MODELS[kind])._base_manager.filter(name=name)
     if capabilities.has(Capability.NAME_PER_SERVER):
         others = others.filter(dhcp_server=dhcp_server)
     return (others.exclude(pk=obj.pk) if obj is not None else others).exists()
 
 
 def _record_name_taken(
-    summary: ImportSummary, family: int, path: str, name: str, capabilities: PluginCapabilities
+    summary: ImportSummary, family: int, kind: Kind, path: str, name: str, capabilities: PluginCapabilities
 ) -> None:
+    label = KIND_LABELS[kind].lower()
     if capabilities.has(Capability.NAME_PER_SERVER):
-        detail = f"Another client class of this DHCP server holds the name {name!r}."
-        entry = not_written(family, Kind.CLIENT_CLASS, path, Reason.NOT_IN_SCOPE, detail)
+        detail = f"Another {label} of this DHCP server holds the name {name!r}."
+        entry = not_written(family, kind, path, Reason.NOT_IN_SCOPE, detail)
     else:
         detail = (
-            f"Another client class holds the name {name!r}. "
-            "The DHCP plugin needs each client class name to be unique across all DHCP servers."
+            f"Another {label} holds the name {name!r}. "
+            f"The DHCP plugin needs each {label} name to be unique across all DHCP servers."
         )
-        entry = unsupported(family, Kind.CLIENT_CLASS, path, Capability.NAME_PER_SERVER, detail)
+        entry = unsupported(family, kind, path, Capability.NAME_PER_SERVER, detail)
     summary.record(entry)
-    summary.warn(f"client-class {name}: {detail}")
+    summary.warn(f"{label} {name}: {detail}")
 
 
 def upsert_client_class(
@@ -1250,9 +1263,9 @@ def upsert_client_class(
                 # Adopt a row that the released importer created before client classes had a mapping.
                 released = ClientClass.objects.filter(name=_released_client_class_name(server, planned.key))
                 obj = _unlinked(released).first()
-            name_taken = _class_name_taken(planned.key, obj, dhcp_server, capabilities)
+            name_taken = _name_taken(Kind.CLIENT_CLASS, planned.key, obj, dhcp_server, capabilities)
             if obj is None and name_taken:
-                _record_name_taken(summary, intent.family, path, planned.key, capabilities)
+                _record_name_taken(summary, intent.family, Kind.CLIENT_CLASS, path, planned.key, capabilities)
                 _skip_options(summary, intent.family, path, intent.options)
                 _skip_class_definitions(definitions, planned, summary)
                 return None
@@ -1279,7 +1292,8 @@ def upsert_client_class(
         return None
 
     if name_taken:
-        _record_name_taken(summary, intent.family, kea_paths.setting(path, "name"), planned.key, capabilities)
+        name_path = kea_paths.setting(path, "name")
+        _record_name_taken(summary, intent.family, Kind.CLIENT_CLASS, name_path, planned.key, capabilities)
     if outcome is not None:
         summary.record(written(intent.family, Kind.CLIENT_CLASS, path, outcome))
     for planned_definition in planned.option_definitions:
@@ -1287,6 +1301,103 @@ def upsert_client_class(
             definitions, planned_definition.key, intent.family, obj, summary, capabilities
         )
     return obj
+
+
+def _shared_network_fields(
+    obj, dhcp_server, planned: PlannedSharedNetwork, summary: ImportSummary, path: str, capabilities, name_taken: bool
+) -> dict:
+    """Plan the managed fields of one Shared Network. A Shared Network whose Kea name is taken keeps its name."""
+    source = _Source(planned.intent.family, Kind.SHARED_NETWORK, path)
+    return {
+        "name": obj.name if name_taken else planned.key,
+        "dhcp_server_id": dhcp_server.pk,
+        "prefix_id": None,
+        **_settings_fields(obj, planned.settings, SUBNET_FIELDS, summary, source),
+        **gated_values(obj, planned.settings, GATED_NETWORK_FIELDS, capabilities, summary, source),
+        **_user_context_fields(obj, planned.intent.user_context, capabilities, summary, source, "Shared Network"),
+    }
+
+
+def _write_shared_network(server, dhcp_server, planned: PlannedSharedNetwork, classes, summary, capabilities):
+    """Get or create the Shared Network of *planned* through its mapping and write it.
+
+    Return the row and its outcome (``None`` when unchanged), or no row when another row holds its name.
+    """
+    family = planned.intent.family
+    path = kea_paths.shared_network(family, planned.key)
+    source = MappingSource.named(Kind.SHARED_NETWORK, planned.key)
+    obj = mapped_target(server, family, source)
+    name_taken = _name_taken(Kind.SHARED_NETWORK, planned.key, obj, dhcp_server, capabilities)
+    if obj is None and name_taken:
+        _record_name_taken(summary, family, Kind.SHARED_NETWORK, path, planned.key, capabilities)
+        return None, None
+    created = obj is None
+    if created:
+        obj = _model("SharedNetwork")()
+    fields = _shared_network_fields(obj, dhcp_server, planned, summary, path, capabilities, name_taken)
+    relations = classes.relations(planned.intent, path, Kind.SHARED_NETWORK, summary)
+    relations["server_interfaces"] = _network_interface(
+        dhcp_server, planned.settings.get(kea_paths.INTERFACE), path, Kind.SHARED_NETWORK, family, summary
+    )
+    outcome = _write_child(obj, created, fields, relations, capabilities)
+    observe_mapping(server, family, obj, source)
+    if name_taken:
+        name_path = kea_paths.setting(path, "name")
+        _record_name_taken(summary, family, Kind.SHARED_NETWORK, name_path, planned.key, capabilities)
+    return obj, outcome
+
+
+def upsert_shared_network(
+    server,
+    dhcp_server,
+    planned: PlannedSharedNetwork,
+    references: OptionReferences,
+    summary: ImportSummary,
+    capabilities: PluginCapabilities,
+):
+    """Get or create the DHCP plugin ``SharedNetwork`` of *planned* through its mapping, with its DHCP Options.
+
+    The row takes the Kea name and no Prefix: a Kea Shared Network has none. Without the capability for an optional
+    prefix the Shared Network is unsupported. Return the row, or ``None`` when it was not written.
+    """
+    intent = planned.intent
+    path = kea_paths.shared_network(intent.family, planned.key)
+    if not capabilities.has(Capability.SHARED_NETWORK_OPTIONAL_PREFIX):
+        detail = "The DHCP plugin needs a Prefix for each Shared Network, and a Kea Shared Network has none."
+        capability = Capability.SHARED_NETWORK_OPTIONAL_PREFIX
+        summary.record(unsupported(intent.family, Kind.SHARED_NETWORK, path, capability, detail))
+        _skip_options(summary, intent.family, path, intent.options)
+        return None
+    try:
+        with event_scope.atomic():
+            obj, outcome = _write_shared_network(
+                server, dhcp_server, planned, references.classes, summary, capabilities
+            )
+    except event_scope.EventDispatchError:
+        raise
+    except ManagedFieldsMismatch:
+        raise
+    except Exception as exc:  # noqa: BLE001 (one bad Shared Network must not abort the import)
+        summary.record(write_failed(intent.family, Kind.SHARED_NETWORK, path))
+        summary.warn(f"shared-network {planned.key}: {exc}")
+        obj = None
+    if obj is None:
+        _skip_options(summary, intent.family, path, intent.options)
+        return None
+    if outcome is not None:
+        summary.record(written(intent.family, Kind.SHARED_NETWORK, path, outcome))
+    upsert_options(obj, intent.options, intent.family, references, summary, path, capabilities)
+    return obj
+
+
+def _import_shared_networks(server, dhcp_server, plan: FamilyPlan, references: OptionReferences, summary, capabilities):
+    """Write every Shared Network of *plan* before its Subnets. Return the row of each imported one by Kea name."""
+    rows = {}
+    for planned in plan.shared_networks:
+        row = upsert_shared_network(server, dhcp_server, planned, references, summary, capabilities)
+        if row is not None:
+            rows[planned.key] = row
+    return rows
 
 
 def _subnet_name(server, planned: PlannedSubnet, network: IPNetworkValue) -> str:
@@ -1313,6 +1424,11 @@ def _reservation_name(scope_name: str, reservation: Reservation) -> str:
     return _synthesized_name(scope_name, f" {identity_text(identity.identifier_type, identity.value)}")
 
 
+def _served_by(dhcp_server) -> Q:
+    """Return the Subnets of *dhcp_server*: its own, and the members of its Shared Networks."""
+    return Q(dhcp_server=dhcp_server) | Q(shared_network__dhcp_server=dhcp_server)
+
+
 def upsert_subnet(
     server,
     dhcp_server,
@@ -1322,11 +1438,13 @@ def upsert_subnet(
     renumbered: bool,
     capabilities: PluginCapabilities,
     classes: ClassReferences,
+    shared_network=None,
 ):
     """Get/create the DHCP-plugin ``Subnet`` for *planned*, tracked via ``KeaDhcpLink`` by its key.
 
-    *renumbered* tells that :func:`settle_subnet_ids` gave the mapped row its Kea subnet ID in this run.
-    Returns the ``netbox_dhcp.Subnet`` instance, or ``None`` on error or for an unmapped row that it keeps.
+    *renumbered* tells that :func:`settle_subnet_ids` gave the mapped row its Kea subnet ID in this run. A member of
+    the imported *shared_network* belongs to it, else the Subnet belongs to *dhcp_server*: the DHCP plugin holds one
+    of the two. Returns the ``netbox_dhcp.Subnet`` instance, or ``None`` on error or for an unmapped row that it keeps.
     """
     Subnet = _model("Subnet")
     intent = planned.intent
@@ -1349,7 +1467,7 @@ def upsert_subnet(
                 summary.warn(f"subnet {network}: IPAM ownership {result.outcome}, Prefix left unchanged")
             if (
                 mapping is None
-                and _unlinked(Subnet.objects.filter(dhcp_server=dhcp_server, prefix=prefix_obj)).exists()
+                and _unlinked(Subnet.objects.filter(_served_by(dhcp_server), prefix=prefix_obj)).exists()
             ):
                 # A Subnet without a Kea subnet ID has no mapping identity. An unmapped Subnet stays as it is.
                 _keep_unmapped(summary, intent.family, Kind.SUBNET, path)
@@ -1357,8 +1475,8 @@ def upsert_subnet(
             subnet_obj = existing if existing is not None else Subnet(name=_subnet_name(server, planned, network))
             fields = {
                 "prefix_id": prefix_obj.pk,
-                "dhcp_server_id": dhcp_server.pk,
-                "shared_network_id": None,
+                "dhcp_server_id": dhcp_server.pk if shared_network is None else None,
+                "shared_network_id": shared_network.pk if shared_network is not None else None,
                 # settle_subnet_ids gave a mapped row its Kea subnet ID. Without one, the plugin numbers a new Subnet.
                 "subnet_id": planned.key if planned.key is not None else subnet_obj.subnet_id,
                 **_settings_fields(subnet_obj, planned.settings, SUBNET_FIELDS, summary, source),
@@ -1366,8 +1484,8 @@ def upsert_subnet(
                 **_user_context_fields(subnet_obj, intent.user_context, capabilities, summary, source, "Subnet"),
             }
             wanted = classes.relations(intent, path, Kind.SUBNET, summary)
-            wanted["server_interfaces"] = _subnet_interface(
-                dhcp_server, planned.settings.get(kea_paths.INTERFACE), path, intent.family, summary
+            wanted["server_interfaces"] = _network_interface(
+                dhcp_server, planned.settings.get(kea_paths.INTERFACE), path, Kind.SUBNET, intent.family, summary
             )
             relations = _relation_changes(subnet_obj, wanted)
             if existing is None:
@@ -1398,8 +1516,8 @@ def upsert_subnet(
     return subnet_obj
 
 
-def _subnet_interface(dhcp_server, name, path: str, family: int, summary: ImportSummary) -> set[int]:
-    """Return the DHCP server interface that the Kea ``interface`` of the Subnet at *path* names.
+def _network_interface(dhcp_server, name, path: str, kind: Kind, family: int, summary: ImportSummary) -> set[int]:
+    """Return the DHCP server interface that the Kea ``interface`` of the Subnet or Shared Network at *path* names.
 
     A name that matches no interface of *dhcp_server* has an entry. The import creates no interface.
     """
@@ -1409,7 +1527,7 @@ def _subnet_interface(dhcp_server, name, path: str, family: int, summary: Import
     if not found:
         entry = not_written(
             family,
-            Kind.SUBNET,
+            kind,
             kea_paths.setting(path, kea_paths.INTERFACE),
             Reason.NO_MATCHING_INTERFACE,
             _no_interface_detail(dhcp_server, name),
@@ -1436,10 +1554,14 @@ def _no_interface_detail(dhcp_server, name: str) -> str:
     return f"The DHCP server's device or virtual machine has no interface {name}."
 
 
-def _report_inherited(summary: ImportSummary, planned: PlannedSubnet) -> None:
-    """Record each value that a Subnet inherits from its Shared Network, which the import does not hold."""
+def _report_inherited(summary: ImportSummary, planned: PlannedSubnet, capabilities: PluginCapabilities) -> None:
+    """Record each value that a Subnet inherits from its Shared Network, which this run did not import."""
     path = subnet_path(planned)
-    detail = f"Kea applies the value of Shared Network {planned.intent.shared_network}, which is not imported."
+    name = planned.intent.shared_network
+    if capabilities.has(Capability.SHARED_NETWORK_OPTIONAL_PREFIX):
+        detail = f"Kea applies the value of Shared Network {name}, which was not imported."
+    else:
+        detail = f"Kea applies the value of Shared Network {name}, which the installed DHCP plugin cannot hold."
     for key in planned.inherited:
         entry = not_written(
             planned.intent.family,
@@ -1583,7 +1705,7 @@ def settle_subnet_ids(
     current = dict(Subnet.objects.filter(pk__in=ours.values()).values_list("pk", "subnet_id"))
     scope = Subnet.objects.all()
     if capabilities.has(Capability.SUBNET_ID_PER_SERVER):
-        scope = scope.filter(dhcp_server=dhcp_server)
+        scope = scope.filter(_served_by(dhcp_server))
     holds = dict(scope.values_list("subnet_id", "pk"))
 
     result = SubnetIdSettlement()
@@ -1669,7 +1791,7 @@ class ClassReferences:
         return None
 
     def relations(self, intent, parent_path: str, kind: Kind, summary: ImportSummary) -> dict[str, set[int]]:
-        """Return the imported client classes of the class lists of the Subnet or Pool *intent*, by relation.
+        """Return the imported client classes of the class lists of the Shared Network, Subnet or Pool *intent*.
 
         A list that is not valid (``None``) is left out, so its relation stays as it is.
         """
@@ -1731,9 +1853,12 @@ def _upsert_pool(
     return pool_obj, outcome
 
 
-def _write_child(row, created: bool, fields: dict, classes: dict[str, set[int]], capabilities) -> Outcome | None:
-    """Write the managed fields and class relations of a Pool or PD Pool *row*. Return its outcome, ``None`` if same."""
-    relations = _relation_changes(row, classes)
+def _write_child(row, created: bool, fields: dict, wanted: dict[str, set[int]], capabilities) -> Outcome | None:
+    """Write the managed fields and relations of a Shared Network, Pool or PD Pool *row*. Return its outcome.
+
+    The outcome is ``None`` for a row that did not change.
+    """
+    relations = _relation_changes(row, wanted)
     changes: dict = {}
     if created:
         _create_row(row, fields, capabilities)
@@ -2735,6 +2860,7 @@ _PLUGIN_UPSERTS = tuple(
         "optiondefinition",
         "option",
         "clientclass",
+        "sharednetwork",
         "subnet",
         "pool",
         "pdpool",
@@ -2833,16 +2959,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         options = row_options[name]
         path = kea_paths.client_class(plan.family, name)
         upsert_options(row, options, plan.family, references, summary, path, capabilities, class_name=name)
-    for planned_network in plan.shared_networks:
-        summary.record(
-            not_written(
-                plan.family,
-                Kind.SHARED_NETWORK,
-                kea_paths.shared_network(plan.family, planned_network.key),
-                Reason.NOT_IN_SCOPE,
-                "Its values and DHCP Options are not imported. Its Subnets are imported without it.",
-            )
-        )
+    networks = _import_shared_networks(server, dhcp_server, plan, references, summary, capabilities)
 
     prefix_claims, pool_claims, pd_pool_claims = _claim_config_networks(server, plan)
     summary.owner_disagreements += sum(
@@ -2861,13 +2978,23 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
             _skip_subnet_children(summary, planned_subnet)
             continue
         renumbered = planned_subnet.key in subnet_ids.renumbered
+        network = networks.get(planned_subnet.intent.shared_network)
         subnet_obj = upsert_subnet(
-            server, dhcp_server, planned_subnet, summary, prefix_claims, renumbered, capabilities, references.classes
+            server,
+            dhcp_server,
+            planned_subnet,
+            summary,
+            prefix_claims,
+            renumbered,
+            capabilities,
+            references.classes,
+            network,
         )
         if subnet_obj is None:
             _skip_subnet_children(summary, planned_subnet)
             continue
-        _report_inherited(summary, planned_subnet)
+        if network is None:
+            _report_inherited(summary, planned_subnet, capabilities)
         upsert_options(
             subnet_obj,
             planned_subnet.intent.options,

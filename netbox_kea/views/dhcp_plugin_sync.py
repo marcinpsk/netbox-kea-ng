@@ -114,9 +114,11 @@ def _summary_text(version: int, summary) -> str:
         notes.append(f"{summary.pd_pools_created} delegated-prefix Pool(s) created")
     if summary.options_skipped:
         notes.append(f"{summary.options_skipped} option(s) skipped (unresolved/invalid)")
-    if summary.shared_networks_not_imported:
+    if summary.shared_networks_created:
+        notes.append(f"{summary.shared_networks_created} Shared Network(s) created")
+    if summary.shared_networks_unsupported:
         notes.append(
-            f"{summary.shared_networks_not_imported} Shared Network(s) not imported; "
+            f"{summary.shared_networks_unsupported} Shared Network(s) unsupported; "
             "their Subnets were imported without them"
         )
     return f"{text} ({'; '.join(notes)})" if notes else text

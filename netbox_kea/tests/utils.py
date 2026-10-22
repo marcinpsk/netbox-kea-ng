@@ -135,6 +135,37 @@ def imported_dhcp_servers(server) -> list[int]:
     return list(KeaDhcpLink.objects.filter(server=server, kind="server").values_list("object_id", flat=True))
 
 
+def optional_shared_network_prefix(test: TestCase):
+    """Give the installed netbox_dhcp the optional Shared Network prefix of #88 gap 1 for one test.
+
+    Return the probed capabilities with that capability. The DDL rolls back with the test transaction, and the
+    patched Subnet check drops only the rule that a member Subnet must sit inside the Prefix of its Shared Network.
+    """
+    from unittest import mock
+
+    from netbox_kea.integrations.dhcp_import_report import Capability
+    from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities, probe
+
+    if not connection.in_atomic_block:
+        raise RuntimeError("The schema change must roll back with the test transaction.")
+    shared_network, subnet = apps.get_model("netbox_dhcp", "SharedNetwork"), apps.get_model("netbox_dhcp", "Subnet")
+    table, column = shared_network._meta.db_table, shared_network._meta.get_field("prefix").column
+    with connection.cursor() as cursor:
+        cursor.execute(f'ALTER TABLE "{table}" ALTER COLUMN "{column}" DROP NOT NULL')
+    inside_prefix = subnet.clean
+
+    def clean(row):
+        if row.shared_network is not None and row.shared_network.prefix_id is None:
+            return super(subnet, row).clean()
+        return inside_prefix(row)
+
+    patcher = mock.patch.object(subnet, "clean", clean)
+    patcher.start()
+    test.addCleanup(patcher.stop)
+    found = probe()
+    return PluginCapabilities(found.present | {Capability.SHARED_NETWORK_OPTIONAL_PREFIX}, found.option_spaces)
+
+
 def linked_dhcp_targets(server):
     """Create one linked target of each DHCP Import Mapping kind, with object IDs that collide across models.
 

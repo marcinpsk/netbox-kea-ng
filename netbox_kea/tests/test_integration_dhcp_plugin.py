@@ -502,9 +502,11 @@ class DhcpPluginAdapterTest(TestCase):
         self.assertEqual(str(pool.ip_range.start_address), "10.95.0.128/24")
         self.assertEqual(str(pool.ip_range.end_address), "10.95.0.191/24")
 
-    # ── deferred reporting ────────────────────────────────────────────────────
+    # ── Shared Networks ───────────────────────────────────────────────────────
 
-    def test_shared_network_subnets_flattened_and_reported(self):
+    def test_with_plugin_0_2_0_a_shared_network_is_unsupported_and_its_subnets_import_without_it(self):
+        from netbox_kea.integrations.dhcp_import_report import Capability, unsupported
+
         conf = {
             "shared-networks": [
                 {"name": "office", "subnet4": [{"id": 5, "subnet": "10.50.0.0/24"}]},
@@ -512,19 +514,18 @@ class DhcpPluginAdapterTest(TestCase):
         }
         Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
         summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
-        self.assertEqual(summary.shared_networks_not_imported, 1)
+        self.assertEqual(summary.shared_networks_unsupported, 1)
         self.assertIn(
-            not_written(
+            unsupported(
                 4,
                 Kind.SHARED_NETWORK,
                 "Dhcp4/shared-networks[name=office]",
-                Reason.NOT_IN_SCOPE,
-                "Its values and DHCP Options are not imported. Its Subnets are imported without it.",
+                Capability.SHARED_NETWORK_OPTIONAL_PREFIX,
+                "The DHCP plugin needs a Prefix for each Shared Network, and a Kea Shared Network has none.",
             ),
             summary.entries,
         )
         subnet = Subnet.objects.get(prefix__prefix="10.50.0.0/24")
-        # Flattened onto the DHCPServer, not a (prefix-requiring) SharedNetwork.
         self.assertIsNotNone(subnet.dhcp_server)
         self.assertIsNone(subnet.shared_network)
 

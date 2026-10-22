@@ -109,6 +109,7 @@ COMMON_FIELDS: FieldMap = (
     *_BOOT_FIELDS,
 )
 
+#: The settings of a Subnet, and of a Shared Network, which the DHCP plugin gives the same fields.
 SUBNET_FIELDS: FieldMap = (
     *COMMON_FIELDS,
     ("interface-id", "interface_id", None),
@@ -138,9 +139,13 @@ GATED_SERVER_FIELDS: GatedFieldMap = (
     (kea_paths.STASH_AGENT_OPTIONS, "stash_agent_options", None, Capability.STASH_AGENT_OPTIONS),
 )
 
-#: The gated settings of a Subnet. The DHCP plugin 0.2.0 keeps the relay as free text, which the import leaves alone.
+#: The gated settings of a Shared Network. The DHCP plugin 0.2.0 keeps the relay as free text, which the import leaves
+#: alone.
+GATED_NETWORK_FIELDS: GatedFieldMap = (("relay", "relay", relay_addresses, Capability.RELAY_ADDRESS_LIST),)
+
+#: The gated settings of a Subnet.
 GATED_SUBNET_FIELDS: GatedFieldMap = (
-    ("relay", "relay", relay_addresses, Capability.RELAY_ADDRESS_LIST),
+    *GATED_NETWORK_FIELDS,
     ("4o6-subnet", "dhcp4o6_subnet", None, Capability.DHCP4O6_SUBNET_SELECTION),
     ("4o6-interface", "dhcp4o6_interface", None, Capability.DHCP4O6_SUBNET_SELECTION),
     ("4o6-interface-id", "dhcp4o6_interface_id", None, Capability.DHCP4O6_SUBNET_SELECTION),
@@ -193,8 +198,14 @@ MANAGED_FIELDS: dict[str, tuple[ManagedField, ...]] = {
         *_gated(GATED_SERVER_FIELDS),
         *_relations("device_interfaces", "virtual_machine_interfaces"),
     ),
-    # marcinpsk/netbox-kea-ng#107 imports Shared Networks.
-    "SharedNetwork": (),
+    # The import never links a Prefix to a Shared Network, so it clears the prefix.
+    "SharedNetwork": (
+        *_scalars("name", "dhcp_server", "prefix"),
+        *_settings(SUBNET_FIELDS),
+        *_gated(GATED_NETWORK_FIELDS),
+        ManagedField("user_context", Capability.USER_CONTEXT),
+        *_relations("client_classes", "evaluate_additional_classes", "server_interfaces"),
+    ),
     "Subnet": (
         *_scalars("prefix", "dhcp_server", "shared_network", "subnet_id"),
         *_settings(SUBNET_FIELDS),
