@@ -458,6 +458,10 @@ def _configuration_gaps(plan: FamilyPlan) -> dict[Kind, list[str]]:
         gaps[Kind.PD_POOL].append("A Subnet entry that is not valid hides its delegated-prefix Pools.")
     if dropped[Kind.CLIENT_CLASS]:
         gaps[Kind.OPTION_DEFINITION].append("A client class entry that is not valid hides its Option Definitions.")
+    for entry in plan.dropped:
+        for hidden in entry.hides:
+            label = KIND_LABELS[entry.kind]
+            gaps[hidden].append(f"A {label} entry that is not valid hides the {KIND_LABELS[hidden]} entries in it.")
     unkeyed_subnets = sum(subnet.key is None for subnet in plan.subnets)
     if unkeyed_subnets:
         gaps[Kind.SUBNET].append(f"{counted(unkeyed_subnets, 'Subnet has', 'Subnets have')} no Kea subnet ID.")

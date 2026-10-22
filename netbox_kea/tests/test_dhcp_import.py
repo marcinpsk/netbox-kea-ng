@@ -2279,6 +2279,24 @@ class SharedNetworkWithoutTheCapabilityTest(_SharedNetworkTestCase):
 
         self.assertEqual((summary.shared_networks_unsupported, summary.shared_networks_created), (2, 0))
 
+    def test_a_shared_network_entry_without_a_name_keeps_the_mapped_subnets_that_it_hides(self):
+        network = {
+            "name": "lab",
+            "subnet4": [{"id": 7, "subnet": "192.0.2.0/24", "pools": [{"pool": "192.0.2.10-192.0.2.20"}]}],
+        }
+        self._apply({"shared-networks": [network]})
+        subnet = self._subnet(7)
+        del network["name"]
+
+        summary = self._apply({"shared-networks": [network]})
+
+        self.assertTrue(apps.get_model(DHCP_PLUGIN, "Subnet").objects.filter(pk=subnet.pk).exists())
+        self.assertNotIn(Outcome.REMOVED, {entry.outcome for entry in summary.entries})
+        self.assertEqual(
+            {entry.kind for entry in summary.entries if entry.reason == Reason.INCOMPLETE_OBSERVATION},
+            {Kind.SUBNET, Kind.POOL},
+        )
+
 
 class SharedNetworkImportTest(_SharedNetworkTestCase):
     """With the optional Shared Network prefix (#88 gap 1), a Shared Network imports with no Prefix (#107)."""

@@ -475,6 +475,11 @@ class TestParseDhcpConfigRobustness(SimpleTestCase):
         self.assertEqual(result.shared_networks, [])
         # Its subnets are dropped too (no parent name to attach them to).
         self.assertEqual(result.subnets, [])
+        (dropped,) = result.dropped
+        self.assertEqual(
+            (dropped.kind, dropped.path, dropped.hides),
+            (Kind.SHARED_NETWORK, "Dhcp4/shared-networks[0]", (Kind.SUBNET, Kind.POOL, Kind.PD_POOL)),
+        )
 
     def test_non_dict_conf_returns_empty(self):
         result = parse_dhcp_config("not a dict", 4)
