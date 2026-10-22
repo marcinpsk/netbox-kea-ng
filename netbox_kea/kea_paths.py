@@ -27,6 +27,8 @@ CLIENT_CLASSES = "client-classes"
 EVALUATE_ADDITIONAL_CLASSES = "evaluate-additional-classes"
 #: The custom Option Definitions of the daemon or of a client class.
 OPTION_DEF = "option-def"
+#: The Pools of a Subnet.
+POOLS = "pools"
 POOL_ID = "pool-id"
 OPTION_DATA = "option-data"
 #: The DHCPv6 delegated-prefix Pools of a Subnet, and the keys of one that the DHCP Import reads by name.
@@ -85,17 +87,17 @@ def shared_network_entry(family: int, index: int) -> str:
 
 def pool(subnet_path: str, text: str) -> str:
     """Return the path of a Pool by its Kea text inside the Subnet at *subnet_path*."""
-    return f"{subnet_path}/{_step('pools', f'pool={text}')}"
+    return f"{subnet_path}/{_step(POOLS, f'pool={text}')}"
 
 
 def pool_collection(subnet_path: str) -> str:
     """Return the path of the Pool collection of the Subnet at *subnet_path*."""
-    return f"{subnet_path}/pools"
+    return f"{subnet_path}/{POOLS}"
 
 
 def pool_entry(subnet_path: str, index: int) -> str:
     """Return the path of the Pool entry at *index* of the Subnet at *subnet_path*."""
-    return f"{subnet_path}/{_step('pools', index)}"
+    return f"{subnet_path}/{_step(POOLS, index)}"
 
 
 def pd_pool(subnet_path: str, prefix: str, delegated_length: int) -> str:

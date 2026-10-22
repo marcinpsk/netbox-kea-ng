@@ -390,8 +390,8 @@ URL request
   `test_dhcp_import_fields.py` compares both tables with `CAPABILITY_LABELS`, `REASON_LABELS` and `REASON_OUTCOME`.
 - **Parity ledger** (`integrations/dhcp_import_ledger.py`, ADR 0013): every key that Kea accepts on an object the
   DHCP Import can meet is listed once, as mapped (with the DHCP Plugin Capability its write needs), not imported
-  (with a reason) or deprecated (with the key Kea returns instead). The parse gives each not-imported key of the
-  global configuration and of `interfaces-config` an entry of the run (`not_imported`).
+  (with a reason) or deprecated (with the key Kea returns instead). The parse gives each not-imported key of every
+  Kea object an entry of the run (`_ParseLog.leave_out` in `mappers/kea_to_dhcp.py`).
   `MERGED_KEYS` lists the keys Kea merges into `config-get` from the parent object, and `KEA_DEFAULTS` the values
   Kea returns when no level declares a key. `test_dhcp_import_ledger.py` compares them with the recordings, and in
   the DHCP plugin job with the import's field maps and the plugin models. `CoverageImportTest` in

@@ -12,7 +12,7 @@
 An entry names each DHCP Plugin Capability (#88) that its write needs, and :mod:`.dhcp_plugin_capabilities` checks
 each one. :data:`MERGED_KEYS` lists the keys that Kea merges into ``config-get`` from the parent object, and
 :data:`KEA_DEFAULTS` the values that Kea gives when no level declares a key, for the Declared Value inference.
-The parse reports each global key that the ledger does not import (:func:`not_imported`). It reads no database.
+:func:`not_imported` returns the keys of one Kea object that the import does not write. It reads no database.
 ``test_dhcp_import_ledger.py`` compares it with the recordings of a real Kea.
 """
 
