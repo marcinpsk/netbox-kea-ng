@@ -167,7 +167,7 @@ class KeaIpamSyncJob(JobRunner):
     Iterates over all configured ``Server`` objects and syncs their active
     leases and/or reservations into NetBox ``IPAddress`` records.  Error on
     one server does not prevent syncing the remaining servers.  With the scheduled
-    DHCP Import on, it then runs the DHCP Import of each Server that the integration
+    DHCP Import on, it first runs the DHCP Import of each Server that the integration
     runs for.
 
     The sync is idempotent: existing ``IPAddress`` objects are updated in place
@@ -339,12 +339,14 @@ class KeaIpamSyncJob(JobRunner):
         return actor
 
     def _run_sync(self, *args: Any, **kwargs: Any) -> None:
-        """Run the IPAM sync, then the scheduled DHCP Import; fail the job when either one failed."""
+        """Run the scheduled DHCP Import, then the IPAM sync; fail the job when either one failed."""
         server_pk = kwargs.get("server_pk")
-        failed = self._run_ipam_sync(server_pk)
+        failed = False
         # A Run Now of one Server syncs its IPAM only: its trigger is not the schedule.
         if server_pk is None:
-            failed = self._run_scheduled_imports() or failed
+            # The stale DHCP plugin rows go first, so the IPAM cleanup no longer counts their objects as used.
+            failed = self._run_scheduled_imports()
+        failed = self._run_ipam_sync(server_pk) or failed
         if failed:
             raise JobFailed
 
