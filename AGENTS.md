@@ -384,12 +384,19 @@ URL request
   `ImportSummary` counts only its entries, and an unchanged row has no entry. `store_run` stores a `DhcpImportRun`
   with its `DhcpImportEntry` rows, keeps the `RETAINED_RUNS` latest runs of the Server, and logs a database failure
   instead of raising it. The rows are main-only (ADR 0007) and not change-logged.
+- **Before you change the DHCP Import**, read ADR 0013, the capability probe reference (`CHECKS` in
+  `integrations/dhcp_plugin_capabilities.py`, one check for each #88 gap, and #88 itself) and the parity ledger below.
+  The user guide page `docs/guide/dhcp-import.md` lists each capability and reason code, and
+  `test_dhcp_import_fields.py` compares both tables with `CAPABILITY_LABELS`, `REASON_LABELS` and `REASON_OUTCOME`.
 - **Parity ledger** (`integrations/dhcp_import_ledger.py`, ADR 0013): every key that Kea accepts on an object the
   DHCP Import can meet is listed once, as mapped (with the DHCP Plugin Capability its write needs), not imported
-  (with a reason) or deprecated (with the key Kea returns instead).
+  (with a reason) or deprecated (with the key Kea returns instead). The parse gives each not-imported key of the
+  global configuration and of `interfaces-config` an entry of the run (`not_imported`).
   `MERGED_KEYS` lists the keys Kea merges into `config-get` from the parent object, and `KEA_DEFAULTS` the values
   Kea returns when no level declares a key. `test_dhcp_import_ledger.py` compares them with the recordings, and in
-  the DHCP plugin job with the import's field maps and the plugin models.
+  the DHCP plugin job with the import's field maps and the plugin models. `CoverageImportTest` in
+  `test_dhcp_import.py` runs the coverage configuration through `run_dhcp_plugin_import` and compares the stored
+  unsupported and not-imported entries with the ledger and the probe.
   When a change maps a key, change its entry in the same change.
   - **After a Kea upgrade:** set the new `KEA_VERSION`, run `scripts/record_kea_config_get.py`, and list each key the
     ledger test reports as missing. Remove each key that Kea no longer has. When Kea deprecates a key, set it on its
