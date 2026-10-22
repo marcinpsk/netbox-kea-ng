@@ -96,7 +96,7 @@ def _submitted_values(
             original_option=parse_dhcp_option(row["original_option"])
             if row.get("original_option") is not None
             else None,
-            client_classes=reservation_edit.class_names(row.get("client_classes", "")),
+            client_classes=row.get("client_classes", ""),
         )
         for row in (getattr(options_formset, "cleaned_data", []) or [])
         if row
@@ -107,7 +107,7 @@ def _submitted_values(
         prefixes,
         cleaned_data.get("hostname", ""),
         rows,
-        client_classes=reservation_edit.class_names(cleaned_data.get("client_classes", "")),
+        client_classes=cleaned_data.get("client_classes", ""),
         next_server=ipaddress.IPv4Address(next_server) if next_server else None,
         server_hostname=cleaned_data.get("server_hostname", ""),
         boot_file_name=cleaned_data.get("boot_file_name", ""),

@@ -156,9 +156,9 @@ Integrations that read leases from the plugin must change with the typed lease r
 - Client classes of the Reservation, and for DHCPv4 the boot fields **Next Server**, **Server Hostname** and
   **Boot File Name**. Kea refuses a broadcast next server, a server hostname of more than 63 characters and a boot
   file name of more than 127 characters, and so does the form. A class field refuses a repeated name. Kea keeps a
-  comma in a class name, and the spaces around a class name of an option. A class field cannot show such a name
-  exactly. While you do not change the field, the edit keeps the classes. A change of them is refused: change them
-  in Kea
+  comma or a line break in a class name, and the spaces around a class name of an option. A class field cannot show
+  such a name exactly. While the field keeps the text that it showed, the edit keeps the classes. Any other text is
+  refused: change those classes in Kea
 - DHCPv6 excluded prefixes (RFC 6603). Enter each excluded prefix. An excluded prefix stays with its delegated
   prefix while you keep that one, so you can reorder the delegated prefixes. A new excluded prefix pairs with the
   delegated prefix that holds it. The form refuses an excluded prefix that is not a longer prefix inside exactly one

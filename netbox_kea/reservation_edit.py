@@ -108,7 +108,8 @@ class OptionRow:
     always_send: bool = False
     delete: bool = False
     original_option: DHCPOption | None = None
-    client_classes: tuple[str, ...] = ()
+    #: The text of the client class field, as the browser sent it.
+    client_classes: str = ""
 
 
 @dataclass(frozen=True)
@@ -122,7 +123,8 @@ class SubmittedValues:
     delegated_prefixes: tuple[ipaddress.IPv6Network, ...] = ()
     hostname: str = ""
     option_rows: tuple[OptionRow, ...] = ()
-    client_classes: tuple[str, ...] = ()
+    #: The text of the client class field, as the browser sent it.
+    client_classes: str = ""
     next_server: ipaddress.IPv4Address | None = None
     server_hostname: str = ""
     boot_file_name: str = ""
@@ -139,24 +141,30 @@ def class_names(text: str) -> tuple[str, ...]:
     return tuple(name for name in (part.strip() for part in text.split(",")) if name)
 
 
-def _class_change(live: tuple[str, ...], submitted: tuple[str, ...], field: str | None, owner: str) -> tuple[str, ...]:
-    """Return the client classes that a class field sets: the live ones while it holds the text that showed them.
+def _shows_exactly(name: str) -> bool:
+    """Return whether the text of a class field shows *name* exactly, and a browser sends it back unchanged."""
+    return bool(name) and name == name.strip() and not any(char in name for char in ",\r\n")
+
+
+def _class_change(live: tuple[str, ...], text: str, field: str | None, owner: str) -> tuple[str, ...]:
+    """Return the client classes that the text of a class field sets: the live ones while it is the shown text.
 
     Raises:
-        EditConflict: If the field changes and the text cannot show a live name exactly, or names a class twice.
+        EditConflict: If the text changes and cannot show a live name exactly, or names a class twice.
 
     """
-    if submitted == class_names(class_text(live)):
+    if text == class_text(live):
         return live
-    if any("," in name or name != name.strip() for name in live):
+    if not all(_shows_exactly(name) for name in live):
         raise EditConflict(
-            f"A client class name of {owner} has a comma or surrounding spaces, so this field cannot change the "
-            "classes without changing that name. Change them in Kea.",
+            f"A client class name of {owner} has a comma, a line break or surrounding spaces, so this field cannot "
+            "change the classes without changing that name. Change them in Kea.",
             field=field,
         )
-    if len(set(submitted)) != len(submitted):
+    names = class_names(text)
+    if len(set(names)) != len(names):
         raise EditConflict(f"Enter each client class name of {owner} once.", field=field)
-    return submitted
+    return names
 
 
 def excluded_prefix_pairs(

@@ -2479,6 +2479,40 @@ class TestWidenedReservationForms(_ViewTestBase):
         sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
         self.assertEqual((sent["server-hostname"], sent["boot-file-name"]), (" boot.example.org ", "host.efi "))
 
+    def test_a_class_field_never_changes_a_live_name_that_its_text_cannot_show(self):
+        # Kea 3.2 keeps a comma-only host class, an embedded newline, and the spaces around an option class tag.
+        option = {"name": "domain-name", "data": "lab.example.org", "client-classes": [" c "]}
+        current = {**_WIDENED[4], "client-classes": ["x", ","], "option-data": [option]}
+        with stub_kea(self._responses(4, current)):
+            page = self.client.get(self._edit_url(4))
+        shown = self._form_data(page)
+        self.assertEqual((shown["client_classes"], shown["options-0-client_classes"]), ("x, ,", " c "))
+        for label, changes, field in (
+            ("comma-only name deleted", {"client_classes": "x"}, "client_classes"),
+            ("spaces of an option tag removed", {"options-0-client_classes": "c"}, None),
+        ):
+            with self.subTest(label), stub_kea(self._responses(4, current, current)) as kea:
+                response = self.client.post(self._edit_url(4), {**shown, **changes})
+                self.assertEqual(response.status_code, 200)
+                self.assertTrue(response.context["form"].errors.get(field or "__all__"))
+                self.assertNotIn("reservation-update", kea.commands())
+        with stub_kea(self._responses(4, current, current)) as kea:
+            response = self.client.post(self._edit_url(4), {**shown, "hostname": "renamed"})
+        self.assertEqual(response.status_code, 302)
+        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+        self.assertEqual((sent["client-classes"], sent["option-data"][0]["client-classes"]), (["x", ","], [" c "]))
+
+    def test_a_class_name_with_a_newline_is_never_renamed(self):
+        # A browser drops the newline of a text input value, so the unchanged field arrives as "ab".
+        current = {**_WIDENED[4], "client-classes": ["a\nb"]}
+        with stub_kea(self._responses(4, current)):
+            page = self.client.get(self._edit_url(4))
+        with stub_kea(self._responses(4, current, current)) as kea:
+            response = self.client.post(self._edit_url(4), {**self._form_data(page), "client_classes": "ab"})
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.context["form"].errors.get("client_classes"))
+            self.assertNotIn("reservation-update", kea.commands())
+
     def test_the_edit_form_sets_and_clears_each_widened_field(self):
         changes = {
             4: (

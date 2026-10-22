@@ -860,12 +860,13 @@ class _SyncToNetBoxForm(forms.Form):
 
 
 def _client_classes_field(help_text: str) -> forms.CharField:
-    return forms.CharField(label="Client Classes", required=False, help_text=help_text)
+    # The edit compares the text with the shown text, so it must arrive as the browser sent it.
+    return forms.CharField(label="Client Classes", required=False, strip=False, help_text=help_text)
 
 
 _RESERVATION_CLASSES_HELP = (
     "Comma-separated client classes that Kea assigns to this client, for example <code>voip, printers</code>."
-    " Leave blank for none. A class name with a comma can only change in Kea."
+    " Leave blank for none. A class name with a comma, a line break or surrounding spaces can only change in Kea."
 )
 
 
@@ -1755,7 +1756,8 @@ class ReservationOptionsForm(ConfigurationOptionsForm):
     """One Reservation option row with its complete shown DHCP Option and its client classes."""
 
     client_classes = _client_classes_field(
-        "Comma-separated client classes that receive this option. A class name with a comma can only change in Kea."
+        "Comma-separated client classes that receive this option."
+        " A class name with a comma, a line break or surrounding spaces can only change in Kea."
     )
 
 
