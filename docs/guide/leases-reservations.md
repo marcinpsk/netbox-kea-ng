@@ -164,9 +164,9 @@ Integrations that read leases from the plugin must change with the typed lease r
   delegated prefix that holds it. The form refuses an excluded prefix that is not a longer prefix inside exactly one
   delegated prefix, and a second one for the same delegated prefix. The table shows each delegated prefix with the
   prefix that it excludes
-- The user context of a Reservation shows read-only on the edit page, in the REST API, and in the **User Context**
-  column of the table, which you add with **Configure Table**. An edit keeps the value that Kea holds, also when
-  another tool changed it after you opened the form
+- The user context of a Reservation shows read-only on the edit page, in the REST API, and in the table, folded
+  below the identifier. An edit keeps the value that Kea holds, also when another tool changed it after you opened
+  the form
 - The hostname field takes the name that clients get. Kea adds the effective `ddns-qualifying-suffix`
   (the Pool that contains the reserved address, then the Subnet, the Shared Network and the global value) to a
   reserved hostname, except to a name that ends in a dot or already ends in the suffix. When a Pool of the

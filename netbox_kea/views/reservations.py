@@ -182,6 +182,15 @@ def _reservation_matches(reservation: Reservation, q: str, subnet_id: int | None
     )
 
 
+def _user_context_summary(context: Any) -> str:
+    """Return the folded label of a user context: its key or item count when it has one."""
+    if isinstance(context, dict | list):
+        count = len(context)
+        unit = "key" if isinstance(context, dict) else "item"
+        return f"User context ({count} {unit}{'' if count == 1 else 's'})"
+    return "User context"
+
+
 def _reservation_table_record(reservation: Reservation, server: Server) -> dict[str, Any]:
     """Build one presentation row from a typed Reservation."""
     if isinstance(reservation.scope, InSubnetReservationScope):
@@ -220,6 +229,7 @@ def _reservation_table_record(reservation: Reservation, server: Server) -> dict[
         "boot_file_name": reservation.boot_file_name,
         # Read-only and opaque, shown as Kea holds it.
         "user_context": "" if reservation.user_context is None else json.dumps(reservation.user_context, indent=2),
+        "user_context_summary": _user_context_summary(reservation.user_context),
         "reservation": reservation,
         "server_name": server.name,
         "server_pk": server.pk,

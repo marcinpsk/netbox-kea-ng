@@ -589,12 +589,17 @@ _LEASE_STATUS_LINK = (
 
 
 #: Identifier cell: the value plus the Kea key it came from.  Without the type a
-#: flex-id is indistinguishable from a hardware address.
+#: flex-id is indistinguishable from a hardware address. The read-only user context of the host folds below it, so
+#: every Reservation shows it without a column of its own.
 _IDENTIFIER_CELL = (
     "{% if record.identifier %}"
     '{% if record.record_url %}<a href="{{ record.record_url }}" class="font-monospace">{{ record.identifier }}</a>'
     '{% else %}<span class="font-monospace">{{ record.identifier }}</span>{% endif %}'
     '<br><span class="text-muted small">{{ record.identifier_type }}</span>'
+    "{% endif %}"
+    "{% if record.user_context %}"
+    '<details class="small"><summary class="text-muted">{{ record.user_context_summary }}</summary>'
+    '<pre class="small mb-0 text-break text-wrap">{{ record.user_context }}</pre></details>'
     "{% endif %}"
 )
 
@@ -657,14 +662,6 @@ _RESERVATION_BOOT_CELL = (
     "{% endif %}"
 )
 
-#: The opaque user context, read-only, folded so that a long value does not widen the table.
-_RESERVATION_USER_CONTEXT_CELL = (
-    "{% if record.user_context %}"
-    '<details><summary class="small">JSON</summary>'
-    '<pre class="small mb-0 text-break">{{ record.user_context }}</pre></details>'
-    "{% endif %}"
-)
-
 _RESERVATION_SCOPE_CELL = (
     "{% if record.scope_kind == 'global' %}"
     '<span class="badge text-bg-primary">Global</span>'
@@ -717,13 +714,6 @@ def _client_classes_column() -> tables.TemplateColumn:
     )
 
 
-def _user_context_column() -> tables.TemplateColumn:
-    """Create a User Context column; a table class cannot share a column instance."""
-    return tables.TemplateColumn(
-        verbose_name="User Context", orderable=False, template_code=_RESERVATION_USER_CONTEXT_CELL
-    )
-
-
 class ReservationTable4(GenericTable):
     """Table for DHCPv4 host reservations returned from the Kea API."""
 
@@ -750,7 +740,6 @@ class ReservationTable4(GenericTable):
     options = tables.TemplateColumn(
         verbose_name="DHCP Options", orderable=False, template_code=_RESERVATION_OPTIONS_CELL
     )
-    user_context = _user_context_column()
     lease_status = tables.TemplateColumn(
         verbose_name="Lease",
         orderable=False,
@@ -775,14 +764,12 @@ class ReservationTable4(GenericTable):
             "client_classes",
             "boot",
             "options",
-            "user_context",
             "lease_status",
             "netbox_ip",
             "actions",
         )
         # ``identifier`` replaces ``hw_address`` by default: it shows the same value
         # for a MAC-keyed host and an actual value for every other identifier type.
-        # ``user_context`` is opaque JSON that few hosts set, so it is not a default column.
         default_columns: tuple[str, ...] = (
             "scope",
             "identifier",
@@ -828,7 +815,6 @@ class ReservationTable6(GenericTable):
     options = tables.TemplateColumn(
         verbose_name="DHCP Options", orderable=False, template_code=_RESERVATION_OPTIONS_CELL
     )
-    user_context = _user_context_column()
     lease_status = tables.TemplateColumn(
         verbose_name="Lease",
         orderable=False,
@@ -853,7 +839,6 @@ class ReservationTable6(GenericTable):
             "hostname",
             "client_classes",
             "options",
-            "user_context",
             "lease_status",
             "netbox_ip",
             "actions",
