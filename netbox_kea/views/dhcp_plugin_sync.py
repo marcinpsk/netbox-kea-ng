@@ -105,6 +105,8 @@ def _summary_text(version: int, summary) -> str:
         f"{summary.options_created} options created, {summary.options_updated} updated, "
         f"{summary.client_classes_created} client classes created, "
         f"{summary.client_classes_updated} updated, "
+        f"{summary.shared_networks_created} shared networks created, "
+        f"{summary.shared_networks_updated} updated, "
         f"{summary.removed} stale objects removed"
     )
     notes = []
@@ -114,8 +116,6 @@ def _summary_text(version: int, summary) -> str:
         notes.append(f"{summary.pd_pools_created} delegated-prefix Pool(s) created")
     if summary.options_skipped:
         notes.append(f"{summary.options_skipped} option(s) skipped (unresolved/invalid)")
-    if summary.shared_networks_created:
-        notes.append(f"{summary.shared_networks_created} Shared Network(s) created")
     if summary.shared_networks_unsupported:
         notes.append(
             f"{summary.shared_networks_unsupported} Shared Network(s) unsupported; "

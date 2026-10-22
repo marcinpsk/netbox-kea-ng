@@ -301,6 +301,7 @@ class SyncNowEndToEndTest(TestCase):
 
         self.assertContains(resp, "1 Shared Network(s) unsupported; their Subnets were imported without them")
         self.assertContains(resp, "1 subnets created")
+        self.assertContains(resp, "0 shared networks created, 0 updated")
 
     def test_post_reports_the_stale_objects_that_it_removed(self):
         subnet = {"id": 2, "subnet": "10.87.0.0/24", "pools": [{"pool": "10.87.0.10-10.87.0.99"}]}

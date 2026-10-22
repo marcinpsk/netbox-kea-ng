@@ -2274,6 +2274,11 @@ class SharedNetworkWithoutTheCapabilityTest(_SharedNetworkTestCase):
             {self._subnet(subnet_id).dhcp_server_id for subnet_id in (1, 2)}, {imported_dhcp_server(self.server, 4).pk}
         )
 
+    def test_the_summary_counts_each_shared_network_that_the_plugin_cannot_hold(self):
+        summary = self._apply()
+
+        self.assertEqual((summary.shared_networks_unsupported, summary.shared_networks_created), (2, 0))
+
 
 class SharedNetworkImportTest(_SharedNetworkTestCase):
     """With the optional Shared Network prefix (#88 gap 1), a Shared Network imports with no Prefix (#107)."""
@@ -2475,6 +2480,16 @@ class SharedNetworkImportTest(_SharedNetworkTestCase):
         )
         detail = "Kea applies the value of Shared Network office, which was not imported."
         self.assertEqual(self._inherited(summary), {("Dhcp6/subnet6[id=2]/reservations-global", detail)})
+
+    def test_the_summary_counts_a_shared_network_with_an_unsupported_setting_as_imported(self):
+        SharedNetwork = apps.get_model(DHCP_PLUGIN, "SharedNetwork")
+        first = self._apply()
+        SharedNetwork._base_manager.filter(pk=self._network("office").pk).update(reservations_global=False)
+
+        second = self._apply()
+
+        self.assertEqual((first.shared_networks_unsupported, first.shared_networks_created), (0, 2))
+        self.assertEqual((second.shared_networks_unsupported, second.shared_networks_updated), (0, 1))
 
     def test_a_member_subnet_without_a_kea_subnet_id_imports_again_without_an_error(self):
         Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")

@@ -284,7 +284,16 @@ class ImportSummary:
     client_classes_created = _Count(Kind.CLIENT_CLASS, Outcome.CREATED)
     client_classes_updated = _Count(Kind.CLIENT_CLASS, Outcome.UPDATED)
     shared_networks_created = _Count(Kind.SHARED_NETWORK, Outcome.CREATED)
-    shared_networks_unsupported = _Count(Kind.SHARED_NETWORK, Outcome.UNSUPPORTED)
+    shared_networks_updated = _Count(Kind.SHARED_NETWORK, Outcome.UPDATED)
+
+    @property
+    def shared_networks_unsupported(self) -> int:
+        """Return the Shared Networks that the DHCP plugin refused whole, not one setting of an imported one."""
+        # The path of the Shared Network ends with its name step; the path of one of its settings does not.
+        return sum(
+            entry.kind == Kind.SHARED_NETWORK and entry.outcome == Outcome.UNSUPPORTED and entry.path.endswith("]")
+            for entry in self.entries
+        )
 
     @property
     def removed(self) -> int:
