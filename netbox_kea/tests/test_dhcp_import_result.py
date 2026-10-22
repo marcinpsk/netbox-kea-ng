@@ -928,7 +928,10 @@ class StaleRemovalTest(_ImportRunTestCase):
         # The Reservation of Subnet 41 now names a Subnet that Kea does not have, so the Snapshot quarantines it.
         run = self._sync(self.config, self.hosts)
 
-        self.assertEqual(self._removed(run), {("pool", _STALE_POOL)})
+        # The Option of the Pool is judged by the Pool observation, which is Complete.
+        self.assertEqual(
+            self._removed(run), {("pool", _STALE_POOL), ("option", f"{_STALE_POOL}/option-data[code=241]")}
+        )
         entry = DhcpImportEntry.objects.filter(run=run).get(kind=Kind.SUBNET.value, reason=Reason.REMOVAL_BLOCKED.value)
         self.assertEqual(entry.kea_path, _STALE_SUBNET)
         self.assertIn("host reservation", entry.detail.lower())

@@ -16,13 +16,13 @@ from __future__ import annotations
 import ipaddress
 import json
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Generic, TypeVar
 
 from .. import kea_paths
 from ..constants import Family, validate_family
-from ..dhcp_options import MAX_OPTION_CODE, DHCPOption, DHCPOptionIdentity, OptionDefinition, option_identity
+from ..dhcp_options import MAX_OPTION_CODE, DHCPOptionIdentity, OptionDefinition, option_identity
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import (
     ClientClassIntent,
@@ -41,6 +41,7 @@ from .dhcp_import_report import KIND_LABELS, ImportEntry, Kind, counted
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from ..dhcp_options import DHCPOption
     from ..ipam_reconciliation import ReservationObservation
     from .dhcp_import_report import DroppedEntry
 
@@ -197,11 +198,7 @@ class OptionKey:
 
     def path(self, family: int) -> str:
         """Return the Kea path of the Option in *family*."""
-        value = self.identity.code_or_name
-        code, name = (value, None) if isinstance(value, int) else (None, value)
-        classes = tuple(sorted(self.identity.client_classes))
-        option = DHCPOption(code, name, self.identity.space, "", None, None, None, classes)
-        return kea_paths.option(self.parent.path(family), option, family)
+        return kea_paths.option_of_identity(self.parent.path(family), self.identity, family)
 
 
 def _known_definitions(
@@ -225,26 +222,64 @@ def _known_definitions(
     ]
 
 
-def option_keys(
-    parent: MappingSource | None,
-    options: Sequence[DHCPOption],
-    family: int,
-    declared: Mapping[OptionDefinitionKey, OptionDefIntent],
-) -> tuple[OptionKey | None, ...]:
-    """Key each option that the object of *parent* assigns, with the custom Option Definitions that Kea *declared*.
+@dataclass(frozen=True)
+class PlannedOptions:
+    """The DHCP Options that one Kea object assigns, each with its key (``None``: no mapping identity).
 
-    The options of an object without a mapping source (``None``) have no key.
+    *kind* is the kind of the object: :attr:`Kind.SERVER` for the global configuration. *parent* is its mapping
+    source, ``None`` for an object without one.
     """
+
+    kind: Kind
+    parent: MappingSource | None
+    options: tuple[DHCPOption, ...]
+    keys: tuple[OptionKey | None, ...]
+
+    @property
+    def class_name(self) -> str | None:
+        """Return the name of the client class that assigns the options, whose own definitions they use first."""
+        return self.parent.kea_identity if self.parent is not None and self.kind == Kind.CLIENT_CLASS else None
+
+
+def _option_parent(planned) -> tuple[Kind, MappingSource | None, tuple[DHCPOption, ...]]:
+    """Return the kind, the mapping source and the options of a planned object that assigns DHCP Options."""
+    if isinstance(planned, PlannedServer):
+        return Kind.SERVER, MappingSource.server(), planned.global_options
+    if isinstance(planned, PlannedClientClass):
+        return Kind.CLIENT_CLASS, MappingSource.named(Kind.CLIENT_CLASS, planned.key), planned.intent.options
+    if isinstance(planned, PlannedSharedNetwork):
+        return Kind.SHARED_NETWORK, MappingSource.named(Kind.SHARED_NETWORK, planned.key), planned.intent.options
+    if isinstance(planned, PlannedSubnet):
+        source = MappingSource.subnet(planned.key) if planned.key is not None else None
+        return Kind.SUBNET, source, planned.intent.options
+    key = planned.key
+    if isinstance(key, PDPoolKey):
+        return Kind.PD_POOL, key.source, planned.intent.options
+    if isinstance(key, GlobalReservationKey | InSubnetReservationKey):
+        return Kind.RESERVATION, key.source, planned.intent.options
+    if key is None or isinstance(key, PoolKey):
+        # A Pool whose range is not valid has no key.
+        return Kind.POOL, key.source if key is not None else None, planned.intent.options
+    raise TypeError(f"{type(planned).__name__} assigns no DHCP Options.")
+
+
+def planned_options(planned, family: int, declared: Mapping[OptionDefinitionKey, OptionDefIntent]) -> PlannedOptions:
+    """Key each option of the *planned* object, with the custom Option Definitions that Kea *declared*.
+
+    The plan and the apply both take the options of an object from here, so their sources cannot drift.
+    """
+    kind, parent, options = _option_parent(planned)
+    unkeyed = PlannedOptions(kind, parent, options, (None,) * len(options))
     if parent is None:
-        return (None,) * len(options)
-    definitions = _known_definitions(declared, parent.kea_identity if parent.kind == Kind.CLIENT_CLASS else None)
+        return unkeyed
+    definitions = _known_definitions(declared, unkeyed.class_name)
     seen: Counter[DHCPOptionIdentity] = Counter()
     keys = []
     for option in options:
         identity = option_identity(option, family, definitions)
         keys.append(OptionKey(parent, identity, seen[identity]))
         seen[identity] += 1
-    return tuple(keys)
+    return replace(unkeyed, keys=tuple(keys))
 
 
 @dataclass(frozen=True)
@@ -393,30 +428,26 @@ class FamilyPlan:
         in_classes = (definition for planned in self.client_classes for definition in planned.option_definitions)
         return (*self.option_definitions, *in_classes)
 
-    def option_keys(self) -> tuple[OptionKey | None, ...]:
-        """Key each DHCP Option of each object that the plan holds, the Reservations included."""
-        declared = {planned.key: planned.intent for planned in self.every_option_definition}
-        return tuple(
-            key
-            for parent, options in self._option_parents()
-            for key in option_keys(parent, options, self.family, declared)
-        )
+    @property
+    def declared_definitions(self) -> dict[OptionDefinitionKey, OptionDefIntent]:
+        """Return each custom Option Definition that Kea declares, by key."""
+        return {planned.key: planned.intent for planned in self.every_option_definition}
 
-    def _option_parents(self) -> Iterator[tuple[MappingSource | None, tuple[DHCPOption, ...]]]:
-        """Yield the mapping source and the options of each object that assigns DHCP Options."""
-        yield MappingSource.server(), self.server.global_options
-        for planned_class in self.client_classes:
-            yield MappingSource.named(Kind.CLIENT_CLASS, planned_class.key), planned_class.intent.options
-        for network in self.shared_networks:
-            yield MappingSource.named(Kind.SHARED_NETWORK, network.key), network.intent.options
+    def option_sets(self) -> tuple[PlannedOptions, ...]:
+        """Return the DHCP Options of each object that the plan holds, the Reservations included."""
+        declared = self.declared_definitions
+        return tuple(planned_options(planned, self.family, declared) for planned in self._option_parents())
+
+    def _option_parents(self) -> Iterator:
+        """Yield each planned object that assigns DHCP Options."""
+        yield self.server
+        yield from self.client_classes
+        yield from self.shared_networks
         for subnet in self.subnets:
-            yield (MappingSource.subnet(subnet.key) if subnet.key is not None else None), subnet.intent.options
-            for pool in subnet.pools:
-                yield (pool.key.source if pool.key is not None else None), pool.intent.options
-            for pd_pool in subnet.pd_pools:
-                yield pd_pool.key.source, pd_pool.intent.options
-        for reservation in keyed_reservations(self.reservations):
-            yield reservation.key.source, reservation.intent.options
+            yield subnet
+            yield from subnet.pools
+            yield from subnet.pd_pools
+        yield from keyed_reservations(self.reservations)
 
 
 def _option_definitions(
@@ -564,11 +595,22 @@ class KindObservation:
     sources: frozenset[MappingSource]
     # Empty when the observation is Complete.
     incomplete: str = ""
+    # DHCP Options only: why the read cannot judge the Options of each kind of parent; () when it can.
+    option_gaps: Mapping[Kind, tuple[str, ...]] | None = None
 
     @property
     def complete(self) -> bool:
         """Return whether the read reported every Kea source of the kind."""
         return not self.incomplete
+
+    def gap(self, source: MappingSource) -> tuple[str, ...]:
+        """Return why the read cannot judge the mapped row of *source*: () when a missing source makes it stale.
+
+        A DHCP Option is judged by its own gaps and by the observation of the kind of its parent.
+        """
+        if self.option_gaps is None:
+            return (self.incomplete,) if self.incomplete else ()
+        return self.option_gaps[OptionKey.from_source(source).parent.kind]
 
 
 def _configuration_gaps(plan: FamilyPlan) -> dict[Kind, list[str]]:
@@ -625,10 +667,12 @@ def _reservation_gap(observation: ReservationObservation | None) -> str:
     return ""
 
 
-def _observed_sources(plan: FamilyPlan, options: tuple[OptionKey | None, ...]) -> dict[Kind, frozenset[MappingSource]]:
+def _observed_sources(plan: FamilyPlan, options: tuple[PlannedOptions, ...]) -> dict[Kind, frozenset[MappingSource]]:
     """Return the Kea source of each object that the plan reports, by mapped kind. *options* keys its Options."""
     return {
-        Kind.OPTION: frozenset(key.source for key in options if key is not None and key.source is not None),
+        Kind.OPTION: frozenset(
+            key.source for each in options for key in each.keys if key is not None and key.source is not None
+        ),
         Kind.RESERVATION: frozenset(planned.key.source for planned in keyed_reservations(plan.reservations)),
         Kind.POOL: frozenset(
             pool.key.source
@@ -653,19 +697,23 @@ def _observed_sources(plan: FamilyPlan, options: tuple[OptionKey | None, ...]) -
     }
 
 
-def _option_gaps(plan: FamilyPlan, gaps: dict[Kind, list[str]], options: tuple[OptionKey | None, ...]) -> list[str]:
-    """Return why the read is Incomplete for the DHCP Options: their own gaps, and each gap of a kind that holds them.
+def _option_gaps(
+    plan: FamilyPlan, gaps: dict[Kind, list[str]], options: tuple[PlannedOptions, ...]
+) -> dict[Kind, tuple[str, ...]]:
+    """Return why the read cannot judge the DHCP Options of each kind of parent.
 
-    A read observes the Options of an object only where it observes that object.
+    A read observes the Options of an object only where it observes that object, so the gaps of the Options of one
+    kind of parent are their own gaps, the gaps of that kind, and their Options without a mapping identity. The global
+    configuration has no observation of its own.
     """
-    reasons = list(gaps[Kind.OPTION])
-    for kind in _OPTION_PARENTS:
-        if kind in mapped_kinds(plan.family):
-            reasons.extend(gaps[kind])
-    unkeyed = sum(key is None or key.source is None for key in options)
-    if unkeyed:
-        reasons.append(f"{counted(unkeyed, 'DHCP Option has', 'DHCP Options have')} no mapping identity.")
-    return list(dict.fromkeys(reasons))
+    unkeyed = Counter(each.kind for each in options for key in each.keys if key is None or key.source is None)
+    found = {}
+    for kind in (Kind.SERVER, *(kind for kind in _OPTION_PARENTS if kind in mapped_kinds(plan.family))):
+        reasons = [*gaps[Kind.OPTION], *gaps.get(kind, [])]
+        if unkeyed[kind]:
+            reasons.append(f"{counted(unkeyed[kind], 'DHCP Option has', 'DHCP Options have')} no mapping identity.")
+        found[kind] = tuple(dict.fromkeys(reasons))
+    return found
 
 
 def observations(plan: FamilyPlan) -> dict[Kind, KindObservation]:
@@ -673,13 +721,16 @@ def observations(plan: FamilyPlan) -> dict[Kind, KindObservation]:
 
     The global configuration of a family has no observation: a family that was not read gives no plan.
     """
-    options = plan.option_keys()
+    options = plan.option_sets()
     sources = _observed_sources(plan, options)
     gaps = _configuration_gaps(plan)
     reservation_gap = _reservation_gap(plan.reservations)
     gaps[Kind.RESERVATION] = [reservation_gap] if reservation_gap else []
-    gaps[Kind.OPTION] = _option_gaps(plan, gaps, options)
-    return {kind: KindObservation(sources[kind], " ".join(gaps[kind])) for kind in mapped_kinds(plan.family)}
+    observed = {kind: KindObservation(sources[kind], " ".join(gaps[kind])) for kind in mapped_kinds(plan.family)}
+    option_gaps = _option_gaps(plan, gaps, options)
+    every_gap = " ".join(dict.fromkeys(reason for reasons in option_gaps.values() for reason in reasons))
+    observed[Kind.OPTION] = KindObservation(sources[Kind.OPTION], every_gap, option_gaps)
+    return observed
 
 
 def kind_path(family: int, kind: Kind) -> str:

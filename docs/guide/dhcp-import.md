@@ -124,16 +124,21 @@ delegated-prefix Pools. The import creates them, but a later run that finds a ro
 leaves that row, its DHCP Options and its Pools as they are, and reports the Kea object as not imported.
 
 The mapping of a DHCP Option holds the Kea source of its object and the identity of the option in that object: the
-option space, the code and the set of client classes. A Kea object can assign one identity more than once, and each
-one then has its own mapping, in Kea order. A Kea option whose client classes change has a new identity, so the run
+option space, the code and the set of client classes. A Kea object can assign one identity more than once. Each one
+then has its own mapping, in Kea order. A Kea option whose client classes change has a new identity. So the run
 creates a new DHCP Option and removes the old one. When the definition of an option moves, for example from the global
-`option-def` to a client class, the Option keeps its row and binds to the new definition. A Kea option without a
-mapped Option takes an Option without a mapping of the same object: first one with the same space, code and client
-classes, then one with the same space and code, for example one that an earlier release wrote without classes. So the
-first run after an upgrade maps each Option that an earlier release wrote. A DHCP Option that you add to an imported
-object has no mapping, and the run does not change or remove it, unless a Kea option of the same object with the same
-space and code has no Option of its own. A DHCP Option of an identity longer than a mapping holds (the mapping keeps
-517 characters) has no mapping: the run writes it, but it removes no DHCP Option of that family.
+`option-def` to a client class, the Option keeps its row and binds to the new definition.
+
+A DHCP Option that you add to an imported object has no mapping. The run does not change it and does not remove it.
+A Kea option without a mapped Option gets a new DHCP Option. The one exception is the upgrade. While a Server and
+family have no Option mapping, a Kea option without one takes an Option without a mapping of the same object. It
+takes one with the same space, code and client classes first. Then it takes one with the same space and code, for
+example one that an earlier release wrote without classes. So the first run after an upgrade maps each Option that an
+earlier release wrote. When the first runs of a Server import no DHCP Option at all, the first run that imports one
+also takes the Options without a mapping.
+
+A mapping keeps 517 characters. A DHCP Option whose identity is longer has no mapping. The run writes it, but then it
+removes no DHCP Option of an object of the same kind.
 
 When you rename an object, the mapping stays and the import keeps your name. A client class and a Shared
 Network are the exceptions: they keep their Kea name, because Kea refers to them by name. The first run after an
@@ -285,14 +290,15 @@ range changes in Kea is a new Pool, and so is a delegated-prefix Pool whose pref
 DHCP Option whose client classes change, so the run removes the old row and creates a new one. The run removes an
 object only after it read every Kea object of that kind. When the Server Configuration or the Reservation Snapshot was
 not read in full, the run keeps the objects of the kinds that the read covers, and one skipped entry for each kind
-tells why and how many objects it kept. A DHCP Option can belong to any object, so the run removes a DHCP Option only
-when it read in full both the Server Configuration and the Reservation Snapshot. The run also keeps an object when
-its removal would remove a DHCP plugin row that the run keeps, for example a Pool that an operator added to a stale
-Subnet or a Subnet that an operator added to a stale Shared Network, when an Option that the run keeps still uses a
-stale Option Definition, or when a row that the run keeps names a stale client class in its `client_classes` or
-`evaluate_additional_classes` (without the class, that row would reach more clients). A stale DHCP Option goes on its
-own, so a stale Option Definition or client class that only it used can go after it. A DHCP Option without a mapping
-goes with the object that the run removes. Before it writes anything, the run finds the stale
+tells why and how many objects it kept. The run judges a DHCP Option by the kind of its object. It removes the Option
+only when it read every DHCP Option entry and every object of that kind. So an unread Reservation Snapshot keeps the
+Options of Reservations, and the run can still remove a global, Subnet or Pool Option. The run also keeps an object
+when its removal would remove a DHCP plugin row that the run keeps, for example a Pool that an operator added to a
+stale Subnet, a Subnet that an operator added to a stale Shared Network, or a mapped DHCP Option that the run cannot
+judge. It also keeps an object when an Option that the run keeps still uses a stale Option Definition, or when a row
+that the run keeps names a stale client class in its `client_classes` or `evaluate_additional_classes` (without the
+class, that row would reach more clients). A stale DHCP Option goes on its own, so a stale Option Definition or client
+class that only it used can go after it. A DHCP Option without a mapping goes with the object that the run removes. Before it writes anything, the run finds the stale
 objects whose removal removes or changes no object that it keeps, so a kept object leaves no change behind. Stale
 objects whose removals rely on each other are removed together or not at all. When a removal fails, each stale object
 whose removal relies on it, directly or through other objects, is kept too. A removal deletes the DHCP plugin row with

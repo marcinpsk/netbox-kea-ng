@@ -97,6 +97,7 @@ if TYPE_CHECKING:
         PDPoolKey,
         Planned,
         PlannedClientClass,
+        PlannedOptions,
         PlannedServer,
         PlannedSharedNetwork,
         PlannedSubnet,
@@ -142,8 +143,8 @@ from .dhcp_import_plan import (
     kind_path,
     mapped_kinds,
     observations,
-    option_keys,
     plan_family,
+    planned_options,
 )
 from .dhcp_import_report import (
     KIND_LABELS,
@@ -450,6 +451,8 @@ class OptionReferences:
 
     definitions: CustomDefinitions
     classes: ClassReferences
+    # Whether an Option without a mapped row adopts an unmapped Option: only while the family has no Option mapping.
+    adopts_options: bool
 
     @property
     def server(self) -> Server:
@@ -778,32 +781,31 @@ def _write_option(item: _PlannedOption, row, parent_obj, ct, family: int, refere
 
 def upsert_options(
     parent_obj,
-    options,
+    planned_set: PlannedOptions,
     family: int,
     references: OptionReferences,
     summary: ImportSummary,
     parent_path: str,
     capabilities: PluginCapabilities,
-    parent: MappingSource | None,
 ) -> None:
-    """Upsert DHCP-plugin ``Option`` rows for *options* assigned to *parent_obj*, the Kea object at *parent_path*.
+    """Upsert DHCP-plugin ``Option`` rows for the options of *planned_set* (:func:`.dhcp_import_plan.planned_options`).
 
-    One Option per Kea option: the same definition with other client classes is another Option. Each Option has a
-    DHCP Import Mapping from the mapping source *parent* of its object and its identity (:class:`OptionKey`), and a
-    re-import finds the row through it. An Option without a mapped row adopts an unmapped Option of *parent_obj*
-    (:func:`_paired_rows`). The options of a client class also resolve its own Option Definitions. An Option whose
-    definition cannot be resolved, whose class has no row, or whose data the plugin refuses, is reported and does not
-    stop the import. An Option whose values did not change has no entry.
+    They are assigned to *parent_obj*, the Kea object at *parent_path*. One Option per Kea option: the same definition
+    with other client classes is another Option. Each Option has a DHCP Import Mapping from its key, and a re-import
+    finds the row through it. Only while the family has no Option mapping (the first run after the upgrade), an Option
+    without a mapped row adopts an unmapped Option of *parent_obj* (:func:`_paired_rows`). After that, every unmapped
+    Option is an operator's and stays. The options of a client class also resolve its own Option Definitions. An
+    Option whose definition cannot be resolved, whose class has no row, or whose data the plugin refuses, is reported
+    and does not stop the import. An Option whose values did not change has no entry.
     """
-    if not options:
+    if not planned_set.options:
         return
     from django.contrib.contenttypes.models import ContentType
 
     ct = ContentType.objects.get_for_model(type(parent_obj))
-    class_name = parent.kea_identity if parent is not None and parent.kind == Kind.CLIENT_CLASS else None
-    keys = option_keys(parent, options, family, references.definitions.declared)
+    class_name = planned_set.class_name
     planned: list[_PlannedOption] = []
-    for opt, key in zip(options, keys, strict=True):
+    for opt, key in zip(planned_set.options, planned_set.keys, strict=True):
         path = kea_paths.option(parent_path, opt, family)
         definition = _resolve_option_definition(opt, family, references.definitions, capabilities, class_name)
         if isinstance(definition, _Unresolved):
@@ -818,14 +820,17 @@ def upsert_options(
             planned.append(_PlannedOption(opt, path, space, code, definition, classes, source))
     server = references.server
     mapped = [mapped_target(server, family, item.source) if item.source is not None else None for item in planned]
-    unmapped = list(
-        _unlinked(_model("Option").objects.filter(assigned_object_type=ct, assigned_object_id=parent_obj.pk))
-        .select_related("definition")
-        .prefetch_related("client_classes")
-        .order_by("pk")
-    )
     adopting = [item for item, row in zip(planned, mapped, strict=True) if row is None]
-    adopted = iter(_paired_rows(adopting, unmapped))
+    if references.adopts_options:
+        unmapped = list(
+            _unlinked(_model("Option").objects.filter(assigned_object_type=ct, assigned_object_id=parent_obj.pk))
+            .select_related("definition")
+            .prefetch_related("client_classes")
+            .order_by("pk")
+        )
+        adopted = iter(_paired_rows(adopting, unmapped))
+    else:
+        adopted = iter([None] * len(adopting))
     for item, row in zip(planned, mapped, strict=True):
         _write_option(
             item, row if row is not None else next(adopted), parent_obj, ct, family, references, summary, capabilities
@@ -1431,8 +1436,8 @@ def upsert_shared_network(
         skip_children=lambda: None,
     )
     if obj is not None:
-        source = MappingSource.named(Kind.SHARED_NETWORK, planned.key)
-        upsert_options(obj, intent.options, intent.family, references, summary, path, capabilities, source)
+        options = planned_options(planned, intent.family, references.definitions.declared)
+        upsert_options(obj, options, intent.family, references, summary, path, capabilities)
     return obj
 
 
@@ -1972,8 +1977,8 @@ def upsert_pools(
             continue
         if outcome is not None:
             summary.record(written(intent.family, Kind.POOL, path, outcome))
-        source = planned_pool.key.source if planned_pool.key is not None else None
-        upsert_options(pool_obj, pool_intent.options, intent.family, references, summary, path, capabilities, source)
+        options = planned_options(planned_pool, intent.family, references.definitions.declared)
+        upsert_options(pool_obj, options, intent.family, references, summary, path, capabilities)
 
 
 def _pd_pool_prefixes(claims: ClaimResult, planned: Planned[PDPoolKey, PDPoolIntent], summary: ImportSummary) -> tuple:
@@ -2087,7 +2092,8 @@ def upsert_pd_pools(
             continue
         if outcome is not None:
             summary.record(written(family, Kind.PD_POOL, path, outcome))
-        upsert_options(row, intent.options, family, references, summary, path, capabilities, key.source)
+        options = planned_options(planned_pd_pool, family, references.definitions.declared)
+        upsert_options(row, options, family, references, summary, path, capabilities)
 
 
 def _unusable_pool(family: int, path: str, key: PoolKey | None, result: RangeClaim | None) -> ImportEntry:
@@ -2253,7 +2259,8 @@ def _upsert_reservation(
         summary.warn(f"reservation {reservation.identity.value} in {scope} could not be imported. See server logs.")
         _skip_options(summary, reservation.family, path, reservation.options)
         return None
-    upsert_options(obj, reservation.options, reservation.family, references, summary, path, capabilities, key.source)
+    options = planned_options(planned, reservation.family, references.definitions.declared)
+    upsert_options(obj, options, reservation.family, references, summary, path, capabilities)
     return obj, before
 
 
@@ -2627,8 +2634,19 @@ def _row_key(obj) -> tuple:
 
 
 def _goes_with_parent(model) -> bool:
-    """Return whether rows of *model* go with a deleted parent: models outside the DHCP plugin, Options, through rows."""
+    """Return whether rows of *model* go with a deleted parent: models outside the DHCP plugin, Options, through rows.
+
+    A mapped Option goes only when it is stale itself (:func:`_removal_plan`).
+    """
     return model._meta.app_label != PLUGIN_APP_LABEL or model._meta.auto_created or model is _model("Option")
+
+
+def _mapped_option_keys(server, family: int) -> frozenset[tuple]:
+    """Return the row key of each Option that a mapping of *family* holds."""
+    from ..models import KeaDhcpLink
+
+    links = KeaDhcpLink.objects.filter(server=server, family=family, kind=Kind.OPTION.value)
+    return frozenset((_model("Option"), pk) for pk in links.values_list("object_id", flat=True))
 
 
 def _counted_rows(rows: list) -> str:
@@ -2663,10 +2681,15 @@ def _owner_key(option) -> tuple:
     return option.assigned_object_type.model_class()._meta.concrete_model, option.assigned_object_id
 
 
-def _option_goes_with(option, stale: dict) -> tuple:
-    """Return the row whose removal takes *option*: the Option when it is stale itself, else its owner."""
+def _option_goes_with(option, stale: dict, mapped_options: frozenset[tuple]) -> tuple | None:
+    """Return the row whose removal takes *option*: the Option when it is stale, its owner when it is unmapped.
+
+    Return ``None`` for a mapped Option that the run keeps: no removal takes it.
+    """
     own = _row_key(option)
-    return own if own in stale else _owner_key(option)
+    if own in stale:
+        return own
+    return None if own in mapped_options else _owner_key(option)
 
 
 def _class_relation_rows(target) -> list:
@@ -2694,13 +2717,13 @@ class _RemovalPlan:
     blocked: str = ""
 
 
-def _removal_plan(target, stale: dict) -> _RemovalPlan:
+def _removal_plan(target, stale: dict, mapped_options: frozenset[tuple]) -> _RemovalPlan:
     """Plan the delete of the stale row *target* against every *stale* row of the run. It writes nothing.
 
     A row outside *stale* is kept: when the delete would remove it, when it uses a row that the delete removes, or when
     it names the row in a many-to-many relation (without it, that row would reach more clients), the row stays. Each
-    stale row with such a part is evidence in ``relies_on``. A stale Option goes alone, and any other Option goes with
-    the object that it is assigned to.
+    stale row with such a part is evidence in ``relies_on``. A stale Option goes alone, and an unmapped Option goes with
+    the object that it is assigned to. A mapped Option of *mapped_options* outside *stale* is kept.
     """
     Option = _model("Option")
     own = _row_key(target)
@@ -2713,7 +2736,11 @@ def _removal_plan(target, stale: dict) -> _RemovalPlan:
         except ProtectedError as error:
             removed = {own, *(_row_key(obj) for obj in _collected(collector)), *stale}
             protected = list(error.protected_objects)
-            going = [obj for obj in protected if isinstance(obj, Option) and _option_goes_with(obj, stale) in removed]
+            going = [
+                obj
+                for obj in protected
+                if isinstance(obj, Option) and _option_goes_with(obj, stale, mapped_options) in removed
+            ]
             if len(going) < len(protected):
                 users = [obj for obj in protected if obj not in going]
                 return _RemovalPlan(blocked=f"It is kept while it is in use by {_counted_rows(users)}.")
@@ -2724,16 +2751,18 @@ def _removal_plan(target, stale: dict) -> _RemovalPlan:
     kept = [
         obj
         for obj in rows
-        if _row_key(obj) not in stale and _row_key(obj) != own and not _goes_with_parent(obj._meta.concrete_model)
+        if _row_key(obj) not in stale
+        and _row_key(obj) != own
+        and (_row_key(obj) in mapped_options or not _goes_with_parent(obj._meta.concrete_model))
     ]
     if kept:
         return _RemovalPlan(blocked=f"It is kept because its removal would also remove {_counted_rows(kept)}.")
     cascaded = frozenset(_row_key(obj) for obj in rows if _row_key(obj) != own and _row_key(obj) in stale)
-    relies_on = {*cascaded, *(_option_goes_with(obj, stale) for obj in first.values())}
+    relies_on = {*cascaded, *(_option_goes_with(obj, stale, mapped_options) for obj in first.values())}
     users = []
     for obj in _class_relation_rows(target):
-        goes_with = _option_goes_with(obj, stale) if isinstance(obj, Option) else _row_key(obj)
-        if goes_with in stale or goes_with in footprint:
+        goes_with = _option_goes_with(obj, stale, mapped_options) if isinstance(obj, Option) else _row_key(obj)
+        if goes_with is not None and (goes_with in stale or goes_with in footprint):
             relies_on.add(goes_with)
         else:
             users.append(obj)
@@ -2772,13 +2801,15 @@ def _relied_on_detail(row: _StaleRow, what: str) -> str:
     return f"It is kept because its removal relies on the removal of {_counted_rows([row.target])}, which {what}."
 
 
-def _removal_set(stale: dict[tuple, _StaleRow]) -> tuple[dict[tuple, _RemovalPlan], dict[tuple, str]]:
+def _removal_set(
+    stale: dict[tuple, _StaleRow], mapped_options: frozenset[tuple]
+) -> tuple[dict[tuple, _RemovalPlan], dict[tuple, str]]:
     """Return the largest subset of stale rows whose deletion removes or changes no kept row.
 
     Return the plan of each row of that subset, and why each other stale row stays. Each plan is read once; a row that
     stays keeps every row that relies on it, through the reverse index.
     """
-    plans = {key: _removal_plan(row.target, stale) for key, row in stale.items()}
+    plans = {key: _removal_plan(row.target, stale, mapped_options) for key, row in stale.items()}
     kept = {key: plan.blocked for key, plan in plans.items() if plan.blocked}
     alive = set(plans) - kept.keys()
     dependents = _dependents(plans)
@@ -2905,9 +2936,9 @@ def _stale_rows(server, plan: FamilyPlan, observed) -> dict[Kind, list[_StaleRow
 def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> None:
     """Remove each Stale DHCP Import Object of one family, children first, and report it.
 
-    An Incomplete observation of a kind keeps every row of that kind, with one entry that says why. Before any write,
-    :func:`_removal_set` finds the stale rows whose deletion removes or changes no kept row; each other stale row is
-    kept and reported. Rows that rely on each other form one component, which goes in one transaction, all or nothing,
+    An Incomplete observation keeps each row that it cannot judge (:meth:`KindObservation.gap`), with one entry for
+    each kind that says why. Before any write, :func:`_removal_set` finds the stale rows whose deletion removes or
+    changes no kept row, and no mapped Option that the run keeps; each other stale row is kept and reported. Rows that rely on each other form one component, which goes in one transaction, all or nothing,
     after every component that it relies on. When a component fails, every pending row that relies on it, directly or
     through other rows, is kept too. IPAM objects stay: the DHCP plugin rows only reference them.
     """
@@ -2915,16 +2946,23 @@ def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> No
     stale = _stale_rows(server, plan, observed)
     removable: dict[tuple, _StaleRow] = {}
     for kind in mapped_kinds(plan.family):
-        rows = stale.get(kind, [])
-        if observed[kind].complete:
-            removable.update((_row_key(row.target), row) for row in rows)
-        elif rows:
-            kept = counted(len(rows), f"mapped {KIND_LABELS[kind]} row was", f"mapped {KIND_LABELS[kind]} rows were")
-            detail = f"{observed[kind].incomplete} {kept} kept."
+        unjudged: list[_StaleRow] = []
+        reasons: list[str] = []
+        for row in stale.get(kind, []):
+            gap = observed[kind].gap(row.source)
+            if gap:
+                unjudged.append(row)
+                reasons.extend(gap)
+            else:
+                removable[_row_key(row.target)] = row
+        if unjudged:
+            label = KIND_LABELS[kind]
+            kept = counted(len(unjudged), f"mapped {label} row was", f"mapped {label} rows were")
+            detail = f"{' '.join(dict.fromkeys(reasons))} {kept} kept."
             summary.record(
                 not_written(plan.family, kind, kind_path(plan.family, kind), Reason.INCOMPLETE_OBSERVATION, detail)
             )
-    plans, staying = _removal_set(removable)
+    plans, staying = _removal_set(removable, _mapped_option_keys(server, plan.family))
     for key, detail in staying.items():
         _record_kept(removable[key], detail, plan.family, summary)
     # A deleted instance has no pk, so every key comes from before the deletes.
@@ -3023,8 +3061,7 @@ def _import_definitions_and_classes(
 
     Return what the Options can reference, and the row of each imported client class by Kea name.
     """
-    declared = {planned.key: planned.intent for planned in plan.every_option_definition}
-    definitions = CustomDefinitions(server, declared, adoption_servers)
+    definitions = CustomDefinitions(server, plan.declared_definitions, adoption_servers)
     for planned in plan.option_definitions:
         definitions.written[planned.key] = _write_option_definition(
             definitions, planned.key, plan.family, dhcp_server, summary, capabilities
@@ -3036,7 +3073,8 @@ def _import_definitions_and_classes(
             rows[planned_class.key] = row
     defined = frozenset(planned.key for planned in plan.client_classes)
     classes = ClassReferences(plan.family, defined, {name: row.pk for name, row in rows.items()})
-    return OptionReferences(definitions, classes), rows
+    option_links = _link_model().objects.filter(server=server, family=plan.family, kind=Kind.OPTION.value)
+    return OptionReferences(definitions, classes, adopts_options=not option_links.exists()), rows
 
 
 @coordinated_import
@@ -3065,21 +3103,14 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     references, class_rows = _import_definitions_and_classes(
         server, dhcp_server, plan, adoption_servers, summary, capabilities
     )
-    row_options = {planned.key: planned.intent.options for planned in plan.client_classes}
-    upsert_options(
-        dhcp_server,
-        plan.server.global_options,
-        plan.family,
-        references,
-        summary,
-        root,
-        capabilities,
-        MappingSource.server(),
-    )
+    declared = references.definitions.declared
+    planned_classes = {planned.key: planned for planned in plan.client_classes}
+    global_options = planned_options(plan.server, plan.family, declared)
+    upsert_options(dhcp_server, global_options, plan.family, references, summary, root, capabilities)
     for name, row in class_rows.items():
-        class_source = MappingSource.named(Kind.CLIENT_CLASS, name)
-        path = class_source.path(plan.family)
-        upsert_options(row, row_options[name], plan.family, references, summary, path, capabilities, class_source)
+        path = kea_paths.client_class(plan.family, name)
+        class_options = planned_options(planned_classes[name], plan.family, declared)
+        upsert_options(row, class_options, plan.family, references, summary, path, capabilities)
     networks = _import_shared_networks(server, dhcp_server, plan, references, summary, capabilities)
 
     prefix_claims, pool_claims, pd_pool_claims = _claim_config_networks(server, plan)
@@ -3122,13 +3153,12 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
             _report_inherited(summary, planned_subnet, capabilities)
         upsert_options(
             subnet_obj,
-            planned_subnet.intent.options,
+            planned_options(planned_subnet, plan.family, declared),
             plan.family,
             references,
             summary,
             subnet_path(planned_subnet),
             capabilities,
-            MappingSource.subnet(planned_subnet.key) if planned_subnet.key is not None else None,
         )
         upsert_pools(server, subnet_obj, planned_subnet, summary, references, pool_claims, capabilities)
         upsert_pd_pools(server, subnet_obj, planned_subnet, summary, references, pd_pool_claims, capabilities)

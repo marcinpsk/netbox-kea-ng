@@ -8,6 +8,7 @@ from pathlib import Path
 from django.test import SimpleTestCase
 
 from netbox_kea.integrations.dhcp_import_fields import MANAGED_FIELDS, ManagedField, managed_fields
+from netbox_kea.integrations.dhcp_import_plan import MAX_MAPPING_IDENTITY_LENGTH
 from netbox_kea.integrations.dhcp_import_report import (
     CAPABILITY_LABELS,
     OUTCOME_LABELS,
@@ -89,3 +90,7 @@ class ManagedFieldsTest(SimpleTestCase):
             {code: tuple(cells) for code, cells in rows.items()},
             {reason.value: (OUTCOME_LABELS[REASON_OUTCOME[reason]], REASON_LABELS[reason]) for reason in Reason},
         )
+
+    def test_the_dhcp_import_guide_names_the_length_that_a_mapping_keeps(self):
+        text = " ".join(_GUIDE.read_text(encoding="utf-8").split())
+        self.assertEqual(re.findall(r"A mapping keeps (\d+) characters\.", text), [str(MAX_MAPPING_IDENTITY_LENGTH)])

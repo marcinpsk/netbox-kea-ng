@@ -3598,7 +3598,7 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         dhcp_server, _ = upsert_dhcp_server(self.server, 4)
         summary = ImportSummary()
         references = OptionReferences(
-            CustomDefinitions(self.server, {}, (dhcp_server.pk,)), ClassReferences(4, frozenset(), {})
+            CustomDefinitions(self.server, {}, (dhcp_server.pk,)), ClassReferences(4, frozenset(), {}), True
         )
 
         import_reservation_snapshot(

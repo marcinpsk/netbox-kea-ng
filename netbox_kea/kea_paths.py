@@ -12,7 +12,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .dhcp_options import DHCPOption
+    from collections.abc import Collection
+
+    from .dhcp_options import DHCPOption, DHCPOptionIdentity
 
 #: The Kea key of the free-form context that an operator attaches to a Kea object.
 USER_CONTEXT = "user-context"
@@ -163,11 +165,23 @@ def option_definition_entry(family: int, index: int, class_name: str | None = No
 
 def option(parent: str, option: DHCPOption, family: int) -> str:
     """Return the path of a DHCP Option of the object at *parent*, by its code (else its name) and client classes."""
-    identity = f"code={option.code}" if option.code is not None else f"name={option.name}"
-    if option.space not in (None, default_space(family)):
-        identity = f"space={option.space},{identity}"
-    if option.client_classes:
-        identity = f"{identity},client-classes={'|'.join(sorted(option.client_classes))}"
+    value = option.code if option.code is not None else option.name
+    return _option_path(parent, option.space, value, option.client_classes, family)
+
+
+def option_of_identity(parent: str, identity: DHCPOptionIdentity, family: int) -> str:
+    """Return the path of the DHCP Option of *identity* that the object at *parent* assigns."""
+    return _option_path(parent, identity.space, identity.code_or_name, identity.client_classes, family)
+
+
+def _option_path(
+    parent: str, space: str | None, value: int | str | None, client_classes: Collection[str], family: int
+) -> str:
+    identity = f"code={value}" if isinstance(value, int) else f"name={value}"
+    if space not in (None, default_space(family)):
+        identity = f"space={space},{identity}"
+    if client_classes:
+        identity = f"{identity},client-classes={'|'.join(sorted(client_classes))}"
     return f"{parent}/{_step(OPTION_DATA, identity)}"
 
 
