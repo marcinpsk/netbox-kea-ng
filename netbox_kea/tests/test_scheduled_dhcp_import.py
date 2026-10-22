@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 import unittest
+import uuid
 from unittest.mock import MagicMock, patch
 
 from core.exceptions import JobFailed
@@ -471,6 +472,27 @@ class ScheduledImportEventsTest(TransactionTestCase):
             "Scheduled DHCP Import of Server a-first saved its changes, but NetBox could not dispatch their events."
             " The job stops.",
         )
+
+    @with_sync_config(interval_minutes=23)
+    @with_dhcp_integration_config(scheduled_import_enabled=True)
+    def test_an_import_event_failure_schedules_the_successor_with_the_stored_interval(self):
+        from core.models import Job
+        from django.utils import timezone
+
+        _server("interval")
+        conf = {4: {"subnet4": [{"id": 1, "subnet": "10.79.0.0/24"}]}}
+        job = Job.objects.create(
+            name=KeaIpamSyncJob.name, status="scheduled", scheduled=timezone.now(), interval=5, job_id=uuid.uuid4()
+        )
+
+        with stub_kea(_sync_responses(conf)):
+            KeaIpamSyncJob.handle(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, "errored")
+        self.assertIn("ImportEventsNotDispatched", job.error)
+        successors = Job.objects.filter(name=KeaIpamSyncJob.name).exclude(pk=job.pk)
+        self.assertEqual(list(successors.values_list("interval", flat=True)), [23])
 
     @override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_scheduled_dhcp_import.fail_ip_address_dispatch"])
     @with_dhcp_integration_config(scheduled_import_enabled=True)

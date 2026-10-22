@@ -340,6 +340,11 @@ class KeaIpamSyncJob(JobRunner):
 
     def _run_sync(self, *args: Any, **kwargs: Any) -> None:
         """Run the scheduled DHCP Import, then the IPAM sync; fail the job when either one failed."""
+        from .models import SyncConfig
+
+        if self.job.interval:
+            # handle() schedules the successor with job.interval, also when a pass raises.
+            self.job.interval = SyncConfig.get().interval_minutes
         server_pk = kwargs.get("server_pk")
         failed = False
         # A Run Now of one Server syncs its IPAM only: its trigger is not the schedule.
@@ -357,9 +362,6 @@ class KeaIpamSyncJob(JobRunner):
         summary: list[dict] = []
         try:
             sync_cfg = SyncConfig.get()
-            if self.job.interval:
-                # handle() schedules the successor with job.interval after run() returns.
-                self.job.interval = sync_cfg.interval_minutes
             if not sync_cfg.sync_enabled:
                 self.logger.info("Global sync kill-switch is active (SyncConfig.sync_enabled=False) — skipping.")
                 return False
