@@ -298,7 +298,7 @@ def _option(family: Family) -> dict[str, Entry]:
         "name": Mapped("Option.definition", (Capability.OPTION_WITHOUT_DEFINITION,)),
         "code": Mapped("Option.definition", (Capability.OPTION_WITHOUT_DEFINITION, *_code_capabilities(family))),
         "space": Mapped("Option.definition", (Capability.OPTION_SPACES,)),
-        "data": Mapped("Option.data"),
+        "data": Mapped("Option.data", (Capability.KEA_OPTION_DATA,)),
         "csv-format": Mapped("Option.csv_format"),
         "always-send": Mapped("Option.send_option"),
         "never-send": Mapped("Option.send_option"),

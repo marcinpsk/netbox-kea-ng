@@ -18,6 +18,7 @@ from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.contrib.messages import ERROR, get_messages
 from django.contrib.postgres.fields import ArrayField
+from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator
 from django.db import models
 from django.db.models.functions import Lower
@@ -775,8 +776,11 @@ class KindObservationTest(SimpleTestCase):
         self.assertEqual(kind_path(4, Kind.OPTION), "Dhcp4/option-data[*]")
 
 
-class CapabilityProbeTest(SimpleTestCase):
-    """The probe reads the plugin models and reports each #88 capability present or missing."""
+class CapabilityProbeTest(TestCase):
+    """The probe reads the plugin models and reports each #88 capability present or missing.
+
+    The check of option data cleans unsaved Options, and NetBox reads the custom fields of the model for that.
+    """
 
     def test_every_capability_has_a_check_and_a_gap(self):
         self.assertEqual(set(CHECKS), set(Capability))
@@ -802,6 +806,7 @@ class CapabilityProbeTest(SimpleTestCase):
             Capability.DHCP4O6_SUBNET_SELECTION: False,
             Capability.ADDRESS_REGISTRATION: False,
             Capability.STASH_AGENT_OPTIONS: False,
+            Capability.KEA_OPTION_DATA: False,
         }
         capabilities = probe()
         self.assertEqual({capability: capabilities.has(capability) for capability in Capability}, expected)
@@ -867,6 +872,19 @@ class CapabilityProbeTest(SimpleTestCase):
             extra_constraints=[global_name],
         )
         self.assertFalse(probe(plugin.__getitem__).has(Capability.NAME_PER_SERVER))
+
+    @isolate_apps("netbox_kea")
+    def test_an_option_whose_clean_refuses_kea_data_lacks_the_capability(self):
+        def clean(option):
+            if option.csv_format is False:
+                raise ValidationError({"data": "Not hexadecimal text"})
+
+        plugin = _proposed_plugin_models()
+        plugin["Option"] = type("HexRefusingOption", (plugin["Option"],), {"__module__": __name__, "clean": clean})
+
+        capabilities = probe(plugin.__getitem__)
+
+        self.assertEqual(capabilities.present, frozenset(Capability) - {Capability.KEA_OPTION_DATA})
 
     @isolate_apps("netbox_kea")
     def test_a_relay_list_that_cannot_be_cleared_lacks_the_capability(self):
@@ -998,6 +1016,8 @@ def _proposed_plugin_models() -> dict[str, type[models.Model]]:
         "OptionDefinition",
         space=models.CharField(max_length=255),
         code=models.PositiveIntegerField(validators=[MaxValueValidator(65535)]),
+        type=models.CharField(max_length=32),
+        array=models.BooleanField(default=False),
         user_context=models.JSONField(null=True),
     )
 
@@ -1045,6 +1065,8 @@ def _proposed_plugin_models() -> dict[str, type[models.Model]]:
             definition=models.ForeignKey(definition, on_delete=models.PROTECT, null=True),
             space=models.CharField(max_length=255),
             code=models.PositiveIntegerField(),
+            data=models.CharField(blank=True),
+            csv_format=models.BooleanField(null=True),
             user_context=user_context(),
         ),
     }
@@ -2639,6 +2661,44 @@ class OptionMappingTest(TestCase):
     def _write_failures(self, summary) -> list[str]:
         return [entry.path for entry in summary.entries if entry.reason == Reason.WRITE_FAILED]
 
+    def _refused_data(self, summary) -> list[str]:
+        return [entry.path for entry in summary.entries if entry.capability == Capability.KEA_OPTION_DATA]
+
+    def test_option_data_that_kea_accepts_and_the_plugin_refuses_is_unsupported(self):
+        hex_routers = {"code": 3, "csv-format": False, "data": "c6:12:00:01"}
+        forwarding = {"code": 19, "data": "1"}
+        domain = {"code": 15, "data": "example.org"}
+
+        summary = self._run(self._subnet_10_options(hex_routers, forwarding, domain))
+
+        run = DhcpImportRun.objects.get(server=self.server)
+        stored = Counter(
+            (entry.kind, entry.kea_path, entry.outcome, entry.reason, entry.capability)
+            for entry in run.entries.filter(kea_path__startswith=f"{_SUBNET_10}/option-data")
+        )
+        unsupported = (Outcome.UNSUPPORTED.value, Reason.PLUGIN_GAP.value, Capability.KEA_OPTION_DATA.value)
+        self.assertEqual(
+            stored,
+            Counter(
+                {
+                    (Kind.OPTION.value, f"{_SUBNET_10}/option-data[code=3]", *unsupported): 1,
+                    (Kind.OPTION.value, f"{_SUBNET_10}/option-data[code=19]", *unsupported): 1,
+                    (Kind.OPTION.value, f"{_SUBNET_10}/option-data[code=15]", Outcome.CREATED.value, "", ""): 1,
+                }
+            ),
+        )
+        self.assertEqual(self._write_failures(summary), [])
+        subnet = KeaDhcpLink.objects.get(server=self.server, kind="subnet", kea_subnet_id=10).sys4_object
+        self.assertEqual(
+            [
+                (row.definition.code, row.data)
+                for row in apps.get_model(DHCP_PLUGIN, "Option").objects.filter(
+                    assigned_object_id=subnet.pk, assigned_object_type__model="subnet"
+                )
+            ],
+            [(15, "example.org")],
+        )
+
     def test_an_option_that_the_plugin_rejects_closes_adoption_and_an_operator_option_stays(self):
         from django.contrib.contenttypes.models import ContentType
 
@@ -2661,7 +2721,9 @@ class OptionMappingTest(TestCase):
         added = self._option_rows()
         dropping = self._run(self._subnet_10_options(rejected))
 
-        self.assertEqual(self._write_failures(first), [f"{_SUBNET_10}/option-data[code=3]"])
+        self.assertEqual(
+            (self._write_failures(first), self._refused_data(first)), ([], [f"{_SUBNET_10}/option-data[code=3]"])
+        )
         self.assertEqual(self._changes(adding), {(Kind.OPTION, dns, Outcome.CREATED, None): 1})
         self.assertEqual(added, rows + Counter({("subnet", 6, "192.0.2.1", (), True): 1}))
         self.assertEqual(self._changes(dropping), {(Kind.OPTION, dns, Outcome.REMOVED, None): 1})
@@ -2670,7 +2732,7 @@ class OptionMappingTest(TestCase):
         operator.refresh_from_db()
         self.assertEqual(operator.data, "192.0.2.77")
 
-    def test_a_legacy_option_whose_adopting_write_fails_is_mapped_and_updated_by_the_next_run(self):
+    def test_a_legacy_option_whose_data_the_plugin_refuses_is_mapped_and_updated_by_the_next_run(self):
         Option = apps.get_model(DHCP_PLUGIN, "Option")
         self._run()
         legacy = Option.objects.get(data="192.0.2.1", client_classes__isnull=True, definition__code=3)
@@ -2683,7 +2745,7 @@ class OptionMappingTest(TestCase):
         adopted = list(mapped.values_list("kea_subnet_id", "kea_identity"))
         valid = self._run(self._subnet_10_options({"code": 3, "data": "192.0.2.5"}))
 
-        self.assertEqual(self._write_failures(failing), [routers])
+        self.assertEqual((self._write_failures(failing), self._refused_data(failing)), ([], [routers]))
         self.assertEqual(adopted, [(10, '["subnet",null,"dhcp4",3,[],0]')])
         self.assertEqual(self._changes(valid), {(Kind.OPTION, routers, Outcome.UPDATED, None): 1})
         self.assertEqual(set(Option.objects.values_list("pk", flat=True)), options)
@@ -3227,6 +3289,12 @@ class CoverageImportTest(TestCase):
         values = {
             (root, kea_paths.HOST_RESERVATION_IDENTIFIERS, Capability.FLEX_ID_IDENTIFIER),
             (root, kea_paths.SERVER_ID, Capability.SERVER_ID_FIELDS),
+        }
+        # The plugin holds the recorded option data; a refused one would be an Option entry of its own.
+        values |= {
+            (path, "data", Capability.KEA_OPTION_DATA)
+            for table, _kind, path, _raw, _parent in objects
+            if table == kea_paths.OPTION_DATA
         }
         unsupported, gap = Outcome.UNSUPPORTED.value, Reason.PLUGIN_GAP.value
         # A rejected object reports no key of its own, and an inherited value has no entry of its own.

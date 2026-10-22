@@ -180,7 +180,7 @@ unsupported: the run reports it with the capability and its row in the
 run imports. With netbox-plugin-dhcp 0.2.0, the plugin has none of these capabilities.
 
 The import reads the models of the installed DHCP plugin at each run: their fields, field types, choices, validators,
-nullability and uniqueness constraints. It does not compare version numbers, so a fork or a backport with the change
+nullability and uniqueness constraints. It also lets the plugin check samples of option data that Kea accepts. It does not compare version numbers, so a fork or a backport with the change
 also counts. When you upgrade to a DHCP plugin release that gains a capability, the next run imports the facts that
 need it. No netbox-kea upgrade is necessary.
 
@@ -200,6 +200,7 @@ need it. No netbox-kea upgrade is necessary.
 | `dhcp4o6_subnet_selection` | DHCPv4-over-DHCPv6 Subnet selection | 12 | `4o6-subnet`, `4o6-interface` and `4o6-interface-id` of a DHCPv4 Subnet |
 | `address_registration` | Address registration | 13 | `allow-address-registration` (DHCPv6) |
 | `stash_agent_options` | Stashed relay agent options | 14 | `stash-agent-options` (DHCPv4) |
+| `kea_option_data` | DHCP Option data in each form that Kea accepts | 17 | A DHCP Option whose data the DHCP plugin refuses. netbox-plugin-dhcp 0.2.0 checks the data against the type of the Option Definition by its own rules, so it refuses for example hexadecimal data with `csv-format: false` (except for the binary and string types), a boolean `1` or `0`, an integer in hexadecimal (`0x10`), and a single-label FQDN |
 
 A DHCP Option that needs an unsupported Option Definition is unsupported for the same reason. The DHCP plugin 0.2.0
 keeps the relay as free text, which the import does not write, so a value that you enter there stays.

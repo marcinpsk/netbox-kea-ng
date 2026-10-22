@@ -776,6 +776,15 @@ def _write_option(item: _PlannedOption, row, parent_obj, ct, family: int, refere
         raise
     except ManagedFieldsMismatch:
         raise
+    except ValidationError as exc:
+        # The data comes from a running Kea, so a plugin that refuses it lacks the capability.
+        if "data" not in getattr(exc, "error_dict", {}) or capabilities.has(Capability.KEA_OPTION_DATA):
+            summary.record(write_failed(family, Kind.OPTION, item.path))
+            summary.warn(f"option {option_identity(item.option, family)}: {exc}")
+            return
+        detail = "The installed DHCP plugin refuses its data, which Kea accepts."
+        summary.record(unsupported(family, Kind.OPTION, item.path, Capability.KEA_OPTION_DATA, detail))
+        summary.warn(f"option {option_identity(item.option, family)}: skipped. {detail} {' '.join(exc.messages)}")
     except Exception as exc:  # noqa: BLE001 (one bad option must not abort the import)
         summary.record(write_failed(family, Kind.OPTION, item.path))
         summary.warn(f"option {option_identity(item.option, family)}: {exc}")

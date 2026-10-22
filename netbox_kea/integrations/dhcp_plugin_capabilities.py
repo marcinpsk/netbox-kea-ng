@@ -3,7 +3,8 @@
 """The DHCP Plugin Capability probe: which #88 gaps the installed netbox_dhcp has closed (ADR 0013).
 
 :func:`probe` reads the models of the installed plugin: fields, field types, choices, validators, nullability and
-uniqueness constraints. It reads no rows. :data:`CHECKS` is the reference: one check for each
+uniqueness constraints. It reads no plugin rows: the check of option data cleans unsaved Options, and NetBox reads the
+custom fields of the model for that. :data:`CHECKS` is the reference: one check for each
 :class:`~.dhcp_import_report.Capability`, in the shape of the "Capability the import checks" column of #88. Where
 the plugin has no field yet, the check assumes the shape that #88 proposes. The apply step writes a gated fact only
 when its capability is present, and reports it as unsupported otherwise.
@@ -120,6 +121,28 @@ def _option_without_definition(model: ModelLookup) -> bool:
     return definition is not None and definition.null and _has_fields(option, "space", "code")
 
 
+# Option data that Kea 3.2 accepts, each as the type and array flag of its Option Definition, the data and csv_format.
+_KEA_OPTION_DATA = (
+    ("ipv4-address", True, "c0:00:02:01", False),
+    ("boolean", False, "1", True),
+    ("int32", False, "0x10", True),
+)
+
+
+def _kea_option_data(model: ModelLookup) -> bool:
+    if not (
+        _has_fields(model("OptionDefinition"), "type", "array") and _has_fields(model("Option"), "data", "csv_format")
+    ):
+        return False
+    for kind, array, data, csv_format in _KEA_OPTION_DATA:
+        definition = model("OptionDefinition")(type=kind, array=array)
+        try:
+            model("Option")(definition=definition, data=data, csv_format=csv_format).clean()
+        except ValidationError:
+            return False
+    return True
+
+
 def _relay_address_list(model: ModelLookup) -> bool:
     fields = [_field(model(name), "relay") for name in _NETWORK_MODELS]
     # The import clears an undeclared relay, so the field must be nullable or have a default.
@@ -200,6 +223,15 @@ CHECKS: dict[Capability, Check] = {
     ),
     Capability.STASH_AGENT_OPTIONS: Check(
         "DHCPServer has stash_agent_options.", lambda model: _has_fields(model("DHCPServer"), "stash_agent_options")
+    ),
+    Capability.KEA_OPTION_DATA: Check(
+        "Option.clean() accepts option data that Kea accepts: "
+        + ", ".join(
+            f"{data!r} for {kind}{' array' if array else ''} with csv_format {csv_format}"
+            for kind, array, data, csv_format in _KEA_OPTION_DATA
+        )
+        + ".",
+        _kea_option_data,
     ),
 }
 
