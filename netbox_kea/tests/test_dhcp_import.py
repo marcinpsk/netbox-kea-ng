@@ -2491,6 +2491,20 @@ class SharedNetworkImportTest(_SharedNetworkTestCase):
         self.assertEqual((first.shared_networks_unsupported, first.shared_networks_created), (0, 2))
         self.assertEqual((second.shared_networks_unsupported, second.shared_networks_updated), (0, 1))
 
+    def test_a_prefix_that_an_operator_sets_on_an_imported_shared_network_stays(self):
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        SharedNetwork = apps.get_model(DHCP_PLUGIN, "SharedNetwork")
+        self._apply()
+        prefix = Prefix.objects.create(prefix=IPNetwork("198.51.100.0/24"))
+        SharedNetwork._base_manager.filter(pk=self._network("office").pk).update(prefix=prefix)
+
+        summary = self._apply()
+
+        self.assertEqual(self._network("office").prefix_id, prefix.pk)
+        self.assertNotIn(_OFFICE, self._entries(summary, Kind.SHARED_NETWORK))
+
     def test_a_member_subnet_without_a_kea_subnet_id_imports_again_without_an_error(self):
         Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
         config = {"shared-networks": [{"name": "lab", "subnet4": [{"subnet": "192.0.2.0/24"}]}]}

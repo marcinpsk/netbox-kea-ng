@@ -1320,7 +1320,6 @@ def _shared_network_fields(
     return {
         "name": obj.name if name_taken else planned.key,
         "dhcp_server_id": dhcp_server.pk,
-        "prefix_id": None,
         **_settings_fields(obj, planned.settings, SUBNET_FIELDS, summary, source),
         **gated_values(obj, planned.settings, GATED_NETWORK_FIELDS, capabilities, summary, source),
         **_user_context_fields(obj, planned.intent.user_context, capabilities, summary, source, "Shared Network"),
@@ -1342,7 +1341,8 @@ def _write_shared_network(server, dhcp_server, planned: PlannedSharedNetwork, cl
         return None, None
     created = obj is None
     if created:
-        obj = _model("SharedNetwork")()
+        # The import never links a Prefix to a Shared Network; a Prefix that an operator sets stays.
+        obj = _model("SharedNetwork")(prefix_id=None)
     fields = _shared_network_fields(obj, dhcp_server, planned, summary, path, capabilities, name_taken)
     relations = classes.relations(planned.intent, path, Kind.SHARED_NETWORK, summary)
     relations["server_interfaces"] = _network_interface(

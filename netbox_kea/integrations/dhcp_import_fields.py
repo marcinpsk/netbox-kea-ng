@@ -198,9 +198,8 @@ MANAGED_FIELDS: dict[str, tuple[ManagedField, ...]] = {
         *_gated(GATED_SERVER_FIELDS),
         *_relations("device_interfaces", "virtual_machine_interfaces"),
     ),
-    # The import never links a Prefix to a Shared Network, so it clears the prefix.
     "SharedNetwork": (
-        *_scalars("name", "dhcp_server", "prefix"),
+        *_scalars("name", "dhcp_server"),
         *_settings(SUBNET_FIELDS),
         *_gated(GATED_NETWORK_FIELDS),
         ManagedField("user_context", Capability.USER_CONTEXT),
