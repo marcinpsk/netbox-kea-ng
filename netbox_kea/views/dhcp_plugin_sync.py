@@ -155,6 +155,8 @@ class DriftObject:
     state: DriftState
     # The mapped DHCP plugin row; a missing object has none. The plugin is optional, so its models have no type here.
     target: Any = None
+    # The object that the imported DHCP Option is assigned to, when the user may view it.
+    assigned: Any = None
 
     @property
     def label(self) -> str:
@@ -165,11 +167,6 @@ class DriftObject:
     def badge(self) -> tuple[str, str]:
         """Return the badge text and colour of the state."""
         return _STATE_BADGES[self.state]
-
-    @property
-    def assigned(self) -> Any:
-        """Return the object that the imported DHCP Option is assigned to, or ``None`` for another kind or no row."""
-        return self.target.assigned_object if self.kind == Kind.OPTION and self.target is not None else None
 
 
 @dataclass(frozen=True)
@@ -252,15 +249,13 @@ _NAME_RELATIONS: dict[str, tuple[str, ...]] = {
     "optiondefinition": ("dhcp_server", "client_class"),
     "option": ("definition__dhcp_server", "definition__client_class"),
 }
-# The generic relations that the card names, by model: one query for each model of the related rows.
-_NAME_PREFETCHES: dict[str, tuple[str, ...]] = {"option": ("assigned_object",)}
 
 
 def _viewable_targets(objects: list[DriftObject], user) -> list[DriftObject]:
     """Keep the imported row of each object only when *user* may view it, loaded with what its name reads.
 
-    One query for each model, and one for each model of the objects that the Options are assigned to, so the card
-    reads a fixed number of queries for any number of rows.
+    An Option also names the object that it is assigned to, only when *user* may view that object. One query for each
+    model, and one for each model of those objects, so the card reads a fixed number of queries for any number of rows.
     """
     pks: dict[Any, set[int]] = defaultdict(set)
     for obj in objects:
@@ -269,17 +264,36 @@ def _viewable_targets(objects: list[DriftObject], user) -> list[DriftObject]:
     viewable = {}
     for model, selected in pks.items():
         queryset = model.objects.restrict(user, "view").filter(pk__in=selected)
-        name = model._meta.model_name
-        for row in queryset.select_related(*_NAME_RELATIONS.get(name, ())).prefetch_related(
-            *_NAME_PREFETCHES.get(name, ())
-        ):
+        for row in queryset.select_related(*_NAME_RELATIONS.get(model._meta.model_name, ())):
             viewable[model, row.pk] = row
-    return [
-        replace(obj, target=viewable.get((obj.target._meta.concrete_model, obj.target.pk)))
-        if obj.target is not None
-        else obj
-        for obj in objects
-    ]
+    assigned = _viewable_assigned(
+        [row for (model, _pk), row in viewable.items() if model._meta.model_name == "option"], user
+    )
+    return [_shown(obj, viewable, assigned) for obj in objects]
+
+
+def _shown(obj: DriftObject, viewable: dict, assigned: dict[int, Any]) -> DriftObject:
+    """Return *obj* with its viewable row, and for an Option the viewable object that it is assigned to."""
+    if obj.target is None:
+        return obj
+    row = viewable.get((obj.target._meta.concrete_model, obj.target.pk))
+    parent = assigned.get(row.pk) if row is not None and obj.kind == Kind.OPTION else None
+    return replace(obj, target=row, assigned=parent)
+
+
+def _viewable_assigned(options: list, user) -> dict[int, Any]:
+    """Return the object that each Option is assigned to, by Option pk, when *user* may view it. One query per model."""
+    from django.contrib.contenttypes.models import ContentType
+
+    pks: dict[int, set[int]] = defaultdict(set)
+    for option in options:
+        pks[option.assigned_object_type_id].add(option.assigned_object_id)
+    found = {}
+    for type_id, selected in pks.items():
+        model = ContentType.objects.get_for_id(type_id).model_class()
+        for row in model.objects.restrict(user, "view").filter(pk__in=selected):
+            found[type_id, row.pk] = row
+    return {option.pk: found.get((option.assigned_object_type_id, option.assigned_object_id)) for option in options}
 
 
 def _drift_objects(family: int, kind: Kind, rows: dict[MappingSource, Any], state: DriftState) -> list[DriftObject]:

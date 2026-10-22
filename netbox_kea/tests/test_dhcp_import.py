@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 from django.apps import apps
 from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
 from django.contrib.messages import ERROR, get_messages
 from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import ValidationError
@@ -2750,6 +2751,42 @@ class OptionMappingTest(TestCase):
         self.assertEqual(self._changes(valid), {(Kind.OPTION, routers, Outcome.UPDATED, None): 1})
         self.assertEqual(set(Option.objects.values_list("pk", flat=True)), options)
         self.assertEqual(Option.objects.get(pk=legacy.pk).data, "192.0.2.5")
+
+    def test_an_option_whose_write_fails_is_write_failed_and_its_adopted_legacy_row_stays_mapped(self):
+        from extras.models import CustomField
+
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        routers = f"{_SUBNET_10}/option-data[code=3]"
+        subnet = {"id": 10, "subnet": "192.0.2.0/24", "option-data": [{"code": 3, "data": "192.0.2.1"}]}
+        config = {"subnet4": [subnet], "shared-networks": []}
+        self._run(config)
+        (legacy,) = Option.objects.all()
+        _before_option_mappings(self.server)
+        # A required custom field without a value: Option.clean() refuses every Option, and not for its data.
+        required = CustomField.objects.create(name="kea_required_note", type="text", required=True)
+        required.object_types.set([ContentType.objects.get_for_model(Option)])
+        config["subnet4"][0]["option-data"][0]["data"] = "192.0.2.5"
+
+        failing = self._run(config)
+        adopted = list(
+            KeaDhcpLink.objects.filter(server=self.server, kind=Kind.OPTION.value).values_list(
+                "object_id", "kea_subnet_id", "kea_identity"
+            )
+        )
+        required.delete()
+        valid = self._run(config)
+
+        self.assertEqual(
+            Counter(
+                (entry.family, entry.kind, entry.path, entry.outcome, entry.reason, entry.capability)
+                for entry in failing.entries
+                if entry.kind == Kind.OPTION
+            ),
+            Counter({(4, Kind.OPTION, routers, Outcome.SKIPPED, Reason.WRITE_FAILED, None): 1}),
+        )
+        self.assertEqual(adopted, [(legacy.pk, 10, '["subnet",null,"dhcp4",3,[],0]')])
+        self.assertEqual(self._changes(valid), {(Kind.OPTION, routers, Outcome.UPDATED, None): 1})
+        self.assertEqual(list(Option.objects.values_list("pk", "data")), [(legacy.pk, "192.0.2.5")])
 
     def test_the_first_run_after_the_upgrade_maps_each_option_that_pairs_and_keeps_the_others(self):
         Option = apps.get_model(DHCP_PLUGIN, "Option")

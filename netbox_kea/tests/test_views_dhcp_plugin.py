@@ -742,6 +742,29 @@ class DriftPartialTest(TestCase):
             [option.get_absolute_url(), option.assigned_object.get_absolute_url()],
         )
 
+    def test_the_card_names_the_object_of_an_option_only_when_the_user_may_view_it(self):
+        from django.contrib.auth import get_user_model
+
+        from .utils import _grant
+
+        self._import()
+        option = apps.get_model(DHCP_PLUGIN, "Option").objects.get()
+        pool = option.assigned_object
+        viewer = get_user_model().objects.create_user("drift-option-viewer")
+        _grant([Server], ["view"], user=viewer)
+        _grant([apps.get_model(DHCP_PLUGIN, "Option")], ["view"], user=viewer)
+        self.client.force_login(viewer)
+
+        with stub_kea(_sync_responses({4: {"subnet4": []}}, {4: []})):
+            resp = self.client.get(self.url, HTTP_HX_REQUEST="true")
+
+        page = BeautifulSoup(resp.content, "html.parser")
+        (cell,) = [row.select("td")[3] for row in page.select("tr[data-state][data-kind=option]")]
+        self.assertEqual(" ".join(cell.get_text().split()), str(option))
+        self.assertEqual([link["href"] for link in cell.select("a")], [option.get_absolute_url()])
+        self.assertNotIn(str(pool), resp.content.decode())
+        self.assertNotIn(pool.get_absolute_url(), resp.content.decode())
+
     def test_the_card_reads_a_fixed_number_of_queries_for_any_number_of_rows(self):
         def stale_card_queries(codes: range) -> int:
             # Each code is an Option of the DHCP Server and an Option of its own client class.
