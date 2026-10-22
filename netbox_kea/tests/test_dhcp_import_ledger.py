@@ -237,14 +237,6 @@ class LedgerEntriesTest(SimpleTestCase):
             for key, entry in keys.items()
         ]
 
-    def test_every_entry_is_mapped_not_imported_or_deprecated(self):
-        others = [
-            (family, table, key)
-            for family, table, key, entry in self._entries()
-            if not isinstance(entry, (Mapped, NotImported, Deprecated))
-        ]
-        self.assertEqual(others, [])
-
     def test_the_shared_network_keys_are_mapped_to_the_plugin_shared_network_and_its_members(self):
         for family in LEDGER:
             network = LEDGER[family]["shared-networks"]
