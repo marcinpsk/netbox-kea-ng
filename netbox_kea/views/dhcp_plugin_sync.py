@@ -223,25 +223,30 @@ def family_drift(server: Server, family: Family, user) -> FamilyDrift:
         observation, rows = observed[kind], mapped[kind]
         missing = dict.fromkeys(observation.sources - rows.keys())
         unobserved = {source: row for source, row in rows.items() if source not in observation.sources}
-        state = DriftState.STALE if observation.complete else DriftState.UNSEEN
+        stale = {source: row for source, row in unobserved.items() if not observation.gap(source)}
+        unseen = {source: row for source, row in unobserved.items() if source not in stale}
         drift.kinds.append(
             KindDrift(
                 kind,
                 in_step=len(rows) - len(unobserved),
                 missing=len(missing),
-                stale=len(unobserved) if observation.complete else 0,
-                unseen=0 if observation.complete else len(unobserved),
+                stale=len(stale),
+                unseen=len(unseen),
                 incomplete=observation.incomplete,
             )
         )
         drift.show(_drift_objects(family, kind, missing, DriftState.MISSING))
-        drift.show(_drift_objects(family, kind, unobserved, state))
+        drift.show(_drift_objects(family, kind, stale, DriftState.STALE))
+        drift.show(_drift_objects(family, kind, unseen, DriftState.UNSEEN))
     drift.objects = _viewable_targets(drift.objects, user)
     return drift
 
 
 # The relations that the name of a DHCP plugin row reads, by model.
-_NAME_RELATIONS: dict[str, tuple[str, ...]] = {"optiondefinition": ("dhcp_server", "client_class")}
+_NAME_RELATIONS: dict[str, tuple[str, ...]] = {
+    "optiondefinition": ("dhcp_server", "client_class"),
+    "option": ("definition__dhcp_server", "definition__client_class"),
+}
 
 
 def _viewable_targets(objects: list[DriftObject], user) -> list[DriftObject]:

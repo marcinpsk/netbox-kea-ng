@@ -79,6 +79,7 @@ def test_the_mapping_kind_lists_name_every_kind_of_mapping_kinds():
         Kind.RESERVATION: "reservation",
         Kind.CLIENT_CLASS: "client class",
         Kind.OPTION_DEFINITION: "option definition",
+        Kind.OPTION: "dhcp option",
     }
     assert set(terms) == set(MAPPING_KINDS)
 

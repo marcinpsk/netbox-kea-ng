@@ -20,8 +20,8 @@ to the main-only policy. CONTEXT.md defines the domain terms.
 Only `KeaDhcpLink` gains branchability. Its targets already follow native DHCP-plugin routing: one
 model for each mapping kind in `MAPPING_KINDS` (`models.py`), which are DHCP Server (the global
 configuration of one family), Shared Network, Subnet, Pool, delegated-prefix Pool (PDPool),
-HostReservation (both Reservation Scopes), client class and Option Definition. A Subnet deletion
-also deletes the mappings of its Pools, delegated-prefix Pools and In-Subnet Reservations. The lifecycle applies to IPv4 and
+HostReservation (both Reservation Scopes), client class, Option Definition and DHCP Option. A Subnet deletion
+also deletes the mappings of its Pools, delegated-prefix Pools, In-Subnet Reservations and DHCP Options. The lifecycle applies to IPv4 and
 IPv6, instance deletion and queryset deletion.
 
 | Operation | Target and mapping outcome |
@@ -64,6 +64,8 @@ Refuse the whole action when:
 Undo of a branch-created Global Reservation is also refused if main import adopted and mapped it
 after merge. A branch cannot delete that newer association through an unrecorded target deletion.
 Timestamp-only mapping observations do not conflict with an otherwise unchanged association.
+`options_mapped` only goes from False to True. A revert that restores a mapping keeps True when main recorded True at
+its deletion, also when the branch history holds an older False.
 
 Affected actions require the dependency-aware squash strategy. Refuse iterative replay before any
 mutation, explain the squash requirement and preserve the selected strategy. Strategy selection

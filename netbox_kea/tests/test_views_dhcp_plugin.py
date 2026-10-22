@@ -581,6 +581,7 @@ _MAPPED = {
     ("subnet", _SUBNET_51),
     ("client_class", "Dhcp4/client-classes[name=voip]"),
     ("option_definition", "Dhcp4/option-def[code=251]"),
+    ("option", f"{_SUBNET_51}/pools[pool=10.86.0.10-10.86.0.20]/option-data[code=251]"),
 }
 
 
@@ -656,6 +657,7 @@ class DriftPartialTest(TestCase):
                 "shared_network": (0, 1, 0, 0),
                 "client_class": (1, 0, 0, 0),
                 "option_definition": (1, 0, 0, 0),
+                "option": (1, 0, 0, 0),
             },
         )
         self.assertEqual(page.select_one("a.drift-latest-run")["href"], "#dhcp-import-latest-run")
@@ -739,8 +741,9 @@ class DriftPartialTest(TestCase):
                 self.client.post(reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk]))
             with stub_kea(_sync_responses({4: {}}, {4: []})), CaptureQueriesContext(connection) as queries:
                 page = BeautifulSoup(self.client.get(self.url, HTTP_HX_REQUEST="true").content, "html.parser")
-            self.assertEqual(len(self._links(page)), 1 if len(codes) else 0)
-            self.assertEqual(len(page.select("tr[data-state=stale]")), len(codes))
+            # One link for each kind: the Option Definitions and their Options.
+            self.assertEqual(len(self._links(page)), 2 if len(codes) else 0)
+            self.assertEqual(len(page.select("tr[data-state=stale]")), 2 * len(codes))
             return len(queries.captured_queries)
 
         self.assertEqual(stale_card_queries(range(230, 231)), stale_card_queries(range(230, 234)))

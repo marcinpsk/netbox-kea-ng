@@ -1663,17 +1663,19 @@ class DhcpPluginMappingImportTest(TestCase):
         subnet = model("Subnet").objects.get(
             dhcp_server__in=imported_dhcp_servers(self.server), prefix__prefix="10.98.0.0/24"
         )
+        pool = model("Pool").objects.get(subnet=subnet)
+        voip = model("ClientClass").objects.get(dhcp_server__in=imported_dhcp_servers(self.server))
         return {
             ("server", None, None): subnet.dhcp_server,
             ("subnet", 1, None): subnet,
-            ("pool", 1, "10.98.0.10-10.98.0.100"): model("Pool").objects.get(subnet=subnet),
+            ("pool", 1, "10.98.0.10-10.98.0.100"): pool,
             ("reservation", 1, "hw-address:aa:bb:cc:dd:ee:98"): model("HostReservation").objects.get(subnet=subnet),
-            ("client_class", None, "voip"): model("ClientClass").objects.get(
-                dhcp_server__in=imported_dhcp_servers(self.server)
-            ),
+            ("client_class", None, "voip"): voip,
             ("option_definition", None, "dhcp4:222"): model("OptionDefinition").objects.get(
                 standard=False, dhcp_server__in=imported_dhcp_servers(self.server)
             ),
+            ("option", None, '["client_class","voip","dhcp4",222,[],0]'): voip.options.get(),
+            ("option", 1, '["pool","10.98.0.10-10.98.0.100","dhcp4",222,[],0]'): pool.options.get(),
         }
 
     def _assert_one_mapping_each(self, rows: dict) -> dict:
@@ -1737,7 +1739,9 @@ class DhcpPluginMappingImportTest(TestCase):
         }
         for source, row in rows.items():
             row.snapshot()
-            row.name = f"renamed {row.pk}"
+            # An Option has no name.
+            if source[0] != "option":
+                row.name = f"renamed {row.pk}"
             for name, value in changed.get(source, {}).items():
                 setattr(row, name, value)
             row.save()
@@ -1751,6 +1755,8 @@ class DhcpPluginMappingImportTest(TestCase):
         current = self._rows()
         self.assertEqual({source: row.pk for source, row in current.items()}, {s: r.pk for s, r in rows.items()})
         for source, row in current.items():
+            if source[0] == "option":
+                continue
             with self.subTest(source=source):
                 # A client class name is its Kea name, so the import names it again.
                 expected = "voip" if source[0] == "client_class" else f"renamed {row.pk}"
@@ -1993,7 +1999,9 @@ class DhcpPluginMappingImportTest(TestCase):
                 (link.kind, link.kea_subnet_id, link.kea_identity): link.object_id
                 for link in KeaDhcpLink.objects.filter(server=self.server, family=4)
             }
-            self.assertEqual(seen, {source: row.pk for source, row in rows.items()})
+            option = ("option", 1, '["pool","10.95.0.10-10.95.0.100","dhcp4",222,[],0]')
+            pool_option = rows[("pool", 1, "10.95.0.10-10.95.0.100")].options.get()
+            self.assertEqual(seen, {**{source: row.pk for source, row in rows.items()}, option: pool_option.pk})
 
             self.assertEqual(
                 [(entry.path, entry.capability) for entry in v6.entries if entry.kind == Kind.CLIENT_CLASS],

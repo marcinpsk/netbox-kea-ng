@@ -113,21 +113,39 @@ the socket settings of `interfaces-config`. The import reports each one that Kea
 ### Mappings and managed fields
 
 The import keeps a DHCP Import Mapping from each DHCP Server, Shared Network, Subnet, Pool, delegated-prefix Pool,
-Reservation, client class and custom Option Definition that it writes to its Kea source. A later run finds the object
-through its mapping and updates it.
+Reservation, client class, custom Option Definition and DHCP Option that it writes to its Kea source. A later run
+finds the object through its mapping and updates it.
 Kea owns the managed fields of a mapped object. Each run sets every managed field from Kea. It clears a managed field
 that Kea does not declare, so the DHCP plugin inherits its value. The next run overwrites a hand edit of a managed
 field. The import does not change the other fields, such as tags, comments, description, status, weight, cluster and
 the device or virtual machine. It also does not change an object without a mapping, such as a Pool or Reservation that
 you add, or its DHCP Options. A Kea Subnet without a subnet ID has no mapping, and neither have its Pools and
 delegated-prefix Pools. The import creates them, but a later run that finds a row without a mapping in their place
-leaves that row, its DHCP Options and its Pools as they are, and reports the Kea object as not imported. A DHCP Option
-has no mapping of its own. The import finds it by its object, the option space and code of its
-Option Definition and its client classes. When no Option has the same client classes, the import takes an Option of
-the same object, space and code that no other Kea option took, for example one that an earlier release wrote without
-classes. When the definition of an option moves, for example from the global `option-def` to a client class, the
-Option keeps its row and binds to the new definition. So a DHCP Option that you add with another Option Definition
-stays. When you rename an object, the mapping stays and the import keeps your name. A client class and a Shared
+leaves that row, its DHCP Options and its Pools as they are, and reports the Kea object as not imported.
+
+The mapping of a DHCP Option holds the Kea source of its object and the identity of the option in that object: the
+option space, the code and the set of client classes. A Kea object can assign one identity more than once. Each one
+then has its own mapping, in Kea order. A Kea option whose client classes change has a new identity. So the run
+creates a new DHCP Option and removes the old one. When the definition of an option moves, for example from the global
+`option-def` to a client class, the Option keeps its row and binds to the new definition.
+
+A DHCP Option that you add to an imported object has no mapping. The run does not change it and does not remove it.
+A Kea option without a mapped Option gets a new DHCP Option. The one exception is the upgrade. Each imported object
+takes the Options without a mapping once: on the first run that reaches it after the upgrade. Then a Kea option
+without a mapped Option takes an Option without a mapping of the same object. It takes one with the same space, code
+and client classes first. Then it takes one with the same space and code, for example one that an earlier release
+wrote without classes. The run maps each Option that it takes before it writes it, so a write that fails keeps the
+mapping, and the next run updates the same Option. Then the mapping of the object records that its Options are mapped,
+whatever the writes do. After that, the object takes no unmapped Option again. The global configuration, client classes,
+Shared Networks, Subnets, Pools, delegated-prefix Pools and Reservations take them this way. A run that cannot read the
+Reservations does not reach them, so a later run that reads them maps their Options.
+
+A mapping keeps 517 characters. A DHCP Option whose identity is longer has no mapping, and neither has a DHCP Option
+of an object without a mapping. On every run, such an Option takes an Option without a mapping of the same object, as
+the upgrade does. So the run updates it in place and makes no duplicate. The run never removes it. While the read has
+such an Option, it removes no DHCP Option of an object of the same kind.
+
+When you rename an object, the mapping stays and the import keeps your name. A client class and a Shared
 Network are the exceptions: they keep their Kea name, because Kea refers to them by name. The first run after an
 upgrade maps each object that an earlier release imported, so it makes no duplicate. It also renames each client
 class from `kea1: voip` to `voip`.
@@ -272,16 +290,20 @@ makes Subnet IDs and names unique per DHCP Server imports these objects with no 
 ## Removal of Stale DHCP Import Objects
 
 A run removes each Stale DHCP Import Object: a mapped Shared Network, Subnet, Pool, delegated-prefix Pool,
-Reservation, client class or custom Option Definition whose Kea source Kea no longer reports. A Pool whose range
-changes in Kea is a new Pool, and so is a delegated-prefix Pool whose prefix or delegated length changes, so the run
-removes the old row and creates a new one. The run removes an object only after it read every Kea object of that
-kind. When the Server Configuration or the Reservation Snapshot was not read in full, the run keeps the objects of the
-kinds that the read covers, and one skipped entry for each kind tells why and how many objects it kept. The run also
-keeps an object when its removal would remove a DHCP plugin row that the run keeps, for example a Pool that an
-operator added to a stale Subnet or a Subnet that an operator added to a stale Shared Network, when an Option still
-uses a stale Option Definition, or when a row that the run keeps names a stale client class in its `client_classes`
-or `evaluate_additional_classes` (without the class, that row would reach more clients). A DHCP Option of an object
-that the run removes goes with that object and keeps nothing. Before it writes anything, the run finds the stale
+Reservation, client class, custom Option Definition or DHCP Option whose Kea source Kea no longer reports. A Pool whose
+range changes in Kea is a new Pool, and so is a delegated-prefix Pool whose prefix or delegated length changes, and a
+DHCP Option whose client classes change, so the run removes the old row and creates a new one. The run removes an
+object only after it read every Kea object of that kind. When the Server Configuration or the Reservation Snapshot was
+not read in full, the run keeps the objects of the kinds that the read covers, and one skipped entry for each kind
+tells why and how many objects it kept. The run judges a DHCP Option by the kind of its object. It removes the Option
+only when it read every DHCP Option entry and every object of that kind. So an unread Reservation Snapshot keeps the
+Options of Reservations, and the run can still remove a global, Subnet or Pool Option. The run also keeps an object
+when its removal would remove a DHCP plugin row that the run keeps, for example a Pool that an operator added to a
+stale Subnet, a Subnet that an operator added to a stale Shared Network, or a mapped DHCP Option that the run cannot
+judge. It also keeps an object when an Option that the run keeps still uses a stale Option Definition, or when a row
+that the run keeps names a stale client class in its `client_classes` or `evaluate_additional_classes` (without the
+class, that row would reach more clients). A stale DHCP Option goes on its own, so a stale Option Definition or client
+class that only it used can go after it. A DHCP Option without a mapping goes with the object that the run removes. Before it writes anything, the run finds the stale
 objects whose removal removes or changes no object that it keeps, so a kept object leaves no change behind. Stale
 objects whose removals rely on each other are removed together or not at all. When a removal fails, each stale object
 whose removal relies on it, directly or through other objects, is kept too. A removal deletes the DHCP plugin row with

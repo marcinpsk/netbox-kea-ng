@@ -45,10 +45,9 @@ _IPAM_IMPORT_WRITES = (
 )
 # The removal of Stale DHCP Import Objects deletes these models.
 _PLUGIN_REMOVALS = (
-    "netbox_dhcp.delete_hostreservation, netbox_dhcp.delete_pool, netbox_dhcp.delete_pdpool, "
-    "netbox_dhcp.delete_subnet, "
-    "netbox_dhcp.delete_sharednetwork, netbox_dhcp.delete_clientclass, netbox_dhcp.delete_optiondefinition, "
-    "netbox_dhcp.delete_option"
+    "netbox_dhcp.delete_option, netbox_dhcp.delete_hostreservation, netbox_dhcp.delete_pool, "
+    "netbox_dhcp.delete_pdpool, netbox_dhcp.delete_subnet, "
+    "netbox_dhcp.delete_sharednetwork, netbox_dhcp.delete_clientclass, netbox_dhcp.delete_optiondefinition"
 )
 _PLUGIN_IMPORT_WRITES = (
     "netbox_dhcp.add_dhcpserver, netbox_dhcp.change_dhcpserver, netbox_dhcp.add_optiondefinition, "

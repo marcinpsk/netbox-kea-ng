@@ -161,6 +161,53 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertEqual(KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=family).pk, link.pk)
         self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).sys4_object.pk, target.pk)
 
+    def test_a_revert_keeps_the_options_that_main_mapped_and_leaves_the_operator_option_alone(self):
+        from netbox_dhcp.models import Option, OptionDefinition, Subnet
+
+        server, intent, observation, target, link = self._imported("subnet", 4, "options-mapped")
+        # A mapping from before Option mappings: the import has not mapped the Options of its Subnet yet.
+        KeaDhcpLink.objects.filter(pk=link.pk).update(options_mapped=False)
+        # A TransactionTestCase flushes the seeded standard Option Definitions.
+        routers, _ = OptionDefinition.objects.get_or_create(
+            standard=True,
+            space="dhcp4",
+            code=3,
+            defaults={"name": "routers", "family": 4, "type": "ipv4-address", "array": True},
+        )
+        with event_tracking(_change_request(self.user)):
+            operator = Option.objects.create(
+                definition=routers,
+                assigned_object_type=ContentType.objects.get_for_model(Subnet),
+                assigned_object_id=target.pk,
+                data="198.18.0.77",
+            )
+        branch = _provisioned_branch(self, "mapping-options-mapped")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        self._delete(branch, target)
+        with event_tracking(_change_request(self.user)):
+            import_server_config(server, intent, observation)
+        self.assertTrue(KeaDhcpLink.objects.get(pk=link.pk).options_mapped)
+
+        branch.merge(user=self.user)
+        branch.revert(user=self.user)
+
+        self.assertTrue(KeaDhcpLink.objects.get(pk=link.pk).options_mapped)
+        (subnet,) = intent.subnets
+        declared = {
+            "id": subnet.kea_subnet_id,
+            "subnet": subnet.cidr,
+            "option-data": [{"code": 3, "data": "198.18.0.1"}],
+        }
+        with event_tracking(_change_request(self.user)):
+            summary = import_server_config(server, parse_dhcp_config({"subnet4": [declared]}, 4), observation)
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        option_links = KeaDhcpLink.objects.filter(server=server, kind="option")
+        self.assertEqual(
+            sorted(Option.objects.filter(assigned_object_id=target.pk).values_list("data", "pk")),
+            sorted([("198.18.0.1", option_links.get().object_id), ("198.18.0.77", operator.pk)]),
+        )
+
     def test_squash_restores_imported_subnets(self):
         for family in (4, 6):
             for queryset in (False, True):
@@ -845,13 +892,14 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertIsNone(current_request.get())
 
     def _mapped_kinds(self, family, suffix):
-        """Create one mapped target of each kind of *family*; its Pools and In-Subnet Reservation are in the Subnet."""
+        """Create one mapped target of each kind of *family*; its Pools, In-Subnet Reservation and Option are in the Subnet."""
         from ipam.models import IPRange, Prefix
         from netaddr import IPNetwork
         from netbox_dhcp.models import (
             ClientClass,
             DHCPServer,
             HostReservation,
+            Option,
             OptionDefinition,
             PDPool,
             Pool,
@@ -905,6 +953,13 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                     dhcp_server=parent,
                 ),
             }
+            # The Subnet delete takes the Option before the delete of its Option Definition.
+            targets[MappingSource(Kind.OPTION, 40, f'["subnet",null,"dhcp{family}",222,[],0]')] = Option.objects.create(
+                definition=targets[MappingSource(Kind.OPTION_DEFINITION, kea_identity=f"dhcp{family}:222")],
+                assigned_object_type=ContentType.objects.get_for_model(Subnet),
+                assigned_object_id=subnet.pk,
+                data="1",
+            )
             if family == 6:
                 targets[MappingSource(Kind.PD_POOL, 40, "2001:db8:4000::/48/56")] = PDPool.objects.create(
                     name=f"mapping-{suffix}-pd-pool",
@@ -926,9 +981,9 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 branch = _provisioned_branch(self, f"mapping-every-kind-{family}")
                 branch.merge_strategy = "squash"
                 branch.save(provision=False)
-                # The Subnet delete also deletes its Pools and its In-Subnet Reservation.
+                # The Subnet delete also deletes its Pools, its In-Subnet Reservation and its Option.
                 for source, target in targets.items():
-                    if source.kind not in (Kind.POOL, Kind.PD_POOL, Kind.RESERVATION):
+                    if source.kind not in (Kind.POOL, Kind.PD_POOL, Kind.RESERVATION, Kind.OPTION):
                         self._delete(branch, target)
                 with activate_branch(branch):
                     for source, target in targets.items():
@@ -1026,7 +1081,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         targets = {(type(link.sys4_object), link.object_id): link.sys4_object.created for link in links()}
         self.assertEqual(
             sorted(links().values_list("kind", flat=True)),
-            ["client_class", "option_definition", "pool", "reservation", "server", "subnet"],
+            ["client_class", "option", "option", "option_definition", "pool", "reservation", "server", "subnet"],
         )
         dhcp_server = links().get(kind="server").sys4_object
         branch = _provisioned_branch(self, "mapping-imported-kinds")

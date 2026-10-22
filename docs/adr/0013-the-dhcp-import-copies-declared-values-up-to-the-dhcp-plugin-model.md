@@ -55,6 +55,9 @@ Prefix in Kea while the plugin requires one. A reverse direction from the plugin
   - Reservation in either scope, by Reservation Identity
   - client class, by name
   - custom Option Definition, by space and code
+  - DHCP Option, by the identity of the object that assigns it and its own identity (ADR 0014): space, code and
+    client class set. Duplicates of one identity in one object are told apart by their order, so a reorder in Kea
+    swaps their mappings.
 
   A client class and a Shared Network keep their Kea name. While the plugin requires names to be unique across all
   servers, a second Server's object of the same name fails as unsupported. Subnets, Pools and Reservations have no
