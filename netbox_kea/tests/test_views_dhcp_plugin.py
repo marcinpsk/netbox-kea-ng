@@ -299,7 +299,7 @@ class SyncNowEndToEndTest(TestCase):
         with stub_kea(_sync_responses({4: {"shared-networks": [network]}})):
             resp = self.client.post(self.url, follow=True)
 
-        self.assertContains(resp, "1 Shared Network(s) unsupported; their Subnets were imported without them")
+        self.assertContains(resp, "1 Shared Network(s) unsupported; see Latest run")
         self.assertContains(resp, "1 subnets created")
         self.assertContains(resp, "0 shared networks created, 0 updated")
 

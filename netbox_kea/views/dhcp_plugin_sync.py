@@ -117,10 +117,7 @@ def _summary_text(version: int, summary) -> str:
     if summary.options_skipped:
         notes.append(f"{summary.options_skipped} option(s) skipped (unresolved/invalid)")
     if summary.shared_networks_unsupported:
-        notes.append(
-            f"{summary.shared_networks_unsupported} Shared Network(s) unsupported; "
-            "their Subnets were imported without them"
-        )
+        notes.append(f"{summary.shared_networks_unsupported} Shared Network(s) unsupported; see Latest run")
     return f"{text} ({'; '.join(notes)})" if notes else text
 
 
