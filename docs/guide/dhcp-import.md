@@ -194,11 +194,9 @@ and the import still completes.
 
 A fact that the run did not write has a reason code. The reason gives the outcome:
 
-- **Unsupported**: the DHCP plugin cannot hold the fact. A later DHCP plugin release can remove this limit.
-- **Not imported**: the fact is out of scope, the Kea data is not valid, or the DHCP plugin has no field for it by
-  design.
-- **Skipped**: the parent object was not imported, IPAM ownership kept the IP Range unchanged, a write failed, Kea
-  could not be read in full, or the run kept a stale object.
+- **Unsupported**: the installed DHCP plugin cannot hold the fact. A later DHCP plugin release can remove this limit.
+- **Not imported**: the import leaves the fact out by design, or the Kea data is not valid.
+- **Skipped**: this run did not write the fact because of another object, a failure or an incomplete read.
 
 | Reason code | Outcome | Shown as |
 | --- | --- | --- |
@@ -242,8 +240,11 @@ has no prefix, so the import never links a Prefix to a Shared Network. A Prefix 
 Network stays. Each member Subnet belongs to its Shared Network (`shared_network`), not to the DHCP Server
 (`dhcp_server`). When Kea moves a Subnet to another Shared Network, or out of one, the next run moves the Subnet.
 
-netbox-plugin-dhcp 0.2.0 needs a Prefix for each Shared Network. So with that release, every Shared Network is
-unsupported, and so are its DHCP Options. The entry names [gap 1](https://github.com/marcinpsk/netbox-kea-ng/issues/88).
+netbox-plugin-dhcp 0.2.0 needs one Prefix for each Shared Network, and that Prefix must enclose every member Subnet.
+Kea has no such rule. A Kea Shared Network groups the Subnets of one link or one relay, and their prefixes often have
+no common enclosing Prefix, for example `192.0.2.0/24` and `198.51.100.0/24`. A Prefix that enclosed them would be an
+aggregate that the network does not have. So with that release, every Shared Network is unsupported, and so are its
+DHCP Options. The entry names [gap 1](https://github.com/marcinpsk/netbox-kea-ng/issues/88).
 The member Subnets then belong to the DHCP Server. The import reports each value that a member Subnet inherits from its
 Shared Network. A DHCP plugin release that makes the Prefix optional imports the Shared Networks with no netbox-kea
 change.
