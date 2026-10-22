@@ -844,11 +844,12 @@ def claim(
 ) -> ClaimResult:
     """Claim one source's records in the Server's VRF, with per-object outcomes and no stale cleanup.
 
-    A call contains one source: address leases, delegated-prefix leases, Reservations, Subnets, Pools, the prefixes
-    of delegated-prefix Pools, or the delegated and excluded prefixes of imported Reservations. All records are validated and grouped before any write. Lease masks and the Subnet IDs
-    of delegated prefixes come from a live complete Kea Subnet Catalogue; a delegated prefix is claimed as a Prefix. Reservations carry their verified
-    Subnet mask, and *catalogue*, the catalogue that verified them, gives their published names; only a Reservation
-    claim takes it. Network records carry their own canonical network and Pool bounds.
+    A call contains one source: address leases, delegated-prefix leases, Reservations, Subnets, Pools, the prefixes of
+    delegated-prefix Pools, or the delegated and excluded prefixes of imported Reservations. All records are validated
+    and grouped before any write. Lease masks and the Subnet IDs of delegated prefixes come from a live complete Kea
+    Subnet Catalogue; a delegated prefix is claimed as a Prefix. Reservations carry their verified Subnet mask, and
+    *catalogue*, the catalogue that verified them, gives their published names; only a Reservation claim takes it.
+    Network records carry their own canonical network and Pool bounds.
     """
     if family not in (4, 6) or isinstance(family, bool):
         raise ValueError("The address family must be 4 or 6")
