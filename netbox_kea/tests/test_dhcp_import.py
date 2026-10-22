@@ -2095,7 +2095,9 @@ def _kea_objects(config: dict, family: Family) -> list[_KeaObject]:
     def reservations(obj: dict, subnet_id: int | None) -> None:
         for raw in obj.get(kea_paths.RESERVATIONS, []):
             identifier = next(name for name in get_args(IdentifierType) if name in raw)
-            path = kea_paths.reservation(family, subnet_id, identifier, raw[identifier])
+            # ReservationIdentity is the public rule that normalizes an identifier, as the Reservation read does.
+            value = ReservationIdentity(identifier, raw[identifier]).value
+            path = kea_paths.reservation(family, subnet_id, identifier, value)
             found.append((kea_paths.RESERVATIONS, Kind.RESERVATION, path, raw, obj))
             options(path, raw)
 
@@ -2160,6 +2162,27 @@ def _standard_definition(space: str, code: int) -> bool:
     """Return whether the installed DHCP plugin ships a standard Option Definition of *code* in *space*."""
     definitions = apps.get_model(DHCP_PLUGIN, "OptionDefinition").objects
     return definitions.filter(standard=True, space=space, code=code).exists()
+
+
+# The entries that judge one value, not a ledger key, by family: (Kea path, outcome, reason).
+_VALUE_ENTRIES: dict[int, set[tuple[str, str, str]]] = {
+    family: {
+        # Member Subnet 21 inherits these from the Shared Network office, which the plugin cannot hold.
+        *(
+            (
+                f"Dhcp{family}/subnet{family}[id=21]/{key}",
+                Outcome.NOT_IMPORTED.value,
+                Reason.INHERITED_FROM_SHARED_NETWORK.value,
+            )
+            for key in ("relay", "interface", "reservations-global")
+        ),
+    }
+    for family in (4, 6)
+}
+# Subnet 10 names eth0, and the imported DHCP Server has no device or virtual machine with interfaces.
+_VALUE_ENTRIES[4].add(
+    ("Dhcp4/subnet4[id=10]/interface", Outcome.NOT_IMPORTED.value, Reason.NO_MATCHING_INTERFACE.value)
+)
 
 
 class _Rejections:
@@ -2228,7 +2251,8 @@ class _Rejections:
     def visit(self, table: str, path: str, raw: dict, parent: dict) -> None:
         unsupported = Outcome.UNSUPPORTED.value
         if id(parent) in self.rejected and table != kea_paths.subnet_collection(self.family):
-            # Options and definitions of a rejected object are skipped; its other children fail with it.
+            # Options and definitions of a rejected object are skipped, and its other children fail with it.
+            # A member Subnet of a rejected Shared Network imports without membership.
             options = (kea_paths.OPTION_DATA, kea_paths.OPTION_DEF)
             child = (Outcome.SKIPPED.value, "") if table in options else self.predicted[self.rejected[id(parent)]]
             self.reject(raw, path, *child)
@@ -2275,8 +2299,7 @@ class CoverageImportTest(TestCase):
         capabilities = probe()
         predicted = _Rejections(family, objects, capabilities).predicted
         self._assert_plugin_objects(server, family, objects, predicted)
-        self._assert_unsupported(family, objects, entries, capabilities, predicted)
-        self._assert_not_imported(family, objects, entries)
+        self._assert_entries(family, objects, entries, capabilities, predicted)
 
     @staticmethod
     def _locate(objects: list[_KeaObject], path: str) -> tuple[_KeaObject, str]:
@@ -2287,6 +2310,7 @@ class CoverageImportTest(TestCase):
         return owner, path[len(owner[2]) + 1 :].split("/", 1)[0]
 
     def _assert_plugin_objects(self, server, family: Family, objects: list[_KeaObject], predicted: dict):
+        # interfaces-config is a part of the DHCP Server, not a row of its own.
         expected = Counter(
             kind
             for table, kind, path, _raw, _parent in objects
@@ -2300,23 +2324,53 @@ class CoverageImportTest(TestCase):
         self.assertEqual(apps.get_model(DHCP_PLUGIN, "Option").objects.count(), expected[Kind.OPTION])
         self.assertGreater(expected[Kind.OPTION], 0)
 
-    def _assert_unsupported(self, family: Family, objects: list[_KeaObject], entries, capabilities, predicted: dict):
+    def _assert_entries(self, family: Family, objects: list[_KeaObject], entries, capabilities, predicted: dict):
+        """Sort every stored entry into one class, and compare each class with its expectation."""
         root = kea_paths.daemon(family)
         missing = set(Capability) - capabilities.present
-        written = {Outcome.CREATED.value, Outcome.UPDATED.value, Outcome.REMOVED.value}
-        rejected, keyed, keyless = {}, set(), set()
+        written_outcomes = {Outcome.CREATED.value, Outcome.UPDATED.value, Outcome.REMOVED.value}
+        ledger_reasons = {
+            entry.reason.value
+            for keys in LEDGER[family].values()
+            for entry in keys.values()
+            if isinstance(entry, NotImported)
+        }
+        written: Counter[tuple[str, str]] = Counter()
+        rejected: Counter[tuple[str, str, str]] = Counter()
+        family_facts, keyed, left_out, others = set(), set(), set(), set()
         for entry in entries:
-            if entry.outcome in written:
-                continue
             (_table, _kind, owner, _raw, _parent), key = self._locate(objects, entry.kea_path)
-            if owner == root and not key:
-                keyless.add(Capability(entry.capability))
+            if entry.outcome in written_outcomes:
+                written[(entry.kea_path, entry.outcome)] += 1
+            elif owner == root and not key:
+                family_facts.add((entry.outcome, entry.capability))
             elif not key:
-                rejected[owner] = (entry.outcome, entry.capability)
+                rejected[(owner, entry.outcome, entry.capability)] += 1
             elif entry.outcome == Outcome.UNSUPPORTED.value and entry.capability:
                 keyed.add((owner, key, Capability(entry.capability)))
-        self.assertEqual(keyless, KEYLESS_CAPABILITIES & missing)
-        self.assertEqual(rejected, predicted)
+            elif entry.outcome == Outcome.NOT_IMPORTED.value and entry.reason in ledger_reasons:
+                left_out.add((entry.kea_path, entry.reason))
+            else:
+                others.add((entry.kea_path, entry.outcome, entry.reason))
+        # Each object that the run does not reject is new in this database, so the run creates it.
+        created = Counter(
+            (path, Outcome.CREATED.value)
+            for table, _kind, path, _raw, _parent in objects
+            if table != kea_paths.INTERFACES_CONFIG and path not in predicted
+        )
+        self.assertEqual(written, created)
+        unsupported = Outcome.UNSUPPORTED.value
+        self.assertEqual(
+            family_facts, {(unsupported, capability.value) for capability in KEYLESS_CAPABILITIES & missing}
+        )
+        self.assertEqual(rejected, Counter((path, *fact) for path, fact in predicted.items()))
+        self.assertEqual(keyed, self._expected_keyed(family, objects, missing, predicted))
+        self.assertEqual(left_out, self._expected_left_out(family, objects))
+        self.assertEqual(others, _VALUE_ENTRIES[family])
+
+    def _expected_keyed(self, family: Family, objects: list[_KeaObject], missing: set, predicted: dict) -> set:
+        """Return each declared key that a written object carries and the ledger gates by a missing capability."""
+        root = kea_paths.daemon(family)
         # A capability that rejects an object decides by the value of its key, so a written object needs none.
         identity = {Capability(capability) for _outcome, capability in predicted.values() if capability}
         # The recorded values need no capability: no flex-id identifier, and a server-id that Kea generates.
@@ -2324,7 +2378,8 @@ class CoverageImportTest(TestCase):
             (root, kea_paths.HOST_RESERVATION_IDENTIFIERS, Capability.FLEX_ID_IDENTIFIER),
             (root, kea_paths.SERVER_ID, Capability.SERVER_ID_FIELDS),
         }
-        expected = {
+        # A rejected object reports no key of its own, and an inherited value has no entry of its own.
+        return {
             (path, key, capability)
             for table, _kind, path, raw, parent in objects
             if path not in predicted
@@ -2333,38 +2388,23 @@ class CoverageImportTest(TestCase):
             for capability in entry.capabilities
             if capability in missing and capability not in identity and (path, key, capability) not in values
         }
-        self.assertEqual(keyed, expected)
+
+    @staticmethod
+    def _expected_left_out(family: Family, objects: list[_KeaObject]) -> set:
+        """Return each key that config-get carries and the ledger lists as not imported, with its reason."""
+        # Kea returns server settings that the configuration does not declare, and the import reads only config-get.
+        return {
+            (kea_paths.setting(path, key), entry.reason.value)
+            for table, _kind, path, raw, _parent in objects
+            for key, entry in LEDGER[family].get(table, {}).items()
+            if isinstance(entry, NotImported) and key in raw
+        }
 
     @staticmethod
     def _declared(family: Family, table: str, key: str, raw: dict, parent: dict) -> bool:
         if table not in MERGED_KEYS[family]:
             return True
         return key in declared_values(family, table, {key: raw[key]}, parent)
-
-    def _assert_not_imported(self, family: Family, objects: list[_KeaObject], entries):
-        # The other not-imported reasons judge one value, not a key, so the ledger lists none of them.
-        reasons = {
-            entry.reason.value
-            for keys in LEDGER[family].values()
-            for entry in keys.values()
-            if isinstance(entry, NotImported)
-        }
-        # An entry of one value of a list, such as interfaces[*], names no key.
-        reported = {
-            (entry.kea_path, entry.reason)
-            for entry in entries
-            if entry.outcome == Outcome.NOT_IMPORTED.value
-            and entry.reason in reasons
-            and self._locate(objects, entry.kea_path)[1]
-        }
-        # Kea returns server settings that the configuration does not declare, and the import reads only config-get.
-        expected = {
-            (kea_paths.setting(path, key), entry.reason.value)
-            for table, _kind, path, raw, _parent in objects
-            for key, entry in LEDGER[family].get(table, {}).items()
-            if isinstance(entry, NotImported) and key in raw
-        }
-        self.assertEqual(reported, expected)
 
     def test_the_dhcpv4_coverage_configuration_agrees_with_the_ledger_and_the_probe(self):
         self._assert_coverage(4)
