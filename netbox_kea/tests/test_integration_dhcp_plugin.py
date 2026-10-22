@@ -4189,6 +4189,23 @@ class DhcpPluginReservationFieldsImportTest(TestCase):
             [(self.server.pk, "delegated-prefix")],
         )
 
+    def test_a_global_dhcpv6_reservation_links_its_delegated_and_excluded_prefixes(self):
+        hosts = [
+            {
+                "subnet-id": 0,
+                "duid": "01:02:03:04:01:06",
+                "prefixes": ["2001:db8:1060::/56"],
+                "excluded-prefixes": ["2001:db8:1060:ff::/64"],
+            }
+        ]
+
+        self._import(_widened_conf_v6(), family=6, hosts=hosts)
+
+        row = self.HostReservation.objects.get(duid="01:02:03:04:01:06")
+        self.assertEqual((row.subnet, row.dhcp_server), (None, imported_dhcp_server(self.server, 6)))
+        self.assertEqual(self._prefixes(row.ipv6_prefixes), ["2001:db8:1060::/56"])
+        self.assertEqual(self._prefixes(row.excluded_ipv6_prefixes), ["2001:db8:1060:ff::/64"])
+
     def test_a_reimport_updates_the_same_reservation_through_its_mapping(self):
         from netbox_kea.integrations.dhcp_import_report import Outcome
 

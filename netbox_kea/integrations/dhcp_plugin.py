@@ -2016,7 +2016,7 @@ def _upsert_reservation(
             obj = linked if linked is not None else _find_reservation(_unlinked(base), reservation, mac_obj)
             created = obj is None
             if created:
-                related: dict[str, dict[int, Any]] = {}
+                related: dict[str, dict[int, Any]] = {name: {} for name in _RESERVATION_RELATIONS}
                 before = None
                 obj = HostReservation(name=_reservation_name(scope_name, reservation))
             else:
@@ -2059,15 +2059,15 @@ def _upsert_reservation(
                     # The relation writes below need the state before the run.
                     obj.snapshot()
             # An empty address list clears the previous IPv6 relations.
-            addresses = set(related.get("ipv6_addresses", {}))
+            addresses = set(related["ipv6_addresses"])
             wanted = {address.pk for address in ipv6_ips}
             obj.ipv6_addresses.remove(*(addresses - wanted))
             obj.ipv6_addresses.add(*(wanted - addresses))
-            if classes != set(related.get("client_classes", {})):
+            if classes != set(related["client_classes"]):
                 obj.client_classes.set(classes)
             # Drop obsolete references before the delegated phase evaluates stale links.
             for relation, networks in _reported_prefixes(reservation).items():
-                current = related.get(relation, {})
+                current = related[relation]
                 getattr(obj, relation).remove(
                     *(pk for pk, prefix in current.items() if ipaddress.ip_network(str(prefix)) not in networks)
                 )
@@ -2311,7 +2311,7 @@ def _attach_delegated_prefixes(imported, report: SyncReport, summary: ImportSumm
         reported = _reported_prefixes(reservation)
         if any(report.prefixes[str(prefix)].outcome == "error" for each in reported.values() for prefix in each):
             summary.warn(
-                f"reservation {reservation.identity.value}: delegated Prefix claim failed; "
+                f"reservation {reservation.identity.value}: delegated or excluded Prefix claim failed; "
                 "existing reported Prefix attachments were retained"
             )
             continue

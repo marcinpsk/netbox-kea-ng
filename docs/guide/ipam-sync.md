@@ -63,10 +63,10 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
 6. Links each current DHCPv6 delegated-prefix lease to a Prefix in the server's `sync_vrf` (source `lease-prefix`),
    when lease sync and Prefix sync are both on. The DHCP plugin import owns the delegated prefixes of Reservations,
    and the prefixes that they exclude, through its own source, so neither cleans up the other's links. These
-   Prefixes follow the rules of step 5. A delegated prefix never creates an IP address. The DHCP plugin import also owns the prefix and the excluded prefix of each DHCPv6
-   delegated-prefix Pool (`pd-pools`), through the source `pd-pool` and the marker `[kea-sync: pd pool]`. The job
-   reads no delegated-prefix Pool, so it never drops these links. The import drops them after it read every
-   delegated-prefix Pool, with the rules of step 5
+   Prefixes follow the rules of step 5. A delegated prefix never creates an IP address. The DHCP plugin import also
+   owns the prefix and the excluded prefix of each DHCPv6 delegated-prefix Pool (`pd-pools`), through the source
+   `pd-pool` and the marker `[kea-sync: pd pool]`. The job reads no delegated-prefix Pool, so it never drops these
+   links. The import drops them after it read every delegated-prefix Pool, with the rules of step 5
 7. One server failing does not block others
 8. Summary logged per server and in total
 

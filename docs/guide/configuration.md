@@ -112,9 +112,10 @@ length shorter than the prefix, the Pool is unsupported with the reason of the p
 and the run goes on. A delegated-prefix Pool that you add stays as it is, also when Kea has a Pool with the same
 prefix: the import writes its own.
 
-The import writes each Global and In-Subnet Reservation as a Host Reservation, with its identifier (also a
-`flex-id`), its hostname, its addresses, its client classes, the DHCPv4 boot fields `next-server`, `server-hostname`
-and `boot-file-name`, and its DHCP Options. A boot field that Kea does not set has no value. The delegated prefixes of
+The import writes each Global and In-Subnet Reservation as a Host Reservation. The Host Reservation gets the
+identifier (also a `flex-id`), the hostname, the addresses, the client classes and the DHCP Options of the
+Reservation. A DHCPv4 Reservation also gives its boot fields `next-server`, `server-hostname` and `boot-file-name`.
+A boot field that Kea does not set has no value. The delegated prefixes of
 a DHCPv6 Reservation and the prefix that Kea excludes from each of them (`excluded-prefixes`) are NetBox Prefixes in
 the Server's `sync_vrf`, linked as `ipv6_prefixes` and `excluded_ipv6_prefixes`. The import creates or links both
 under the IPAM source `delegated-prefix` and the marker `[kea-sync: delegated prefix]`. When the claim of one of these
@@ -138,8 +139,8 @@ when the installed DHCP plugin has that capability. Without it, the import does 
 reports the Kea value as unsupported. A Kea value that the DHCP plugin field cannot hold is also unsupported, for
 example a percentage with four decimal places. That field keeps its value. The `client_classes` and
 `evaluate_additional_classes` of a Subnet, a Pool or a delegated-prefix Pool, and the `client_classes` of a Host
-Reservation, refer to the client classes that the same run imported for the DHCP Server. The import reports a class name without such a class and leaves it out. A class
-that Kea defines but that was not imported is skipped. A class that Kea does not define, for example the built-in
+Reservation, refer to the client classes that the same run imported for the DHCP Server. The import reports a class
+name without such a class and leaves it out. A class that Kea defines but that was not imported is skipped. A class that Kea does not define, for example the built-in
 class `KNOWN`, is not imported.
 The DHCP plugin keeps these relations unordered, so Kea's evaluation order of `evaluate-additional-classes` is lost.
 A Subnet's `interface` links the Subnet to the DHCP Server interface of that name. The DHCP Server has that interface
