@@ -13,6 +13,15 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.8.1 (2026-10-22)
+
+### Bug Fixes
+
+- **deps**: Bump the uv group across 1 directory with 2 updates
+  ([#154](https://github.com/marcinpsk/netbox-kea-ng/pull/154),
+  [`540fd92`](https://github.com/marcinpsk/netbox-kea-ng/commit/540fd92933cfa9c1aac92525033e2a23c378d566))
+
+
 ## v3.8.0 (2026-10-20)
 
 ### Bug Fixes
