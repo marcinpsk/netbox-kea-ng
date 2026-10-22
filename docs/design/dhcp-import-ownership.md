@@ -37,7 +37,9 @@ Save DHCP Reservation rows before the delegated-prefix phase creates their Prefi
 Clear dropped Prefix references in those row saves.
 Run the phase with the successfully imported records and mark it incomplete after any skipped or failed row.
 Claim the delegated and excluded Prefixes of the imported Reservations, and attach them in one transaction.
-A failed claim or attachment rolls back only that transaction, and the phase and its cleanup do not run.
+A Prefix whose claim fails counts as one error and makes the phase incomplete, so the phase drops no link.
+The other Reservations still attach their Prefixes.
+An exception from the claim or the attachment rolls back only that transaction, and the phase and its cleanup do not run.
 Run the phase after the stale removal (ADR 0006, marcinpsk/netbox-kea-ng#150).
 Take the phase cutoff before the Reservation network read.
 The import takes a Reservation observation instead of a bare snapshot.
