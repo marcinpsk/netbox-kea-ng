@@ -300,8 +300,11 @@ DHCP Option whose client classes change, so the run removes the old row and crea
 object only after it read every Kea object of that kind. When the Server Configuration or the Reservation Snapshot was
 not read in full, the run keeps the objects of the kinds that the read covers, and one skipped entry for each kind
 tells why and how many objects it kept. The run judges a DHCP Option by the kind of its object. It removes the Option
-only when it read every DHCP Option entry and every object of that kind. So an unread Reservation Snapshot keeps the
-Options of Reservations, and the run can still remove a global, Subnet or Pool Option. The run also keeps an object
+only when it read every object of that kind and every DHCP Option entry of those objects. So an invalid `option-data`
+entry of a Pool keeps only the Options of Pools, and an unread Reservation Snapshot keeps only the Options of
+Reservations. The Options of Reservations come from the Reservation Snapshot, so a Server Configuration that was not read
+in full keeps the global Options and the Options of the configuration objects, but not the Options of Reservations.
+The run also keeps an object
 when its removal would remove a DHCP plugin row that the run keeps, for example a Pool that an operator added to a
 stale Subnet, a Subnet that an operator added to a stale Shared Network, or a mapped DHCP Option that the run cannot
 judge. It also keeps an object when an Option that the run keeps still uses a stale Option Definition, or when a row

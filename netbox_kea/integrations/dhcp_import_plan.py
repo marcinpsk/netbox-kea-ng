@@ -588,7 +588,9 @@ REMOVAL_ORDER: tuple[Kind, ...] = (
     Kind.CLIENT_CLASS,
     Kind.OPTION_DEFINITION,
 )
-_CONFIGURATION_KINDS = frozenset(REMOVAL_ORDER) - {Kind.RESERVATION}
+# The kinds whose objects the configuration read observes. DHCP Options take the gaps of their parent kind.
+_CONFIGURATION_KINDS = frozenset(REMOVAL_ORDER) - {Kind.RESERVATION, Kind.OPTION}
+_CONFIGURATION_GAP = "The Server Configuration was not read in full."
 #: The mapped kinds whose objects assign DHCP Options. The global configuration of a family has no observation.
 _OPTION_PARENTS = (Kind.CLIENT_CLASS, Kind.SHARED_NETWORK, Kind.SUBNET, Kind.POOL, Kind.PD_POOL, Kind.RESERVATION)
 
@@ -631,7 +633,7 @@ def _configuration_gaps(plan: FamilyPlan) -> dict[Kind, list[str]]:
     gaps: dict[Kind, list[str]] = {kind: [] for kind in _CONFIGURATION_KINDS}
     if not plan.configuration_complete:
         for reasons in gaps.values():
-            reasons.append("The Server Configuration was not read in full.")
+            reasons.append(_CONFIGURATION_GAP)
     dropped = Counter(entry.kind for entry in plan.dropped)
     for kind, reasons in gaps.items():
         if dropped[kind]:
@@ -716,13 +718,24 @@ def _option_gaps(
     """Return why the read cannot judge the DHCP Options of each kind of parent.
 
     A read observes the Options of an object only where it observes that object, so the gaps of the Options of one
-    kind of parent are their own gaps, the gaps of that kind, and their Options without a mapping identity. The global
-    configuration has no observation of its own.
+    kind of parent are the gaps of that kind, the option-data entries of that kind that the parse dropped, and their
+    Options without a mapping identity. The global configuration has no observation of its own: its Options take the
+    gap of an unread Server Configuration.
     """
+    dropped = Counter(entry.parent for entry in plan.dropped if entry.kind == Kind.OPTION)
     unkeyed = Counter(each.kind for each in options for key in each.keys if key is None or key.source is None)
     found = {}
     for kind in (Kind.SERVER, *(kind for kind in _OPTION_PARENTS if kind in mapped_kinds(plan.family))):
-        reasons = [*gaps[Kind.OPTION], *gaps.get(kind, [])]
+        if kind == Kind.SERVER:
+            reasons = [] if plan.configuration_complete else [_CONFIGURATION_GAP]
+        else:
+            reasons = list(gaps[kind])
+        if dropped[kind]:
+            owner = "the global configuration" if kind == Kind.SERVER else f"a {KIND_LABELS[kind]}"
+            entries = counted(
+                dropped[kind], f"DHCP Option entry of {owner} that is", f"DHCP Option entries of {owner} that are"
+            )
+            reasons.append(f"The configuration has {entries} not valid.")
         if unkeyed[kind]:
             reasons.append(f"{counted(unkeyed[kind], 'DHCP Option has', 'DHCP Options have')} no mapping identity.")
         found[kind] = tuple(dict.fromkeys(reasons))
@@ -739,11 +752,14 @@ def observations(plan: FamilyPlan) -> dict[Kind, KindObservation]:
     gaps = _configuration_gaps(plan)
     reservation_gap = _reservation_gap(plan.reservations)
     gaps[Kind.RESERVATION] = [reservation_gap] if reservation_gap else []
-    observed = {kind: KindObservation(sources[kind], " ".join(gaps[kind])) for kind in mapped_kinds(plan.family)}
     option_gaps = _option_gaps(plan, gaps, options)
     every_gap = " ".join(dict.fromkeys(reason for reasons in option_gaps.values() for reason in reasons))
-    observed[Kind.OPTION] = KindObservation(sources[Kind.OPTION], every_gap, option_gaps)
-    return observed
+    return {
+        kind: KindObservation(sources[kind], every_gap, option_gaps)
+        if kind == Kind.OPTION
+        else KindObservation(sources[kind], " ".join(gaps[kind]))
+        for kind in mapped_kinds(plan.family)
+    }
 
 
 def kind_path(family: int, kind: Kind) -> str:

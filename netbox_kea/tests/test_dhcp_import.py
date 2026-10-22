@@ -66,7 +66,7 @@ from netbox_kea.reservations import (
 )
 from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot, IncompleteCatalogueSnapshot, SubnetIdentity
 
-from .kea_stub import _subnet_list, _sync_responses, stub_kea
+from .kea_stub import _subnet_list, _sync_responses, queued, stub_kea
 from .test_dhcp_import_ledger import KEYLESS_CAPABILITIES
 from .test_integration_dhcp_plugin import _reservation_snapshot
 from .test_kea_recordings import _RECORDINGS, _recording
@@ -2421,6 +2421,46 @@ class OptionMappingTest(TestCase):
         rows[("dhcpserver", 3, "192.0.2.254", (), True)] -= 1
         self.assertEqual(self._option_rows(), +rows)
 
+    def test_an_invalid_option_of_a_pool_keeps_only_the_options_of_pools(self):
+        self._run()
+        rows = self._option_rows()
+        config = self._without_routers()
+        config["subnet4"][0]["pools"][0]["option-data"] = []
+        config["subnet4"][0]["pools"][1]["option-data"] = [{"code": 3, "data": 1}]
+
+        summary = self._run(config)
+
+        self.assertEqual(
+            self._changes(summary), {(Kind.OPTION, _ROUTERS, Outcome.REMOVED, None): 1, _INCOMPLETE_OPTIONS: 1}
+        )
+        (kept,) = [entry for entry in summary.entries if entry.reason == Reason.INCOMPLETE_OBSERVATION]
+        self.assertEqual(
+            kept.detail,
+            "The configuration has 1 DHCP Option entry of a Pool that is not valid. 1 mapped DHCP Option row was kept.",
+        )
+        rows[("dhcpserver", 3, "192.0.2.254", (), True)] -= 1
+        self.assertEqual(self._option_rows(), +rows)
+
+    def test_the_reservation_observation_judges_the_options_of_reservations_of_a_partly_read_configuration(self):
+        self._run()
+        rows = self._option_rows()
+        config = _recorded_config(4)
+        host = config["shared-networks"][1]["subnet4"][1]["reservations"][0]
+        host["option-data"] = []
+        responses = _sync_responses({4: config}, {4: _recorded_hosts(config, 4)})
+        # The import read finds a Subnet without a CIDR; the read of the Reservations sees the fixed configuration.
+        partial = {**config, "subnet4": [*config["subnet4"], {"id": 43}]}
+        responses["config-get"] = queued(*({"result": 0, "arguments": {"Dhcp4": each}} for each in (partial, config)))
+
+        with stub_kea(responses):
+            ((_family, summary),) = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+
+        assert isinstance(summary, dhcp_plugin.ImportSummary), summary
+        option = f"{kea_paths.reservation(4, 21, 'hw-address', host['hw-address'])}/option-data[code=15]"
+        self.assertEqual(self._changes(summary), {(Kind.OPTION, option, Outcome.REMOVED, None): 1})
+        rows[("hostreservation", 15, "host.example.org", (), True)] -= 1
+        self.assertEqual(self._option_rows(), +rows)
+
     def test_the_option_of_a_pool_that_kea_drops_is_removed_while_the_reservations_are_unread(self):
         self._run()
         rows = self._option_rows()
@@ -2446,7 +2486,8 @@ class OptionMappingTest(TestCase):
         rows = self._option_rows()
         config = _recorded_config(4)
         config["subnet4"][0]["pools"] = [p for p in config["subnet4"][0]["pools"] if p["pool"] != _POOL_10_TEXT]
-        config["option-data"].append({"code": 3, "data": 1})
+        # An invalid Option of another Pool keeps the Options of Pools; the Pools themselves are observed in full.
+        config["subnet4"][0]["pools"][0]["option-data"] = [{"code": 3, "data": 1}]
 
         summary = self._run(config)
 

@@ -236,3 +236,9 @@ class DroppedEntry:
     detail: str
     # The kinds whose entries the dropped entry holds, which the parse did not read.
     hides: tuple[Kind, ...] = ()
+    # The kind of the object that assigns a dropped DHCP Option; None for every other kind.
+    parent: Kind | None = None
+
+    def __post_init__(self) -> None:
+        if (self.kind == Kind.OPTION) != (self.parent is not None):
+            raise ValueError(f"A dropped {self.kind.value} entry names the kind of its parent only for a DHCP Option.")
