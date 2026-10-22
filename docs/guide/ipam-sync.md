@@ -135,7 +135,7 @@ group mapping (`FIND_GROUP_PERMS`) gives does not count.
 
 **Sync to DHCP plugin now** also writes the DHCP plugin objects. It needs add and change on DHCP Server, Option
 Definition, Option, Client Class, Shared Network, Subnet, Pool, Prefix Delegation Pool and Host Reservation. It
-removes Stale DHCP Import Objects (see [Configuration](configuration.md)), so it also needs delete on Option
+removes Stale DHCP Import Objects (see [DHCP Import](dhcp-import.md#removal-of-stale-dhcp-import-objects)), so it also needs delete on Option
 Definition, Option, Client Class, Shared Network, Subnet, Pool, Prefix Delegation Pool and Host Reservation.
 
 ## Upgrade to ownership links
@@ -150,7 +150,7 @@ different VRFs keep the global row and create their own scoped rows. A global-VR
 Adopted objects keep their last link until every potential owner completes all relevant enabled observations.
 Periodic jobs and DHCP imports record completion separately. An incomplete phase or missing family does not
 count as complete. Disabled sources and families do not hold the barrier. A Server whose DHCP plugin integration
-does not run (see [Configuration](configuration.md)) has no DHCP import to wait for. The read-only
+does not run (see [DHCP Import](dhcp-import.md#when-the-import-runs)) has no DHCP import to wait for. The read-only
 `ipam_first_complete_at` field shows when a server first completed its enabled observations. Newly enabled
 sources still require complete observations, even when that timestamp is already set.
 

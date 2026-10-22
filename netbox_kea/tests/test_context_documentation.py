@@ -91,7 +91,7 @@ def test_the_mapping_kind_lists_name_every_kind_of_mapping_kinds():
             terms.values(),
         ),
         ("docs/guide/branching.md", "- dhcp import mappings follow", " - ", terms.values()),
-        ("docs/guide/configuration.md", "keeps a dhcp import mapping from", ".", terms.values()),
+        ("docs/guide/dhcp-import.md", "keeps a dhcp import mapping from", ".", terms.values()),
         ("AGENTS.md", "applies each plan (`dhcp_plugin.apply_plan`).", "that the apply writes", terms.values()),
     )
     missing = {}

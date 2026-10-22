@@ -52,6 +52,7 @@ nav:
   - Configuration: configuration.md
   - Kea Servers: servers.md
   - IPAM Sync: ipam-sync.md
+  - DHCP Import: dhcp-import.md
   - Leases, Reservations and Subnets: leases-reservations.md
   - Event rules and webhooks: event-rules.md
   - DNS: dns.md
