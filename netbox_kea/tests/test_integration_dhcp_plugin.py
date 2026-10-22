@@ -44,6 +44,7 @@ from .utils import (
     imported_dhcp_servers,
     lease_phase,
     linked_dhcp_targets,
+    refused_delete,
     take_reservation_name,
     with_sync_config,
     without_dhcp_plugin,
@@ -3219,6 +3220,95 @@ class DhcpPluginPDPoolImportTest(TestCase):
                 prefix.refresh_from_db()
                 self.assertEqual((prefix.status, prefix.description), ("active", "[kea-sync: pd pool]"))
                 self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=prefix).exists())
+
+    def test_a_pd_pool_whose_removal_fails_keeps_its_prefix_links_and_prefixes_active(self):
+        from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
+        from netbox_kea.models import DhcpImportTrigger, IPAMOwnershipLink
+
+        from .test_views_dhcp_plugin import _sync_responses
+
+        self.server.sync_deprecate_prefixes_and_ranges = True
+        self.server.save()
+        self._run()
+        pd_pool = self._pd_pool()
+        prefixes = (pd_pool.prefix, pd_pool.excluded_prefix)
+        before = list(IPAMOwnershipLink.objects.filter(prefix__in=prefixes).order_by("pk").values())
+        self.conf["subnet6"][0]["pd-pools"] = []
+
+        with refused_delete(self.PDPool, pd_pool.pk), stub_kea(_sync_responses({6: self.conf}, {6: []})):
+            ((_family, summary),) = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+
+        self.assertEqual(summary.errors, 1, summary.warnings)
+        self.assertTrue(self.PDPool.objects.filter(pk=pd_pool.pk).exists())
+        self.assertEqual(list(IPAMOwnershipLink.objects.filter(prefix__in=prefixes).order_by("pk").values()), before)
+        self.assertIn("pd-pool", summary.ownership.incomplete)
+        for prefix in prefixes:
+            prefix.refresh_from_db()
+            self.assertEqual(prefix.status, "active")
+
+        self._run()
+
+        for prefix in prefixes:
+            prefix.refresh_from_db()
+            self.assertEqual(prefix.status, "deprecated")
+
+    def test_a_pd_pool_that_the_run_cannot_judge_keeps_its_prefix_links(self):
+        from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
+        from netbox_kea.models import DhcpImportTrigger, IPAMOwnershipLink, KeaDhcpLink
+
+        from .test_views_dhcp_plugin import _sync_responses
+
+        self.server.sync_deprecate_prefixes_and_ranges = True
+        self.server.save()
+        self._run()
+        pd_pool = self._pd_pool()
+        prefixes = (pd_pool.prefix, pd_pool.excluded_prefix)
+        before = list(IPAMOwnershipLink.objects.filter(prefix__in=prefixes).order_by("pk").values())
+        self.conf["subnet6"][0]["pd-pools"] = []
+        responses = _sync_responses({6: self.conf}, {6: []})
+        read_config = responses["config-get"]
+
+        def replay(body):
+            # Another writer, such as an ADR 0008 replay, confirms the mapping after the read started.
+            KeaDhcpLink.objects.filter(server=self.server, kind="pd_pool").update(last_synced=timezone.now())
+            return read_config(body)
+
+        responses["config-get"] = replay
+        with stub_kea(responses):
+            ((_family, summary),) = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+
+        self.assertTrue(self.PDPool.objects.filter(pk=pd_pool.pk).exists())
+        self.assertEqual(list(IPAMOwnershipLink.objects.filter(prefix__in=prefixes).order_by("pk").values()), before)
+        self.assertIn("pd-pool", summary.ownership.incomplete)
+        for prefix in prefixes:
+            prefix.refresh_from_db()
+            self.assertEqual(prefix.status, "active")
+
+    def test_a_pd_pool_prefix_claim_that_fails_once_is_a_failed_pd_pool(self):
+        from django.db import DatabaseError
+        from django.db.models.signals import pre_save
+        from ipam.models import Prefix
+
+        kea = self.conf["subnet6"][0]["pd-pools"][0]
+        network = f"{kea['prefix']}/{kea['prefix-len']}"
+        refused = []
+
+        def refuse(sender, instance, **kwargs):
+            if str(instance.prefix) == network and not refused:
+                refused.append(instance)
+                raise DatabaseError("the Prefix write fails once")
+
+        pre_save.connect(refuse, sender=Prefix, weak=False)
+        try:
+            summary = self._apply()
+        finally:
+            pre_save.disconnect(refuse, sender=Prefix)
+
+        self.assertEqual(len(refused), 1)
+        self.assertEqual(summary.errors, 1, summary.warnings)
+        self.assertEqual(
+            [entry.reason for entry in summary.entries if entry.kind == Kind.PD_POOL], [Reason.WRITE_FAILED]
+        )
 
     def test_a_pd_pool_link_that_a_claim_confirms_during_the_read_survives_a_read_without_it(self):
         from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import

@@ -36,8 +36,9 @@ All Prefix sources use one object identity lock, regardless of source.
 Save DHCP Reservation rows before the delegated-prefix phase creates their Prefixes.
 Clear dropped Prefix references in those row saves.
 Run the phase with the successfully imported records and mark it incomplete after any skipped or failed row.
-Attach its returned Prefixes after reconciliation, in the same transaction as that phase.
-A failed attachment rolls back the phase and its cleanup.
+Claim the delegated and excluded Prefixes of the imported Reservations, and attach them in one transaction.
+A failed claim or attachment rolls back only that transaction, and the phase and its cleanup do not run.
+Run the phase after the stale removal (ADR 0006, marcinpsk/netbox-kea-ng#150).
 Take the phase cutoff before the Reservation network read.
 The import takes a Reservation observation instead of a bare snapshot.
 Every caller supplies the cutoff taken before its read, including test fixtures.

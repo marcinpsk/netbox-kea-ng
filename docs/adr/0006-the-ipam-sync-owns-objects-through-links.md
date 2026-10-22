@@ -179,8 +179,25 @@ import would link them again. With the source `delegated-prefix`, their cleanup 
 Snapshot, and a failed Reservation read would keep the stale links of the configuration. The `pd-pool` phase takes
 its cutoff before the import reads the configuration, and it is complete only when that read is Complete for
 delegated-prefix Pools. The import runs the phase after it removes the Stale DHCP Import Objects, so the DHCP plugin
-reference guard does not keep a Prefix that only a removed delegated-prefix Pool used. When a Prefix has more than
-one live source, the `subnet` marker wins over `pd pool`, and `pd pool` wins over `delegated prefix`.
+reference guard does not keep a Prefix that only a removed delegated-prefix Pool used. A delegated-prefix Pool that
+Kea no longer reports and that is still in NetBox references its Prefixes, so the phase is then not complete
+(marcinpsk/netbox-kea-ng#150).
+When a Prefix has more than one live source, the `subnet` marker wins over `pd pool`, and `pd pool` wins over
+`delegated prefix`.
+
+### Delegated and excluded prefixes of Reservations
+
+This section was added for marcinpsk/netbox-kea-ng#150. The Reservation step of the DHCP plugin import claims the
+delegated and excluded prefixes of the imported Reservations with `claim`, and attaches them in the same transaction.
+The `delegated-prefix` phase runs after the import removes the Stale DHCP Import Objects, the same as the `pd-pool`
+phase. Before, the phase ran in the Reservation step. A stale Reservation then still referenced its Prefixes, so the
+DHCP plugin reference guard dropped their links without deprecation, and the next step removed the Reservation. The
+Prefix stayed active, with no link that a later run could find. After the removal, the import reads which mapped
+Reservations and delegated-prefix Pools Kea no longer reports but NetBox still holds: a kind whose observation was
+incomplete, a removal that failed or was blocked, a mapping that another writer confirmed after the read started, or
+a plan without a read time. Such a row still references its Prefixes, so the phase of its source is then not complete
+and keeps every link. A Prefix whose claim failed before its attachment counts as one error, also when the later
+claim of the phase succeeds.
 
 ### Interface
 
@@ -194,8 +211,8 @@ claim(server, family, records, force) -> ClaimResult  # one or more records, lin
 The job and the bulk views call `reconcile`. The per-row Sync, lease add and the DHCP plugin import call `claim`.
 The records of one `claim` call count as one phase for the fact comparison, so the DHCP plugin import passes all
 records of one snapshot in one call. The DHCP plugin import also calls `reconcile` for its `delegated-prefix` and
-`pd-pool` phases. The job reads one Lease Snapshot per family, with one cutoff, for its `lease` and `lease-prefix`
-phases.
+`pd-pool` phases, after it removes the Stale DHCP Import Objects. The job reads one Lease Snapshot per family, with
+one cutoff, for its `lease` and `lease-prefix` phases.
 
 Before `claim` and `reconcile` look up or create an object, or change its links, they take a transaction-level
 PostgreSQL advisory lock on the object identity: the VRF and the address, Prefix or IP Range. They decide the
