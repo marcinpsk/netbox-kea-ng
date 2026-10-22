@@ -671,8 +671,10 @@ class DelegatedPrefixClaim:
     prefix: IPNetworkValue
 
 
+_NetworkClaim = SubnetClaim | PoolClaim | PDPoolClaim | DelegatedPrefixClaim
+
 # The source of each network record that a claim takes.
-_NETWORK_CLAIM_SOURCES: dict[type, str] = {
+_NETWORK_CLAIM_SOURCES: dict[type[_NetworkClaim], str] = {
     SubnetClaim: "subnet",
     PoolClaim: "pool",
     PDPoolClaim: PD_POOL,
@@ -860,7 +862,7 @@ def claim(
     if isinstance(records[0], network_claims):
         if catalogue is not None:
             raise unexpected
-        return _claim_network_records(server, family, records, force=force)
+        return _claim_network_records(server, family, cast("Sequence[_NetworkClaim]", records), force=force)
     if any(isinstance(record, network_claims) for record in records):
         raise ValueError("A claim takes one homogeneous source")
     address_records = cast("Sequence[Lease | Reservation]", records)
@@ -1934,7 +1936,7 @@ def _network_result(server: Server, source: str, row: _NetworkReport, outcome: _
 def _claim_network_records(
     server: Server,
     family: Family,
-    records: Sequence[Lease | Reservation | SubnetClaim | PoolClaim | PDPoolClaim | DelegatedPrefixClaim],
+    records: Sequence[_NetworkClaim],
     *,
     force: bool,
 ) -> ClaimResult:
@@ -1943,9 +1945,7 @@ def _claim_network_records(
     source = _NETWORK_CLAIM_SOURCES[expected]
     reports: dict[str, _NetworkReport] = {}
     for record in records:
-        if type(record) is not expected or not isinstance(
-            record, (SubnetClaim, PoolClaim, PDPoolClaim, DelegatedPrefixClaim)
-        ):
+        if type(record) is not expected or not isinstance(record, tuple(_NETWORK_CLAIM_SOURCES)):
             raise ValueError("A claim takes one homogeneous source")
         network = record.prefix if isinstance(record, (PDPoolClaim, DelegatedPrefixClaim)) else record.network
         if network.version != family:
