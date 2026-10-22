@@ -8,7 +8,9 @@ These tests drive the real views with real ObjectPermission rows. Only the Kea t
 
 from __future__ import annotations
 
+import re
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from dcim.models import MACAddress
@@ -22,6 +24,7 @@ from ipam.models import IPAddress, IPRange, Prefix
 from users.models import Group
 
 from netbox_kea import ipam_reconciliation
+from netbox_kea.integrations.dhcp_plugin import import_permissions
 from netbox_kea.ipam_reconciliation import LEASE, RESERVATION
 from netbox_kea.models import Server
 from netbox_kea.sync_permissions import sync_gate
@@ -68,6 +71,7 @@ _PLUGIN_MODELS = (
     "HostReservation",
 )
 _CONSTRAINT = {"vrf__name": "lab"}
+_IPAM_SYNC_GUIDE = Path(__file__).resolve().parents[2] / "docs/guide/ipam-sync.md"
 
 
 def _reason(names: str) -> str:
@@ -583,3 +587,27 @@ class TestDhcpPluginSyncControl(_PermissionTestBase):
         response = self._get()
         self.assertContains(response, reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk]))
         self.assertNotContains(response, "Manual Sync needs")
+
+
+class TestDhcpPluginPermissionGuide(TestCase):
+    """The IPAM sync guide names each DHCP plugin permission that the import needs."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed("netbox_dhcp"):
+            raise unittest.SkipTest("netbox_dhcp not installed")
+        super().setUpClass()
+
+    def test_the_guide_names_each_dhcp_plugin_model_per_action(self):
+        needed = {action: set() for action in ("add", "change", "delete")}
+        for permission in import_permissions(_make_db_server()):
+            app_label, codename = permission.split(".")
+            if app_label == "netbox_dhcp":
+                action, model = codename.split("_", 1)
+                needed[action].add(str(apps.get_model(app_label, model)._meta.verbose_name))
+        self.assertEqual(needed["add"], needed["change"])
+        text = " ".join(_IPAM_SYNC_GUIDE.read_text(encoding="utf-8").split())
+        for actions, models in (("add and change", needed["add"]), ("delete", needed["delete"])):
+            listed = re.search(rf"needs {actions} on ([^.]+)\.", text)
+            self.assertIsNotNone(listed, actions)
+            self.assertEqual(set(re.split(r", | and ", listed.group(1))), models, actions)
