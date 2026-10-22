@@ -599,7 +599,7 @@ _IDENTIFIER_CELL = (
     "{% endif %}"
     "{% if record.user_context %}"
     '<details class="small"><summary class="text-muted">{{ record.user_context_summary }}</summary>'
-    '<pre class="small mb-0 text-break text-wrap">{{ record.user_context }}</pre></details>'
+    '<code class="d-block text-break">{{ record.user_context }}</code></details>'
     "{% endif %}"
 )
 

@@ -1258,7 +1258,7 @@ class TestWidenedReservationPage(_ViewTestBase):
         self.assertNotIn("User Context", row)
         details = row["Identifier"].find("details")
         self.assertEqual(details.find("summary").get_text(" ", strip=True), summary)
-        self.assertEqual(json.loads(details.find("pre").get_text()), value)
+        self.assertEqual(json.loads(details.find("code").get_text()), value)
 
     def test_the_summary_counts_the_keys_or_items_of_the_user_context(self):
         for context, summary in (

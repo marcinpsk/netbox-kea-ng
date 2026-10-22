@@ -227,8 +227,8 @@ def _reservation_table_record(reservation: Reservation, server: Server) -> dict[
         "next_server": "" if reservation.next_server is None else str(reservation.next_server),
         "server_hostname": reservation.server_hostname,
         "boot_file_name": reservation.boot_file_name,
-        # Read-only and opaque, shown as Kea holds it.
-        "user_context": "" if reservation.user_context is None else json.dumps(reservation.user_context, indent=2),
+        # Read-only and opaque, shown as Kea holds it; compact, so that it wraps inside the Identifier cell.
+        "user_context": "" if reservation.user_context is None else json.dumps(reservation.user_context),
         "user_context_summary": _user_context_summary(reservation.user_context),
         "reservation": reservation,
         "server_name": server.name,
