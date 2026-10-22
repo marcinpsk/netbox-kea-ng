@@ -2120,7 +2120,7 @@ class CoverageImportTest(TestCase):
         from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
         from netbox_kea.models import DhcpImportTrigger
 
-        from .test_views_dhcp_plugin import _sync_responses
+        from .kea_stub import _sync_responses
 
         responses = _sync_responses({family: config}, {family: _recorded_hosts(config, family)})
         responses[f"subnet{family}-list"] = subnets

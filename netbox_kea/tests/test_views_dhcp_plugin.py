@@ -28,54 +28,10 @@ from netbox_kea.models import DhcpIntegrationConfig, Server
 from netbox_kea.views import dhcp_plugin_sync as dps
 from netbox_kea.views.notices import HEADLINES, Notice
 
-from .kea_stub import READ_FAILURES, _res_page, _subnet_list, stub_kea
+from .kea_stub import READ_FAILURES, _request_version, _sync_responses, stub_kea
 from .utils import _make_db_server, with_dhcp_integration_config, without_dhcp_plugin
 
 DHCP_PLUGIN = "netbox_dhcp"
-
-
-def _request_version(body: dict) -> int:
-    """Return the DHCP family one stubbed request targets, from its ``service``."""
-    service = body.get("service")
-    if service == ["dhcp4"]:
-        return 4
-    if service == ["dhcp6"]:
-        return 6
-    raise AssertionError(f"Expected exactly one DHCP service, got {service!r}")
-
-
-def _sync_responses(
-    conf_by_version: dict[int, dict],
-    hosts_by_version: dict[int, list] | None = None,
-    *,
-    reservations_available: bool = True,
-) -> dict:
-    """Kea responses for the DHCP-plugin sync path, answered per requested family.
-
-    Registered by command name for :func:`stub_kea`, so the real ``KeaClient`` builds
-    the requests and validates every response envelope. ``config-get`` and
-    ``reservation-get-page`` are callables because one stub must answer both families,
-    which a Control Agent distinguishes by ``service``.
-    """
-    hosts = hosts_by_version or {}
-
-    def config_get(body):
-        version = _request_version(body)
-        return {"result": 0, "arguments": {f"Dhcp{version}": conf_by_version.get(version, {})}}
-
-    def reservation_get_page(body):
-        if not reservations_available:
-            # host_cmds not loaded: the real client turns result 2 into a KeaException.
-            return {"result": 2, "text": "command not supported"}
-        return _res_page(hosts.get(_request_version(body), []))
-
-    responses: dict = {"config-get": config_get, "reservation-get-page": reservation_get_page}
-    for version, conf in conf_by_version.items():
-        subnets = list(conf.get(f"subnet{version}", []))
-        for shared_network in conf.get("shared-networks", []):
-            subnets.extend(shared_network.get(f"subnet{version}", []))
-        responses[f"subnet{version}-list"] = _subnet_list(version, subnets)
-    return responses
 
 
 class SyncResponseRoutingTest(SimpleTestCase):

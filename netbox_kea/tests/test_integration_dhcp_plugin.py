@@ -3031,7 +3031,7 @@ class DhcpPluginPDPoolImportTest(TestCase):
         from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
         from netbox_kea.models import DhcpImportTrigger
 
-        from .test_views_dhcp_plugin import _sync_responses
+        from .kea_stub import _sync_responses
 
         with stub_kea(_sync_responses({6: self.conf}, {6: []})):
             ((_family, summary),) = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
@@ -3225,7 +3225,7 @@ class DhcpPluginPDPoolImportTest(TestCase):
         from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
         from netbox_kea.models import DhcpImportTrigger, IPAMOwnershipLink
 
-        from .test_views_dhcp_plugin import _sync_responses
+        from .kea_stub import _sync_responses
 
         self.server.sync_deprecate_prefixes_and_ranges = True
         self.server.save()
@@ -3256,7 +3256,7 @@ class DhcpPluginPDPoolImportTest(TestCase):
         from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
         from netbox_kea.models import DhcpImportTrigger, IPAMOwnershipLink, KeaDhcpLink
 
-        from .test_views_dhcp_plugin import _sync_responses
+        from .kea_stub import _sync_responses
 
         self.server.sync_deprecate_prefixes_and_ranges = True
         self.server.save()
@@ -3315,7 +3315,7 @@ class DhcpPluginPDPoolImportTest(TestCase):
         from netbox_kea.ipam_reconciliation import PDPoolClaim, claim
         from netbox_kea.models import DhcpImportTrigger, IPAMOwnershipLink
 
-        from .test_views_dhcp_plugin import _sync_responses
+        from .kea_stub import _sync_responses
 
         self.server.sync_deprecate_prefixes_and_ranges = True
         self.server.save()

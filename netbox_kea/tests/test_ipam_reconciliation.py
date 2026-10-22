@@ -2125,7 +2125,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         from django.apps import apps
 
         from netbox_kea.models import DhcpImportTrigger
-        from netbox_kea.tests.test_views_dhcp_plugin import _sync_responses
+        from netbox_kea.tests.kea_stub import _sync_responses
         from netbox_kea.views.dhcp_plugin_sync import run_dhcp_plugin_import
 
         if not apps.is_installed("netbox_dhcp"):

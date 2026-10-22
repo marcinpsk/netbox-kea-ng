@@ -39,8 +39,7 @@ from netbox_kea.integrations.dhcp_import_report import (
 )
 from netbox_kea.models import DhcpImportEntry, DhcpImportRun, DhcpImportTrigger, Server
 
-from .kea_stub import _subnet_list, stub_kea
-from .test_views_dhcp_plugin import _sync_responses
+from .kea_stub import _subnet_list, _sync_responses, stub_kea
 from .utils import DISPATCHED_EVENTS, _grant, _make_db_server
 
 DHCP_PLUGIN = "netbox_dhcp"
