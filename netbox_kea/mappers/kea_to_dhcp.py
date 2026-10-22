@@ -187,6 +187,11 @@ class SharedNetworkIntent:
     family: int
     options: tuple[DHCPOption, ...]
     settings: dict = field(default_factory=dict)
+    # A class list is None when it is not valid, so the import keeps the class links.
+    client_classes: tuple[str, ...] | None = ()
+    evaluate_additional_classes: tuple[str, ...] | None = ()
+    # None: the Shared Network declares no user-context.
+    user_context: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -548,6 +553,11 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
                 family=family,
                 options=_options(raw_net.get("option-data"), net_path, dropped),
                 settings=_settings(raw_net),
+                client_classes=_class_list(raw_net, kea_paths.CLIENT_CLASSES, Kind.SHARED_NETWORK, net_path, dropped),
+                evaluate_additional_classes=_class_list(
+                    raw_net, kea_paths.EVALUATE_ADDITIONAL_CLASSES, Kind.SHARED_NETWORK, net_path, dropped
+                ),
+                user_context=raw_net.get(kea_paths.USER_CONTEXT),
             )
         )
         for index, raw in enumerate(_config_collection(raw_net, subnet_key)):
