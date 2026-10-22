@@ -1997,10 +1997,12 @@ def upsert_pools(
         except Exception as exc:  # noqa: BLE001 — one bad pool must not abort the import
             summary.record(write_failed(intent.family, Kind.POOL, path))
             summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: {exc}")
+            _skip_options(summary, intent.family, path, pool_intent.options)
             continue
         if range_obj is None:
             summary.record(_unusable_pool(intent.family, path, planned_pool.key, result))
             summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: unusable range, skipped")
+            _skip_options(summary, intent.family, path, pool_intent.options)
             continue
         options = planned_options(planned_pool, intent.family, references.definitions.declared)
         if pool_obj is None:

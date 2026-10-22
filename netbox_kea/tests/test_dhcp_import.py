@@ -2842,6 +2842,65 @@ def _without_option_codes(value) -> None:
             _without_option_codes(child)
 
 
+class PoolNotImportedOptionsTest(TestCase):
+    """A Pool that the run does not write reports each of its DHCP Options as skipped, as other parents do."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def test_a_pool_whose_write_fails_or_whose_range_is_unusable_skips_its_options(self):
+        from ipam.models import IPRange
+        from netaddr import IPNetwork
+
+        # Two IP Ranges of one range: the IPAM claim of the first Pool fails, so its write fails.
+        for mask in (24, 25):
+            IPRange.objects.create(
+                start_address=IPNetwork(f"10.96.0.10/{mask}"), end_address=IPNetwork(f"10.96.0.20/{mask}")
+            )
+        routers = [{"code": 3, "data": "10.96.0.1"}]
+        config = {
+            "subnet4": [
+                {
+                    "id": 1,
+                    "subnet": "10.96.0.0/24",
+                    "pools": [
+                        {"pool": "10.96.0.10-10.96.0.20", "option-data": routers},
+                        # Outside the Subnet: the range is not usable.
+                        {"pool": "10.96.1.10-10.96.1.20", "option-data": routers},
+                    ],
+                }
+            ]
+        }
+        server = _make_db_server(name="pool-options", dhcp6=False, sync_dhcp_plugin_enabled=True)
+
+        with stub_kea(_sync_responses({4: config})):
+            ((_family, summary),) = run_dhcp_plugin_import(server, DhcpImportTrigger.MANUAL)
+
+        assert isinstance(summary, dhcp_plugin.ImportSummary), summary
+        failed, unusable = (
+            f"Dhcp4/subnet4[id=1]/pools[pool={text}]" for text in ("10.96.0.10-10.96.0.20", "10.96.1.10-10.96.1.20")
+        )
+        skipped = (Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED, None)
+        self.assertEqual(
+            Counter(
+                (entry.family, entry.kind, entry.path, entry.outcome, entry.reason, entry.capability)
+                for entry in summary.entries
+                if entry.kind in (Kind.POOL, Kind.OPTION)
+            ),
+            Counter(
+                {
+                    (4, Kind.POOL, failed, Outcome.SKIPPED, Reason.WRITE_FAILED, None): 1,
+                    (4, Kind.OPTION, f"{failed}/option-data[code=3]", *skipped): 1,
+                    (4, Kind.POOL, unusable, Outcome.NOT_IMPORTED, Reason.INVALID_KEA_DATA, None): 1,
+                    (4, Kind.OPTION, f"{unusable}/option-data[code=3]", *skipped): 1,
+                }
+            ),
+        )
+
+
 # A Kea object of a config-get reply: its ledger table, kind, Kea path, keys, and the keys of its parent.
 _KeaObject = tuple[str, Kind, str, dict, dict]
 
