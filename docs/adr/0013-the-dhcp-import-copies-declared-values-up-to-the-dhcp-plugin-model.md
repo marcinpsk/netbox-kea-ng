@@ -43,9 +43,9 @@ Prefix in Kea while the plugin requires one. A reverse direction from the plugin
   the Shared Network of a member Subnet, else the global configuration.
 - **Shared Networks** are imported with their Declared Values, DHCP Options and Subnet membership, and never with a
   Prefix (operator decision of 2026-10-22, #107). While the plugin requires a Prefix, every Shared Network fails as
-  unsupported; it imports with no Prefix once the plugin has that capability. Its member Subnets still import without
-  membership. The values those Subnets inherit from it are reported, never copied
-  onto the Subnets.
+  unsupported, and its member Subnets import on the DHCPServer without membership. The values those Subnets inherit
+  from it are reported, never copied onto the Subnets. Once the plugin has that capability, the Shared Network imports
+  with no Prefix and holds its member Subnets.
 - **Identity.** Every top-level object has a DHCP Import Mapping, which is the identity a reverse direction will use:
   - the global configuration of each family, one DHCPServer per Server and family
   - Shared Network, by name
