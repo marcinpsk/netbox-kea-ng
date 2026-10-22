@@ -1218,14 +1218,11 @@ def _client_class_fields(
     return fields
 
 
-# The DHCP plugin model of each kind that keeps its Kea name.
-_NAMED_MODELS = {Kind.CLIENT_CLASS: "ClientClass", Kind.SHARED_NETWORK: "SharedNetwork"}
-
-
 def _name_taken(kind: Kind, name: str, obj, dhcp_server, capabilities: PluginCapabilities) -> bool:
     """Return whether another row of *kind* holds *name* in the scope where the DHCP plugin keeps the names unique."""
-    # The base manager: the default manager of a Shared Network joins its Prefix.
-    others = _model(_NAMED_MODELS[kind])._base_manager.filter(name=name)
+    from ..models import MAPPING_KINDS
+
+    others = _model(MAPPING_KINDS[kind][0]).objects.filter(name=name)
     if capabilities.has(Capability.NAME_PER_SERVER):
         others = others.filter(dhcp_server=dhcp_server)
     return (others.exclude(pk=obj.pk) if obj is not None else others).exists()
