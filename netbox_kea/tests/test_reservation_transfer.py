@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 import json
+from dataclasses import replace
 from ipaddress import IPv6Address, ip_address, ip_network
 from unittest.mock import patch
 
@@ -816,6 +817,25 @@ class TestWidenedTransferDocument(SimpleTestCase):
                 self.assertEqual(created, records)
                 # The user context is read-only: a document carries it, and a create does not set it.
                 self.assertEqual([record.user_context for record in created], [None, None])
+
+    def test_class_names_with_a_comma_or_spaces_keep_their_exact_text(self):
+        # A document holds a JSON list, so it carries each name that Kea keeps, also one that a form field cannot show.
+        record = replace(
+            _widened_records()[0],
+            client_classes=("a,b", "c"),
+            options=(DHCPOption(15, "domain-name", "dhcp4", "lab.example.org", True, False, False, ("a,b", " c ")),),
+        )
+        exported = json.loads(export_reservation_document((record,), "json"))["reservations"][0]
+        self.assertEqual(
+            (exported["client_classes"], exported["options"][0]["client_classes"]), (["a,b", "c"], ["a,b", " c "])
+        )
+        for format_name in ("yaml", "json"):
+            parsed = parse_reservation_document(export_reservation_document((record,), format_name), format_name)
+            with self.subTest(format=format_name):
+                created = resolve_import_proposal(parsed.proposals[0], record.scope.subnet)
+                self.assertEqual(
+                    (created.client_classes, created.options[0].client_classes), (("a,b", "c"), ("a,b", " c "))
+                )
 
     def test_a_document_without_the_widened_fields_still_validates(self):
         for family in (4, 6):

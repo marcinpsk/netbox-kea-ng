@@ -2531,8 +2531,7 @@ class TestWidenedReservationForms(_ViewTestBase):
                 {
                     "ip_address": "198.18.0.20",
                     "identifier": "aa:bb:cc:dd:ee:ff",
-                    # Kea drops a repeated class name of a host, and so does the field.
-                    "client_classes": "voip, voip, boot",
+                    "client_classes": "voip, boot",
                     "next_server": "192.0.2.5",
                     "server_hostname": "boot.example.org",
                     "boot_file_name": "host.efi",
@@ -2573,6 +2572,7 @@ class TestWidenedReservationForms(_ViewTestBase):
             (4, {"next_server": "2001:db8::1"}, "next_server"),
             (4, {"server_hostname": "s" * 64}, "server_hostname"),
             (4, {"boot_file_name": "b" * 128}, "boot_file_name"),
+            (4, {"client_classes": "voip, voip"}, "client_classes"),
             (6, {"prefixes": "2001:db8:500::/56", "excluded_prefixes": "2001:db8:500:ff::1/64"}, "excluded_prefixes"),
             (6, {"prefixes": "2001:db8:600::/56", "excluded_prefixes": "2001:db8:500:ff::/64"}, "excluded_prefixes"),
             (6, {"excluded_prefixes": "2001:db8:500:ff::/64"}, "excluded_prefixes"),

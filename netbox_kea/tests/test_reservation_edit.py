@@ -950,8 +950,55 @@ class WidenedReservationEditTests(TestCase):
             [classed, {"name": "domain-name", "data": "voip.example.org", "client-classes": ["voip"]}],
         )
 
-    def test_a_class_field_drops_empty_and_repeated_names_like_kea(self):
-        self.assertEqual(reservation_edit.class_names(" voip, ,printers, voip "), ("voip", "printers"))
+    def test_a_class_field_drops_empty_names_and_keeps_repeated_ones_for_the_check(self):
+        self.assertEqual(reservation_edit.class_names(" voip, ,printers, voip "), ("voip", "printers", "voip"))
+
+    def test_a_changed_class_field_refuses_a_repeated_name(self):
+        raw = {**_raw(), "client-classes": ["voip"]}
+        current, _state = self._shown(4, raw)
+        with stub_kea(_responses(raw=raw)) as kea, self.assertRaises(reservation_edit.EditConflict) as raised:
+            reservation_edit.save_edit(
+                self.server,
+                4,
+                20,
+                _IDENTITY,
+                self._shown(4, raw)[1].initial["managed_fingerprint"],
+                self._values(current, client_classes=reservation_edit.class_names("voip, printers, voip")),
+            )
+        self.assertEqual(raised.exception.field, "client_classes")
+        self.assertIn("once", raised.exception.message)
+        self.assertNotIn("reservation-update", kea.commands())
+
+    def test_a_class_field_cannot_change_live_names_that_its_text_cannot_show(self):
+        # A comma in a name makes the text ambiguous: an added or removed name would split or keep another one.
+        option = {"name": "domain-name", "data": "lab.example.org", "client-classes": ["a,b"]}
+        for live, entered in ((["a,b"], "a,b, new"), (["x,y", "x"], "x,y")):
+            raw = {**_raw(), "client-classes": live, "option-data": [option]}
+            current, state = self._shown(4, raw)
+            row = reservation_edit.OptionRow(
+                option["name"],
+                option["data"],
+                original_option=current.options[0],
+                client_classes=reservation_edit.class_names(state.options_initial[0]["client_classes"]),
+            )
+            changes = (
+                ("client_classes", {"client_classes": reservation_edit.class_names(entered), "option_rows": (row,)}),
+                (None, {"option_rows": (replace(row, client_classes=reservation_edit.class_names("a,b, new")),)}),
+            )
+            for field, change in changes:
+                with self.subTest(live=live, field=field), stub_kea(_responses(raw=raw)) as kea:
+                    with self.assertRaises(reservation_edit.EditConflict) as raised:
+                        reservation_edit.save_edit(
+                            self.server,
+                            4,
+                            20,
+                            _IDENTITY,
+                            state.initial["managed_fingerprint"],
+                            self._values(current, **change),
+                        )
+                    self.assertEqual(raised.exception.field, field)
+                    self.assertIn("comma", raised.exception.message)
+                    self.assertNotIn("reservation-update", kea.commands())
 
     def test_an_unchanged_class_field_keeps_live_names_that_the_text_cannot_show(self):
         # Kea keeps a comma in a class name, and untrimmed names of an option. "x" repeats a part of "x,y".

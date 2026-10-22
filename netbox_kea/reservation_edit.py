@@ -134,13 +134,28 @@ def class_text(classes: tuple[str, ...]) -> str:
 
 
 def class_names(text: str) -> tuple[str, ...]:
-    """Return the names of a client class field without the empty and the repeated ones, as Kea stores a host's."""
-    return tuple(dict.fromkeys(name for name in (part.strip() for part in text.split(",")) if name))
+    """Return the names of a client class field, without the empty ones."""
+    return tuple(name for name in (part.strip() for part in text.split(",")) if name)
 
 
-def _shown_classes(live: tuple[str, ...], submitted: tuple[str, ...]) -> tuple[str, ...]:
-    """Keep the live names while the field holds the text that showed them, also for a name with a comma."""
-    return live if submitted == class_names(class_text(live)) else submitted
+def _class_change(live: tuple[str, ...], submitted: tuple[str, ...], field: str | None, owner: str) -> tuple[str, ...]:
+    """Return the client classes that a class field sets: the live ones while it holds the text that showed them.
+
+    Raises:
+        EditConflict: If the field changes and the text cannot show a live name exactly, or names a class twice.
+
+    """
+    if submitted == class_names(class_text(live)):
+        return live
+    if any("," in name or name != name.strip() for name in live):
+        raise EditConflict(
+            f"A client class name of {owner} has a comma or surrounding spaces, so this field cannot change the "
+            "classes without changing that name. Change them in Kea.",
+            field=field,
+        )
+    if len(set(submitted)) != len(submitted):
+        raise EditConflict(f"Enter each client class name of {owner} once.", field=field)
+    return submitted
 
 
 def excluded_prefix_pairs(
@@ -247,11 +262,13 @@ def _option_edit(rows: tuple[OptionRow, ...], snapshot: tuple[DHCPOption, ...]) 
         elif seen is None:
             if not row.name:
                 continue
+            classes = _class_change((), row.client_classes, None, f"DHCP Option '{row.name}'")
             intended = DHCPOption(
-                None, row.name, None, row.data, None, True if row.always_send else None, None, row.client_classes
+                None, row.name, None, row.data, None, True if row.always_send else None, None, classes
             )
         else:
-            classes = _shown_classes(seen.client_classes, row.client_classes)
+            label = f"DHCP Option '{row.name or seen.name or seen.code}'"
+            classes = _class_change(seen.client_classes, row.client_classes, None, label)
             intended = replace(seen, name=row.name or None, data=row.data, client_classes=classes)
             if bool(seen.always_send) != row.always_send:
                 intended = replace(intended, always_send=row.always_send)
@@ -414,6 +431,7 @@ def build_add(
         raise EditConflict(exc.message) from exc
     hostname = _stored_for(catalogue, subnet, values.hostname, values.addresses)
     excluded = excluded_prefix_pairs(values.delegated_prefixes, values.excluded_prefixes)
+    classes = _class_change((), values.client_classes, "client_classes", "this Reservation")
     if family == 4:
         return IPv4Reservation(
             scope=scope,
@@ -421,7 +439,7 @@ def build_add(
             addresses=tuple(ipaddress.IPv4Address(address) for address in values.addresses),
             hostname=hostname,
             options=options,
-            client_classes=values.client_classes,
+            client_classes=classes,
             next_server=values.next_server,
             server_hostname=values.server_hostname,
             boot_file_name=values.boot_file_name,
@@ -433,7 +451,7 @@ def build_add(
         delegated_prefixes=values.delegated_prefixes,
         hostname=hostname,
         options=options,
-        client_classes=values.client_classes,
+        client_classes=classes,
         excluded_prefixes=excluded,
     )
 
@@ -463,7 +481,9 @@ def build_edit(
         hostname=_hostname_change(current, values.hostname, values.addresses, shown.qualifying_suffix, catalogue),
         options=options,
         client_classes=_change(
-            current.client_classes, _shown_classes(current.client_classes, values.client_classes), ()
+            current.client_classes,
+            _class_change(current.client_classes, values.client_classes, "client_classes", "this Reservation"),
+            (),
         ),
         next_server=_change(current.next_server, values.next_server, None),
         server_hostname=_change(current.server_hostname, values.server_hostname, ""),

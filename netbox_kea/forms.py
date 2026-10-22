@@ -865,7 +865,7 @@ def _client_classes_field(help_text: str) -> forms.CharField:
 
 _RESERVATION_CLASSES_HELP = (
     "Comma-separated client classes that Kea assigns to this client, for example <code>voip, printers</code>."
-    " Leave blank for none."
+    " Leave blank for none. A class name with a comma can only change in Kea."
 )
 
 
@@ -1754,7 +1754,9 @@ SubnetOptionsFormSet = forms.formset_factory(ConfigurationOptionsForm, extra=1, 
 class ReservationOptionsForm(ConfigurationOptionsForm):
     """One Reservation option row with its complete shown DHCP Option and its client classes."""
 
-    client_classes = _client_classes_field("Comma-separated client classes that receive this option.")
+    client_classes = _client_classes_field(
+        "Comma-separated client classes that receive this option. A class name with a comma can only change in Kea."
+    )
 
 
 ReservationOptionsFormSet = forms.formset_factory(ReservationOptionsForm, extra=1, can_delete=True)
