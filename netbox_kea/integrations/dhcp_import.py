@@ -99,11 +99,14 @@ def _fetch_config_intent(server: Server, version: Family) -> ServerConfigIntent 
     typed Snapshot read. Returns the :class:`ServerConfigIntent`, the Notice of a
     read that failed, or ``None`` when the configuration could not be parsed.
     """
+    from ..models import next_confirmation_number
+
     # Imported here: the views package imports this module.
     from ..views.notices import failed_load
 
-    # Taken before config-get: a mapping confirmed after it belongs to a newer read (remove_stale_objects).
+    # Taken before config-get: a mapping or IPAM link confirmed after them belongs to a newer read.
     started = timezone.now()
+    cutoff = next_confirmation_number()
     read = server_configuration.for_import(server, version)
     if isinstance(read, ServerConfigurationSnapshot):
         logger.warning("DHCP-plugin sync: config-get failed for %s (v%s)", server.name, version)
@@ -117,6 +120,7 @@ def _fetch_config_intent(server: Server, version: Family) -> ServerConfigIntent 
         return None
     intent.configuration_complete = not read.snapshot.subnet_diagnostics
     intent.read_started = started
+    intent.ipam_cutoff = cutoff
     intent.host_reservation_identifiers = read.snapshot.host_reservation_identifiers
     return intent
 

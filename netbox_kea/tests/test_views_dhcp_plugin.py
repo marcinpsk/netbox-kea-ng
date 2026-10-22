@@ -281,6 +281,18 @@ class SyncNowEndToEndTest(TestCase):
         ct = ContentType.objects.get_for_model(Subnet)
         self.assertTrue(Option.objects.filter(assigned_object_type=ct, assigned_object_id=subnet.pk).exists())
 
+    def test_post_reports_the_delegated_prefix_pools_that_it_created(self):
+        self.server.dhcp4, self.server.dhcp6 = False, True
+        self.server.save()
+        pd_pool = {"prefix": "2001:db8:100::", "prefix-len": 48, "delegated-len": 56}
+        conf = {6: {"subnet6": [{"id": 1, "subnet": "2001:db8:1::/64", "pd-pools": [pd_pool]}]}}
+
+        with stub_kea(_sync_responses(conf)):
+            resp = self.client.post(self.url, follow=True)
+
+        self.assertContains(resp, "1 delegated-prefix Pool(s) created")
+        self.assertTrue(apps.get_model(DHCP_PLUGIN, "PDPool").objects.filter(delegated_length=56).exists())
+
     def test_post_reports_the_stale_objects_that_it_removed(self):
         subnet = {"id": 2, "subnet": "10.87.0.0/24", "pools": [{"pool": "10.87.0.10-10.87.0.99"}]}
         conf = {4: {"subnet4": [{"id": 1, "subnet": "10.88.0.0/24"}, subnet]}}
@@ -682,6 +694,28 @@ class DriftPartialTest(TestCase):
         )
         self.assertEqual(page.select_one("a.drift-latest-run")["href"], "#dhcp-import-latest-run")
         self.assertIn("Unknown: Kea could not be read", " ".join(page.select_one(".drift-legend").get_text().split()))
+
+    def test_a_dhcpv6_card_counts_its_delegated_prefix_pools(self):
+        server = _make_db_server(
+            name=f"kea-drift6-{timezone.now().timestamp()}", sync_dhcp_plugin_enabled=True, dhcp4=False, dhcp6=True
+        )
+        mapped = {"prefix": "2001:db8:100::", "prefix-len": 48, "delegated-len": 56}
+        conf = {"subnet6": [{"id": 1, "subnet": "2001:db8:1::/64", "pd-pools": [mapped]}]}
+        with stub_kea(_sync_responses({6: conf}, {6: []})):
+            self.client.post(reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[server.pk]))
+        conf["subnet6"][0]["pd-pools"].append({"prefix": "2001:db8:200::", "prefix-len": 48, "delegated-len": 64})
+
+        with stub_kea(_sync_responses({6: conf}, {6: []})):
+            resp = self.client.get(
+                reverse("plugins:netbox_kea:server_dhcp_plugin_drift", args=[server.pk]), HTTP_HX_REQUEST="true"
+            )
+
+        page = BeautifulSoup(resp.content, "html.parser")
+        self.assertEqual(self._counts(page)["pd_pool"], (1, 1, 0, 0))
+        self.assertEqual(
+            self._objects(page),
+            {("missing", "pd_pool", "Dhcp6/subnet6[id=1]/pd-pools[prefix=2001:db8:200::/48,delegated-len=64]")},
+        )
 
     def test_an_incomplete_observation_labels_its_unobserved_rows_not_seen_never_stale(self):
         self._import()

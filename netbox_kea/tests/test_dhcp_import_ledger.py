@@ -34,7 +34,7 @@ from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
 # The open tickets of #89 that map a key.
-_PARITY_TICKETS = frozenset({97, 98, 99, 101, 104, 107})
+_PARITY_TICKETS = frozenset({97, 98, 99, 104, 107})
 # Collections of child objects: an empty one in config-get is a Kea default, never a merge.
 _CHILD_COLLECTIONS = frozenset({"option-data", OPTION_DEF, "pools", "pd-pools", "reservations", "subnet4", "subnet6"})
 
@@ -246,6 +246,28 @@ class LedgerEntriesTest(SimpleTestCase):
             if ticket is not None:
                 with self.subTest(family=family, table=table, key=key):
                     self.assertIn(ticket, _PARITY_TICKETS)
+
+    def test_the_dhcpv6_pd_pool_keys_are_mapped_to_the_plugin_pd_pool(self):
+        pd_pool = LEDGER[6]["pd-pools"]
+
+        self.assertEqual(LEDGER[6]["subnet6"]["pd-pools"], Mapped("PDPool"))
+        self.assertEqual([key for key, entry in pd_pool.items() if isinstance(entry, Pending)], [])
+        self.assertEqual(
+            {key: entry.target for key, entry in pd_pool.items() if isinstance(entry, Mapped)},
+            {
+                "prefix": "PDPool.prefix",
+                "prefix-len": "PDPool.prefix",
+                "delegated-len": "PDPool.delegated_length",
+                "excluded-prefix": "PDPool.excluded_prefix",
+                "excluded-prefix-len": "PDPool.excluded_prefix",
+                "pool-id": "PDPool.pool_id",
+                "client-classes": "PDPool.client_classes",
+                "evaluate-additional-classes": "PDPool.evaluate_additional_classes",
+                "option-data": "Option",
+                "user-context": "PDPool.user_context",
+            },
+        )
+        self.assertEqual(pd_pool["user-context"].capabilities, (Capability.USER_CONTEXT,))
 
     def test_a_not_imported_entry_refuses_a_reason_that_is_not_for_a_key(self):
         with self.assertRaises(ValueError):

@@ -640,6 +640,7 @@ MAPPING_KINDS: dict[Kind, tuple[str, models.Q]] = {
     Kind.SHARED_NETWORK: ("SharedNetwork", _GLOBAL_SOURCE),
     Kind.SUBNET: ("Subnet", _SUBNET_SOURCE),
     Kind.POOL: ("Pool", _IN_SUBNET_SOURCE),
+    Kind.PD_POOL: ("PDPool", _IN_SUBNET_SOURCE),
     # A Reservation Identity holds its Reservation Scope: a Kea subnet ID, or none for Global.
     Kind.RESERVATION: ("HostReservation", _IN_SUBNET_SOURCE | _GLOBAL_SOURCE),
     Kind.CLIENT_CLASS: ("ClientClass", _GLOBAL_SOURCE),
@@ -651,11 +652,12 @@ class KeaDhcpLink(ChangeLoggingMixin):
     """A DHCP Import Mapping: maps a Kea source object to the netbox-plugin-dhcp (``netbox_dhcp``) row imported from it.
 
     The source is ``(server, family, kind, kea_subnet_id, kea_identity)``. ``kea_subnet_id`` holds the Kea subnet ID
-    of a Subnet, or of the Subnet of a Pool or an In-Subnet Reservation. ``kea_identity`` holds the identity inside
-    that Subnet, or inside the Server and family for a global kind (``dhcp_import_plan.MappingSource``). The global
-    configuration of a family sets neither, because the Server and family identify it. Kea's
-    ``subnet-id`` is unique only per ``(server, family)``, and ``netbox_dhcp`` has one global ``Subnet.subnet_id``
-    namespace, so Kea's identity lives here. The ``GenericForeignKey`` keeps ``netbox_dhcp`` optional.
+    of a Subnet, or of the Subnet of a Pool, a delegated-prefix Pool or an In-Subnet Reservation. ``kea_identity`` holds
+    the identity inside that Subnet, or inside the Server and family for a global kind
+    (``dhcp_import_plan.MappingSource``). The global configuration of a family sets neither, because the Server and
+    family identify it. Kea's ``subnet-id`` is unique only per ``(server, family)``, and ``netbox_dhcp`` has one global
+    ``Subnet.subnet_id`` namespace, so Kea's identity lives here. The ``GenericForeignKey`` keeps ``netbox_dhcp``
+    optional.
 
     ``MAPPING_KINDS`` ties each kind to its identity columns. Each identity shape has its own partial unique
     constraint on non-null columns, so no row escapes uniqueness through a NULL.
@@ -820,6 +822,7 @@ class IPAMOwnershipSource(models.TextChoices):
     POOL = "pool", "Pool"
     DELEGATED_PREFIX = "delegated-prefix", "Delegated prefix"
     LEASE_PREFIX = "lease-prefix", "Delegated-prefix lease"
+    PD_POOL = "pd-pool", "Delegated-prefix Pool"
 
 
 OWNED_OBJECT_KEYS = ("ip_address", "prefix", "ip_range")

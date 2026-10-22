@@ -17,11 +17,12 @@ Input shape (the ``Dhcp4``/``Dhcp6`` object from ``config-get``)::
         "shared-networks": [{"name": "office", "subnet4": [ ...same shape... ]}],
     }
 
-DHCPv6 uses ``subnet6``.
+DHCPv6 uses ``subnet6``, and a DHCPv6 subnet can also hold ``pd-pools``.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -143,6 +144,23 @@ class PoolIntent:
 
 
 @dataclass(frozen=True)
+class PDPoolIntent:
+    """A Kea ``pd-pools`` entry of a DHCPv6 subnet: its prefix, its delegated length and its Declared Values."""
+
+    prefix: ipaddress.IPv6Network
+    delegated_length: int
+    # None: the PD Pool declares no excluded prefix, or the one it declares is not valid.
+    excluded_prefix: ipaddress.IPv6Network | None = None
+    options: tuple[DHCPOption, ...] = ()
+    pool_id: int | None = None
+    # A class list is None when it is not valid, so the import keeps the class links.
+    client_classes: tuple[str, ...] | None = ()
+    evaluate_additional_classes: tuple[str, ...] | None = ()
+    # None: the PD Pool declares no user-context.
+    user_context: dict | None = None
+
+
+@dataclass(frozen=True)
 class SubnetIntent:
     """A Kea subnet, with its parent shared-network (if any) and children."""
 
@@ -158,6 +176,7 @@ class SubnetIntent:
     evaluate_additional_classes: tuple[str, ...] | None = ()
     # None: the Subnet declares no user-context.
     user_context: dict | None = None
+    pd_pools: tuple[PDPoolIntent, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -195,6 +214,8 @@ class ServerConfigIntent:
     configuration_complete: bool = False
     # When the read of this configuration started, before config-get. None: not known, so no mapped row is stale.
     read_started: datetime | None = None
+    # The IPAM confirmation number taken before config-get. None: not known, so no IPAM link of the read is stale.
+    ipam_cutoff: int | None = None
     # From the Server Configuration Snapshot. None: the key is absent or invalid.
     host_reservation_identifiers: tuple[str, ...] | None = None
     shared_networks: list[SharedNetworkIntent] = field(default_factory=list)
@@ -289,7 +310,7 @@ def _pools(raw_list, subnet_path: str, dropped: list[DroppedEntry]) -> tuple[Poo
             PoolIntent(
                 pool=pool,
                 options=_options(entry.get("option-data"), path, dropped),
-                pool_id=_pool_id(entry.get(kea_paths.POOL_ID), path, dropped),
+                pool_id=_pool_id(entry.get(kea_paths.POOL_ID), Kind.POOL, path, dropped),
                 client_classes=_class_list(entry, kea_paths.CLIENT_CLASSES, Kind.POOL, path, dropped),
                 evaluate_additional_classes=_class_list(
                     entry, kea_paths.EVALUATE_ADDITIONAL_CLASSES, Kind.POOL, path, dropped
@@ -301,16 +322,82 @@ def _pools(raw_list, subnet_path: str, dropped: list[DroppedEntry]) -> tuple[Poo
     return tuple(out)
 
 
-def _pool_id(raw, path: str, dropped: list[DroppedEntry]) -> int | None:
-    """Read a Pool's ``pool-id``; drop one that is not a non-negative integer."""
+def _pool_id(raw, kind: Kind, path: str, dropped: list[DroppedEntry]) -> int | None:
+    """Read the ``pool-id`` of the Pool or PD Pool (*kind*) at *path*; drop one that is not a non-negative integer."""
     if raw is None:
         return None
     if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
         return raw
     dropped.append(
-        DroppedEntry(Kind.POOL, kea_paths.setting(path, kea_paths.POOL_ID), "The ID is not a non-negative integer.")
+        DroppedEntry(kind, kea_paths.setting(path, kea_paths.POOL_ID), "The ID is not a non-negative integer.")
     )
     return None
+
+
+def _ipv6_prefix(address, length) -> ipaddress.IPv6Network | None:
+    """Return the IPv6 prefix of a Kea address and prefix length, or ``None`` when they are not one prefix."""
+    if not isinstance(address, str) or not isinstance(length, int) or isinstance(length, bool):
+        return None
+    try:
+        # Kea refuses a prefix with bits set after its length, so a strict parse matches Kea.
+        return ipaddress.IPv6Network(f"{address}/{length}")
+    except ValueError:
+        return None
+
+
+def _excluded_prefix(raw: dict, path: str, dropped: list[DroppedEntry]) -> ipaddress.IPv6Network | None:
+    """Read the excluded prefix of the PD Pool at *path*; drop one that is not a valid prefix."""
+    if kea_paths.EXCLUDED_PREFIX not in raw and kea_paths.EXCLUDED_PREFIX_LEN not in raw:
+        return None
+    excluded = _ipv6_prefix(raw.get(kea_paths.EXCLUDED_PREFIX), raw.get(kea_paths.EXCLUDED_PREFIX_LEN))
+    if excluded is None:
+        path = kea_paths.setting(path, kea_paths.EXCLUDED_PREFIX)
+        dropped.append(DroppedEntry(Kind.PD_POOL, path, "The excluded prefix is not a valid prefix."))
+    return excluded
+
+
+def _pd_pool_intent(raw, subnet_path: str, dropped: list[DroppedEntry]) -> PDPoolIntent | None:
+    """Normalize one ``pd-pools`` entry; return ``None`` for one without a valid prefix and delegated length.
+
+    The DHCP plugin decides whether it can hold the lengths, for example a delegated length shorter than the prefix.
+    """
+    entry = raw if isinstance(raw, dict) else {}
+    prefix = _ipv6_prefix(entry.get(kea_paths.PREFIX), entry.get(kea_paths.PREFIX_LEN))
+    delegated = entry.get(kea_paths.DELEGATED_LEN)
+    if prefix is None or isinstance(delegated, bool) or not isinstance(delegated, int):
+        return None
+    if not 0 <= delegated <= ipaddress.IPV6LENGTH:
+        return None
+    path = kea_paths.pd_pool(subnet_path, str(prefix), delegated)
+    return PDPoolIntent(
+        prefix=prefix,
+        delegated_length=delegated,
+        excluded_prefix=_excluded_prefix(entry, path, dropped),
+        options=_options(entry.get(kea_paths.OPTION_DATA), path, dropped),
+        pool_id=_pool_id(entry.get(kea_paths.POOL_ID), Kind.PD_POOL, path, dropped),
+        client_classes=_class_list(entry, kea_paths.CLIENT_CLASSES, Kind.PD_POOL, path, dropped),
+        evaluate_additional_classes=_class_list(
+            entry, kea_paths.EVALUATE_ADDITIONAL_CLASSES, Kind.PD_POOL, path, dropped
+        ),
+        user_context=entry.get(kea_paths.USER_CONTEXT),
+    )
+
+
+def _pd_pools(raw_list, subnet_path: str, dropped: list[DroppedEntry]) -> tuple[PDPoolIntent, ...]:
+    """Normalize the ``pd-pools`` list of a DHCPv6 subnet, dropping invalid entries. A null list is dropped."""
+    if not isinstance(raw_list, list):
+        path = kea_paths.pd_pool_collection(subnet_path)
+        dropped.append(DroppedEntry(Kind.PD_POOL, path, "The collection is not a list."))
+        return ()
+    out: list[PDPoolIntent] = []
+    for index, raw in enumerate(raw_list):
+        intent = _pd_pool_intent(raw, subnet_path, dropped)
+        if intent is None:
+            path = kea_paths.pd_pool_entry(subnet_path, index)
+            dropped.append(DroppedEntry(Kind.PD_POOL, path, "The entry has no valid prefix and delegated length."))
+        else:
+            out.append(intent)
+    return tuple(out)
 
 
 def _class_list(raw: dict, key: str, kind: Kind, path: str, dropped: list[DroppedEntry]) -> tuple[str, ...] | None:
@@ -359,6 +446,7 @@ def _subnet_intent(
             raw, kea_paths.EVALUATE_ADDITIONAL_CLASSES, Kind.SUBNET, subnet_path, dropped
         ),
         user_context=raw.get(kea_paths.USER_CONTEXT),
+        pd_pools=_pd_pools(raw.get(kea_paths.PD_POOLS, []), subnet_path, dropped) if family == 6 else (),
     )
 
 

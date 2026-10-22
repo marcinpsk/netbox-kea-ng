@@ -57,7 +57,8 @@ _Avoid_: Import log, import summary
 **Stale DHCP Import Object**:
 A NetBox DHCP object with a DHCP Import Mapping whose Kea source a Complete observation of the same kind no longer
 reports. The DHCP Import removes it. An Incomplete observation cannot make an object stale. A Pool whose range
-changes in Kea is a different Pool, so the old one becomes stale.
+changes in Kea is a different Pool, so the old one becomes stale. So is a delegated-prefix Pool whose prefix or
+delegated length changes.
 _Avoid_: Orphan, orphaned Subnet
 
 **Declared Value**:
@@ -70,8 +71,9 @@ An association between a Kea source object and its imported NetBox DHCP object. 
 Import has one: the global configuration of one address family, a Shared Network, a Subnet, a Pool, a
 delegated-prefix Pool, a Reservation, a client class, and a custom Option Definition. The source identity includes
 the Server, address family, and the Kea identity of the object: a Shared Network name, a Kea subnet ID, a Pool within
-its Subnet, a Reservation Identity, a client class name, or an Option Definition's space and code (with the name of
-its client class, for a definition that a client class declares). A DHCP Option is identified within the object that
+its Subnet, a delegated-prefix Pool's prefix and delegated length within its Subnet, a Reservation Identity, a client
+class name, or an Option Definition's space and code (with the name of its client class, for a definition that a
+client class declares). A DHCP Option is identified within the object that
 assigns it.
 _Avoid_: DHCP Link, ownership link
 
@@ -229,9 +231,9 @@ _Avoid_: Kea action, direct action, runtime write
 
 **IPAM Ownership**:
 The fact that one Server and address family synchronized a NetBox IP address, Prefix, or IP Range from one Kea
-source: an address lease, a delegated-prefix lease, a Reservation, a Subnet, a Pool, or a Reservation delegated
-prefix. Only a Current Lease is a lease source. One object can have several owners. An operator
-ends every ownership of an object when the description no longer starts with a well-formed marker block
+source: an address lease, a delegated-prefix lease, a Reservation, a Subnet, a Pool, a Reservation delegated
+prefix, or a delegated-prefix Pool. Only a Current Lease is a lease source. One object can have several owners. An
+operator ends every ownership of an object when the description no longer starts with a well-formed marker block
 (`[kea-sync: <kind>]`): the block is missing, moved or malformed. A block of another known kind still marks the
 object. Text after the block is an operator note, and the synchronization keeps it.
 _Avoid_: Kea-managed IP, synced description
