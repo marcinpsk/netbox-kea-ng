@@ -265,7 +265,7 @@ class ReservationObservation:
 
 @dataclass(frozen=True)
 class DelegatedPrefixPhase:
-    """Successfully imported Reservations with their original read cutoff."""
+    """Successfully imported Reservations with their original read cutoff: their delegated and excluded prefixes."""
 
     records: Sequence[Reservation]
     cutoff: int
@@ -1983,13 +1983,17 @@ def _imported_prefixes(family: Family, phase: DelegatedPrefixPhase | PDPoolPhase
         return list(phase.prefixes)
     if any(reservation.family != family for reservation in phase.records):
         raise ValueError("The Reservation does not match the phase family")
-    return [prefix for reservation in phase.records for prefix in reservation.delegated_prefixes]
+    return [
+        prefix
+        for reservation in phase.records
+        for prefix in (*reservation.delegated_prefixes, *(pair.excluded for pair in reservation.excluded_prefixes))
+    ]
 
 
 def _run_imported_prefix_phase(
     server: Server, family: Family, phase: DelegatedPrefixPhase | PDPoolPhase, report: SyncReport
 ) -> int | None:
-    """Claim the Prefixes of an import phase (Reservation delegated prefixes, or PD Pools) before stale cleanup."""
+    """Claim the Prefixes of an import phase (Reservation delegated and excluded prefixes, or PD Pools) before cleanup."""
     reports = {
         str(prefix): _NetworkReport(str(prefix), prefix.prefixlen) for prefix in _imported_prefixes(family, phase)
     }

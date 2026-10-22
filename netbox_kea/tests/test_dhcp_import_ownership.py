@@ -363,7 +363,7 @@ class ImportOwnershipTest(TestCase):
         HostReservation = apps.get_model("netbox_dhcp", "HostReservation")
         tables = {
             relation: HostReservation._meta.get_field(relation).remote_field.through._meta.db_table
-            for relation in ("ipv6_addresses", "ipv6_prefixes")
+            for relation in ("ipv6_addresses", "ipv6_prefixes", "excluded_ipv6_prefixes", "client_classes")
         }
 
         def reads(count):
@@ -373,6 +373,7 @@ class ImportOwnershipTest(TestCase):
                     "duid": f"01:02:03:{count:02x}:{row:02x}",
                     "ip-addresses": [f"2001:db8:1::{count:x}{row:02x}"],
                     "prefixes": [f"2001:db8:{count:x}{row:02x}::/56"],
+                    "excluded-prefixes": [f"2001:db8:{count:x}{row:02x}:ff::/64"],
                 }
                 for row in range(count)
             ]
@@ -390,6 +391,8 @@ class ImportOwnershipTest(TestCase):
             {
                 "ipv6_addresses": 1,
                 "ipv6_prefixes": 2,
+                "excluded_ipv6_prefixes": 2,
+                "client_classes": 1,
             },
         )
 
@@ -596,6 +599,46 @@ class ImportOwnershipTest(TestCase):
         self.assertTrue(
             IPAMOwnershipLink.objects.filter(prefix__prefix=healthy_prefix, source="delegated-prefix").exists()
         )
+
+    def test_complete_delegated_phase_deprecates_an_excluded_prefix_only_after_dropped_reference(self):
+        self.server.sync_deprecate_prefixes_and_ranges = True
+        self.server.save()
+        excluded = "2001:db8:100:ff::/64"
+        first = self.import_hosts([{**self.identity, "prefixes": [self.network], "excluded-prefixes": [excluded]}])
+        prefix = Prefix.objects.get(prefix=excluded)
+        link = IPAMOwnershipLink.objects.get(prefix=prefix, source="delegated-prefix")
+        self.assertEqual((first.errors, link.server), (0, self.server))
+
+        second = self.import_hosts([{**self.identity, "prefixes": [self.network]}])
+
+        prefix.refresh_from_db()
+        link.refresh_from_db()
+        self.assertEqual(second.errors, 0, second.warnings)
+        self.assertEqual(prefix.status, "deprecated")
+        self.assertIsNotNone(link.stale_mark)
+        reservation = apps.get_model("netbox_dhcp", "HostReservation").objects.get()
+        self.assertFalse(reservation.excluded_ipv6_prefixes.exists())
+        self.assertEqual(list(reservation.ipv6_prefixes.all()), [self.delegated()])
+        self.assertEqual(self.delegated().status, "active")
+
+    def test_failed_excluded_claim_preserves_both_prefix_attachments(self):
+        excluded = "2001:db8:100:ff::/64"
+        host = {**self.identity, "prefixes": [self.network], "excluded-prefixes": [excluded]}
+        self.import_hosts([host])
+        original = Prefix.objects.get(prefix=excluded)
+        reservation = apps.get_model("netbox_dhcp", "HostReservation").objects.get()
+        Prefix.objects.create(prefix=excluded, vrf=original.vrf)
+
+        summary = self.import_hosts(
+            [{**host, "prefixes": [self.network, "2001:db8:200::/56"], "excluded-prefixes": [excluded, ""]}]
+        )
+
+        self.assertEqual(summary.errors, 1, summary.warnings)
+        self.assertTrue(
+            any("existing reported Prefix attachments were retained" in warning for warning in summary.warnings)
+        )
+        self.assertEqual(list(reservation.excluded_ipv6_prefixes.values_list("pk", flat=True)), [original.pk])
+        self.assertEqual(list(reservation.ipv6_prefixes.values_list("pk", flat=True)), [self.delegated().pk])
 
     def test_failed_attachment_rolls_back_new_prefix_and_stale_cleanup(self):
         self.server.sync_deprecate_prefixes_and_ranges = True

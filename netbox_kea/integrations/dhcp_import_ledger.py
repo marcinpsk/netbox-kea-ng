@@ -268,17 +268,17 @@ def _reservation(family: Family) -> dict[str, Entry]:
     entries = {
         **_fields("HostReservation", "hw-address", "duid", "flex-id", "hostname"),
         "option-data": Mapped("Option"),
-        "client-classes": Pending(104),
-        "user-context": Pending(104, _USER_CONTEXT),
+        "client-classes": Mapped("HostReservation.client_classes"),
+        "user-context": Mapped("HostReservation.user_context", _USER_CONTEXT),
     }
     if family == 4:
-        entries |= _fields("HostReservation", "circuit-id", "client-id")
-        entries |= {"ip-address": Mapped("HostReservation.ipv4_address"), **_pending(104, *_BOOT_FIELDS)}
+        entries |= _fields("HostReservation", "circuit-id", "client-id", *_BOOT_FIELDS)
+        entries |= {"ip-address": Mapped("HostReservation.ipv4_address")}
     else:
         entries |= {
             "ip-addresses": Mapped("HostReservation.ipv6_addresses"),
             "prefixes": Mapped("HostReservation.ipv6_prefixes"),
-            "excluded-prefixes": Pending(104),
+            "excluded-prefixes": Mapped("HostReservation.excluded_ipv6_prefixes"),
         }
     return entries
 

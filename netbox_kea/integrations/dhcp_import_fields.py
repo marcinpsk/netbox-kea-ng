@@ -225,7 +225,9 @@ MANAGED_FIELDS: dict[str, tuple[ManagedField, ...]] = {
             "flex_id",
             "ipv4_address",
         ),
-        *_relations("ipv6_addresses", "ipv6_prefixes"),
+        *_settings(_BOOT_FIELDS),
+        ManagedField("user_context", Capability.USER_CONTEXT),
+        *_relations("ipv6_addresses", "ipv6_prefixes", "excluded_ipv6_prefixes", "client_classes"),
     ),
     "Option": (
         *_scalars("definition", "data", "csv_format", "send_option"),

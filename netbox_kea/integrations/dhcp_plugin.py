@@ -26,8 +26,8 @@ v1 scope (import + diff, read-only against Kea):
   adapter never parses raw ``reservation-get-page`` records. Valid records import
   even when the snapshot quarantines other records. A Global Reservation skips the
   IPAM sync, so the import creates no address rows for it and reports every reserved
-  address it could not attach.  Delegated prefixes carry their own length, so they
-  import as shared ``ipam.Prefix`` rows for every Scope.
+  address it could not attach.  Delegated prefixes and the prefixes that they exclude carry their own length, so
+  they import as shared ``ipam.Prefix`` rows for every Scope, under the IPAM source ``delegated-prefix``.
 * Each imported Subnet, Pool, delegated-prefix Pool, Reservation, client class and custom Option Definition has a
   DHCP Import Mapping (:class:`netbox_kea.models.KeaDhcpLink`) to its Kea source, and a re-import finds the row
   through it, also after an operator renames the row. The first import after an upgrade maps each
@@ -54,8 +54,9 @@ v1 scope (import + diff, read-only against Kea):
   from its Shared Network is reported, never copied onto the Subnet.
 * **Ownership.** Every writer sets exactly the managed fields of :mod:`.dhcp_import_fields` on a mapped row, and
   :func:`_managed_changes` refuses a write that names another set. Unmanaged fields and unmapped rows stay.
-* A Subnet, a Pool and a PD Pool link the client classes of their class lists that the same run imported. A Subnet
-  links the DHCP server interface that its Kea ``interface`` names, and reports a name that matches none.
+* A Subnet, a Pool, a PD Pool and a Reservation link the client classes of their class lists that the same run
+  imported. A Subnet links the DHCP server interface that its Kea ``interface`` names, and reports a name that
+  matches none.
 * **Client classes** (``client-classes``) are imported as ``ClientClass`` rows
   (test/template-test, additional-list flag, BOOTP + lifetime settings, options) with
   their Kea name. While the plugin keeps class names unique across all servers, a class
@@ -114,6 +115,7 @@ from .dhcp_import_fields import (
     CLIENT_CLASS_FIELDS,
     GATED_SERVER_FIELDS,
     GATED_SUBNET_FIELDS,
+    MANAGED_FIELDS,
     POOL_FIELDS,
     SERVER_FIELDS,
     SUBNET_FIELDS,
@@ -1965,7 +1967,7 @@ def _upsert_reservation(
     subnet_obj,
     server,
     dhcp_server,
-    references,
+    references: OptionReferences,
     summary,
     claims,
     catalogue,
@@ -1981,7 +1983,9 @@ def _upsert_reservation(
     merging ``ipv4_address`` and ``ipv6_addresses``.
 
     Consumes IPAM claim results so the plugin reservation shares the same
-    ``ipam.IPAddress``/``dcim.MACAddress`` rows the lease/reservation sync owns.
+    ``ipam.IPAddress``/``dcim.MACAddress`` rows the lease/reservation sync owns. The client classes refer to the
+    classes that the same run imported. The delegated and excluded Prefixes attach after the delegated-prefix phase
+    (:func:`_attach_delegated_prefixes`).
 
     Return the row and its state before the write (``None`` for a new row), or ``None`` after a failed write.
     """
@@ -2003,14 +2007,24 @@ def _upsert_reservation(
             ipv4_ip, ipv6_ips, mac_obj = _reservation_addresses(reservation, claims, catalogue, summary)
             if reservation.identity.identifier_type == "hw-address" and mac_obj is None:
                 raise RuntimeError("The reservation hardware address could not be resolved.")
+            classes = references.classes.resolve(
+                reservation.client_classes, path, kea_paths.CLIENT_CLASSES, Kind.RESERVATION, summary
+            )
             linked = mapped_target(server, reservation.family, key.source)
             # Adopt a row that an import made before its Reservation had a mapping (a Global one: before the
             # mapping carried the family), so an upgrade maps that row instead of duplicating it.
             obj = linked if linked is not None else _find_reservation(_unlinked(base), reservation, mac_obj)
-            # The relation reads give the state before the write and also drive the write.
-            addresses = frozenset() if obj is None else frozenset(obj.ipv6_addresses.values_list("pk", flat=True))
-            prefixes = {} if obj is None else dict(obj.ipv6_prefixes.values_list("pk", "prefix"))
-            before = None if obj is None else _reservation_state(obj, addresses, prefixes)
+            created = obj is None
+            if created:
+                related: dict[str, dict[int, Any]] = {}
+                before = None
+                obj = HostReservation(name=_reservation_name(scope_name, reservation))
+            else:
+                # The relation reads give the state before the write and also drive the write.
+                related = _reservation_relations(obj)
+                before = _reservation_state(
+                    obj, {name: frozenset(rows) for name, rows in related.items()}, capabilities
+                )
             fields = {
                 # The Reservation Scope is a managed field: a row that an operator moved returns to it.
                 "subnet_id": subnet_obj.pk if subnet_obj is not None else None,
@@ -2021,9 +2035,17 @@ def _upsert_reservation(
                 # One row holds one family. _reservation_addresses returns the other
                 # family empty, which also splits a row an earlier import merged.
                 "ipv4_address_id": ipv4_ip.pk if ipv4_ip is not None else None,
+                **_reservation_boot_values(reservation),
+                **_user_context_fields(
+                    obj,
+                    reservation.user_context,
+                    capabilities,
+                    summary,
+                    _Source(reservation.family, Kind.RESERVATION, path),
+                    "Reservation",
+                ),
             }
-            if obj is None:
-                obj = HostReservation(name=_reservation_name(scope_name, reservation))
+            if created:
                 _create_row(obj, fields, capabilities)
             else:
                 changes = _managed_changes(obj, fields, capabilities)
@@ -2037,17 +2059,18 @@ def _upsert_reservation(
                     # The relation writes below need the state before the run.
                     obj.snapshot()
             # An empty address list clears the previous IPv6 relations.
+            addresses = set(related.get("ipv6_addresses", {}))
             wanted = {address.pk for address in ipv6_ips}
             obj.ipv6_addresses.remove(*(addresses - wanted))
             obj.ipv6_addresses.add(*(wanted - addresses))
+            if classes != set(related.get("client_classes", {})):
+                obj.client_classes.set(classes)
             # Drop obsolete references before the delegated phase evaluates stale links.
-            obj.ipv6_prefixes.remove(
-                *(
-                    pk
-                    for pk, prefix in prefixes.items()
-                    if ipaddress.ip_network(str(prefix)) not in reservation.delegated_prefixes
+            for relation, networks in _reported_prefixes(reservation).items():
+                current = related.get(relation, {})
+                getattr(obj, relation).remove(
+                    *(pk for pk, prefix in current.items() if ipaddress.ip_network(str(prefix)) not in networks)
                 )
-            )
             observe_mapping(server, reservation.family, obj, key.source)
     except event_scope.EventDispatchError:
         raise
@@ -2069,36 +2092,68 @@ def reservation_path(key: ReservationKey, family: int) -> str:
     return kea_paths.reservation(family, subnet_id, key.identifier_type, key.value)
 
 
-def _reservation_state(obj, addresses, prefixes) -> tuple:
-    """Return the managed values of a DHCP plugin Reservation, to tell an update from an unchanged row."""
-    return (
-        obj.name,
-        obj.subnet_id,
-        obj.dhcp_server_id,
-        obj.hostname,
-        obj.hw_address_id,
-        obj.duid,
-        obj.circuit_id,
-        obj.client_id,
-        obj.flex_id,
-        obj.ipv4_address_id,
-        frozenset(addresses),
-        frozenset(prefixes),
+def _reservation_boot_values(reservation: Reservation) -> dict:
+    """Return the DHCPv4 boot fields of a DHCP plugin Reservation. Kea's unset value (and DHCPv6) is ``None``."""
+    return {
+        "next_server": str(reservation.next_server) if reservation.next_server is not None else None,
+        "server_hostname": reservation.server_hostname or None,
+        "boot_file_name": reservation.boot_file_name or None,
+    }
+
+
+def _reported_prefixes(reservation: Reservation) -> dict[str, tuple]:
+    """Return the networks of each Prefix relation of a DHCP plugin Reservation: delegated and excluded prefixes."""
+    return {
+        "ipv6_prefixes": reservation.delegated_prefixes,
+        "excluded_ipv6_prefixes": tuple(pair.excluded for pair in reservation.excluded_prefixes),
+    }
+
+
+# The managed many-to-many relations of a DHCP plugin Reservation.
+_RESERVATION_RELATIONS = tuple(managed.name for managed in MANAGED_FIELDS["HostReservation"] if managed.relation)
+
+
+def _reservation_relations(obj) -> dict[str, dict[int, Any]]:
+    """Read each managed relation of the DHCP plugin Reservation *obj*: each related pk, with its Prefix if it has one.
+
+    One query for each relation.
+    """
+    related: dict[str, dict[int, Any]] = {}
+    for name in _RESERVATION_RELATIONS:
+        rows = getattr(obj, name)
+        if rows.model._meta.label == "ipam.Prefix":
+            related[name] = dict(rows.values_list("pk", "prefix"))
+        else:
+            related[name] = dict.fromkeys(rows.values_list("pk", flat=True))
+    return related
+
+
+def _reservation_state(obj, relations: dict[str, frozenset[int]], capabilities: PluginCapabilities) -> tuple:
+    """Return the name, the managed values and the managed relations of a DHCP plugin Reservation.
+
+    It tells an update from an unchanged row.
+    """
+    scalars = tuple(
+        getattr(obj, obj._meta.get_field(managed.name).attname)
+        for managed in managed_fields("HostReservation", capabilities)
+        if not managed.relation
     )
+    return obj.name, scalars, relations
 
 
-def _relation_states(objs) -> dict[int, tuple[set, set]]:
-    """Read the IPv6 addresses and Prefixes of every row in two queries, keyed by row."""
-    states: dict[int, tuple[set, set]] = {obj.pk: (set(), set()) for obj in objs}
-    if not states:
+def _relation_states(objs) -> dict[int, dict[str, frozenset[int]]]:
+    """Read the managed relations of every row in one query for each relation, keyed by row."""
+    pks = [obj.pk for obj in objs]
+    if not pks:
         # Without the DHCP plugin no row is imported, and its model does not exist.
-        return states
-    rows = _model("HostReservation").objects.filter(pk__in=states)
-    for position, relation in enumerate(("ipv6_addresses", "ipv6_prefixes")):
-        for pk, related in rows.values_list("pk", relation):
+        return {}
+    states: dict[int, dict[str, set[int]]] = {pk: {name: set() for name in _RESERVATION_RELATIONS} for pk in pks}
+    rows = _model("HostReservation").objects.filter(pk__in=pks)
+    for name in _RESERVATION_RELATIONS:
+        for pk, related in rows.values_list("pk", name):
             if related is not None:
-                states[pk][position].add(related)
-    return states
+                states[pk][name].add(related)
+    return {pk: {name: frozenset(related) for name, related in state.items()} for pk, state in states.items()}
 
 
 def _record_address_claims(report: SyncReport, claims: ClaimResult) -> bool:
@@ -2137,7 +2192,7 @@ def import_reservation_snapshot(
     server,
     dhcp_server,
     observation: ReservationObservation | None,
-    references,
+    references: OptionReferences,
     summary: ImportSummary,
     *,
     family: int,
@@ -2243,28 +2298,26 @@ def import_reservation_snapshot(
         summary.ownership.incomplete.add("delegated-prefix")
         logger.exception("Could not attach delegated Prefixes after DHCP import")
         summary.warn("Delegated Prefixes could not be attached. See server logs.")
-    relations = _relation_states(obj for _, obj, _ in imported)
+    relations = _relation_states([obj for _, obj, _ in imported])
     for planned, obj, before in imported:
-        if before is None or before != _reservation_state(obj, *relations[obj.pk]):
+        if before is None or before != _reservation_state(obj, relations[obj.pk], capabilities):
             outcome = Outcome.CREATED if before is None else Outcome.UPDATED
             summary.record(written(family, Kind.RESERVATION, reservation_path(planned.key, family), outcome))
 
 
 def _attach_delegated_prefixes(imported, report: SyncReport, summary: ImportSummary) -> None:
-    """Attach each imported Reservation's reported Prefixes, and keep the old ones when a claim failed."""
+    """Attach each imported Reservation's delegated and excluded Prefixes, and keep the old ones when a claim failed."""
     for reservation, obj in imported:
-        if any(report.prefixes[str(prefix)].outcome == "error" for prefix in reservation.delegated_prefixes):
+        reported = _reported_prefixes(reservation)
+        if any(report.prefixes[str(prefix)].outcome == "error" for each in reported.values() for prefix in each):
             summary.warn(
                 f"reservation {reservation.identity.value}: delegated Prefix claim failed; "
                 "existing reported Prefix attachments were retained"
             )
             continue
-        prefixes = []
-        for prefix in reservation.delegated_prefixes:
-            result = report.prefixes[str(prefix)]
-            if result.prefix is not None:
-                prefixes.append(result.prefix)
-        obj.ipv6_prefixes.set(prefixes)
+        for relation, networks in reported.items():
+            results = (report.prefixes[str(prefix)] for prefix in networks)
+            getattr(obj, relation).set([result.prefix for result in results if result.prefix is not None])
 
 
 def _reservation_identifier_values(reservation: Reservation, mac_obj) -> dict:

@@ -2416,7 +2416,17 @@ def _owned_conf() -> dict:
                         "option-data": [{"code": 222, "data": "4"}],
                     }
                 ],
-                "reservations": [{"hw-address": "aa:bb:cc:dd:ee:93", "ip-address": "10.93.0.150", "hostname": "owned"}],
+                "reservations": [
+                    {
+                        "hw-address": "aa:bb:cc:dd:ee:93",
+                        "ip-address": "10.93.0.150",
+                        "hostname": "owned",
+                        "client-classes": ["voip"],
+                        "next-server": "10.93.0.2",
+                        "server-hostname": "boot",
+                        "boot-file-name": "pxe.0",
+                    }
+                ],
             }
         ],
     }
@@ -2558,6 +2568,8 @@ class DhcpPluginManagedFieldTest(TestCase):
         pool = next(row for row in rows if type(row).__name__ == "Pool")
         pool.client_classes.clear()
         pool.evaluate_additional_classes.clear()
+        reservation = next(row for row in rows if type(row).__name__ == "HostReservation")
+        reservation.client_classes.clear()
 
         summary = self._import()
 
@@ -2568,6 +2580,7 @@ class DhcpPluginManagedFieldTest(TestCase):
             (self._class_names(pool.client_classes), self._class_names(pool.evaluate_additional_classes)),
             (["voip"], ["printers"]),
         )
+        self.assertEqual(self._class_names(reservation.client_classes), ["voip"])
         updated = {entry.kind for entry in summary.entries if entry.outcome == Outcome.UPDATED}
         self.assertEqual(
             updated,
@@ -3470,7 +3483,14 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         self.assertIsNone(res.ipv4_address)
 
     def test_a_global_reservation_imports_with_its_adoption_servers_and_no_custom_definitions(self):
-        from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot, upsert_dhcp_server
+        from netbox_kea.integrations.dhcp_plugin import (
+            ClassReferences,
+            CustomDefinitions,
+            ImportSummary,
+            OptionReferences,
+            import_reservation_snapshot,
+            upsert_dhcp_server,
+        )
         from netbox_kea.integrations.dhcp_plugin_capabilities import probe
 
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
@@ -3478,12 +3498,15 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         hosts = [{"subnet-id": 0, "duid": "01:02:03:04:05:06", "hostname": "global-duid-host"}]
         dhcp_server, _ = upsert_dhcp_server(self.server, 4)
         summary = ImportSummary()
+        references = OptionReferences(
+            CustomDefinitions(self.server, {}, (dhcp_server.pk,)), ClassReferences(4, frozenset(), {})
+        )
 
         import_reservation_snapshot(
             self.server,
             dhcp_server,
             _reservation_snapshot(conf, 4, hosts),
-            None,
+            references,
             summary,
             family=4,
             adoption_servers=(dhcp_server.pk,),
@@ -3941,6 +3964,286 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
             any("10.0.0.11" in warning for warning in summary.warnings),
             summary.warnings,
         )
+
+
+def _widened_conf_v4() -> dict:
+    """Return a DHCPv4 configuration whose In-Subnet Reservation has client classes, boot fields and class options."""
+    return {
+        "client-classes": [
+            {"name": "voip", "test": "option[60].hex == 'voip'"},
+            {"name": "printers", "test": "option[60].hex == 'printer'"},
+        ],
+        "subnet4": [
+            {
+                "id": 11,
+                "subnet": "10.104.0.0/24",
+                "reservations": [
+                    {
+                        "hw-address": "aa:bb:cc:dd:01:04",
+                        "ip-address": "10.104.0.50",
+                        "client-classes": ["voip", "printers"],
+                        "next-server": "10.104.0.2",
+                        "server-hostname": "boot.example.invalid",
+                        "boot-file-name": "pxelinux.0",
+                        "option-data": [{"code": 6, "data": "10.104.0.53", "client-classes": ["voip"]}],
+                    },
+                    {"hw-address": "aa:bb:cc:dd:01:05", "ip-address": "10.104.0.51"},
+                ],
+            }
+        ],
+    }
+
+
+def _widened_conf_v6() -> dict:
+    """Return a DHCPv6 configuration whose In-Subnet Reservation delegates two prefixes and excludes one of them."""
+    return {
+        "subnet6": [
+            {
+                "id": 12,
+                "subnet": "2001:db8:104::/64",
+                "reservations": [
+                    {
+                        "duid": "01:02:03:01:04",
+                        "ip-addresses": ["2001:db8:104::50"],
+                        "prefixes": ["2001:db8:1040::/56", "2001:db8:1041::/56"],
+                        "excluded-prefixes": ["2001:db8:1040:ff::/64", ""],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+_WIDE_V4 = "Dhcp4/subnet4[id=11]/reservations[hw-address=aa:bb:cc:dd:01:04]"
+_WIDE_V6 = "Dhcp6/subnet6[id=12]/reservations[duid=01:02:03:01:04]"
+
+
+@tag("dhcp_plugin")
+class DhcpPluginReservationFieldsImportTest(TestCase):
+    """The import writes the client classes, boot fields, excluded prefixes and class options of a Reservation."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def setUp(self):
+        from netbox_kea.integrations import dhcp_plugin
+
+        self.adapter = dhcp_plugin
+        self.server = _make_db_server(name=f"kea-widened-{timezone.now().timestamp()}")
+        self.HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+
+    def _apply(self, conf: dict, family: Family = 4, hosts: list[dict] | None = None):
+        from netbox_kea.integrations.dhcp_import_plan import plan_family
+        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+
+        plan = plan_family(parse_dhcp_config(conf, family), _reservation_snapshot(conf, family, hosts))
+        return self.adapter.apply_plan(self.server, plan, probe())
+
+    def _import(self, conf: dict, family: Family = 4, hosts: list[dict] | None = None):
+        summary = self._apply(conf, family, hosts)
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        return summary
+
+    @staticmethod
+    def _entries(summary, path: str) -> list[tuple]:
+        return [
+            (entry.path, entry.outcome, entry.reason, entry.capability)
+            for entry in summary.entries
+            if entry.path.startswith(path)
+        ]
+
+    @staticmethod
+    def _names(relation) -> list[str]:
+        return sorted(relation.values_list("name", flat=True))
+
+    @staticmethod
+    def _prefixes(relation) -> list[str]:
+        return sorted(str(prefix.prefix) for prefix in relation.all())
+
+    def _boot(self, row) -> tuple:
+        return row.next_server, row.server_hostname, row.boot_file_name
+
+    def test_a_dhcpv4_reservation_takes_its_client_classes_and_boot_fields(self):
+        self._import(_widened_conf_v4())
+
+        row = self.HostReservation.objects.get(hw_address__mac_address="aa:bb:cc:dd:01:04")
+        self.assertEqual(self._names(row.client_classes), ["printers", "voip"])
+        self.assertEqual(self._boot(row), ("10.104.0.2", "boot.example.invalid", "pxelinux.0"))
+        # Kea's unset boot values are no value in the DHCP plugin.
+        plain = self.HostReservation.objects.get(hw_address__mac_address="aa:bb:cc:dd:01:05")
+        self.assertEqual((self._names(plain.client_classes), self._boot(plain)), ([], (None, None, None)))
+
+    def test_a_global_reservation_takes_its_client_classes_and_boot_fields(self):
+        conf = _widened_conf_v4()
+        hosts = [
+            {
+                "subnet-id": 0,
+                "duid": "01:02:03:04:01:04",
+                "client-classes": ["printers"],
+                "next-server": "192.0.2.4",
+                "boot-file-name": "ipxe.efi",
+            }
+        ]
+
+        self._import(conf, hosts=hosts)
+
+        row = self.HostReservation.objects.get(duid="01:02:03:04:01:04")
+        self.assertEqual((row.subnet, row.dhcp_server), (None, imported_dhcp_server(self.server, 4)))
+        self.assertEqual(self._names(row.client_classes), ["printers"])
+        self.assertEqual(self._boot(row), ("192.0.2.4", None, "ipxe.efi"))
+
+    def test_a_reservation_option_is_imported_with_its_client_classes(self):
+        self._import(_widened_conf_v4())
+
+        row = self.HostReservation.objects.get(hw_address__mac_address="aa:bb:cc:dd:01:04")
+        (option,) = row.options.all()
+        self.assertEqual((option.definition.code, option.data), (6, "10.104.0.53"))
+        self.assertEqual(self._names(option.client_classes), ["voip"])
+
+    def test_a_reservation_class_without_an_imported_class_is_reported_and_left_out(self):
+        model = partial(apps.get_model, DHCP_PLUGIN)
+        other = model("DHCPServer").objects.create(name=f"{self.server.name} other")
+        # netbox-plugin-dhcp 0.2.0 keeps class names unique across servers, so Kea's class "blocked" is not imported.
+        model("ClientClass").objects.create(name="blocked", dhcp_server=other)
+        conf = _widened_conf_v4()
+        conf["client-classes"].append({"name": "blocked", "test": "option[60].hex == 'blocked'"})
+        conf["subnet4"][0]["reservations"][0]["client-classes"] = ["voip", "blocked", "KNOWN"]
+
+        summary = self._import(conf)
+
+        row = self.HostReservation.objects.get(hw_address__mac_address="aa:bb:cc:dd:01:04")
+        self.assertEqual(self._names(row.client_classes), ["voip"])
+        self.assertEqual(
+            {path: reason for path, _outcome, reason, _cap in self._entries(summary, f"{_WIDE_V4}/client-classes")},
+            {
+                f"{_WIDE_V4}/client-classes[blocked]": Reason.PARENT_NOT_IMPORTED,
+                f"{_WIDE_V4}/client-classes[KNOWN]": Reason.NO_PLUGIN_HOME,
+            },
+        )
+        self.assertEqual(summary.reservations_created, 2)
+
+    def test_a_flex_id_reservation_imports_with_its_flex_id(self):
+        conf = {"subnet4": [{"id": 13, "subnet": "10.104.3.0/24"}]}
+        hosts = [
+            {"subnet-id": 13, "flex-id": "'lab-port-7'", "ip-address": "10.104.3.7"},
+            {"subnet-id": 0, "flex-id": "0a0b0c", "hostname": "global-flex"},
+        ]
+
+        summary = self._import(conf, hosts=hosts)
+
+        in_subnet = self.HostReservation.objects.get(subnet__prefix__prefix="10.104.3.0/24")
+        self.assertEqual(in_subnet.flex_id, "'lab-port-7'")
+        self.assertEqual(str(in_subnet.ipv4_address.address), "10.104.3.7/24")
+        self.assertEqual(self.HostReservation.objects.get(hostname="global-flex").flex_id, "0a0b0c")
+        self.assertEqual(summary.reservations_created, 2)
+
+    def test_with_plugin_0_2_0_a_reservation_user_context_is_unsupported_and_the_reservation_imports(self):
+        from netbox_kea.integrations.dhcp_import_report import Capability, Outcome
+        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+
+        self.assertFalse(probe().has(Capability.USER_CONTEXT))
+        conf = _widened_conf_v4()
+        conf["subnet4"][0]["reservations"][0]["user-context"] = {"rack": "r4"}
+        hosts = [{"subnet-id": 0, "duid": "01:02:03:04:01:06", "user-context": {"owner": "lab"}}]
+        hosts += [{"subnet-id": 11, **host} for host in conf["subnet4"][0]["reservations"]]
+
+        summary = self._import(conf, hosts=hosts)
+
+        unsupported = [
+            (entry.path, entry.capability)
+            for entry in summary.entries
+            if entry.kind == Kind.RESERVATION and entry.outcome == Outcome.UNSUPPORTED
+        ]
+        self.assertEqual(
+            sorted(unsupported),
+            [
+                ("Dhcp4/reservations[duid=01:02:03:04:01:06]/user-context", Capability.USER_CONTEXT),
+                (f"{_WIDE_V4}/user-context", Capability.USER_CONTEXT),
+            ],
+        )
+        self.assertEqual(summary.reservations_created, 3)
+        self.assertEqual(
+            self._names(self.HostReservation.objects.get(hw_address__mac_address="aa:bb:cc:dd:01:04").client_classes),
+            ["printers", "voip"],
+        )
+
+    def test_a_dhcpv6_reservation_links_its_delegated_and_excluded_prefixes(self):
+        from ipam.models import Prefix
+
+        from netbox_kea.models import IPAMOwnershipLink
+
+        self._import(_widened_conf_v6(), family=6)
+
+        row = self.HostReservation.objects.get(duid="01:02:03:01:04")
+        self.assertEqual(self._prefixes(row.ipv6_prefixes), ["2001:db8:1040::/56", "2001:db8:1041::/56"])
+        self.assertEqual(self._prefixes(row.excluded_ipv6_prefixes), ["2001:db8:1040:ff::/64"])
+        self.assertEqual(self._boot(row), (None, None, None))
+        excluded = Prefix.objects.get(prefix="2001:db8:1040:ff::/64")
+        self.assertEqual(list(row.excluded_ipv6_prefixes.values_list("pk", flat=True)), [excluded.pk])
+        self.assertEqual(excluded.description, "[kea-sync: delegated prefix]")
+        self.assertEqual(
+            list(IPAMOwnershipLink.objects.filter(prefix=excluded).values_list("server", "source")),
+            [(self.server.pk, "delegated-prefix")],
+        )
+
+    def test_a_reimport_updates_the_same_reservation_through_its_mapping(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
+        conf = _widened_conf_v4()
+        self._import(conf)
+        row = self.HostReservation.objects.get(hw_address__mac_address="aa:bb:cc:dd:01:04")
+        self.assertEqual(self._entries(self._import(conf), _WIDE_V4), [])
+        kea = conf["subnet4"][0]["reservations"][0]
+        changes = (
+            ("client-classes", ["printers"]),
+            ("next-server", "10.104.0.3"),
+            ("server-hostname", "boot2.example.invalid"),
+            ("boot-file-name", None),
+        )
+        for key, value in changes:
+            with self.subTest(key=key):
+                if value is None:
+                    del kea[key]
+                else:
+                    kea[key] = value
+
+                summary = self._import(conf)
+
+                self.assertEqual(self._entries(summary, _WIDE_V4), [(_WIDE_V4, Outcome.UPDATED, None, None)])
+                self.assertEqual(self._entries(self._import(conf), _WIDE_V4), [])
+        again = self.HostReservation.objects.get(hw_address__mac_address="aa:bb:cc:dd:01:04")
+        self.assertEqual(again.pk, row.pk)
+        self.assertEqual(self._names(again.client_classes), ["printers"])
+        self.assertEqual(self._boot(again), ("10.104.0.3", "boot2.example.invalid", None))
+
+    def test_a_dhcpv6_reimport_follows_the_excluded_prefixes_of_kea(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
+        conf = _widened_conf_v6()
+        self._import(conf, family=6)
+        row = self.HostReservation.objects.get(duid="01:02:03:01:04")
+        self.assertEqual(self._entries(self._import(conf, family=6), _WIDE_V6), [])
+        kea = conf["subnet6"][0]["reservations"][0]
+        for excluded, expected in (
+            (["2001:db8:1040:f0::/60", "2001:db8:1041:1::/64"], ["2001:db8:1040:f0::/60", "2001:db8:1041:1::/64"]),
+            (None, []),
+        ):
+            with self.subTest(excluded=excluded):
+                if excluded is None:
+                    del kea["excluded-prefixes"]
+                else:
+                    kea["excluded-prefixes"] = excluded
+
+                summary = self._import(conf, family=6)
+
+                again = self.HostReservation.objects.get(duid="01:02:03:01:04")
+                self.assertEqual(again.pk, row.pk)
+                self.assertEqual(self._prefixes(again.excluded_ipv6_prefixes), expected)
+                self.assertEqual(self._entries(summary, _WIDE_V6), [(_WIDE_V6, Outcome.UPDATED, None, None)])
+                self.assertEqual(self._entries(self._import(conf, family=6), _WIDE_V6), [])
 
 
 @tag("dhcp_plugin")

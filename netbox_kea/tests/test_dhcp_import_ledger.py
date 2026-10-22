@@ -34,7 +34,7 @@ from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
 # The open tickets of #89 that map a key.
-_PARITY_TICKETS = frozenset({97, 98, 99, 104, 107})
+_PARITY_TICKETS = frozenset({107})
 # Collections of child objects: an empty one in config-get is a Kea default, never a merge.
 _CHILD_COLLECTIONS = frozenset({"option-data", OPTION_DEF, "pools", "pd-pools", "reservations", "subnet4", "subnet6"})
 
@@ -268,6 +268,42 @@ class LedgerEntriesTest(SimpleTestCase):
             },
         )
         self.assertEqual(pd_pool["user-context"].capabilities, (Capability.USER_CONTEXT,))
+
+    def test_the_reservation_keys_are_mapped_to_the_plugin_host_reservation(self):
+        identity = {key: f"HostReservation.{key.replace('-', '_')}" for key in ("hw-address", "duid", "flex-id")}
+        common = {
+            **identity,
+            "hostname": "HostReservation.hostname",
+            "client-classes": "HostReservation.client_classes",
+            "option-data": "Option",
+            "user-context": "HostReservation.user_context",
+        }
+        expected = {
+            4: {
+                **common,
+                "circuit-id": "HostReservation.circuit_id",
+                "client-id": "HostReservation.client_id",
+                "ip-address": "HostReservation.ipv4_address",
+                "next-server": "HostReservation.next_server",
+                "server-hostname": "HostReservation.server_hostname",
+                "boot-file-name": "HostReservation.boot_file_name",
+            },
+            6: {
+                **common,
+                "ip-addresses": "HostReservation.ipv6_addresses",
+                "prefixes": "HostReservation.ipv6_prefixes",
+                "excluded-prefixes": "HostReservation.excluded_ipv6_prefixes",
+            },
+        }
+        for family, targets in expected.items():
+            reservations = LEDGER[family]["reservations"]
+            with self.subTest(family=family):
+                self.assertEqual(
+                    {key: type(entry) for key, entry in reservations.items()}, dict.fromkeys(targets, Mapped)
+                )
+                self.assertEqual({key: entry.target for key, entry in reservations.items()}, targets)
+                gated = {key: entry.capabilities for key, entry in reservations.items() if entry.capabilities}
+                self.assertEqual(gated, {"user-context": (Capability.USER_CONTEXT,)})
 
     def test_a_not_imported_entry_refuses_a_reason_that_is_not_for_a_key(self):
         with self.assertRaises(ValueError):
