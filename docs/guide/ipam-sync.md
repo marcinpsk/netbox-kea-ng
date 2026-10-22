@@ -68,9 +68,9 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
    `pd-pool` and the marker `[kea-sync: pd pool]`. The job reads no delegated-prefix Pool, so it never drops these
    links. The import drops them after it read every delegated-prefix Pool, with the rules of step 5.
    The import drops its stale `delegated-prefix` and `pd-pool` links after it removed the Stale DHCP Import Objects.
-   So a Prefix that only a removed Reservation or delegated-prefix Pool used follows the rules of step 5. When the
-   run keeps a stale Reservation or delegated-prefix Pool, for example because its removal failed, the kept row still
-   uses its Prefixes, and the run drops no link of that source (`delegated-prefix` or `pd-pool`).
+   So a Prefix that only a removed Reservation or delegated-prefix Pool used follows the rules of step 5. When a
+   Reservation or delegated-prefix Pool that Kea no longer reports stays in NetBox, for example because its removal
+   failed, it still uses its Prefixes, and the run drops no link of that source (`delegated-prefix` or `pd-pool`).
 7. One server failing does not block others
 8. Summary logged per server and in total
 

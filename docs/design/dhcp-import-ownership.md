@@ -38,6 +38,7 @@ Clear dropped Prefix references in those row saves.
 Run the phase with the successfully imported records and mark it incomplete after any skipped or failed row.
 Attach its returned Prefixes after reconciliation, in the same transaction as that phase.
 A failed attachment rolls back the phase and its cleanup.
+Since marcinpsk/netbox-kea-ng#150 the attachment follows a claim, and the phase runs after the stale removal (ADR 0006).
 Take the phase cutoff before the Reservation network read.
 The import takes a Reservation observation instead of a bare snapshot.
 Every caller supplies the cutoff taken before its read, including test fixtures.
