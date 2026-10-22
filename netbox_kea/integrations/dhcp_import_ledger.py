@@ -64,6 +64,8 @@ class Deprecated:
 Entry = Mapped | NotImported | Pending | Deprecated
 
 _USER_CONTEXT = (Capability.USER_CONTEXT,)
+# A Shared Network and its membership need it; its other keys need it only through their object.
+_OPTIONAL_PREFIX = (Capability.SHARED_NETWORK_OPTIONAL_PREFIX,)
 _LIFETIMES = ("valid-lifetime", "min-valid-lifetime", "max-valid-lifetime")
 _PREFERRED_LIFETIMES = ("preferred-lifetime", "min-preferred-lifetime", "max-preferred-lifetime")
 _BOOT_FIELDS = ("next-server", "server-hostname", "boot-file-name")
@@ -113,10 +115,6 @@ def _fields(model: str, *keys: str) -> dict[str, Entry]:
     return {key: Mapped(f"{model}.{key.replace('-', '_')}") for key in keys}
 
 
-def _pending(ticket: int, *keys: str) -> dict[str, Entry]:
-    return {key: Pending(ticket) for key in keys}
-
-
 def _no_plugin_home(*keys: str) -> dict[str, Entry]:
     return {key: NotImported() for key in keys}
 
@@ -156,7 +154,7 @@ def _global(family: Family) -> dict[str, Entry]:
         "client-classes": Mapped("ClientClass"),
         f"subnet{family}": Mapped("Subnet"),
         "reservations": Mapped("HostReservation"),
-        "shared-networks": Pending(107, (Capability.SHARED_NETWORK_OPTIONAL_PREFIX,)),
+        "shared-networks": Mapped("SharedNetwork", _OPTIONAL_PREFIX),
         "user-context": Mapped("DHCPServer.user_context", _USER_CONTEXT),
         "comment": _DEPRECATED["comment"],
         # The interface list links DHCPServer interfaces; the other keys are Kea socket settings.
@@ -221,17 +219,13 @@ def _subnet(family: Family) -> dict[str, Entry]:
 
 def _shared_network(family: Family) -> dict[str, Entry]:
     return {
-        **_pending(
-            107,
-            *_network_settings(family),
-            *_CLASS_REFERENCES,
-            "interface",
-            "option-data",
-        ),
-        "name": Pending(107, (Capability.NAME_PER_SERVER,)),
-        f"subnet{family}": Pending(107, (Capability.SHARED_NETWORK_OPTIONAL_PREFIX,)),
-        "relay": Pending(107, (Capability.RELAY_ADDRESS_LIST,)),
-        "user-context": Pending(107, _USER_CONTEXT),
+        **_fields("SharedNetwork", *_network_settings(family), *_CLASS_REFERENCES),
+        "name": Mapped("SharedNetwork.name", (*_OPTIONAL_PREFIX, Capability.NAME_PER_SERVER)),
+        f"subnet{family}": Mapped("Subnet.shared_network", _OPTIONAL_PREFIX),
+        "interface": Mapped("SharedNetwork.server_interfaces"),
+        "relay": Mapped("SharedNetwork.relay", (Capability.RELAY_ADDRESS_LIST,)),
+        "option-data": Mapped("Option"),
+        "user-context": Mapped("SharedNetwork.user_context", _USER_CONTEXT),
         "metadata": NotImported(),
         **_DEPRECATED,
     }
@@ -268,17 +262,17 @@ def _reservation(family: Family) -> dict[str, Entry]:
     entries = {
         **_fields("HostReservation", "hw-address", "duid", "flex-id", "hostname"),
         "option-data": Mapped("Option"),
-        "client-classes": Pending(104),
-        "user-context": Pending(104, _USER_CONTEXT),
+        "client-classes": Mapped("HostReservation.client_classes"),
+        "user-context": Mapped("HostReservation.user_context", _USER_CONTEXT),
     }
     if family == 4:
-        entries |= _fields("HostReservation", "circuit-id", "client-id")
-        entries |= {"ip-address": Mapped("HostReservation.ipv4_address"), **_pending(104, *_BOOT_FIELDS)}
+        entries |= _fields("HostReservation", "circuit-id", "client-id", *_BOOT_FIELDS)
+        entries |= {"ip-address": Mapped("HostReservation.ipv4_address")}
     else:
         entries |= {
             "ip-addresses": Mapped("HostReservation.ipv6_addresses"),
             "prefixes": Mapped("HostReservation.ipv6_prefixes"),
-            "excluded-prefixes": Pending(104),
+            "excluded-prefixes": Mapped("HostReservation.excluded_ipv6_prefixes"),
         }
     return entries
 

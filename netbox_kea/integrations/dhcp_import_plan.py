@@ -242,6 +242,16 @@ class PlannedClientClass:
 
 
 @dataclass(frozen=True)
+class PlannedSharedNetwork:
+    """A Shared Network by its Kea name."""
+
+    key: str
+    intent: SharedNetworkIntent
+    # The Declared Values of the Shared Network, by Kea key. Its parent is the global configuration.
+    settings: dict
+
+
+@dataclass(frozen=True)
 class PlannedSubnet:
     """A Subnet by Kea subnet ID, with its Pools. ``None``: Kea gave no ID, so the Subnet has no mapping identity."""
 
@@ -269,8 +279,7 @@ class FamilyPlan:
     server: PlannedServer
     option_definitions: tuple[Planned[OptionDefinitionKey, OptionDefIntent], ...]
     client_classes: tuple[PlannedClientClass, ...]
-    # Planned so that the result reports each one; the DHCP plugin model holds none yet.
-    shared_networks: tuple[Planned[str, SharedNetworkIntent], ...]
+    shared_networks: tuple[PlannedSharedNetwork, ...]
     subnets: tuple[PlannedSubnet, ...]
     # None: the read failed. keyed_reservations() keys its records.
     reservations: ReservationObservation | None
@@ -323,18 +332,31 @@ def _planned_client_class(intent: ClientClassIntent, family: Family) -> PlannedC
     return PlannedClientClass(intent.name, intent, settings, _option_definitions(intent.option_defs, intent.name))
 
 
-def _planned_subnets(config: ServerConfigIntent, family: Family) -> tuple[PlannedSubnet, ...]:
+def _planned_shared_networks(config: ServerConfigIntent, family: Family) -> tuple[PlannedSharedNetwork, ...]:
+    """Plan each Shared Network with its Declared Values against the global configuration."""
+    return tuple(
+        PlannedSharedNetwork(
+            intent.name,
+            intent,
+            declared_values(family, kea_paths.SHARED_NETWORKS, intent.settings, config.global_settings),
+        )
+        for intent in config.shared_networks
+    )
+
+
+def _planned_subnets(
+    config: ServerConfigIntent, family: Family, networks: tuple[PlannedSharedNetwork, ...]
+) -> tuple[PlannedSubnet, ...]:
     """Plan each Subnet with its Declared Values. Its parent is its Shared Network, else the global configuration."""
-    networks = {network.name: network.settings for network in config.shared_networks}
+    by_name = {network.key: network for network in networks}
     planned = []
     for subnet in config.subnets:
-        network_settings = networks[subnet.shared_network] if subnet.shared_network is not None else None
-        parent = config.global_settings if network_settings is None else network_settings
+        network = by_name[subnet.shared_network] if subnet.shared_network is not None else None
+        parent = config.global_settings if network is None else network.intent.settings
         settings = declared_values(family, kea_paths.subnet_collection(family), subnet.settings, parent)
         inherited = {}
-        if network_settings is not None:
-            from_network = declared_values(family, kea_paths.SHARED_NETWORKS, network_settings, config.global_settings)
-            inherited = {key: value for key, value in from_network.items() if key not in settings}
+        if network is not None:
+            inherited = {key: value for key, value in network.settings.items() if key not in settings}
         pools = tuple(Planned(_pool_key(subnet, pool), pool) for pool in subnet.pools)
         pd_pools = tuple(
             Planned(PDPoolKey(subnet.kea_subnet_id, pd_pool.prefix, pd_pool.delegated_length), pd_pool)
@@ -362,6 +384,7 @@ def keyed_reservations(observation: ReservationObservation | None) -> tuple[Plan
 def plan_family(config: ServerConfigIntent, observation: ReservationObservation | None) -> FamilyPlan:
     """Return the plan of one family from its parsed configuration and its Reservation observation."""
     family = validate_family(config.family)
+    networks = _planned_shared_networks(config, family)
     return FamilyPlan(
         family=family,
         configuration_complete=config.configuration_complete,
@@ -376,8 +399,8 @@ def plan_family(config: ServerConfigIntent, observation: ReservationObservation 
         ),
         option_definitions=_option_definitions(config.option_defs),
         client_classes=tuple(_planned_client_class(intent, family) for intent in config.client_classes),
-        shared_networks=tuple(Planned(intent.name, intent) for intent in config.shared_networks),
-        subnets=_planned_subnets(config, family),
+        shared_networks=networks,
+        subnets=_planned_subnets(config, family, networks),
         reservations=observation,
         dropped=tuple(config.dropped),
     )
@@ -435,6 +458,10 @@ def _configuration_gaps(plan: FamilyPlan) -> dict[Kind, list[str]]:
         gaps[Kind.PD_POOL].append("A Subnet entry that is not valid hides its delegated-prefix Pools.")
     if dropped[Kind.CLIENT_CLASS]:
         gaps[Kind.OPTION_DEFINITION].append("A client class entry that is not valid hides its Option Definitions.")
+    for entry in plan.dropped:
+        for hidden in entry.hides:
+            label = KIND_LABELS[entry.kind]
+            gaps[hidden].append(f"A {label} entry that is not valid hides the {KIND_LABELS[hidden]} entries in it.")
     unkeyed_subnets = sum(subnet.key is None for subnet in plan.subnets)
     if unkeyed_subnets:
         gaps[Kind.SUBNET].append(f"{counted(unkeyed_subnets, 'Subnet has', 'Subnets have')} no Kea subnet ID.")

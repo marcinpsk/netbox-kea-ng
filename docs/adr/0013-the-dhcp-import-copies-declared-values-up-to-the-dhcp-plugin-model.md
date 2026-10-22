@@ -27,8 +27,8 @@ It also has other faults:
 - It never removes anything.
 - In-Subnet Reservations, Pools and client classes have no DHCP Import Mapping.
 
-Some Kea facts need upstream plugin changes (marcinpsk/netbox-kea-ng#88), for example a Shared Network whose Subnets
-share no enclosing Prefix. A reverse direction from the plugin to Kea must stay possible.
+Some Kea facts need upstream plugin changes (marcinpsk/netbox-kea-ng#88), for example a Shared Network, which has no
+Prefix in Kea while the plugin requires one. A reverse direction from the plugin to Kea must stay possible.
 
 ## Decision
 
@@ -41,10 +41,11 @@ share no enclosing Prefix. A reverse direction from the plugin to Kea must stay 
 - **Declared Values only.** The plugin's own inheritance supplies the rest. Kea's `config-get` merges inherited
   values into a Subnet for some keys. There, a value equal to the parent's value counts as inherited. The parent is
   the Shared Network of a member Subnet, else the global configuration.
-- **Shared Networks** are imported with their Declared Values, DHCP Options and Subnet membership. A Shared Network
-  that the plugin cannot hold, for example one whose Subnets share no enclosing Prefix, fails as unsupported. Its
-  member Subnets still import without membership. The values those Subnets inherit from it are reported, never copied
-  onto the Subnets.
+- **Shared Networks** are imported with their Declared Values, DHCP Options and Subnet membership, and never with a
+  Prefix (operator decision of 2026-10-22, #107). While the plugin requires a Prefix, every Shared Network fails as
+  unsupported, and its member Subnets import on the DHCPServer without membership. The values those Subnets inherit
+  from it are reported, never copied onto the Subnets. Once the plugin has that capability, the Shared Network imports
+  with no Prefix and holds its member Subnets.
 - **Identity.** Every top-level object has a DHCP Import Mapping, which is the identity a reverse direction will use:
   - the global configuration of each family, one DHCPServer per Server and family
   - Shared Network, by name

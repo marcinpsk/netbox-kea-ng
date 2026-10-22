@@ -234,3 +234,5 @@ class DroppedEntry:
     kind: Kind
     path: str
     detail: str
+    # The kinds whose entries the dropped entry holds, which the parse did not read.
+    hides: tuple[Kind, ...] = ()

@@ -135,6 +135,31 @@ def imported_dhcp_servers(server) -> list[int]:
     return list(KeaDhcpLink.objects.filter(server=server, kind="server").values_list("object_id", flat=True))
 
 
+def optional_shared_network_prefix(test: TestCase):
+    """Give netbox_dhcp the optional Shared Network prefix of #88 gap 1 for one test, and return the probe."""
+    from unittest import mock
+
+    from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+
+    if not connection.in_atomic_block:
+        raise RuntimeError("The schema change must roll back with the test transaction.")
+    shared_network, subnet = apps.get_model("netbox_dhcp", "SharedNetwork"), apps.get_model("netbox_dhcp", "Subnet")
+    prefix = shared_network._meta.get_field("prefix")
+    with connection.cursor() as cursor:
+        cursor.execute(f'ALTER TABLE "{shared_network._meta.db_table}" ALTER COLUMN "{prefix.column}" DROP NOT NULL')
+    inside_prefix = subnet.clean
+
+    def clean(row):
+        if row.shared_network is not None and row.shared_network.prefix_id is None:
+            return super(subnet, row).clean()
+        return inside_prefix(row)
+
+    for patcher in (mock.patch.object(prefix, "null", True), mock.patch.object(subnet, "clean", clean)):
+        patcher.start()
+        test.addCleanup(patcher.stop)
+    return probe()
+
+
 def linked_dhcp_targets(server):
     """Create one linked target of each DHCP Import Mapping kind, with object IDs that collide across models.
 

@@ -73,8 +73,8 @@ Kea's `interfaces-config` names to the DHCP Server's device or virtual machine i
 matches no interface is reported, and so are `*` and the address part of an entry such as `eth0/192.0.2.1`, which
 the DHCP plugin cannot hold.
 
-The import keeps a DHCP Import Mapping from each DHCP Server, Subnet, Pool, delegated-prefix Pool, Reservation,
-client class and custom Option Definition that it writes to its Kea source. A later run finds the object through
+The import keeps a DHCP Import Mapping from each DHCP Server, Shared Network, Subnet, Pool, delegated-prefix Pool,
+Reservation, client class and custom Option Definition that it writes to its Kea source. A later run finds the object through
 its mapping and updates it.
 Kea owns the managed fields of a mapped object. Each run sets every managed field from Kea. It clears a managed field
 that Kea does not declare, so the DHCP plugin inherits its value. The next run overwrites a hand edit of a managed
@@ -89,11 +89,12 @@ same object, space and code that no other Kea option took, for example one that 
 classes. When the definition of an option moves, for example from the global `option-def` to a client class, the
 Option keeps its row and binds to the new definition. So a DHCP
 Option that you add with another Option Definition stays. When you rename an object, the mapping stays and the import
-keeps your name. A client class is the exception: it keeps its Kea name, because Kea refers to a class by name. The
-first run after an upgrade maps each object that an earlier release imported, so it makes no duplicate. It also renames
-each client class from `kea1: voip` to `voip`. The DHCP plugin keeps client class names unique across all DHCP
-Servers. So when another client class already holds the name, the class is unsupported. A new class is not created.
-An existing class keeps its old name, and its other fields still follow Kea. With netbox-plugin-dhcp 0.2.0, these
+keeps your name. A client class and a Shared Network are the exceptions: they keep their Kea name, because Kea refers to
+them by name. The first run after an upgrade maps each object that an earlier release imported, so it makes no
+duplicate. It also renames each client class from `kea1: voip` to `voip`. The DHCP plugin keeps client class and
+Shared Network names unique across all DHCP Servers. So when another client class or Shared Network already holds the
+name, the object is unsupported. A new object is not created. An existing object keeps its old name, and its other
+fields still follow Kea. With netbox-plugin-dhcp 0.2.0, these
 global facts are unsupported: the family of a DHCP Server, the `server-id` parameters other than its type, a global
 `user-context`, the `flex-id` Reservation identifier, `allow-address-registration` (DHCPv6) and `stash-agent-options`
 (DHCPv4). The rest of the global configuration imports. On a Subnet, the relay address list, `user-context` and the
@@ -101,6 +102,23 @@ DHCPv4-over-DHCPv6 keys (`4o6-subnet`, `4o6-interface`, `4o6-interface-id`) are 
 `user-context` of a Pool or a delegated-prefix Pool. The rest of the Subnet, the Pool and the delegated-prefix Pool
 imports. The DHCP plugin 0.2.0 keeps the relay as free text, which the import does not write, so a value that you
 enter there stays.
+
+The import writes each Kea Shared Network as a DHCP plugin Shared Network. The Shared Network gets its Kea name, its
+Declared Values, its client classes, its additional classes, its interface and its DHCP Options. A Kea Shared Network
+has no prefix, so the import never links a Prefix to a Shared Network. A Prefix that you set on an imported Shared
+Network stays. Each member Subnet belongs to its Shared Network (`shared_network`), not to the DHCP Server
+(`dhcp_server`). A member Subnet does not hold the values that it inherits from its Shared Network: the DHCP plugin
+supplies them. When Kea moves a Subnet to another Shared Network, or out of one, the next run moves the Subnet.
+
+netbox-plugin-dhcp 0.2.0 needs a Prefix for each Shared Network. So with that release, every Shared Network is
+unsupported, and so are its DHCP Options. The entry names [gap 1](https://github.com/marcinpsk/netbox-kea-ng/issues/88).
+The member Subnets then belong to the DHCP Server. The import reports each value that a member Subnet inherits from its
+Shared Network. A DHCP plugin release that makes the Prefix optional imports the Shared Networks with no netbox-kea
+change.
+
+A Shared Network is also unsupported when another Shared Network holds its name, for example the Shared Network of the
+same name in the other family. When a run does not write a Shared Network that the DHCP plugin can hold, for example
+after a failed write, each member Subnet keeps its parent. A new member Subnet then belongs to the DHCP Server.
 
 The import writes each DHCPv6 delegated-prefix Pool (`pd-pools`) as a Prefix Delegation Pool in its Subnet, with its
 delegated length, `pool-id`, client classes, additional classes and DHCP Options. Its prefix and its excluded prefix
@@ -111,6 +129,16 @@ new Pool. The DHCP plugin checks each Pool when the import saves it. When it ref
 length shorter than the prefix, the Pool is unsupported with the reason of the plugin, its DHCP Options are skipped,
 and the run goes on. A delegated-prefix Pool that you add stays as it is, also when Kea has a Pool with the same
 prefix: the import writes its own.
+
+The import writes each Global and In-Subnet Reservation as a Host Reservation. The Host Reservation gets the
+identifier (also a `flex-id`), the hostname, the addresses, the client classes and the DHCP Options of the
+Reservation. A DHCPv4 Reservation also gives its boot fields `next-server`, `server-hostname` and `boot-file-name`.
+A boot field that Kea does not set has no value. The delegated prefixes of
+a DHCPv6 Reservation and the prefix that Kea excludes from each of them (`excluded-prefixes`) are NetBox Prefixes in
+the Server's `sync_vrf`, linked as `ipv6_prefixes` and `excluded_ipv6_prefixes`. The import creates or links both
+under the IPAM source `delegated-prefix` and the marker `[kea-sync: delegated prefix]`. When the claim of one of these
+Prefixes fails, the Host Reservation keeps the Prefixes that it had. The `user-context` of a Reservation is
+unsupported with netbox-plugin-dhcp 0.2.0, and the rest of the Reservation imports.
 
 The import writes every custom Option Definition that Kea declares, also one that no option uses, before it writes
 any DHCP Option. A definition of the global `option-def` belongs to the DHCP Server. A definition of a client class
@@ -128,27 +156,27 @@ The table lists the managed fields of each DHCP plugin model. A field behind a D
 when the installed DHCP plugin has that capability. Without it, the import does not write or clear the field. It
 reports the Kea value as unsupported. A Kea value that the DHCP plugin field cannot hold is also unsupported, for
 example a percentage with four decimal places. That field keeps its value. The `client_classes` and
-`evaluate_additional_classes` of a Subnet, a Pool or a delegated-prefix Pool refer to the client classes that the same
-run imported for the DHCP Server. The import reports a class name without such a class and leaves it out. A class
-that Kea defines but that was not imported is skipped. A class that Kea does not define, for example the built-in
+`evaluate_additional_classes` of a Shared Network, a Subnet, a Pool or a delegated-prefix Pool, and the
+`client_classes` of a Host Reservation, refer to the client classes that the same run imported for the DHCP Server. The import reports a class
+name without such a class and leaves it out. A class that Kea defines but that was not imported is skipped. A class that Kea does not define, for example the built-in
 class `KNOWN`, is not imported.
 The DHCP plugin keeps these relations unordered, so Kea's evaluation order of `evaluate-additional-classes` is lost.
-A Subnet's `interface` links the Subnet to the DHCP Server interface of that name. The DHCP Server has that interface
+A Subnet's or Shared Network's `interface` links the object to the DHCP Server interface of that name. The DHCP Server has that interface
 when Kea's `interfaces-config` names it, or when you link it while Kea serves every interface (`*`). Otherwise the
 interface is reported, with the reason: the DHCP Server has no device or virtual machine, it does not list the
-interface, or its device or virtual machine has no interface of that name. The Subnet then has no interface link, as
-Kea owns the link. The import creates no interface. A Subnet or Pool class list that is not valid is reported, and
-its class links stay as they are. A member Subnet of a Shared Network takes the interface of its Shared Network in
-Kea, and the import reports it as inherited.
+interface, or its device or virtual machine has no interface of that name. The object then has no interface link, as
+Kea owns the link. The import creates no interface. A Shared Network, Subnet or Pool class list that is not valid is
+reported, and its class links stay as they are. A member Subnet of a Shared Network takes the interface of its Shared
+Network in Kea. When the Shared Network is not imported, the import reports the interface as inherited.
 
 | Model | Managed fields | Fields behind a capability |
 | --- | --- | --- |
 | `DHCPServer` | `valid_lifetime`, `min_valid_lifetime`, `max_valid_lifetime`, `preferred_lifetime`, `min_preferred_lifetime`, `max_preferred_lifetime`, `offer_lifetime`, `renew_timer`, `rebind_timer`, `match_client_id`, `authoritative`, `reservations_global`, `reservations_out_of_pool`, `reservations_in_subnet`, `calculate_tee_times`, `t1_percent`, `t2_percent`, `cache_threshold`, `cache_max_age`, `store_extended_info`, `allocator`, `pd_allocator`, `adaptive_lease_time_threshold`, `ddns_send_updates`, `ddns_override_no_update`, `ddns_override_client_update`, `ddns_replace_client_name`, `ddns_generated_prefix`, `ddns_qualifying_suffix`, `ddns_update_on_renew`, `ddns_conflict_resolution_mode`, `ddns_ttl_percent`, `ddns_ttl`, `ddns_ttl_min`, `ddns_ttl_max`, `hostname_char_set`, `hostname_char_replacement`, `next_server`, `server_hostname`, `boot_file_name`, `decline_probation_period`, `echo_client_id`, `relay_supplied_options`, `server_id`, `host_reservation_identifiers`, `device_interfaces`, `virtual_machine_interfaces` | `family` (`server_family`), `user_context` (`user_context`), `server_id_identifier` (`server_id_fields`), `server_id_enterprise_id` (`server_id_fields`), `server_id_htype` (`server_id_fields`), `server_id_time` (`server_id_fields`), `allow_address_registration` (`address_registration`), `stash_agent_options` (`stash_agent_options`) |
-| `SharedNetwork` | None. The import does not write Shared Networks yet. | |
+| `SharedNetwork` | `name`, `dhcp_server`, `valid_lifetime`, `min_valid_lifetime`, `max_valid_lifetime`, `preferred_lifetime`, `min_preferred_lifetime`, `max_preferred_lifetime`, `offer_lifetime`, `renew_timer`, `rebind_timer`, `match_client_id`, `authoritative`, `reservations_global`, `reservations_out_of_pool`, `reservations_in_subnet`, `calculate_tee_times`, `t1_percent`, `t2_percent`, `cache_threshold`, `cache_max_age`, `store_extended_info`, `allocator`, `pd_allocator`, `adaptive_lease_time_threshold`, `ddns_send_updates`, `ddns_override_no_update`, `ddns_override_client_update`, `ddns_replace_client_name`, `ddns_generated_prefix`, `ddns_qualifying_suffix`, `ddns_update_on_renew`, `ddns_conflict_resolution_mode`, `ddns_ttl_percent`, `ddns_ttl`, `ddns_ttl_min`, `ddns_ttl_max`, `hostname_char_set`, `hostname_char_replacement`, `next_server`, `server_hostname`, `boot_file_name`, `interface_id`, `rapid_commit`, `client_classes`, `evaluate_additional_classes`, `server_interfaces` | `relay` (`relay_address_list`), `user_context` (`user_context`) |
 | `Subnet` | `prefix`, `dhcp_server`, `shared_network`, `subnet_id`, `valid_lifetime`, `min_valid_lifetime`, `max_valid_lifetime`, `preferred_lifetime`, `min_preferred_lifetime`, `max_preferred_lifetime`, `offer_lifetime`, `renew_timer`, `rebind_timer`, `match_client_id`, `authoritative`, `reservations_global`, `reservations_out_of_pool`, `reservations_in_subnet`, `calculate_tee_times`, `t1_percent`, `t2_percent`, `cache_threshold`, `cache_max_age`, `store_extended_info`, `allocator`, `pd_allocator`, `adaptive_lease_time_threshold`, `ddns_send_updates`, `ddns_override_no_update`, `ddns_override_client_update`, `ddns_replace_client_name`, `ddns_generated_prefix`, `ddns_qualifying_suffix`, `ddns_update_on_renew`, `ddns_conflict_resolution_mode`, `ddns_ttl_percent`, `ddns_ttl`, `ddns_ttl_min`, `ddns_ttl_max`, `hostname_char_set`, `hostname_char_replacement`, `next_server`, `server_hostname`, `boot_file_name`, `interface_id`, `rapid_commit`, `client_classes`, `evaluate_additional_classes`, `server_interfaces` | `relay` (`relay_address_list`), `dhcp4o6_subnet` (`dhcp4o6_subnet_selection`), `dhcp4o6_interface` (`dhcp4o6_subnet_selection`), `dhcp4o6_interface_id` (`dhcp4o6_subnet_selection`), `user_context` (`user_context`) |
 | `Pool` | `subnet`, `ip_range`, `pool_id`, `ddns_send_updates`, `ddns_override_no_update`, `ddns_override_client_update`, `ddns_replace_client_name`, `ddns_generated_prefix`, `ddns_qualifying_suffix`, `ddns_update_on_renew`, `ddns_conflict_resolution_mode`, `ddns_ttl_percent`, `ddns_ttl`, `ddns_ttl_min`, `ddns_ttl_max`, `hostname_char_set`, `hostname_char_replacement`, `client_classes`, `evaluate_additional_classes` | `user_context` (`user_context`) |
 | `PDPool` | `subnet`, `prefix`, `delegated_length`, `excluded_prefix`, `pool_id`, `client_classes`, `evaluate_additional_classes` | `user_context` (`user_context`) |
-| `HostReservation` | `subnet`, `dhcp_server`, `hostname`, `hw_address`, `duid`, `circuit_id`, `client_id`, `flex_id`, `ipv4_address`, `ipv6_addresses`, `ipv6_prefixes` | |
+| `HostReservation` | `subnet`, `dhcp_server`, `hostname`, `hw_address`, `duid`, `circuit_id`, `client_id`, `flex_id`, `ipv4_address`, `next_server`, `server_hostname`, `boot_file_name`, `ipv6_addresses`, `ipv6_prefixes`, `excluded_ipv6_prefixes`, `client_classes` | `user_context` (`user_context`) |
 | `Option` | `definition`, `data`, `csv_format`, `send_option`, `client_classes` | `space` (`option_without_definition`), `code` (`option_without_definition`), `user_context` (`user_context`) |
 | `OptionDefinition` | `space`, `code`, `family`, `type`, `array`, `record_types`, `encapsulate`, `dhcp_server`, `client_class` | `user_context` (`user_context`) |
 | `ClientClass` | `name`, `dhcp_server`, `test`, `template_test`, `only_in_additional_list`, `valid_lifetime`, `min_valid_lifetime`, `max_valid_lifetime`, `preferred_lifetime`, `min_preferred_lifetime`, `max_preferred_lifetime`, `next_server`, `server_hostname`, `boot_file_name` | `user_context` (`user_context`) |
@@ -169,19 +197,19 @@ fact that the run did not write has a reason:
   the installed release lacks a DHCP Plugin Capability that the fact needs, the entry names that capability and its
   row in the [DHCP plugin gap list](https://github.com/marcinpsk/netbox-kea-ng/issues/88). The import checks the
   installed models at each run, so a release that gains the capability imports the fact with no netbox-kea change.
-- **Not imported**: the fact is out of scope (for example a Shared Network), the Kea data is not valid, or the DHCP
-  plugin has no field for it by design.
+- **Not imported**: the fact is out of scope (for example a value that a Subnet inherits from a Shared Network that
+  was not imported), the Kea data is not valid, or the DHCP plugin has no field for it by design.
 - **Skipped**: the parent object was not imported, IPAM ownership kept the IP Range unchanged, a write failed,
   Kea could not be read in full, or the run kept a stale object (see below).
 
-A run removes each Stale DHCP Import Object: a mapped Subnet, Pool, delegated-prefix Pool, Reservation, client class
-or custom Option Definition whose Kea source Kea no longer reports. A Pool whose range changes in Kea is a new Pool,
+A run removes each Stale DHCP Import Object: a mapped Shared Network, Subnet, Pool, delegated-prefix Pool,
+Reservation, client class or custom Option Definition whose Kea source Kea no longer reports. A Pool whose range changes in Kea is a new Pool,
 and so is a delegated-prefix Pool whose prefix or delegated length changes, so the run removes the old row and creates
 a new one. The run removes an object only after it read every Kea object of that kind. When
 the Server Configuration or the Reservation Snapshot was not read in full, the run keeps the objects of the kinds that
 the read covers, and one skipped entry for each kind tells why and how many objects it kept. The run also keeps an
 object when its removal would remove a DHCP plugin row that the run keeps, for example a Pool that an operator added
-to a stale Subnet, when an Option still uses a stale Option Definition, or when a row that the run keeps names a
+to a stale Subnet or a Subnet that an operator added to a stale Shared Network, when an Option still uses a stale Option Definition, or when a row that the run keeps names a
 stale client class in its `client_classes` or `evaluate_additional_classes` (without the class, that row would reach
 more clients). A DHCP Option of an object that the run removes goes with that object and keeps nothing. Before it
 writes anything, the run finds the stale objects whose removal removes or changes no object that it keeps, so a kept

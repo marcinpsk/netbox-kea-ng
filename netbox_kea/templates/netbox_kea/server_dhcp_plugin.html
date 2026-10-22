@@ -45,10 +45,10 @@
                       Shared Network grouping
                     </h6>
                     <p class="card-text small mb-0">
-                      Kea <strong>shared-networks</strong> define a DHCP link and subnet-selection domain.
-                      They do not map to the DHCP plugin's <em>Shared Networks</em>. The DHCP plugin's
-                      Shared Networks require an aggregate Prefix. Member Subnets are imported individually
-                      and remain attached directly to the DHCP Server.
+                      Kea <strong>shared-networks</strong> import as the DHCP plugin's <em>Shared Networks</em>,
+                      with no Prefix. While the DHCP plugin requires a Prefix, each Shared Network is unsupported
+                      and its member Subnets import on the DHCP Server. A Subnet that already belongs to a Shared
+                      Network keeps it when a run does not write that Shared Network.
                     </p>
                   </div>
                 </div>

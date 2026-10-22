@@ -33,8 +33,6 @@ from netbox_kea.kea_paths import OPTION_DEF
 from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
-# The open tickets of #89 that map a key.
-_PARITY_TICKETS = frozenset({97, 98, 99, 104, 107})
 # Collections of child objects: an empty one in config-get is a Kea default, never a merge.
 _CHILD_COLLECTIONS = frozenset({"option-data", OPTION_DEF, "pools", "pd-pools", "reservations", "subnet4", "subnet6"})
 
@@ -240,12 +238,46 @@ class LedgerEntriesTest(SimpleTestCase):
             for key, entry in keys.items()
         ]
 
-    def test_a_pending_entry_names_an_open_parity_ticket(self):
-        for family, table, key, entry in self._entries():
-            ticket = entry.ticket if isinstance(entry, Pending) else getattr(entry, "pending", None)
-            if ticket is not None:
-                with self.subTest(family=family, table=table, key=key):
-                    self.assertIn(ticket, _PARITY_TICKETS)
+    def test_no_entry_is_pending(self):
+        pending = [
+            (family, table, key)
+            for family, table, key, entry in self._entries()
+            if isinstance(entry, Pending) or getattr(entry, "pending", None) is not None
+        ]
+        self.assertEqual(pending, [])
+
+    def test_the_shared_network_keys_are_mapped_to_the_plugin_shared_network_and_its_members(self):
+        for family in LEDGER:
+            network = LEDGER[family]["shared-networks"]
+            with self.subTest(family=family):
+                self.assertEqual(
+                    LEDGER[family][f"Dhcp{family}"]["shared-networks"],
+                    Mapped("SharedNetwork", (Capability.SHARED_NETWORK_OPTIONAL_PREFIX,)),
+                )
+                self.assertEqual(
+                    network[f"subnet{family}"],
+                    Mapped("Subnet.shared_network", (Capability.SHARED_NETWORK_OPTIONAL_PREFIX,)),
+                )
+                self.assertEqual(
+                    network["name"],
+                    Mapped(
+                        "SharedNetwork.name",
+                        (Capability.SHARED_NETWORK_OPTIONAL_PREFIX, Capability.NAME_PER_SERVER),
+                    ),
+                )
+                self.assertEqual(network["interface"], Mapped("SharedNetwork.server_interfaces"))
+                gated = {
+                    key: entry.capabilities for key, entry in network.items() if getattr(entry, "capabilities", ())
+                }
+                self.assertEqual(
+                    gated,
+                    {
+                        "name": (Capability.SHARED_NETWORK_OPTIONAL_PREFIX, Capability.NAME_PER_SERVER),
+                        f"subnet{family}": (Capability.SHARED_NETWORK_OPTIONAL_PREFIX,),
+                        "relay": (Capability.RELAY_ADDRESS_LIST,),
+                        "user-context": (Capability.USER_CONTEXT,),
+                    },
+                )
 
     def test_the_dhcpv6_pd_pool_keys_are_mapped_to_the_plugin_pd_pool(self):
         pd_pool = LEDGER[6]["pd-pools"]
@@ -268,6 +300,42 @@ class LedgerEntriesTest(SimpleTestCase):
             },
         )
         self.assertEqual(pd_pool["user-context"].capabilities, (Capability.USER_CONTEXT,))
+
+    def test_the_reservation_keys_are_mapped_to_the_plugin_host_reservation(self):
+        identity = {key: f"HostReservation.{key.replace('-', '_')}" for key in ("hw-address", "duid", "flex-id")}
+        common = {
+            **identity,
+            "hostname": "HostReservation.hostname",
+            "client-classes": "HostReservation.client_classes",
+            "option-data": "Option",
+            "user-context": "HostReservation.user_context",
+        }
+        expected = {
+            4: {
+                **common,
+                "circuit-id": "HostReservation.circuit_id",
+                "client-id": "HostReservation.client_id",
+                "ip-address": "HostReservation.ipv4_address",
+                "next-server": "HostReservation.next_server",
+                "server-hostname": "HostReservation.server_hostname",
+                "boot-file-name": "HostReservation.boot_file_name",
+            },
+            6: {
+                **common,
+                "ip-addresses": "HostReservation.ipv6_addresses",
+                "prefixes": "HostReservation.ipv6_prefixes",
+                "excluded-prefixes": "HostReservation.excluded_ipv6_prefixes",
+            },
+        }
+        for family, targets in expected.items():
+            reservations = LEDGER[family]["reservations"]
+            with self.subTest(family=family):
+                self.assertEqual(
+                    {key: type(entry) for key, entry in reservations.items()}, dict.fromkeys(targets, Mapped)
+                )
+                self.assertEqual({key: entry.target for key, entry in reservations.items()}, targets)
+                gated = {key: entry.capabilities for key, entry in reservations.items() if entry.capabilities}
+                self.assertEqual(gated, {"user-context": (Capability.USER_CONTEXT,)})
 
     def test_a_not_imported_entry_refuses_a_reason_that_is_not_for_a_key(self):
         with self.assertRaises(ValueError):
@@ -299,17 +367,19 @@ class LedgerEntriesTest(SimpleTestCase):
 
     def test_the_mapped_settings_are_the_field_maps_of_the_import(self):
         gated_subnet = tuple((key, attr, transform) for key, attr, transform, _cap in fields.GATED_SUBNET_FIELDS)
-        # The Subnet interface is a relation to a DHCP server interface, written apart from the field maps.
+        # The interface is a relation to a DHCP server interface, written apart from the field maps.
         interface = (("interface", "server_interfaces", None),)
+        gated_network = tuple((key, attr, transform) for key, attr, transform, _cap in fields.GATED_NETWORK_FIELDS)
         field_maps = {
             "Dhcp": ("DHCPServer", fields.SERVER_FIELDS),
-            "subnet": ("Subnet", (*fields.SUBNET_FIELDS, *gated_subnet, *interface)),
+            "shared-networks": ("SharedNetwork", (*fields.NETWORK_FIELDS, *gated_network, *interface)),
+            "subnet": ("Subnet", (*fields.NETWORK_FIELDS, *gated_subnet, *interface)),
             "pools": ("Pool", fields.POOL_FIELDS),
             "client-classes": ("ClientClass", fields.CLIENT_CLASS_FIELDS),
         }
 
         def table_of(prefix: str, family: Family) -> str:
-            return prefix if prefix in ("pools", "client-classes") else f"{prefix}{family}"
+            return prefix if prefix in ("pools", "client-classes", "shared-networks") else f"{prefix}{family}"
 
         for prefix, (model, field_map) in field_maps.items():
             # One field map serves both families, so each key must be a key of at least one of them.

@@ -47,6 +47,32 @@ class TestParseDhcpConfigStructure(SimpleTestCase):
         self.assertIsNone(by_id[1].shared_network)
         self.assertEqual(by_id[2].shared_network, "office")
 
+    def test_a_shared_network_carries_its_class_lists_and_user_context(self):
+        network = {
+            "name": "office",
+            "client-classes": ["voip"],
+            "evaluate-additional-classes": ["late"],
+            "user-context": {"floor": 2},
+        }
+
+        (parsed,) = parse_dhcp_config({"shared-networks": [network]}, 4).shared_networks
+
+        self.assertEqual(
+            (parsed.client_classes, parsed.evaluate_additional_classes, parsed.user_context),
+            (("voip",), ("late",), {"floor": 2}),
+        )
+
+    def test_a_shared_network_class_list_that_is_not_valid_is_dropped(self):
+        network = {"name": "office", "client-classes": "voip"}
+
+        result = parse_dhcp_config({"shared-networks": [network]}, 4)
+
+        self.assertIsNone(result.shared_networks[0].client_classes)
+        self.assertEqual(
+            [(entry.kind, entry.path) for entry in result.dropped],
+            [(Kind.SHARED_NETWORK, "Dhcp4/shared-networks[name=office]/client-classes")],
+        )
+
     def test_v6_uses_subnet6_key_and_family_6(self):
         conf = {"subnet6": [{"id": 7, "subnet": "2001:db8::/64"}]}
         result = parse_dhcp_config(conf, 6)
@@ -449,6 +475,11 @@ class TestParseDhcpConfigRobustness(SimpleTestCase):
         self.assertEqual(result.shared_networks, [])
         # Its subnets are dropped too (no parent name to attach them to).
         self.assertEqual(result.subnets, [])
+        (dropped,) = result.dropped
+        self.assertEqual(
+            (dropped.kind, dropped.path, dropped.hides),
+            (Kind.SHARED_NETWORK, "Dhcp4/shared-networks[0]", (Kind.SUBNET, Kind.POOL, Kind.PD_POOL)),
+        )
 
     def test_non_dict_conf_returns_empty(self):
         result = parse_dhcp_config("not a dict", 4)
