@@ -1048,6 +1048,39 @@ class WidenedReservationEditTests(TestCase):
         sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
         self.assertEqual(sent["excluded-prefixes"], ["", "2001:db8:500:100:ff::/80"])
 
+    def test_a_change_of_a_repeated_excluded_prefix_that_fits_two_delegations_is_refused(self):
+        both = ["2001:db8:500:100:ff::/80", "2001:db8:500:100:ff::/80"]
+        raw = {**_raw(6), "prefixes": ["2001:db8:500::/48", "2001:db8:500:100::/56"], "excluded-prefixes": both}
+        current, state = self._shown(6, raw)
+        # One exclusion goes, and the field cannot say which delegation keeps its own.
+        values = self._values(current, excluded_prefixes=(IPv6Network(both[0]),))
+        with stub_kea(_responses(6, raw=raw)) as kea, self.assertRaises(reservation_edit.EditConflict) as raised:
+            reservation_edit.save_edit(self.server, 6, 20, _IDENTITY, state.initial["managed_fingerprint"], values)
+        self.assertEqual(raised.exception.field, "excluded_prefixes")
+        self.assertIn("Change it in Kea", raised.exception.message)
+        self.assertNotIn("reservation-update", kea.commands())
+
+    def test_a_repeated_excluded_prefix_follows_the_delegation_that_an_edit_keeps(self):
+        both = ["2001:db8:500:100:ff::/80", "2001:db8:500:100:ff::/80"]
+        raw = {**_raw(6), "prefixes": ["2001:db8:500::/48", "2001:db8:500:100::/56"], "excluded-prefixes": both}
+        current, _state = self._shown(6, raw)
+        wide, narrow = current.delegated_prefixes
+        other = IPv6Network("2001:db8:900::/56")
+        for label, delegated, excluded, expected in (
+            ("reordered", (narrow, wide), both, both),
+            ("one delegation removed with its exclusion", (narrow,), both[:1], both[:1]),
+            ("an unrelated delegation added", (wide, narrow, other), both, [*both, ""]),
+        ):
+            values = self._values(
+                current,
+                delegated_prefixes=delegated,
+                excluded_prefixes=tuple(IPv6Network(prefix) for prefix in excluded),
+            )
+            with self.subTest(label):
+                _outcome, kea = self._save_edit(6, raw, values)
+                sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+                self.assertEqual(sent["excluded-prefixes"], expected)
+
     def test_an_edit_keeps_one_excluded_prefix_that_two_delegations_exclude(self):
         # Kea 3.2 stores an exclusion for each delegation, so a /48 and a /56 inside it can exclude the same prefix.
         both = ["2001:db8:500:100:ff::/80", "2001:db8:500:100:ff::/80"]

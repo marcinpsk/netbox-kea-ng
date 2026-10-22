@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -165,42 +166,42 @@ def excluded_prefix_pairs(
 ) -> tuple[ExcludedPrefix, ...]:
     """Pair each excluded prefix with the delegated prefix that holds it, in the order of *delegated*.
 
-    An excluded prefix stays with its *live* delegated prefix while that one is still delegated. Any other one pairs
-    with the one delegated prefix that holds it.
+    The *live* pairs of an excluded prefix stay while the field keeps that prefix as often as they hold it. Any other
+    excluded prefix pairs with the one delegated prefix that holds it.
 
     Raises:
-        EditConflict: If an excluded prefix is in no delegated prefix or in more than one, or a delegated prefix
-            would exclude two prefixes.
+        EditConflict: If an excluded prefix is in no delegated prefix, or in more than one and the field does not say
+            which one, or a delegated prefix would exclude two prefixes.
 
     """
     paired: dict[ipaddress.IPv6Network, ipaddress.IPv6Network] = {}
-    for prefix in excluded:
-        # Kea keeps an exclusion for each delegation, so two delegations can exclude the same prefix.
-        kept = next(
-            (
-                pair.delegated
-                for pair in live
-                if pair.excluded == prefix and pair.delegated in delegated and pair.delegated not in paired
-            ),
-            None,
-        )
-        holders = (
-            [kept]
-            if kept is not None
-            else [held for held in delegated if prefix.prefixlen > held.prefixlen and prefix.subnet_of(held)]
-        )
-        if len(holders) != 1:
+    # Kea keeps an exclusion for each delegation, so two delegations can exclude the same prefix.
+    for prefix, count in Counter(excluded).items():
+        kept = [pair.delegated for pair in live if pair.excluded == prefix and pair.delegated in delegated]
+        holders = [held for held in delegated if prefix.prefixlen > held.prefixlen and prefix.subnet_of(held)]
+        if count == len(kept):
+            chosen = kept
+        elif kept and len(holders) > 1:
+            raise EditConflict(
+                f"The excluded prefix {prefix} is inside more than one delegated prefix, so the form cannot tell "
+                "which delegated prefix gains or loses it. Change it in Kea, or remove the delegated prefix with it.",
+                field="excluded_prefixes",
+            )
+        elif len(holders) != 1:
             where = "is not inside a delegated prefix" if not holders else "is inside more than one delegated prefix"
             raise EditConflict(
                 f"The excluded prefix {prefix} {where} of this Reservation. "
                 "Each excluded prefix must be a longer prefix inside exactly one delegated prefix.",
                 field="excluded_prefixes",
             )
-        if holders[0] in paired:
-            raise EditConflict(
-                f"The delegated prefix {holders[0]} can exclude one prefix only.", field="excluded_prefixes"
-            )
-        paired[holders[0]] = prefix
+        else:
+            chosen = holders * count
+        for held in chosen:
+            if held in paired:
+                raise EditConflict(
+                    f"The delegated prefix {held} can exclude one prefix only.", field="excluded_prefixes"
+                )
+            paired[held] = prefix
     return tuple(ExcludedPrefix(held, paired[held]) for held in delegated if held in paired)
 
 
