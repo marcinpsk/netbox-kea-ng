@@ -199,6 +199,19 @@ a plan without a read time. Such a row still references its Prefixes, so the pha
 and keeps every link. A Prefix whose claim failed before its attachment counts as one error, also when the later
 claim of the phase succeeds.
 
+### Order of the sync job passes
+
+This section was added for marcinpsk/netbox-kea-ng#153. The sync job runs its scheduled DHCP plugin import before
+the IPAM sync. The `subnet`, `pool` and `reservation` phases of the job clean up objects that the import also
+references. When the job ran the IPAM sync first, the stale DHCP plugin rows still existed, so the DHCP plugin
+reference guard dropped the stale links without deprecation or removal. The import then removed the rows, and the
+Prefix, IP Range or IP address stayed with no link that a later run could find. With the import first, the rows are
+gone when the cleanup reads the guard. The cleanup rule does not change: an unmapped DHCP plugin row still protects
+the objects that it references. Two limits are accepted. A Run Now of one Server syncs IPAM only, and a manual import
+can run after the job, so both can still leave such an object without an owner. The import attaches the existing IP
+address of a Global Reservation and never creates it, so an address that the `lease` phase creates is attached in
+the next run.
+
 ### Interface
 
 One IPAM Reconciliation module owns ownership, cleanup, per-row savepoints and conflict counting:

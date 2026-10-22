@@ -29,7 +29,10 @@
               <p class="small text-muted mb-1">{{ latest_job.completed }}</p>
               {% if latest_job.data.summary %}
                 {% for entry in latest_job.data.summary %}
-                  {% if entry.pk == object.pk %}
+                  {% if entry.pk == object.pk and "created" not in entry %}
+                    <hr>
+                    <p class="small text-muted mb-0">The job stopped before the IPAM sync of this Server finished.</p>
+                  {% elif entry.pk == object.pk %}
                     <hr>
                     <div class="d-flex flex-wrap gap-3 small">
                       <span>✅ Created: <strong>{{ entry.created }}</strong></span>

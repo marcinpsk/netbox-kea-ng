@@ -40,10 +40,14 @@ In a branch the import refuses and stores no result.
 ### Scheduled runs
 
 With **Scheduled Import** on, each run of the periodic sync job runs the DHCP Import of each Server that the
-integration runs for, after the IPAM sync of all Servers. It is the same import as **Sync to DHCP plugin now**, and it
+integration runs for, before the IPAM sync of all Servers. It is the same import as **Sync to DHCP plugin now**, and it
 stores its result with the trigger Scheduled. The reserved user `netbox-kea-sync` makes its changes.
 **Sync Enabled (global)** and the IPAM sync settings do not stop it. A **Run Now** of one Server on the Sync Jobs page
-syncs IPAM only. The job log shows the counts of each family of each Server. The import of a Server fails when Kea
+syncs IPAM only. When the IPAM sync runs before the import removes the record of a removed Kea Subnet, Pool or
+Reservation, for example in a **Run Now**, or with **Scheduled Import** off and a later **Sync to DHCP plugin now**,
+its Prefix, IP Range or IP address stays and has no owner. The import attaches the address of a Global Reservation
+only when NetBox already has it, so an address that the lease sync adds is attached in the next run.
+The job log shows the counts of each family of each Server. The import of a Server fails when Kea
 does not give its configuration, when the configuration cannot be parsed, when a read or a write of one object fails,
 or when the import stops. The job then records the failure, continues with the next Server, and ends as failed. When
 another DHCP Import of a Server is running, the job skips that Server. When NetBox cannot dispatch the events of the
