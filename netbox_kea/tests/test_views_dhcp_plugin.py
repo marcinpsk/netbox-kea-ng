@@ -352,7 +352,7 @@ class SyncNowEndToEndTest(TestCase):
         self.assertContains(resp, "Shared Network grouping")
         self.assertContains(resp, "Direct-interface mapping")
         self.assertContains(resp, "DHCP option mapping")
-        self.assertContains(resp, "require an aggregate Prefix")
+        self.assertContains(resp, "While the DHCP plugin requires a Prefix, each Shared Network is unsupported")
         self.assertContains(resp, "DHCPServerInterface")
         self.assertContains(resp, "does not preserve Shared Network identity")
         self.assertContains(resp, "DHCP options are imported")
