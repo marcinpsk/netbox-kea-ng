@@ -664,8 +664,20 @@ class PDPoolClaim:
     prefix: IPNetworkValue
 
 
+@dataclass(frozen=True)
+class DelegatedPrefixClaim:
+    """A delegated or excluded prefix of an imported Reservation, to claim without cleanup."""
+
+    prefix: IPNetworkValue
+
+
 # The source of each network record that a claim takes.
-_NETWORK_CLAIM_SOURCES: dict[type, str] = {SubnetClaim: "subnet", PoolClaim: "pool", PDPoolClaim: PD_POOL}
+_NETWORK_CLAIM_SOURCES: dict[type, str] = {
+    SubnetClaim: "subnet",
+    PoolClaim: "pool",
+    PDPoolClaim: PD_POOL,
+    DelegatedPrefixClaim: DelegatedPrefixPhase.source,
+}
 
 
 @dataclass(frozen=True)
@@ -808,7 +820,11 @@ def claim(
 def claim(
     server: Server,
     family: Family,
-    records: Sequence[Lease] | Sequence[SubnetClaim] | Sequence[PoolClaim] | Sequence[PDPoolClaim],
+    records: Sequence[Lease]
+    | Sequence[SubnetClaim]
+    | Sequence[PoolClaim]
+    | Sequence[PDPoolClaim]
+    | Sequence[DelegatedPrefixClaim],
     force: bool,
 ) -> ClaimResult: ...
 
@@ -820,15 +836,16 @@ def claim(
     | Sequence[Reservation]
     | Sequence[SubnetClaim]
     | Sequence[PoolClaim]
-    | Sequence[PDPoolClaim],
+    | Sequence[PDPoolClaim]
+    | Sequence[DelegatedPrefixClaim],
     force: bool,
     *,
     catalogue: CatalogueSnapshot | None = None,
 ) -> ClaimResult:
     """Claim one source's records in the Server's VRF, with per-object outcomes and no stale cleanup.
 
-    A call contains one source: address leases, delegated-prefix leases, Reservations, Subnets, Pools or the prefixes
-    of delegated-prefix Pools. All records are validated and grouped before any write. Lease masks and the Subnet IDs
+    A call contains one source: address leases, delegated-prefix leases, Reservations, Subnets, Pools, the prefixes
+    of delegated-prefix Pools, or the delegated and excluded prefixes of imported Reservations. All records are validated and grouped before any write. Lease masks and the Subnet IDs
     of delegated prefixes come from a live complete Kea Subnet Catalogue; a delegated prefix is claimed as a Prefix. Reservations carry their verified
     Subnet mask, and *catalogue*, the catalogue that verified them, gives their published names; only a Reservation
     claim takes it. Network records carry their own canonical network and Pool bounds.
@@ -1916,7 +1933,7 @@ def _network_result(server: Server, source: str, row: _NetworkReport, outcome: _
 def _claim_network_records(
     server: Server,
     family: Family,
-    records: Sequence[Lease | Reservation | SubnetClaim | PoolClaim | PDPoolClaim],
+    records: Sequence[Lease | Reservation | SubnetClaim | PoolClaim | PDPoolClaim | DelegatedPrefixClaim],
     *,
     force: bool,
 ) -> ClaimResult:
@@ -1925,9 +1942,11 @@ def _claim_network_records(
     source = _NETWORK_CLAIM_SOURCES[expected]
     reports: dict[str, _NetworkReport] = {}
     for record in records:
-        if not isinstance(record, (SubnetClaim, PoolClaim, PDPoolClaim)) or type(record) is not expected:
+        if type(record) is not expected or not isinstance(
+            record, (SubnetClaim, PoolClaim, PDPoolClaim, DelegatedPrefixClaim)
+        ):
             raise ValueError("A claim takes one homogeneous source")
-        network = record.prefix if isinstance(record, PDPoolClaim) else record.network
+        network = record.prefix if isinstance(record, (PDPoolClaim, DelegatedPrefixClaim)) else record.network
         if network.version != family:
             raise ValueError("The network does not match the claim family")
         if not isinstance(record, PoolClaim):
