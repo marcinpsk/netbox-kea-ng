@@ -384,19 +384,26 @@ URL request
   `ImportSummary` counts only its entries, and an unchanged row has no entry. `store_run` stores a `DhcpImportRun`
   with its `DhcpImportEntry` rows, keeps the `RETAINED_RUNS` latest runs of the Server, and logs a database failure
   instead of raising it. The rows are main-only (ADR 0007) and not change-logged.
+- **Before you change the DHCP Import**, read ADR 0013, the capability probe reference (`CHECKS` in
+  `integrations/dhcp_plugin_capabilities.py`, one check for each #88 gap, and #88 itself) and the parity ledger below.
+  The user guide page `docs/guide/dhcp-import.md` lists each capability and reason code, and
+  `test_dhcp_import_fields.py` compares both tables with `CAPABILITY_LABELS`, `REASON_LABELS` and `REASON_OUTCOME`.
 - **Parity ledger** (`integrations/dhcp_import_ledger.py`, ADR 0013): every key that Kea accepts on an object the
   DHCP Import can meet is listed once, as mapped (with the DHCP Plugin Capability its write needs), not imported
-  (with a reason), pending (with the #89 ticket that maps it) or deprecated (with the key Kea returns instead).
+  (with a reason) or deprecated (with the key Kea returns instead). The parse gives each not-imported key of every
+  Kea object an entry of the run (`_ParseLog.leave_out` in `mappers/kea_to_dhcp.py`).
   `MERGED_KEYS` lists the keys Kea merges into `config-get` from the parent object, and `KEA_DEFAULTS` the values
   Kea returns when no level declares a key. `test_dhcp_import_ledger.py` compares them with the recordings, and in
-  the DHCP plugin job with the import's field maps and the plugin models.
+  the DHCP plugin job with the import's field maps and the plugin models. `CoverageImportTest` in
+  `test_dhcp_import.py` runs the coverage configuration through `run_dhcp_plugin_import` and compares the stored
+  unsupported and not-imported entries with the ledger and the probe.
   When a change maps a key, change its entry in the same change.
   - **After a Kea upgrade:** set the new `KEA_VERSION`, run `scripts/record_kea_config_get.py`, and list each key the
     ledger test reports as missing. Remove each key that Kea no longer has. When Kea deprecates a key, set it on its
     object in `kea-dhcp{4,6}.conf`, record again, and list it as deprecated. When a merged-key or Kea-default
     assertion fails, update `MERGED_KEYS` or `KEA_DEFAULTS` (the Declared Value inference reads both).
   - **After a netbox-plugin-dhcp upgrade:** run the DHCP plugin job. A "no plugin home" key whose name is now a plugin
-    field fails; move it to pending or mapped. A mapped target that the plugin removed fails. When the upgrade ships
+    field fails; map it. A mapped target that the plugin removed fails. When the upgrade ships
     a #88 change, check that the capability check matches the shipped shape, as #88 says. The entries that name the
     capability stay: the capability probe (#106) finds it present at run time.
 - **Sync interval**: `SyncConfig.interval_minutes` is the only runtime source.

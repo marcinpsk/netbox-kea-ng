@@ -389,7 +389,7 @@ class DhcpImportEventTest(_Recorded, TransactionTestCase):
         super().setUpClass()
 
     def _post_import(self, server, conf):
-        from netbox_kea.tests.test_views_dhcp_plugin import _sync_responses
+        from netbox_kea.tests.kea_stub import _sync_responses
 
         self.client.force_login(User.objects.create_superuser(f"importer-{uuid.uuid4()}"))
         with stub_kea(_sync_responses(conf)):

@@ -34,7 +34,7 @@ from ..mappers.kea_to_dhcp import (
 from ..pools import Pool, parse_pool
 from ..reservations import MAX_IDENTITY_LENGTH, IdentifierType, InSubnetReservationScope, Reservation, identity_text
 from .dhcp_import_ledger import KEA_DEFAULTS, MERGED_KEYS
-from .dhcp_import_report import KIND_LABELS, Kind, counted
+from .dhcp_import_report import KIND_LABELS, ImportEntry, Kind, counted
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -285,6 +285,8 @@ class FamilyPlan:
     reservations: ReservationObservation | None
     # The configuration entries that the parse dropped as invalid.
     dropped: tuple[DroppedEntry, ...]
+    # The global keys that the parity ledger lists as not imported, one entry each.
+    not_imported: tuple[ImportEntry, ...]
 
     @property
     def every_option_definition(self) -> tuple[Planned[OptionDefinitionKey, OptionDefIntent], ...]:
@@ -403,6 +405,7 @@ def plan_family(config: ServerConfigIntent, observation: ReservationObservation 
         subnets=_planned_subnets(config, family, networks),
         reservations=observation,
         dropped=tuple(config.dropped),
+        not_imported=config.not_imported,
     )
 
 

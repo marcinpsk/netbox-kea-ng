@@ -30,10 +30,9 @@ from netbox_kea.models import Server
 from netbox_kea.sync_permissions import sync_gate
 from netbox_kea.views import dhcp_plugin_sync as dps
 
-from .kea_stub import _catalogue_responses, _res_get, _res_page, _subnet_list, complete_lease, stub_kea
+from .kea_stub import _catalogue_responses, _res_get, _res_page, _subnet_list, _sync_responses, complete_lease, stub_kea
 from .test_reservation_mutation_views import _mutation_responses
 from .test_sync_views import _lease_get
-from .test_views_dhcp_plugin import _sync_responses
 from .test_views_leases import _lease_stub, _reservation_stub
 from .utils import _grant, _make_db_server, with_kea_client_config, with_sync_config, without_dhcp_plugin
 

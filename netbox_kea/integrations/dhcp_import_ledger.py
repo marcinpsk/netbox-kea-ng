@@ -7,13 +7,13 @@
 
 * :class:`Mapped`: the import writes the key to a netbox_dhcp model or field.
 * :class:`NotImported`: the key is not imported, for a reason from the closed set of the run result.
-* :class:`Pending`: a later ticket of #89 maps the key.
 * :class:`Deprecated`: Kea rewrites the key to its replacement, so ``config-get`` never returns it.
 
 An entry names each DHCP Plugin Capability (#88) that its write needs, and :mod:`.dhcp_plugin_capabilities` checks
 each one. :data:`MERGED_KEYS` lists the keys that Kea merges into ``config-get`` from the parent object, and
 :data:`KEA_DEFAULTS` the values that Kea gives when no level declares a key, for the Declared Value inference.
-It reads no database. ``test_dhcp_import_ledger.py`` compares it with the recordings of a real Kea.
+:func:`not_imported` returns the keys of one Kea object that the import does not write. It reads no database.
+``test_dhcp_import_ledger.py`` compares it with the recordings of a real Kea.
 """
 
 from __future__ import annotations
@@ -31,8 +31,6 @@ class Mapped:
 
     target: str
     capabilities: tuple[Capability, ...] = ()
-    # The #89 ticket that completes a partial mapping.
-    pending: int | None = None
 
 
 @dataclass(frozen=True)
@@ -47,21 +45,13 @@ class NotImported:
 
 
 @dataclass(frozen=True)
-class Pending:
-    """The #89 ticket *ticket* maps the key."""
-
-    ticket: int
-    capabilities: tuple[Capability, ...] = ()
-
-
-@dataclass(frozen=True)
 class Deprecated:
     """Kea rewrites the key to *replacement* in ``config-get``."""
 
     replacement: str
 
 
-Entry = Mapped | NotImported | Pending | Deprecated
+Entry = Mapped | NotImported | Deprecated
 
 _USER_CONTEXT = (Capability.USER_CONTEXT,)
 # A Shared Network and its membership need it; its other keys need it only through their object.
@@ -408,6 +398,15 @@ KEA_DEFAULTS: dict[Family, dict[str, dict[str, object]]] = {
         "pd-pools": {},
     },
 }
+
+
+def not_imported(family: Family, table: str, obj: dict) -> list[tuple[str, Reason]]:
+    """Return each key of *obj*, a Kea object of the ledger *table*, that the import does not write, with its reason."""
+    return [
+        (key, entry.reason)
+        for key, entry in LEDGER[family][table].items()
+        if key in obj and isinstance(entry, NotImported)
+    ]
 
 
 def differences(recorded: dict[Family, dict[str, set[str]]]) -> list[str]:

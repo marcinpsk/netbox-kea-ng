@@ -35,9 +35,8 @@ from netbox_kea.pools import parse_pool
 from netbox_kea.views.dhcp_plugin_sync import _summary_problems, run_dhcp_plugin_import
 from netbox_kea.views.notices import Notice
 
-from .kea_stub import observed_configuration, stub_kea
+from .kea_stub import _sync_responses, observed_configuration, stub_kea
 from .test_integration_dhcp_plugin import _reservation_snapshot
-from .test_views_dhcp_plugin import _sync_responses
 from .utils import _make_db_server, refused_delete, take_reservation_name
 
 

@@ -18,13 +18,12 @@ from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK, ImportEventsNotDis
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import DhcpImportEntry, DhcpImportRun, DhcpImportTrigger, DhcpIntegrationConfig
 
-from .kea_stub import complete_lease, lease_pages, stub_kea
+from .kea_stub import _sync_responses, complete_lease, lease_pages, stub_kea
 from .test_dhcp_import import _recorded_config
 from .test_dhcp_import_result import _held_elsewhere, _lock_key, _new_session
 from .test_event_scope import _FAILING_PIPELINE, NESTED_TRACKING
 from .test_jobs import _make_job
 from .test_kea_recordings import _recording
-from .test_views_dhcp_plugin import _sync_responses
 from .utils import (
     _make_db_server,
     imported_dhcp_server,

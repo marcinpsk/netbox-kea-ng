@@ -8,8 +8,10 @@ import dataclasses
 import ipaddress
 import json
 import unittest
+from collections import Counter
 from dataclasses import fields
 from datetime import datetime, timezone
+from typing import get_args
 from unittest.mock import patch
 
 from django.apps import apps
@@ -24,8 +26,11 @@ from django.test.utils import isolate_apps
 from django.urls import reverse
 
 from netbox_kea import kea_paths
+from netbox_kea.constants import Family
+from netbox_kea.dhcp_options import parse_dhcp_option, parse_option_definition
 from netbox_kea.integrations import dhcp_plugin
-from netbox_kea.integrations.dhcp_import_ledger import KEA_DEFAULTS
+from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
+from netbox_kea.integrations.dhcp_import_ledger import KEA_DEFAULTS, LEDGER, MERGED_KEYS, Mapped, NotImported
 from netbox_kea.integrations.dhcp_import_plan import (
     MAX_KEA_NAME_LENGTH,
     MAX_MAPPING_IDENTITY_LENGTH,
@@ -37,6 +42,7 @@ from netbox_kea.integrations.dhcp_import_plan import (
     OptionDefinitionKey,
     PDPoolKey,
     PoolKey,
+    declared_values,
     keyed_reservations,
     kind_path,
     mapped_kinds,
@@ -47,10 +53,11 @@ from netbox_kea.integrations.dhcp_import_report import GAPS, Capability, Kind, O
 from netbox_kea.integrations.dhcp_plugin_capabilities import CHECKS, PluginCapabilities, probe
 from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS, parse_dhcp_config
-from netbox_kea.models import KeaDhcpLink
+from netbox_kea.models import DhcpImportEntry, DhcpImportRun, DhcpImportTrigger, KeaDhcpLink
 from netbox_kea.pools import Pool
 from netbox_kea.reservations import (
     GlobalReservationScope,
+    IdentifierType,
     InSubnetReservationScope,
     IPv4Reservation,
     ReservationDiagnostic,
@@ -59,7 +66,8 @@ from netbox_kea.reservations import (
 )
 from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot, IncompleteCatalogueSnapshot, SubnetIdentity
 
-from .kea_stub import stub_kea
+from .kea_stub import _subnet_list, _sync_responses, stub_kea
+from .test_dhcp_import_ledger import KEYLESS_CAPABILITIES
 from .test_integration_dhcp_plugin import _reservation_snapshot
 from .test_kea_recordings import _RECORDINGS, _recording
 from .utils import (
@@ -2060,6 +2068,354 @@ class OptionCoverageTest(TestCase):
         self.assertEqual(entry.reason, Reason.PARENT_NOT_IMPORTED)
         self.assertIn("KNOWN", entry.detail)
         self.assertFalse(apps.get_model(DHCP_PLUGIN, "Option").objects.filter(data="known.example.org").exists())
+
+
+# A Kea object of a config-get reply: its ledger table, kind, Kea path, keys, and the keys of its parent.
+_KeaObject = tuple[str, Kind, str, dict, dict]
+
+
+def _kea_objects(config: dict, family: Family) -> list[_KeaObject]:
+    """Return each object of a config-get reply with the Kea path that the DHCP Import names it by."""
+    root = kea_paths.daemon(family)
+    found: list[_KeaObject] = [(root, Kind.SERVER, root, config, {})]
+    interfaces = kea_paths.setting(root, kea_paths.INTERFACES_CONFIG)
+    found.append((kea_paths.INTERFACES_CONFIG, Kind.SERVER, interfaces, config[kea_paths.INTERFACES_CONFIG], config))
+
+    def options(parent: str, obj: dict) -> None:
+        for raw in obj.get(kea_paths.OPTION_DATA, []):
+            path = kea_paths.option(parent, parse_dhcp_option(raw), family)
+            found.append((kea_paths.OPTION_DATA, Kind.OPTION, path, raw, obj))
+
+    def definitions(obj: dict, class_name: str | None = None) -> None:
+        for raw in obj.get(kea_paths.OPTION_DEF, []):
+            definition = parse_option_definition(raw, family)
+            path = kea_paths.option_definition(family, definition.space, definition.code, class_name)
+            found.append((kea_paths.OPTION_DEF, Kind.OPTION_DEFINITION, path, raw, obj))
+
+    def reservations(obj: dict, subnet_id: int | None) -> None:
+        for raw in obj.get(kea_paths.RESERVATIONS, []):
+            identifier = next(name for name in get_args(IdentifierType) if name in raw)
+            # ReservationIdentity is the public rule that normalizes an identifier, as the Reservation read does.
+            value = ReservationIdentity(identifier, raw[identifier]).value
+            path = kea_paths.reservation(family, subnet_id, identifier, value)
+            found.append((kea_paths.RESERVATIONS, Kind.RESERVATION, path, raw, obj))
+            options(path, raw)
+
+    def subnet(raw: dict, parent: dict) -> None:
+        path = kea_paths.subnet(family, raw["id"])
+        found.append((kea_paths.subnet_collection(family), Kind.SUBNET, path, raw, parent))
+        options(path, raw)
+        for pool in raw.get(kea_paths.POOLS, []):
+            pool_path = kea_paths.pool(path, pool["pool"])
+            found.append((kea_paths.POOLS, Kind.POOL, pool_path, pool, raw))
+            options(pool_path, pool)
+        for pd_pool in raw.get(kea_paths.PD_POOLS, []):
+            prefix = f"{pd_pool[kea_paths.PREFIX]}/{pd_pool[kea_paths.PREFIX_LEN]}"
+            pd_path = kea_paths.pd_pool(path, prefix, pd_pool[kea_paths.DELEGATED_LEN])
+            found.append((kea_paths.PD_POOLS, Kind.PD_POOL, pd_path, pd_pool, raw))
+            options(pd_path, pd_pool)
+        reservations(raw, raw["id"])
+
+    options(root, config)
+    definitions(config)
+    reservations(config, None)
+    for raw in config[kea_paths.CLIENT_CLASSES]:
+        path = kea_paths.client_class(family, raw["name"])
+        found.append((kea_paths.CLIENT_CLASSES, Kind.CLIENT_CLASS, path, raw, config))
+        options(path, raw)
+        definitions(raw, raw["name"])
+    for raw in config[kea_paths.subnet_collection(family)]:
+        subnet(raw, config)
+    for network in config[kea_paths.SHARED_NETWORKS]:
+        path = kea_paths.shared_network(family, network["name"])
+        found.append((kea_paths.SHARED_NETWORKS, Kind.SHARED_NETWORK, path, network, config))
+        options(path, network)
+        for raw in network[kea_paths.subnet_collection(family)]:
+            subnet(raw, network)
+    return found
+
+
+def _recorded_hosts(config: dict, family: Family) -> list[dict]:
+    """Return the Reservations of a config-get reply as reservation-get-page lists them: global ones in Subnet 0."""
+    collection = kea_paths.subnet_collection(family)
+    networks = config[kea_paths.SHARED_NETWORKS]
+    subnets = [*config[collection], *(subnet for network in networks for subnet in network[collection])]
+    hosts = [{"subnet-id": 0, **host} for host in config.get(kea_paths.RESERVATIONS, [])]
+    return hosts + [
+        {"subnet-id": subnet["id"], **host} for subnet in subnets for host in subnet.get(kea_paths.RESERVATIONS, [])
+    ]
+
+
+# Another Server holds Subnet 20 and the class per-client, so the uniqueness capabilities are judged too.
+_OTHER_SERVER: dict[str, list[dict]] = {
+    "subnet4": [{"id": 20, "subnet": "203.0.113.0/24"}],
+    "shared-networks": [],
+    "client-classes": [{"name": "per-client"}],
+}
+
+
+# A NetBox IP Range cannot hold this recorded /80 Pool; the IPAM claim decides that, and it has no public rule.
+_UNHOLDABLE_POOLS = frozenset({"Dhcp6/subnet6[id=10]/pools[pool=2001:db8:1:0:1::/80]"})
+
+
+def _standard_definition(space: str, code: int) -> bool:
+    """Return whether the installed DHCP plugin ships a standard Option Definition of *code* in *space*."""
+    definitions = apps.get_model(DHCP_PLUGIN, "OptionDefinition").objects
+    return definitions.filter(standard=True, space=space, code=code).exists()
+
+
+# A stored entry without its free-text detail: family, kind, Kea path, outcome, reason and capability.
+_Fact = tuple[int, str, str, str, str, str]
+
+# The entries that judge one value, not a ledger key, by family.
+_VALUE_ENTRIES: dict[int, list[_Fact]] = {
+    family: [
+        # Member Subnet 21 inherits these from the Shared Network office, which the plugin cannot hold.
+        (
+            family,
+            Kind.SUBNET.value,
+            f"Dhcp{family}/subnet{family}[id=21]/{key}",
+            Outcome.NOT_IMPORTED.value,
+            Reason.INHERITED_FROM_SHARED_NETWORK.value,
+            "",
+        )
+        for key in ("relay", "interface", "reservations-global")
+    ]
+    for family in (4, 6)
+}
+# Subnet 10 names eth0, and the imported DHCP Server has no device or virtual machine with interfaces.
+_VALUE_ENTRIES[4].append(
+    (
+        4,
+        Kind.SUBNET.value,
+        "Dhcp4/subnet4[id=10]/interface",
+        Outcome.NOT_IMPORTED.value,
+        Reason.NO_MATCHING_INTERFACE.value,
+        "",
+    )
+)
+
+
+class _Rejections:
+    """The objects that one run must not write, by path, with the kind, outcome, reason and capability of their entry.
+
+    It reads only config-get, the ledger, the probe, _OTHER_SERVER and the standard Option Definitions of the plugin.
+    """
+
+    def __init__(self, family: Family, objects: list[_KeaObject], capabilities: PluginCapabilities) -> None:
+        self.family, self.capabilities = family, capabilities
+        self.table_of = {id(raw): table for table, _kind, _path, raw, _parent in objects}
+        self.predicted: dict[str, tuple[str, str, str, str]] = {}
+        self.rejected: dict[int, str] = {}
+        # An option finds its custom Option Definition wherever the configuration lists it.
+        self.definitions = {
+            (self.owner(parent), self.space(raw), raw["code"]): self.code_and_space(self.space(raw), raw["code"])
+            for table, _kind, _path, raw, parent in objects
+            if table == kea_paths.OPTION_DEF
+        }
+        for table, kind, path, raw, parent in objects:
+            self.visit(table, kind, path, raw, parent)
+
+    def owner(self, parent: dict) -> str | None:
+        return parent.get("name") if self.table_of.get(id(parent)) == kea_paths.CLIENT_CLASSES else None
+
+    def space(self, raw: dict) -> str:
+        return raw.get("space", kea_paths.default_space(self.family))
+
+    def gate(self, *needed: Capability) -> Capability | None:
+        return next((capability for capability in needed if not self.capabilities.has(capability)), None)
+
+    def code_and_space(self, space: str, code: int) -> Capability | None:
+        # DHCPv6 option codes above 255 need two octets (#88 gap 8); the probe reads the space choices.
+        if self.family == 6 and code > 255 and not self.capabilities.has(Capability.OPTION_CODE_16_BIT):
+            return Capability.OPTION_CODE_16_BIT
+        return None if self.capabilities.holds_space(space) else Capability.OPTION_SPACES
+
+    def option_capability(self, raw: dict, parent: dict) -> Capability | None:
+        owner, space, code = self.owner(parent), self.space(raw), raw["code"]
+        for key in ((owner, space, code), (None, space, code)):
+            if key in self.definitions:
+                return self.definitions[key]
+        if _standard_definition(space, code):
+            return None
+        return self.gate(Capability.OPTION_WITHOUT_DEFINITION) or self.code_and_space(space, code)
+
+    def own_gap(self, table: str, raw: dict, parent: dict) -> tuple[Reason, Capability] | None:
+        """Return the reason and capability that reject the object *raw* of *table* on its own, or ``None``."""
+        tables = LEDGER[self.family]
+        gap = Reason.PLUGIN_GAP
+        if table == kea_paths.SHARED_NETWORKS:
+            network = tables[kea_paths.daemon(self.family)][kea_paths.SHARED_NETWORKS]
+            capability = self.gate(*network.capabilities) if isinstance(network, Mapped) else None
+            return (gap, capability) if capability else None
+        clashes = {
+            (kea_paths.subnet_collection(self.family), "id", Reason.SUBNET_ID_CLASH): {
+                subnet["id"] for subnet in _OTHER_SERVER["subnet4"]
+            },
+            (kea_paths.CLIENT_CLASSES, "name", Reason.PLUGIN_GAP): {
+                cls["name"] for cls in _OTHER_SERVER["client-classes"]
+            },
+        }
+        for (clash_table, key, reason), names in clashes.items():
+            entry = tables[clash_table][key]
+            if table == clash_table and raw[key] in names and isinstance(entry, Mapped):
+                capability = self.gate(*entry.capabilities)
+                return (reason, capability) if capability else None
+        capability = None
+        if table == kea_paths.OPTION_DEF:
+            capability = self.definitions[(self.owner(parent), self.space(raw), raw["code"])]
+        if table == kea_paths.OPTION_DATA:
+            capability = self.option_capability(raw, parent)
+        return (gap, capability) if capability else None
+
+    def visit(self, table: str, kind: Kind, path: str, raw: dict, parent: dict) -> None:
+        unsupported = Outcome.UNSUPPORTED.value
+        if id(parent) in self.rejected and table != kea_paths.subnet_collection(self.family):
+            # Options and definitions of a rejected object are skipped, and its other children fail with it.
+            # A member Subnet of a rejected Shared Network imports without membership.
+            _kind, outcome, reason, capability = self.predicted[self.rejected[id(parent)]]
+            if table in (kea_paths.OPTION_DATA, kea_paths.OPTION_DEF):
+                outcome, reason, capability = Outcome.SKIPPED.value, Reason.PARENT_NOT_IMPORTED.value, ""
+            self.reject(raw, path, kind, outcome, reason, capability)
+        elif path in _UNHOLDABLE_POOLS:
+            self.reject(raw, path, kind, unsupported, Reason.PLUGIN_GAP.value, "")
+        elif (gap := self.own_gap(table, raw, parent)) is not None:
+            self.reject(raw, path, kind, unsupported, gap[0].value, gap[1].value)
+
+    def reject(self, raw: dict, path: str, kind: Kind, outcome: str, reason: str, capability: str) -> None:
+        self.predicted[path] = (kind.value, outcome, reason, capability)
+        self.rejected[id(raw)] = path
+
+    def facts(self) -> list[_Fact]:
+        return [(self.family, *fact[:1], path, *fact[1:]) for path, fact in self.predicted.items()]
+
+
+class CoverageImportTest(TestCase):
+    """One run of the real import entry on the coverage configuration agrees with the ledger and the probe."""
+
+    maxDiff = None
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def _run(self, server, config, family, subnets):
+        responses = _sync_responses({family: config}, {family: _recorded_hosts(config, family)})
+        responses[f"subnet{family}-list"] = subnets
+        with stub_kea(responses):
+            ((_family, summary),) = run_dhcp_plugin_import(server, DhcpImportTrigger.MANUAL)
+        assert isinstance(summary, dhcp_plugin.ImportSummary), summary
+        self.assertEqual(summary.errors, 0, summary.warnings)
+
+    def _assert_coverage(self, family: Family):
+        other = _make_db_server(name="other", dhcp6=False, sync_dhcp_plugin_enabled=True)
+        self._run(other, _OTHER_SERVER, 4, _subnet_list(4, _OTHER_SERVER["subnet4"]))
+        # One family per Server: the plugin keeps Subnet IDs unique, and both families number theirs 10, 20 and 21.
+        server = _make_db_server(
+            name=f"coverage{family}", dhcp4=family == 4, dhcp6=family == 6, sync_dhcp_plugin_enabled=True
+        )
+        config = _recorded_config(family)
+        self._run(server, config, family, _recording(family)[f"subnet{family}-list"])
+        entries = list(DhcpImportEntry.objects.filter(run=DhcpImportRun.objects.get(server=server)))
+        objects = _kea_objects(config, family)
+        capabilities = probe()
+        rejections = _Rejections(family, objects, capabilities)
+        self._assert_plugin_objects(server, family, objects, rejections.predicted)
+        self._assert_entries(family, objects, entries, capabilities, rejections)
+
+    def _assert_plugin_objects(self, server, family: Family, objects: list[_KeaObject], predicted: dict):
+        # interfaces-config is a part of the DHCP Server, not a row of its own.
+        expected = Counter(
+            kind
+            for table, kind, path, _raw, _parent in objects
+            if table != kea_paths.INTERFACES_CONFIG and path not in predicted
+        )
+        for kind in (Kind.SERVER, *mapped_kinds(family)):
+            with self.subTest(family=family, kind=kind):
+                links = KeaDhcpLink.objects.filter(server=server, family=family, kind=kind.value)
+                self.assertEqual(links.count(), expected[kind])
+                self.assertTrue(all(link.sys4_object is not None for link in links))
+        self.assertEqual(apps.get_model(DHCP_PLUGIN, "Option").objects.count(), expected[Kind.OPTION])
+        self.assertGreater(expected[Kind.OPTION], 0)
+
+    def _assert_entries(self, family: Family, objects: list[_KeaObject], entries, capabilities, rejections):
+        """Compare every stored entry, counted, with the expectation of its class, field for field but the detail."""
+        root = kea_paths.daemon(family)
+        missing = set(Capability) - capabilities.present
+        stored = Counter(
+            (entry.family, entry.kind, entry.kea_path, entry.outcome, entry.reason, entry.capability)
+            for entry in entries
+        )
+        # Each object that the run does not reject is new in this database, so the run creates it.
+        created = [
+            (family, kind.value, path, Outcome.CREATED.value, "", "")
+            for table, kind, path, _raw, _parent in objects
+            if table != kea_paths.INTERFACES_CONFIG and path not in rejections.predicted
+        ]
+        keyless = [
+            (family, Kind.SERVER.value, root, Outcome.UNSUPPORTED.value, Reason.PLUGIN_GAP.value, capability.value)
+            for capability in KEYLESS_CAPABILITIES & missing
+        ]
+        expected = Counter(
+            [
+                *created,
+                *keyless,
+                *rejections.facts(),
+                *self._expected_keyed(family, objects, missing, rejections.predicted),
+                *self._expected_left_out(family, objects),
+                *_VALUE_ENTRIES[family],
+            ]
+        )
+        # Plain dicts give a line diff; the counts still compare exactly.
+        self.assertEqual(dict(stored), dict(expected))
+
+    def _expected_keyed(self, family: Family, objects: list[_KeaObject], missing: set, predicted: dict) -> list[_Fact]:
+        """Return each declared key that a written object carries and the ledger gates by a missing capability."""
+        root = kea_paths.daemon(family)
+        # A capability that rejects an object decides by the value of its key, so a written object needs none.
+        identity = {Capability(fact[3]) for fact in predicted.values() if fact[3]}
+        # The recorded values need no capability: no flex-id identifier, and a server-id that Kea generates.
+        values = {
+            (root, kea_paths.HOST_RESERVATION_IDENTIFIERS, Capability.FLEX_ID_IDENTIFIER),
+            (root, kea_paths.SERVER_ID, Capability.SERVER_ID_FIELDS),
+        }
+        unsupported, gap = Outcome.UNSUPPORTED.value, Reason.PLUGIN_GAP.value
+        # A rejected object reports no key of its own, and an inherited value has no entry of its own.
+        return [
+            (family, kind.value, kea_paths.setting(path, key), unsupported, gap, capability.value)
+            for table, kind, path, raw, parent in objects
+            if path not in predicted
+            for key, entry in LEDGER[family].get(table, {}).items()
+            if isinstance(entry, Mapped) and key in raw and self._declared(family, table, key, raw, parent)
+            for capability in entry.capabilities
+            if capability in missing and capability not in identity and (path, key, capability) not in values
+        ]
+
+    @staticmethod
+    def _expected_left_out(family: Family, objects: list[_KeaObject]) -> list[_Fact]:
+        """Return each key that config-get carries and the ledger lists as not imported, with its reason."""
+        not_imported = Outcome.NOT_IMPORTED.value
+        # Kea returns server settings that the configuration does not declare, and the import reads only config-get.
+        return [
+            (family, kind.value, kea_paths.setting(path, key), not_imported, entry.reason.value, "")
+            for table, kind, path, raw, _parent in objects
+            for key, entry in LEDGER[family].get(table, {}).items()
+            if isinstance(entry, NotImported) and key in raw
+        ]
+
+    @staticmethod
+    def _declared(family: Family, table: str, key: str, raw: dict, parent: dict) -> bool:
+        if table not in MERGED_KEYS[family]:
+            return True
+        return key in declared_values(family, table, {key: raw[key]}, parent)
+
+    def test_the_dhcpv4_coverage_configuration_agrees_with_the_ledger_and_the_probe(self):
+        self._assert_coverage(4)
+
+    def test_the_dhcpv6_coverage_configuration_agrees_with_the_ledger_and_the_probe(self):
+        self._assert_coverage(6)
 
 
 def _without_class(config: dict, name: str) -> dict:
