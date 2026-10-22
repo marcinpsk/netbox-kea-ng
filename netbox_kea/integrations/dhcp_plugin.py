@@ -3021,8 +3021,9 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     """
     summary = ImportSummary()
     root = kea_paths.daemon(plan.family)
-    for dropped in plan.dropped:
-        summary.record(not_written(plan.family, dropped.kind, dropped.path, Reason.INVALID_KEA_DATA, dropped.detail))
+    dropped = (not_written(plan.family, d.kind, d.path, Reason.INVALID_KEA_DATA, d.detail) for d in plan.dropped)
+    for entry in (*dropped, *plan.not_imported):
+        summary.record(entry)
     dhcp_server, created = upsert_dhcp_server(server, plan.family)
     adoption_servers = _adoption_servers(server, dhcp_server)
 

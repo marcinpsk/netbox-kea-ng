@@ -11,7 +11,7 @@ from __future__ import annotations
 from django.test import SimpleTestCase
 
 from netbox_kea.dhcp_options import DHCPOption, DHCPOptionIdentity, option_identity
-from netbox_kea.integrations.dhcp_import_report import Kind
+from netbox_kea.integrations.dhcp_import_report import Kind, Outcome, Reason
 from netbox_kea.mappers.kea_to_dhcp import (
     OptionDefIntent,
     parse_dhcp_config,
@@ -409,6 +409,24 @@ class TestParseDhcpConfigSettings(SimpleTestCase):
         self.assertEqual(settings["valid-lifetime"], 7200)
         self.assertEqual(settings["relay"], {"ip-addresses": ["10.0.0.3"]})
         self.assertIs(settings["rapid-commit"], False)
+
+    def test_each_global_key_that_the_ledger_does_not_import_has_an_entry(self):
+        conf = {
+            "valid-lifetime": 3600,
+            "lease-database": {"type": "memfile"},
+            "interfaces-config": {"interfaces": ["eth0"], "re-detect": False},
+            "subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "valid-lifetime": 7200}],
+        }
+
+        entries = parse_dhcp_config(conf, 4).not_imported
+
+        self.assertEqual(
+            {(entry.kind, entry.path, entry.outcome, entry.reason) for entry in entries},
+            {
+                (Kind.SERVER, "Dhcp4/lease-database", Outcome.NOT_IMPORTED, Reason.NO_PLUGIN_HOME),
+                (Kind.SERVER, "Dhcp4/interfaces-config/re-detect", Outcome.NOT_IMPORTED, Reason.NO_PLUGIN_HOME),
+            },
+        )
 
     def test_settings_default_empty(self):
         conf = {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}

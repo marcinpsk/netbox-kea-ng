@@ -28,9 +28,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .. import kea_paths
+from ..constants import validate_family
 from ..dhcp_options import DHCPOption, parse_dhcp_option, parse_option_definition
+from ..integrations import dhcp_import_ledger
 from ..integrations.dhcp_import_fields import GATED_SUBNET_FIELDS
-from ..integrations.dhcp_import_report import DroppedEntry, Kind
+from ..integrations.dhcp_import_report import DroppedEntry, ImportEntry, Kind, not_written
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -235,6 +237,8 @@ class ServerConfigIntent:
     interfaces: tuple[str, ...] | None = ()
     # Entries that the parse dropped as invalid, each with its Kea path.
     dropped: list[DroppedEntry] = field(default_factory=list)
+    # The global keys that the parity ledger lists as not imported.
+    not_imported: tuple[ImportEntry, ...] = ()
 
 
 def _optional_dhcp_option(raw, path: str, dropped: list[DroppedEntry]) -> DHCPOption | None:
@@ -490,6 +494,20 @@ def _interfaces(raw, family: int, dropped: list[DroppedEntry]) -> tuple[str, ...
     return tuple(entries)
 
 
+def _not_imported(conf: dict, family: int) -> tuple[ImportEntry, ...]:
+    """Return an entry for each key of the global configuration and its interface settings that is not imported."""
+    root = kea_paths.daemon(family)
+    objects = [(root, root, conf)]
+    interfaces = conf.get(kea_paths.INTERFACES_CONFIG)
+    if isinstance(interfaces, dict):
+        objects.append((kea_paths.INTERFACES_CONFIG, kea_paths.setting(root, kea_paths.INTERFACES_CONFIG), interfaces))
+    return tuple(
+        not_written(family, Kind.SERVER, kea_paths.setting(path, key), reason)
+        for table, path, obj in objects
+        for key, reason in dhcp_import_ledger.not_imported(validate_family(family), table, obj)
+    )
+
+
 def _config_collection(conf: dict, key: str) -> list:
     """Read an optional config collection and reject a malformed container."""
     collection = conf.get(key, [])
@@ -527,6 +545,7 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
             result.global_settings[key] = conf[key]
     result.user_context = conf.get(kea_paths.USER_CONTEXT)
     result.interfaces = _interfaces(conf.get(kea_paths.INTERFACES_CONFIG), family, dropped)
+    result.not_imported = _not_imported(conf, family)
 
     for index, raw_cc in enumerate(_config_collection(conf, "client-classes")):
         cc = _client_class_intent(raw_cc, family, kea_paths.client_class_entry(family, index), dropped)

@@ -12,7 +12,8 @@
 An entry names each DHCP Plugin Capability (#88) that its write needs, and :mod:`.dhcp_plugin_capabilities` checks
 each one. :data:`MERGED_KEYS` lists the keys that Kea merges into ``config-get`` from the parent object, and
 :data:`KEA_DEFAULTS` the values that Kea gives when no level declares a key, for the Declared Value inference.
-It reads no database. ``test_dhcp_import_ledger.py`` compares it with the recordings of a real Kea.
+The parse reports each global key that the ledger does not import (:func:`not_imported`). It reads no database.
+``test_dhcp_import_ledger.py`` compares it with the recordings of a real Kea.
 """
 
 from __future__ import annotations
@@ -397,6 +398,15 @@ KEA_DEFAULTS: dict[Family, dict[str, dict[str, object]]] = {
         "pd-pools": {},
     },
 }
+
+
+def not_imported(family: Family, table: str, obj: dict) -> list[tuple[str, Reason]]:
+    """Return each key of *obj*, a Kea object of the ledger *table*, that the import does not write, with its reason."""
+    return [
+        (key, entry.reason)
+        for key, entry in LEDGER[family][table].items()
+        if key in obj and isinstance(entry, NotImported)
+    ]
 
 
 def differences(recorded: dict[Family, dict[str, set[str]]]) -> list[str]:
