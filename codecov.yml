@@ -1,12 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-# Two CI jobs upload coverage (unit-test, branching-test); report only after both arrive.
+# Three CI jobs upload coverage (unit-test, dhcp-plugin-test, branching-test); report only after all arrive.
 codecov:
   notify:
-    after_n_builds: 2
+    after_n_builds: 3
 
 comment:
-  after_n_builds: 2
+  after_n_builds: 3
   layout: "diff, flags, files"
   behavior: default
   require_changes: false
@@ -25,14 +25,4 @@ coverage:
         target: 90%
         threshold: 1%
 
-# The optional netbox_dhcp integration only executes when that plugin is
-# installed. CI installs netbox_kea alone (PLUGINS=['netbox_kea']), so the gated
-# integration/view tests skip here and these modules can't be exercised in CI —
-# they're covered by the devcontainer suite (test_integration_dhcp_plugin.py /
-# test_views_dhcp_plugin.py, gated on apps.is_installed("netbox_dhcp")). Those
-# tests still RUN and gate correctness in CI when present; ignore only excludes
-# these files from the CI coverage *metric*. Paths are repo-root-relative globs.
 # All other coverage settings live in pyproject's [tool.coverage.*] tables.
-ignore:
-  - "netbox_kea/integrations/dhcp_plugin.py"
-  - "netbox_kea/views/dhcp_plugin_sync.py"

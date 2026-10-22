@@ -218,6 +218,35 @@ def test_codecov_uploads_only_the_report_that_reads_the_coverage_configuration()
         assert upload.get("disable_search") is True, "the uploader adds every coverage file it finds"
 
 
+#: CI jobs that run the unit suite without reporting coverage, and the job that measures the same code.
+_UNMEASURED_UNIT_JOBS = {"event-rollback-test-netbox-4-3": "unit-test"}
+
+
+def test_every_job_that_runs_the_unit_suite_reports_its_coverage():
+    """A test that only one job can run (it needs a plugin, say) counts as coverage only when that job uploads it."""
+    jobs = yaml.safe_load((REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text())["jobs"]
+    unit_jobs = {
+        name: job
+        for name, job in jobs.items()
+        if any(
+            "netbox_kea/tests/" in command
+            for step in job.get("steps", ())
+            for command in _pytest_commands(step.get("run", ""))
+        )
+    }
+    assert {"unit-test", "dhcp-plugin-test"} <= unit_jobs.keys(), "this guard would pass without reading a unit job"
+    assert set(_UNMEASURED_UNIT_JOBS) <= unit_jobs.keys(), "an exemption names a job that runs no unit test"
+    for name, job in unit_jobs.items():
+        if name in _UNMEASURED_UNIT_JOBS:
+            continue
+        steps = job.get("steps", ())
+        commands = [command for step in steps for command in _pytest_commands(step.get("run", ""))]
+        assert any("--cov=netbox_kea" in command for command in commands), f"{name} runs the unit suite without --cov"
+        assert any("codecov/codecov-action" in str(step.get("uses", "")) for step in steps), (
+            f"{name} uploads no coverage"
+        )
+
+
 def test_the_ci_default_guard_reads_the_value_each_claim_names():
     """Fail a claim only for the value it actually names.
 

@@ -219,7 +219,13 @@ jobs:
             -n 1 \
             --maxschedchunk=1 \
             --reuse-db \
+            --cov=netbox_kea \
+            --cov-config=${{ github.workspace }}/pyproject.toml \
+            --cov-report=xml:${{ github.workspace }}/coverage.xml \
             --no-header -q
+
+      # Only this job runs the tests that need netbox_dhcp; Codecov merges this report with the others.
+      - *upload-coverage
 
   branching-test:
     runs-on: ubuntu-latest
