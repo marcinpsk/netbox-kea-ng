@@ -158,12 +158,20 @@ def excluded_prefix_pairs(
             would exclude two prefixes.
 
     """
-    kept = {pair.excluded: pair.delegated for pair in live if pair.delegated in delegated}
     paired: dict[ipaddress.IPv6Network, ipaddress.IPv6Network] = {}
     for prefix in excluded:
+        # Kea keeps an exclusion for each delegation, so two delegations can exclude the same prefix.
+        kept = next(
+            (
+                pair.delegated
+                for pair in live
+                if pair.excluded == prefix and pair.delegated in delegated and pair.delegated not in paired
+            ),
+            None,
+        )
         holders = (
-            [kept[prefix]]
-            if prefix in kept
+            [kept]
+            if kept is not None
             else [held for held in delegated if prefix.prefixlen > held.prefixlen and prefix.subnet_of(held)]
         )
         if len(holders) != 1:

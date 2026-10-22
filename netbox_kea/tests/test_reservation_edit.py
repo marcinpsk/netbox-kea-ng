@@ -1000,3 +1000,13 @@ class WidenedReservationEditTests(TestCase):
         self.assertEqual(outcome.application, "applied")
         sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
         self.assertEqual(sent["excluded-prefixes"], ["", "2001:db8:500:100:ff::/80"])
+
+    def test_an_edit_keeps_one_excluded_prefix_that_two_delegations_exclude(self):
+        # Kea 3.2 stores an exclusion for each delegation, so a /48 and a /56 inside it can exclude the same prefix.
+        both = ["2001:db8:500:100:ff::/80", "2001:db8:500:100:ff::/80"]
+        raw = {**_raw(6), "prefixes": ["2001:db8:500::/48", "2001:db8:500:100::/56"], "excluded-prefixes": both}
+        current, state = self._shown(6, raw)
+        self.assertEqual(state.initial["excluded_prefixes"], ",".join(both))
+        outcome, kea = self._save_edit(6, raw, self._values(current, hostname="renamed"))
+        self.assertEqual(outcome.application, "applied")
+        self.assertEqual(kea.bodies("reservation-update")[0]["arguments"]["reservation"]["excluded-prefixes"], both)
