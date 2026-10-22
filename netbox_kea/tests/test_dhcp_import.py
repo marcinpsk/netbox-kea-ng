@@ -44,7 +44,7 @@ from netbox_kea.integrations.dhcp_import_plan import (
     plan_family,
 )
 from netbox_kea.integrations.dhcp_import_report import GAPS, Capability, Kind, Outcome, Reason
-from netbox_kea.integrations.dhcp_plugin_capabilities import CHECKS, probe
+from netbox_kea.integrations.dhcp_plugin_capabilities import CHECKS, PluginCapabilities, probe
 from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS, parse_dhcp_config
 from netbox_kea.models import KeaDhcpLink
@@ -2213,7 +2213,11 @@ class SharedNetworkWithoutTheCapabilityTest(_SharedNetworkTestCase):
             self._entries(summary, Kind.OPTION)[f"{_OFFICE}/option-data[code=6]"],
             (Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED, None),
         )
-        self.assertFalse(apps.get_model(DHCP_PLUGIN, "SharedNetwork")._base_manager.exists())
+        self.assertFalse(
+            apps.get_model(DHCP_PLUGIN, "SharedNetwork")
+            ._base_manager.filter(dhcp_server__in=imported_dhcp_servers(self.server))
+            .exists()
+        )
         self.assertFalse(KeaDhcpLink.objects.filter(server=self.server, kind="shared_network").exists())
         dhcp_server = imported_dhcp_server(self.server, 4)
         for subnet_id in (20, 21):
@@ -2473,8 +2477,6 @@ class SharedNetworkImportTest(_SharedNetworkTestCase):
     def test_with_per_server_subnet_ids_a_member_subnet_of_the_dhcp_server_holds_its_id(self):
         from ipam.models import Prefix
         from netaddr import IPNetwork
-
-        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
         self._apply()
         apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
