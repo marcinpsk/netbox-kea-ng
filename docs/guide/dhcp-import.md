@@ -134,8 +134,9 @@ A Kea option without a mapped Option gets a new DHCP Option. The one exception i
 takes the Options without a mapping once: on the first run that reaches it after the upgrade. Then a Kea option
 without a mapped Option takes an Option without a mapping of the same object. It takes one with the same space, code
 and client classes first. Then it takes one with the same space and code, for example one that an earlier release
-wrote without classes. When the run has written each DHCP Option of the object that it can write, the mapping of the
-object records it. After that, the object takes no unmapped Option again. The global configuration, client classes,
+wrote without classes. The run maps each Option that it takes before it writes it, so a write that fails keeps the
+mapping, and the next run updates the same Option. Then the mapping of the object records that its Options are mapped,
+whatever the writes do. After that, the object takes no unmapped Option again. The global configuration, client classes,
 Shared Networks, Subnets, Pools, delegated-prefix Pools and Reservations take them this way. A run that cannot read the
 Reservations does not reach them, so a later run that reads them maps their Options.
 

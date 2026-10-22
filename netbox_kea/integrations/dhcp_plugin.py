@@ -748,11 +748,8 @@ def _paired_rows(planned: list[_PlannedOption], rows: list) -> list:
     return paired
 
 
-def _write_option(item: _PlannedOption, row, parent_obj, ct, family: int, references, summary, capabilities) -> bool:
-    """Create the Option of *item* on *parent_obj*, or update its *row*, with its client classes and its mapping.
-
-    Return whether the write succeeded.
-    """
+def _write_option(item: _PlannedOption, row, parent_obj, ct, family: int, references, summary, capabilities) -> None:
+    """Create the Option of *item* on *parent_obj*, or update its *row*, with its client classes and its mapping."""
     Option = _model("Option")
     source = _Source(family, Kind.OPTION, item.path)
     outcome = None
@@ -785,8 +782,6 @@ def _write_option(item: _PlannedOption, row, parent_obj, ct, family: int, refere
     except Exception as exc:  # noqa: BLE001 (one bad option must not abort the import)
         summary.record(write_failed(family, Kind.OPTION, item.path))
         summary.warn(f"option {option_identity(item.option, family)}: {exc}")
-        return False
-    return True
 
 
 def upsert_options(
@@ -804,7 +799,7 @@ def upsert_options(
     with other client classes is another Option. Each Option has a DHCP Import Mapping from its key, and a re-import
     finds the row through it. Until the mapping of the object records that its Options are mapped (the first run that
     reaches it after the upgrade), an Option without a mapped row adopts an unmapped Option of *parent_obj*
-    (:func:`_paired_rows`). After that, every unmapped Option is an operator's and stays. An Option without a mapping
+    (:func:`_paired_rows`). The adoptions and that record are written before the Options, whatever their writes do. After that, every unmapped Option is an operator's and stays. An Option without a mapping
     source pairs with an unmapped Option on every run, so it is updated in place and never removed. The options of a
     client class also resolve its own Option Definitions. An Option whose definition cannot be resolved, whose class
     has no row, or whose data the plugin refuses, is reported and does not stop the import. An Option whose values did
@@ -848,13 +843,16 @@ def upsert_options(
             .order_by("pk")
         )
     paired = dict(zip(map(id, pairing), _paired_rows(pairing, unmapped), strict=True))
+    # The adoption decisions hold before any write, so a write that fails leaves the adopted row mapped.
     with event_scope.atomic():
-        written_all = True
-        for item, row in zip(planned, mapped, strict=True):
-            target = row if row is not None else paired.get(id(item))
-            written_all &= _write_option(item, target, parent_obj, ct, family, references, summary, capabilities)
-        if parent is not None and written_all:
+        for item in pairing:
+            if item.source is not None and paired[id(item)] is not None:
+                observe_mapping(server, family, paired[id(item)], item.source)
+        if parent is not None:
             mark_options_mapped(server, family, parent)
+    for item, row in zip(planned, mapped, strict=True):
+        target = row if row is not None else paired.get(id(item))
+        _write_option(item, target, parent_obj, ct, family, references, summary, capabilities)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

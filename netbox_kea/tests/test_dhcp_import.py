@@ -2590,6 +2590,64 @@ class OptionMappingTest(TestCase):
         self.assertEqual(entry.detail, "It is kept because its removal would also remove 1 Option.")
         self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).sys4_object, foreign)
 
+    def _subnet_10_options(self, *options: dict) -> dict:
+        config = _recorded_config(4)
+        config["subnet4"][0]["option-data"] = list(options)
+        return config
+
+    def _write_failures(self, summary) -> list[str]:
+        return [entry.path for entry in summary.entries if entry.reason == Reason.WRITE_FAILED]
+
+    def test_an_option_that_the_plugin_rejects_closes_adoption_and_an_operator_option_stays(self):
+        from django.contrib.contenttypes.models import ContentType
+
+        # Valid hex for Kea; netbox_dhcp reads the routers data as IPv4 text and rejects it.
+        rejected = {"code": 3, "csv-format": False, "data": "c6:12:00:01"}
+        first = self._run(self._subnet_10_options(rejected))
+        subnet = KeaDhcpLink.objects.get(server=self.server, kind="subnet", kea_subnet_id=10).sys4_object
+        operator = apps.get_model(DHCP_PLUGIN, "Option").objects.create(
+            definition=apps.get_model(DHCP_PLUGIN, "OptionDefinition").objects.get(
+                standard=True, space="dhcp4", code=6
+            ),
+            assigned_object_type=ContentType.objects.get_for_model(subnet),
+            assigned_object_id=subnet.pk,
+            data="192.0.2.77",
+        )
+        rows = self._option_rows()
+        dns = f"{_SUBNET_10}/option-data[code=6]"
+
+        adding = self._run(self._subnet_10_options(rejected, {"code": 6, "data": "192.0.2.1"}))
+        added = self._option_rows()
+        dropping = self._run(self._subnet_10_options(rejected))
+
+        self.assertEqual(self._write_failures(first), [f"{_SUBNET_10}/option-data[code=3]"])
+        self.assertEqual(self._changes(adding), {(Kind.OPTION, dns, Outcome.CREATED, None): 1})
+        self.assertEqual(added, rows + Counter({("subnet", 6, "192.0.2.1", (), True): 1}))
+        self.assertEqual(self._changes(dropping), {(Kind.OPTION, dns, Outcome.REMOVED, None): 1})
+        self.assertEqual(self._option_rows(), rows)
+        self.assertEqual(rows[("subnet", 6, "192.0.2.77", (), False)], 1)
+        operator.refresh_from_db()
+        self.assertEqual(operator.data, "192.0.2.77")
+
+    def test_a_legacy_option_whose_adopting_write_fails_is_mapped_and_updated_by_the_next_run(self):
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        self._run()
+        legacy = Option.objects.get(data="192.0.2.1", client_classes__isnull=True, definition__code=3)
+        options = set(Option.objects.values_list("pk", flat=True))
+        _before_option_mappings(self.server)
+        routers = f"{_SUBNET_10}/option-data[code=3]"
+
+        failing = self._run(self._subnet_10_options({"code": 3, "csv-format": False, "data": "c6:12:00:01"}))
+        mapped = KeaDhcpLink.objects.filter(server=self.server, kind=Kind.OPTION.value, object_id=legacy.pk)
+        adopted = list(mapped.values_list("kea_subnet_id", "kea_identity"))
+        valid = self._run(self._subnet_10_options({"code": 3, "data": "192.0.2.5"}))
+
+        self.assertEqual(self._write_failures(failing), [routers])
+        self.assertEqual(adopted, [(10, '["subnet",null,"dhcp4",3,[],0]')])
+        self.assertEqual(self._changes(valid), {(Kind.OPTION, routers, Outcome.UPDATED, None): 1})
+        self.assertEqual(set(Option.objects.values_list("pk", flat=True)), options)
+        self.assertEqual(Option.objects.get(pk=legacy.pk).data, "192.0.2.5")
+
     def test_the_first_run_after_the_upgrade_maps_each_option_that_pairs_and_keeps_the_others(self):
         Option = apps.get_model(DHCP_PLUGIN, "Option")
         self._run()
