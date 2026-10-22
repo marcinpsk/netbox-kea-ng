@@ -1481,7 +1481,6 @@ def upsert_subnet(
 
     existing = mapped_target(server, intent.family, mapping) if mapping is not None else None
 
-    changed = False
     try:
         with event_scope.atomic():
             # Inside the try so one bad CIDR is counted as a per-subnet error, not fatal.
@@ -1513,17 +1512,7 @@ def upsert_subnet(
             wanted["server_interfaces"] = _network_interface(
                 dhcp_server, planned.settings.get(kea_paths.INTERFACE), path, Kind.SUBNET, intent.family, summary
             )
-            relations = _relation_changes(subnet_obj, wanted)
-            if existing is None:
-                _create_row(subnet_obj, fields, capabilities)
-            elif changes := _managed_changes(subnet_obj, fields, capabilities):
-                _save_changes(subnet_obj, changes)
-                changed = True
-            elif relations:
-                subnet_obj.snapshot()
-            for name, pks in relations.items():
-                getattr(subnet_obj, name).set(pks)
-            changed = changed or bool(relations)
+            outcome = _write_child(subnet_obj, existing is None, fields, wanted, capabilities)
             if mapping is not None:
                 observe_mapping(server, intent.family, subnet_obj, mapping)
     except event_scope.EventDispatchError:
@@ -1535,10 +1524,10 @@ def upsert_subnet(
         summary.warn(f"subnet {intent.cidr} (id={intent.kea_subnet_id}): {exc}")
         return None
 
-    if existing is None:
-        summary.record(written(intent.family, Kind.SUBNET, path, Outcome.CREATED))
-    elif changed or renumbered:
-        summary.record(written(intent.family, Kind.SUBNET, path, Outcome.UPDATED))
+    if outcome is None and renumbered:
+        outcome = Outcome.UPDATED
+    if outcome is not None:
+        summary.record(written(intent.family, Kind.SUBNET, path, outcome))
     return subnet_obj
 
 
@@ -1889,7 +1878,7 @@ def _upsert_pool(
 
 
 def _write_child(row, created: bool, fields: dict, wanted: dict[str, set[int]], capabilities) -> Outcome | None:
-    """Write the managed fields and relations of a Shared Network, Pool or PD Pool *row*. Return its outcome.
+    """Write the managed fields and relations of a DHCP plugin *row*. Return its outcome.
 
     The outcome is ``None`` for a row that did not change.
     """
