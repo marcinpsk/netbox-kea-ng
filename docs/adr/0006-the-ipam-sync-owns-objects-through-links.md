@@ -179,8 +179,10 @@ import would link them again. With the source `delegated-prefix`, their cleanup 
 Snapshot, and a failed Reservation read would keep the stale links of the configuration. The `pd-pool` phase takes
 its cutoff before the import reads the configuration, and it is complete only when that read is Complete for
 delegated-prefix Pools. The import runs the phase after it removes the Stale DHCP Import Objects, so the DHCP plugin
-reference guard does not keep a Prefix that only a removed delegated-prefix Pool used. When a Prefix has more than
-one live source, the `subnet` marker wins over `pd pool`, and `pd pool` wins over `delegated prefix`.
+reference guard does not keep a Prefix that only a removed delegated-prefix Pool used. A stale delegated-prefix Pool
+that the run keeps still references its Prefixes, so the phase is then not complete (marcinpsk/netbox-kea-ng#150).
+When a Prefix has more than one live source, the `subnet` marker wins over `pd pool`, and `pd pool` wins over
+`delegated prefix`.
 
 ### Delegated and excluded prefixes of Reservations
 

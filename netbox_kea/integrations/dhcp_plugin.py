@@ -2543,15 +2543,16 @@ def pd_pool_prefixes(plan: FamilyPlan) -> list:
     return list(dict.fromkeys(networks))
 
 
-def reconcile_pd_pool_prefixes(server, plan: FamilyPlan, summary: ImportSummary) -> None:
+def reconcile_pd_pool_prefixes(server, plan: FamilyPlan, kept: set[Kind], summary: ImportSummary) -> None:
     """Link the Prefixes of every planned delegated-prefix Pool again, and drop the stale ``pd-pool`` links (ADR 0006).
 
     It runs after :func:`remove_stale_objects`: a removed PD Pool no longer uses its Prefix, so the cleanup can
-    deprecate it. Only a Complete observation of delegated-prefix Pools, with a cutoff, drops a link.
+    deprecate it. Only a Complete observation of delegated-prefix Pools, with a cutoff, drops a link. A stale PD Pool
+    in *kept* (the kinds that keep a stale row) still uses its Prefixes, so the phase is then not complete.
     """
     from ..ipam_reconciliation import PDPoolPhase, reconcile
 
-    complete = observations(plan)[Kind.PD_POOL].complete
+    complete = observations(plan)[Kind.PD_POOL].complete and Kind.PD_POOL not in kept
     report = reconcile(server, plan.family, [PDPoolPhase(pd_pool_prefixes(plan), plan.ipam_cutoff, complete)])
     summary.ownership.merge(report)
     summary.ownership_errors += report.errors + report.prefix_errors
@@ -3093,7 +3094,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     if delegated is not None:
         reconcile_delegated_prefixes(server, plan.family, delegated, kept, summary)
     if plan.family == 6:
-        reconcile_pd_pool_prefixes(server, plan, summary)
+        reconcile_pd_pool_prefixes(server, plan, kept, summary)
     if not plan.configuration_complete:
         summary.ownership.incomplete.update({"subnet", "pool"})
     if (

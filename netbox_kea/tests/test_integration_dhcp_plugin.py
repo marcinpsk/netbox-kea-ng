@@ -3220,6 +3220,47 @@ class DhcpPluginPDPoolImportTest(TestCase):
                 self.assertEqual((prefix.status, prefix.description), ("active", "[kea-sync: pd pool]"))
                 self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=prefix).exists())
 
+    def test_a_pd_pool_whose_removal_fails_keeps_its_prefix_links_and_prefixes_active(self):
+        from django.db.models.signals import pre_delete
+
+        from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
+        from netbox_kea.models import DhcpImportTrigger, IPAMOwnershipLink
+
+        from .test_views_dhcp_plugin import _sync_responses
+
+        self.server.sync_deprecate_prefixes_and_ranges = True
+        self.server.save()
+        self._run()
+        pd_pool = self._pd_pool()
+        prefixes = (pd_pool.prefix, pd_pool.excluded_prefix)
+        before = list(IPAMOwnershipLink.objects.filter(prefix__in=prefixes).order_by("pk").values())
+        self.conf["subnet6"][0]["pd-pools"] = []
+
+        def refuse(sender, instance, **kwargs):
+            if instance.pk == pd_pool.pk:
+                raise RuntimeError("the PD Pool delete fails")
+
+        pre_delete.connect(refuse, sender=self.PDPool, weak=False)
+        try:
+            with stub_kea(_sync_responses({6: self.conf}, {6: []})):
+                ((_family, summary),) = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+        finally:
+            pre_delete.disconnect(refuse, sender=self.PDPool)
+
+        self.assertEqual(summary.errors, 1, summary.warnings)
+        self.assertTrue(self.PDPool.objects.filter(pk=pd_pool.pk).exists())
+        self.assertEqual(list(IPAMOwnershipLink.objects.filter(prefix__in=prefixes).order_by("pk").values()), before)
+        self.assertIn("pd-pool", summary.ownership.incomplete)
+        for prefix in prefixes:
+            prefix.refresh_from_db()
+            self.assertEqual(prefix.status, "active")
+
+        self._run()
+
+        for prefix in prefixes:
+            prefix.refresh_from_db()
+            self.assertEqual(prefix.status, "deprecated")
+
     def test_a_pd_pool_link_that_a_claim_confirms_during_the_read_survives_a_read_without_it(self):
         from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
         from netbox_kea.ipam_reconciliation import PDPoolClaim, claim
