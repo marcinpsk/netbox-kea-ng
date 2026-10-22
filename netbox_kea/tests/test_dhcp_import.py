@@ -2505,6 +2505,38 @@ class SharedNetworkImportTest(_SharedNetworkTestCase):
         self.assertEqual(self._network("office").prefix_id, prefix.pk)
         self.assertNotIn(_OFFICE, self._entries(summary, Kind.SHARED_NETWORK))
 
+    def test_the_members_of_a_shared_network_whose_write_failed_keep_their_membership(self):
+        self._apply()
+        office = self._network("office")
+        config = _recorded_config(4)
+        network = next(each for each in config["shared-networks"] if each["name"] == "office")
+        # PostgreSQL cannot store a NUL character, so the Shared Network's UPDATE fails in the driver.
+        network["hostname-char-set"] = "[^a-z]\x00"
+        network["subnet4"].append({"id": 22, "subnet": "198.51.100.224/28"})
+
+        summary = self._apply(config, errors=1)
+
+        self.assertEqual(self._entries(summary, Kind.SHARED_NETWORK)[_OFFICE][1], Reason.WRITE_FAILED)
+        self.assertEqual({self._subnet(subnet_id).shared_network_id for subnet_id in (20, 21)}, {office.pk})
+        new = self._subnet(22)
+        self.assertEqual((new.dhcp_server_id, new.shared_network_id), (imported_dhcp_server(self.server, 4).pk, None))
+        self.assertIn("Dhcp4/subnet4[id=20]/reservations-global", {path for path, _ in self._inherited(summary)})
+
+    def test_the_members_of_a_shared_network_whose_name_is_taken_keep_their_membership(self):
+        self._apply()
+        office = self._network("office")
+        KeaDhcpLink.objects.filter(server=self.server, kind="shared_network", kea_identity="office").delete()
+        config = _recorded_config(4)
+        office_config = next(each for each in config["shared-networks"] if each["name"] == "office")
+        office_config["subnet4"].append({"id": 22, "subnet": "198.51.100.224/28"})
+
+        summary = self._apply(config)
+
+        self.assertEqual(self._entries(summary, Kind.SHARED_NETWORK)[_OFFICE][2], Capability.NAME_PER_SERVER)
+        self.assertEqual({self._subnet(subnet_id).shared_network_id for subnet_id in (20, 21)}, {office.pk})
+        self.assertEqual(self._subnet(22).dhcp_server_id, imported_dhcp_server(self.server, 4).pk)
+        self.assertIn("Dhcp4/subnet4[id=21]/reservations-global", {path for path, _ in self._inherited(summary)})
+
     def test_a_member_subnet_without_a_kea_subnet_id_imports_again_without_an_error(self):
         Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
         config = {"shared-networks": [{"name": "lab", "subnet4": [{"subnet": "192.0.2.0/24"}]}]}

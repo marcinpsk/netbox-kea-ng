@@ -1444,13 +1444,15 @@ def upsert_subnet(
     renumbered: bool,
     capabilities: PluginCapabilities,
     classes: ClassReferences,
-    shared_network=None,
+    shared_network,
+    keep_membership: bool,
 ):
     """Get/create the DHCP-plugin ``Subnet`` for *planned*, tracked via ``KeaDhcpLink`` by its key.
 
     *renumbered* tells that :func:`settle_subnet_ids` gave the mapped row its Kea subnet ID in this run. A member of
-    the imported *shared_network* belongs to it, else the Subnet belongs to *dhcp_server*: the DHCP plugin holds one
-    of the two. Returns the ``netbox_dhcp.Subnet`` instance, or ``None`` on error or for an unmapped row that it keeps.
+    the imported *shared_network* belongs to it. With *keep_membership*, a stored Subnet keeps its parent. Else the
+    Subnet belongs to *dhcp_server*: the DHCP plugin holds one of the two. Returns the ``netbox_dhcp.Subnet``
+    instance, or ``None`` on error or for an unmapped row that it keeps.
     """
     Subnet = _model("Subnet")
     intent = planned.intent
@@ -1481,8 +1483,7 @@ def upsert_subnet(
             subnet_obj = existing if existing is not None else Subnet(name=_subnet_name(server, planned, network))
             fields = {
                 "prefix_id": prefix_obj.pk,
-                "dhcp_server_id": dhcp_server.pk if shared_network is None else None,
-                "shared_network_id": shared_network.pk if shared_network is not None else None,
+                **_subnet_parent(existing, dhcp_server, shared_network, keep_membership),
                 # settle_subnet_ids gave a mapped row its Kea subnet ID. Without one, the plugin numbers a new Subnet.
                 "subnet_id": planned.key if planned.key is not None else subnet_obj.subnet_id,
                 **_settings_fields(subnet_obj, planned.settings, SUBNET_FIELDS, summary, source),
@@ -1520,6 +1521,15 @@ def upsert_subnet(
     elif changed or renumbered:
         summary.record(written(intent.family, Kind.SUBNET, path, Outcome.UPDATED))
     return subnet_obj
+
+
+def _subnet_parent(existing, dhcp_server, shared_network, keep_membership: bool) -> dict:
+    """Return the parent fields of a Subnet: its imported Shared Network, its stored parent, or *dhcp_server*."""
+    if shared_network is not None:
+        return {"dhcp_server_id": None, "shared_network_id": shared_network.pk}
+    if keep_membership and existing is not None:
+        return {"dhcp_server_id": existing.dhcp_server_id, "shared_network_id": existing.shared_network_id}
+    return {"dhcp_server_id": dhcp_server.pk, "shared_network_id": None}
 
 
 def _network_interface(dhcp_server, name, path: str, kind: Kind, family: int, summary: ImportSummary) -> set[int]:
@@ -2984,7 +2994,10 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
             _skip_subnet_children(summary, planned_subnet)
             continue
         renumbered = planned_subnet.key in subnet_ids.renumbered
-        network = networks.get(planned_subnet.intent.shared_network)
+        name = planned_subnet.intent.shared_network
+        network = networks.get(name)
+        # A member of a Shared Network that this run could hold but did not write keeps its stored parent.
+        keep = name is not None and network is None and capabilities.has(Capability.SHARED_NETWORK_OPTIONAL_PREFIX)
         subnet_obj = upsert_subnet(
             server,
             dhcp_server,
@@ -2995,6 +3008,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
             capabilities,
             references.classes,
             network,
+            keep,
         )
         if subnet_obj is None:
             _skip_subnet_children(summary, planned_subnet)

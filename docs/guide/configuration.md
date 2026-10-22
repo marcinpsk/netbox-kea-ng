@@ -109,7 +109,8 @@ the import never links a Prefix to a Shared Network. A Prefix that you set on an
 Each member Subnet belongs to its Shared Network
 (`shared_network`), not to the DHCP Server (`dhcp_server`), and it does not hold the values that it inherits from the
 Shared Network: the DHCP plugin supplies them. When Kea moves a Subnet to another Shared Network, or out of one, the
-next run moves the Subnet. netbox-plugin-dhcp 0.2.0 needs a Prefix for each Shared Network, so with that release
+next run moves the Subnet. When a run cannot write a Shared Network that the DHCP plugin can hold, its member
+Subnets keep their parent, and a new member Subnet belongs to the DHCP Server. netbox-plugin-dhcp 0.2.0 needs a Prefix for each Shared Network, so with that release
 every Shared Network is unsupported, with its DHCP Options, and the entry names
 [gap 1](https://github.com/marcinpsk/netbox-kea-ng/issues/88). Its member Subnets then belong to the DHCP Server, and
 the import reports each value that a member Subnet inherits from the Shared Network. A DHCP plugin release that makes
