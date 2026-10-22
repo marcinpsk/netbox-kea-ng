@@ -58,7 +58,7 @@ _Avoid_: Import log, import summary
 A NetBox DHCP object with a DHCP Import Mapping whose Kea source a Complete observation of the same kind no longer
 reports. The DHCP Import removes it. An Incomplete observation cannot make an object stale. A Pool whose range
 changes in Kea is a different Pool, so the old one becomes stale. So is a delegated-prefix Pool whose prefix or
-delegated length changes.
+delegated length changes, and a DHCP Option whose client classes change.
 _Avoid_: Orphan, orphaned Subnet
 
 **Declared Value**:
@@ -67,14 +67,14 @@ configuration. Subnet Settings are effective values and do not say which values 
 _Avoid_: Override, explicit setting
 
 **DHCP Import Mapping**:
-An association between a Kea source object and its imported NetBox DHCP object. Every top-level object of a DHCP
-Import has one: the global configuration of one address family, a Shared Network, a Subnet, a Pool, a
-delegated-prefix Pool, a Reservation, a client class, and a custom Option Definition. The source identity includes
-the Server, address family, and the Kea identity of the object: a Shared Network name, a Kea subnet ID, a Pool within
-its Subnet, a delegated-prefix Pool's prefix and delegated length within its Subnet, a Reservation Identity, a client
-class name, or an Option Definition's space and code (with the name of its client class, for a definition that a
-client class declares). A DHCP Option is identified within the object that
-assigns it.
+An association between a Kea source object and its imported NetBox DHCP object. Each object that a DHCP Import
+writes has one: the global configuration of one address family, a Shared Network, a Subnet, a Pool, a
+delegated-prefix Pool, a Reservation, a client class, a custom Option Definition, and a DHCP Option. The source
+identity includes the Server, address family, and the Kea identity of the object: a Shared Network name, a Kea subnet
+ID, a Pool within its Subnet, a delegated-prefix Pool's prefix and delegated length within its Subnet, a Reservation
+Identity, a client class name, an Option Definition's space and code (with the name of its client class, for a
+definition that a client class declares), or a DHCP Option's identity within the source of the object that assigns
+it. A DHCP Option without a mapping, for example one that an operator adds, is not the import's.
 _Avoid_: DHCP Link, ownership link
 
 **Aggregate Prefix**:

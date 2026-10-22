@@ -845,13 +845,14 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertIsNone(current_request.get())
 
     def _mapped_kinds(self, family, suffix):
-        """Create one mapped target of each kind of *family*; its Pools and In-Subnet Reservation are in the Subnet."""
+        """Create one mapped target of each kind of *family*; its Pools, In-Subnet Reservation and Option are in the Subnet."""
         from ipam.models import IPRange, Prefix
         from netaddr import IPNetwork
         from netbox_dhcp.models import (
             ClientClass,
             DHCPServer,
             HostReservation,
+            Option,
             OptionDefinition,
             PDPool,
             Pool,
@@ -905,6 +906,13 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                     dhcp_server=parent,
                 ),
             }
+            # The Subnet delete takes the Option before the delete of its Option Definition.
+            targets[MappingSource(Kind.OPTION, 40, f'["subnet",null,"dhcp{family}",222,[],0]')] = Option.objects.create(
+                definition=targets[MappingSource(Kind.OPTION_DEFINITION, kea_identity=f"dhcp{family}:222")],
+                assigned_object_type=ContentType.objects.get_for_model(Subnet),
+                assigned_object_id=subnet.pk,
+                data="1",
+            )
             if family == 6:
                 targets[MappingSource(Kind.PD_POOL, 40, "2001:db8:4000::/48/56")] = PDPool.objects.create(
                     name=f"mapping-{suffix}-pd-pool",
@@ -926,9 +934,9 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 branch = _provisioned_branch(self, f"mapping-every-kind-{family}")
                 branch.merge_strategy = "squash"
                 branch.save(provision=False)
-                # The Subnet delete also deletes its Pools and its In-Subnet Reservation.
+                # The Subnet delete also deletes its Pools, its In-Subnet Reservation and its Option.
                 for source, target in targets.items():
-                    if source.kind not in (Kind.POOL, Kind.PD_POOL, Kind.RESERVATION):
+                    if source.kind not in (Kind.POOL, Kind.PD_POOL, Kind.RESERVATION, Kind.OPTION):
                         self._delete(branch, target)
                 with activate_branch(branch):
                     for source, target in targets.items():
@@ -1026,7 +1034,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         targets = {(type(link.sys4_object), link.object_id): link.sys4_object.created for link in links()}
         self.assertEqual(
             sorted(links().values_list("kind", flat=True)),
-            ["client_class", "option_definition", "pool", "reservation", "server", "subnet"],
+            ["client_class", "option", "option", "option_definition", "pool", "reservation", "server", "subnet"],
         )
         dhcp_server = links().get(kind="server").sys4_object
         branch = _provisioned_branch(self, "mapping-imported-kinds")

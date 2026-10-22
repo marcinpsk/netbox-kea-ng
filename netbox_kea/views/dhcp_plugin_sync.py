@@ -241,7 +241,10 @@ def family_drift(server: Server, family: Family, user) -> FamilyDrift:
 
 
 # The relations that the name of a DHCP plugin row reads, by model.
-_NAME_RELATIONS: dict[str, tuple[str, ...]] = {"optiondefinition": ("dhcp_server", "client_class")}
+_NAME_RELATIONS: dict[str, tuple[str, ...]] = {
+    "optiondefinition": ("dhcp_server", "client_class"),
+    "option": ("definition__dhcp_server", "definition__client_class"),
+}
 
 
 def _viewable_targets(objects: list[DriftObject], user) -> list[DriftObject]:

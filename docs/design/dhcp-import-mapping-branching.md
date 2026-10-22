@@ -20,8 +20,8 @@ to the main-only policy. CONTEXT.md defines the domain terms.
 Only `KeaDhcpLink` gains branchability. Its targets already follow native DHCP-plugin routing: one
 model for each mapping kind in `MAPPING_KINDS` (`models.py`), which are DHCP Server (the global
 configuration of one family), Shared Network, Subnet, Pool, delegated-prefix Pool (PDPool),
-HostReservation (both Reservation Scopes), client class and Option Definition. A Subnet deletion
-also deletes the mappings of its Pools, delegated-prefix Pools and In-Subnet Reservations. The lifecycle applies to IPv4 and
+HostReservation (both Reservation Scopes), client class, Option Definition and DHCP Option. A Subnet deletion
+also deletes the mappings of its Pools, delegated-prefix Pools, In-Subnet Reservations and DHCP Options. The lifecycle applies to IPv4 and
 IPv6, instance deletion and queryset deletion.
 
 | Operation | Target and mapping outcome |

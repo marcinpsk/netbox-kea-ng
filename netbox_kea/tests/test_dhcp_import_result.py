@@ -814,7 +814,12 @@ class StaleRemovalTest(_ImportRunTestCase):
         run = self._sync(self.config, self.hosts)
 
         self.assertEqual(
-            self._removed(run), {("pool", _STALE_POOL), ("option_definition", "Dhcp4/option-def[code=241]")}
+            self._removed(run),
+            {
+                ("pool", _STALE_POOL),
+                ("option", f"{_STALE_POOL}/option-data[code=241]"),
+                ("option_definition", "Dhcp4/option-def[code=241]"),
+            },
         )
         self.assertEqual(self._mapped(Kind.OPTION_DEFINITION), [])
 
@@ -833,6 +838,8 @@ class StaleRemovalTest(_ImportRunTestCase):
 
     @override_settings(EVENTS_PIPELINE=["netbox_kea.tests.utils.record_dispatched_events"])
     def test_a_blocked_class_removal_dispatches_no_event_for_the_options_of_the_class(self):
+        from netbox_kea.models import KeaDhcpLink
+
         Option = apps.get_model(DHCP_PLUGIN, "Option")
         boot = {
             "name": "boot",
@@ -845,10 +852,14 @@ class StaleRemovalTest(_ImportRunTestCase):
         with_boot[4]["option-data"] = [{"code": 15, "data": "boot.example.org", "client-classes": ["boot"]}]
         self._sync(with_boot, self.hosts)
         own = Option.objects.get(definition__code=231)
+        # An operator takes over both Options: without a mapping, an Option is never stale on its own.
+        naming = Option.objects.get(definition__code=15)
+        option_type = ContentType.objects.get_for_model(Option)
+        KeaDhcpLink.objects.filter(object_type=option_type, object_id__in=[own.pk, naming.pk]).delete()
         DISPATCHED_EVENTS.clear()
         self.addCleanup(DISPATCHED_EVENTS.clear)
 
-        # Kea drops the class and the option that names it, so the unpaired global Option keeps the class.
+        # Kea drops the class and the option that names it, so the operator's global Option keeps the class.
         run = self._sync(self.config, self.hosts)
 
         entry = DhcpImportEntry.objects.get(run=run, kea_path="Dhcp4/client-classes[name=boot]")
@@ -946,6 +957,7 @@ class StaleRemovalTest(_ImportRunTestCase):
                 ("pool", "Dhcp4/subnet4[*]/pools[*]"),
                 ("client_class", "Dhcp4/client-classes[*]"),
                 ("option_definition", "Dhcp4/option-def[*]"),
+                ("option", "Dhcp4/option-data[*]"),
                 ("reservation", "Dhcp4/reservations[*]"),
             },
         )

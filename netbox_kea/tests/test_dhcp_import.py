@@ -11,7 +11,7 @@ import unittest
 from collections import Counter
 from dataclasses import fields
 from datetime import datetime, timezone
-from typing import get_args
+from typing import cast, get_args
 from unittest.mock import patch
 
 from django.apps import apps
@@ -531,9 +531,13 @@ class KindObservationTest(SimpleTestCase):
         observed = observations(plan_family(intent, _complete_observation()))
 
         self.assertEqual(
-            {kind for kind, o in observed.items() if not o.complete}, {Kind.CLIENT_CLASS, Kind.OPTION_DEFINITION}
+            {kind for kind, o in observed.items() if not o.complete},
+            {Kind.CLIENT_CLASS, Kind.OPTION_DEFINITION, Kind.OPTION},
         )
         self.assertIn("hides its Option Definitions", observed[Kind.OPTION_DEFINITION].incomplete)
+        self.assertEqual(
+            observed[Kind.OPTION].incomplete, "The configuration has 1 Client class entry that is not valid."
+        )
 
     def test_subnet_diagnostics_make_every_configuration_kind_incomplete_and_leave_reservations_complete(self):
         intent = _recorded_intent(4)
@@ -547,14 +551,16 @@ class KindObservationTest(SimpleTestCase):
                 self.assertIn("not read in full", observed[kind].incomplete)
         self.assertTrue(observed[Kind.RESERVATION].complete)
 
-    def test_an_invalid_subnet_entry_makes_subnets_and_pools_incomplete_only(self):
+    def test_an_invalid_subnet_entry_makes_subnets_pools_and_their_options_incomplete_only(self):
         config = {"subnet4": [{"id": 1, "subnet": "192.0.2.0/24"}, {"id": 2}]}
         intent = parse_dhcp_config(config, 4)
         intent.configuration_complete = True
 
         observed = observations(plan_family(intent, _complete_observation()))
 
-        self.assertEqual({kind for kind, o in observed.items() if not o.complete}, {Kind.SUBNET, Kind.POOL})
+        self.assertEqual(
+            {kind for kind, o in observed.items() if not o.complete}, {Kind.SUBNET, Kind.POOL, Kind.OPTION}
+        )
         self.assertIn("1 Subnet entry", observed[Kind.SUBNET].incomplete)
 
     def test_a_dhcpv6_read_observes_its_pd_pools_and_a_dhcpv4_read_has_none(self):
@@ -579,7 +585,9 @@ class KindObservationTest(SimpleTestCase):
 
         observed = observations(plan_family(intent, None))
 
-        self.assertEqual({kind for kind, o in observed.items() if not o.complete}, {Kind.PD_POOL, Kind.RESERVATION})
+        self.assertEqual(
+            {kind for kind, o in observed.items() if not o.complete}, {Kind.PD_POOL, Kind.RESERVATION, Kind.OPTION}
+        )
         self.assertIn("1 Delegated-prefix Pool entry that is not valid", observed[Kind.PD_POOL].incomplete)
 
     def test_an_invalid_dhcpv6_subnet_entry_hides_its_pd_pools(self):
@@ -613,7 +621,7 @@ class KindObservationTest(SimpleTestCase):
 
         observed = observations(plan_family(intent, _complete_observation()))
 
-        self.assertEqual({kind for kind, o in observed.items() if not o.complete}, {Kind.POOL})
+        self.assertEqual({kind for kind, o in observed.items() if not o.complete}, {Kind.POOL, Kind.OPTION})
 
     def test_each_reservation_gap_makes_the_reservation_observation_incomplete(self):
         quarantined = ReservationDiagnostic("invalid-identifier", "bad", "hosts[3]")
@@ -630,8 +638,9 @@ class KindObservationTest(SimpleTestCase):
                 self.assertFalse(observed.complete)
                 self.assertIn(reason, observed.incomplete)
 
-    def test_a_kind_without_a_path_refuses_instead_of_naming_the_daemon(self):
-        with self.assertRaises(ValueError):
+    def test_a_source_or_a_kind_without_a_path_refuses_instead_of_naming_the_daemon(self):
+        # An Option source names its parent in its identity.
+        with self.assertRaisesRegex(ValueError, "identity"):
             MappingSource(Kind.OPTION).path(4)
         with self.assertRaises(ValueError):
             kind_path(4, Kind.SERVER)
@@ -658,6 +667,112 @@ class KindObservationTest(SimpleTestCase):
         for source, path in sources.items():
             with self.subTest(source=source):
                 self.assertEqual(source.path(4), path)
+
+    def test_an_option_source_holds_its_parent_source_its_identity_and_its_occurrence(self):
+        from netbox_kea.dhcp_options import DHCPOptionIdentity
+        from netbox_kea.integrations.dhcp_import_plan import OptionKey
+
+        sources = {
+            OptionKey(MappingSource.server(), DHCPOptionIdentity("dhcp4", 3, frozenset())): (
+                MappingSource(Kind.OPTION, None, '["server",null,"dhcp4",3,[],0]'),
+                "Dhcp4/option-data[code=3]",
+            ),
+            OptionKey(
+                MappingSource(Kind.POOL, 20, "192.0.2.10-192.0.2.20"),
+                DHCPOptionIdentity("dhcp4", 3, frozenset({"voip", "b"})),
+                1,
+            ): (
+                MappingSource(Kind.OPTION, 20, '["pool","192.0.2.10-192.0.2.20","dhcp4",3,["b","voip"],1]'),
+                "Dhcp4/subnet4[id=20]/pools[pool=192.0.2.10-192.0.2.20]/option-data[code=3,client-classes=b|voip]",
+            ),
+            OptionKey(
+                MappingSource.named(Kind.CLIENT_CLASS, "a:b"), DHCPOptionIdentity("vendor-x", "x-name", frozenset())
+            ): (
+                MappingSource(Kind.OPTION, None, '["client_class","a:b","vendor-x","x-name",[],0]'),
+                "Dhcp4/client-classes[name=a:b]/option-data[space=vendor-x,name=x-name]",
+            ),
+        }
+        for key, (source, path) in sources.items():
+            with self.subTest(key=key):
+                self.assertEqual(key.source, source)
+                self.assertEqual(OptionKey.from_source(source), key)
+                self.assertEqual(source.path(4), path)
+
+    def test_a_complete_read_observes_the_options_of_every_parent(self):
+        observed = observations(plan_family(_recorded_intent(4), _complete_observation()))
+
+        paths = Counter(source.path(4) for source in observed[Kind.OPTION].sources)
+        global_paths = [
+            kea_paths.option("Dhcp4", parse_dhcp_option(raw), 4) for raw in _recorded_config(4)["option-data"]
+        ]
+        self.assertEqual(
+            paths,
+            Counter(
+                [
+                    *global_paths,
+                    f"{_BOOT}/option-data[code=231]",
+                    f"{_OFFICE}/option-data[code=6]",
+                    f"{_SUBNET_10}/option-data[code=3]",
+                    f"{_SUBNET_10}/pools[pool=192.0.2.10-192.0.2.20]/option-data[code=15]",
+                ]
+            ),
+        )
+        self.assertEqual(len(global_paths), 10)
+
+    def test_one_option_identity_twice_in_one_parent_gives_two_sources(self):
+        from netbox_kea.integrations.dhcp_import_plan import OptionKey
+
+        routers = {"code": 3, "data": "192.0.2.1"}
+        intent = parse_dhcp_config({"option-data": [routers, {**routers, "data": "192.0.2.2"}]}, 4)
+        intent.configuration_complete = True
+
+        observed = observations(plan_family(intent, _complete_observation()))[Kind.OPTION]
+
+        self.assertEqual(
+            Counter(OptionKey.from_source(source).occurrence for source in observed.sources), Counter({0: 1, 1: 1})
+        )
+        self.assertEqual(observed.incomplete, "")
+
+    def test_an_option_named_by_a_class_definition_takes_its_code(self):
+        config = {
+            "client-classes": [
+                {
+                    "name": "boot",
+                    "option-def": [{"name": "boot-flag", "code": 231, "space": "dhcp4", "type": "uint8"}],
+                    "option-data": [{"name": "boot-flag", "data": "1"}],
+                }
+            ]
+        }
+        intent = parse_dhcp_config(config, 4)
+        intent.configuration_complete = True
+
+        observed = observations(plan_family(intent, _complete_observation()))[Kind.OPTION]
+
+        self.assertEqual([source.path(4) for source in observed.sources], [f"{_BOOT}/option-data[code=231]"])
+
+    def test_an_option_whose_identity_a_mapping_cannot_hold_makes_the_options_incomplete(self):
+        classes = [f"{'c' * (MAX_KEA_NAME_LENGTH - 1)}{n}" for n in range(2)]
+        config = {"option-data": [{"code": 3, "data": "192.0.2.1", "client-classes": classes}]}
+        intent = parse_dhcp_config(config, 4)
+        intent.configuration_complete = True
+
+        observed = observations(plan_family(intent, _complete_observation()))[Kind.OPTION]
+
+        self.assertEqual(
+            (observed.sources, observed.incomplete), (frozenset(), "1 DHCP Option has no mapping identity.")
+        )
+
+    def test_each_parent_gap_makes_the_option_observation_incomplete(self):
+        unread = observations(plan_family(_recorded_intent(4), None))[Kind.OPTION]
+        partial = _recorded_intent(4)
+        partial.configuration_complete = False
+
+        self.assertEqual(unread.incomplete, "The Reservation Snapshot could not be read.")
+        self.assertEqual(
+            observations(plan_family(partial, _complete_observation()))[Kind.OPTION].incomplete,
+            "The Server Configuration was not read in full.",
+        )
+        self.assertEqual(kind_path(4, Kind.OPTION), "Dhcp4/option-data[*]")
 
 
 class CapabilityProbeTest(SimpleTestCase):
@@ -1067,14 +1182,17 @@ class ApplyPlanWithoutKeaTest(TestCase):
             *ClientClass.objects.filter(dhcp_server__in=imported_dhcp_servers(server)),
             *OptionDefinition.objects.filter(standard=False, dhcp_server__in=imported_dhcp_servers(server)),
             *OptionDefinition.objects.filter(client_class__dhcp_server__in=imported_dhcp_servers(server)),
+            # This test imports every Option of the database.
+            *apps.get_model(DHCP_PLUGIN, "Option").objects.all(),
         ]
         mapped = KeaDhcpLink.objects.filter(server=server, family=4).exclude(kind__in=["subnet", "server"])
         self.assertCountEqual(
             mapped.values_list("object_type__model", "object_id"),
             [(row._meta.model_name, row.pk) for row in rows],
         )
-        # Four Pools, two Reservations, four client classes and five custom Option Definitions, one of them in a class.
-        self.assertEqual(mapped.count(), 15)
+        # Four Pools, two Reservations, four client classes, five custom Option Definitions (one of them in a class),
+        # and eleven DHCP Options.
+        self.assertEqual(mapped.count(), 26)
         before = set(KeaDhcpLink.objects.filter(server=server).values_list("pk", "object_id"))
 
         again = dhcp_plugin.apply_plan(server, plan, probe())
@@ -1701,6 +1819,8 @@ class OptionCoverageTest(TestCase):
         older = json.loads(json.dumps(config))
         del next(o for o in older["option-data"] if o.get("code") == 3)["client-classes"]
         self._apply(older)
+        # An older import wrote no Option mappings.
+        KeaDhcpLink.objects.filter(server=self.server, kind=Kind.OPTION.value).delete()
         dhcp_server = imported_dhcp_server(self.server, 4)
         self.assertEqual(self._options(dhcp_server, 3), [(classed["data"], ())])
         before = set(apps.get_model(DHCP_PLUGIN, "Option").objects.values_list("pk", flat=True))
@@ -2070,6 +2190,283 @@ class OptionCoverageTest(TestCase):
         self.assertFalse(apps.get_model(DHCP_PLUGIN, "Option").objects.filter(data="known.example.org").exists())
 
 
+def _without_options(value):
+    """Return a copy of a Kea configuration in which every object assigns no DHCP Option."""
+    if isinstance(value, list):
+        return [_without_options(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    return {key: [] if key == kea_paths.OPTION_DATA else _without_options(item) for key, item in value.items()}
+
+
+_ROUTERS = "Dhcp4/option-data[code=3]"
+_VOIP_ROUTERS = "Dhcp4/option-data[code=3,client-classes=voip]"
+# A standard DHCPv4 option that the coverage configuration assigns nowhere.
+_NETBIOS_NAME_SERVERS = 44
+# The global Reservation of the coverage configuration of each family, with one DHCP Option.
+_RESERVATION_OPTION = {
+    4: {"code": 15, "name": "domain-name", "space": "dhcp4", "data": "host.example.org"},
+    6: {"code": 23, "name": "dns-servers", "space": "dhcp6", "data": "2001:db8::99"},
+}
+
+
+class OptionMappingTest(TestCase):
+    """Each imported DHCP Option has a DHCP Import Mapping, and a run removes one that Kea stops declaring (#145).
+
+    Every run is the real import entry against Kea stubbed at the transport.
+    """
+
+    maxDiff = None
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def setUp(self):
+        self.server = _make_db_server(name="option-mapping", dhcp6=False, sync_dhcp_plugin_enabled=True)
+        self.config = _recorded_config(4)
+
+    def _run(self, config: dict | None = None, family: Family = 4, *, reservations: bool = True):
+        config = self.config if config is None else config
+        responses = _sync_responses(
+            {family: config}, {family: _recorded_hosts(config, family)}, reservations_available=reservations
+        )
+        with stub_kea(responses):
+            ((_family, summary),) = run_dhcp_plugin_import(
+                self.server, cast("DhcpImportTrigger", DhcpImportTrigger.MANUAL)
+            )
+        assert isinstance(summary, dhcp_plugin.ImportSummary), summary
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        return summary
+
+    @staticmethod
+    def _changes(summary) -> dict:
+        """Count each entry that wrote or removed a row, or kept a stale one, by kind, path, outcome and reason."""
+        # A plain dict gives a line diff; the counts still compare exactly.
+        return dict(
+            Counter(
+                (entry.kind, entry.path, entry.outcome, entry.reason)
+                for entry in summary.entries
+                if entry.outcome in (Outcome.CREATED, Outcome.UPDATED, Outcome.REMOVED)
+                or entry.reason in (Reason.REMOVAL_BLOCKED, Reason.INCOMPLETE_OBSERVATION)
+            )
+        )
+
+    @staticmethod
+    def _option_rows() -> Counter:
+        """Count every Option row by its parent model, code, data, client classes and whether a mapping holds it."""
+        mapped = set(KeaDhcpLink.objects.filter(kind=Kind.OPTION.value).values_list("object_id", flat=True))
+        return Counter(
+            (
+                row.assigned_object_type.model,
+                row.definition.code,
+                row.data,
+                tuple(sorted(row.client_classes.values_list("name", flat=True))),
+                row.pk in mapped,
+            )
+            for row in apps.get_model(DHCP_PLUGIN, "Option").objects.all()
+        )
+
+    def _without_routers(self) -> dict:
+        config = _recorded_config(4)
+        config["option-data"] = [o for o in config["option-data"] if (o["code"], o.get("client-classes")) != (3, None)]
+        return config
+
+    def _operator_option(self, parent):
+        """Add the Option that an operator adds by hand to the imported row *parent*: it has no mapping."""
+        from django.contrib.contenttypes.models import ContentType
+
+        definition = apps.get_model(DHCP_PLUGIN, "OptionDefinition").objects.get(
+            standard=True, space="dhcp4", code=_NETBIOS_NAME_SERVERS
+        )
+        return apps.get_model(DHCP_PLUGIN, "Option").objects.create(
+            definition=definition,
+            assigned_object_type=ContentType.objects.get_for_model(parent),
+            assigned_object_id=parent.pk,
+            data="192.0.2.44",
+        )
+
+    def test_a_complete_run_removes_the_unclassed_routers_that_kea_drops_and_keeps_the_classed_one(self):
+        self._run()
+        rows = self._option_rows()
+
+        summary = self._run(self._without_routers())
+
+        self.assertEqual(self._changes(summary), {(Kind.OPTION, _ROUTERS, Outcome.REMOVED, None): 1})
+        rows[("dhcpserver", 3, "192.0.2.254", (), True)] -= 1
+        self.assertEqual(self._option_rows(), +rows)
+
+    def test_a_complete_run_removes_a_dropped_class_with_its_classed_option(self):
+        self._run()
+        rows = self._option_rows()
+        config = _without_class(_recorded_config(4), "voip")
+        # The class list of the classed routers is now empty; Kea dropped that option with its class.
+        config["option-data"] = [o for o in config["option-data"] if o.get("client-classes") != []]
+
+        summary = self._run(config)
+
+        self.assertEqual(
+            self._changes(summary),
+            {
+                (Kind.OPTION, _VOIP_ROUTERS, Outcome.REMOVED, None): 1,
+                (Kind.CLIENT_CLASS, "Dhcp4/client-classes[name=voip]", Outcome.REMOVED, None): 1,
+                # Each row whose class list named voip loses it.
+                (Kind.SUBNET, _SUBNET_10, Outcome.UPDATED, None): 1,
+                (Kind.SUBNET, "Dhcp4/subnet4[id=21]", Outcome.UPDATED, None): 1,
+                (Kind.POOL, f"{_SUBNET_10}/pools[pool=192.0.2.10-192.0.2.20]", Outcome.UPDATED, None): 1,
+                (Kind.POOL, "Dhcp4/subnet4[id=21]/pools[pool=198.51.100.200-198.51.100.220]", Outcome.UPDATED, None): 1,
+                (
+                    Kind.RESERVATION,
+                    "Dhcp4/subnet4[id=21]/reservations[hw-address=aa:bb:cc:00:01:00]",
+                    Outcome.UPDATED,
+                    None,
+                ): 1,
+            },
+        )
+        rows[("dhcpserver", 3, "192.0.2.1", ("voip",), True)] -= 1
+        self.assertEqual(self._option_rows(), +rows)
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "ClientClass").objects.filter(name="voip").exists())
+
+    def test_a_removed_option_lets_the_stale_option_definition_that_it_used_go(self):
+        self._run()
+        definition = KeaDhcpLink.objects.get(server=self.server, kind="option_definition", kea_identity="dhcp4:224")
+        config = _recorded_config(4)
+        config["option-data"] = [o for o in config["option-data"] if o["code"] != 224]
+        config["option-def"] = [d for d in config["option-def"] if d["code"] != 224]
+
+        summary = self._run(config)
+
+        self.assertEqual(
+            self._changes(summary),
+            {
+                (Kind.OPTION, "Dhcp4/option-data[code=224]", Outcome.REMOVED, None): 1,
+                (Kind.OPTION_DEFINITION, "Dhcp4/option-def[code=224]", Outcome.REMOVED, None): 1,
+            },
+        )
+        OptionDefinition = apps.get_model(DHCP_PLUGIN, "OptionDefinition")
+        self.assertFalse(OptionDefinition.objects.filter(pk=definition.object_id).exists())
+
+    def test_an_incomplete_observation_keeps_an_option_that_kea_drops(self):
+        invalid = self._without_routers()
+        invalid["option-data"].append({"code": 3, "data": 1})
+        incomplete_options = (Kind.OPTION, "Dhcp4/option-data[*]", Outcome.SKIPPED, Reason.INCOMPLETE_OBSERVATION)
+        incomplete_reservations = (
+            Kind.RESERVATION,
+            "Dhcp4/reservations[*]",
+            Outcome.SKIPPED,
+            Reason.INCOMPLETE_OBSERVATION,
+        )
+        cases = {
+            "invalid option entry": (invalid, True, {incomplete_options: 1}),
+            "unread reservations": (
+                self._without_routers(),
+                False,
+                {incomplete_options: 1, incomplete_reservations: 1},
+            ),
+        }
+        self._run()
+        rows = self._option_rows()
+        for case, (config, reservations, changes) in cases.items():
+            with self.subTest(case=case):
+                summary = self._run(config, reservations=reservations)
+
+                self.assertEqual(self._changes(summary), changes)
+                self.assertEqual(self._option_rows(), rows)
+
+    def test_an_option_that_an_operator_adds_to_a_mapped_parent_stays_across_runs(self):
+        self._run()
+        operator = self._operator_option(imported_dhcp_server(self.server, 4))
+        rows = self._option_rows()
+
+        removing = self._run(self._without_routers())
+        again = self._run(self._without_routers())
+
+        self.assertEqual(self._changes(removing), {(Kind.OPTION, _ROUTERS, Outcome.REMOVED, None): 1})
+        self.assertEqual(self._changes(again), {})
+        rows[("dhcpserver", 3, "192.0.2.254", (), True)] -= 1
+        self.assertEqual(self._option_rows(), +rows)
+        self.assertEqual(rows[("dhcpserver", _NETBIOS_NAME_SERVERS, "192.0.2.44", (), False)], 1)
+        self.assertTrue(apps.get_model(DHCP_PLUGIN, "Option").objects.filter(pk=operator.pk).exists())
+
+    def test_the_first_run_after_the_upgrade_maps_each_option_that_pairs_and_keeps_the_others(self):
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        self._run()
+        # After the run a mapping holds each Option that Kea declares.
+        rows = Counter({(*row[:4], True): count for row, count in self._option_rows().items()})
+        options = set(Option.objects.values_list("pk", flat=True))
+        # Before the upgrade an Option had no mapping of its own.
+        KeaDhcpLink.objects.filter(server=self.server, kind=Kind.OPTION.value).delete()
+        operator = self._operator_option(imported_dhcp_server(self.server, 4))
+
+        summary = self._run()
+
+        self.assertEqual(self._changes(summary), {})
+        rows[("dhcpserver", _NETBIOS_NAME_SERVERS, "192.0.2.44", (), False)] += 1
+        self.assertEqual(self._option_rows(), rows)
+        self.assertEqual(set(Option.objects.values_list("pk", flat=True)), options | {operator.pk})
+
+    def test_an_option_whose_client_classes_change_is_removed_and_created_again(self):
+        self._run()
+        rows = self._option_rows()
+        config = _recorded_config(4)
+        next(o for o in config["option-data"] if o.get("client-classes") == ["voip"])["client-classes"] = ["printers"]
+
+        summary = self._run(config)
+
+        self.assertEqual(
+            self._changes(summary),
+            {
+                (Kind.OPTION, _VOIP_ROUTERS, Outcome.REMOVED, None): 1,
+                (Kind.OPTION, "Dhcp4/option-data[code=3,client-classes=printers]", Outcome.CREATED, None): 1,
+            },
+        )
+        rows[("dhcpserver", 3, "192.0.2.1", ("voip",), True)] -= 1
+        rows[("dhcpserver", 3, "192.0.2.1", ("printers",), True)] += 1
+        self.assertEqual(self._option_rows(), +rows)
+
+    def _assert_every_parent_kind(self, family: Family, parents: dict):
+        """Import an Option on each kind of parent, then remove every one that Kea stops declaring."""
+        self.server.dhcp4, self.server.dhcp6 = family == 4, family == 6
+        self.server.save()
+        optional_shared_network_prefix(self)
+        config = _recorded_config(family)
+        config["reservations"][0]["option-data"] = [_RESERVATION_OPTION[family]]
+
+        created = self._run(config, family)
+        links = KeaDhcpLink.objects.filter(server=self.server, family=family, kind=Kind.OPTION.value)
+        sources = [MappingSource(Kind.OPTION, link.kea_subnet_id, link.kea_identity) for link in links]
+        removed = self._run(_without_options(config), family)
+
+        def options(summary, outcome: Outcome) -> dict:
+            matches = (Kind.OPTION, outcome)
+            return dict(Counter(entry.path for entry in summary.entries if (entry.kind, entry.outcome) == matches))
+
+        self.assertEqual(dict(Counter(json.loads(str(source.kea_identity))[0] for source in sources)), parents)
+        self.assertEqual(dict(Counter(source.path(family) for source in sources)), options(created, Outcome.CREATED))
+        self.assertEqual(options(removed, Outcome.REMOVED), options(created, Outcome.CREATED))
+        self.assertEqual(self._option_rows(), Counter())
+        # all(): the loop above filled the cache of links.
+        self.assertFalse(links.all().exists())
+
+    def test_a_complete_dhcpv4_run_removes_the_options_of_every_parent_kind(self):
+        parents = {"server": 8, "client_class": 1, "shared_network": 1, "subnet": 1, "pool": 1, "reservation": 2}
+        self._assert_every_parent_kind(4, parents)
+
+    def test_a_complete_dhcpv6_run_removes_the_options_of_every_parent_kind(self):
+        parents = {
+            "server": 5,
+            "client_class": 1,
+            "shared_network": 1,
+            "subnet": 1,
+            "pool": 1,
+            "pd_pool": 1,
+            "reservation": 2,
+        }
+        self._assert_every_parent_kind(6, parents)
+
+
 # A Kea object of a config-get reply: its ledger table, kind, Kea path, keys, and the keys of its parent.
 _KeaObject = tuple[str, Kind, str, dict, dict]
 
@@ -2339,6 +2736,22 @@ class CoverageImportTest(TestCase):
                 self.assertTrue(all(link.sys4_object is not None for link in links))
         self.assertEqual(apps.get_model(DHCP_PLUGIN, "Option").objects.count(), expected[Kind.OPTION])
         self.assertGreater(expected[Kind.OPTION], 0)
+        # Each Option mapping names the Kea path of one written Option, and holds the Option of its mapped parent.
+        links = KeaDhcpLink.objects.filter(server=server, family=family)
+        rows = {(link.kind, link.kea_subnet_id, link.kea_identity): link.sys4_object for link in links}
+        mapped: Counter[tuple[str, bool]] = Counter()
+        for link in links.filter(kind=Kind.OPTION.value):
+            parent_kind, parent_identity = json.loads(link.kea_identity)[:2]
+            # An Option takes the Kea subnet ID of its parent.
+            parent = rows[(parent_kind, link.kea_subnet_id, parent_identity)]
+            path = MappingSource(Kind.OPTION, link.kea_subnet_id, link.kea_identity).path(family)
+            mapped[(path, link.sys4_object.assigned_object == parent)] += 1
+        written = Counter(
+            (path, True)
+            for _table, kind, path, _raw, _parent in objects
+            if kind == Kind.OPTION and path not in predicted
+        )
+        self.assertEqual(mapped, written)
 
     def _assert_entries(self, family: Family, objects: list[_KeaObject], entries, capabilities, rejections):
         """Compare every stored entry, counted, with the expectation of its class, field for field but the detail."""

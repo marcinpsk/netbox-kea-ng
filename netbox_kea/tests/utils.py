@@ -250,6 +250,25 @@ def linked_dhcp_targets(server):
             ),
             {"kind": "option_definition", "kea_identity": "dhcp4:222"},
         ),
+        (
+            # A TransactionTestCase flushes the seeded standard Option Definitions, so the Option has its own. It is
+            # standard, so it has no parent whose delete would cascade to it while the Option protects it.
+            model("Option").objects.create(
+                pk=100,
+                definition=model("OptionDefinition").objects.create(
+                    name="linked-option-definition-in-use",
+                    standard=True,
+                    family=4,
+                    space="dhcp4",
+                    code=223,
+                    type="uint8",
+                ),
+                assigned_object_type=ContentType.objects.get_for_model(dhcp_server),
+                assigned_object_id=dhcp_server.pk,
+                data="1",
+            ),
+            {"kind": "option", "kea_identity": '["server",null,"dhcp4",223,[],0]'},
+        ),
         # Last: deleting the DHCPServer cascades to the targets that it holds.
         (dhcp_server, {"kind": "server"}),
     ]
