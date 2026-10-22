@@ -136,10 +136,7 @@ def imported_dhcp_servers(server) -> list[int]:
 
 
 def optional_shared_network_prefix(test: TestCase):
-    """Give the installed netbox_dhcp the optional Shared Network prefix of #88 gap 1 for one test, and probe it.
-
-    The DDL rolls back with the test transaction, and the patched Subnet check drops only the containment rule.
-    """
+    """Give netbox_dhcp the optional Shared Network prefix of #88 gap 1 for one test, and return the probe."""
     from unittest import mock
 
     from netbox_kea.integrations.dhcp_plugin_capabilities import probe
