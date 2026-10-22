@@ -372,8 +372,8 @@ class LedgerEntriesTest(SimpleTestCase):
         gated_network = tuple((key, attr, transform) for key, attr, transform, _cap in fields.GATED_NETWORK_FIELDS)
         field_maps = {
             "Dhcp": ("DHCPServer", fields.SERVER_FIELDS),
-            "shared-networks": ("SharedNetwork", (*fields.SUBNET_FIELDS, *gated_network, *interface)),
-            "subnet": ("Subnet", (*fields.SUBNET_FIELDS, *gated_subnet, *interface)),
+            "shared-networks": ("SharedNetwork", (*fields.NETWORK_FIELDS, *gated_network, *interface)),
+            "subnet": ("Subnet", (*fields.NETWORK_FIELDS, *gated_subnet, *interface)),
             "pools": ("Pool", fields.POOL_FIELDS),
             "client-classes": ("ClientClass", fields.CLIENT_CLASS_FIELDS),
         }

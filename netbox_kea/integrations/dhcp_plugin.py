@@ -123,9 +123,9 @@ from .dhcp_import_fields import (
     GATED_SERVER_FIELDS,
     GATED_SUBNET_FIELDS,
     MANAGED_FIELDS,
+    NETWORK_FIELDS,
     POOL_FIELDS,
     SERVER_FIELDS,
-    SUBNET_FIELDS,
     GatedFieldMap,
     managed_fields,
     server_id_field,
@@ -1357,7 +1357,7 @@ def _shared_network_fields(
     return {
         "name": obj.name if name_taken else planned.key,
         "dhcp_server_id": dhcp_server.pk,
-        **_settings_fields(obj, planned.settings, SUBNET_FIELDS, summary, source),
+        **_settings_fields(obj, planned.settings, NETWORK_FIELDS, summary, source),
         **gated_values(obj, planned.settings, GATED_NETWORK_FIELDS, capabilities, summary, source),
         **_user_context_fields(obj, planned.intent.user_context, capabilities, summary, source, "Shared Network"),
     }
@@ -1504,7 +1504,7 @@ def upsert_subnet(
                 **_subnet_parent(existing, dhcp_server, shared_network, keep_membership),
                 # settle_subnet_ids gave a mapped row its Kea subnet ID. Without one, the plugin numbers a new Subnet.
                 "subnet_id": planned.key if planned.key is not None else subnet_obj.subnet_id,
-                **_settings_fields(subnet_obj, planned.settings, SUBNET_FIELDS, summary, source),
+                **_settings_fields(subnet_obj, planned.settings, NETWORK_FIELDS, summary, source),
                 **gated_values(subnet_obj, planned.settings, GATED_SUBNET_FIELDS, capabilities, summary, source),
                 **_user_context_fields(subnet_obj, intent.user_context, capabilities, summary, source, "Subnet"),
             }

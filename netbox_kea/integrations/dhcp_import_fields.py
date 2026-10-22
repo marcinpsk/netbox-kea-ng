@@ -110,7 +110,7 @@ COMMON_FIELDS: FieldMap = (
 )
 
 #: The settings of a Subnet, and of a Shared Network, which the DHCP plugin gives the same fields.
-SUBNET_FIELDS: FieldMap = (
+NETWORK_FIELDS: FieldMap = (
     *COMMON_FIELDS,
     ("interface-id", "interface_id", None),
     ("rapid-commit", "rapid_commit", None),
@@ -200,14 +200,14 @@ MANAGED_FIELDS: dict[str, tuple[ManagedField, ...]] = {
     ),
     "SharedNetwork": (
         *_scalars("name", "dhcp_server"),
-        *_settings(SUBNET_FIELDS),
+        *_settings(NETWORK_FIELDS),
         *_gated(GATED_NETWORK_FIELDS),
         ManagedField("user_context", Capability.USER_CONTEXT),
         *_relations("client_classes", "evaluate_additional_classes", "server_interfaces"),
     ),
     "Subnet": (
         *_scalars("prefix", "dhcp_server", "shared_network", "subnet_id"),
-        *_settings(SUBNET_FIELDS),
+        *_settings(NETWORK_FIELDS),
         *_gated(GATED_SUBNET_FIELDS),
         ManagedField("user_context", Capability.USER_CONTEXT),
         *_relations("client_classes", "evaluate_additional_classes", "server_interfaces"),
