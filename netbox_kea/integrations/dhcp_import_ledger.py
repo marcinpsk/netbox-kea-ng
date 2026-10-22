@@ -7,7 +7,6 @@
 
 * :class:`Mapped`: the import writes the key to a netbox_dhcp model or field.
 * :class:`NotImported`: the key is not imported, for a reason from the closed set of the run result.
-* :class:`Pending`: a later ticket of #89 maps the key.
 * :class:`Deprecated`: Kea rewrites the key to its replacement, so ``config-get`` never returns it.
 
 An entry names each DHCP Plugin Capability (#88) that its write needs, and :mod:`.dhcp_plugin_capabilities` checks
@@ -31,8 +30,6 @@ class Mapped:
 
     target: str
     capabilities: tuple[Capability, ...] = ()
-    # The #89 ticket that completes a partial mapping.
-    pending: int | None = None
 
 
 @dataclass(frozen=True)
@@ -47,21 +44,13 @@ class NotImported:
 
 
 @dataclass(frozen=True)
-class Pending:
-    """The #89 ticket *ticket* maps the key."""
-
-    ticket: int
-    capabilities: tuple[Capability, ...] = ()
-
-
-@dataclass(frozen=True)
 class Deprecated:
     """Kea rewrites the key to *replacement* in ``config-get``."""
 
     replacement: str
 
 
-Entry = Mapped | NotImported | Pending | Deprecated
+Entry = Mapped | NotImported | Deprecated
 
 _USER_CONTEXT = (Capability.USER_CONTEXT,)
 # A Shared Network and its membership need it; its other keys need it only through their object.

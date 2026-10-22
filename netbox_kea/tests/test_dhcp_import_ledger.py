@@ -26,7 +26,6 @@ from netbox_kea.integrations.dhcp_import_ledger import (
     Deprecated,
     Mapped,
     NotImported,
-    Pending,
 )
 from netbox_kea.integrations.dhcp_import_report import Capability, Reason
 from netbox_kea.kea_paths import OPTION_DEF
@@ -238,13 +237,13 @@ class LedgerEntriesTest(SimpleTestCase):
             for key, entry in keys.items()
         ]
 
-    def test_no_entry_is_pending(self):
-        pending = [
+    def test_every_entry_is_mapped_not_imported_or_deprecated(self):
+        others = [
             (family, table, key)
             for family, table, key, entry in self._entries()
-            if isinstance(entry, Pending) or getattr(entry, "pending", None) is not None
+            if not isinstance(entry, (Mapped, NotImported, Deprecated))
         ]
-        self.assertEqual(pending, [])
+        self.assertEqual(others, [])
 
     def test_the_shared_network_keys_are_mapped_to_the_plugin_shared_network_and_its_members(self):
         for family in LEDGER:
@@ -283,7 +282,6 @@ class LedgerEntriesTest(SimpleTestCase):
         pd_pool = LEDGER[6]["pd-pools"]
 
         self.assertEqual(LEDGER[6]["subnet6"]["pd-pools"], Mapped("PDPool"))
-        self.assertEqual([key for key, entry in pd_pool.items() if isinstance(entry, Pending)], [])
         self.assertEqual(
             {key: entry.target for key, entry in pd_pool.items() if isinstance(entry, Mapped)},
             {
