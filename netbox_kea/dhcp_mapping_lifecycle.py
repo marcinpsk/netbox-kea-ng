@@ -254,6 +254,26 @@ def observe_mapping(server, family: int, target, source: MappingSource):
         return mapping
 
 
+def options_mapped(server, family: int, source: MappingSource) -> bool:
+    """Return whether the import has mapped the DHCP Options of the object of *source*. It must have a mapping."""
+    from .models import KeaDhcpLink
+
+    return (
+        KeaDhcpLink.objects.filter(**_source_lookup(server, family, source))
+        .values_list("options_mapped", flat=True)
+        .get()
+    )
+
+
+def mark_options_mapped(server, family: int, source: MappingSource) -> None:
+    """Record that the import has mapped the DHCP Options of the object of *source*, without a history change."""
+    from .models import KeaDhcpLink
+
+    KeaDhcpLink.objects.filter(**_source_lookup(server, family, source), options_mapped=False).update(
+        options_mapped=True
+    )
+
+
 class MappingUnavailable(AbortRequest):
     """The active branch cannot safely read or change DHCP Import Mappings."""
 

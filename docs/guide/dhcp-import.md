@@ -130,15 +130,19 @@ creates a new DHCP Option and removes the old one. When the definition of an opt
 `option-def` to a client class, the Option keeps its row and binds to the new definition.
 
 A DHCP Option that you add to an imported object has no mapping. The run does not change it and does not remove it.
-A Kea option without a mapped Option gets a new DHCP Option. The one exception is the upgrade. While a Server and
-family have no Option mapping, a Kea option without one takes an Option without a mapping of the same object. It
-takes one with the same space, code and client classes first. Then it takes one with the same space and code, for
-example one that an earlier release wrote without classes. So the first run after an upgrade maps each Option that an
-earlier release wrote. When the first runs of a Server import no DHCP Option at all, the first run that imports one
-also takes the Options without a mapping.
+A Kea option without a mapped Option gets a new DHCP Option. The one exception is the upgrade. Each imported object
+takes the Options without a mapping once: on the first run that reaches it after the upgrade. Then a Kea option
+without a mapped Option takes an Option without a mapping of the same object. It takes one with the same space, code
+and client classes first. Then it takes one with the same space and code, for example one that an earlier release
+wrote without classes. When the run has written each DHCP Option of the object that it can write, the mapping of the
+object records it. After that, the object takes no unmapped Option again. The global configuration, client classes,
+Shared Networks, Subnets, Pools, delegated-prefix Pools and Reservations take them this way. A run that cannot read the
+Reservations does not reach them, so a later run that reads them maps their Options.
 
-A mapping keeps 517 characters. A DHCP Option whose identity is longer has no mapping. The run writes it, but then it
-removes no DHCP Option of an object of the same kind.
+A mapping keeps 517 characters. A DHCP Option whose identity is longer has no mapping, and neither has a DHCP Option
+of an object without a mapping. On every run, such an Option takes an Option without a mapping of the same object, as
+the upgrade does. So the run updates it in place and makes no duplicate. The run never removes it. While the read has
+such an Option, it removes no DHCP Option of an object of the same kind.
 
 When you rename an object, the mapping stays and the import keeps your name. A client class and a Shared
 Network are the exceptions: they keep their Kea name, because Kea refers to them by name. The first run after an

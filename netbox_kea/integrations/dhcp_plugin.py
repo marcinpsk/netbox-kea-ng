@@ -113,7 +113,14 @@ from django.db.models.signals import post_delete
 
 from .. import event_scope, kea_paths
 from ..constants import Family, IPNetworkValue
-from ..dhcp_mapping_lifecycle import coordinated_import, mapped_target, observe_mapping, target_models
+from ..dhcp_mapping_lifecycle import (
+    coordinated_import,
+    mapped_target,
+    mark_options_mapped,
+    observe_mapping,
+    options_mapped,
+    target_models,
+)
 from ..dhcp_options import MAX_ONE_OCTET_OPTION_CODE, DHCPOption, option_identity
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import OptionDefIntent, PDPoolIntent, ServerConfigIntent
@@ -451,8 +458,6 @@ class OptionReferences:
 
     definitions: CustomDefinitions
     classes: ClassReferences
-    # Whether an Option without a mapped row adopts an unmapped Option: only while the family has no Option mapping.
-    adopts_options: bool
 
     @property
     def server(self) -> Server:
@@ -743,8 +748,11 @@ def _paired_rows(planned: list[_PlannedOption], rows: list) -> list:
     return paired
 
 
-def _write_option(item: _PlannedOption, row, parent_obj, ct, family: int, references, summary, capabilities) -> None:
-    """Create the Option of *item* on *parent_obj*, or update its *row*, with its client classes and its mapping."""
+def _write_option(item: _PlannedOption, row, parent_obj, ct, family: int, references, summary, capabilities) -> bool:
+    """Create the Option of *item* on *parent_obj*, or update its *row*, with its client classes and its mapping.
+
+    Return whether the write succeeded.
+    """
     Option = _model("Option")
     source = _Source(family, Kind.OPTION, item.path)
     outcome = None
@@ -777,6 +785,8 @@ def _write_option(item: _PlannedOption, row, parent_obj, ct, family: int, refere
     except Exception as exc:  # noqa: BLE001 (one bad option must not abort the import)
         summary.record(write_failed(family, Kind.OPTION, item.path))
         summary.warn(f"option {option_identity(item.option, family)}: {exc}")
+        return False
+    return True
 
 
 def upsert_options(
@@ -792,13 +802,18 @@ def upsert_options(
 
     They are assigned to *parent_obj*, the Kea object at *parent_path*. One Option per Kea option: the same definition
     with other client classes is another Option. Each Option has a DHCP Import Mapping from its key, and a re-import
-    finds the row through it. Only while the family has no Option mapping (the first run after the upgrade), an Option
-    without a mapped row adopts an unmapped Option of *parent_obj* (:func:`_paired_rows`). After that, every unmapped
-    Option is an operator's and stays. The options of a client class also resolve its own Option Definitions. An
-    Option whose definition cannot be resolved, whose class has no row, or whose data the plugin refuses, is reported
-    and does not stop the import. An Option whose values did not change has no entry.
+    finds the row through it. Until the mapping of the object records that its Options are mapped (the first run that
+    reaches it after the upgrade), an Option without a mapped row adopts an unmapped Option of *parent_obj*
+    (:func:`_paired_rows`). After that, every unmapped Option is an operator's and stays. An Option without a mapping
+    source pairs with an unmapped Option on every run, so it is updated in place and never removed. The options of a
+    client class also resolve its own Option Definitions. An Option whose definition cannot be resolved, whose class
+    has no row, or whose data the plugin refuses, is reported and does not stop the import. An Option whose values did
+    not change has no entry.
     """
+    server, parent = references.server, planned_set.parent
     if not planned_set.options:
+        if parent is not None:
+            mark_options_mapped(server, family, parent)
         return
     from django.contrib.contenttypes.models import ContentType
 
@@ -818,23 +833,28 @@ def upsert_options(
             code = definition.code if definition is not None else opt.code
             source = key.source if key is not None else None
             planned.append(_PlannedOption(opt, path, space, code, definition, classes, source))
-    server = references.server
     mapped = [mapped_target(server, family, item.source) if item.source is not None else None for item in planned]
-    adopting = [item for item, row in zip(planned, mapped, strict=True) if row is None]
-    if references.adopts_options:
+    adopts = parent is not None and not options_mapped(server, family, parent)
+    # An Option without a source pairs on every run; one with a source only while its object adopts.
+    pairing = [
+        item for item, row in zip(planned, mapped, strict=True) if row is None and (item.source is None or adopts)
+    ]
+    unmapped = []
+    if pairing:
         unmapped = list(
             _unlinked(_model("Option").objects.filter(assigned_object_type=ct, assigned_object_id=parent_obj.pk))
             .select_related("definition")
             .prefetch_related("client_classes")
             .order_by("pk")
         )
-        adopted = iter(_paired_rows(adopting, unmapped))
-    else:
-        adopted = iter([None] * len(adopting))
-    for item, row in zip(planned, mapped, strict=True):
-        _write_option(
-            item, row if row is not None else next(adopted), parent_obj, ct, family, references, summary, capabilities
-        )
+    paired = dict(zip(map(id, pairing), _paired_rows(pairing, unmapped), strict=True))
+    with event_scope.atomic():
+        written_all = True
+        for item, row in zip(planned, mapped, strict=True):
+            target = row if row is not None else paired.get(id(item))
+            written_all &= _write_option(item, target, parent_obj, ct, family, references, summary, capabilities)
+        if parent is not None and written_all:
+            mark_options_mapped(server, family, parent)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2641,11 +2661,14 @@ def _goes_with_parent(model) -> bool:
     return model._meta.app_label != PLUGIN_APP_LABEL or model._meta.auto_created or model is _model("Option")
 
 
-def _mapped_option_keys(server, family: int) -> frozenset[tuple]:
-    """Return the row key of each Option that a mapping of *family* holds."""
+def _mapped_option_keys() -> frozenset[tuple]:
+    """Return the row key of each Option that a mapping holds, of any Server and family.
+
+    An operator can assign the Option of another Server to an object of this one.
+    """
     from ..models import KeaDhcpLink
 
-    links = KeaDhcpLink.objects.filter(server=server, family=family, kind=Kind.OPTION.value)
+    links = KeaDhcpLink.objects.filter(kind=Kind.OPTION.value)
     return frozenset((_model("Option"), pk) for pk in links.values_list("object_id", flat=True))
 
 
@@ -2962,7 +2985,7 @@ def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> No
             summary.record(
                 not_written(plan.family, kind, kind_path(plan.family, kind), Reason.INCOMPLETE_OBSERVATION, detail)
             )
-    plans, staying = _removal_set(removable, _mapped_option_keys(server, plan.family))
+    plans, staying = _removal_set(removable, _mapped_option_keys())
     for key, detail in staying.items():
         _record_kept(removable[key], detail, plan.family, summary)
     # A deleted instance has no pk, so every key comes from before the deletes.
@@ -3073,8 +3096,7 @@ def _import_definitions_and_classes(
             rows[planned_class.key] = row
     defined = frozenset(planned.key for planned in plan.client_classes)
     classes = ClassReferences(plan.family, defined, {name: row.pk for name, row in rows.items()})
-    option_links = _link_model().objects.filter(server=server, family=plan.family, kind=Kind.OPTION.value)
-    return OptionReferences(definitions, classes, adopts_options=not option_links.exists()), rows
+    return OptionReferences(definitions, classes), rows
 
 
 @coordinated_import

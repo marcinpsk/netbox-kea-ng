@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""Let a DHCP Import Mapping map a DHCP Option: an identity, in a Subnet or globally, as its parent has."""
+"""Let a DHCP Import Mapping map a DHCP Option, and record on the mapping of its object that its Options are mapped."""
 
 from django.db import migrations, models
 
@@ -16,6 +16,11 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.AddField(
+            model_name='keadhcplink',
+            name='options_mapped',
+            field=models.BooleanField(default=False, help_text='Whether the import has mapped the DHCP Options of the object; until then it adopts unmapped ones.'),
+        ),
         migrations.RemoveConstraint(
             model_name='keadhcplink',
             name='keadhcplink_kind_identity',

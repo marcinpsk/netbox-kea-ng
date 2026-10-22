@@ -698,6 +698,10 @@ class KeaDhcpLink(ChangeLoggingMixin):
     )
     object_id = models.PositiveBigIntegerField()
     sys4_object = GenericForeignKey("object_type", "object_id")
+    options_mapped: models.BooleanField = models.BooleanField(
+        default=False,
+        help_text="Whether the import has mapped the DHCP Options of the object; until then it adopts unmapped ones.",
+    )
     created = models.DateTimeField(auto_now_add=True)
     last_synced = models.DateTimeField(auto_now=True)
 

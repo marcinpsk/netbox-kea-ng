@@ -1650,9 +1650,24 @@ class PDPoolCoverageTest(TestCase):
         self.assertEqual(self._mapped("pd_pool", 10, "2001:db8:100::/48/56").delegated_length, 56)
 
 
-def _unmap_options(server) -> None:
-    """Make every imported Option of *server* an operator's: an unmapped Option goes with its object only."""
+def _before_option_mappings(server) -> None:
+    """Return the imported rows of *server* to the state that a release before Option mappings left."""
     KeaDhcpLink.objects.filter(server=server, kind=Kind.OPTION.value).delete()
+    KeaDhcpLink.objects.filter(server=server).update(options_mapped=False)
+
+
+def _unmap_options(server, **option_filter) -> None:
+    """Make the imported Options of *server* that *option_filter* selects an operator's: they go with their object."""
+    selected = apps.get_model(DHCP_PLUGIN, "Option").objects.filter(**option_filter).values_list("pk", flat=True)
+    KeaDhcpLink.objects.filter(server=server, kind=Kind.OPTION.value, object_id__in=list(selected)).delete()
+
+
+def _unmap_class_options(server) -> None:
+    """Make the imported Options of the client classes of *server* an operator's."""
+    from django.contrib.contenttypes.models import ContentType
+
+    client_class = ContentType.objects.get_for_model(apps.get_model(DHCP_PLUGIN, "ClientClass"))
+    _unmap_options(server, assigned_object_type=client_class)
 
 
 def _class_chain(prefix: str, length: int) -> list[dict]:
@@ -1824,8 +1839,7 @@ class OptionCoverageTest(TestCase):
         older = json.loads(json.dumps(config))
         del next(o for o in older["option-data"] if o.get("code") == 3)["client-classes"]
         self._apply(older)
-        # An older import wrote no Option mappings.
-        KeaDhcpLink.objects.filter(server=self.server, kind=Kind.OPTION.value).delete()
+        _before_option_mappings(self.server)
         dhcp_server = imported_dhcp_server(self.server, 4)
         self.assertEqual(self._options(dhcp_server, 3), [(classed["data"], ())])
         before = set(apps.get_model(DHCP_PLUGIN, "Option").objects.values_list("pk", flat=True))
@@ -1888,7 +1902,7 @@ class OptionCoverageTest(TestCase):
 
     def test_a_stale_client_class_that_an_operator_option_still_names_is_kept(self):
         self._apply()
-        _unmap_options(self.server)
+        _unmap_options(self.server, data="192.0.2.1")
         voip = KeaDhcpLink.objects.get(server=self.server, family=4, kind="client_class", kea_identity="voip")
         config = _without_class(_recorded_config(4), "voip")
         config["option-data"] = [o for o in config["option-data"] if o.get("client-classes") != []]
@@ -2009,7 +2023,7 @@ class OptionCoverageTest(TestCase):
             },
         ]
         self._apply(config)
-        _unmap_options(self.server)
+        _unmap_class_options(self.server)
         b = KeaDhcpLink.objects.get(server=self.server, family=4, kind="client_class", kea_identity="b")
         operator = apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
             name="operator subnet",
@@ -2070,7 +2084,7 @@ class OptionCoverageTest(TestCase):
         ]
         config["subnet4"].append({"id": 30, "subnet": "203.0.113.0/24", "evaluate-additional-classes": ["b"]})
         self._apply(config)
-        _unmap_options(self.server)
+        _unmap_class_options(self.server)
         subnet = KeaDhcpLink.objects.get(server=self.server, family=4, kind="subnet", kea_subnet_id=30).sys4_object
 
         def refuse(sender, instance, **kwargs):
@@ -2131,7 +2145,7 @@ class OptionCoverageTest(TestCase):
 
     def test_two_classes_that_name_each_other_stay_together_when_one_delete_fails(self):
         self._apply(self._classes_naming({"a": ["b"], "b": ["a"]}))
-        _unmap_options(self.server)
+        _unmap_class_options(self.server)
 
         summary = self._read_failing("b", errors=1)
 
@@ -2143,7 +2157,7 @@ class OptionCoverageTest(TestCase):
     def test_a_class_that_relies_on_a_failed_cycle_stays(self):
         # a relies on b (b's Option names a); b and c rely on each other.
         self._apply(self._classes_naming({"a": [], "b": ["a", "c"], "c": ["b"]}))
-        _unmap_options(self.server)
+        _unmap_class_options(self.server)
 
         summary = self._read_failing("c", errors=1)
 
@@ -2155,7 +2169,7 @@ class OptionCoverageTest(TestCase):
 
     def test_a_class_that_relies_on_a_cycle_is_removed_after_it(self):
         self._apply(self._classes_naming({"a": [], "b": ["a", "c"], "c": ["b"]}))
-        _unmap_options(self.server)
+        _unmap_class_options(self.server)
 
         summary = self._apply_read(_recorded_config(4))
 
@@ -2179,7 +2193,7 @@ class OptionCoverageTest(TestCase):
             },
         ]
         self._apply(config)
-        _unmap_options(self.server)
+        _unmap_class_options(self.server)
 
         summary = self._apply_read(_recorded_config(4))
 
@@ -2244,14 +2258,14 @@ class OptionMappingTest(TestCase):
         self.server = _make_db_server(name="option-mapping", dhcp6=False, sync_dhcp_plugin_enabled=True)
         self.config = _recorded_config(4)
 
-    def _run(self, config: dict | None = None, family: Family = 4, *, reservations: bool = True):
+    def _run(self, config: dict | None = None, family: Family = 4, *, reservations: bool = True, server=None):
         config = self.config if config is None else config
         responses = _sync_responses(
             {family: config}, {family: _recorded_hosts(config, family)}, reservations_available=reservations
         )
         with stub_kea(responses):
             ((_family, summary),) = run_dhcp_plugin_import(
-                self.server, cast("DhcpImportTrigger", DhcpImportTrigger.MANUAL)
+                server or self.server, cast("DhcpImportTrigger", DhcpImportTrigger.MANUAL)
             )
         assert isinstance(summary, dhcp_plugin.ImportSummary), summary
         self.assertEqual(summary.errors, 0, summary.warnings)
@@ -2289,6 +2303,20 @@ class OptionMappingTest(TestCase):
         config = _recorded_config(4)
         config["option-data"] = [o for o in config["option-data"] if (o["code"], o.get("client-classes")) != (3, None)]
         return config
+
+    def _operator_option_of_code(self, code: int, data: str):
+        """Add an unmapped Option of the standard *code* to the imported DHCP Server, as an operator does."""
+        from django.contrib.contenttypes.models import ContentType
+
+        dhcp_server = imported_dhcp_server(self.server, 4)
+        return apps.get_model(DHCP_PLUGIN, "Option").objects.create(
+            definition=apps.get_model(DHCP_PLUGIN, "OptionDefinition").objects.get(
+                standard=True, space="dhcp4", code=code
+            ),
+            assigned_object_type=ContentType.objects.get_for_model(dhcp_server),
+            assigned_object_id=dhcp_server.pk,
+            data=data,
+        )
 
     def _operator_option(self, parent):
         """Add the Option that an operator adds by hand to the imported row *parent*: it has no mapping."""
@@ -2476,14 +2504,99 @@ class OptionMappingTest(TestCase):
         self.assertEqual(rows[("dhcpserver", 3, "192.0.2.77", ("printers",), False)], 1)
         self.assertTrue(Option.objects.filter(pk=operator.pk).exists())
 
+    def test_a_kea_option_that_returns_after_every_option_went_leaves_an_operator_option_alone(self):
+        self._run()
+        self._operator_option_of_code(3, "192.0.2.77")
+        without = _without_options(_recorded_config(4))
+        restored = _without_options(_recorded_config(4))
+        restored["option-data"] = [{"code": 3, "name": "routers", "data": "192.0.2.88"}]
+        operator = ("dhcpserver", 3, "192.0.2.77", (), False)
+
+        self._run(without)
+        returning = self._run(restored)
+        rows = self._option_rows()
+        dropping = self._run(without)
+
+        self.assertEqual(self._changes(returning), {(Kind.OPTION, _ROUTERS, Outcome.CREATED, None): 1})
+        self.assertEqual(rows, Counter({operator: 1, ("dhcpserver", 3, "192.0.2.88", (), True): 1}))
+        self.assertEqual(self._changes(dropping), {(Kind.OPTION, _ROUTERS, Outcome.REMOVED, None): 1})
+        self.assertEqual(self._option_rows(), Counter({operator: 1}))
+
+    def test_an_upgrade_run_that_cannot_read_the_reservations_maps_their_options_on_a_later_run(self):
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        self._run()
+        rows = self._option_rows()
+        options = set(Option.objects.values_list("pk", flat=True))
+        _before_option_mappings(self.server)
+
+        partial = self._run(reservations=False)
+        complete = self._run()
+
+        self.assertEqual(self._changes(partial), {_INCOMPLETE_RESERVATIONS: 1})
+        self.assertEqual(self._changes(complete), {})
+        self.assertEqual(self._option_rows(), rows)
+        self.assertEqual(set(Option.objects.values_list("pk", flat=True)), options)
+
+    def test_an_option_whose_identity_a_mapping_cannot_hold_is_updated_in_place_on_every_run(self):
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        names = [f"{letter * 199}x" for letter in "abc"]
+        config = _recorded_config(4)
+        config["client-classes"] += [{"name": name, "test": "member('KNOWN')"} for name in names]
+        config["option-data"].append({"code": 15, "data": "long.example.org", "client-classes": names})
+        path = f"Dhcp4/option-data[code=15,client-classes={'|'.join(names)}]"
+        unmapped = ("dhcpserver", 15, "long.example.org", tuple(names), False)
+
+        first = self._run(config)
+        rows = self._option_rows()
+        options = set(Option.objects.values_list("pk", flat=True))
+        again = self._run(config)
+        config["option-data"][-1]["data"] = "longer.example.org"
+        changed = self._run(config)
+
+        self.assertEqual(self._changes(first)[(Kind.OPTION, path, Outcome.CREATED, None)], 1)
+        self.assertEqual(rows[unmapped], 1)
+        self.assertEqual(self._changes(again), {})
+        self.assertEqual(self._changes(changed), {(Kind.OPTION, path, Outcome.UPDATED, None): 1})
+        rows[unmapped] -= 1
+        rows[("dhcpserver", 15, "longer.example.org", tuple(names), False)] += 1
+        self.assertEqual(self._option_rows(), +rows)
+        self.assertEqual(set(Option.objects.values_list("pk", flat=True)), options)
+
+    def test_a_parent_that_holds_an_option_another_server_maps_is_kept(self):
+        other = _make_db_server(name="option-mapping-other", dhcp6=False, sync_dhcp_plugin_enabled=True)
+        other_config = {"option-data": [{"code": 15, "name": "domain-name", "data": "other.example.org"}]}
+        self._run({**other_config, "subnet4": [], "shared-networks": []}, server=other)
+        self._run()
+        (link,) = KeaDhcpLink.objects.filter(server=other, kind=Kind.OPTION.value)
+        pool = KeaDhcpLink.objects.get(server=self.server, kind="pool", kea_identity=_POOL_10_TEXT).sys4_object
+        # The DHCP plugin lets an operator assign the Option of one DHCP Server to an object of another.
+        foreign = link.sys4_object
+        foreign.snapshot()
+        foreign.assigned_object = pool
+        foreign.save()
+        config = _recorded_config(4)
+        config["subnet4"][0]["pools"] = [p for p in config["subnet4"][0]["pools"] if p["pool"] != _POOL_10_TEXT]
+
+        summary = self._run(config)
+
+        self.assertEqual(
+            self._changes(summary),
+            {
+                (Kind.POOL, _POOL_10, Outcome.SKIPPED, Reason.REMOVAL_BLOCKED): 1,
+                (Kind.OPTION, f"{_POOL_10}/option-data[code=15]", Outcome.REMOVED, None): 1,
+            },
+        )
+        (entry,) = [e for e in summary.entries if e.path == _POOL_10]
+        self.assertEqual(entry.detail, "It is kept because its removal would also remove 1 Option.")
+        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).sys4_object, foreign)
+
     def test_the_first_run_after_the_upgrade_maps_each_option_that_pairs_and_keeps_the_others(self):
         Option = apps.get_model(DHCP_PLUGIN, "Option")
         self._run()
         # After the run a mapping holds each Option that Kea declares.
         rows = Counter({(*row[:4], True): count for row, count in self._option_rows().items()})
         options = set(Option.objects.values_list("pk", flat=True))
-        # Before the upgrade an Option had no mapping of its own.
-        KeaDhcpLink.objects.filter(server=self.server, kind=Kind.OPTION.value).delete()
+        _before_option_mappings(self.server)
         operator = self._operator_option(imported_dhcp_server(self.server, 4))
 
         summary = self._run()
@@ -3494,7 +3607,7 @@ class StaleRemovalQueryCountTest(TestCase):
         intent = parse_dhcp_config({"client-classes": _class_chain(prefix, length)}, 4)
         intent.configuration_complete = True
         self.assertEqual(dhcp_plugin.apply_plan(server, plan_family(intent, None), probe()).errors, 0)
-        _unmap_options(server)
+        _unmap_class_options(server)
         last = KeaDhcpLink.objects.get(server=server, kind="client_class", kea_identity=f"{prefix}{length - 1}")
         operator = apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
             name=f"chain-{prefix} operator",
