@@ -32,6 +32,8 @@ from netbox_kea.kea_paths import OPTION_DEF
 from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS
 
 _RECORDINGS = Path(__file__).with_name("kea_recordings")
+# The capabilities that gate no Kea key: the family of a DHCPServer is the Kea daemon itself.
+KEYLESS_CAPABILITIES = frozenset({Capability.SERVER_FAMILY})
 # Collections of child objects: an empty one in config-get is a Kea default, never a merge.
 _CHILD_COLLECTIONS = frozenset({"option-data", OPTION_DEF, "pools", "pd-pools", "reservations", "subnet4", "subnet6"})
 
@@ -344,8 +346,7 @@ class LedgerEntriesTest(SimpleTestCase):
             for _family, _table, _key, entry in self._entries()
             for capability in getattr(entry, "capabilities", ())
         }
-        # The family of a DHCPServer is the Kea daemon itself, not a key.
-        self.assertEqual(named, set(Capability) - {Capability.SERVER_FAMILY})
+        self.assertEqual(named, set(Capability) - KEYLESS_CAPABILITIES)
 
     def test_user_context_is_gated_on_every_object_that_has_it(self):
         for family, tables in LEDGER.items():

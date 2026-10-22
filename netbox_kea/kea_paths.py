@@ -29,6 +29,8 @@ EVALUATE_ADDITIONAL_CLASSES = "evaluate-additional-classes"
 OPTION_DEF = "option-def"
 #: The Pools of a Subnet.
 POOLS = "pools"
+#: The Reservations of a daemon or a Subnet.
+RESERVATIONS = "reservations"
 POOL_ID = "pool-id"
 OPTION_DATA = "option-data"
 #: The DHCPv6 delegated-prefix Pools of a Subnet, and the keys of one that the DHCP Import reads by name.
@@ -192,7 +194,7 @@ def option_entry(parent: str, index: int) -> str:
 def reservations(family: int, subnet_id: int | None = None) -> str:
     """Return the path of the Reservations of a Subnet, or of the Global Reservations without *subnet_id*."""
     parent = daemon(family) if subnet_id is None else subnet(family, subnet_id)
-    return f"{parent}/reservations"
+    return f"{parent}/{RESERVATIONS}"
 
 
 def reservation(family: int, subnet_id: int | None, identifier_type: str, value: str) -> str:

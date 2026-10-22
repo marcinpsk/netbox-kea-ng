@@ -7,12 +7,11 @@ from __future__ import annotations
 import dataclasses
 import ipaddress
 import json
-import re
 import unittest
 from collections import Counter, defaultdict
 from dataclasses import fields
 from datetime import datetime, timezone
-from typing import cast
+from typing import get_args
 from unittest.mock import patch
 
 from django.apps import apps
@@ -28,8 +27,10 @@ from django.urls import reverse
 
 from netbox_kea import kea_paths
 from netbox_kea.constants import Family
+from netbox_kea.dhcp_options import parse_dhcp_option, parse_option_definition
 from netbox_kea.integrations import dhcp_plugin
-from netbox_kea.integrations.dhcp_import_ledger import KEA_DEFAULTS, LEDGER, Mapped, NotImported
+from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
+from netbox_kea.integrations.dhcp_import_ledger import KEA_DEFAULTS, LEDGER, MERGED_KEYS, Mapped, NotImported
 from netbox_kea.integrations.dhcp_import_plan import (
     MAX_KEA_NAME_LENGTH,
     MAX_MAPPING_IDENTITY_LENGTH,
@@ -41,6 +42,7 @@ from netbox_kea.integrations.dhcp_import_plan import (
     OptionDefinitionKey,
     PDPoolKey,
     PoolKey,
+    declared_values,
     keyed_reservations,
     kind_path,
     mapped_kinds,
@@ -51,10 +53,11 @@ from netbox_kea.integrations.dhcp_import_report import GAPS, Capability, Kind, O
 from netbox_kea.integrations.dhcp_plugin_capabilities import CHECKS, PluginCapabilities, probe
 from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS, parse_dhcp_config
-from netbox_kea.models import KeaDhcpLink
+from netbox_kea.models import DhcpImportEntry, DhcpImportRun, DhcpImportTrigger, KeaDhcpLink
 from netbox_kea.pools import Pool
 from netbox_kea.reservations import (
     GlobalReservationScope,
+    IdentifierType,
     InSubnetReservationScope,
     IPv4Reservation,
     ReservationDiagnostic,
@@ -63,8 +66,8 @@ from netbox_kea.reservations import (
 )
 from netbox_kea.subnet_catalogue import CompleteCatalogueSnapshot, IncompleteCatalogueSnapshot, SubnetIdentity
 
-from .kea_stub import _subnet_list, stub_kea
-from .test_dhcp_import_ledger import _objects as _ledger_objects
+from .kea_stub import _subnet_list, _sync_responses, stub_kea
+from .test_dhcp_import_ledger import KEYLESS_CAPABILITIES
 from .test_integration_dhcp_plugin import _reservation_snapshot
 from .test_kea_recordings import _RECORDINGS, _recording
 from .utils import (
@@ -2067,44 +2070,86 @@ class OptionCoverageTest(TestCase):
         self.assertFalse(apps.get_model(DHCP_PLUGIN, "Option").objects.filter(data="known.example.org").exists())
 
 
-_PATH_STEP = re.compile(r"[^/\[]+(?:\[[^\]]*\])?")
-_ABSENT = object()
+# A Kea object of a config-get reply: its ledger table, kind, Kea path, keys, and the keys of its parent.
+_KeaObject = tuple[str, Kind, str, dict, dict]
 
 
-def _location(path: str) -> tuple[str, str, str]:
-    """Return the ledger parent table, table and key of a Kea path; the key is empty for an object."""
-    root, *steps = _PATH_STEP.findall(path)
-    parent, table, key = root, root, ""
-    for index, step in enumerate(steps):
-        name, bracket, _identity = step.partition("[")
-        if bracket or (index < len(steps) - 1 and any(name in tables for tables in LEDGER.values())):
-            parent, table, key = table, name, ""
-        else:
-            # A step below a key, such as server-id/identifier, names a part of that key.
-            key = name
-            break
-    return parent, table, key
+def _kea_objects(config: dict, family: Family) -> list[_KeaObject]:
+    """Return each object of a config-get reply with the Kea path that the DHCP Import names it by."""
+    root = kea_paths.daemon(family)
+    found: list[_KeaObject] = [(root, Kind.SERVER, root, config, {})]
+    interfaces = kea_paths.setting(root, kea_paths.INTERFACES_CONFIG)
+    found.append((kea_paths.INTERFACES_CONFIG, Kind.SERVER, interfaces, config[kea_paths.INTERFACES_CONFIG], config))
+
+    def options(parent: str, obj: dict) -> None:
+        for raw in obj.get(kea_paths.OPTION_DATA, []):
+            path = kea_paths.option(parent, parse_dhcp_option(raw), family)
+            found.append((kea_paths.OPTION_DATA, Kind.OPTION, path, raw, obj))
+
+    def definitions(obj: dict, class_name: str | None = None) -> None:
+        for raw in obj.get(kea_paths.OPTION_DEF, []):
+            definition = parse_option_definition(raw, family)
+            path = kea_paths.option_definition(family, definition.space, definition.code, class_name)
+            found.append((kea_paths.OPTION_DEF, Kind.OPTION_DEFINITION, path, raw, obj))
+
+    def reservations(obj: dict, subnet_id: int | None) -> None:
+        for raw in obj.get(kea_paths.RESERVATIONS, []):
+            identifier = next(name for name in get_args(IdentifierType) if name in raw)
+            path = kea_paths.reservation(family, subnet_id, identifier, raw[identifier])
+            found.append((kea_paths.RESERVATIONS, Kind.RESERVATION, path, raw, obj))
+            options(path, raw)
+
+    def subnet(raw: dict, parent: dict) -> None:
+        path = kea_paths.subnet(family, raw["id"])
+        found.append((kea_paths.subnet_collection(family), Kind.SUBNET, path, raw, parent))
+        options(path, raw)
+        for pool in raw.get(kea_paths.POOLS, []):
+            pool_path = kea_paths.pool(path, pool["pool"])
+            found.append((kea_paths.POOLS, Kind.POOL, pool_path, pool, raw))
+            options(pool_path, pool)
+        for pd_pool in raw.get(kea_paths.PD_POOLS, []):
+            prefix = f"{pd_pool[kea_paths.PREFIX]}/{pd_pool[kea_paths.PREFIX_LEN]}"
+            pd_path = kea_paths.pd_pool(path, prefix, pd_pool[kea_paths.DELEGATED_LEN])
+            found.append((kea_paths.PD_POOLS, Kind.PD_POOL, pd_path, pd_pool, raw))
+            options(pd_path, pd_pool)
+        reservations(raw, raw["id"])
+
+    options(root, config)
+    definitions(config)
+    reservations(config, None)
+    for raw in config[kea_paths.CLIENT_CLASSES]:
+        path = kea_paths.client_class(family, raw["name"])
+        found.append((kea_paths.CLIENT_CLASSES, Kind.CLIENT_CLASS, path, raw, config))
+        options(path, raw)
+        definitions(raw, raw["name"])
+    for raw in config[kea_paths.subnet_collection(family)]:
+        subnet(raw, config)
+    for network in config[kea_paths.SHARED_NETWORKS]:
+        path = kea_paths.shared_network(family, network["name"])
+        found.append((kea_paths.SHARED_NETWORKS, Kind.SHARED_NETWORK, path, network, config))
+        options(path, network)
+        for raw in network[kea_paths.subnet_collection(family)]:
+            subnet(raw, network)
+    return found
 
 
-def _gated_by(family: Family, table: str, capability: Capability) -> set[str]:
-    entries = LEDGER[family].get(table, {})
-    return {key for key, entry in entries.items() if isinstance(entry, Mapped) and capability in entry.capabilities}
-
-
-def _recorded_objects(config: dict, family: Family) -> dict[str, list[dict]]:
-    """Return each object of a config-get reply by the ledger table that lists its keys."""
-    objects = {table: [obj for _scope, obj in found] for table, found in _ledger_objects(config, family).items()}
-    objects[kea_paths.INTERFACES_CONFIG] = [config[kea_paths.INTERFACES_CONFIG]]
-    return objects
-
-
-def _recorded_hosts(config: dict, family: int) -> list[dict]:
+def _recorded_hosts(config: dict, family: Family) -> list[dict]:
     """Return the Reservations of a config-get reply as reservation-get-page lists them: global ones in Subnet 0."""
-    subnets = [*config[f"subnet{family}"], *(s for n in config["shared-networks"] for s in n[f"subnet{family}"])]
-    hosts = [{"subnet-id": 0, **host} for host in config.get("reservations", [])]
+    collection = kea_paths.subnet_collection(family)
+    networks = config[kea_paths.SHARED_NETWORKS]
+    subnets = [*config[collection], *(subnet for network in networks for subnet in network[collection])]
+    hosts = [{"subnet-id": 0, **host} for host in config.get(kea_paths.RESERVATIONS, [])]
     return hosts + [
-        {"subnet-id": subnet["id"], **host} for subnet in subnets for host in subnet.get("reservations", [])
+        {"subnet-id": subnet["id"], **host} for subnet in subnets for host in subnet.get(kea_paths.RESERVATIONS, [])
     ]
+
+
+# Another Server holds Subnet 20 and the class per-client, so the uniqueness capabilities are judged too.
+_OTHER_SERVER: dict[str, list[dict]] = {
+    "subnet4": [{"id": 20, "subnet": "203.0.113.0/24"}],
+    "shared-networks": [],
+    "client-classes": [{"name": "per-client"}],
+}
 
 
 class CoverageImportTest(TestCase):
@@ -2116,119 +2161,141 @@ class CoverageImportTest(TestCase):
             raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
         super().setUpClass()
 
-    def _run(self, server, config: dict, family: Family, subnets: dict) -> None:
-        from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
-        from netbox_kea.models import DhcpImportTrigger
-
-        from .kea_stub import _sync_responses
-
+    def _run(self, server, config, family, subnets):
         responses = _sync_responses({family: config}, {family: _recorded_hosts(config, family)})
         responses[f"subnet{family}-list"] = subnets
         with stub_kea(responses):
-            ((_family, summary),) = run_dhcp_plugin_import(server, cast("DhcpImportTrigger", DhcpImportTrigger.MANUAL))
+            ((_family, summary),) = run_dhcp_plugin_import(server, DhcpImportTrigger.MANUAL)
         assert isinstance(summary, dhcp_plugin.ImportSummary), summary
         self.assertEqual(summary.errors, 0, summary.warnings)
 
-    def _import(self, family: Family):
-        from netbox_kea.models import DhcpImportEntry, DhcpImportRun
-
-        # Another Server holds Subnet 20 and the class per-client, so the uniqueness capabilities are judged too.
-        other: dict[str, list[dict]] = {
-            "subnet4": [{"id": 20, "subnet": "203.0.113.0/24"}],
-            "shared-networks": [],
-            "client-classes": [{"name": "per-client"}],
-        }
-        other_server = _make_db_server(name="other", dhcp6=False, sync_dhcp_plugin_enabled=True)
-        self._run(other_server, other, 4, _subnet_list(4, other["subnet4"]))
+    def _assert_coverage(self, family: Family):
+        other = _make_db_server(name="other", dhcp6=False, sync_dhcp_plugin_enabled=True)
+        self._run(other, _OTHER_SERVER, 4, _subnet_list(4, _OTHER_SERVER["subnet4"]))
         # One family per Server: the plugin keeps Subnet IDs unique, and both families number theirs 10, 20 and 21.
         server = _make_db_server(
             name=f"coverage{family}", dhcp4=family == 4, dhcp6=family == 6, sync_dhcp_plugin_enabled=True
         )
         config = _recorded_config(family)
         self._run(server, config, family, _recording(family)[f"subnet{family}-list"])
-        run = DhcpImportRun.objects.get(server=server)
-        return server, config, list(DhcpImportEntry.objects.filter(run=run))
-
-    def _assert_coverage(self, family: Family):
-        server, config, entries = self._import(family)
-        capabilities = probe()
-        objects = _recorded_objects(config, family)
-        self._assert_plugin_objects(server, family, entries, capabilities)
-        self._assert_unsupported(family, objects, entries, capabilities)
+        entries = list(DhcpImportEntry.objects.filter(run=DhcpImportRun.objects.get(server=server)))
+        objects = _kea_objects(config, family)
+        self._assert_plugin_objects(server, family, objects, entries)
+        self._assert_unsupported(family, objects, entries, probe())
         self._assert_not_imported(family, objects, entries)
 
-    def _assert_plugin_objects(self, server, family: Family, entries, capabilities):
-        created = Counter(entry.kind for entry in entries if entry.outcome == Outcome.CREATED.value)
+    @staticmethod
+    def _locate(objects: list[_KeaObject], path: str) -> tuple[_KeaObject, str]:
+        """Return the object that a fact path names, and the key below it (empty for the object itself)."""
+        owner = max(
+            (obj for obj in objects if path == obj[2] or path.startswith(f"{obj[2]}/")), key=lambda o: len(o[2])
+        )
+        return owner, path[len(owner[2]) + 1 :].split("/", 1)[0]
+
+    def _assert_plugin_objects(self, server, family: Family, objects: list[_KeaObject], entries):
+        written = {Outcome.CREATED.value, Outcome.UPDATED.value, Outcome.REMOVED.value}
+        not_written = {entry.kea_path for entry in entries if entry.outcome not in written}
+        # The family of a DHCP Server is a fact at its path; the DHCP Server itself is written.
+        expected = Counter(
+            kind
+            for table, kind, path, _raw, _parent in objects
+            if table != kea_paths.INTERFACES_CONFIG and (kind == Kind.SERVER or path not in not_written)
+        )
         for kind in (Kind.SERVER, *mapped_kinds(family)):
             with self.subTest(family=family, kind=kind):
                 links = KeaDhcpLink.objects.filter(server=server, family=family, kind=kind.value)
-                self.assertEqual(links.count(), created[kind.value])
-                held = kind != Kind.SHARED_NETWORK or capabilities.has(Capability.SHARED_NETWORK_OPTIONAL_PREFIX)
-                self.assertEqual(links.exists(), held)
+                self.assertEqual(links.count(), expected[kind])
                 self.assertTrue(all(link.sys4_object is not None for link in links))
-        options = apps.get_model(DHCP_PLUGIN, "Option").objects.count()
-        self.assertEqual((options > 0, options), (True, created[Kind.OPTION.value]))
+        self.assertEqual(apps.get_model(DHCP_PLUGIN, "Option").objects.count(), expected[Kind.OPTION])
+        self.assertGreater(expected[Kind.OPTION], 0)
 
-    @staticmethod
-    def _expected_unsupported(family: Family, objects, capabilities) -> set[tuple[str, str, Capability]]:
-        """Return each gated ledger key that config-get carries with a non-default value, by each missing capability."""
-        defaults = KEA_DEFAULTS[family]
-        expected = {
-            (table, key, capability)
-            for table, keys in LEDGER[family].items()
-            for key, entry in keys.items()
-            if isinstance(entry, Mapped)
-            and any(
-                key in obj and obj[key] != defaults.get(table, {}).get(key, _ABSENT) for obj in objects.get(table, [])
-            )
-            for capability in entry.capabilities
-            if not capabilities.has(capability)
-        }
-        gating = {
-            capability
-            for tables in LEDGER.values()
-            for keys in tables.values()
-            for entry in keys.values()
-            for capability in getattr(entry, "capabilities", ())
-        }
+    def _assert_unsupported(self, family: Family, objects: list[_KeaObject], entries, capabilities):
         root = kea_paths.daemon(family)
-        return expected | {(root, "", c) for c in set(Capability) - gating if not capabilities.has(c)}
-
-    def _assert_unsupported(self, family: Family, objects, entries, capabilities):
-        root = kea_paths.daemon(family)
+        missing = set(Capability) - capabilities.present
         # A value that a plugin field cannot hold names no capability, so no ledger key predicts it.
         facts = [
             (entry.kea_path, Capability(entry.capability))
             for entry in entries
             if entry.outcome == Outcome.UNSUPPORTED.value and entry.capability
         ]
-        reported, unexplained, failed_objects = set(), [], defaultdict(set)
+        keyed, whole, keyless = set(), defaultdict(set), set()
         for path, capability in facts:
-            parent, table, key = _location(path)
-            if key or table == root:
-                found = {(table, key, capability)}
+            (_table, _kind, owner, _raw, _parent), key = self._locate(objects, path)
+            if key:
+                keyed.add((owner, key, capability))
+            elif owner == root:
+                keyless.add(capability)
             else:
-                failed_objects[table].add(path)
-                found = {(table, name, capability) for name in _gated_by(family, table, capability)}
-                if table in _gated_by(family, parent, capability):
-                    found.add((parent, table, capability))
-            # A child of an unsupported object fails with the capability of its parent.
-            if not found and not any(path.startswith(f"{other}/") and gap == capability for other, gap in facts):
-                unexplained.append(path)
-            reported |= found
-        self.assertEqual(unexplained, [])
-        expected = self._expected_unsupported(family, objects, capabilities)
-        self.assertEqual(reported - expected, set())
-        # An object that fails as a whole reports none of its own keys.
-        whole = {fact for fact in expected if len(failed_objects[fact[0]]) == len(objects[fact[0]])}
+                whole[owner].add(capability)
+        self.assertEqual(keyless, KEYLESS_CAPABILITIES & missing)
+        failing = self._failing_objects(family, objects, missing)
+        self.assertEqual({path: whole.get(path, set()) for path in failing}, failing)
+        # Any other object that fails as a whole carries a key that the ledger gates by the capability.
+        ungated = [
+            (path, capability)
+            for table, _kind, path, raw, _parent in objects
+            if path not in failing
+            for capability in whole.get(path, ())
+            if not any(
+                isinstance(entry, Mapped) and capability in entry.capabilities and key in raw
+                for key, entry in LEDGER[family][table].items()
+            )
+        ]
+        self.assertEqual(ungated, [])
+        # A capability that fails an object as a whole decides by the value of its key, so a written object needs none.
+        identity = set().union(*whole.values())
         # The recorded values need no capability: no flex-id identifier, and a server-id that Kea generates.
         values = {
             (root, kea_paths.HOST_RESERVATION_IDENTIFIERS, Capability.FLEX_ID_IDENTIFIER),
             (root, kea_paths.SERVER_ID, Capability.SERVER_ID_FIELDS),
         }
-        self.assertEqual(expected - reported, (whole - reported) | (values & expected))
+        expected = {
+            (path, key, capability)
+            for table, _kind, path, raw, parent in objects
+            if path not in whole
+            for key, entry in LEDGER[family].get(table, {}).items()
+            if isinstance(entry, Mapped) and key in raw and self._declared(family, table, key, raw, parent)
+            for capability in entry.capabilities
+            if capability in missing and capability not in identity and (path, key, capability) not in values
+        }
+        self.assertEqual(keyed, expected)
 
-    def _assert_not_imported(self, family: Family, objects, entries):
+    @staticmethod
+    def _failing_objects(family: Family, objects: list[_KeaObject], missing: set[Capability]) -> dict[str, set]:
+        """Return the objects that fail as a whole, by path: each Shared Network, and each clash with _OTHER_SERVER."""
+        tables = LEDGER[family]
+        network = tables[kea_paths.daemon(family)][kea_paths.SHARED_NETWORKS]
+        clashes = {
+            (kea_paths.subnet_collection(family), "id"): {subnet["id"] for subnet in _OTHER_SERVER["subnet4"]},
+            (kea_paths.CLIENT_CLASSES, "name"): {cls["name"] for cls in _OTHER_SERVER["client-classes"]},
+        }
+        failing: dict[str, set] = {}
+        clashed: list[dict] = []
+        for table, _kind, path, raw, parent in objects:
+            gates: tuple[Capability, ...] = ()
+            if table == kea_paths.SHARED_NETWORKS and isinstance(network, Mapped):
+                gates = network.capabilities
+            for (clash_table, key), values in clashes.items():
+                entry = tables[clash_table][key]
+                if table == clash_table and raw[key] in values and isinstance(entry, Mapped):
+                    gates = entry.capabilities
+                    clashed.append(raw)
+            # The Pools, delegated-prefix Pools and In-Subnet Reservations of a clashing Subnet fail with it.
+            if table in (kea_paths.POOLS, kea_paths.PD_POOLS, kea_paths.RESERVATIONS) and any(
+                parent is subnet for subnet in clashed
+            ):
+                gates = (Capability.SUBNET_ID_PER_SERVER,)
+            if set(gates) & missing:
+                failing[path] = set(gates) & missing
+        return failing
+
+    @staticmethod
+    def _declared(family: Family, table: str, key: str, raw: dict, parent: dict) -> bool:
+        if table not in MERGED_KEYS[family]:
+            return True
+        return key in declared_values(family, table, {key: raw[key]}, parent)
+
+    def _assert_not_imported(self, family: Family, objects: list[_KeaObject], entries):
         # The other not-imported reasons judge one value, not a key, so the ledger lists none of them.
         reasons = {
             entry.reason.value
@@ -2238,18 +2305,18 @@ class CoverageImportTest(TestCase):
         }
         # An entry of one value of a list, such as interfaces[*], names no key.
         reported = {
-            (table, key, entry.reason)
+            (entry.kea_path, entry.reason)
             for entry in entries
-            if entry.outcome == Outcome.NOT_IMPORTED.value and entry.reason in reasons
-            for _parent, table, key in [_location(entry.kea_path)]
-            if key
+            if entry.outcome == Outcome.NOT_IMPORTED.value
+            and entry.reason in reasons
+            and self._locate(objects, entry.kea_path)[1]
         }
         # Kea returns server settings that the configuration does not declare, and the import reads only config-get.
         expected = {
-            (table, key, entry.reason.value)
-            for table, keys in LEDGER[family].items()
-            for key, entry in keys.items()
-            if isinstance(entry, NotImported) and any(key in obj for obj in objects.get(table, []))
+            (kea_paths.setting(path, key), entry.reason.value)
+            for table, _kind, path, raw, _parent in objects
+            for key, entry in LEDGER[family].get(table, {}).items()
+            if isinstance(entry, NotImported) and key in raw
         }
         self.assertEqual(reported, expected)
 
