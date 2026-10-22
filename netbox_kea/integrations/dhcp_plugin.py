@@ -27,8 +27,8 @@ v1 scope (import + diff, read-only against Kea):
   even when the snapshot quarantines other records. A Global Reservation skips the
   IPAM sync, so the import creates no address rows for it and reports every reserved
   address it could not attach.  Delegated prefixes and the prefixes that they exclude carry their own length, so
-  they import as shared ``ipam.Prefix`` rows for every Scope, under the IPAM source ``delegated-prefix``. Its stale
-  cleanup runs after the removal of Stale DHCP Import Objects, as the ``pd-pool`` phase does.
+  they import as shared ``ipam.Prefix`` rows for every Scope, under the IPAM source ``delegated-prefix``. The stale
+  cleanup of ``delegated-prefix`` runs after the removal of Stale DHCP Import Objects, as the ``pd-pool`` phase does.
 * Each imported Shared Network, Subnet, Pool, delegated-prefix Pool, Reservation, client class and custom Option
   Definition has a DHCP Import Mapping (:class:`netbox_kea.models.KeaDhcpLink`) to its Kea source, and a re-import
   finds the row through it, also after an operator renames the row. The first import after an upgrade maps each
@@ -2349,13 +2349,13 @@ def import_reservation_snapshot(
     adoption_servers: tuple[int, ...],
     capabilities: PluginCapabilities,
     subnet_ids: SubnetIdSettlement | None = None,
-) -> DelegatedPrefixPhase | None:
+) -> DelegatedPrefixStep | None:
     """Import valid typed records and report quarantined Snapshot records.
 
     A Global Reservation may adopt an unmapped row of a DHCP server in *adoption_servers*. An In-Subnet
     Reservation of a Subnet that *subnet_ids* reports as taken or failed is not imported.
 
-    Return the delegated-prefix phase of the imported Reservations for :func:`reconcile_delegated_prefixes`, or
+    Return the delegated-prefix step of the imported Reservations for :func:`reconcile_delegated_prefixes`, or
     ``None`` when no Snapshot was read or their Prefixes could not be attached.
     """
     from ..ipam_reconciliation import DelegatedPrefixClaim, DelegatedPrefixPhase, claim
@@ -2426,15 +2426,15 @@ def import_reservation_snapshot(
     networks = dict.fromkeys(
         network for record in records for each in _reported_prefixes(record).values() for network in each
     )
-    phase: DelegatedPrefixPhase | None = None
+    step: DelegatedPrefixStep | None = None
     try:
         with event_scope.atomic():
             prefix_claims = claim(
                 server, snapshot.family, [DelegatedPrefixClaim(network) for network in networks], force=False
             )
             _attach_delegated_prefixes([(planned.intent, obj) for planned, obj, _ in imported], prefix_claims, summary)
-        claimed = all(result.outcome != "error" for result in prefix_claims.prefixes.values())
-        phase = DelegatedPrefixPhase(records, observation.cutoff, complete and claimed)
+        failed = frozenset(address for address, result in prefix_claims.prefixes.items() if result.outcome == "error")
+        step = DelegatedPrefixStep(DelegatedPrefixPhase(records, observation.cutoff, complete and not failed), failed)
         if complete:
             summary.ownership.completed_sources.add("reservation")
         else:
@@ -2459,25 +2459,33 @@ def import_reservation_snapshot(
         if before is None or before != _reservation_state(obj, relations[obj.pk], capabilities):
             outcome = Outcome.CREATED if before is None else Outcome.UPDATED
             summary.record(written(family, Kind.RESERVATION, reservation_path(planned.key, family), outcome))
-    return phase
+    return step
+
+
+@dataclass(frozen=True)
+class DelegatedPrefixStep:
+    """The delegated-prefix phase of the imported Reservations, and the Prefixes whose claim failed before attachment."""
+
+    phase: DelegatedPrefixPhase
+    failed: frozenset[str]
 
 
 def reconcile_delegated_prefixes(
-    server, family: Family, phase: DelegatedPrefixPhase, kept: set[Kind], summary: ImportSummary
+    server, family: Family, step: DelegatedPrefixStep, unobserved: set[Kind], summary: ImportSummary
 ) -> None:
     """Link the delegated and excluded Prefixes of the imported Reservations again, and drop the stale links (ADR 0006).
 
     It runs after :func:`remove_stale_objects`: a removed Reservation no longer uses its Prefixes, so the cleanup can
-    deprecate them. A stale Reservation in *kept* (the kinds that keep a stale row) still uses its Prefixes, so the
-    phase is then not complete and drops no link.
+    deprecate them. A Reservation that Kea no longer reports and that is still in NetBox (*unobserved*, see
+    :func:`unobserved_kinds`) still uses its Prefixes, so the phase is then not complete and drops no link. A Prefix
+    whose claim failed before attachment counts as one error, also when this claim of it succeeds.
     """
     from ..ipam_reconciliation import reconcile
 
-    complete = phase.complete and Kind.RESERVATION not in kept
-    report = reconcile(server, family, [replace(phase, complete=complete)])
-    summary.ownership.merge(report)
-    summary.ownership_errors += report.errors + report.prefix_errors
-    summary.owner_disagreements += len(report.disagreements)
+    complete = step.phase.complete and Kind.RESERVATION not in unobserved
+    report = reconcile(server, family, [replace(step.phase, complete=complete)])
+    _record_report(summary, report)
+    summary.ownership_errors += sum(report.prefixes[address].outcome != "error" for address in step.failed)
     for address in sorted(report.conflicts):
         summary.warn(f"delegated prefix {address}: IPAM ownership conflict, Prefix left unchanged")
 
@@ -2543,20 +2551,40 @@ def pd_pool_prefixes(plan: FamilyPlan) -> list:
     return list(dict.fromkeys(networks))
 
 
-def reconcile_pd_pool_prefixes(server, plan: FamilyPlan, kept: set[Kind], summary: ImportSummary) -> None:
+def reconcile_pd_pool_prefixes(server, plan: FamilyPlan, unobserved: set[Kind], summary: ImportSummary) -> None:
     """Link the Prefixes of every planned delegated-prefix Pool again, and drop the stale ``pd-pool`` links (ADR 0006).
 
     It runs after :func:`remove_stale_objects`: a removed PD Pool no longer uses its Prefix, so the cleanup can
-    deprecate it. Only a Complete observation of delegated-prefix Pools, with a cutoff, drops a link. A stale PD Pool
-    in *kept* (the kinds that keep a stale row) still uses its Prefixes, so the phase is then not complete.
+    deprecate it. Only a Complete observation of delegated-prefix Pools, with a cutoff, drops a link. A PD Pool that
+    Kea no longer reports and that is still in NetBox (*unobserved*) still uses its Prefixes, so the phase is then not
+    complete.
     """
     from ..ipam_reconciliation import PDPoolPhase, reconcile
 
-    complete = observations(plan)[Kind.PD_POOL].complete and Kind.PD_POOL not in kept
+    complete = observations(plan)[Kind.PD_POOL].complete and Kind.PD_POOL not in unobserved
     report = reconcile(server, plan.family, [PDPoolPhase(pd_pool_prefixes(plan), plan.ipam_cutoff, complete)])
+    _record_report(summary, report)
+
+
+def _record_report(summary: ImportSummary, report: SyncReport) -> None:
+    """Add the ownership work, the errors and the owner disagreements of one ``reconcile`` call to *summary*."""
     summary.ownership.merge(report)
     summary.ownership_errors += report.errors + report.prefix_errors
     summary.owner_disagreements += len(report.disagreements)
+
+
+def unobserved_kinds(server, plan: FamilyPlan) -> set[Kind]:
+    """Return the kinds that still have a mapped DHCP plugin row whose Kea source *plan* does not observe.
+
+    After :func:`remove_stale_objects`, such a row stayed: its kind was not observed in full, its removal failed or
+    was blocked, another writer confirmed its mapping after the read started, or the plan has no read time.
+    """
+    observed = observations(plan)
+    return {
+        kind
+        for kind, rows in mapped_rows(server, plan.family).items()
+        if any(source not in observed[kind].sources for source in rows)
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2846,7 +2874,7 @@ def _stale_rows(server, plan: FamilyPlan, observed) -> dict[Kind, list[_StaleRow
     }
 
 
-def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> set[Kind]:
+def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> None:
     """Remove each Stale DHCP Import Object of one family, children first, and report it.
 
     An Incomplete observation of a kind keeps every row of that kind, with one entry that says why. Before any write,
@@ -2854,19 +2882,15 @@ def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> se
     kept and reported. Rows that rely on each other form one component, which goes in one transaction, all or nothing,
     after every component that it relies on. When a component fails, every pending row that relies on it, directly or
     through other rows, is kept too. IPAM objects stay: the DHCP plugin rows only reference them.
-
-    Return the kinds that keep a stale row.
     """
     observed = observations(plan)
     stale = _stale_rows(server, plan, observed)
     removable: dict[tuple, _StaleRow] = {}
-    kept_kinds: set[Kind] = set()
     for kind in mapped_kinds(plan.family):
         rows = stale.get(kind, [])
         if observed[kind].complete:
             removable.update((_row_key(row.target), row) for row in rows)
         elif rows:
-            kept_kinds.add(kind)
             kept = counted(len(rows), f"mapped {KIND_LABELS[kind]} row was", f"mapped {KIND_LABELS[kind]} rows were")
             detail = f"{observed[kind].incomplete} {kept} kept."
             summary.record(
@@ -2899,7 +2923,6 @@ def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> se
             detail = _relied_on_detail(removable[key], "failed" if key == failed else "is kept")
             for each in _keep_dependents(key, dependents, pending, relied_on, detail):
                 _record_kept(removable[each], detail, plan.family, summary)
-    return kept_kinds | {row.source.kind for key, row in removable.items() if key not in removed}
 
 
 def _together_detail(row: _StaleRow) -> str:
@@ -3079,7 +3102,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         summary.ownership.disagreements.update(
             address for address, result in outcomes.items() if result.outcome == "disagreement"
         )
-    delegated = import_reservation_snapshot(
+    delegated_step = import_reservation_snapshot(
         server,
         dhcp_server,
         plan.reservations,
@@ -3090,11 +3113,12 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         capabilities=capabilities,
         subnet_ids=subnet_ids,
     )
-    kept = remove_stale_objects(server, plan, summary)
-    if delegated is not None:
-        reconcile_delegated_prefixes(server, plan.family, delegated, kept, summary)
+    remove_stale_objects(server, plan, summary)
+    unobserved = unobserved_kinds(server, plan)
+    if delegated_step is not None:
+        reconcile_delegated_prefixes(server, plan.family, delegated_step, unobserved, summary)
     if plan.family == 6:
-        reconcile_pd_pool_prefixes(server, plan, kept, summary)
+        reconcile_pd_pool_prefixes(server, plan, unobserved, summary)
     if not plan.configuration_complete:
         summary.ownership.incomplete.update({"subnet", "pool"})
     if (

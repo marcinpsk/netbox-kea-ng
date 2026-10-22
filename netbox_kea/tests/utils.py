@@ -6,6 +6,7 @@ Import from this module instead of duplicating scaffold code in each test file.
 """
 
 import re
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import requests
@@ -14,6 +15,7 @@ from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.db import connection
+from django.db.models.signals import pre_delete
 from django.test import Client, TestCase
 from django.test.utils import CaptureQueriesContext, TestContextDecorator
 from django.urls import reverse
@@ -556,3 +558,18 @@ class _ReadModifyWriteMessages(_ViewTestBase):
                 applied = label.startswith(("applied", "unknown"))
                 self.assertEqual("config-set" in kea.commands(), applied)
                 self.assertEqual("config-write" in kea.commands(), applied and "not requested" not in label)
+
+
+@contextmanager
+def refused_delete(model, pk: int):
+    """Make the ORM delete of the *model* row *pk* fail, as a removal that NetBox refuses."""
+
+    def refuse(sender, instance, **kwargs):
+        if instance.pk == pk:
+            raise RuntimeError(f"the delete of {model._meta.model_name} {pk} fails")
+
+    pre_delete.connect(refuse, sender=model, weak=False)
+    try:
+        yield
+    finally:
+        pre_delete.disconnect(refuse, sender=model)

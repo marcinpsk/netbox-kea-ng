@@ -15,6 +15,7 @@ from django.db import connection
 from django.db.models.signals import post_save
 from django.test import SimpleTestCase, TestCase
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 
@@ -29,7 +30,7 @@ from netbox_kea.ipam_reconciliation import (
     reconcile,
 )
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
-from netbox_kea.models import DhcpImportTrigger, IPAMOwnershipLink, next_confirmation_number
+from netbox_kea.models import DhcpImportTrigger, IPAMOwnershipLink, KeaDhcpLink, next_confirmation_number
 from netbox_kea.pools import parse_pool
 from netbox_kea.views.dhcp_plugin_sync import _summary_problems, run_dhcp_plugin_import
 from netbox_kea.views.notices import Notice
@@ -37,7 +38,7 @@ from netbox_kea.views.notices import Notice
 from .kea_stub import observed_configuration, stub_kea
 from .test_integration_dhcp_plugin import _reservation_snapshot
 from .test_views_dhcp_plugin import _sync_responses
-from .utils import _make_db_server, take_reservation_name
+from .utils import _make_db_server, refused_delete, take_reservation_name
 
 
 class ImportOwnershipTest(TestCase):
@@ -556,10 +557,10 @@ class ImportOwnershipTest(TestCase):
         conf = {"subnet6": [{"id": 9, "subnet": "2001:db8:9::/64"}]}
         observation = _reservation_snapshot(conf, 6, [{**self.identity, "subnet-id": 9}])
         summary = dhcp_plugin.ImportSummary()
-        phase = dhcp_plugin.import_reservation_snapshot(
+        step = dhcp_plugin.import_reservation_snapshot(
             self.server, None, observation, None, summary, family=6, adoption_servers=(), capabilities=probe()
         )
-        dhcp_plugin.reconcile_delegated_prefixes(self.server, 6, phase, set(), summary)
+        dhcp_plugin.reconcile_delegated_prefixes(self.server, 6, step, set(), summary)
         self.assertEqual(summary.reservations_skipped, 1)
         self.assertIn("delegated-prefix", summary.ownership.incomplete)
         self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix=self.delegated()), before)
@@ -656,8 +657,6 @@ class ImportOwnershipTest(TestCase):
                         self.assertFalse(links.exists())
 
     def test_a_reservation_whose_removal_fails_keeps_its_prefix_links_and_prefixes_active(self):
-        from django.db.models.signals import pre_delete
-
         self.server.sync_deprecate_prefixes_and_ranges = True
         self.server.save()
         excluded = "2001:db8:100:ff::/64"
@@ -667,15 +666,8 @@ class ImportOwnershipTest(TestCase):
         HostReservation = apps.get_model("netbox_dhcp", "HostReservation")
         stale = HostReservation.objects.get()
 
-        def refuse(sender, instance, **kwargs):
-            if instance.pk == stale.pk:
-                raise RuntimeError("the Reservation delete fails")
-
-        pre_delete.connect(refuse, sender=HostReservation, weak=False)
-        try:
+        with refused_delete(HostReservation, stale.pk):
             summary = self.run_import([])
-        finally:
-            pre_delete.disconnect(refuse, sender=HostReservation)
 
         self.assertEqual(summary.errors, 1, summary.warnings)
         self.assertTrue(HostReservation.objects.filter(pk=stale.pk).exists())
@@ -704,6 +696,62 @@ class ImportOwnershipTest(TestCase):
         self.assertTrue(apps.get_model("netbox_dhcp", "HostReservation").objects.exists())
         self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix=self.delegated()), before)
         self.assertEqual(self.delegated().status, "active")
+
+    def test_a_reservation_that_the_run_cannot_judge_keeps_its_prefix_links(self):
+        HostReservation = apps.get_model("netbox_dhcp", "HostReservation")
+        self.server.sync_deprecate_prefixes_and_ranges = True
+        self.server.save()
+        self.import_hosts([{**self.identity, "prefixes": [self.network]}])
+        before = IPAMOwnershipLink.objects.values().get(prefix=self.delegated())
+        responses = _sync_responses({6: self.config}, {6: []})
+        read_page = responses["reservation-get-page"]
+
+        def replay(body):
+            # Another writer, such as an ADR 0008 replay, confirms the mapping after the read started.
+            KeaDhcpLink.objects.filter(server=self.server, kind=Kind.RESERVATION.value).update(
+                last_synced=timezone.now()
+            )
+            return read_page(body)
+
+        responses["reservation-get-page"] = replay
+        # A plan without a read time judges no mapping.
+        for label, run in (("no read time", lambda: self.import_hosts([])), ("newer mapping", None)):
+            with self.subTest(label):
+                if run is None:
+                    with stub_kea(responses):
+                        summary = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)[0][1]
+                else:
+                    summary = run()
+
+                self.assertTrue(HostReservation.objects.exists())
+                self.assertIn("delegated-prefix", summary.ownership.incomplete)
+                self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix=self.delegated()), before)
+                self.assertEqual(self.delegated().status, "active")
+
+    def test_a_failed_delegated_prefix_claim_counts_once_also_when_the_cleanup_claim_succeeds(self):
+        from django.db import DatabaseError
+        from django.db.models.signals import pre_save
+
+        HostReservation = apps.get_model("netbox_dhcp", "HostReservation")
+        for refusals, self.network in ((1, "2001:db8:100::/56"), (2, "2001:db8:200::/56")):
+            with self.subTest(refusals=refusals):
+                refused = []
+
+                def refuse(sender, instance, refusals=refusals, network=self.network, refused=refused, **kwargs):
+                    if str(instance.prefix) == network and len(refused) < refusals:
+                        refused.append(instance)
+                        raise DatabaseError("the Prefix write fails")
+
+                pre_save.connect(refuse, sender=Prefix, weak=False)
+                try:
+                    summary = self.import_hosts([{**self.identity, "prefixes": [self.network]}])
+                finally:
+                    pre_save.disconnect(refuse, sender=Prefix)
+
+                self.assertEqual(len(refused), refusals)
+                self.assertEqual(summary.errors, 1, summary.warnings)
+                self.assertIn("delegated-prefix", summary.ownership.incomplete)
+                self.assertFalse(HostReservation.objects.get().ipv6_prefixes.filter(prefix=self.network).exists())
 
     def test_failed_excluded_claim_preserves_both_prefix_attachments(self):
         excluded = "2001:db8:100:ff::/64"

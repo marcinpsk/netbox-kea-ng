@@ -1489,13 +1489,13 @@ class ConcurrencyHarness(TransactionTestCase):
 
 
 def _import_reservations(server, observation, summary):
-    """Run the Reservation step and the delegated-prefix cleanup of a DHCPv6 import in one transaction, as apply_plan."""
+    """Run the Reservation step, then the delegated-prefix cleanup of a DHCPv6 import, in one transaction."""
     from netbox_kea import event_scope
     from netbox_kea.integrations.dhcp_plugin import import_reservation_snapshot, reconcile_delegated_prefixes
     from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
     with event_scope.atomic():
-        phase = import_reservation_snapshot(
+        step = import_reservation_snapshot(
             server,
             None,
             observation,
@@ -1505,8 +1505,8 @@ def _import_reservations(server, observation, summary):
             adoption_servers=(),
             capabilities=PluginCapabilities(frozenset()),
         )
-        assert phase is not None
-        reconcile_delegated_prefixes(server, 6, phase, set(), summary)
+        assert step is not None
+        reconcile_delegated_prefixes(server, 6, step, set(), summary)
 
 
 class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
