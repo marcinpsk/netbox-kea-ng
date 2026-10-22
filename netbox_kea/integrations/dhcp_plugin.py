@@ -84,6 +84,7 @@ from itertools import count
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from datetime import datetime
 
     from ..ipam_reconciliation import ClaimResult, RangeClaim, ReservationObservation, SyncReport
@@ -1245,6 +1246,59 @@ def _record_name_taken(
     summary.warn(f"{label} {name}: {detail}")
 
 
+def _upsert_named(
+    server,
+    dhcp_server,
+    kind: Kind,
+    name: str,
+    family: int,
+    options,
+    summary: ImportSummary,
+    capabilities: PluginCapabilities,
+    *,
+    write: Callable[[Any, bool], tuple[Any, Outcome | None]],
+    adopt: Callable[[], Any],
+    skip_children: Callable[[], None],
+):
+    """Get or create the row of the client class or Shared Network *name* through its mapping, and write it.
+
+    *write(row, name_taken)* writes the row (``None``: a new one) and returns it with its outcome. A row that the
+    mapping does not find can be *adopt*-ed. Another row that holds the name stops a new row, and a mapped row keeps
+    its name. When no row is written, the DHCP Options and the other children (*skip_children*) are skipped. Return the
+    row, or ``None``.
+    """
+    source = MappingSource.named(kind, name)
+    path = source.path(family)
+    try:
+        with event_scope.atomic():
+            obj = mapped_target(server, family, source)
+            if obj is None:
+                obj = adopt()
+            name_taken = _name_taken(kind, name, obj, dhcp_server, capabilities)
+            if obj is None and name_taken:
+                _record_name_taken(summary, family, kind, path, name, capabilities)
+                _skip_options(summary, family, path, options)
+                skip_children()
+                return None
+            obj, outcome = write(obj, name_taken)
+            observe_mapping(server, family, obj, source)
+    except event_scope.EventDispatchError:
+        raise
+    except ManagedFieldsMismatch:
+        raise
+    except Exception as exc:  # noqa: BLE001 (one bad object must not abort the import)
+        summary.record(write_failed(family, kind, path))
+        summary.warn(f"{KIND_LABELS[kind].lower()} {name}: {exc}")
+        _skip_options(summary, family, path, options)
+        skip_children()
+        return None
+    if name_taken:
+        _record_name_taken(summary, family, kind, kea_paths.setting(path, "name"), name, capabilities)
+    if outcome is not None:
+        summary.record(written(family, kind, path, outcome))
+    return obj
+
+
 def upsert_client_class(
     server,
     dhcp_server,
@@ -1260,48 +1314,34 @@ def upsert_client_class(
     ClientClass = _model("ClientClass")
     intent = planned.intent
     path = kea_paths.client_class(intent.family, planned.key)
-    source = MappingSource.named(Kind.CLIENT_CLASS, planned.key)
-    outcome = None
-    try:
-        with event_scope.atomic():
-            obj = mapped_target(server, intent.family, source)
-            if obj is None:
-                # Adopt a row that the released importer created before client classes had a mapping.
-                released = ClientClass.objects.filter(name=_released_client_class_name(server, planned.key))
-                obj = _unlinked(released).first()
-            name_taken = _name_taken(Kind.CLIENT_CLASS, planned.key, obj, dhcp_server, capabilities)
-            if obj is None and name_taken:
-                _record_name_taken(summary, intent.family, Kind.CLIENT_CLASS, path, planned.key, capabilities)
-                _skip_options(summary, intent.family, path, intent.options)
-                _skip_class_definitions(definitions, planned, summary)
-                return None
-            if obj is None:
-                obj = ClientClass()
-                fields = _client_class_fields(obj, dhcp_server, planned, summary, path, capabilities, name_taken=False)
-                _create_row(obj, fields, capabilities)
-                outcome = Outcome.CREATED
-            else:
-                fields = _client_class_fields(obj, dhcp_server, planned, summary, path, capabilities, name_taken)
-                if changes := _managed_changes(obj, fields, capabilities):
-                    _save_changes(obj, changes)
-                    outcome = Outcome.UPDATED
-            observe_mapping(server, intent.family, obj, source)
-    except event_scope.EventDispatchError:
-        raise
-    except ManagedFieldsMismatch:
-        raise
-    except Exception as exc:  # noqa: BLE001 — one bad class must not abort the import
-        summary.record(write_failed(intent.family, Kind.CLIENT_CLASS, path))
-        summary.warn(f"client-class {intent.name}: {exc}")
-        _skip_options(summary, intent.family, path, intent.options)
-        _skip_class_definitions(definitions, planned, summary)
-        return None
 
-    if name_taken:
-        name_path = kea_paths.setting(path, "name")
-        _record_name_taken(summary, intent.family, Kind.CLIENT_CLASS, name_path, planned.key, capabilities)
-    if outcome is not None:
-        summary.record(written(intent.family, Kind.CLIENT_CLASS, path, outcome))
+    def adopt():
+        # Adopt a row that the released importer created before client classes had a mapping.
+        released = ClientClass.objects.filter(name=_released_client_class_name(server, planned.key))
+        return _unlinked(released).first()
+
+    def write(obj, name_taken: bool):
+        created = obj is None
+        if created:
+            obj = ClientClass()
+        fields = _client_class_fields(obj, dhcp_server, planned, summary, path, capabilities, name_taken)
+        return obj, _write_child(obj, created, fields, {}, capabilities)
+
+    obj = _upsert_named(
+        server,
+        dhcp_server,
+        Kind.CLIENT_CLASS,
+        planned.key,
+        intent.family,
+        intent.options,
+        summary,
+        capabilities,
+        write=write,
+        adopt=adopt,
+        skip_children=lambda: _skip_class_definitions(definitions, planned, summary),
+    )
+    if obj is None:
+        return None
     for planned_definition in planned.option_definitions:
         definitions.written[planned_definition.key] = _write_option_definition(
             definitions, planned_definition.key, intent.family, obj, summary, capabilities
@@ -1321,36 +1361,6 @@ def _shared_network_fields(
         **gated_values(obj, planned.settings, GATED_NETWORK_FIELDS, capabilities, summary, source),
         **_user_context_fields(obj, planned.intent.user_context, capabilities, summary, source, "Shared Network"),
     }
-
-
-def _write_shared_network(server, dhcp_server, planned: PlannedSharedNetwork, classes, summary, capabilities):
-    """Get or create the Shared Network of *planned* through its mapping and write it.
-
-    Return the row and its outcome (``None`` when unchanged), or no row when another row holds its name.
-    """
-    family = planned.intent.family
-    path = kea_paths.shared_network(family, planned.key)
-    source = MappingSource.named(Kind.SHARED_NETWORK, planned.key)
-    obj = mapped_target(server, family, source)
-    name_taken = _name_taken(Kind.SHARED_NETWORK, planned.key, obj, dhcp_server, capabilities)
-    if obj is None and name_taken:
-        _record_name_taken(summary, family, Kind.SHARED_NETWORK, path, planned.key, capabilities)
-        return None, None
-    created = obj is None
-    if created:
-        # The import never links a Prefix to a Shared Network; a Prefix that an operator sets stays.
-        obj = _model("SharedNetwork")(prefix_id=None)
-    fields = _shared_network_fields(obj, dhcp_server, planned, summary, path, capabilities, name_taken)
-    relations = classes.relations(planned.intent, path, Kind.SHARED_NETWORK, summary)
-    relations["server_interfaces"] = _network_interface(
-        dhcp_server, planned.settings.get(kea_paths.INTERFACE), path, Kind.SHARED_NETWORK, family, summary
-    )
-    outcome = _write_child(obj, created, fields, relations, capabilities)
-    observe_mapping(server, family, obj, source)
-    if name_taken:
-        name_path = kea_paths.setting(path, "name")
-        _record_name_taken(summary, family, Kind.SHARED_NETWORK, name_path, planned.key, capabilities)
-    return obj, outcome
 
 
 def upsert_shared_network(
@@ -1374,25 +1384,34 @@ def upsert_shared_network(
         summary.record(unsupported(intent.family, Kind.SHARED_NETWORK, path, capability, detail))
         _skip_options(summary, intent.family, path, intent.options)
         return None
-    try:
-        with event_scope.atomic():
-            obj, outcome = _write_shared_network(
-                server, dhcp_server, planned, references.classes, summary, capabilities
-            )
-    except event_scope.EventDispatchError:
-        raise
-    except ManagedFieldsMismatch:
-        raise
-    except Exception as exc:  # noqa: BLE001 (one bad Shared Network must not abort the import)
-        summary.record(write_failed(intent.family, Kind.SHARED_NETWORK, path))
-        summary.warn(f"shared-network {planned.key}: {exc}")
-        obj = None
-    if obj is None:
-        _skip_options(summary, intent.family, path, intent.options)
-        return None
-    if outcome is not None:
-        summary.record(written(intent.family, Kind.SHARED_NETWORK, path, outcome))
-    upsert_options(obj, intent.options, intent.family, references, summary, path, capabilities)
+
+    def write(obj, name_taken: bool):
+        created = obj is None
+        if created:
+            # The import never links a Prefix to a Shared Network; a Prefix that an operator sets stays.
+            obj = _model("SharedNetwork")(prefix_id=None)
+        fields = _shared_network_fields(obj, dhcp_server, planned, summary, path, capabilities, name_taken)
+        relations = references.classes.relations(intent, path, Kind.SHARED_NETWORK, summary)
+        relations["server_interfaces"] = _network_interface(
+            dhcp_server, planned.settings.get(kea_paths.INTERFACE), path, Kind.SHARED_NETWORK, intent.family, summary
+        )
+        return obj, _write_child(obj, created, fields, relations, capabilities)
+
+    obj = _upsert_named(
+        server,
+        dhcp_server,
+        Kind.SHARED_NETWORK,
+        planned.key,
+        intent.family,
+        intent.options,
+        summary,
+        capabilities,
+        write=write,
+        adopt=lambda: None,
+        skip_children=lambda: None,
+    )
+    if obj is not None:
+        upsert_options(obj, intent.options, intent.family, references, summary, path, capabilities)
     return obj
 
 
