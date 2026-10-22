@@ -10,6 +10,7 @@ gated on ``netbox_dhcp`` being installed.  Only the Kea HTTP transport is stubbe
 from __future__ import annotations
 
 import unittest
+from functools import partial
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -760,10 +761,51 @@ class DriftPartialTest(TestCase):
 
         page = BeautifulSoup(resp.content, "html.parser")
         (cell,) = [row.select("td")[3] for row in page.select("tr[data-state][data-kind=option]")]
-        self.assertEqual(" ".join(cell.get_text().split()), str(option))
+        # The user may not view the Option Definition either, so the Option is named by its kind.
+        self.assertEqual(" ".join(cell.get_text().split()), "DHCP Option")
         self.assertEqual([link["href"] for link in cell.select("a")], [option.get_absolute_url()])
         self.assertNotIn(str(pool), resp.content.decode())
         self.assertNotIn(pool.get_absolute_url(), resp.content.decode())
+
+    def test_the_card_names_an_option_and_its_definition_without_a_dhcp_server_the_user_may_not_view(self):
+        from django.contrib.auth import get_user_model
+
+        from .utils import _grant
+
+        self._import()
+        model = partial(apps.get_model, DHCP_PLUGIN)
+        option = model("Option").objects.get()
+        definition, pool = option.definition, option.assigned_object
+        dhcp_server = definition.dhcp_server
+        viewer = get_user_model().objects.create_user("drift-label-viewer")
+        _grant([Server, model("Option"), model("OptionDefinition"), model("Pool")], ["view"], user=viewer)
+        _grant([model("DHCPServer")], ["view"], user=viewer, constraints={"name": "another server"})
+        self.client.force_login(viewer)
+
+        with stub_kea(_sync_responses({4: {"subnet4": []}}, {4: []})):
+            resp = self.client.get(self.url, HTTP_HX_REQUEST="true")
+
+        page = BeautifulSoup(resp.content, "html.parser")
+        cells = {
+            str(row["data-kind"]): row.select("td")[3]
+            for row in page.select("tr[data-state]")
+            if row["data-kind"] in ("option", "option_definition")
+        }
+        label = f"{definition.space} {definition.name} ({definition.code})"
+        self.assertEqual(
+            {kind: " ".join(cell.get_text().split()) for kind, cell in cells.items()},
+            {"option": f"{label} on {pool}", "option_definition": label},
+        )
+        self.assertEqual(
+            {kind: [link["href"] for link in cell.select("a")] for kind, cell in cells.items()},
+            {
+                "option": [option.get_absolute_url(), pool.get_absolute_url()],
+                "option_definition": [definition.get_absolute_url()],
+            },
+        )
+        # The import names the Pool after its DHCP Server: that is a field of the Pool, which the user may view.
+        self.assertNotIn(f"[{dhcp_server.name}]", resp.content.decode())
+        self.assertNotIn(dhcp_server.get_absolute_url(), resp.content.decode())
 
     def test_the_card_reads_a_fixed_number_of_queries_for_any_number_of_rows(self):
         def stale_card_queries(codes: range) -> int:
