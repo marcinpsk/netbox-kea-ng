@@ -2149,6 +2149,15 @@ def _without_network(config: dict, name: str) -> dict:
     return config
 
 
+def _option_data(parent) -> list[tuple]:
+    from django.contrib.contenttypes.models import ContentType
+
+    rows = apps.get_model(DHCP_PLUGIN, "Option").objects.filter(
+        assigned_object_type=ContentType.objects.get_for_model(parent), assigned_object_id=parent.pk
+    )
+    return sorted((row.definition.code, row.data) for row in rows)
+
+
 def _names(relation) -> list[str]:
     return sorted(relation.values_list("name", flat=True))
 
@@ -2272,6 +2281,7 @@ class SharedNetworkImportTest(_SharedNetworkTestCase):
     def setUp(self):
         super().setUp()
         self.capabilities = optional_shared_network_prefix(self)
+        self.assertTrue(self.capabilities.has(Capability.SHARED_NETWORK_OPTIONAL_PREFIX))
 
     def test_a_shared_network_imports_without_a_prefix_with_its_declared_values_options_and_members(self):
         summary = self._apply()
@@ -2310,8 +2320,10 @@ class SharedNetworkImportTest(_SharedNetworkTestCase):
                 f"{_EMPTY_NETWORK}/user-context": (Outcome.UNSUPPORTED, Reason.PLUGIN_GAP, Capability.USER_CONTEXT),
             },
         )
-        # The DHCP Options are not checked: NetBox finds an Option's owner through the plugin's default manager, whose
-        # Prefix join hides a Shared Network without a Prefix while the model field is not nullable.
+        self.assertEqual(_option_data(office), [(6, "198.51.100.53")])
+        self.assertEqual(
+            self._entries(summary, Kind.OPTION)[f"{_OFFICE}/option-data[code=6]"], (Outcome.CREATED, None, None)
+        )
 
     def test_a_second_run_finds_a_renamed_shared_network_through_its_mapping_and_follows_kea(self):
         SharedNetwork = apps.get_model(DHCP_PLUGIN, "SharedNetwork")

@@ -136,22 +136,20 @@ def imported_dhcp_servers(server) -> list[int]:
 
 
 def optional_shared_network_prefix(test: TestCase):
-    """Give the installed netbox_dhcp the optional Shared Network prefix of #88 gap 1 for one test.
+    """Give the installed netbox_dhcp the optional Shared Network prefix of #88 gap 1 for one test, and probe it.
 
-    Return the probed capabilities with that capability. The DDL rolls back with the test transaction, and the
-    patched Subnet check drops only the rule that a member Subnet must sit inside the Prefix of its Shared Network.
+    The DDL rolls back with the test transaction, and the patched Subnet check drops only the containment rule.
     """
     from unittest import mock
 
-    from netbox_kea.integrations.dhcp_import_report import Capability
-    from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities, probe
+    from netbox_kea.integrations.dhcp_plugin_capabilities import probe
 
     if not connection.in_atomic_block:
         raise RuntimeError("The schema change must roll back with the test transaction.")
     shared_network, subnet = apps.get_model("netbox_dhcp", "SharedNetwork"), apps.get_model("netbox_dhcp", "Subnet")
-    table, column = shared_network._meta.db_table, shared_network._meta.get_field("prefix").column
+    prefix = shared_network._meta.get_field("prefix")
     with connection.cursor() as cursor:
-        cursor.execute(f'ALTER TABLE "{table}" ALTER COLUMN "{column}" DROP NOT NULL')
+        cursor.execute(f'ALTER TABLE "{shared_network._meta.db_table}" ALTER COLUMN "{prefix.column}" DROP NOT NULL')
     inside_prefix = subnet.clean
 
     def clean(row):
@@ -159,11 +157,10 @@ def optional_shared_network_prefix(test: TestCase):
             return super(subnet, row).clean()
         return inside_prefix(row)
 
-    patcher = mock.patch.object(subnet, "clean", clean)
-    patcher.start()
-    test.addCleanup(patcher.stop)
-    found = probe()
-    return PluginCapabilities(found.present | {Capability.SHARED_NETWORK_OPTIONAL_PREFIX}, found.option_spaces)
+    for patcher in (mock.patch.object(prefix, "null", True), mock.patch.object(subnet, "clean", clean)):
+        patcher.start()
+        test.addCleanup(patcher.stop)
+    return probe()
 
 
 def linked_dhcp_targets(server):
