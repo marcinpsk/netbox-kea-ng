@@ -64,6 +64,8 @@ Refuse the whole action when:
 Undo of a branch-created Global Reservation is also refused if main import adopted and mapped it
 after merge. A branch cannot delete that newer association through an unrecorded target deletion.
 Timestamp-only mapping observations do not conflict with an otherwise unchanged association.
+`options_mapped` only goes from False to True. A revert that restores a mapping keeps True when main recorded True at
+its deletion, also when the branch history holds an older False.
 
 Affected actions require the dependency-aware squash strategy. Refuse iterative replay before any
 mutation, explain the squash requirement and preserve the selected strategy. Strategy selection

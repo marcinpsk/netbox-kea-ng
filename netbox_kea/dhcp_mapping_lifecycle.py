@@ -73,6 +73,8 @@ class ReplayOperation:
     endpoint_deletions: dict = dataclass_field(default_factory=dict)
     restorations: dict = dataclass_field(default_factory=dict)
     restoration_births: dict = dataclass_field(default_factory=dict)
+    # The mappings that a revert restores whose Options main had mapped when it deleted them.
+    mapped_options: set = dataclass_field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -593,6 +595,28 @@ def prepare_replay(branch, collapsed, operation: str, request, *, named_request=
                 replay.mappings[change.key[1]] = (
                     change.prechange_data if operation == "merge" else change.postchange_data
                 )
+        if operation == "revert":
+            restored = [pk for pk, change in mappings.items() if change.final_action == "delete"]
+            replay.mapped_options.update(_mapped_options_at_deletion(restored))
+
+
+def _mapped_options_at_deletion(pks: list) -> set:
+    """Return the mappings of *pks* whose last deletion in main recorded that their Options were mapped.
+
+    ``options_mapped`` only goes from False to True, so a revert that restores a mapping from older branch history
+    keeps the True that main recorded when it deleted the mapping.
+    """
+    from core.models import ObjectChange
+    from django.contrib.contenttypes.models import ContentType
+
+    from .models import KeaDhcpLink
+
+    deletions = ObjectChange.objects.using("default").filter(
+        changed_object_type=ContentType.objects.get_for_model(KeaDhcpLink), changed_object_id__in=pks, action="delete"
+    )
+    # Later deletions overwrite earlier ones, so each mapping keeps its last deletion.
+    latest = dict(deletions.order_by("time", "pk").values_list("changed_object_id", "prechange_data"))
+    return {pk for pk, payload in latest.items() if payload and payload.get("options_mapped") is True}
 
 
 def record_endpoint_deletion(receipt, using: str, created: bool) -> None:
@@ -1494,6 +1518,8 @@ def _late_save_guard(sender, instance, using, **kwargs):
             _validate_named_write(instance, using)
     if replay is None or using != "default" or current_request.get() not in replay.native_requests:
         return
+    if sender is KeaDhcpLink and instance.pk in replay.mapped_options:
+        instance.options_mapped = True
     with metadata_scope(using):
         key = (sender, instance.pk)
         _validate_native_mapping_destination(instance, using)

@@ -161,6 +161,53 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertEqual(KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=family).pk, link.pk)
         self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).sys4_object.pk, target.pk)
 
+    def test_a_revert_keeps_the_options_that_main_mapped_and_leaves_the_operator_option_alone(self):
+        from netbox_dhcp.models import Option, OptionDefinition, Subnet
+
+        server, intent, observation, target, link = self._imported("subnet", 4, "options-mapped")
+        # A mapping from before Option mappings: the import has not mapped the Options of its Subnet yet.
+        KeaDhcpLink.objects.filter(pk=link.pk).update(options_mapped=False)
+        # A TransactionTestCase flushes the seeded standard Option Definitions.
+        routers, _ = OptionDefinition.objects.get_or_create(
+            standard=True,
+            space="dhcp4",
+            code=3,
+            defaults={"name": "routers", "family": 4, "type": "ipv4-address", "array": True},
+        )
+        with event_tracking(_change_request(self.user)):
+            operator = Option.objects.create(
+                definition=routers,
+                assigned_object_type=ContentType.objects.get_for_model(Subnet),
+                assigned_object_id=target.pk,
+                data="198.18.0.77",
+            )
+        branch = _provisioned_branch(self, "mapping-options-mapped")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        self._delete(branch, target)
+        with event_tracking(_change_request(self.user)):
+            import_server_config(server, intent, observation)
+        self.assertTrue(KeaDhcpLink.objects.get(pk=link.pk).options_mapped)
+
+        branch.merge(user=self.user)
+        branch.revert(user=self.user)
+
+        self.assertTrue(KeaDhcpLink.objects.get(pk=link.pk).options_mapped)
+        (subnet,) = intent.subnets
+        declared = {
+            "id": subnet.kea_subnet_id,
+            "subnet": subnet.cidr,
+            "option-data": [{"code": 3, "data": "198.18.0.1"}],
+        }
+        with event_tracking(_change_request(self.user)):
+            summary = import_server_config(server, parse_dhcp_config({"subnet4": [declared]}, 4), observation)
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        option_links = KeaDhcpLink.objects.filter(server=server, kind="option")
+        self.assertEqual(
+            sorted(Option.objects.filter(assigned_object_id=target.pk).values_list("data", "pk")),
+            sorted([("198.18.0.1", option_links.get().object_id), ("198.18.0.77", operator.pk)]),
+        )
+
     def test_squash_restores_imported_subnets(self):
         for family in (4, 6):
             for queryset in (False, True):
