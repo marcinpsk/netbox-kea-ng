@@ -366,11 +366,13 @@ URL request
   The job reads one `LeaseObservation` per family for its address `LeasePhase` and its DHCPv6 `LeasePrefixPhase`
   (source `lease-prefix`, enabled by the lease and the Prefix flags together). Both own objects only through Current Leases.
   A lease link records its `allocation_kind`; an unclassified DHCPv6 lease link is never cleaned up (ADR 0006).
-- **`jobs.py`**: `KeaIpamSyncJob` (`@system_job`). Iterates all `Server` objects,
-  runs subnet/lease/reservation/prefix/range sync phases, writes a per-server
-  summary to the job log. Then, with `DhcpIntegrationConfig.scheduled_import_enabled` on, a separate pass calls
-  `run_dhcp_plugin_import(server, DhcpImportTrigger.SCHEDULED)` for each Server that `integration_refusal` accepts.
-  A Run Now of one Server (`server_pk`) skips that pass. A Server fails when a family has a `READ_FAILED` or
+- **`jobs.py`**: `KeaIpamSyncJob` (`@system_job`). First, with `DhcpIntegrationConfig.scheduled_import_enabled` on,
+  a separate pass calls `run_dhcp_plugin_import(server, DhcpImportTrigger.SCHEDULED)` for each Server that
+  `integration_refusal` accepts. Then it iterates all `Server` objects, runs subnet/lease/reservation/prefix/range
+  sync phases, and writes a per-server summary to the job log. The import goes first because the IPAM stale cleanup
+  keeps an object that a DHCP plugin row references; a removed row lets the cleanup deprecate or remove it (#153).
+  The cost: the import attaches the IP that the lease phase creates for a Global Reservation one run later.
+  A Run Now of one Server (`server_pk`) skips the import pass. A Server fails when a family has a `READ_FAILED` or
   `WRITE_FAILED` entry of any kind or IPAM ownership errors (`_failed_facts`; `ImportSummary.errors` counts less),
   or when the import raises. A failed Server fails the job and the pass continues. Only `ImportRunning` (another run
   holds the import lock) skips a Server. An `EventDispatchError` of either pass stops the job.
