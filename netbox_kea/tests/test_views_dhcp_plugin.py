@@ -729,21 +729,38 @@ class DriftPartialTest(TestCase):
         self.assertEqual(len(self._objects(page)), len(_MAPPED))
         self.assertEqual(set(self._links(page)), {"subnet"})
 
+    def test_the_card_names_each_option_with_the_object_it_is_assigned_to(self):
+        self._import()
+        option = apps.get_model(DHCP_PLUGIN, "Option").objects.get()
+
+        page = self._drift(_sync_responses({4: {"subnet4": []}}, {4: []}))
+
+        (cell,) = [row.select("td")[3] for row in page.select("tr[data-state][data-kind=option]")]
+        self.assertEqual(" ".join(cell.get_text().split()), f"{option} on {option.assigned_object}")
+        self.assertEqual(
+            [link["href"] for link in cell.select("a")],
+            [option.get_absolute_url(), option.assigned_object.get_absolute_url()],
+        )
+
     def test_the_card_reads_a_fixed_number_of_queries_for_any_number_of_rows(self):
         def stale_card_queries(codes: range) -> int:
+            # Each code is an Option of the DHCP Server and an Option of its own client class.
             config = {
                 4: {
                     "option-def": [{"name": f"opt-{code}", "code": code, "type": "uint8"} for code in codes],
                     "option-data": [{"code": code, "data": "1"} for code in codes],
+                    "client-classes": [
+                        {"name": f"class-{code}", "option-data": [{"code": code, "data": "2"}]} for code in codes
+                    ],
                 }
             }
             with stub_kea(_sync_responses(config, {4: []})):
                 self.client.post(reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk]))
             with stub_kea(_sync_responses({4: {}}, {4: []})), CaptureQueriesContext(connection) as queries:
                 page = BeautifulSoup(self.client.get(self.url, HTTP_HX_REQUEST="true").content, "html.parser")
-            # One link for each kind: the Option Definitions and their Options.
-            self.assertEqual(len(self._links(page)), 2 if len(codes) else 0)
-            self.assertEqual(len(page.select("tr[data-state=stale]")), 2 * len(codes))
+            # One link for each kind: the Option Definitions, the client classes and the Options.
+            self.assertEqual(len(self._links(page)), 3 if len(codes) else 0)
+            self.assertEqual(len(page.select("tr[data-state=stale]")), 4 * len(codes))
             return len(queries.captured_queries)
 
         self.assertEqual(stale_card_queries(range(230, 231)), stale_card_queries(range(230, 234)))

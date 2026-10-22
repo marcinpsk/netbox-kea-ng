@@ -83,7 +83,7 @@
                 <td>{{ obj.label }}</td>
                 <td><code>{{ obj.path }}</code></td>
                 <td><span class="badge text-bg-{{ obj.badge.1 }}">{{ obj.badge.0 }}</span></td>
-                <td>{{ obj.target|linkify|placeholder }}</td>
+                <td>{{ obj.target|linkify|placeholder }}{% if obj.assigned %} on {{ obj.assigned|linkify }}{% endif %}</td>
               </tr>
             {% endfor %}
             {% if drift.hidden %}

@@ -166,6 +166,11 @@ class DriftObject:
         """Return the badge text and colour of the state."""
         return _STATE_BADGES[self.state]
 
+    @property
+    def assigned(self) -> Any:
+        """Return the object that the imported DHCP Option is assigned to, or ``None`` for another kind or no row."""
+        return self.target.assigned_object if self.kind == Kind.OPTION and self.target is not None else None
+
 
 @dataclass(frozen=True)
 class KindDrift:
@@ -247,12 +252,15 @@ _NAME_RELATIONS: dict[str, tuple[str, ...]] = {
     "optiondefinition": ("dhcp_server", "client_class"),
     "option": ("definition__dhcp_server", "definition__client_class"),
 }
+# The generic relations that the card names, by model: one query for each model of the related rows.
+_NAME_PREFETCHES: dict[str, tuple[str, ...]] = {"option": ("assigned_object",)}
 
 
 def _viewable_targets(objects: list[DriftObject], user) -> list[DriftObject]:
     """Keep the imported row of each object only when *user* may view it, loaded with what its name reads.
 
-    One query for each model, so the card reads a fixed number of queries for any number of rows.
+    One query for each model, and one for each model of the objects that the Options are assigned to, so the card
+    reads a fixed number of queries for any number of rows.
     """
     pks: dict[Any, set[int]] = defaultdict(set)
     for obj in objects:
@@ -261,7 +269,10 @@ def _viewable_targets(objects: list[DriftObject], user) -> list[DriftObject]:
     viewable = {}
     for model, selected in pks.items():
         queryset = model.objects.restrict(user, "view").filter(pk__in=selected)
-        for row in queryset.select_related(*_NAME_RELATIONS.get(model._meta.model_name, ())):
+        name = model._meta.model_name
+        for row in queryset.select_related(*_NAME_RELATIONS.get(name, ())).prefetch_related(
+            *_NAME_PREFETCHES.get(name, ())
+        ):
             viewable[model, row.pk] = row
     return [
         replace(obj, target=viewable.get((obj.target._meta.concrete_model, obj.target.pk)))
