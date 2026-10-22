@@ -77,7 +77,7 @@ _FIRST_RUN = {
     ("client_class", "created", "", "Dhcp4/client-classes[name=voip]"),
     ("server", "created", "", "Dhcp4"),
     ("server", "unsupported", "plugin_gap", "Dhcp4"),
-    ("shared_network", "not_imported", "not_in_scope", "Dhcp4/shared-networks[name=office]"),
+    ("shared_network", "unsupported", "plugin_gap", "Dhcp4/shared-networks[name=office]"),
     ("subnet", "created", "", _SUBNET),
     ("subnet", "created", "", "Dhcp4/subnet4[id=30]"),
     ("option", "created", "", f"{_SUBNET}/option-data[code=3]"),
@@ -265,7 +265,7 @@ class LatestRunPageTest(_ImportRunTestCase):
         self.assertIn(("DHCPv4", "Subnet", "2", "0", "0", "0", "0", "0"), counts)
         self.assertIn(("DHCPv4", "Reservation", "1", "0", "0", "0", "0", "1"), counts)
         self.assertIn(("DHCPv4", "DHCP Option", "1", "0", "0", "1", "0", "1"), counts)
-        self.assertIn(("DHCPv4", "Shared Network", "0", "0", "0", "0", "0", "1"), counts)
+        self.assertIn(("DHCPv4", "Shared Network", "0", "0", "0", "1", "0", "0"), counts)
         text = card.get_text(" ", strip=True)
         self.assertIn(f"{_SUBNET}/option-data[space=vendor-x,code=1]", text)
         self.assertIn("The DHCP plugin cannot hold it", text)

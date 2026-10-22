@@ -130,9 +130,9 @@ missing or constrained permission, and the server refuses the request with the s
 group mapping (`FIND_GROUP_PERMS`) gives does not count.
 
 **Sync to DHCP plugin now** also writes the DHCP plugin objects. It needs add and change on DHCP Server, Option
-Definition, Option, Client Class, Subnet, Pool, Prefix Delegation Pool and Host Reservation. It removes Stale DHCP
-Import Objects (see [Configuration](configuration.md)), so it also needs delete on Option Definition, Option, Client
-Class, Shared Network, Subnet, Pool, Prefix Delegation Pool and Host Reservation.
+Definition, Option, Client Class, Shared Network, Subnet, Pool, Prefix Delegation Pool and Host Reservation. It
+removes Stale DHCP Import Objects (see [Configuration](configuration.md)), so it also needs delete on Option
+Definition, Option, Client Class, Shared Network, Subnet, Pool, Prefix Delegation Pool and Host Reservation.
 
 ## Upgrade to ownership links
 
