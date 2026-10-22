@@ -343,18 +343,30 @@ def _assert_kea_would_accept_host(body: dict[str, Any]) -> None:
     if not isinstance(host, dict):
         return
     # host_cmds takes subnet-id inside the host; the configuration parser has no such key.
-    known = {"subnet-id"} | _accepted_keys(4)["reservations"] | _accepted_keys(6)["reservations"]
-    unknown = set(host) - known
+    accepted = {family: {"subnet-id"} | _accepted_keys(family)["reservations"] for family in (4, 6)}
+    family = _host_family(body, host, accepted)
+    unknown = set(host) - accepted[family]
     if unknown:
         raise AssertionError(
             f"KeaHttpStub: {body.get('command')} sends {sorted(unknown)} in a host, which the host reservation "
-            "keyword tables in kea_recordings/accepted-keys.json do not accept."
+            f"keyword tables in kea_recordings/accepted-keys.json do not accept on a DHCPv{family} host."
         )
     if "excluded-prefixes" in host and len(host["excluded-prefixes"]) != len(host.get("prefixes", [])):
         raise AssertionError(
             f"KeaHttpStub: {body.get('command')} sends excluded-prefixes that do not pair one to one with prefixes, "
             "which Kea refuses."
         )
+
+
+def _host_family(body: dict[str, Any], host: dict[str, Any], accepted: dict[int, set[str]]) -> int:
+    """Return the family of a host write: the Control Agent service, else the family of its family-only keys.
+
+    Without a service, a host whose family-only keys all belong to the other family passes as that family.
+    """
+    service = body.get("service")
+    if service in (["dhcp4"], ["dhcp6"]):
+        return int(service[0][-1])
+    return 6 if set(host) & (accepted[6] - accepted[4]) else 4
 
 
 def _assert_kea_has(commands: Any, verb: str) -> None:
