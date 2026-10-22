@@ -143,6 +143,9 @@ mapping, and the next run updates the same Option. Then the mapping of the objec
 whatever the writes do. After that, the object takes no unmapped Option again. The global configuration, client classes,
 Shared Networks, Subnets, Pools, delegated-prefix Pools and Reservations take them this way. A run that cannot read the
 Reservations does not reach them, so a later run that reads them maps their Options.
+A branch revert keeps the fact that the Options of an object are mapped, as main recorded it. When change log retention
+has removed the change log entry of the merge, the revert restores that fact from the branch, so the restored object can
+take Options without a mapping again.
 
 A mapping keeps 517 characters. A DHCP Option whose identity is longer has no mapping, and neither has a DHCP Option
 of an object without a mapping. On every run, such an Option takes an Option without a mapping of the same object, as
