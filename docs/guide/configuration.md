@@ -26,6 +26,7 @@ restart. The page has one section for each group of settings:
 | Display Cache | Leases TTL (seconds) | `30` | How long a page shows cached Leases, the Lease badges of Reservations and the Reservation badges of Leases. `0` turns off caching for them |
 | Display Cache | Utilization and Status TTL (seconds) | `15` | How long a page shows cached Subnet utilization and daemon status. `0` turns off caching for them |
 | DHCP Plugin | Integration Enabled (global) | On | Global switch. Clear it to stop the DHCP plugin integration for all Servers. The section shows only when the NetBox DHCP plugin (`netbox_dhcp`) is installed |
+| DHCP Plugin | Scheduled Import | Off | Each run of the periodic sync job also runs the DHCP Import of each Server that the DHCP plugin integration runs for |
 
 A section shows to a user with the view permission of its model (`netbox_kea.view_syncconfig`,
 `netbox_kea.view_keaclientconfig`, `netbox_kea.view_displaycacheconfig`, `netbox_kea.view_dhcpintegrationconfig`). A save needs the change permission of the model too. Without it, the section
@@ -45,6 +46,17 @@ The DHCP plugin integration runs for a Server only when the NetBox DHCP plugin i
 **DHCP Plugin** subsection under Sync, **Sync to DHCP plugin now** refuses, and the IPAM sync does not wait for a
 DHCP plugin import before it removes an adopted object. Objects that DHCP plugin records refer to stay protected from
 stale cleanup while the switch is off.
+
+With **Scheduled Import** on, each run of the periodic sync job runs the DHCP Import of each Server that the
+integration runs for, after the IPAM sync of all Servers. It is the same import as **Sync to DHCP plugin now**, and it
+stores its result with the trigger Scheduled. The reserved user `netbox-kea-sync` makes its changes.
+**Sync Enabled (global)** and the IPAM sync settings do not stop it. A **Run Now** of one Server on the Sync Jobs page
+syncs IPAM only. The job log shows the counts of each family of each Server. The import of a Server fails when Kea
+does not give its configuration, when the configuration cannot be parsed, when a read or a write of one object fails,
+or when the import stops. The job then records the failure, continues with the next Server, and ends as failed. When
+another DHCP Import of a Server is running, the job skips that Server. When NetBox cannot dispatch the events of the
+IPAM sync or of an import, the job stops. While a branch is active in the worker, the sync job fails before it reads
+anything, so no import runs.
 
 The DHCP Import needs netbox-plugin-dhcp 0.2.0 or later. With an older release installed, **Sync to DHCP plugin now**
 refuses before it reads Kea, names the required version, and changes nothing.

@@ -247,8 +247,8 @@ URL request
   row (pk=1). `SyncConfig` holds the sync settings (`interval_minutes`, `sync_enabled`, the type toggles,
   `sync_max_leases_per_server`, `stale_ip_cleanup`); `KeaClientConfig` holds `kea_timeout` and
   `lease_query_max_unpaged_leases`, and `Server.get_client()` reads it on each call. `DhcpIntegrationConfig` holds
-  `enabled`, the global switch of the DHCP plugin integration. `DisplayCacheConfig` holds the TTL of each read kind of
-  the display cache. `dhcp_plugin.integration_refusal(server)` is the one
+  `enabled`, the global switch of the DHCP plugin integration, and `scheduled_import_enabled`.
+  `DisplayCacheConfig` holds the TTL of each read kind of the display cache. `dhcp_plugin.integration_refusal(server)` is the one
   rule that combines `is_available()`, `Server.sync_dhcp_plugin_enabled` and that switch; no other code combines
   them. Guards that keep DHCP plugin references safe from cleanup check `is_available()` only. Defaults live on the
   model fields. Migrations 0018, 0025, 0026 and 0027 create the rows, and 0018 and 0025 copy the values of
@@ -368,7 +368,12 @@ URL request
   A lease link records its `allocation_kind`; an unclassified DHCPv6 lease link is never cleaned up (ADR 0006).
 - **`jobs.py`**: `KeaIpamSyncJob` (`@system_job`). Iterates all `Server` objects,
   runs subnet/lease/reservation/prefix/range sync phases, writes a per-server
-  summary to the job log.
+  summary to the job log. Then, with `DhcpIntegrationConfig.scheduled_import_enabled` on, a separate pass calls
+  `run_dhcp_plugin_import(server, DhcpImportTrigger.SCHEDULED)` for each Server that `integration_refusal` accepts.
+  A Run Now of one Server (`server_pk`) skips that pass. A Server fails when a family has a `READ_FAILED` or
+  `WRITE_FAILED` entry of any kind or IPAM ownership errors (`_failed_facts`; `ImportSummary.errors` counts less),
+  or when the import raises. A failed Server fails the job and the pass continues. Only `ImportRunning` (another run
+  holds the import lock) skips a Server. An `EventDispatchError` of either pass stops the job.
 - **DHCP Import** (`integrations/`): `dhcp_import.run_dhcp_plugin_import(server, trigger)` reads Kea for every
   enabled family, plans each family (`dhcp_import_plan.py`) and applies each plan (`dhcp_plugin.apply_plan`). Each
   DHCP Server, Subnet, Pool, Reservation, client class and custom Option Definition that the apply writes has a DHCP

@@ -55,6 +55,10 @@ _IMPORT_RUNNING = "Another DHCP Import of this Server is running. Nothing change
 REQUIRED_PLUGIN_VERSION = "0.2.0"
 
 
+class ImportRunning(MetadataBusy):
+    """Another DHCP Import of the Server holds its import lock. The run read nothing and changed nothing."""
+
+
 class UnsupportedPluginVersion(Exception):
     """The installed netbox-plugin-dhcp is older than :data:`REQUIRED_PLUGIN_VERSION`."""
 
@@ -158,14 +162,14 @@ def _server_import_lock(server: Server) -> Iterator[None]:
     A session lock, so the run holds no transaction open across its Kea reads.
 
     Raises:
-        MetadataBusy: Another session holds the lock.
+        ImportRunning: Another session holds the lock.
 
     """
     with connection.cursor() as cursor:
         cursor.execute("SELECT pg_try_advisory_lock(%s, %s)", [IMPORT_LOCK_CLASS, server.pk])
         (taken,) = cursor.fetchone()
     if not taken:
-        raise MetadataBusy(_IMPORT_RUNNING)
+        raise ImportRunning(_IMPORT_RUNNING)
     try:
         yield
     finally:
@@ -196,7 +200,8 @@ def run_dhcp_plugin_import(
 
     Raises:
         UnsupportedPluginVersion: Before any Kea read, when the installed netbox-plugin-dhcp is too old.
-        MetadataBusy: Before any Kea read, when another run of the Server holds the lock.
+        ImportRunning: Before any Kea read, when another run of the Server holds the lock.
+        MetadataBusy: When the mapping coordination refuses the apply of a family, after its result is stored.
 
     """
     require_supported_plugin()

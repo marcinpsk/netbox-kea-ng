@@ -214,6 +214,7 @@ jobs:
             ${{ github.workspace }}/netbox_kea/tests/test_ipam_reconciliation.py \
             ${{ github.workspace }}/netbox_kea/tests/test_manual_sync_permissions.py \
             ${{ github.workspace }}/netbox_kea/tests/test_prefix_pool_reconciliation.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_scheduled_dhcp_import.py \
             --override-ini="DJANGO_SETTINGS_MODULE=netbox_kea.tests.isolated_settings" \
             --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
             -n 1 \

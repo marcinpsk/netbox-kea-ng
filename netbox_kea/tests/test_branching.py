@@ -108,6 +108,7 @@ from netbox_kea.tests.utils import (  # noqa: E402
     _make_db_server,
     _refusal_receivers,
     linked_dhcp_targets,
+    with_dhcp_integration_config,
 )
 
 # Changing this set needs a design decision (docs/design/ipam-ownership-branching.md).
@@ -1585,8 +1586,10 @@ class OwnershipBranchLifecycleTest(_OwnedObjectsTestCase):
 class SyncJobInBranchTest(TransactionTestCase):
     """KeaIpamSyncJob runs on main only: in a branch it fails before any read."""
 
+    @with_dhcp_integration_config(scheduled_import_enabled=True)
     def test_the_sync_job_fails_in_a_branch_before_any_query_or_kea_command(self):
-        _make_db_server(name="job")
+        # The scheduled DHCP Import is on for this Server, so the refusal also covers it.
+        _make_db_server(name="job", sync_dhcp_plugin_enabled=True)
         branch = _provisioned_branch(self, "job")
         job = Job.objects.create(name="Kea IPAM Sync", job_id=uuid.uuid4())
 
