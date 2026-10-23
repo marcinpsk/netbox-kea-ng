@@ -165,7 +165,7 @@ from .dhcp_import_report import (
     unsupported,
     written,
 )
-from .dhcp_plugin_capabilities import PLUGIN_APP_LABEL, PluginCapabilities, probe
+from .dhcp_plugin_capabilities import PLUGIN_APP_LABEL, PluginCapabilities, probe, refuses_kea_data
 
 logger = logging.getLogger(__name__)
 
@@ -665,6 +665,16 @@ def _resolve_option_definition(
     return found if found is not None else _without_definition(opt, space, family, capabilities)
 
 
+def _data_gap(opt: DHCPOption, definition, capabilities: PluginCapabilities) -> _Unresolved | None:
+    """Return why the DHCP plugin cannot hold the Kea data of *opt* against its *definition* (gap 17), or ``None``."""
+    if definition is None or capabilities.has(Capability.KEA_OPTION_DATA):
+        return None
+    if not refuses_kea_data(definition.type, definition.array, definition.record_types, opt.data or "", opt.csv_format):
+        return None
+    detail = "The installed DHCP plugin refuses this form of option data, which Kea accepts."
+    return _Unresolved(Reason.PLUGIN_GAP, detail, Capability.KEA_OPTION_DATA)
+
+
 def option_values(
     candidate, opt: DHCPOption, family: int, capabilities: PluginCapabilities, summary, source: _Source
 ) -> dict:
@@ -698,7 +708,7 @@ def option_values(
 
 @dataclass(frozen=True)
 class _PlannedOption:
-    """A Kea option that the DHCP plugin can hold, with its DHCP Import Mapping source (``None``: none)."""
+    """A Kea option with an Option Definition that the plugin holds, and its mapping source (``None``: none)."""
 
     option: DHCPOption
     path: str
@@ -707,6 +717,8 @@ class _PlannedOption:
     definition: Any
     classes: frozenset[int]
     source: MappingSource | None
+    # Why the DHCP plugin cannot hold its data (gap 17): the run still pairs the Option, and writes nothing.
+    refused: _Unresolved | None = None
 
 
 def _option_code(row) -> tuple:
@@ -776,15 +788,6 @@ def _write_option(item: _PlannedOption, row, parent_obj, ct, family: int, refere
         raise
     except ManagedFieldsMismatch:
         raise
-    except ValidationError as exc:
-        # The data comes from a running Kea, so a plugin that refuses it lacks the capability.
-        if "data" not in getattr(exc, "error_dict", {}) or capabilities.has(Capability.KEA_OPTION_DATA):
-            summary.record(write_failed(family, Kind.OPTION, item.path))
-            summary.warn(f"option {option_identity(item.option, family)}: {exc}")
-            return
-        detail = "The installed DHCP plugin refuses its data, which Kea accepts."
-        summary.record(unsupported(family, Kind.OPTION, item.path, Capability.KEA_OPTION_DATA, detail))
-        summary.warn(f"option {option_identity(item.option, family)}: skipped. {detail} {' '.join(exc.messages)}")
     except Exception as exc:  # noqa: BLE001 (one bad option must not abort the import)
         summary.record(write_failed(family, Kind.OPTION, item.path))
         summary.warn(f"option {option_identity(item.option, family)}: {exc}")
@@ -833,7 +836,8 @@ def upsert_options(
             space = opt.space or kea_paths.default_space(family)
             code = definition.code if definition is not None else opt.code
             source = key.source if key is not None else None
-            planned.append(_PlannedOption(opt, path, space, code, definition, classes, source))
+            refused = _data_gap(opt, definition, capabilities)
+            planned.append(_PlannedOption(opt, path, space, code, definition, classes, source, refused))
     mapped = [mapped_target(server, family, item.source) if item.source is not None else None for item in planned]
     adopts = parent is not None and not options_mapped(server, family, parent)
     # An Option without a source pairs on every run; one with a source only while its object adopts.
@@ -857,6 +861,10 @@ def upsert_options(
         if parent is not None:
             mark_options_mapped(server, family, parent)
     for item, row in zip(planned, mapped, strict=True):
+        if item.refused is not None:
+            summary.record(item.refused.entry(family, Kind.OPTION, item.path))
+            summary.warn(f"option {option_identity(item.option, family)}: skipped. {item.refused.detail}")
+            continue
         target = row if row is not None else paired.get(id(item))
         _write_option(item, target, parent_obj, ct, family, references, summary, capabilities)
 

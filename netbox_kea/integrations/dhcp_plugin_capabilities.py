@@ -12,13 +12,15 @@ when its capability is present, and reports it as unsupported otherwise.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from django.apps import apps
 from django.core.exceptions import FieldDoesNotExist, ValidationError
 from django.db import models
 
+from ..decimal_text import parse_decimal
 from ..dhcp_options import MAX_OPTION_CODE
 from ..reservations import FLEX_ID
 from .dhcp_import_report import Capability
@@ -121,12 +123,71 @@ def _option_without_definition(model: ModelLookup) -> bool:
     return definition is not None and definition.null and _has_fields(option, "space", "code")
 
 
-# Option data that Kea 3.2 accepts, each as the type and array flag of its Option Definition, the data and csv_format.
+# Option data that Kea 3.2 accepts, each as the type and array flag of its Option Definition, the data and csv_format:
+# one sample of each form that refuses_kea_data() names.
 _KEA_OPTION_DATA = (
     ("ipv4-address", True, "c0:00:02:01", False),
     ("boolean", False, "1", True),
     ("int32", False, "0x10", True),
+    ("fqdn", False, "localhost", True),
 )
+# The types whose data netbox-plugin-dhcp 0.2.0 also holds in the hexadecimal form of Kea.
+_HEX_TEXT_TYPES = frozenset({"binary", "string"})
+_INTEGER_RANGES = {
+    "int8": range(-(2**7), 2**7),
+    "int16": range(-(2**15), 2**15),
+    "int32": range(-(2**31), 2**31),
+    "uint8": range(2**8),
+    "uint16": range(2**16),
+    "uint32": range(2**32),
+}
+# The plugin splits the data of an array or a record at each comma.
+_DATA_SEPARATOR = re.compile(r"\s*,\s*")
+# Kea reads an integer in hexadecimal only with the prefix 0x, and without a sign.
+_HEX_INTEGER = re.compile(r"0[xX][0-9a-fA-F]+")
+
+
+def refuses_kea_data(
+    kind: str, array: bool, record_types: Sequence[str] | None, data: str, csv_format: bool | None
+) -> bool:
+    """Return whether a DHCP plugin without :attr:`Capability.KEA_OPTION_DATA` refuses Kea option *data* (#88 gap 17).
+
+    *kind*, *array* and *record_types* come from the Option Definition that the plugin checks the data against. The
+    forms are the ones that the capability check samples: hexadecimal data with csv-format false for a type other than
+    binary and string, a boolean 1 or 0, an integer in hexadecimal, and an FQDN of one label.
+    """
+    if csv_format is False:
+        # The plugin checks hexadecimal data as text, so it holds digits that are an integer in the range of the type.
+        return bool(data) and kind not in _HEX_TEXT_TYPES and not _decimal_in_range(data, kind)
+    if kind == "record":
+        fields = _DATA_SEPARATOR.split(data)
+        types = list(record_types or ())
+        if array and types:
+            types += [types[-1]] * (len(fields) - len(types))
+        return any(_refused_text(text, field_type) for text, field_type in zip(fields, types, strict=False))
+    fields = _DATA_SEPARATOR.split(data) if array else [data]
+    return any(_refused_text(text, kind) for text in fields)
+
+
+def _refused_text(text: str, kind: str) -> bool:
+    """Return whether the plugin refuses the Kea text *text* of one value of *kind*."""
+    if kind == "boolean":
+        return text in ("0", "1")
+    if kind in _INTEGER_RANGES:
+        return _HEX_INTEGER.fullmatch(text) is not None
+    if kind == "fqdn":
+        return bool(text) and "." not in text.rstrip(".")
+    return False
+
+
+def _decimal_in_range(text: str, kind: str) -> bool:
+    """Return whether the plugin reads *text* as a decimal integer in the range of the integer type *kind*."""
+    if kind not in _INTEGER_RANGES:
+        return False
+    try:
+        return parse_decimal(text) in _INTEGER_RANGES[kind]
+    except ValueError:
+        return False
 
 
 def _kea_option_data(model: ModelLookup) -> bool:

@@ -349,6 +349,25 @@ class ScheduledImportTest(_ScheduledImportTestCase):
         self.assertTrue(any(_FAILED_FAMILY.search(line) for line in lines), lines)
         self.assertEqual(lines[-1], "Scheduled DHCP Import complete: servers=1 failed=1")
 
+    def test_an_option_that_an_operator_validator_refuses_fails_the_server_and_the_job(self):
+        server = _server("site-rules")
+        config = {
+            "subnet4": [{"id": 1, "subnet": "198.18.1.0/24", "option-data": [{"code": 42, "data": "192.0.2.99"}]}]
+        }
+        validators = {"netbox_dhcp.option": ["netbox_kea.tests.test_dhcp_import.RefuseOperatorDataValidator"]}
+
+        with override_settings(CUSTOM_VALIDATORS=validators):
+            job = self._run_failed(_sync_responses({4: config}))
+
+        run = DhcpImportRun.objects.get(server=server)
+        self.assertIn(
+            ("option", "skipped", "write_failed", ""),
+            set(run.entries.values_list("kind", "outcome", "reason", "capability")),
+        )
+        lines = _scheduled_lines(job)
+        self.assertTrue(any(_FAILED_FAMILY.search(line) for line in lines), lines)
+        self.assertEqual(lines[-1], "Scheduled DHCP Import complete: servers=1 failed=1")
+
     def test_a_mapping_lock_refusal_after_the_reads_fails_the_server_and_the_job(self):
         server = _server("mapping-busy")
         holder = _new_session()

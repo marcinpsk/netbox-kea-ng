@@ -23,9 +23,10 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator
 from django.db import models
 from django.db.models.functions import Lower
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.test.utils import isolate_apps
 from django.urls import reverse
+from extras.validators import CustomValidator
 
 from netbox_kea import kea_paths
 from netbox_kea.constants import Family
@@ -52,7 +53,7 @@ from netbox_kea.integrations.dhcp_import_plan import (
     plan_family,
 )
 from netbox_kea.integrations.dhcp_import_report import GAPS, Capability, Kind, Outcome, Reason
-from netbox_kea.integrations.dhcp_plugin_capabilities import CHECKS, PluginCapabilities, probe
+from netbox_kea.integrations.dhcp_plugin_capabilities import CHECKS, PluginCapabilities, probe, refuses_kea_data
 from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS, parse_dhcp_config
 from netbox_kea.models import DhcpImportEntry, DhcpImportRun, DhcpImportTrigger, KeaDhcpLink, next_confirmation_number
@@ -811,6 +812,59 @@ class CapabilityProbeTest(TestCase):
         }
         capabilities = probe()
         self.assertEqual({capability: capabilities.has(capability) for capability in Capability}, expected)
+
+    def test_the_gap_17_data_rule_agrees_with_the_clean_step_of_netbox_dhcp_0_2_0(self):
+        self.maxDiff = None
+        if not apps.is_installed(DHCP_PLUGIN):
+            self.skipTest(f"{DHCP_PLUGIN} not installed")
+        from netbox_kea.integrations.dhcp_plugin_capabilities import _KEA_OPTION_DATA
+
+        definition_model, option_model = (apps.get_model(DHCP_PLUGIN, name) for name in ("OptionDefinition", "Option"))
+        # (type, array, record types, data, csv_format): every form is data that Kea 3.2 accepts.
+        refused = {
+            *((kind, array, (), data, csv_format) for kind, array, data, csv_format in _KEA_OPTION_DATA),
+            ("uint8", False, (), "0xff", True),
+            ("int8", False, (), "0x7f", True),
+            ("uint16", False, (), "0a00", False),
+            ("ipv6-address", False, (), "20010db8000000000000000000000001", False),
+            ("boolean", False, (), "0", True),
+            ("uint16", True, (), "1, 0x2", True),
+            ("fqdn", False, (), "localhost.", True),
+            ("fqdn", True, (), "example.org, localhost", True),
+            ("record", False, ("uint8", "boolean"), "5, 1", True),
+            ("record", True, ("uint16", "fqdn"), "5, example.org, localhost", True),
+        }
+        held = {
+            ("binary", False, (), "c0:00:02:01", False),
+            ("string", False, (), "c6:12", False),
+            ("boolean", False, (), "true", True),
+            ("uint8", False, (), "0", True),
+            ("uint8", False, (), "40", False),
+            ("uint16", False, (), "0256", False),
+            ("uint16", False, (), "576", True),
+            ("uint32", False, (), "4294967295", True),
+            ("int8", False, (), "-128", True),
+            ("int32", False, (), "-16", True),
+            ("empty", False, (), "", True),
+            ("fqdn", False, (), "example.org.", True),
+            ("fqdn", True, (), "example.org, example.com.", True),
+            ("ipv4-address", True, (), "192.0.2.1, 192.0.2.2", True),
+            ("record", False, ("uint8", "fqdn"), "5, example.org", True),
+            ("record", True, ("uint8", "boolean"), "5, true, false", True),
+        }
+
+        def cleaned(kind, array, record_types, data, csv_format) -> bool:
+            definition = definition_model(type=kind, array=array, record_types=list(record_types))
+            try:
+                option_model(definition=definition, data=data, csv_format=csv_format).clean()
+            except ValidationError:
+                return False
+            return True
+
+        self.assertEqual(
+            {form: (refuses_kea_data(*form), cleaned(*form)) for form in refused | held},
+            {**dict.fromkeys(refused, (True, False)), **dict.fromkeys(held, (False, True))},
+        )
 
     def test_netbox_dhcp_0_2_0_holds_the_option_spaces_of_its_choices_only(self):
         if not apps.is_installed(DHCP_PLUGIN):
@@ -2263,6 +2317,34 @@ _RESERVATION_OPTION = {
 }
 
 
+class RefuseOperatorDataValidator(CustomValidator):
+    """An operator's NetBox custom validator that refuses one Option data value, on the field "data"."""
+
+    def validate(self, instance, request):
+        """Refuse the data 192.0.2.99."""
+        if instance.data == "192.0.2.99":
+            self.fail("This site does not use 192.0.2.99.", field="data")
+
+
+class RefuseEveryOptionValidator(CustomValidator):
+    """An operator's NetBox custom validator that refuses every Option, on no field."""
+
+    def validate(self, instance, request):
+        """Refuse the Option."""
+        self.fail("This site adds no DHCP Option.")
+
+
+# The outcome, reason and capability of an Option entry whose write failed.
+_WRITE_FAILED = (Outcome.SKIPPED.value, Reason.WRITE_FAILED.value, "")
+# One Subnet 10 option for each form of Kea data that netbox-plugin-dhcp 0.2.0 refuses (#88 gap 17).
+_GAP_17_OPTIONS = (
+    {"code": 3, "csv-format": False, "data": "c6:12:00:01"},
+    {"code": 19, "data": "1"},
+    {"code": 2, "data": "0x10"},
+    {"code": 15, "data": "localhost"},
+)
+
+
 class OptionMappingTest(TestCase):
     """Each imported DHCP Option has a DHCP Import Mapping, and a run removes one that Kea stops declaring (#145).
 
@@ -2665,40 +2747,82 @@ class OptionMappingTest(TestCase):
     def _refused_data(self, summary) -> list[str]:
         return [entry.path for entry in summary.entries if entry.capability == Capability.KEA_OPTION_DATA]
 
-    def test_option_data_that_kea_accepts_and_the_plugin_refuses_is_unsupported(self):
-        hex_routers = {"code": 3, "csv-format": False, "data": "c6:12:00:01"}
-        forwarding = {"code": 19, "data": "1"}
-        domain = {"code": 15, "data": "example.org"}
-
-        summary = self._run(self._subnet_10_options(hex_routers, forwarding, domain))
-
-        run = DhcpImportRun.objects.get(server=self.server)
-        stored = Counter(
+    def _subnet_10_entries(self) -> Counter:
+        """Count the stored entries of the Options of Subnet 10 in the latest run, field for field but the detail."""
+        run = DhcpImportRun.objects.filter(server=self.server).latest("pk")
+        return Counter(
             (entry.kind, entry.kea_path, entry.outcome, entry.reason, entry.capability)
-            for entry in run.entries.filter(kea_path__startswith=f"{_SUBNET_10}/option-data")
+            for entry in DhcpImportEntry.objects.filter(run=run, kea_path__startswith=f"{_SUBNET_10}/option-data")
         )
+
+    def _subnet_10_rows(self) -> list[tuple[int, str]]:
+        subnet = KeaDhcpLink.objects.get(server=self.server, kind="subnet", kea_subnet_id=10).sys4_object
+        options = apps.get_model(DHCP_PLUGIN, "Option").objects.filter(
+            assigned_object_id=subnet.pk, assigned_object_type__model="subnet"
+        )
+        return sorted((row.definition.code, row.data) for row in options)
+
+    def _gap_17_entries(self) -> Counter:
         unsupported = (Outcome.UNSUPPORTED.value, Reason.PLUGIN_GAP.value, Capability.KEA_OPTION_DATA.value)
+        return Counter(
+            (Kind.OPTION.value, f"{_SUBNET_10}/option-data[code={option['code']}]", *unsupported)
+            for option in _GAP_17_OPTIONS
+        )
+
+    def test_option_data_that_kea_accepts_and_the_plugin_refuses_is_unsupported(self):
+        servers = {"code": 6, "data": "192.0.2.53"}
+        # The plugin reads these hexadecimal digits as the decimal 40, so it holds them.
+        hex_ttl = {"code": 23, "csv-format": False, "data": "40"}
+
+        summary = self._run(self._subnet_10_options(*_GAP_17_OPTIONS, servers, hex_ttl))
+
+        expected = self._gap_17_entries()
+        for code in (6, 23):
+            expected[(Kind.OPTION.value, f"{_SUBNET_10}/option-data[code={code}]", Outcome.CREATED.value, "", "")] += 1
+        self.assertEqual(self._subnet_10_entries(), expected)
+        self.assertEqual(self._write_failures(summary), [])
+        self.assertEqual(self._subnet_10_rows(), [(6, "192.0.2.53"), (23, "40")])
+
+    def test_the_import_finds_a_gap_17_refusal_before_it_writes_the_option(self):
+        held = {"code": 6, "data": "192.0.2.53"}
+        validators = {"netbox_dhcp.option": [f"{__name__}.RefuseEveryOptionValidator"]}
+
+        with override_settings(CUSTOM_VALIDATORS=validators):
+            self._run(self._subnet_10_options(*_GAP_17_OPTIONS, held))
+
+        # The operator refuses every write, so only the Option that the run writes fails.
+        expected = self._gap_17_entries()
+        expected[(Kind.OPTION.value, f"{_SUBNET_10}/option-data[code=6]", *_WRITE_FAILED)] += 1
+        self.assertEqual(self._subnet_10_entries(), expected)
+        self.assertEqual(self._subnet_10_rows(), [])
+
+    def test_an_operator_validator_that_refuses_option_data_is_a_write_failure(self):
+        hex_routers = {"code": 3, "csv-format": False, "data": "c6:12:00:01"}
+        refused_by_operator = {"code": 42, "data": "192.0.2.99"}
+        held = {"code": 6, "data": "192.0.2.53"}
+        validators = {"netbox_dhcp.option": [f"{__name__}.RefuseOperatorDataValidator"]}
+
+        with override_settings(CUSTOM_VALIDATORS=validators):
+            self._run(self._subnet_10_options(hex_routers, refused_by_operator, held))
+
+        option = Kind.OPTION.value
         self.assertEqual(
-            stored,
+            self._subnet_10_entries(),
             Counter(
                 {
-                    (Kind.OPTION.value, f"{_SUBNET_10}/option-data[code=3]", *unsupported): 1,
-                    (Kind.OPTION.value, f"{_SUBNET_10}/option-data[code=19]", *unsupported): 1,
-                    (Kind.OPTION.value, f"{_SUBNET_10}/option-data[code=15]", Outcome.CREATED.value, "", ""): 1,
+                    (
+                        option,
+                        f"{_SUBNET_10}/option-data[code=3]",
+                        Outcome.UNSUPPORTED.value,
+                        Reason.PLUGIN_GAP.value,
+                        Capability.KEA_OPTION_DATA.value,
+                    ): 1,
+                    (option, f"{_SUBNET_10}/option-data[code=42]", *_WRITE_FAILED): 1,
+                    (option, f"{_SUBNET_10}/option-data[code=6]", Outcome.CREATED.value, "", ""): 1,
                 }
             ),
         )
-        self.assertEqual(self._write_failures(summary), [])
-        subnet = KeaDhcpLink.objects.get(server=self.server, kind="subnet", kea_subnet_id=10).sys4_object
-        self.assertEqual(
-            [
-                (row.definition.code, row.data)
-                for row in apps.get_model(DHCP_PLUGIN, "Option").objects.filter(
-                    assigned_object_id=subnet.pk, assigned_object_type__model="subnet"
-                )
-            ],
-            [(15, "example.org")],
-        )
+        self.assertEqual(self._subnet_10_rows(), [(6, "192.0.2.53")])
 
     def test_an_option_that_the_plugin_rejects_closes_adoption_and_an_operator_option_stays(self):
         from django.contrib.contenttypes.models import ContentType
@@ -3088,10 +3212,10 @@ _OTHER_SERVER: dict[str, list[dict]] = {
 _UNHOLDABLE_POOLS = frozenset({"Dhcp6/subnet6[id=10]/pools[pool=2001:db8:1:0:1::/80]"})
 
 
-def _standard_definition(space: str, code: int) -> bool:
-    """Return whether the installed DHCP plugin ships a standard Option Definition of *code* in *space*."""
+def _standard_definition(space: str, code: int):
+    """Return the standard Option Definition of *code* in *space* that the installed DHCP plugin ships, or ``None``."""
     definitions = apps.get_model(DHCP_PLUGIN, "OptionDefinition").objects
-    return definitions.filter(standard=True, space=space, code=code).exists()
+    return definitions.filter(standard=True, space=space, code=code).first()
 
 
 # A stored entry without its free-text detail: family, kind, Kea path, outcome, reason and capability.
@@ -3129,7 +3253,8 @@ _VALUE_ENTRIES[4].append(
 class _Rejections:
     """The objects that one run must not write, by path, with the kind, outcome, reason and capability of their entry.
 
-    It reads only config-get, the ledger, the probe, _OTHER_SERVER and the standard Option Definitions of the plugin.
+    It reads only config-get, the ledger, the probe, the data rule of gap 17 (refuses_kea_data), _OTHER_SERVER and
+    the standard Option Definitions of the plugin.
     """
 
     def __init__(self, family: Family, objects: list[_KeaObject], capabilities: PluginCapabilities) -> None:
@@ -3140,6 +3265,16 @@ class _Rejections:
         # An option finds its custom Option Definition wherever the configuration lists it.
         self.definitions = {
             (self.owner(parent), self.space(raw), raw["code"]): self.code_and_space(self.space(raw), raw["code"])
+            for table, _kind, _path, raw, parent in objects
+            if table == kea_paths.OPTION_DEF
+        }
+        # The type, array flag and record types that the plugin checks the data of an option against.
+        self.forms = {
+            (self.owner(parent), self.space(raw), raw["code"]): (
+                raw["type"],
+                raw.get("array", False),
+                [name.strip() for name in raw.get("record-types", "").split(",") if name.strip()],
+            )
             for table, _kind, _path, raw, parent in objects
             if table == kea_paths.OPTION_DEF
         }
@@ -3165,10 +3300,16 @@ class _Rejections:
         owner, space, code = self.owner(parent), self.space(raw), raw["code"]
         for key in ((owner, space, code), (None, space, code)):
             if key in self.definitions:
-                return self.definitions[key]
-        if _standard_definition(space, code):
-            return None
+                return self.definitions[key] or self.data_gap(raw, self.forms[key])
+        standard = _standard_definition(space, code)
+        if standard is not None:
+            return self.data_gap(raw, (standard.type, standard.array, standard.record_types))
         return self.gate(Capability.OPTION_WITHOUT_DEFINITION) or self.code_and_space(space, code)
+
+    def data_gap(self, raw: dict, form: tuple) -> Capability | None:
+        kind, array, record_types = form
+        refused = refuses_kea_data(kind, array, record_types, raw.get("data", ""), raw.get("csv-format", True))
+        return self.gate(Capability.KEA_OPTION_DATA) if refused else None
 
     def own_gap(self, table: str, raw: dict, parent: dict) -> tuple[Reason, Capability] | None:
         """Return the reason and capability that reject the object *raw* of *table* on its own, or ``None``."""
@@ -3327,7 +3468,7 @@ class CoverageImportTest(TestCase):
             (root, kea_paths.HOST_RESERVATION_IDENTIFIERS, Capability.FLEX_ID_IDENTIFIER),
             (root, kea_paths.SERVER_ID, Capability.SERVER_ID_FIELDS),
         }
-        # The plugin holds the recorded option data; a refused one would be an Option entry of its own.
+        # The data rule of gap 17 rejects an option by its value, so a written option needs no capability for its data.
         values |= {
             (path, "data", Capability.KEA_OPTION_DATA)
             for table, _kind, path, _raw, _parent in objects
