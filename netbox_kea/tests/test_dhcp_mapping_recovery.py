@@ -3437,6 +3437,71 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
 
                 self.assertGreater(KeaDhcpLink.objects.get(pk=mapping.pk).confirmation, before)
 
+    def test_a_merge_and_revert_of_combined_mapping_history_stamp_new_confirmation_numbers(self):
+        """Squash collapses several branch changes of one mapping; each payload it replays must deserialize."""
+        histories = {
+            "update then mapping delete": ("update", "delete mapping"),
+            "update then target delete": ("update", "delete target"),
+            "create then update": ("create", "update"),
+            "update then update": ("update", "update"),
+        }
+        for index, (label, steps) in enumerate(histories.items()):
+            with self.subTest(label):
+                suffix = f"combined-history-{index}"
+                server, _, _, target, original = self._imported("subnet", 4, suffix)
+                pk = original.pk
+                # Servers live in main, so the test creates the source Servers of the updates before the branch.
+                sources = iter(
+                    [
+                        _make_db_server(name=f"mapping-{suffix}-{n}", ca_url="https://kea.example.invalid")
+                        for n in range(steps.count("update"))
+                    ]
+                )
+                if steps[0] == "create":
+                    values = {
+                        field.attname: getattr(original, field.attname)
+                        for field in original._meta.concrete_fields
+                        if not field.primary_key and field.name not in {"created", "last_updated"}
+                    }
+                    with event_tracking(_change_request(self.user)):
+                        original.delete()
+                    request_finished.send(sender=type(self))
+                branch = _provisioned_branch(self, f"mapping-{suffix}")
+                branch.merge_strategy = "squash"
+                branch.save(provision=False)
+                for step in steps:
+                    with activate_branch(branch), event_tracking(_change_request(self.user)):
+                        if step == "create":
+                            pk = KeaDhcpLink.objects.create(**values).pk
+                        elif step == "update":
+                            mapping = KeaDhcpLink.objects.get(pk=pk)
+                            mapping.snapshot()
+                            mapping.server = next(sources)
+                            mapping.save()
+                        elif step == "delete mapping":
+                            KeaDhcpLink.objects.get(pk=pk).delete()
+                        else:
+                            type(target).objects.get(pk=target.pk).delete()
+                    request_finished.send(sender=type(self))
+                created = steps[0] == "create"
+                deleted = steps[-1].startswith("delete")
+
+                before_merge = next_confirmation_number()
+                branch.merge(user=self.user)
+                branch.refresh_from_db()
+                merged = KeaDhcpLink.objects.filter(pk=pk).first()
+                self.assertEqual(merged is None, deleted)
+                if merged is not None:
+                    self.assertGreater(merged.confirmation, before_merge)
+
+                before_revert = next_confirmation_number()
+                branch.revert(user=self.user)
+                reverted = KeaDhcpLink.objects.filter(pk=pk).first()
+                self.assertEqual(reverted is None, created)
+                if reverted is not None:
+                    self.assertEqual((reverted.server_id, reverted.object_id), (server.pk, target.pk))
+                    self.assertGreater(reverted.confirmation, before_revert)
+
     def test_missing_source_server_refuses_branch_deletion_capture(self):
         server, _, _, target, link = self._imported("reservation", 4, "missing-source-capture")
         branch = _provisioned_branch(self, "mapping-missing-source-capture")

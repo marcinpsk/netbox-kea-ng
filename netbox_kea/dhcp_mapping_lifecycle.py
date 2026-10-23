@@ -1121,7 +1121,7 @@ def _validate_history_payload(model, payload) -> None:
     required = {
         "custom_fields" if field.name == "custom_field_data" else field.name
         for field in model._meta.concrete_fields
-        if field.serialize and not field.primary_key and field.name not in {"last_updated", "confirmation"}
+        if field.serialize and not field.primary_key and field.name != "last_updated"
     }
     required.update(field.name for field in model._meta.many_to_many)
     if not isinstance(payload, dict) or not required.issubset(payload):
@@ -1160,8 +1160,7 @@ def _complete_history(original):
         elif type(self)._meta.label_lower == "netbox_kea.keadhcplink":
             for payload in (change.prechange_data, change.postchange_data):
                 if payload is not None:
-                    for name in ("confirmation", "last_updated"):
-                        payload.pop(name, None)
+                    payload.pop("last_updated", None)
         return change
 
     return recorded
