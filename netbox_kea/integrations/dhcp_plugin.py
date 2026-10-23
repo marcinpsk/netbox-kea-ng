@@ -165,7 +165,7 @@ from .dhcp_import_report import (
     unsupported,
     written,
 )
-from .dhcp_plugin_capabilities import PLUGIN_APP_LABEL, PluginCapabilities, probe, refuses_kea_data
+from .dhcp_plugin_capabilities import PLUGIN_APP_LABEL, PluginCapabilities, probe
 
 logger = logging.getLogger(__name__)
 
@@ -669,9 +669,10 @@ def _data_gap(opt: DHCPOption, definition, capabilities: PluginCapabilities) -> 
     """Return why the DHCP plugin cannot hold the Kea data of *opt* against its *definition* (gap 17), or ``None``."""
     if definition is None or capabilities.has(Capability.KEA_OPTION_DATA):
         return None
-    if not refuses_kea_data(definition.type, definition.array, definition.record_types, opt.data or "", opt.csv_format):
+    refusal = capabilities.data_refusal(definition.type, definition.array, definition.record_types, opt.data or "")
+    if refusal is None:
         return None
-    detail = "The installed DHCP plugin refuses this form of option data, which Kea accepts."
+    detail = f"The installed DHCP plugin refuses this form of option data, which Kea accepts: {refusal}"
     return _Unresolved(Reason.PLUGIN_GAP, detail, Capability.KEA_OPTION_DATA)
 
 

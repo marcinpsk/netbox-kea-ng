@@ -3,8 +3,8 @@
 """The DHCP Plugin Capability probe: which #88 gaps the installed netbox_dhcp has closed (ADR 0013).
 
 :func:`probe` reads the models of the installed plugin: fields, field types, choices, validators, nullability and
-uniqueness constraints. It reads no plugin rows: the check of option data cleans unsaved Options, and NetBox reads the
-custom fields of the model for that. :data:`CHECKS` is the reference: one check for each
+uniqueness constraints. It reads no plugin rows. The check of option data calls the data check of the plugin
+(:func:`installed_data_rule`) and no site or custom validation. :data:`CHECKS` is the reference: one check for each
 :class:`~.dhcp_import_report.Capability`, in the shape of the "Capability the import checks" column of #88. Where
 the plugin has no field yet, the check assumes the shape that #88 proposes. The apply step writes a gated fact only
 when its capability is present, and reports it as unsupported otherwise.
@@ -12,6 +12,7 @@ when its capability is present, and reports it as unsupported otherwise.
 
 from __future__ import annotations
 
+import importlib
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -20,7 +21,6 @@ from django.apps import apps
 from django.core.exceptions import FieldDoesNotExist, ValidationError
 from django.db import models
 
-from ..decimal_text import parse_decimal
 from ..dhcp_options import MAX_OPTION_CODE
 from ..reservations import FLEX_ID
 from .dhcp_import_report import Capability
@@ -29,6 +29,9 @@ PLUGIN_APP_LABEL = "netbox_dhcp"
 
 #: Returns a netbox_dhcp model class by name.
 ModelLookup = Callable[[str], type[models.Model]]
+#: Checks one value of option data against a type, as ``validate_data(data, type)`` of netbox_dhcp 0.2.0 does. It
+#: raises ValidationError for a value that the plugin refuses.
+DataRule = Callable[[str, str], None]
 
 # The models that hold a Kea object with a user-context, and the models that hold a Kea name.
 _KEA_OBJECT_MODELS = (
@@ -123,85 +126,59 @@ def _option_without_definition(model: ModelLookup) -> bool:
     return definition is not None and definition.null and _has_fields(option, "space", "code")
 
 
-# Option data that Kea 3.2 accepts, each as the type and array flag of its Option Definition, the data and csv_format:
-# one sample of each form that refuses_kea_data() names.
+# Option data that Kea 3.2 accepts, each as the type and array flag of its Option Definition and the data.
 _KEA_OPTION_DATA = (
-    ("ipv4-address", True, "c0:00:02:01", False),
-    ("boolean", False, "1", True),
-    ("int32", False, "0x10", True),
-    ("fqdn", False, "localhost", True),
+    ("ipv4-address", True, "c0:00:02:01"),
+    ("boolean", False, "1"),
+    ("int32", False, "0x10"),
+    ("fqdn", False, "localhost"),
 )
-# The types whose data netbox-plugin-dhcp 0.2.0 also holds in the hexadecimal form of Kea.
-_HEX_TEXT_TYPES = frozenset({"binary", "string"})
-_INTEGER_RANGES = {
-    "int8": range(-(2**7), 2**7),
-    "int16": range(-(2**15), 2**15),
-    "int32": range(-(2**31), 2**31),
-    "uint8": range(2**8),
-    "uint16": range(2**16),
-    "uint32": range(2**32),
-}
 # The plugin splits the data of an array or a record at each comma.
 _DATA_SEPARATOR = re.compile(r"\s*,\s*")
-# Kea reads an integer in hexadecimal only with the prefix 0x, and without a sign.
-_HEX_INTEGER = re.compile(r"0[xX][0-9a-fA-F]+")
 
 
-def refuses_kea_data(
-    kind: str, array: bool, record_types: Sequence[str] | None, data: str, csv_format: bool | None
-) -> bool:
-    """Return whether a DHCP plugin without :attr:`Capability.KEA_OPTION_DATA` refuses Kea option *data* (#88 gap 17).
-
-    *kind*, *array* and *record_types* come from the Option Definition that the plugin checks the data against. The
-    forms are the ones that the capability check samples: hexadecimal data with csv-format false for a type other than
-    binary and string, a boolean 1 or 0, an integer in hexadecimal, and an FQDN of one label.
-    """
-    if csv_format is False:
-        # The plugin checks hexadecimal data as text, so it holds digits that are an integer in the range of the type.
-        return bool(data) and kind not in _HEX_TEXT_TYPES and not _decimal_in_range(data, kind)
-    if kind == "record":
-        fields = _DATA_SEPARATOR.split(data)
-        types = list(record_types or ())
-        if array and types:
-            types += [types[-1]] * (len(fields) - len(types))
-        return any(_refused_text(text, field_type) for text, field_type in zip(fields, types, strict=False))
-    fields = _DATA_SEPARATOR.split(data) if array else [data]
-    return any(_refused_text(text, kind) for text in fields)
-
-
-def _refused_text(text: str, kind: str) -> bool:
-    """Return whether the plugin refuses the Kea text *text* of one value of *kind*."""
-    if kind == "boolean":
-        return text in ("0", "1")
-    if kind in _INTEGER_RANGES:
-        return _HEX_INTEGER.fullmatch(text) is not None
-    if kind == "fqdn":
-        return bool(text) and "." not in text.rstrip(".")
-    return False
-
-
-def _decimal_in_range(text: str, kind: str) -> bool:
-    """Return whether the plugin reads *text* as a decimal integer in the range of the integer type *kind*."""
-    if kind not in _INTEGER_RANGES:
-        return False
+def installed_data_rule() -> DataRule | None:
+    """Return the data check of the installed netbox_dhcp, or ``None`` when it has none."""
     try:
-        return parse_decimal(text) in _INTEGER_RANGES[kind]
-    except ValueError:
-        return False
+        validators = importlib.import_module(f"{PLUGIN_APP_LABEL}.validators")
+    except ImportError:
+        return None
+    return getattr(validators, "validate_data", None)
 
 
-def _kea_option_data(model: ModelLookup) -> bool:
-    if not (
-        _has_fields(model("OptionDefinition"), "type", "array") and _has_fields(model("Option"), "data", "csv_format")
+def _refusal(rule: DataRule, kind: str, array: bool, record_types: Sequence[str] | None, data: str) -> str | None:
+    """Return why the data check *rule* refuses option *data* for an Option Definition (#88 gap 17), or ``None``.
+
+    *kind*, *array* and *record_types* come from the Option Definition. The data is split into values as
+    ``Option.clean()`` of netbox_dhcp 0.2.0 splits it, and *rule* checks each value. No site or custom validation runs.
+    """
+    try:
+        _check_data(rule, kind, array, list(record_types or ()), data)
+    except ValidationError as exc:
+        return " ".join(exc.messages)
+    return None
+
+
+def _check_data(rule: DataRule, kind: str, array: bool, record_types: list[str], data: str) -> None:
+    if kind != "record":
+        for text in _DATA_SEPARATOR.split(data) if array else [data]:
+            rule(text, kind)
+        return
+    fields = _DATA_SEPARATOR.split(data)
+    if len(record_types) > len(fields) if array else len(record_types) != len(fields):
+        raise ValidationError({"data": "The data has another number of values than the record types."})
+    if array and record_types:
+        record_types += [record_types[-1]] * (len(fields) - len(record_types))
+    for text, field_type in zip(fields, record_types, strict=False):
+        rule(text, field_type)
+
+
+def _kea_option_data(model: ModelLookup, data_rule: DataRule | None) -> bool:
+    if data_rule is None or not (
+        _has_fields(model("OptionDefinition"), "type", "array") and _has_fields(model("Option"), "data")
     ):
         return False
-    for kind, array, data, csv_format in _KEA_OPTION_DATA:
-        definition = model("OptionDefinition")(type=kind, array=array)
-        try:
-            model("Option")(definition=definition, data=data, csv_format=csv_format).clean()
-        except ValidationError:
-            return False
-    return True
+    return all(_refusal(data_rule, kind, array, (), data) is None for kind, array, data in _KEA_OPTION_DATA)
 
 
 def _relay_address_list(model: ModelLookup) -> bool:
@@ -222,75 +199,83 @@ def _shared_network_optional_prefix(model: ModelLookup) -> bool:
 
 @dataclass(frozen=True)
 class Check:
-    """The check of one capability: what it reads (the reference text) and the predicate over the plugin models."""
+    """The check of one capability: what it reads (the reference text) and its predicate over the plugin."""
 
     reads: str
-    holds: Callable[[ModelLookup], bool]
+    holds: Callable[[ModelLookup, DataRule | None], bool]
+
+
+def _models(holds: Callable[[ModelLookup], bool]) -> Callable[[ModelLookup, DataRule | None], bool]:
+    """Return a check that reads only the plugin models."""
+    return lambda model, _data_rule: holds(model)
 
 
 CHECKS: dict[Capability, Check] = {
     Capability.SHARED_NETWORK_OPTIONAL_PREFIX: Check(
         "SharedNetwork.prefix is nullable. Whether a Subnet must still sit inside it is model code, not read.",
-        _shared_network_optional_prefix,
+        _models(_shared_network_optional_prefix),
     ),
     Capability.SUBNET_ID_PER_SERVER: Check(
         "Subnet.subnet_id is not unique alone, and each uniqueness constraint on it includes dhcp_server.",
-        lambda model: _unique_per_server(model("Subnet"), "subnet_id"),
+        _models(lambda model: _unique_per_server(model("Subnet"), "subnet_id")),
     ),
     Capability.NAME_PER_SERVER: Check(
         "ClientClass.name and SharedNetwork.name are not unique alone, and each uniqueness constraint on them "
         "includes dhcp_server.",
-        lambda model: all(_unique_per_server(model(name), "name") for name in _KEA_NAME_MODELS),
+        _models(lambda model: all(_unique_per_server(model(name), "name") for name in _KEA_NAME_MODELS)),
     ),
-    Capability.SERVER_FAMILY: Check("DHCPServer.family has the choices 4 and 6.", _server_family),
+    Capability.SERVER_FAMILY: Check("DHCPServer.family has the choices 4 and 6.", _models(_server_family)),
     Capability.FLEX_ID_IDENTIFIER: Check(
-        "flex-id is a choice of DHCPServer.host_reservation_identifiers.", _flex_id_identifier
+        "flex-id is a choice of DHCPServer.host_reservation_identifiers.", _models(_flex_id_identifier)
     ),
     Capability.USER_CONTEXT: Check(
         f"Each of {', '.join(_KEA_OBJECT_MODELS)} has a JSON field user_context that is nullable or has a default.",
-        _user_context,
+        _models(_user_context),
     ),
     Capability.OPTION_SPACES: Check(
         "OptionDefinition.space has no closed set of choices. Without it, a space that is one of the choices is held.",
-        _option_spaces,
+        _models(_option_spaces),
     ),
     Capability.OPTION_CODE_16_BIT: Check(
-        f"The validators of OptionDefinition.code accept {MAX_OPTION_CODE}.", _option_code_16_bit
+        f"The validators of OptionDefinition.code accept {MAX_OPTION_CODE}.", _models(_option_code_16_bit)
     ),
     Capability.OPTION_WITHOUT_DEFINITION: Check(
-        "Option.definition is nullable, and Option has the fields space and code.", _option_without_definition
+        "Option.definition is nullable, and Option has the fields space and code.", _models(_option_without_definition)
     ),
     Capability.SERVER_ID_FIELDS: Check(
         "DHCPServer has server_id_identifier, server_id_enterprise_id, server_id_htype and server_id_time.",
-        lambda model: _has_fields(
-            model("DHCPServer"),
-            "server_id_identifier",
-            "server_id_enterprise_id",
-            "server_id_htype",
-            "server_id_time",
+        _models(
+            lambda model: _has_fields(
+                model("DHCPServer"),
+                "server_id_identifier",
+                "server_id_enterprise_id",
+                "server_id_htype",
+                "server_id_time",
+            )
         ),
     ),
     Capability.RELAY_ADDRESS_LIST: Check(
         "Subnet.relay and SharedNetwork.relay are arrays of IP addresses that are nullable or have a default.",
-        _relay_address_list,
+        _models(_relay_address_list),
     ),
     Capability.DHCP4O6_SUBNET_SELECTION: Check(
         "Subnet has dhcp4o6_subnet, dhcp4o6_interface and dhcp4o6_interface_id.",
-        lambda model: _has_fields(model("Subnet"), "dhcp4o6_subnet", "dhcp4o6_interface", "dhcp4o6_interface_id"),
+        _models(
+            lambda model: _has_fields(model("Subnet"), "dhcp4o6_subnet", "dhcp4o6_interface", "dhcp4o6_interface_id")
+        ),
     ),
     Capability.ADDRESS_REGISTRATION: Check(
         "DHCPServer has allow_address_registration.",
-        lambda model: _has_fields(model("DHCPServer"), "allow_address_registration"),
+        _models(lambda model: _has_fields(model("DHCPServer"), "allow_address_registration")),
     ),
     Capability.STASH_AGENT_OPTIONS: Check(
-        "DHCPServer has stash_agent_options.", lambda model: _has_fields(model("DHCPServer"), "stash_agent_options")
+        "DHCPServer has stash_agent_options.",
+        _models(lambda model: _has_fields(model("DHCPServer"), "stash_agent_options")),
     ),
     Capability.KEA_OPTION_DATA: Check(
-        "Option.clean() accepts option data that Kea accepts: "
-        + ", ".join(
-            f"{data!r} for {kind}{' array' if array else ''} with csv_format {csv_format}"
-            for kind, array, data, csv_format in _KEA_OPTION_DATA
-        )
+        "netbox_dhcp.validators.validate_data() accepts each value of option data that Kea accepts, with the data "
+        "split as Option.clean() splits it: "
+        + ", ".join(f"{data!r} for {kind}{' array' if array else ''}" for kind, array, data in _KEA_OPTION_DATA)
         + ".",
         _kea_option_data,
     ),
@@ -307,10 +292,20 @@ class PluginCapabilities:
     present: frozenset[Capability]
     # The choices of OptionDefinition.space.
     option_spaces: frozenset[str] = frozenset()
+    # The data check of the plugin, which predicts the option data that it refuses (gap 17).
+    data_rule: DataRule | None = None
 
     def has(self, capability: Capability) -> bool:
         """Return whether the installed plugin has *capability*."""
         return capability in self.present
+
+    def data_refusal(self, kind: str, array: bool, record_types: Sequence[str] | None, data: str) -> str | None:
+        """Return why the data check of the plugin refuses Kea option *data* for its Option Definition, or ``None``.
+
+        Without the capability, an Option that it refuses is unsupported (gap 17). Without a data check, it refuses
+        nothing.
+        """
+        return None if self.data_rule is None else _refusal(self.data_rule, kind, array, record_types, data)
 
     def holds_space(self, space: str) -> bool:
         """Return whether the installed plugin holds an Option Definition in the Kea option space *space*."""
@@ -326,7 +321,11 @@ def _space_choices(model: ModelLookup) -> frozenset[str]:
     return frozenset(_choice_values(field)) if field is not None and field.choices else frozenset()
 
 
-def probe(model: ModelLookup = _plugin_model) -> PluginCapabilities:
-    """Return the capabilities of the plugin models that *model* looks up: by default, the installed netbox_dhcp."""
-    present = frozenset(capability for capability, check in CHECKS.items() if check.holds(model))
-    return PluginCapabilities(present, _space_choices(model))
+def probe(model: ModelLookup = _plugin_model, data_rule: DataRule | None = None) -> PluginCapabilities:
+    """Return the capabilities of the plugin models that *model* looks up and of the data check *data_rule*.
+
+    By default, both come from the installed netbox_dhcp.
+    """
+    data_rule = data_rule if data_rule is not None else installed_data_rule()
+    present = frozenset(capability for capability, check in CHECKS.items() if check.holds(model, data_rule))
+    return PluginCapabilities(present, _space_choices(model), data_rule)
