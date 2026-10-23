@@ -12,6 +12,7 @@ import time
 import uuid
 from collections.abc import Callable, Sequence
 from contextlib import suppress
+from typing import TYPE_CHECKING
 
 from core.exceptions import JobFailed
 from core.models import Job
@@ -46,6 +47,11 @@ from netbox_kea.tests.kea_stub import (
 )
 from netbox_kea.tests.test_jobs import _lease_page, _make_job, _patch_kea
 from netbox_kea.tests.utils import _make_db_server, lease_phase, with_sync_config
+
+if TYPE_CHECKING:
+    from netbox_kea.integrations.dhcp_plugin import ImportSummary
+    from netbox_kea.ipam_reconciliation import ReservationObservation
+    from netbox_kea.models import Server
 
 ADDRESS = "10.0.0.5"
 SUBNET = {"id": 1, "subnet": "10.0.0.0/24"}
@@ -1488,18 +1494,25 @@ class ConcurrencyHarness(TransactionTestCase):
         return result
 
 
-def _import_reservations(server, observation, summary):
+def _import_reservations(server: Server, observation: ReservationObservation, summary: ImportSummary) -> None:
     """Run the Reservation step, then the delegated-prefix cleanup of a DHCPv6 import, in one transaction."""
     from netbox_kea import event_scope
-    from netbox_kea.integrations.dhcp_plugin import import_reservation_snapshot, reconcile_delegated_prefixes
+    from netbox_kea.integrations.dhcp_plugin import (
+        ClassReferences,
+        CustomDefinitions,
+        OptionReferences,
+        import_reservation_snapshot,
+        reconcile_delegated_prefixes,
+    )
     from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
+    references = OptionReferences(CustomDefinitions(server, {}, ()), ClassReferences(6, frozenset(), {}))
     with event_scope.atomic():
         step = import_reservation_snapshot(
             server,
             None,
             observation,
-            {},
+            references,
             summary,
             family=6,
             adoption_servers=(),
