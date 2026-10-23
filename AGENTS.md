@@ -214,7 +214,7 @@ URL request
       fan_out.py        (the per-Server read pool of combined Subnets, Shared Networks, Reservations)
       sync_views.py     (per-server IPAM sync UI)
       sync_jobs.py      (jobs tab, periodic sync management)
-      settings_page.py  (Settings page: one section per settings singleton; ADR 0010)
+      settings_page.py  (Settings page: one tab per settings singleton; ADR 0010)
   → reservation_edit.py (Reservation add/edit/import, signed form state, Published Name rules and after-apply facts)
   → config_write.py     (Configuration Changes, Reservation writes included: typed outcome, advisory lock, persist step)
   → change_outcome.py   (ChangeRejected and the Application classifier that every change shares; ADR 0011)
@@ -258,11 +258,12 @@ URL request
   KeaClientConfig with the migrations' values, every other row with its model defaults. They
   inherit `ChangeLoggingMixin` (not a `NetBoxModel`), so a save in a request writes an ObjectChange;
   `api/serializers.py` has a brief serializer for each because NetBox's change log API serializes each changed
-  object. The Settings page (`views/settings_page.py`) has one section for each row (`SECTIONS`): a section shows
-  with the view permission of its model, a save needs the change permission too, and the view calls `snapshot()`
-  before the form changes the row. A section whose `available()` is false (the DHCP Plugin section without
-  `netbox_dhcp`) does not show, and a save of it is refused. `navigation.py` builds one menu item for each available
-  section. The adoption cleanup locks the `Server`, `SyncConfig` and `DhcpIntegrationConfig` tables to freeze policy.
+  object. The Settings page (`views/settings_page.py`) has one tab for each row (`SECTIONS`), at
+  `settings/<slug>/`: a tab shows with the view permission of its model, a save needs the change permission too, and
+  the view calls `snapshot()` before the form changes the row. `settings/` redirects to the first visible tab. A
+  section whose `available()` is false (the DHCP Plugin section without `netbox_dhcp`) has no tab, and its URL gives
+  404, as does a hidden one; a user who can view no section gets 403. `navigation.py` has one Settings item without
+  permissions, because NetBox needs every listed permission and a tab needs only its own. The adoption cleanup locks the `Server`, `SyncConfig` and `DhcpIntegrationConfig` tables to freeze policy.
   A new settings row needs a model, a migration that creates the row, a brief serializer and a `SECTIONS` line. The
   page builds the form from the model fields (`modelform_factory`) and renders them with `inc/settings_fields.html`
   unless the section names its own include; a test fails while a singleton has no section. A section can give a

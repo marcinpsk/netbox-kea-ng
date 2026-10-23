@@ -1199,11 +1199,9 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
 
         client = Client()
         client.force_login(get_user_model().objects.create_superuser("settings-in-branch"))
-        url = reverse("plugins:netbox_kea:settings")
         sections = {
             "sync": (
                 {
-                    "section": "sync",
                     "sync-interval_minutes": 31,
                     "sync-sync_enabled": "on",
                     "sync-sync_max_leases_per_server": 50000,
@@ -1213,15 +1211,14 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
                 31,
             ),
             "kea-client": (
-                {"section": "kea-client", "kea-client-kea_timeout": 31, "kea-client-lease_query_max_unpaged_leases": 0},
+                {"kea-client-kea_timeout": 31, "kea-client-lease_query_max_unpaged_leases": 0},
                 lambda: KeaClientConfig.get().kea_timeout,
                 31,
             ),
             # The unchecked switch is left out, as a browser sends it.
-            "dhcp-integration": ({"section": "dhcp-integration"}, lambda: DhcpIntegrationConfig.get().enabled, False),
+            "dhcp-integration": ({}, lambda: DhcpIntegrationConfig.get().enabled, False),
             "display-cache": (
                 {
-                    "section": "display-cache",
                     "display-cache-configuration_ttl": 31,
                     "display-cache-reservations_ttl": 300,
                     "display-cache-leases_ttl": 30,
@@ -1237,6 +1234,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
                 self.fail("The branching CI job requires netbox_dhcp for the DHCP Plugin settings section.")
             del sections["dhcp-integration"]
         for slug, (data, saved, expected) in sections.items():
+            url = reverse("plugins:netbox_kea:settings_section", args=[slug])
             with self.subTest(section=slug):
                 before = (self._main(), ObjectChange.objects.count())
                 client.cookies[COOKIE_NAME] = self.branch.schema_id
@@ -1872,6 +1870,8 @@ def _route_arguments(route: _Route, server: Server, ip: IPAddress) -> dict[str, 
             arguments[parameter] = ip.pk if route.name.endswith(":ipaddress_kea_reservations") else server.pk
         elif parameter == "format":
             arguments[parameter] = "json"
+        elif parameter == "section" and route.name.endswith(":settings_section"):
+            arguments[parameter] = "sync"
         elif parameter in by_family and objects is not None:
             arguments[parameter] = by_family[parameter](objects)
         else:
@@ -1921,7 +1921,7 @@ def _route_url(route: _Route, server: Server, ip: IPAddress) -> str:
     return f"{url}?{query}" if query else url
 
 
-# A page GET that main answers with a redirect: NetBox's bulk views, and the lease delete confirmation.
+# A page GET that main answers with a redirect: NetBox's bulk views, the lease delete confirmation, and Settings.
 _MAIN_GET_REDIRECTS = frozenset(
     f"plugins:netbox_kea:{name}"
     for name in (
@@ -1931,6 +1931,7 @@ _MAIN_GET_REDIRECTS = frozenset(
         "server_leases6_delete",
         "server_status",
         "server_switch",
+        "settings",
     )
 )
 
@@ -2261,7 +2262,7 @@ class RenderedBranchControlsTest(TransactionTestCase):
             "server_reservations4",
             "server_leases4",
             "sync_jobs",
-            "settings",
+            "settings_section",
         ):
             self.assertIn(f"plugins:netbox_kea:{name}", covered)
 

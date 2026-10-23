@@ -193,7 +193,7 @@ class ServerSyncStatusView(ServerFamilyMixin, generic.ObjectView):
             "sync_toggle_url": server_family_url(request, instance, self, "server_sync_toggle"),
             "sync_now_url": server_family_url(request, instance, self, "server_sync_now"),
             "sync_cfg": sync_cfg,
-            "can_view_settings": bool(visible_sections(request.user)),
+            "can_view_sync_settings": any(section.model is SyncConfig for section in visible_sections(request.user)),
             **sync_nav_context(request, instance, self, "ipam", integration_runs=dhcp_plugin.runs_for(instance)),
         }
 

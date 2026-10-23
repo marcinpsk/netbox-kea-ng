@@ -29,9 +29,11 @@ operators tune while they watch the pages, and the DHCP integration needs a glob
   existing install keeps them. After that, the keys leave `plugin_settings.SETTINGS`.
 - A removed key that is still in `PLUGINS_CONFIG` causes a startup warning that names the Settings page.
   The value is ignored. An upgrade never fails to start because of it.
-- One Settings page shows a section for each singleton. A section shows to a user with the view permission of its
-  model. Without the change permission of the model, the section is read-only. A save needs both permissions.
-  The Sync Jobs page keeps only the jobs.
+- One **Settings** menu item opens the Settings page. The page has one tab for each singleton, and each tab has its
+  own URL. A tab shows to a user with the view permission of its model. Without the change permission of the model,
+  the tab is read-only. A save needs both permissions. The Sync Jobs page keeps only the jobs.
+- The menu item has no permission and shows to every signed-in user. NetBox shows an item only to a user who has
+  every listed permission, but a tab needs only its own. A user who can view no tab gets 403 from the page.
 - The singletons are change-logged. Like every sync setting, they are main-only
   ([ADR 0007](0007-netbox-kea-rows-stay-in-main-and-a-branch-is-read-only.md)).
 - The DHCP integration runs for a Server only when the global switch and the Server's

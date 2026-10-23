@@ -7,9 +7,10 @@ SPDX-License-Identifier: Apache-2.0
 # Configuration
 
 All runtime settings are on the **Settings** page (menu **DHCP Kea > Settings**). A change applies without a
-restart. The page has one section for each group of settings:
+restart. The page has one tab for each group of settings, and each tab has its own URL (for example
+`/plugins/kea/settings/sync/`). The menu item opens the first tab that you can view:
 
-| Section | Setting | Default | Description |
+| Tab | Setting | Default | Description |
 |---|---|---|---|
 | Sync | Sync Interval (minutes) | `5` | How often the background sync job runs, from 1 to 1440. A change applies after the next run |
 | Sync | Sync Enabled (global) | On | Global switch. Clear it to stop the sync for all Servers |
@@ -25,14 +26,15 @@ restart. The page has one section for each group of settings:
 | Display Cache | Reservations TTL (seconds) | `300` | How long a page shows cached Reservations. `0` turns off caching for them |
 | Display Cache | Leases TTL (seconds) | `30` | How long a page shows cached Leases, the Lease badges of Reservations and the Reservation badges of Leases. `0` turns off caching for them |
 | Display Cache | Utilization and Status TTL (seconds) | `15` | How long a page shows cached Subnet utilization and daemon status. `0` turns off caching for them |
-| DHCP Plugin | Integration Enabled (global) | On | Global switch. Clear it to stop the DHCP plugin integration for all Servers. The section shows only when the NetBox DHCP plugin (`netbox_dhcp`) is installed |
+| DHCP Plugin | Integration Enabled (global) | On | Global switch. Clear it to stop the DHCP plugin integration for all Servers. The tab shows only when the NetBox DHCP plugin (`netbox_dhcp`) is installed |
 | DHCP Plugin | Scheduled Import | Off | Each run of the periodic sync job also runs the DHCP Import of each Server that the DHCP plugin integration runs for |
 
-A section shows to a user with the view permission of its model (`netbox_kea.view_syncconfig`,
-`netbox_kea.view_keaclientconfig`, `netbox_kea.view_displaycacheconfig`, `netbox_kea.view_dhcpintegrationconfig`). A save needs the change permission of the model too. Without it, the section
-shows the values read-only. Each save writes a change log record. While a branch is active, the page refuses a save.
+A tab shows to a user with the view permission of its model (`netbox_kea.view_syncconfig`,
+`netbox_kea.view_keaclientconfig`, `netbox_kea.view_displaycacheconfig`, `netbox_kea.view_dhcpintegrationconfig`). A save needs the change permission of the model too. Without it, the tab
+shows the values read-only. The menu item shows to every signed-in user. A user who can view no tab gets an error
+page (403). Each save writes a change log record. While a branch is active, the page refuses a save.
 
-A save of the Display Cache section makes every cached entry unused, also when no value changes. A change that the
+A save of the Display Cache tab makes every cached entry unused, also when no value changes. A change that the
 plugin sends to Kea makes the cached entries that the change affects unused at once. A change from outside this NetBox, such as
 kea-shell or an HA partner, shows when the TTL of the entry ends, or after a Refresh. This also applies to a change
 through another Server record that points at the same daemon: a change resets only the entries of the Server that sent it. A Reservations table and a
@@ -41,7 +43,7 @@ table and for the badges of its rows. On a page of all Servers, the age is the a
 each Server again. A badge is never older than the table that shows it. Subnet utilization and daemon status show no
 read age and no Refresh: their TTL is short.
 
-The DHCP Plugin section controls the DHCP Import. See [DHCP Import](dhcp-import.md).
+The DHCP Plugin tab controls the DHCP Import. See [DHCP Import](dhcp-import.md).
 
 Subnet lease searches use `stat-lease4-get` or `stat-lease6-get` before an
 unpaged lease command. Kea statistics can reject a query that is already too
