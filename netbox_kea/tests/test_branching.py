@@ -1069,6 +1069,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
     def setUp(self):
         self.server = _make_db_server(name="rows", ca_url=_BEFORE)
         self.link = KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
             server=self.server,
             family=4,
             kind="subnet",

@@ -703,7 +703,9 @@ class KeaDhcpLink(ChangeLoggingMixin):
         help_text="Whether the import has mapped the DHCP Options of the object; until then it adopts unmapped ones.",
     )
     created = models.DateTimeField(auto_now_add=True)
-    last_synced = models.DateTimeField(auto_now=True)
+    confirmation: models.BigIntegerField = models.BigIntegerField(
+        help_text="The confirmation sequence number that a writer took when it last confirmed the mapping.",
+    )
 
     class Meta:
         app_label = "netbox_kea"
@@ -807,12 +809,12 @@ class DhcpImportEntry(models.Model):
         return f"{self.kea_path}: {self.outcome}"
 
 
-# One sequence gives every link confirmation and every phase cutoff number (ADR 0006); migration 0019 creates it.
+# One sequence gives every link and mapping confirmation and every cutoff number (ADR 0006); migration 0019 creates it.
 CONFIRMATION_SEQUENCE = "netbox_kea_ipam_ownership_confirmation"
 
 
 def next_confirmation_number() -> int:
-    """Take the next number of the confirmation sequence, for a link confirmation or a phase cutoff."""
+    """Take the next number of the confirmation sequence, for a link or mapping confirmation or a cutoff."""
     with connection.cursor() as cursor:
         cursor.execute("SELECT nextval(%s)", [CONFIRMATION_SEQUENCE])
         (number,) = cursor.fetchone()

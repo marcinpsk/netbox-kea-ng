@@ -49,7 +49,7 @@ from netbox_kea.integrations.dhcp_import_plan import MappingSource
 from netbox_kea.integrations.dhcp_import_report import Kind, Reason
 from netbox_kea.integrations.dhcp_plugin import import_server_config
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
-from netbox_kea.models import KeaDhcpLink, Server
+from netbox_kea.models import KeaDhcpLink, Server, next_confirmation_number
 from netbox_kea.tests.kea_stub import _res_page, stub_kea
 from netbox_kea.tests.test_branching import (
     _KEA_OBJECTS,
@@ -828,11 +828,11 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         def observing(sender, operation, **kwargs):
             if operation == "revert":
                 before = ObjectChange.objects.count()
-                previous = KeaDhcpLink.objects.get(pk=link.pk).last_synced
+                previous = KeaDhcpLink.objects.get(pk=link.pk).confirmation
                 with event_tracking(_change_request(self.user)):
                     mapping = observe_mapping(merged_source, 4, target, MappingSource.subnet(7))
                 self.assertEqual(mapping.pk, link.pk)
-                self.assertGreater(mapping.last_synced, previous)
+                self.assertGreater(mapping.confirmation, previous)
                 self.assertEqual(ObjectChange.objects.count(), before)
                 observed.append(mapping.server_id)
 
@@ -1219,6 +1219,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         with connection.cursor() as cursor:
             cursor.execute('DROP TABLE "' + branch.schema_name + '"."' + KeaDhcpLink._meta.db_table + '"')
         replacement = KeaDhcpLink(
+            confirmation=next_confirmation_number(),
             pk=link.pk,
             server_id=link.server_id,
             family=link.family,
@@ -2112,7 +2113,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 values = {
                     field.attname: getattr(original, field.attname)
                     for field in original._meta.concrete_fields
-                    if not field.primary_key and field.name not in {"created", "last_updated", "last_synced"}
+                    if not field.primary_key and field.name not in {"created", "last_updated"}
                 }
                 with event_tracking(_change_request(self.user)):
                     original.delete()
@@ -2160,7 +2161,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         values = {
             field.attname: getattr(original, field.attname)
             for field in original._meta.concrete_fields
-            if not field.primary_key and field.name not in {"created", "last_updated", "last_synced"}
+            if not field.primary_key and field.name not in {"created", "last_updated"}
         }
         with event_tracking(_change_request(self.user)):
             original.delete()
@@ -2239,6 +2240,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             target.snapshot()
             target.tags.add(endpoint)
             _link = KeaDhcpLink.objects.create(
+                confirmation=next_confirmation_number(),
                 server=server,
                 family=4,
                 kind="reservation",
@@ -2587,6 +2589,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             link.save_base,
             lambda: KeaDhcpLink.objects.filter(pk=link.pk).update(kea_subnet_id=99),
             lambda: KeaDhcpLink.objects.create(
+                confirmation=next_confirmation_number(),
                 server_id=link.server_id,
                 family=6,
                 kind="subnet",
@@ -2598,6 +2601,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             lambda: KeaDhcpLink.objects.bulk_create(
                 [
                     KeaDhcpLink(
+                        confirmation=next_confirmation_number(),
                         server_id=link.server_id,
                         family=6,
                         kind="subnet",
@@ -2631,12 +2635,12 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         )
         before = changes.count()
         created = link.created
-        synced = link.last_synced
+        confirmed = link.confirmation
         with event_tracking(_change_request(self.user)):
             summary = import_server_config(server, intent, observation)
         self.assertEqual(summary.errors, 0, summary.warnings)
         link.refresh_from_db()
-        self.assertGreater(link.last_synced, synced)
+        self.assertGreater(link.confirmation, confirmed)
         self.assertEqual(link.created, created)
         self.assertEqual(link.object_id, target.pk)
         self.assertEqual(changes.count(), before)
@@ -2805,8 +2809,8 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             row.description = "branch change"
             row.save()
         request_finished.send(sender=type(self))
-        # Kea no longer reports the Subnet, and the configuration read, which starts now, is Complete.
-        intent.subnets, intent.configuration_complete, intent.read_started = [], True, timezone.now()
+        # Kea no longer reports the Subnet, and the configuration read, which takes its cutoff now, is Complete.
+        intent.subnets, intent.configuration_complete, intent.cutoff = [], True, next_confirmation_number()
         with event_tracking(_change_request(self.user)):
             summary = import_server_config(server, intent, observation)
         self.assertEqual([entry.kind for entry in summary.entries if entry.outcome.value == "removed"], [Kind.SUBNET])
@@ -2862,6 +2866,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             dhcp_server=target.dhcp_server,
         )
         KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
             pk=link.pk,
             server_id=link.server_id,
             family=link.family,
@@ -2905,6 +2910,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self._delete(branch, target)
         KeaDhcpLink.objects.filter(pk=link.pk).delete()
         KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
             pk=link.pk,
             server_id=link.server_id,
             family=link.family,
@@ -3575,7 +3581,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertFalse(branch.applied_changes.exists())
         self.assertEqual(ObjectChange.objects.count(), before)
         self.assertEqual(type(target).objects.get(pk=target.pk).valid_lifetime, target.valid_lifetime)
-        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).last_synced, link.last_synced)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).confirmation, link.confirmation)
         self.assertIsNone(current_request.get())
 
     def test_conflicting_mapping_target_identity_refuses_the_whole_revert(self):
@@ -3587,6 +3593,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         branch.merge(user=self.user)
         branch.refresh_from_db()
         conflicting = KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
             server_id=link.server_id,
             family=6,
             kind="reservation",

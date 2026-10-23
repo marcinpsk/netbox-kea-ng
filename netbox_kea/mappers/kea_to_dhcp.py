@@ -25,7 +25,6 @@ from __future__ import annotations
 import ipaddress
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from .. import kea_paths
 from ..constants import Family, validate_family
@@ -33,9 +32,6 @@ from ..dhcp_options import DHCPOption, parse_dhcp_option, parse_option_definitio
 from ..integrations import dhcp_import_ledger
 from ..integrations.dhcp_import_fields import GATED_SUBNET_FIELDS
 from ..integrations.dhcp_import_report import DroppedEntry, ImportEntry, Kind, not_written
-
-if TYPE_CHECKING:
-    from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -219,10 +215,8 @@ class ServerConfigIntent:
 
     family: int
     configuration_complete: bool = False
-    # When the read of this configuration started, before config-get. None: not known, so no mapped row is stale.
-    read_started: datetime | None = None
-    # The IPAM confirmation number taken before config-get. None: not known, so no IPAM link of the read is stale.
-    ipam_cutoff: int | None = None
+    # The confirmation number taken before config-get. None: not known, so no mapping or IPAM link of the read is stale.
+    cutoff: int | None = None
     # From the Server Configuration Snapshot. None: the key is absent or invalid.
     host_reservation_identifiers: tuple[str, ...] | None = None
     shared_networks: list[SharedNetworkIntent] = field(default_factory=list)

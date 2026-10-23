@@ -40,7 +40,6 @@ netbox_kea/models.py:0: error: Need type annotation for "kea_identity"  [var-ann
 netbox_kea/models.py:0: error: Need type annotation for "object_type"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "object_id"  [var-annotated]
 netbox_kea/models.py:0: error: Need type annotation for "created"  [var-annotated]
-netbox_kea/models.py:0: error: Need type annotation for "last_synced"  [var-annotated]
 netbox_kea/subnet_catalogue.py:0: error: Argument 2 to "_is_quarantined" has incompatible type "frozenset[int]"; expected "set[int]"  [arg-type]
 netbox_kea/subnet_catalogue.py:0: error: Argument 3 to "_is_quarantined" has incompatible type "frozenset[IPv4Network | IPv6Network]"; expected "set[IPv4Network | IPv6Network]"  [arg-type]
 netbox_kea/subnet_catalogue.py:0: error: Argument 2 to "_is_quarantined" has incompatible type "frozenset[int]"; expected "set[int]"  [arg-type]

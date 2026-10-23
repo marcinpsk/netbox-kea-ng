@@ -273,7 +273,12 @@ def linked_dhcp_targets(server):
         (dhcp_server, {"kind": "server"}),
     ]
     return tuple(
-        (target, KeaDhcpLink.objects.create(server=server, sys4_object=target, **{"family": 4, **source}))
+        (
+            target,
+            KeaDhcpLink.objects.create(
+                confirmation=next_confirmation_number(), server=server, sys4_object=target, **{"family": 4, **source}
+            ),
+        )
         for target, source in targets
     )
 
