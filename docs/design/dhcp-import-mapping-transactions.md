@@ -282,6 +282,18 @@ public action status writes sit outside replay atomic. Native event_tracking res
 but leaves the core deletion suppression set to request_finished. These facts determine adapter placement.
 The production tests must verify these facts against real installed libraries rather than mock adapters.
 
+Django keeps the ordinary, default and base managers in `Options` cached properties. `apps.clear_cache()`
+(a model registered at runtime, an `INSTALLED_APPS` override, `TransactionTestCase.available_apps`) and
+`Options.add_field` expire them, and Django then builds new managers with the plain queryset class.
+The model methods, the signals and the related-manager descriptors stay, because they are class attributes
+or receivers. `ensure_boundaries()` puts the boundary queryset on the current managers again. `register()`
+calls it, and so does each entry point that the plugin owns: each request (`BranchRefusalMiddleware`), the
+start of each plugin job (`KeaIpamSyncJob.handle`), the start of a DHCP Import (`coordinated_import`), and
+the branch action hooks `preflight_action` and `prepare_replay`. It sends no query and reads only the cached
+derived model sets. Accepted limit: between a cache reset and the next entry point, the queryset guards are
+missing in that process. A model registered at runtime does not join the derived model sets
+(`protected_models`, `delete_effect_models` and the others), which are computed once per process.
+
 Native event_tracking flushes the configured event pipeline after each replay object. The default
 pipeline invokes native action providers. This change guarantees database rows, native status and native
 history rollback, as required by the accepted ticket. It does not replace the native event pipeline or
