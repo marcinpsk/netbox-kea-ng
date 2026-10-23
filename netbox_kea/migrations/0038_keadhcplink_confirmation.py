@@ -19,7 +19,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='keadhcplink',
             name='confirmation',
-            field=models.BigIntegerField(default=0, help_text='The confirmation sequence number that a writer took when it last confirmed the mapping.'),
+            field=models.BigIntegerField(blank=True, default=0, help_text='The confirmation sequence number that a writer took when it last confirmed the mapping.'),
             preserve_default=False,
         ),
         migrations.RemoveField(

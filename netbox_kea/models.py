@@ -703,7 +703,10 @@ class KeaDhcpLink(ChangeLoggingMixin):
         help_text="Whether the import has mapped the DHCP Options of the object; until then it adopts unmapped ones.",
     )
     created = models.DateTimeField(auto_now_add=True)
+    # blank, but no default: a replayed payload has no number and validates, and the replay stamps one before the
+    # insert; a writer that does not stamp fails on NOT NULL.
     confirmation: models.BigIntegerField = models.BigIntegerField(
+        blank=True,
         help_text="The confirmation sequence number that a writer took when it last confirmed the mapping.",
     )
 

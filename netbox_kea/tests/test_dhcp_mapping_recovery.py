@@ -44,6 +44,7 @@ from netbox_branching.models import Branch
 from netbox_branching.signals import pre_merge, squash_dependency_graph_built
 from netbox_branching.utilities import activate_branch
 from utilities.exceptions import AbortRequest
+from utilities.serialization import deserialize_object
 
 from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
 from netbox_kea.integrations.dhcp_import_plan import MappingSource
@@ -3485,6 +3486,16 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                     request_finished.send(sender=type(self))
                 created = steps[0] == "create"
                 deleted = steps[-1].startswith("delete")
+                history = branch.get_changes().filter(
+                    changed_object_type=ContentType.objects.get_for_model(KeaDhcpLink), changed_object_id=pk
+                )
+                for change in history.exclude(action="create"):
+                    # Only a create records the number; a revert restores a deletion without one.
+                    self.assertNotIn("confirmation", change.prechange_data)
+                    self.assertNotIn("confirmation", change.postchange_data or {})
+                    if change.action == "delete":
+                        restored = deserialize_object(KeaDhcpLink, change.prechange_data_clean, pk=pk).object
+                        self.assertIsNone(restored.confirmation)
 
                 before_merge = next_confirmation_number()
                 branch.merge(user=self.user)
@@ -3501,6 +3512,47 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 if reverted is not None:
                     self.assertEqual((reverted.server_id, reverted.object_id), (server.pk, target.pk))
                     self.assertGreater(reverted.confirmation, before_revert)
+
+    def test_a_main_refresh_before_a_branch_mapping_change_records_no_branch_conflict(self):
+        """A confirmation number is not a branch change, so the native conflict gate must not list it."""
+        from netbox_branching.models import ChangeDiff
+
+        histories = {
+            "update then mapping delete": ("update", "delete mapping"),
+            "update then target delete": ("update", "delete target"),
+            "target delete": ("delete target",),
+            "update": ("update",),
+        }
+        for index, (label, steps) in enumerate(histories.items()):
+            with self.subTest(label):
+                suffix = f"refresh-conflict-{index}"
+                server, intent, observation, target, link = self._imported("subnet", 4, suffix)
+                source = _make_db_server(name=f"mapping-{suffix}-source", ca_url="https://kea.example.invalid")
+                branch = _provisioned_branch(self, f"mapping-{suffix}")
+                branch.merge_strategy = "squash"
+                branch.save(provision=False)
+                # A no-op import in main confirms the mapping again after the branch copied it.
+                with event_tracking(_change_request(self.user)):
+                    summary = import_server_config(server, intent, observation)
+                self.assertEqual(summary.errors, 0, summary.warnings)
+                self.assertGreater(KeaDhcpLink.objects.get(pk=link.pk).confirmation, link.confirmation)
+                for step in steps:
+                    with activate_branch(branch), event_tracking(_change_request(self.user)):
+                        if step == "update":
+                            mapping = KeaDhcpLink.objects.get(pk=link.pk)
+                            mapping.snapshot()
+                            mapping.server = source
+                            mapping.save()
+                        elif step == "delete mapping":
+                            KeaDhcpLink.objects.get(pk=link.pk).delete()
+                        else:
+                            type(target).objects.get(pk=target.pk).delete()
+                    request_finished.send(sender=type(self))
+
+                diff = ChangeDiff.objects.get(
+                    branch=branch, object_type=ContentType.objects.get_for_model(KeaDhcpLink), object_id=link.pk
+                )
+                self.assertIsNone(diff.conflicts)
 
     def test_missing_source_server_refuses_branch_deletion_capture(self):
         server, _, _, target, link = self._imported("reservation", 4, "missing-source-capture")

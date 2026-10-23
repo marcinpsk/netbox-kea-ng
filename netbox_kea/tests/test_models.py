@@ -581,6 +581,17 @@ class TestKeaDhcpLinkIdentity(TestCase):
             **identity,
         )
 
+    def test_a_mapping_without_a_confirmation_number_validates_but_is_never_stored(self):
+        unstamped = self._link("subnet", kea_subnet_id=7)
+        unstamped.confirmation = None
+
+        # A replayed payload has no number, so the native full_clean() before its save must accept it.
+        unstamped.full_clean()
+        # Outside a replay nothing stamps it, and the column has no default.
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            unstamped.save()
+        self.assertFalse(KeaDhcpLink.objects.filter(server=self.server).exists())
+
     def test_each_kind_stores_its_identity_columns(self):
         accepted = {
             "subnet": {"kea_subnet_id": 7},
