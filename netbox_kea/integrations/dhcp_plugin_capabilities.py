@@ -13,6 +13,7 @@ when its capability is present, and reports it as unsupported otherwise.
 from __future__ import annotations
 
 import importlib
+import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -26,6 +27,8 @@ from ..reservations import FLEX_ID
 from .dhcp_import_report import Capability
 
 PLUGIN_APP_LABEL = "netbox_dhcp"
+
+logger = logging.getLogger(__name__)
 
 #: Returns a netbox_dhcp model class by name.
 ModelLookup = Callable[[str], type[models.Model]]
@@ -178,7 +181,11 @@ def _kea_option_data(model: ModelLookup, data_rule: DataRule | None) -> bool:
         _has_fields(model("OptionDefinition"), "type", "array") and _has_fields(model("Option"), "data")
     ):
         return False
-    return all(_refusal(data_rule, kind, array, (), data) is None for kind, array, data in _KEA_OPTION_DATA)
+    try:
+        return all(_refusal(data_rule, kind, array, (), data) is None for kind, array, data in _KEA_OPTION_DATA)
+    except Exception:  # A data check that fails on a sample lacks the capability.
+        logger.warning("The data check of the DHCP plugin failed on a probe sample.", exc_info=True)
+        return False
 
 
 def _relay_address_list(model: ModelLookup) -> bool:

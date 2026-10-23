@@ -28,7 +28,7 @@ from netbox_kea.models import (
 from netbox_kea.views.sync_jobs import get_all_jobs_for_server, get_recent_jobs_for_servers
 
 from .kea_stub import _sync_responses, complete_lease, lease_pages, stub_kea
-from .test_dhcp_import import _recorded_config
+from .test_dhcp_import import LONG_TUPLE_DEFINITION, LONG_TUPLE_OPTION, _recorded_config
 from .test_dhcp_import_result import _held_elsewhere, _lock_key, _new_session
 from .test_event_scope import _FAILING_PIPELINE, NESTED_TRACKING
 from .test_jobs import _make_job
@@ -366,6 +366,34 @@ class ScheduledImportTest(_ScheduledImportTestCase):
         )
         lines = _scheduled_lines(job)
         self.assertTrue(any(_FAILED_FAMILY.search(line) for line in lines), lines)
+        self.assertEqual(lines[-1], "Scheduled DHCP Import complete: servers=1 failed=1")
+
+    def test_an_option_that_the_data_check_of_the_plugin_fails_on_fails_the_server_and_the_job(self):
+        server = _server("long-tuple", dhcp4=False, dhcp6=True)
+        config = {
+            "option-def": [LONG_TUPLE_DEFINITION],
+            "subnet6": [
+                {
+                    "id": 1,
+                    "subnet": "2001:db8:1::/64",
+                    "option-data": [LONG_TUPLE_OPTION, {"code": 23, "data": "2001:db8::53"}],
+                }
+            ],
+        }
+
+        job = self._run_failed(_sync_responses({6: config}))
+
+        run = DhcpImportRun.objects.get(server=server)
+        self.assertEqual(
+            set(run.entries.filter(kind="option").values_list("kea_path", "outcome", "reason")),
+            {
+                ("Dhcp6/subnet6[id=1]/option-data[code=222]", "skipped", "write_failed"),
+                ("Dhcp6/subnet6[id=1]/option-data[code=23]", "created", ""),
+            },
+        )
+        self.assertIn(("subnet", "created"), set(run.entries.values_list("kind", "outcome")))
+        lines = _scheduled_lines(job)
+        self.assertTrue(any(re.search(r"DHCPv6: .* failed=[1-9]", line) for line in lines), lines)
         self.assertEqual(lines[-1], "Scheduled DHCP Import complete: servers=1 failed=1")
 
     def test_a_mapping_lock_refusal_after_the_reads_fails_the_server_and_the_job(self):

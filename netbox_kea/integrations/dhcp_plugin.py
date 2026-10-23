@@ -665,15 +665,33 @@ def _resolve_option_definition(
     return found if found is not None else _without_definition(opt, space, family, capabilities)
 
 
-def _data_gap(opt: DHCPOption, definition, capabilities: PluginCapabilities) -> _Unresolved | None:
-    """Return why the DHCP plugin cannot hold the Kea data of *opt* against its *definition* (gap 17), or ``None``."""
+@dataclass(frozen=True)
+class _Skipped:
+    """The entry and the warning of a planned Option that the run does not write."""
+
+    entry: ImportEntry
+    warning: str
+
+
+def _data_gap(opt: DHCPOption, definition, capabilities: PluginCapabilities, family: int, path: str) -> _Skipped | None:
+    """Return why the run does not write *opt* at *path*: the DHCP plugin refuses its data (gap 17), or its check failed.
+
+    Only a ValidationError of the data check of the plugin is a refusal. Another error is a write failure.
+    """
     if definition is None or capabilities.has(Capability.KEA_OPTION_DATA):
         return None
-    refusal = capabilities.data_refusal(definition.type, definition.array, definition.record_types, opt.data or "")
+    identity = option_identity(opt, family)
+    try:
+        refusal = capabilities.data_refusal(definition.type, definition.array, definition.record_types, opt.data or "")
+    except Exception as exc:  # noqa: BLE001 (one bad option must not abort the import)
+        return _Skipped(write_failed(family, Kind.OPTION, path), f"option {identity}: {type(exc).__name__}: {exc}")
     if refusal is None:
         return None
     detail = f"The installed DHCP plugin refuses this form of option data, which Kea accepts: {refusal}"
-    return _Unresolved(Reason.PLUGIN_GAP, detail, Capability.KEA_OPTION_DATA)
+    return _Skipped(
+        unsupported(family, Kind.OPTION, path, Capability.KEA_OPTION_DATA, detail),
+        f"option {identity}: skipped. {detail}",
+    )
 
 
 def option_values(
@@ -718,8 +736,8 @@ class _PlannedOption:
     definition: Any
     classes: frozenset[int]
     source: MappingSource | None
-    # Why the DHCP plugin cannot hold its data (gap 17): the run still pairs the Option, and writes nothing.
-    refused: _Unresolved | None = None
+    # Why the run does not write the Option (see _data_gap): the run still pairs it.
+    skipped: _Skipped | None = None
 
 
 def _option_code(row) -> tuple:
@@ -837,8 +855,8 @@ def upsert_options(
             space = opt.space or kea_paths.default_space(family)
             code = definition.code if definition is not None else opt.code
             source = key.source if key is not None else None
-            refused = _data_gap(opt, definition, capabilities)
-            planned.append(_PlannedOption(opt, path, space, code, definition, classes, source, refused))
+            skipped = _data_gap(opt, definition, capabilities, family, path)
+            planned.append(_PlannedOption(opt, path, space, code, definition, classes, source, skipped))
     mapped = [mapped_target(server, family, item.source) if item.source is not None else None for item in planned]
     adopts = parent is not None and not options_mapped(server, family, parent)
     # An Option without a source pairs on every run; one with a source only while its object adopts.
@@ -862,9 +880,9 @@ def upsert_options(
         if parent is not None:
             mark_options_mapped(server, family, parent)
     for item, row in zip(planned, mapped, strict=True):
-        if item.refused is not None:
-            summary.record(item.refused.entry(family, Kind.OPTION, item.path))
-            summary.warn(f"option {option_identity(item.option, family)}: skipped. {item.refused.detail}")
+        if item.skipped is not None:
+            summary.record(item.skipped.entry)
+            summary.warn(item.skipped.warning)
             continue
         target = row if row is not None else paired.get(id(item))
         _write_option(item, target, parent_obj, ct, family, references, summary, capabilities)

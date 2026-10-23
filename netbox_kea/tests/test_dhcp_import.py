@@ -888,6 +888,15 @@ class CapabilityProbeTest(TestCase):
             ):
                 self.assertEqual(probe().present, expected)
 
+    @isolate_apps("netbox_kea")
+    def test_a_data_check_that_raises_another_error_on_a_sample_lacks_the_capability(self):
+        def fail(data: str, kind: str) -> None:
+            raise ValueError("Exceeds the limit (4300 digits)")
+
+        capabilities = probe(_proposed_plugin_models().__getitem__, fail)
+
+        self.assertEqual(capabilities.present, frozenset(Capability) - {Capability.KEA_OPTION_DATA})
+
     def test_netbox_dhcp_0_2_0_holds_the_option_spaces_of_its_choices_only(self):
         if not apps.is_installed(DHCP_PLUGIN):
             self.skipTest(f"{DHCP_PLUGIN} not installed")
@@ -2378,6 +2387,11 @@ class RefuseHighCodeValidator(CustomValidator):
             self.fail("This site uses no option code above 250.", field="definition")
 
 
+# A DHCPv6 tuple option of 4,369 bytes in hexadecimal, which Kea accepts. netbox_dhcp 0.2.0 reads it as a JSON
+# integer, and Python refuses an integer of more than 4,300 digits with ValueError.
+LONG_TUPLE_DEFINITION = {"name": "site-tuple", "code": 222, "type": "tuple", "space": "dhcp6"}
+LONG_TUPLE_OPTION = {"code": 222, "csv-format": False, "data": "1111" + "31" * 4369}
+
 # The outcome, reason and capability of an Option entry whose write failed.
 _WRITE_FAILED = (Outcome.SKIPPED.value, Reason.WRITE_FAILED.value, "")
 # One Subnet 10 option for each form of Kea data that netbox-plugin-dhcp 0.2.0 refuses (#88 gap 17).
@@ -2864,6 +2878,32 @@ class OptionMappingTest(TestCase):
         self.assertEqual(self._refused_data(summary), [])
         self.assertEqual(self._write_failures(summary), [])
         self.assertIn((222, data), self._subnet_10_rows())
+
+    def test_an_error_of_the_data_check_of_the_plugin_is_a_write_failure_of_that_option_only(self):
+        config = _recorded_config(6)
+        config.setdefault("option-def", []).append(LONG_TUPLE_DEFINITION)
+        subnet = config["subnet6"][0]
+        subnet["option-data"] = [LONG_TUPLE_OPTION, {"code": 23, "data": "2001:db8::53"}]
+
+        server = _make_db_server(name="option-mapping-v6", dhcp4=False, sync_dhcp_plugin_enabled=True)
+
+        summary = self._run(config, family=6, server=server)
+
+        options = {
+            entry.path.rsplit("/", 1)[1]: (entry.outcome, entry.reason)
+            for entry in summary.entries
+            if entry.kind == Kind.OPTION and entry.path.startswith(f"Dhcp6/subnet6[id={subnet['id']}]/")
+        }
+        self.assertEqual(options["option-data[code=222]"], (Outcome.SKIPPED, Reason.WRITE_FAILED))
+        self.assertEqual(options["option-data[code=23]"], (Outcome.CREATED, None))
+        self.assertTrue(any("ValueError" in warning for warning in summary.warnings), summary.warnings)
+        link = KeaDhcpLink.objects.get(server=server, kind="subnet", kea_subnet_id=subnet["id"])
+        rows = apps.get_model(DHCP_PLUGIN, "Option").objects.filter(
+            assigned_object_id=link.sys4_object.pk, assigned_object_type__model="subnet"
+        )
+        written = {row.definition.code: row.data for row in rows}
+        self.assertEqual(written[23], "2001:db8::53")
+        self.assertNotIn(222, written)
 
     def test_an_operator_validator_that_refuses_option_data_is_a_write_failure(self):
         hex_routers = {"code": 3, "csv-format": False, "data": "c6:12:00:01"}
