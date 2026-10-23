@@ -2004,6 +2004,7 @@ def upsert_pools(
     for planned_pool in planned.pools:
         pool_intent = planned_pool.intent
         path = pool_path(parent_path, planned_pool, intent.family)
+        options = planned_options(planned_pool, intent.family, references.definitions.declared)
         try:
             with event_scope.atomic():
                 pool = planned_pool.key.range if planned_pool.key is not None else None
@@ -2033,14 +2034,13 @@ def upsert_pools(
         except Exception as exc:  # noqa: BLE001 — one bad pool must not abort the import
             summary.record(write_failed(intent.family, Kind.POOL, path))
             summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: {exc}")
-            _skip_options(summary, intent.family, path, pool_intent.options)
+            _skip_options(summary, intent.family, path, options)
             continue
         if range_obj is None:
             summary.record(_unusable_pool(intent.family, path, planned_pool.key, result))
             summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: unusable range, skipped")
-            _skip_options(summary, intent.family, path, pool_intent.options)
+            _skip_options(summary, intent.family, path, options)
             continue
-        options = planned_options(planned_pool, intent.family, references.definitions.declared)
         if pool_obj is None:
             _skip_options(summary, intent.family, path, options)
             continue
