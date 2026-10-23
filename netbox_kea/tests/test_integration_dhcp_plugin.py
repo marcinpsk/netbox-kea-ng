@@ -18,7 +18,7 @@ from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.db import connection, transaction
-from django.test import TestCase, TransactionTestCase, tag
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, tag
 from django.urls import reverse
 from django.utils import timezone
 
@@ -4130,3 +4130,24 @@ class SkippedReservationCompletenessTest(TestCase):
         )
         self.assertIn("reservation for unknown subnet-id 7 skipped", summary.warnings)
         self.assertNotIn("host_cmds", " ".join(_summary_problems(summary)))
+
+
+class WithoutDhcpPluginCachesTest(SimpleTestCase):
+    """The decorator must not leave a model set derived without netbox_dhcp to the next test on the worker."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def test_the_derived_model_sets_follow_the_registry_in_and_out_of_the_decorator(self):
+        from netbox_kea.dhcp_mapping_lifecycle import protected_models
+        from netbox_kea.models import KeaDhcpLink
+
+        installed = protected_models()
+        with without_dhcp_plugin():
+            self.assertEqual(protected_models(), (KeaDhcpLink,))
+
+        self.assertEqual(protected_models(), installed)
+        self.assertIn(DHCP_PLUGIN, {model._meta.app_label for model in installed})
