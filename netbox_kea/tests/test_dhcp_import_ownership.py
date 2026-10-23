@@ -8,7 +8,9 @@ import ast
 import ipaddress
 import unittest
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from django.apps import apps
 from django.db import connection
@@ -63,6 +65,35 @@ class ImportOwnershipTest(TestCase):
         self.server.refresh_from_db()
         self.assertIsNotNone(self.server.ipam_first_complete_at)
         self.assertIn("import", self.server.ipam_initial_observations)
+
+    def test_a_mapping_confirmed_after_the_cutoff_by_a_slower_clock_is_not_stale(self):
+        from netbox_kea.dhcp_mapping_lifecycle import observe_mapping
+        from netbox_kea.integrations.dhcp_import_plan import MappingSource
+
+        with stub_kea(_sync_responses({6: self.config}, {6: []})):
+            run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+        mapping = KeaDhcpLink.objects.get(server=self.server, family=6, kind=Kind.SUBNET.value)
+        subnet = mapping.sys4_object
+        responses = _sync_responses({6: {"subnet6": []}}, {6: []})
+        read_config, confirmed = responses["config-get"], []
+
+        def confirm_with_a_slower_clock(body):
+            # The writer's clock is an hour behind the import host; the read took its cutoff before config-get.
+            if not confirmed:
+                behind = timezone.now() - timedelta(hours=1)
+                with patch.object(timezone, "now", return_value=behind):
+                    confirmed.append(observe_mapping(self.server, 6, subnet, MappingSource.subnet(1)))
+            return read_config(body)
+
+        responses["config-get"] = confirm_with_a_slower_clock
+        with stub_kea(responses):
+            ((_family, summary),) = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+
+        self.assertEqual(len(confirmed), 1)
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual([entry for entry in summary.entries if entry.outcome is Outcome.REMOVED], [])
+        self.assertTrue(type(subnet).objects.filter(pk=subnet.pk).exists())
+        self.assertEqual(KeaDhcpLink.objects.get(pk=mapping.pk).confirmation, confirmed[0].confirmation)
 
     def test_a_dhcpv6_import_that_did_not_read_every_pd_pool_records_no_receipt(self):
         self.server.sync_enabled = False
@@ -708,13 +739,13 @@ class ImportOwnershipTest(TestCase):
         def replay(body):
             # Another writer, such as an ADR 0008 replay, confirms the mapping after the read started.
             KeaDhcpLink.objects.filter(server=self.server, kind=Kind.RESERVATION.value).update(
-                last_synced=timezone.now()
+                confirmation=next_confirmation_number()
             )
             return read_page(body)
 
         responses["reservation-get-page"] = replay
-        # A plan without a read time judges no mapping.
-        for label, run in (("no read time", lambda: self.import_hosts([])), ("newer mapping", None)):
+        # A plan without a cutoff judges no mapping.
+        for label, run in (("no cutoff", lambda: self.import_hosts([])), ("newer mapping", None)):
             with self.subTest(label):
                 if run is None:
                     with stub_kea(responses):

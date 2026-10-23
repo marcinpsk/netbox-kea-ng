@@ -53,7 +53,7 @@ from netbox_kea.integrations.dhcp_import_report import GAPS, Capability, Kind, O
 from netbox_kea.integrations.dhcp_plugin_capabilities import CHECKS, PluginCapabilities, probe
 from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS, parse_dhcp_config
-from netbox_kea.models import DhcpImportEntry, DhcpImportRun, DhcpImportTrigger, KeaDhcpLink
+from netbox_kea.models import DhcpImportEntry, DhcpImportRun, DhcpImportTrigger, KeaDhcpLink, next_confirmation_number
 from netbox_kea.pools import Pool
 from netbox_kea.reservations import (
     GlobalReservationScope,
@@ -1860,7 +1860,7 @@ class OptionCoverageTest(TestCase):
         self._apply(config)
         spare = self._mapped_definition("boot:dhcp4:232")
         intent = _recorded_intent(4)
-        intent.read_started = datetime.now(timezone.utc)
+        intent.cutoff = next_confirmation_number()
 
         summary = dhcp_plugin.apply_plan(self.server, plan_family(intent, None), probe())
 
@@ -1872,10 +1872,10 @@ class OptionCoverageTest(TestCase):
         self.assertTrue(OptionDefinition.objects.filter(pk=self._mapped_definition("boot:dhcp4:231").pk).exists())
 
     def _apply_read(self, config: dict, errors: int = 0):
-        """Apply a Complete read of *config* that started now, so a mapping that it does not report is stale."""
+        """Apply a Complete read of *config* with a cutoff taken now, so a mapping that it does not report is stale."""
         intent = parse_dhcp_config(config, 4)
         intent.configuration_complete = True
-        intent.read_started = datetime.now(timezone.utc)
+        intent.cutoff = next_confirmation_number()
         summary = dhcp_plugin.apply_plan(self.server, plan_family(intent, None), probe())
         self.assertEqual(summary.errors, errors, summary.warnings)
         return summary
@@ -3277,10 +3277,10 @@ class _SharedNetworkTestCase(TestCase):
         self.capabilities = probe()
 
     def _apply(self, config: dict | None = None, family: int = 4, errors: int = 0, capabilities=None):
-        """Apply a Complete read of *config* that started now, so a mapping that it does not report is stale."""
+        """Apply a Complete read of *config* with a cutoff taken now, so a mapping that it does not report is stale."""
         intent = parse_dhcp_config(_recorded_config(family) if config is None else config, family)
         intent.configuration_complete = True
-        intent.read_started = datetime.now(timezone.utc)
+        intent.cutoff = next_confirmation_number()
         plan = plan_family(intent, None)
         summary = dhcp_plugin.apply_plan(self.server, plan, capabilities or self.capabilities)
         self.assertEqual(summary.errors, errors, summary.warnings)
@@ -3725,7 +3725,7 @@ class StaleRemovalQueryCountTest(TestCase):
         )
         operator.evaluate_additional_classes.set([last.object_id])
         empty = parse_dhcp_config({}, 4)
-        empty.configuration_complete, empty.read_started = True, datetime.now(timezone.utc)
+        empty.configuration_complete, empty.cutoff = True, next_confirmation_number()
         executed = []
 
         def count(execute, sql, params, many, context):

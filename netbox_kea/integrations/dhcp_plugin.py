@@ -87,7 +87,6 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
-    from datetime import datetime
 
     from ..ipam_reconciliation import ClaimResult, DelegatedPrefixPhase, RangeClaim, ReservationObservation, SyncReport
     from ..models import DhcpIntegrationConfig, Server
@@ -2621,7 +2620,7 @@ def reconcile_pd_pool_prefixes(server, plan: FamilyPlan, unobserved: set[Kind], 
     from ..ipam_reconciliation import PDPoolPhase, reconcile
 
     complete = observations(plan)[Kind.PD_POOL].complete and Kind.PD_POOL not in unobserved
-    report = reconcile(server, plan.family, [PDPoolPhase(pd_pool_prefixes(plan), plan.ipam_cutoff, complete)])
+    report = reconcile(server, plan.family, [PDPoolPhase(pd_pool_prefixes(plan), plan.cutoff, complete)])
     _record_report(summary, report)
 
 
@@ -2636,7 +2635,7 @@ def unobserved_kinds(server, plan: FamilyPlan) -> set[Kind]:
     """Return the kinds that still have a mapped DHCP plugin row whose Kea source *plan* does not observe.
 
     After :func:`remove_stale_objects`, such a row stayed: its kind was not observed in full, its removal failed or
-    was blocked, another writer confirmed its mapping after the read started, or the plan has no read time.
+    was blocked, another writer confirmed its mapping after the cutoff, or the plan has no cutoff.
     """
     observed = observations(plan)
     return {
@@ -2933,18 +2932,18 @@ def _delete_component(
     return gone, None
 
 
-def mapped_rows(server, family: int, confirmed_before: datetime | None = None) -> dict[Kind, dict[MappingSource, Any]]:
+def mapped_rows(server, family: int, confirmed_before: int | None = None) -> dict[Kind, dict[MappingSource, Any]]:
     """Return the DHCP plugin row of each mapping of *family* whose kind a run can remove, by kind and Kea source.
 
-    A mapping whose row is gone has none. With *confirmed_before*, only the mappings that an import confirmed before
-    that time count.
+    A mapping whose row is gone has none. With *confirmed_before*, a cutoff of the confirmation sequence, only the
+    mappings confirmed with a lower number count.
     """
     from ..models import KeaDhcpLink
 
     rows: dict[Kind, dict[MappingSource, Any]] = {kind: {} for kind in mapped_kinds(family)}
     links = KeaDhcpLink.objects.filter(server=server, family=family, kind__in=[kind.value for kind in rows])
     if confirmed_before is not None:
-        links = links.filter(last_synced__lt=confirmed_before)
+        links = links.filter(confirmation__lt=confirmed_before)
     for link in links.prefetch_related("sys4_object").order_by("pk"):
         if link.sys4_object is not None:
             source = MappingSource(Kind(link.kind), link.kea_subnet_id, link.kea_identity)
@@ -2955,15 +2954,15 @@ def mapped_rows(server, family: int, confirmed_before: datetime | None = None) -
 def _stale_rows(server, plan: FamilyPlan, observed) -> dict[Kind, list[_StaleRow]]:
     """Return the mapped rows of each kind whose Kea source the plan does not observe.
 
-    A mapping that an import confirmed after this read started belongs to a newer read, so it is never stale here.
-    The import lock keeps two runs of one Server apart; this cutoff covers the other writers, such as an ADR 0008
-    merge or revert replay in main. A plan without a read time can judge no mapping.
+    A mapping confirmed with a number at or above the cutoff of the plan belongs to a newer read, so it is never stale
+    here. The import lock keeps two runs of one Server apart; the cutoff covers the other writers, such as an ADR 0008
+    merge or revert replay in main. A plan without a cutoff can judge no mapping.
     """
-    if plan.read_started is None:
+    if plan.cutoff is None:
         return {}
     return {
         kind: [_StaleRow(source, row) for source, row in rows.items() if source not in observed[kind].sources]
-        for kind, rows in mapped_rows(server, plan.family, confirmed_before=plan.read_started).items()
+        for kind, rows in mapped_rows(server, plan.family, confirmed_before=plan.cutoff).items()
     }
 
 

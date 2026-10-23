@@ -40,6 +40,7 @@ from netbox_kea.models import (
     KeaDhcpLink,
     Server,
     SyncConfig,
+    next_confirmation_number,
 )
 from netbox_kea.reservations import MAX_IDENTITY_LENGTH
 from netbox_kea.tests.kea_stub import record_transport, stub_kea
@@ -571,6 +572,7 @@ class TestKeaDhcpLinkIdentity(TestCase):
 
     def _link(self, kind, object_id=None, family=4, **identity) -> KeaDhcpLink:
         return KeaDhcpLink(
+            confirmation=next_confirmation_number(),
             server=self.server,
             family=family,
             kind=kind,
@@ -578,6 +580,17 @@ class TestKeaDhcpLinkIdentity(TestCase):
             object_id=self.server.pk if object_id is None else object_id,
             **identity,
         )
+
+    def test_a_mapping_without_a_confirmation_number_validates_but_is_never_stored(self):
+        unstamped = self._link("subnet", kea_subnet_id=7)
+        unstamped.confirmation = None
+
+        # A replayed payload has no number, so the native full_clean() before its save must accept it.
+        unstamped.full_clean()
+        # Outside a replay nothing stamps it, and the column has no default.
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            unstamped.save()
+        self.assertFalse(KeaDhcpLink.objects.filter(server=self.server).exists())
 
     def test_each_kind_stores_its_identity_columns(self):
         accepted = {
@@ -698,6 +711,7 @@ class TestChangeLoggedModelsInTheChangeLogApi(TestCase):
         request.user, request.id = user, uuid.uuid4()
         with event_tracking(request):
             link = KeaDhcpLink.objects.create(
+                confirmation=next_confirmation_number(),
                 server=server,
                 family=4,
                 kind="subnet",
@@ -962,10 +976,17 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         }
         for object_id, (kind, identity) in enumerate({**held, **unheld}.items(), start=1):
             KeaDhcpLink.objects.create(
-                server=server, family=4, kind=kind, object_type=object_type, object_id=object_id, **identity
+                confirmation=next_confirmation_number(),
+                server=server,
+                family=4,
+                kind=kind,
+                object_type=object_type,
+                object_id=object_id,
+                **identity,
             )
         # An In-Subnet Reservation sets both identity columns, which the older check constraint refuses.
         KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
             server=server,
             family=4,
             kind="reservation",
@@ -987,9 +1008,22 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         server = _make_db_server(name="family-mappings")
         object_type = ContentType.objects.get_for_model(Server)
         KeaDhcpLink.objects.create(
-            server=server, family=4, kind="subnet", kea_subnet_id=7, object_type=object_type, object_id=1
+            confirmation=next_confirmation_number(),
+            server=server,
+            family=4,
+            kind="subnet",
+            kea_subnet_id=7,
+            object_type=object_type,
+            object_id=1,
         )
-        KeaDhcpLink.objects.create(server=server, family=4, kind="server", object_type=object_type, object_id=2)
+        KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
+            server=server,
+            family=4,
+            kind="server",
+            object_type=object_type,
+            object_id=2,
+        )
 
         self._migrate_to("0030_dhcpimportentry_capability")
 
@@ -998,6 +1032,33 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         with connection.cursor() as cursor:
             cursor.execute("SELECT object_id FROM netbox_kea_keadhcplink WHERE server_id = %s", [server.pk])
             self.assertEqual({row[0] for row in cursor.fetchall()}, {1})
+
+    def test_0038_gives_an_existing_mapping_a_confirmation_below_every_cutoff(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        server = _make_db_server(name="confirmed-mappings")
+        object_type = ContentType.objects.get_for_model(Server)
+        current = self._migrate_to("0037_keadhcplink_option")
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO netbox_kea_keadhcplink (server_id, family, kind, kea_subnet_id, object_type_id, "
+                "object_id, options_mapped, created, last_synced, last_updated) "
+                "VALUES (%s, 4, 'subnet', 7, %s, %s, false, NOW(), NOW(), NOW())",
+                [server.pk, object_type.pk, server.pk],
+            )
+            cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        # A read that is in progress during the upgrade took its cutoff before the migration.
+        cutoff = next_confirmation_number()
+
+        forward = MigrationExecutor(connection)
+        forward.loader.build_graph()
+        forward.migrate(current)
+
+        confirmation = KeaDhcpLink.objects.get(server=server).confirmation
+        self.assertLess(confirmation, cutoff)
+        # 1 is the lowest number of the sequence, so also every later cutoff is higher.
+        self.assertLess(confirmation, 1)
 
     def test_an_identityless_link_is_removed_before_the_constraint_is_added(self):
         from django.db import connection

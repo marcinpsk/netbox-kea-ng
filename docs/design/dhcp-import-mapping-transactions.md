@@ -200,15 +200,18 @@ restores that request's prior set. A direct action without an enclosing request 
 state and clears its own state on every exit. Native event_tracking continues to own request and event
 contexts. A successful retry on the same identities must produce new native deletion and applied history.
 
-Mapping semantic fields are Server, family, Kea subnet ID or normalized Global Reservation identity,
-target content type and original target PK. Observation timestamps are not semantic changes. A locked
-no-op import updates last_synced without a semantic change record. Genuine source or target changes use
-native change logging. Semantic comparison omits only nonsemantic timestamps and normalizes M2M identity
-ordering. CREATE and DELETE history retain complete required timestamp fields, because native raw CREATE
-does not run auto_now. Reversible deletion records retain original PK and both identities. An ordinary migration
-registers the new branchable/change-logged model behavior and timestamp schema. Old branches are not
-retrofitted. Their affected operations and actual DHCP Plugin tab use the same fresh-branch refusal.
-Verify physical target tables as well as mapping columns. A branch created before the optional DHCP
+Mapping semantic fields are Server, family, Kea subnet ID or normalized Global Reservation identity, target
+content type and original target PK. Observation timestamps and confirmation numbers are not semantic changes.
+A locked no-op import stamps a new confirmation number (ADR 0006) without a semantic change record. A native
+replay save of a mapping in main also stamps a new number, so a replayed mapping is never older than a cutoff
+taken before the replay. Only CREATE history records the number. A main refresh changes it, so a recorded
+number in UPDATE or DELETE history would be a false branch conflict. Genuine source or target changes use
+native change logging. Semantic comparison omits only nonsemantic timestamps and confirmation numbers, and
+normalizes M2M identity ordering. CREATE and DELETE history retain complete required timestamp fields, because
+native raw CREATE does not run auto_now. Reversible deletion records retain original PK and both identities.
+An ordinary migration registers the new branchable/change-logged model behavior and timestamp schema. Old
+branches are not retrofitted. Their affected operations and actual DHCP Plugin tab use the same fresh-branch
+refusal. Verify physical target tables as well as mapping columns. A branch created before the optional DHCP
 plugin was enabled must not resolve a missing target table to main through the connection search path.
 
 Creation time supplies separate row-generation provenance. Scoped target and mapping serialization

@@ -612,6 +612,7 @@ class DhcpPluginAdapterTest(TestCase):
         self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
         # Recreate a dangling link from an installation without target cleanup.
         link = KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
             server=self.server,
             family=4,
             kind="subnet",
@@ -1176,7 +1177,14 @@ class DhcpPluginServerPerFamilyTest(TestCase):
             prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:60::/64")),
             dhcp_server=existing,
         )
-        KeaDhcpLink.objects.create(server=self.server, family=6, kind="subnet", kea_subnet_id=2, sys4_object=v6_subnet)
+        KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
+            server=self.server,
+            family=6,
+            kind="subnet",
+            kea_subnet_id=2,
+            sys4_object=v6_subnet,
+        )
         # A custom definition and global Options of DHCPv6, which that importer wrote without a mapping.
         definition = model("OptionDefinition").objects.create(
             name=f"{self.server.name}-site", family=6, space="dhcp6", code=250, type="uint8", dhcp_server=existing
@@ -1953,8 +1961,16 @@ class DhcpPluginMappingImportTest(TestCase):
                 name="site-code", family=4, space="dhcp4", code=222, type="uint8", dhcp_server=dhcp_server
             ),
         }
-        KeaDhcpLink.objects.create(server=self.server, family=4, kind="subnet", kea_subnet_id=1, sys4_object=subnet)
         KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
+            server=self.server,
+            family=4,
+            kind="subnet",
+            kea_subnet_id=1,
+            sys4_object=subnet,
+        )
+        KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
             server=self.server,
             family=4,
             kind="reservation",
@@ -2328,7 +2344,14 @@ class DhcpPluginSubnetIdImportTest(TestCase):
             prefix=Prefix.objects.create(prefix=IPNetwork("10.94.23.0/24")),
             dhcp_server=self.adapter.upsert_dhcp_server(fourth, 4)[0],
         )
-        KeaDhcpLink.objects.create(server=fourth, family=4, kind="subnet", kea_subnet_id=2, sys4_object=row_c)
+        KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
+            server=fourth,
+            family=4,
+            kind="subnet",
+            kea_subnet_id=2,
+            sys4_object=row_c,
+        )
         self._renumber({row_a: 1, row_b: 2, row_c: 3})
 
         summary = self._import(self.server, _subnet_id_conf(1, 24))
@@ -3278,7 +3301,9 @@ class DhcpPluginPDPoolImportTest(TestCase):
 
         def replay(body):
             # Another writer, such as an ADR 0008 replay, confirms the mapping after the read started.
-            KeaDhcpLink.objects.filter(server=self.server, kind="pd_pool").update(last_synced=timezone.now())
+            KeaDhcpLink.objects.filter(server=self.server, kind="pd_pool").update(
+                confirmation=next_confirmation_number()
+            )
             return read_config(body)
 
         responses["config-get"] = replay

@@ -228,10 +228,13 @@ def mapped_target(server, family: int, source: MappingSource):
 
 
 def observe_mapping(server, family: int, target, source: MappingSource):
-    """Record a source association, or refresh its observation without a semantic history change."""
+    """Record a source association, or refresh its observation without a semantic history change.
+
+    Each call confirms the mapping with a new number of the confirmation sequence (ADR 0006).
+    """
     from django.contrib.contenttypes.models import ContentType
 
-    from .models import KeaDhcpLink
+    from .models import KeaDhcpLink, next_confirmation_number
 
     lookup = _source_lookup(server, family, source)
     association = {
@@ -241,17 +244,18 @@ def observe_mapping(server, family: int, target, source: MappingSource):
     }
     with metadata_scope():
         mapping = KeaDhcpLink.objects.filter(**lookup).first()
-        desired = KeaDhcpLink(**association)
+        desired = KeaDhcpLink(**association, confirmation=next_confirmation_number())
         if mapping is None:
             desired.save()
             return desired
         if mapping_identity(mapping) == mapping_identity(desired):
-            mapping.last_synced = timezone.now()
-            KeaDhcpLink.objects.filter(pk=mapping.pk).update(last_synced=mapping.last_synced)
+            mapping.confirmation = desired.confirmation
+            KeaDhcpLink.objects.filter(pk=mapping.pk).update(confirmation=mapping.confirmation)
             return mapping
         mapping.snapshot()
         for name, value in association.items():
             setattr(mapping, name, value)
+        mapping.confirmation = desired.confirmation
         mapping.save()
         return mapping
 
@@ -1117,7 +1121,7 @@ def _validate_history_payload(model, payload) -> None:
     required = {
         "custom_fields" if field.name == "custom_field_data" else field.name
         for field in model._meta.concrete_fields
-        if field.serialize and not field.primary_key and field.name not in {"last_updated", "last_synced"}
+        if field.serialize and not field.primary_key and field.name not in {"last_updated", "confirmation"}
     }
     required.update(field.name for field in model._meta.many_to_many)
     if not isinstance(payload, dict) or not required.issubset(payload):
@@ -1134,7 +1138,7 @@ def _precise_serialization(original):
     @wraps(original)
     def serialized(self, *args, **kwargs):
         payload = original(self, *args, **kwargs)
-        for name in ("created", "last_updated", "last_synced"):
+        for name in ("created", "last_updated"):
             value = getattr(self, name, None)
             if name in payload and value is not None:
                 payload[name] = value.isoformat(timespec="microseconds")
@@ -1150,14 +1154,16 @@ def _complete_history(original):
         if action in {"create", "delete"}:
             payload = change.postchange_data if action == "create" else change.prechange_data
             precise = self.serialize_object()
-            for name in ("created", "last_updated", "last_synced"):
+            for name in ("created", "last_updated"):
                 if name in precise:
                     payload[name] = precise[name]
-        elif type(self)._meta.label_lower == "netbox_kea.keadhcplink":
+        if type(self)._meta.label_lower == "netbox_kea.keadhcplink" and action != "create":
+            # A main refresh changes the number, so a recorded one would be a false branch conflict.
             for payload in (change.prechange_data, change.postchange_data):
                 if payload is not None:
-                    for name in ("last_synced", "last_updated"):
-                        payload.pop(name, None)
+                    payload.pop("confirmation", None)
+                    if action == "update":
+                        payload.pop("last_updated", None)
         return change
 
     return recorded
@@ -1510,7 +1516,7 @@ def _late_save_guard(sender, instance, using, **kwargs):
     from django.contrib.contenttypes.models import ContentType
     from netbox.context import current_request
 
-    from .models import KeaDhcpLink
+    from .models import KeaDhcpLink, next_confirmation_number
 
     replay = _replay_operation.get()
     if replay is not None:
@@ -1518,8 +1524,11 @@ def _late_save_guard(sender, instance, using, **kwargs):
             _validate_named_write(instance, using)
     if replay is None or using != "default" or current_request.get() not in replay.native_requests:
         return
-    if sender is KeaDhcpLink and instance.pk in replay.mapped_options:
-        instance.options_mapped = True
+    if sender is KeaDhcpLink:
+        # The replay confirms the mapping now; the recorded number would be older than a cutoff taken before it.
+        instance.confirmation = next_confirmation_number()
+        if instance.pk in replay.mapped_options:
+            instance.options_mapped = True
     with metadata_scope(using):
         key = (sender, instance.pk)
         _validate_native_mapping_destination(instance, using)
