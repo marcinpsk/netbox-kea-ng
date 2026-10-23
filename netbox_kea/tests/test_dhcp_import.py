@@ -2683,13 +2683,47 @@ class OptionMappingTest(TestCase):
         rows[("dhcpserver", 3, "192.0.2.1", ("printers",), True)] += 1
         self.assertEqual(self._option_rows(), +rows)
 
-    def _assert_every_parent_kind(self, family: Family, parents: dict):
+    def test_a_name_only_option_has_its_code_path_when_created_and_when_removed(self):
+        config = _recorded_config(4)
+        config["subnet4"][0]["option-data"].append({"name": "domain-name", "data": "name-only.example.org"})
+        path = f"{_SUBNET_10}/option-data[code=15]"
+
+        created = self._run(config)
+        removed = self._run(_recorded_config(4))
+
+        self.assertIn((Kind.OPTION, path, Outcome.CREATED, None), self._changes(created))
+        self.assertEqual(self._changes(removed), {(Kind.OPTION, path, Outcome.REMOVED, None): 1})
+
+    def test_a_name_only_option_of_a_parent_that_was_not_imported_has_its_code_path(self):
+        config = _recorded_config(4)
+        office = next(network for network in config["shared-networks"] if network["name"] == "office")
+        del office["option-data"][0]["code"]
+
+        summary = self._run(config)
+
+        skipped = [entry.path for entry in summary.entries if entry.reason == Reason.PARENT_NOT_IMPORTED]
+        self.assertIn(f"{_OFFICE}/option-data[code=6]", skipped)
+
+    def test_a_prefix_pool_has_one_path_when_created_and_when_removed(self):
+        path = f"{_SUBNET_10}/pools[pool=192.0.2.64/26]"
+        config = _recorded_config(4)
+        config["subnet4"][0]["pools"] = [p for p in config["subnet4"][0]["pools"] if p["pool"] != "192.0.2.64/26"]
+
+        created = self._run()
+        removed = self._run(config)
+
+        self.assertIn((Kind.POOL, path, Outcome.CREATED, None), self._changes(created))
+        self.assertEqual(self._changes(removed), {(Kind.POOL, path, Outcome.REMOVED, None): 1})
+
+    def _assert_every_parent_kind(self, family: Family, parents: dict, *, name_only: bool = False):
         """Import an Option on each kind of parent, then remove every one that Kea stops declaring."""
         self.server.dhcp4, self.server.dhcp6 = family == 4, family == 6
         self.server.save()
         optional_shared_network_prefix(self)
         config = _recorded_config(family)
         config["reservations"][0]["option-data"] = [_RESERVATION_OPTION[family]]
+        if name_only:
+            _without_option_codes(config)
 
         created = self._run(config, family)
         links = KeaDhcpLink.objects.filter(server=self.server, family=family, kind=Kind.OPTION.value)
@@ -2748,6 +2782,23 @@ class OptionMappingTest(TestCase):
             "reservation": 2,
         }
         self._assert_every_parent_kind(6, parents)
+
+    def test_the_name_only_options_of_every_parent_kind_have_one_path_each(self):
+        parents = {"server": 8, "client_class": 1, "shared_network": 1, "subnet": 1, "pool": 1, "reservation": 2}
+        self._assert_every_parent_kind(4, parents, name_only=True)
+
+
+def _without_option_codes(value) -> None:
+    """Remove the code of each named DHCP Option in *value*, as a configuration that names options does."""
+    if isinstance(value, dict):
+        for option in value.get("option-data") or ():
+            if "name" in option:
+                option.pop("code", None)
+        for child in value.values():
+            _without_option_codes(child)
+    elif isinstance(value, list):
+        for child in value:
+            _without_option_codes(child)
 
 
 # A Kea object of a config-get reply: its ledger table, kind, Kea path, keys, and the keys of its parent.

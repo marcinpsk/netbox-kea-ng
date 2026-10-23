@@ -111,7 +111,7 @@ class MappingSource:
         if self.kind == Kind.SUBNET:
             return kea_paths.subnet(family, self.kea_subnet_id)
         if self.kind == Kind.POOL:
-            return kea_paths.pool(kea_paths.subnet(family, self.kea_subnet_id), identity)
+            return kea_paths.pool(kea_paths.subnet(family, self.kea_subnet_id), _kea_pool_text(identity))
         if self.kind == Kind.PD_POOL:
             # The delegated length follows the last slash.
             prefix, _, delegated = identity.rpartition("/")
@@ -134,6 +134,13 @@ class MappingSource:
         if self.kind == Kind.SERVER:
             return kea_paths.daemon(family)
         raise ValueError(f"A {self.kind.value} source has no Kea path.")
+
+
+def _kea_pool_text(identity: str) -> str:
+    """Return the text that Kea's config-get gives the Pool range *identity*: its prefix when the range is one."""
+    start, _, end = identity.partition("-")
+    networks = list(ipaddress.summarize_address_range(ipaddress.ip_address(start), ipaddress.ip_address(end)))
+    return str(networks[0]) if len(networks) == 1 else identity
 
 
 @dataclass(frozen=True)
@@ -239,6 +246,16 @@ class PlannedOptions:
     def class_name(self) -> str | None:
         """Return the name of the client class that assigns the options, whose own definitions they use first."""
         return self.parent.kea_identity if self.parent is not None and self.kind == Kind.CLIENT_CLASS else None
+
+    def paths(self, parent_path: str, family: int) -> tuple[str, ...]:
+        """Return the Kea path of each option: the path of its key, else its literal path under *parent_path*.
+
+        A run names a keyed Option by its key also when it removes it, so the key gives the one path of the Option.
+        """
+        return tuple(
+            key.path(family) if key is not None else kea_paths.option(parent_path, option, family)
+            for option, key in zip(self.options, self.keys, strict=True)
+        )
 
 
 def _option_parent(planned) -> tuple[Kind, MappingSource | None, tuple[DHCPOption, ...]]:
