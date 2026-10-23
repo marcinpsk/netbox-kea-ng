@@ -447,6 +447,7 @@ def mapping_unavailable_reason() -> str | None:
 
 def preflight_action(branch, operation: str) -> None:
     """Reject an affected unsupported strategy before the native action changes status."""
+    ensure_boundaries()
     changes = branch.get_changes()
     if _has_tag_changes(branch):
         with metadata_scope():
@@ -474,6 +475,7 @@ def prepare_replay(branch, collapsed, operation: str, request, *, named_request=
     """Validate the whole affected main footprint before the first native replay mutation."""
     from .models import KeaDhcpLink
 
+    ensure_boundaries()
     _refuse_mixed_tags(branch, collapsed, operation, named_changes)
     mappings = {change.key[1]: change for change in collapsed.values() if change.model_class is KeaDhcpLink}
     for change in mappings.values():
@@ -1220,6 +1222,7 @@ def coordinated_import(original):
 
     @wraps(original)
     def importing(server, config, *args, **kwargs):
+        ensure_boundaries()
         branching.refuse_in_branch("A DHCP-plugin import")
         opened = not connections["default"].in_atomic_block
         summary = None
@@ -1555,9 +1558,15 @@ def register() -> None:
         pre_delete.connect(
             _late_delete_guard, sender=model, dispatch_uid=f"netbox_kea.mapping_delete.{model._meta.label}"
         )
-        managers = {
-            id(manager): manager for manager in (*model._meta.managers, model._default_manager, model._base_manager)
-        }
-        for manager in managers.values():
-            manager._queryset_class = _boundary_queryset(manager._queryset_class, model)
+    ensure_boundaries()
     _register_relations(protected, roots)
+
+
+def ensure_boundaries() -> None:
+    """Put the boundary queryset on the current managers of each guarded model, also after a cache reset."""
+    if not branching.installed() or not target_models():
+        return
+    for model in delete_effect_models():
+        # apps.clear_cache() makes Options build new managers with the plain queryset class.
+        for manager in (*model._meta.managers, model._default_manager, model._base_manager):
+            manager._queryset_class = _boundary_queryset(manager._queryset_class, model)
