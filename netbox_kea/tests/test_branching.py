@@ -1194,11 +1194,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
         self.assertEqual(_ipam_state(), before)
 
     def test_a_settings_page_post_in_a_branch_is_refused_and_changes_nothing(self):
-        from unittest.mock import patch
-
         from core.models import ObjectChange
-
-        from netbox_kea.integrations import dhcp_plugin
 
         client = Client()
         client.force_login(get_user_model().objects.create_superuser("settings-in-branch"))
@@ -1234,12 +1230,13 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
                 31,
             ),
         }
+        # The Settings page shows the DHCP Plugin section only with netbox_dhcp.
+        if not apps.is_installed("netbox_dhcp"):
+            if _required:
+                self.fail("The branching CI job requires netbox_dhcp for the DHCP Plugin settings section.")
+            del sections["dhcp-integration"]
         for slug, (data, saved, expected) in sections.items():
-            # The DHCP Plugin section shows only with netbox_dhcp; its row and the branch refusal do not need it.
-            with (
-                self.subTest(section=slug),
-                patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True),
-            ):
+            with self.subTest(section=slug):
                 before = (self._main(), ObjectChange.objects.count())
                 client.cookies[COOKIE_NAME] = self.branch.schema_id
 

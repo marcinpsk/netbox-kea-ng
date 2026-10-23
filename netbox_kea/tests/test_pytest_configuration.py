@@ -1368,19 +1368,67 @@ def test_every_module_that_needs_the_dhcp_plugin_runs_in_a_dhcp_plugin_job():
 def _unguarded_plugin_free_classes(path: Path) -> list[str]:
     """Return the classes of *path* that import the DHCP integration and run without netbox_dhcp, undecorated."""
     source = path.read_text()
+    classes = {node.name: node for node in ast.parse(source).body if isinstance(node, ast.ClassDef)}
+
+    def skips(node: ast.ClassDef) -> bool:
+        # A base skip counts only when the base is defined in the same module.
+        own = _DHCP_PLUGIN_SKIP.search(ast.get_source_segment(source, node) or "")
+        bases = (classes.get(base.id) for base in node.bases if isinstance(base, ast.Name))
+        return bool(own) or any(base is not None and skips(base) for base in bases)
+
     found = []
-    for node in ast.parse(source).body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        imports_integration = any(
-            isinstance(child, ast.ImportFrom) and (child.module or "").startswith("netbox_kea.integrations.dhcp_plugin")
+    for node in classes.values():
+        imported = (
+            f"{child.module}.{alias.name}"
             for child in ast.walk(node)
+            if isinstance(child, ast.ImportFrom)
+            for alias in child.names
         )
+        imports_integration = any(name.startswith("netbox_kea.integrations.dhcp_plugin") for name in imported)
         decorators = {ast.unparse(decorator) for decorator in node.decorator_list}
-        skips = _DHCP_PLUGIN_SKIP.search(ast.get_source_segment(source, node) or "")
-        if imports_integration and not skips and "without_dhcp_plugin()" not in decorators:
+        if imports_integration and not skips(node) and "without_dhcp_plugin()" not in decorators:
             found.append(f"{path.name}::{node.name}")
     return found
+
+
+def test_the_plugin_free_class_guard_reports_each_import_form_and_accepts_each_skip(tmp_path):
+    """Report an unguarded class for both import forms; accept an own, an inherited or a decorator skip."""
+    module = tmp_path / "test_sample.py"
+    # The labels are joined in, so the module scan above does not read this file as one that skips.
+    by_name, by_constant = '"netbox_dhcp"', "DHCP_PLUGIN"
+    module.write_text(
+        "class ReExportTest(TestCase):\n"
+        "    def test_it(self):\n"
+        "        from netbox_kea.integrations import dhcp_plugin\n"
+        "class SubmoduleTest(TestCase):\n"
+        "    def test_it(self):\n"
+        "        from netbox_kea.integrations.dhcp_plugin import is_available\n"
+        "class OwnSkipTest(TestCase):\n"
+        "    def setUp(self):\n"
+        f"        if not apps.is_installed({by_name}):\n"
+        "            self.skipTest('absent')\n"
+        "        from netbox_kea.integrations import dhcp_plugin\n"
+        "class _SkippingBase(TestCase):\n"
+        "    @classmethod\n"
+        "    def setUpClass(cls):\n"
+        f"        if not apps.is_installed({by_constant}):\n"
+        "            raise unittest.SkipTest('absent')\n"
+        "class InheritedSkipTest(_SkippingBase):\n"
+        "    def test_it(self):\n"
+        "        from netbox_kea.integrations import dhcp_plugin\n"
+        "class GrandchildSkipTest(InheritedSkipTest):\n"
+        "    def test_more(self):\n"
+        "        from netbox_kea.integrations import dhcp_plugin\n"
+        "@without_dhcp_plugin()\n"
+        "class DecoratedTest(TestCase):\n"
+        "    def test_it(self):\n"
+        "        from netbox_kea.integrations import dhcp_plugin\n"
+        "class UnrelatedImportTest(TestCase):\n"
+        "    def test_it(self):\n"
+        "        from netbox_kea.integrations import dhcp_import\n"
+    )
+
+    assert _unguarded_plugin_free_classes(module) == ["test_sample.py::ReExportTest", "test_sample.py::SubmoduleTest"]
 
 
 def test_a_test_class_that_runs_without_the_dhcp_plugin_also_runs_without_it_locally():
