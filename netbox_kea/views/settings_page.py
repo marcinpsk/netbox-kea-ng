@@ -15,6 +15,7 @@ from django.core.exceptions import PermissionDenied
 from django.forms import modelform_factory
 from django.http import Http404, HttpResponse
 from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.views import View
 
 from ..integrations import dhcp_plugin
@@ -88,15 +89,28 @@ def visible_sections(user) -> list[SettingsSection]:
     return [section for section in SECTIONS if section.available() and user.has_perm(section.view_permission)]
 
 
+def section_url(user, model: type[SettingsSingleton]) -> str | None:
+    """Return the tab URL of *model*'s section, or None when *user* may not view it."""
+    for section in visible_sections(user):
+        if section.model is model:
+            return reverse("plugins:netbox_kea:settings_section", args=[section.slug])
+    return None
+
+
+def _visible_or_403(user) -> list[SettingsSection]:
+    """Return the sections that *user* may view; a user who may view none gets 403."""
+    sections = visible_sections(user)
+    if not sections:
+        raise PermissionDenied
+    return sections
+
+
 class SettingsView(LoginRequiredMixin, View):
     """Open the first tab that the user may view."""
 
     def get(self, request) -> HttpResponse:
         """Redirect to the first visible tab; a user who can view no section gets 403."""
-        sections = visible_sections(request.user)
-        if not sections:
-            raise PermissionDenied
-        return redirect("plugins:netbox_kea:settings_section", section=sections[0].slug)
+        return redirect("plugins:netbox_kea:settings_section", section=_visible_or_403(request.user)[0].slug)
 
 
 class SettingsSectionView(LoginRequiredMixin, View):
@@ -126,9 +140,7 @@ class SettingsSectionView(LoginRequiredMixin, View):
     @staticmethod
     def _tab(request, slug: str) -> tuple[list[SettingsSection], SettingsSection]:
         """Return the visible sections and the one of *slug*: 403 without a visible section, else 404 for *slug*."""
-        tabs = visible_sections(request.user)
-        if not tabs:
-            raise PermissionDenied
+        tabs = _visible_or_403(request.user)
         shown = next((section for section in tabs if section.slug == slug), None)
         if shown is None:
             raise Http404("Unknown settings section.")
