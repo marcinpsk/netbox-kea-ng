@@ -45,12 +45,13 @@ from netbox_branching.signals import pre_merge, squash_dependency_graph_built
 from netbox_branching.utilities import activate_branch
 from utilities.exceptions import AbortRequest
 
+from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
 from netbox_kea.integrations.dhcp_import_plan import MappingSource
 from netbox_kea.integrations.dhcp_import_report import Kind, Reason
 from netbox_kea.integrations.dhcp_plugin import import_server_config
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
-from netbox_kea.models import KeaDhcpLink, Server, next_confirmation_number
-from netbox_kea.tests.kea_stub import _res_page, stub_kea
+from netbox_kea.models import DhcpImportTrigger, KeaDhcpLink, Server, next_confirmation_number
+from netbox_kea.tests.kea_stub import _res_page, _sync_responses, stub_kea
 from netbox_kea.tests.test_branching import (
     _KEA_OBJECTS,
     _change_request,
@@ -3350,6 +3351,91 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertTrue(blocked, "The importer selected mapping state before coordination")
         self.assertEqual(KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=4).pk, link.pk)
         self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).object_id, target.pk)
+
+    def _import_with_replay_during_read(self, server, branch, action):
+        """Run the real import of *server* while Kea reports no Subnet, and replay *branch* after the read started."""
+        responses = _sync_responses({4: {"subnet4": []}, 6: {"subnet6": []}})
+        read_config, replayed = responses["config-get"], []
+
+        def replay():
+            try:
+                getattr(Branch.objects.get(pk=branch.pk), action)(user=self.user)
+            finally:
+                connections.close_all()
+
+        def config_get(body):
+            # The import took its cutoff before config-get and holds no mapping lock until its apply.
+            if not replayed:
+                with ThreadPoolExecutor(1) as pool:
+                    pool.submit(replay).result(timeout=30)
+                replayed.append(action)
+            return read_config(body)
+
+        responses["config-get"] = config_get
+        with stub_kea(responses), event_tracking(_change_request(self.user)):
+            results = run_dhcp_plugin_import(server, DhcpImportTrigger.MANUAL)
+        self.assertEqual(replayed, [action])
+        return [summary for _, summary in results]
+
+    def _replayable_mapping(self, action, suffix):
+        """Return the Server, target, mapping and branch of a squash *action* that writes the mapping in main.
+
+        ``create``: a merge inserts the mapping that the branch created. ``update``: a merge changes the source Server
+        of the mapping. ``restore``: a revert restores the mapping that the merged branch deleted with its target.
+        """
+        server, _, _, target, original = self._imported("subnet", 4, suffix)
+        if action == "create":
+            values = {
+                field.attname: getattr(original, field.attname)
+                for field in original._meta.concrete_fields
+                if not field.primary_key and field.name not in {"created", "last_updated"}
+            }
+            with event_tracking(_change_request(self.user)):
+                original.delete()
+            request_finished.send(sender=type(self))
+        branch = _provisioned_branch(self, f"mapping-{suffix}")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        if action == "create":
+            with activate_branch(branch), event_tracking(_change_request(self.user)):
+                mapping = KeaDhcpLink.objects.create(**values)
+            request_finished.send(sender=type(self))
+        elif action == "update":
+            source = _make_db_server(name=f"mapping-{suffix}-source", ca_url="https://kea.example.invalid")
+            with activate_branch(branch), event_tracking(_change_request(self.user)):
+                mapping = KeaDhcpLink.objects.get(pk=original.pk)
+                mapping.server = source
+                mapping.save()
+            request_finished.send(sender=type(self))
+            server = source
+        else:
+            self._delete(branch, target)
+            branch.merge(user=self.user)
+            mapping = original
+        return server, target, mapping, branch
+
+    def test_a_replay_during_an_import_read_keeps_the_mapping_that_it_writes(self):
+        for action, replay in (("create", "merge"), ("update", "merge"), ("restore", "revert")):
+            with self.subTest(action=action):
+                server, target, mapping, branch = self._replayable_mapping(action, f"replay-during-read-{action}")
+
+                summaries = self._import_with_replay_during_read(server, branch, replay)
+
+                for summary in summaries:
+                    self.assertEqual(summary.errors, 0, summary.warnings)
+                    self.assertEqual([entry for entry in summary.entries if entry.outcome.value == "removed"], [])
+                self.assertTrue(type(target).objects.filter(pk=target.pk).exists())
+                self.assertEqual(KeaDhcpLink.objects.get(pk=mapping.pk).object_id, target.pk)
+
+    def test_a_replay_stamps_a_new_confirmation_number(self):
+        for action, replay in (("create", "merge"), ("update", "merge"), ("restore", "revert")):
+            with self.subTest(action=action):
+                _, _, mapping, branch = self._replayable_mapping(action, f"replay-confirmation-{action}")
+                before = next_confirmation_number()
+
+                getattr(branch, replay)(user=self.user)
+
+                self.assertGreater(KeaDhcpLink.objects.get(pk=mapping.pk).confirmation, before)
 
     def test_missing_source_server_refuses_branch_deletion_capture(self):
         server, _, _, target, link = self._imported("reservation", 4, "missing-source-capture")

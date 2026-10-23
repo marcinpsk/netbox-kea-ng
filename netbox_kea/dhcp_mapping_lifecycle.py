@@ -1514,7 +1514,7 @@ def _late_save_guard(sender, instance, using, **kwargs):
     from django.contrib.contenttypes.models import ContentType
     from netbox.context import current_request
 
-    from .models import KeaDhcpLink
+    from .models import KeaDhcpLink, next_confirmation_number
 
     replay = _replay_operation.get()
     if replay is not None:
@@ -1522,8 +1522,11 @@ def _late_save_guard(sender, instance, using, **kwargs):
             _validate_named_write(instance, using)
     if replay is None or using != "default" or current_request.get() not in replay.native_requests:
         return
-    if sender is KeaDhcpLink and instance.pk in replay.mapped_options:
-        instance.options_mapped = True
+    if sender is KeaDhcpLink:
+        # The replay confirms the mapping now; the recorded number would be older than a cutoff taken before it.
+        instance.confirmation = next_confirmation_number()
+        if instance.pk in replay.mapped_options:
+            instance.options_mapped = True
     with metadata_scope(using):
         key = (sender, instance.pk)
         _validate_native_mapping_destination(instance, using)
