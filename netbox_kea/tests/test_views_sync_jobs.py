@@ -60,7 +60,7 @@ def _tab(slug: str) -> str:
 
 
 def _body_links(response, href: str) -> list:
-    """Return the links to *href* in the page body; the menu links to Settings for every signed-in user."""
+    """Return the links to *href* in the page body, not in the menu."""
     return BeautifulSoup(response.content, "html.parser").select(f'.page-body a[href="{href}"]')
 
 
@@ -428,16 +428,22 @@ class TestSettingsPermissions(TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertEqual(SyncConfig.get().interval_minutes, 5)
 
-    def test_the_menu_has_one_settings_item_for_every_signed_in_user(self):
+    def test_the_menu_has_one_settings_item_for_a_user_who_can_view_servers(self):
         superuser = User.objects.create_superuser("settings-menu-admin", "m@m.com", "pass")
-        one_section = User.objects.create_user("settings-menu-one-section")
-        _grant([KeaClientConfig], ["view"], user=one_section)
-        for user in (superuser, one_section, self.user):
+        server_viewer = User.objects.create_user("settings-menu-server-viewer")
+        _grant([Server], ["view"], user=server_viewer)
+        section_only = User.objects.create_user("settings-menu-section-only")
+        _grant([KeaClientConfig], ["view"], user=section_only)
+        expected = {superuser: ["Settings"], server_viewer: ["Settings"], section_only: [], self.user: []}
+        for user, items in expected.items():
             with self.subTest(user=user.username):
                 self.client.force_login(user)
                 menu = BeautifulSoup(self.client.get(reverse("home")).content, "html.parser")
-                items = [link.get_text(strip=True) for link in menu.select(f'a[href^="{self.settings_url}"]')]
-                self.assertEqual(items, ["Settings"])
+                links = [link.get_text(strip=True) for link in menu.select(f'a[href^="{self.settings_url}"]')]
+                self.assertEqual(links, items)
+        # The page does not depend on the menu permission.
+        self.client.force_login(section_only)
+        self.assertRedirects(self.client.get(self.settings_url), _tab("kea-client"))
 
     def test_a_viewer_gets_the_sync_jobs_link(self):
         _grant([SyncConfig, Server], ["view"], user=self.user)

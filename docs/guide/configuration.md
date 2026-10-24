@@ -31,8 +31,8 @@ restart. The page has one tab for each group of settings, and each tab has its o
 
 A tab shows to a user with the view permission of its model (`netbox_kea.view_syncconfig`,
 `netbox_kea.view_keaclientconfig`, `netbox_kea.view_displaycacheconfig`, `netbox_kea.view_dhcpintegrationconfig`). A save needs the change permission of the model too. Without it, the tab
-shows the values read-only. The menu item shows to every signed-in user. A user who can view no tab gets an error
-page (403). Each save writes a change log record. While a branch is active, the page refuses a save.
+shows the values read-only. The menu item shows to a user who can view Servers (`netbox_kea.view_server`). A user
+who can view a tab but not Servers opens the page by its URL. A user who can view no tab gets an error page (403). Each save writes a change log record. While a branch is active, the page refuses a save.
 
 A save of the Display Cache tab makes every cached entry unused, also when no value changes. A change that the
 plugin sends to Kea makes the cached entries that the change affects unused at once. A change from outside this NetBox, such as

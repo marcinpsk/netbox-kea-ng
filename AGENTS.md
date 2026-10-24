@@ -262,8 +262,8 @@ URL request
   `settings/<slug>/`: a tab shows with the view permission of its model, a save needs the change permission too, and
   the view calls `snapshot()` before the form changes the row. `settings/` redirects to the first visible tab. A
   section whose `available()` is false (the DHCP Plugin section without `netbox_dhcp`) has no tab, and its URL gives
-  404, as does a hidden one; a user who can view no section gets 403. `navigation.py` has one Settings item without
-  permissions, because NetBox needs every listed permission and a tab needs only its own. The adoption cleanup locks the `Server`, `SyncConfig` and `DhcpIntegrationConfig` tables to freeze policy.
+  404, as does a hidden one; a user who can view no section gets 403. `navigation.py` has one Settings item that needs
+  `view_server`, like the other items: NetBox needs every listed permission, so the item cannot follow the tabs. The adoption cleanup locks the `Server`, `SyncConfig` and `DhcpIntegrationConfig` tables to freeze policy.
   A new settings row needs a model, a migration that creates the row, a brief serializer and a `SECTIONS` line. The
   page builds the form from the model fields (`modelform_factory`) and renders them with `inc/settings_fields.html`
   unless the section names its own include; a test fails while a singleton has no section. A section can give a

@@ -28,8 +28,12 @@ _items = (
         link_text="Sync Jobs",
         permissions=["netbox_kea.view_server"],
     ),
-    # No permissions: NetBox needs all listed ones, a tab needs only its own; the page gives 403 instead.
-    PluginMenuItem(link="plugins:netbox_kea:settings", link_text="Settings", auth_required=True),
+    # NetBox has no "any of" permission, so the item follows the other items; each tab checks its own permission.
+    PluginMenuItem(
+        link="plugins:netbox_kea:settings",
+        link_text="Settings",
+        permissions=["netbox_kea.view_server"],
+    ),
 )
 
 
