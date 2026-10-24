@@ -1215,6 +1215,90 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         with activate_branch(branch), self.assertRaisesMessage(AbortRequest, "Create a fresh branch"):
             KeaDhcpLink.objects.filter(pk=link.pk).exists()
 
+    def _old_branch_mapping(self, suffix):
+        _, _, _, _, link = self._imported("subnet", 6, suffix)
+        branch = _provisioned_branch(self, f"mapping-{suffix}")
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'ALTER TABLE "' + branch.schema_name + '"."' + KeaDhcpLink._meta.db_table + '" DROP COLUMN last_updated'
+            )
+        return branch, link
+
+    def _reset_boundaries(self):
+        """Expire every Options cache as Apps.register_model does, and restore the guards when the test ends."""
+        from django.apps import apps
+
+        from netbox_kea.dhcp_mapping_lifecycle import ensure_boundaries
+
+        self.addCleanup(ensure_boundaries)
+        apps.clear_cache()
+        self.assertNotEqual(self._unguarded(), [])
+
+    def _unguarded(self):
+        from netbox_kea.dhcp_mapping_lifecycle import delete_effect_models
+
+        return sorted(
+            f"{model._meta.label}.{manager.name}"
+            for model in delete_effect_models()
+            for manager in (*model._meta.managers, model._default_manager, model._base_manager)
+            if not manager._queryset_class.__name__.endswith("DhcpMappingBoundary")
+        )
+
+    def _assert_old_branch_read_refused(self, branch, link):
+        with activate_branch(branch), self.assertRaisesMessage(AbortRequest, "Create a fresh branch"):
+            KeaDhcpLink.objects.filter(pk=link.pk).exists()
+        self.assertEqual(self._unguarded(), [])
+
+    def test_a_request_restores_the_boundaries_after_a_cache_reset(self):
+        branch, link = self._old_branch_mapping("reset-request")
+        self.client.force_login(self.user)
+        self._reset_boundaries()
+        with stub_kea(_recorded_kea()):
+            response = self.client.get(reverse("plugins:netbox_kea:server_list"))
+        self.assertEqual(response.status_code, 200)
+        self._assert_old_branch_read_refused(branch, link)
+
+    def test_the_boundary_recheck_sends_no_query(self):
+        from netbox_kea.dhcp_mapping_lifecycle import ensure_boundaries
+
+        self._reset_boundaries()
+        with self.assertNumQueries(0):
+            ensure_boundaries()
+        self.assertEqual(self._unguarded(), [])
+
+    def test_a_sync_job_restores_the_boundaries_after_a_cache_reset(self):
+        from netbox_kea.jobs import KeaIpamSyncJob
+
+        branch, link = self._old_branch_mapping("reset-job")
+        job = Job.objects.create(name=KeaIpamSyncJob.name, job_id=uuid.uuid4())
+        self._reset_boundaries()
+        with with_sync_config(sync_enabled=False):
+            KeaIpamSyncJob.handle(job)
+        job.refresh_from_db()
+        self.assertEqual(job.status, "completed")
+        self._assert_old_branch_read_refused(branch, link)
+
+    def test_a_dhcp_import_restores_the_boundaries_after_a_cache_reset(self):
+        self._reset_boundaries()
+        self._imported("subnet", 4, "reset-import")
+        self.assertEqual(self._unguarded(), [])
+        branch, link = self._old_branch_mapping("reset-import-read")
+        self._assert_old_branch_read_refused(branch, link)
+
+    def test_branch_action_hooks_restore_the_boundaries_after_a_cache_reset(self):
+        from netbox_kea.dhcp_mapping_lifecycle import preflight_action, prepare_replay
+
+        branch, link = self._old_branch_mapping("reset-hooks")
+        hooks = {
+            "preflight_action": lambda: preflight_action(branch, "merge"),
+            "prepare_replay": lambda: prepare_replay(branch, {}, "merge", None),
+        }
+        for name, hook in hooks.items():
+            with self.subTest(hook=name):
+                self._reset_boundaries()
+                hook()
+                self._assert_old_branch_read_refused(branch, link)
+
     def test_old_branch_mapping_save_refuses_main_fallback(self):
         _, _, _, _, link = self._imported("subnet", 4, "old-save")
         branch = _provisioned_branch(self, "mapping-old-save")

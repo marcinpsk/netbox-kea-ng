@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 # TYPE_CHECKING-only Family or SyncReport would raise NameError.
 from . import branching, event_scope
 from .constants import Family
+from .dhcp_mapping_lifecycle import ensure_boundaries
 from .ipam_reconciliation import SyncReport, complete_job_observation, upgrade_counts
 
 logger = logging.getLogger(__name__)
@@ -185,7 +186,8 @@ class KeaIpamSyncJob(JobRunner):
 
     @classmethod
     def handle(cls, job: Any, *args: Any, **kwargs: Any) -> None:
-        """Refresh the queued actor before native lifecycle writes can restore a deleted user."""
+        """Restore the mapping guards, and refresh the queued actor before native lifecycle writes restore a user."""
+        ensure_boundaries()
         job.refresh_from_db(fields=["user"])
         super().handle(job, *args, **kwargs)
 

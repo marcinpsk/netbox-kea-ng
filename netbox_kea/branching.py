@@ -482,7 +482,10 @@ class BranchRefusalMiddleware:
         self.get_response = get_response
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
-        """Add the sources header to a response from a plugin-owned callback or GraphQL while a branch is active."""
+        """Restore the mapping guards, then add the sources header to a plugin or GraphQL response in a branch."""
+        from .dhcp_mapping_lifecycle import ensure_boundaries
+
+        ensure_boundaries()
         response = self.get_response(request)
         branch = active_branch()
         match = getattr(request, "resolver_match", None)

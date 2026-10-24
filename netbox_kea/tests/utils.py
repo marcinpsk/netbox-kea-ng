@@ -22,6 +22,7 @@ from django.urls import reverse
 from netaddr import IPNetwork
 from users.models import ObjectPermission
 
+from netbox_kea import dhcp_mapping_lifecycle
 from netbox_kea.models import (
     DhcpIntegrationConfig,
     DisplayCacheConfig,
@@ -69,11 +70,19 @@ class without_dhcp_plugin(TestContextDecorator):
     def enable(self) -> None:
         self.installed = apps.app_configs
         apps.app_configs = {label: config for label, config in self.installed.items() if label != "netbox_dhcp"}
-        apps.clear_cache()
+        _clear_registry_caches()
 
     def disable(self) -> None:
         apps.app_configs = self.installed
-        apps.clear_cache()
+        _clear_registry_caches()
+
+
+def _clear_registry_caches() -> None:
+    """Clear the app registry and the model sets that dhcp_mapping_lifecycle derives from it once per process."""
+    apps.clear_cache()
+    for value in vars(dhcp_mapping_lifecycle).values():
+        if hasattr(value, "cache_clear"):
+            value.cache_clear()
 
 
 def with_kea_client_config(**values) -> SettingsRowOverride:
