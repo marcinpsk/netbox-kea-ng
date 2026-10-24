@@ -11,10 +11,13 @@ from __future__ import annotations
 from django.test import SimpleTestCase
 
 from netbox_kea.dhcp_options import DHCPOption, DHCPOptionIdentity, option_identity
+from netbox_kea.integrations.dhcp_import_report import Kind
 from netbox_kea.mappers.kea_to_dhcp import (
     OptionDefIntent,
     parse_dhcp_config,
 )
+from netbox_kea.tests.test_kea_recordings import _recording
+from netbox_kea.tests.utils import without_dhcp_plugin
 
 
 class TestParseDhcpConfigStructure(SimpleTestCase):
@@ -64,6 +67,36 @@ class TestParseDhcpConfigStructure(SimpleTestCase):
         self.assertIsNone(parse_dhcp_config(conf, 4).subnets[0].kea_subnet_id)
 
 
+@without_dhcp_plugin()
+class TestKeyedValuesThatAreNotText(SimpleTestCase):
+    """A keyed name, range or CIDR that is not text is dropped, so a plan never keys an object by it."""
+
+    def test_each_keyed_value_that_is_not_text_is_dropped(self):
+        conf = {
+            "option-def": None,
+            "client-classes": [{"name": ["bad"]}],
+            "shared-networks": [{"name": {"bad": 1}}],
+            "subnet4": [
+                {"id": True, "subnet": "10.0.0.0/24", "pools": [{"pool": ["10.0.0.10", "10.0.0.20"]}]},
+                {"id": 2, "subnet": ["10.0.1.0/24"]},
+            ],
+        }
+
+        result = parse_dhcp_config(conf, 4)
+
+        self.assertEqual((result.client_classes, result.shared_networks, result.option_defs), ([], [], ()))
+        self.assertEqual([(subnet.kea_subnet_id, subnet.pools) for subnet in result.subnets], [(None, ())])
+        self.assertEqual(
+            {entry.kind for entry in result.dropped},
+            {Kind.OPTION_DEFINITION, Kind.CLIENT_CLASS, Kind.SHARED_NETWORK, Kind.POOL, Kind.SUBNET},
+        )
+
+    def test_an_absent_option_definition_collection_is_empty_and_drops_nothing(self):
+        result = parse_dhcp_config({"subnet4": []}, 4)
+
+        self.assertEqual((result.option_defs, result.dropped), ((), []))
+
+
 class TestParseDhcpConfigPools(SimpleTestCase):
     def test_pools_extracted_in_order(self):
         conf = {
@@ -85,6 +118,51 @@ class TestParseDhcpConfigPools(SimpleTestCase):
     def test_empty_and_non_dict_pool_entries_skipped(self):
         conf = {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": ""}, "garbage", {}]}]}
         self.assertEqual(parse_dhcp_config(conf, 4).subnets[0].pools, ())
+
+    def test_pool_id_classes_and_ddns_settings_are_read(self):
+        pool = {
+            "pool": "10.0.0.10-10.0.0.99",
+            "pool-id": 7,
+            "client-classes": ["voip"],
+            "evaluate-additional-classes": ["late", "later"],
+            "ddns-send-updates": False,
+            "hostname-char-set": "[^A-Za-z0-9.-]",
+        }
+        conf = {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [pool]}]}
+
+        (parsed,) = parse_dhcp_config(conf, 4).subnets[0].pools
+
+        self.assertEqual(
+            (parsed.pool_id, parsed.client_classes, parsed.evaluate_additional_classes, parsed.settings),
+            (7, ("voip",), ("late", "later"), {"ddns-send-updates": False, "hostname-char-set": "[^A-Za-z0-9.-]"}),
+        )
+
+    def test_an_invalid_pool_id_or_class_list_is_dropped_and_the_rest_of_the_pool_is_read(self):
+        pool = {
+            "pool": "10.0.0.10-10.0.0.99",
+            "pool-id": True,
+            "client-classes": "voip",
+            "evaluate-additional-classes": ["late", 7],
+            "ddns-send-updates": True,
+        }
+        conf = {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [pool]}]}
+
+        result = parse_dhcp_config(conf, 4)
+
+        (parsed,) = result.subnets[0].pools
+        self.assertEqual(
+            (parsed.pool_id, parsed.client_classes, parsed.evaluate_additional_classes, parsed.settings),
+            (None, None, None, {"ddns-send-updates": True}),
+        )
+        path = "Dhcp4/subnet4[id=1]/pools[pool=10.0.0.10-10.0.0.99]"
+        self.assertEqual(
+            [(entry.kind, entry.path) for entry in result.dropped],
+            [
+                (Kind.POOL, f"{path}/pool-id"),
+                (Kind.POOL, f"{path}/client-classes"),
+                (Kind.POOL, f"{path}/evaluate-additional-classes"),
+            ],
+        )
 
 
 class TestParseDhcpConfigOptions(SimpleTestCase):
@@ -233,7 +311,7 @@ class TestParseDhcpConfigOptionDefs(SimpleTestCase):
                     "space": "dhcp4",
                     "type": "string",
                     "array": False,
-                    "record-types": [],
+                    "record-types": "",
                     "encapsulate": "",
                 }
             ]
@@ -252,15 +330,11 @@ class TestParseDhcpConfigOptionDefs(SimpleTestCase):
                 encapsulate=None,
             ),
         )
-        self.assertEqual(defs[0].match_key, ("dhcp4", 222))
 
-    def test_record_types_captured(self):
-        conf = {
-            "option-def": [
-                {"code": 223, "name": "r", "space": "dhcp4", "type": "record", "record-types": ["uint8", "string"]}
-            ]
-        }
-        self.assertEqual(parse_dhcp_config(conf, 4).option_defs[0].record_types, ("uint8", "string"))
+    def test_record_types_are_read_from_the_recorded_kea_string(self):
+        conf = _recording(4)["config-get"]["arguments"]["Dhcp4"]
+        definitions = {d.code: d for d in parse_dhcp_config(conf, 4).option_defs}
+        self.assertEqual(definitions[225].record_types, ("uint8", "string"))
 
     def test_non_dict_option_def_skipped(self):
         conf = {"option-def": ["nope", None, {"code": 224, "name": "ok", "space": "dhcp4", "type": "string"}]}
@@ -384,3 +458,86 @@ class TestParseDhcpConfigRobustness(SimpleTestCase):
     def test_invalid_version_raises(self):
         with self.assertRaises(ValueError):
             parse_dhcp_config({}, 5)
+
+
+class TestParseDhcpConfigDroppedEntries(SimpleTestCase):
+    """Each entry that the parse drops is reported with its Kea path, so the import result can list it."""
+
+    def test_each_dropped_entry_has_its_kind_and_kea_path(self):
+        conf = {
+            "option-data": "not-a-list",
+            "option-def": ["nope", {"name": "bad-code", "code": "x"}],
+            "client-classes": [{"test": "member('ALL')"}],
+            "subnet6": [
+                "nope",
+                {"id": 4},
+                {
+                    "id": 5,
+                    "subnet": "2001:db8:5::/64",
+                    "pools": [{"option-data": []}],
+                    "option-data": [{"data": "x"}],
+                },
+            ],
+            "shared-networks": [{"subnet6": [{"id": 6, "subnet": "2001:db8:6::/64"}]}, {"name": "lab", "subnet6": [7]}],
+        }
+
+        dropped = parse_dhcp_config(conf, 6).dropped
+
+        self.assertEqual(
+            [(entry.kind, entry.path) for entry in dropped],
+            [
+                (Kind.OPTION, "Dhcp6/option-data"),
+                (Kind.OPTION_DEFINITION, "Dhcp6/option-def[0]"),
+                (Kind.OPTION_DEFINITION, "Dhcp6/option-def[1]"),
+                (Kind.CLIENT_CLASS, "Dhcp6/client-classes[0]"),
+                (Kind.SUBNET, "Dhcp6/subnet6[0]"),
+                (Kind.SUBNET, "Dhcp6/subnet6[id=4]"),
+                (Kind.POOL, "Dhcp6/subnet6[id=5]/pools[0]"),
+                (Kind.OPTION, "Dhcp6/subnet6[id=5]/option-data[0]"),
+                (Kind.SHARED_NETWORK, "Dhcp6/shared-networks[0]"),
+                (Kind.SUBNET, "Dhcp6/shared-networks[name=lab]/subnet6[0]"),
+            ],
+        )
+        self.assertEqual(dropped[5].detail, "The Subnet has no CIDR.")
+
+    def test_a_valid_configuration_drops_nothing(self):
+        conf = {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.20"}]}]}
+
+        self.assertEqual(parse_dhcp_config(conf, 4).dropped, [])
+
+    def test_a_collection_that_is_not_a_list_is_one_dropped_entry(self):
+        conf = {"option-def": {}, "subnet4": [{"id": 1, "subnet": "10.0.0.0/24", "pools": {}}]}
+
+        self.assertEqual(
+            [(entry.kind, entry.path) for entry in parse_dhcp_config(conf, 4).dropped],
+            [(Kind.OPTION_DEFINITION, "Dhcp4/option-def"), (Kind.POOL, "Dhcp4/subnet4[id=1]/pools")],
+        )
+
+
+class TestOptionUserContext(SimpleTestCase):
+    """An option keeps Kea's user-context for the import, and option edits neither compare nor write it."""
+
+    _LIVE = {"code": 15, "name": "domain-name", "data": "example.org", "user-context": {"comment": "Kea comment"}}
+
+    def test_the_import_reads_the_user_context_of_an_option(self):
+        (option,) = parse_dhcp_config({"option-data": [self._LIVE]}, 4).global_options
+
+        self.assertEqual(option.user_context, {"comment": "Kea comment"})
+
+    def test_a_user_context_does_not_make_two_option_values_differ(self):
+        from netbox_kea.dhcp_options import parse_dhcp_option
+
+        without = {key: value for key, value in self._LIVE.items() if key != "user-context"}
+        self.assertEqual(parse_dhcp_option(self._LIVE), parse_dhcp_option(without))
+
+    def test_an_option_edit_keeps_the_live_user_context(self):
+        from dataclasses import replace
+
+        from netbox_kea.dhcp_options import DHCPOptionChange, DHCPOptionEdit, merge_option_edit, parse_dhcp_option
+
+        seen = parse_dhcp_option(self._LIVE)
+        edit = DHCPOptionEdit((seen,), (DHCPOptionChange(seen, replace(seen, data="example.net")),))
+
+        (merged,) = merge_option_edit(edit, [dict(self._LIVE)], 4)
+
+        self.assertEqual((merged["data"], merged["user-context"]), ("example.net", {"comment": "Kea comment"}))

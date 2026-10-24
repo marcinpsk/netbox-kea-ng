@@ -9,6 +9,7 @@ import re
 from typing import TYPE_CHECKING
 
 import requests
+from django.apps import apps
 from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
@@ -19,6 +20,7 @@ from django.urls import reverse
 from netaddr import IPNetwork
 from users.models import ObjectPermission
 
+from netbox_kea import dhcp_mapping_lifecycle
 from netbox_kea.models import (
     DhcpIntegrationConfig,
     DisplayCacheConfig,
@@ -60,6 +62,27 @@ class SettingsRowOverride(TestContextDecorator):
             raise RuntimeError(f"{self.model.__name__} has no row")
 
 
+class without_dhcp_plugin(TestContextDecorator):
+    """Run a test as the CI unit-test job does: with netbox_dhcp absent from the app registry."""
+
+    def enable(self) -> None:
+        self.installed = apps.app_configs
+        apps.app_configs = {label: config for label, config in self.installed.items() if label != "netbox_dhcp"}
+        _clear_registry_caches()
+
+    def disable(self) -> None:
+        apps.app_configs = self.installed
+        _clear_registry_caches()
+
+
+def _clear_registry_caches() -> None:
+    """Clear the app registry and the model sets that dhcp_mapping_lifecycle derives from it once per process."""
+    apps.clear_cache()
+    for value in vars(dhcp_mapping_lifecycle).values():
+        if hasattr(value, "cache_clear"):
+            value.cache_clear()
+
+
 def with_kea_client_config(**values) -> SettingsRowOverride:
     """Override fields of the KeaClientConfig row, such as ``lease_query_max_unpaged_leases=0`` (no guard)."""
     return SettingsRowOverride(KeaClientConfig, **values)
@@ -95,45 +118,127 @@ def active_tabs(response) -> list[str]:
     return _ACTIVE_TAB.findall(response.content.decode())
 
 
-def linked_dhcp_targets(server):
-    """Create linked Subnets and a Global Reservation with colliding object IDs."""
+def take_reservation_name(subnet_name: str, duid: str):
+    """Create an unmapped Reservation that holds the name the import gives *duid* in a Subnet, so that write fails."""
     from django.apps import apps
-    from ipam.models import Prefix
+
+    from netbox_kea.integrations.dhcp_plugin import _synthesized_name
+
+    holder = apps.get_model("netbox_dhcp", "DHCPServer").objects.create(name=f"name holder {duid[-8:]}")
+    return apps.get_model("netbox_dhcp", "HostReservation").objects.create(
+        name=_synthesized_name(subnet_name, f" duid:{duid}"), dhcp_server=holder, duid="00:00:00:01"
+    )
+
+
+def imported_dhcp_server(server, family: int):
+    """Return the DHCP plugin DHCPServer that the DHCP Import maps to the global configuration of *family*."""
+    from netbox_kea.models import KeaDhcpLink
+
+    return KeaDhcpLink.objects.get(server=server, family=family, kind="server").sys4_object
+
+
+def imported_dhcp_servers(server) -> list[int]:
+    """Return the primary keys of the DHCPServers that the DHCP Import maps to *server*, for a filter."""
+    from netbox_kea.models import KeaDhcpLink
+
+    return list(KeaDhcpLink.objects.filter(server=server, kind="server").values_list("object_id", flat=True))
+
+
+def linked_dhcp_targets(server):
+    """Create one linked target of each DHCP Import Mapping kind, with object IDs that collide across models.
+
+    The Pool, the PD Pool and the In-Subnet Reservation sit in Subnets that have no mapping, so deleting a linked
+    Subnet reaches no other target.
+    """
+    from django.apps import apps
+    from ipam.models import IPRange, Prefix
 
     from netbox_kea.models import KeaDhcpLink
 
-    dhcp_server = apps.get_model("netbox_dhcp", "DHCPServer").objects.create(name=server.name)
-    subnet_model = apps.get_model("netbox_dhcp", "Subnet")
-    reservation_model = apps.get_model("netbox_dhcp", "HostReservation")
-    targets = [
-        subnet_model.objects.create(
+    def model(name):
+        return apps.get_model("netbox_dhcp", name)
+
+    dhcp_server = model("DHCPServer").objects.create(name=server.name)
+    subnets = [
+        model("Subnet").objects.create(
             pk=100 + index,
             name=f"linked-subnet-{index}",
             subnet_id=100 + index,
             dhcp_server=dhcp_server,
-            prefix=Prefix.objects.create(prefix=f"198.18.{index}.0/24"),
+            prefix=Prefix.objects.create(prefix=IPNetwork(f"198.18.{index}.0/24")),
         )
-        for index in range(2)
+        for index in range(3)
     ]
-    targets.append(
-        reservation_model.objects.create(
-            pk=100, name="linked-global-reservation", dhcp_server=dhcp_server, duid="00:01:02:03"
-        )
+    ip_range = IPRange.objects.create(
+        start_address=IPNetwork("198.18.2.10/24"), end_address=IPNetwork("198.18.2.20/24")
     )
-    links = [
-        KeaDhcpLink.objects.create(
-            server=server,
-            family=4,
-            sys4_object=target,
-            **(
-                {"kea_subnet_id": index + 1}
-                if isinstance(target, subnet_model)
-                else {"kea_identity": "duid:00:01:02:03"}
+    # The DHCP plugin holds a PD Pool only in a DHCPv6 Subnet.
+    subnet6 = model("Subnet").objects.create(
+        pk=103,
+        name="linked-subnet-6",
+        subnet_id=103,
+        dhcp_server=dhcp_server,
+        prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:18::/64")),
+    )
+    shared_prefix = Prefix.objects.create(prefix=IPNetwork("198.18.10.0/24"))
+    reservation_model = model("HostReservation")
+    targets = [
+        (subnets[0], {"kind": "subnet", "kea_subnet_id": 1}),
+        (subnets[1], {"kind": "subnet", "kea_subnet_id": 2}),
+        (
+            reservation_model.objects.create(
+                pk=100, name="linked-global-reservation", dhcp_server=dhcp_server, duid="00:01:02:03"
             ),
-        )
-        for index, target in enumerate(targets)
+            {"kind": "reservation", "kea_identity": "duid:00:01:02:03"},
+        ),
+        (
+            model("SharedNetwork").objects.create(
+                pk=100, name="linked-shared-network", dhcp_server=dhcp_server, prefix=shared_prefix
+            ),
+            {"kind": "shared_network", "kea_identity": "office"},
+        ),
+        (
+            model("Pool").objects.create(pk=100, name="linked-pool", subnet=subnets[2], ip_range=ip_range),
+            {"kind": "pool", "kea_subnet_id": 3, "kea_identity": "198.18.2.10-198.18.2.20"},
+        ),
+        (
+            reservation_model.objects.create(pk=101, name="linked-in-subnet-reservation", subnet=subnets[2], duid="04"),
+            {"kind": "reservation", "kea_subnet_id": 3, "kea_identity": "duid:04"},
+        ),
+        (
+            model("PDPool").objects.create(
+                pk=100,
+                name="linked-pd-pool",
+                subnet=subnet6,
+                prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:1800::/48")),
+                delegated_length=56,
+            ),
+            {"kind": "pd_pool", "family": 6, "kea_subnet_id": 4, "kea_identity": "2001:db8:1800::/48/56"},
+        ),
+        (
+            model("ClientClass").objects.create(pk=100, name="linked-client-class", dhcp_server=dhcp_server),
+            {"kind": "client_class", "kea_identity": "voip"},
+        ),
+        (
+            # The DHCP plugin seeds its standard Option Definitions, so this ID is out of their range.
+            model("OptionDefinition").objects.create(
+                pk=1000,
+                name="linked-option-definition",
+                family=4,
+                space="dhcp4",
+                code=222,
+                type="uint8",
+                dhcp_server=dhcp_server,
+            ),
+            {"kind": "option_definition", "kea_identity": "dhcp4:222"},
+        ),
+        # Last: deleting the DHCPServer cascades to the targets that it holds.
+        (dhcp_server, {"kind": "server"}),
     ]
-    return tuple(zip(targets, links, strict=True))
+    return tuple(
+        (target, KeaDhcpLink.objects.create(server=server, sys4_object=target, **{"family": 4, **source}))
+        for target, source in targets
+    )
 
 
 _INT_PK_RE = re.compile(r"/servers/(\d+)/")

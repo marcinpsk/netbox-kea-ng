@@ -218,6 +218,35 @@ def test_codecov_uploads_only_the_report_that_reads_the_coverage_configuration()
         assert upload.get("disable_search") is True, "the uploader adds every coverage file it finds"
 
 
+#: CI jobs that run the unit suite without reporting coverage, and the job that measures the same code.
+_UNMEASURED_UNIT_JOBS = {"event-rollback-test-netbox-4-3": "unit-test"}
+
+
+def test_every_job_that_runs_the_unit_suite_reports_its_coverage():
+    """A test that only one job can run (it needs a plugin, say) counts as coverage only when that job uploads it."""
+    jobs = yaml.safe_load((REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text())["jobs"]
+    unit_jobs = {
+        name: job
+        for name, job in jobs.items()
+        if any(
+            "netbox_kea/tests/" in command
+            for step in job.get("steps", ())
+            for command in _pytest_commands(step.get("run", ""))
+        )
+    }
+    assert {"unit-test", "dhcp-plugin-test"} <= unit_jobs.keys(), "this guard would pass without reading a unit job"
+    assert set(_UNMEASURED_UNIT_JOBS) <= unit_jobs.keys(), "an exemption names a job that runs no unit test"
+    for name, job in unit_jobs.items():
+        if name in _UNMEASURED_UNIT_JOBS:
+            continue
+        steps = job.get("steps", ())
+        commands = [command for step in steps for command in _pytest_commands(step.get("run", ""))]
+        assert any("--cov=netbox_kea" in command for command in commands), f"{name} runs the unit suite without --cov"
+        assert any("codecov/codecov-action" in str(step.get("uses", "")) for step in steps), (
+            f"{name} uploads no coverage"
+        )
+
+
 def test_the_ci_default_guard_reads_the_value_each_claim_names():
     """Fail a claim only for the value it actually names.
 
@@ -1302,6 +1331,115 @@ def test_dhcp_plugin_ci_uses_xdist():
     command = re.split(r"\n\s*- name:", workflow.split(marker, 1)[1], maxsplit=1)[0]
 
     assert [_xdist_settings(entry) for entry in _pytest_commands(command)] == [{"workers": "1", "maxschedchunk": "1"}]
+
+
+#: A test that skips when the DHCP plugin is absent, as each module in this suite writes it.
+_DHCP_PLUGIN_SKIP = re.compile(r"\bnot apps\.is_installed\((?:\"netbox_dhcp\"|DHCP_PLUGIN)\)")
+#: One whole test module in a pytest command. A node ID (``module.py::Test``) runs part of it only.
+_WHOLE_TEST_MODULE = re.compile(r"netbox_kea/tests/(test_\w+\.py)(?=\s|$)")
+
+
+def test_a_whole_test_module_matches_as_the_last_token_of_a_command():
+    """A module path that ends a command runs whole; a node ID runs part of the module only."""
+    (command,) = _pytest_commands("pytest -v netbox_kea/tests/test_a.py::Test netbox_kea/tests/test_b.py\n")
+
+    assert _WHOLE_TEST_MODULE.findall(command) == ["test_b.py"]
+
+
+def test_every_module_that_needs_the_dhcp_plugin_runs_in_a_dhcp_plugin_job():
+    """A module that skips without netbox_dhcp must run whole in a CI job that installs it."""
+    workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    covered = {
+        module
+        for job in ("dhcp-plugin-test", "branching-test")
+        for command in _pytest_commands(_workflow_job(workflow, job))
+        for module in _WHOLE_TEST_MODULE.findall(command)
+    }
+    needs_plugin = {
+        path.name
+        for path in (REPOSITORY_ROOT / "netbox_kea" / "tests").glob("test_*.py")
+        if _DHCP_PLUGIN_SKIP.search(path.read_text())
+    }
+
+    assert {"test_dhcp_import.py", "test_dhcp_import_ownership.py"} <= needs_plugin, needs_plugin
+    assert not needs_plugin - covered, f"No DHCP plugin CI job runs: {sorted(needs_plugin - covered)}"
+
+
+def _unguarded_plugin_free_classes(path: Path) -> list[str]:
+    """Return the classes of *path* that import the DHCP integration and run without netbox_dhcp, undecorated."""
+    source = path.read_text()
+    classes = {node.name: node for node in ast.parse(source).body if isinstance(node, ast.ClassDef)}
+
+    def skips(node: ast.ClassDef) -> bool:
+        # A base skip counts only when the base is defined in the same module.
+        own = _DHCP_PLUGIN_SKIP.search(ast.get_source_segment(source, node) or "")
+        bases = (classes.get(base.id) for base in node.bases if isinstance(base, ast.Name))
+        return bool(own) or any(base is not None and skips(base) for base in bases)
+
+    found = []
+    for node in classes.values():
+        imported = (
+            f"{child.module}.{alias.name}"
+            for child in ast.walk(node)
+            if isinstance(child, ast.ImportFrom)
+            for alias in child.names
+        )
+        imports_integration = any(name.startswith("netbox_kea.integrations.dhcp_plugin") for name in imported)
+        decorators = {ast.unparse(decorator) for decorator in node.decorator_list}
+        if imports_integration and not skips(node) and "without_dhcp_plugin()" not in decorators:
+            found.append(f"{path.name}::{node.name}")
+    return found
+
+
+def test_the_plugin_free_class_guard_reports_each_import_form_and_accepts_each_skip(tmp_path):
+    """Report an unguarded class for both import forms; accept an own, an inherited or a decorator skip."""
+    module = tmp_path / "test_sample.py"
+    # The labels are joined in, so the module scan above does not read this file as one that skips.
+    by_name, by_constant = '"netbox_dhcp"', "DHCP_PLUGIN"
+    module.write_text(
+        "class ReExportTest(TestCase):\n"
+        "    def test_it(self):\n"
+        "        from netbox_kea.integrations import dhcp_plugin\n"
+        "class SubmoduleTest(TestCase):\n"
+        "    def test_it(self):\n"
+        "        from netbox_kea.integrations.dhcp_plugin import is_available\n"
+        "class OwnSkipTest(TestCase):\n"
+        "    def setUp(self):\n"
+        f"        if not apps.is_installed({by_name}):\n"
+        "            self.skipTest('absent')\n"
+        "        from netbox_kea.integrations import dhcp_plugin\n"
+        "class _SkippingBase(TestCase):\n"
+        "    @classmethod\n"
+        "    def setUpClass(cls):\n"
+        f"        if not apps.is_installed({by_constant}):\n"
+        "            raise unittest.SkipTest('absent')\n"
+        "class InheritedSkipTest(_SkippingBase):\n"
+        "    def test_it(self):\n"
+        "        from netbox_kea.integrations import dhcp_plugin\n"
+        "class GrandchildSkipTest(InheritedSkipTest):\n"
+        "    def test_more(self):\n"
+        "        from netbox_kea.integrations import dhcp_plugin\n"
+        "@without_dhcp_plugin()\n"
+        "class DecoratedTest(TestCase):\n"
+        "    def test_it(self):\n"
+        "        from netbox_kea.integrations import dhcp_plugin\n"
+        "class UnrelatedImportTest(TestCase):\n"
+        "    def test_it(self):\n"
+        "        from netbox_kea.integrations import dhcp_import\n"
+    )
+
+    assert _unguarded_plugin_free_classes(module) == ["test_sample.py::ReExportTest", "test_sample.py::SubmoduleTest"]
+
+
+def test_a_test_class_that_runs_without_the_dhcp_plugin_also_runs_without_it_locally():
+    """CI unit-test has no netbox_dhcp; the local runner has it, so a plugin lookup there passes locally only."""
+    found = [
+        name
+        for path in sorted((REPOSITORY_ROOT / "netbox_kea" / "tests").glob("test_*.py"))
+        for name in _unguarded_plugin_free_classes(path)
+    ]
+
+    assert not found, f"Decorate with @without_dhcp_plugin(), or skip without netbox_dhcp: {found}"
 
 
 def test_pytest_configuration_works_with_django_plugin_disabled():

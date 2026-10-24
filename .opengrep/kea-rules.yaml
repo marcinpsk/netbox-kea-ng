@@ -1269,10 +1269,6 @@ rules:
       - pattern-not-inside: |
           def _read_later_search_page(...):
               ...
-      # The DHCP plugin import reads the Reservation Snapshot to synchronize it, not to show it.
-      - pattern-not-inside: |
-          def _read_reservation_observation(...):
-              ...
       # The DDNS suffix of a hostname preview.
       - pattern-not-inside: |
           def _published_name_preview(...):
@@ -1295,7 +1291,7 @@ rules:
       the failure. A hand-written ladder writes its own text, and the texts drift. Run the read through the loader,
       and catch only a ValueError that the site can raise, with an accurate message.
       Exempt by name: the reads that degrade silently and log the failure (utilization, status, the read back of a
-      created Lease, a later page of a Reservation search, the Reservation read of the DHCP plugin import).
+      created Lease, a later page of a Reservation search).
       Limits: an except of Exception, of RuntimeError alone, of a subclass such as requests.ConnectionError, or of
       an aliased import is not seen, and the rule does not check that a handler logs.
     metadata:
@@ -1371,10 +1367,6 @@ rules:
       # A later page of a Reservation search ends the batch with a diagnostic; the first page raises to the loader.
       - pattern-not-inside: |
           def _read_later_search_page(...):
-              ...
-      # The DHCP plugin import records an unread Reservation Snapshot in its summary.
-      - pattern-not-inside: |
-          def _read_reservation_observation(...):
               ...
 
   - id: kea-catalogue-absence-without-consistency

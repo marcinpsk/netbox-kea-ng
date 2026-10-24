@@ -34,6 +34,7 @@ from netbox.settings import VERSION
 
 from netbox_kea import event_scope
 from netbox_kea.ipam_reconciliation import claim
+from netbox_kea.models import DhcpImportEntry
 from netbox_kea.sync import sync_mac_address
 from netbox_kea.tests.kea_stub import stub_kea
 from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
@@ -413,12 +414,39 @@ class DhcpImportEventTest(_Recorded, TransactionTestCase):
             [str(message) for message in get_messages(response.wsgi_request)],
         )
         self.assertFalse(Prefix.objects.filter(prefix="2001:db8:78::/64").exists())
+        # The stored result keeps the committed DHCPv4 facts and names the DHCPv6 family that stopped.
+        stored = set(DhcpImportEntry.objects.filter(run__server=server).values_list("kind", "outcome", "kea_path"))
+        self.assertIn(("subnet", "created", "Dhcp4/subnet4[id=1]"), stored)
+        self.assertIn(("server", "skipped", "Dhcp6"), stored)
         subnet = apps.get_model("netbox_dhcp", "Subnet").objects.get(prefix__prefix="10.78.0.0/24")
         self.assertIn((type(subnet), subnet.pk), self.dispatched())
         if NESTED_TRACKING:
             self.assert_every_event_names_a_committed_row()
         else:
             self.assertIn(Prefix, [model for model, _ in self.reverted()])
+
+    @unittest.skipUnless(NESTED_TRACKING, "Units need the nestable event_tracking of NetBox 4.6.9")
+    def test_a_family_whose_events_fail_after_its_commit_keeps_its_entries(self):
+        server = _make_db_server(name=f"kea-dispatch-{uuid.uuid4()}", sync_dhcp_plugin_enabled=True, dhcp6=False)
+        conf = {4: {"subnet4": [{"id": 1, "subnet": "10.79.0.0/24"}]}}
+
+        with override_settings(EVENTS_PIPELINE=[_FAILING_PIPELINE]):
+            response = self._post_import(server, conf)
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)],
+            [
+                (
+                    "The DHCP-plugin import saved its changes, but NetBox could not dispatch their events, "
+                    "and the import stopped. See the server logs."
+                )
+            ],
+        )
+        self.assertTrue(apps.get_model("netbox_dhcp", "Subnet").objects.filter(prefix__prefix="10.79.0.0/24").exists())
+        stored = set(DhcpImportEntry.objects.filter(run__server=server).values_list("kind", "outcome", "kea_path"))
+        self.assertIn(("subnet", "created", "Dhcp4/subnet4[id=1]"), stored)
+        self.assertNotIn("skipped", {outcome for _kind, outcome, _path in stored})
 
     def test_a_refused_import_receipt_dispatches_no_reverted_server_event(self):
         from netbox_kea.models import Server
@@ -437,6 +465,9 @@ class DhcpImportEventTest(_Recorded, TransactionTestCase):
         self.assertEqual((response.status_code, refused), (302, [server.pk]))
         server.refresh_from_db()
         self.assertEqual((server.ipam_initial_observations, server.ipam_first_complete_at), ({}, None))
+        # The family committed before the receipt failed, so the run keeps its entries.
+        stored = set(DhcpImportEntry.objects.filter(run__server=server).values_list("kind", "outcome", "kea_path"))
+        self.assertIn(("subnet", "created", "Dhcp4/subnet4[id=1]"), stored)
         subnet = apps.get_model("netbox_dhcp", "Subnet").objects.get(prefix__prefix="10.88.0.0/24")
         self.assertIn((type(subnet), subnet.pk), self.dispatched())
         receipts = [
