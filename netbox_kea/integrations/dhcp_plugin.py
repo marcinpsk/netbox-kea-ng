@@ -678,7 +678,8 @@ def _data_gap(opt: DHCPOption, definition, capabilities: PluginCapabilities, fam
 
     Only a ValidationError of the data check of the plugin is a refusal. Another error is a write failure.
     """
-    if definition is None or capabilities.has(Capability.KEA_OPTION_DATA):
+    # The probe checks only samples, so the capability does not prove that the plugin accepts this data.
+    if definition is None:
         return None
     identity = option_identity(opt, family)
     try:

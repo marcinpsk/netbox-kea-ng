@@ -2844,6 +2844,25 @@ class OptionMappingTest(TestCase):
         self.assertEqual(self._write_failures(summary), [])
         self.assertEqual(self._subnet_10_rows(), [(6, "192.0.2.53"), (23, "40")])
 
+    def test_option_data_that_the_probe_samples_miss_and_the_plugin_refuses_is_unsupported(self):
+        def refuse_one_address(data: str, kind: str) -> None:
+            if data == "192.0.2.99":
+                raise ValidationError({"data": "Not an address this plugin release reads"})
+
+        # A plugin release that accepts every probe sample, so it has the capability, and refuses another form.
+        with (
+            patch(f"{DHCP_PLUGIN}.validators.validate_data", refuse_one_address),
+            patch(f"{DHCP_PLUGIN}.models.option.validate_data", refuse_one_address),
+        ):
+            self.assertTrue(probe().has(Capability.KEA_OPTION_DATA))
+            summary = self._run(
+                self._subnet_10_options({"code": 6, "data": "192.0.2.99"}, {"code": 42, "data": "192.0.2.1"})
+            )
+
+        self.assertEqual(self._write_failures(summary), [])
+        self.assertEqual(self._refused_data(summary), [f"{_SUBNET_10}/option-data[code=6]"])
+        self.assertEqual(self._subnet_10_rows(), [(42, "192.0.2.1")])
+
     def test_the_import_finds_a_gap_17_refusal_before_it_writes_the_option(self):
         held = {"code": 6, "data": "192.0.2.53"}
         validators = {"netbox_dhcp.option": [f"{__name__}.RefuseEveryOptionValidator"]}
