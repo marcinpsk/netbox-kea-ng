@@ -925,13 +925,13 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         executor.migrate([("netbox_kea", name)])
         return current
 
-    def test_0029_gives_each_released_mapping_the_kind_of_its_source(self):
+    def test_0028_gives_each_released_mapping_the_kind_of_its_source(self):
         from django.db import connection
         from django.db.migrations.executor import MigrationExecutor
 
         server = _make_db_server(name="released-mappings")
         object_type = ContentType.objects.get_for_model(Server)
-        current = self._migrate_to("0028_dhcpimportrun_dhcpimportentry")
+        current = self._migrate_to("0027_displaycacheconfig")
         with connection.cursor() as cursor:
             for object_id, subnet_id, identity in ((1, 7, None), (2, None, "duid:01:02:03")):
                 cursor.execute(
@@ -952,7 +952,7 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         )
         self.assertIsNone(KeaDhcpLink.objects.get(server=server, object_id=2).kea_subnet_id)
 
-    def test_0029_reversed_removes_the_mappings_that_the_older_schema_cannot_hold(self):
+    def test_0028_reversed_removes_the_mappings_that_the_older_schema_cannot_hold(self):
         server = _make_db_server(name="newer-mappings")
         object_type = ContentType.objects.get_for_model(Server)
         held = {"subnet": {"kea_subnet_id": 7}, "reservation": {"kea_identity": "duid:01:02:03"}}
@@ -975,7 +975,7 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
             object_id=10,
         )
 
-        self._migrate_to("0028_dhcpimportrun_dhcpimportentry")
+        self._migrate_to("0027_displaycacheconfig")
 
         from django.db import connection
 
@@ -983,7 +983,7 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
             cursor.execute("SELECT object_id FROM netbox_kea_keadhcplink WHERE server_id = %s", [server.pk])
             self.assertEqual({row[0] for row in cursor.fetchall()}, {1, 2})
 
-    def test_0031_reversed_removes_the_family_mappings_that_the_older_schema_cannot_hold(self):
+    def test_0028_reversed_removes_the_family_mappings_that_the_older_schema_cannot_hold(self):
         server = _make_db_server(name="family-mappings")
         object_type = ContentType.objects.get_for_model(Server)
         KeaDhcpLink.objects.create(
@@ -991,7 +991,7 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         )
         KeaDhcpLink.objects.create(server=server, family=4, kind="server", object_type=object_type, object_id=2)
 
-        self._migrate_to("0030_dhcpimportentry_capability")
+        self._migrate_to("0027_displaycacheconfig")
 
         from django.db import connection
 
