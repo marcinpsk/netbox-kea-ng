@@ -665,6 +665,36 @@ def _resolve_option_definition(
     return found if found is not None else _without_definition(opt, space, family, capabilities)
 
 
+@dataclass(frozen=True)
+class _Skipped:
+    """The entry and the warning of a planned Option that the run does not write."""
+
+    entry: ImportEntry
+    warning: str
+
+
+def _data_gap(opt: DHCPOption, definition, capabilities: PluginCapabilities, family: int, path: str) -> _Skipped | None:
+    """Return why the run does not write *opt* at *path*: the DHCP plugin refuses its data (gap 17), or its check failed.
+
+    Only a ValidationError of the data check of the plugin is a refusal. Another error is a write failure.
+    """
+    # The probe checks only samples, so the capability does not prove that the plugin accepts this data.
+    if definition is None:
+        return None
+    identity = option_identity(opt, family)
+    try:
+        refusal = capabilities.data_refusal(definition.type, definition.array, definition.record_types, opt.data or "")
+    except Exception as exc:  # noqa: BLE001 (one bad option must not abort the import)
+        return _Skipped(write_failed(family, Kind.OPTION, path), f"option {identity}: {type(exc).__name__}: {exc}")
+    if refusal is None:
+        return None
+    detail = f"The installed DHCP plugin refuses this form of option data, which Kea accepts: {refusal}"
+    return _Skipped(
+        unsupported(family, Kind.OPTION, path, Capability.KEA_OPTION_DATA, detail),
+        f"option {identity}: skipped. {detail}",
+    )
+
+
 def option_values(
     candidate, opt: DHCPOption, family: int, capabilities: PluginCapabilities, summary, source: _Source
 ) -> dict:
@@ -698,7 +728,7 @@ def option_values(
 
 @dataclass(frozen=True)
 class _PlannedOption:
-    """A Kea option that the DHCP plugin can hold, with its DHCP Import Mapping source (``None``: none)."""
+    """A Kea option with an Option Definition that the plugin holds, and its mapping source (``None``: none)."""
 
     option: DHCPOption
     path: str
@@ -707,6 +737,8 @@ class _PlannedOption:
     definition: Any
     classes: frozenset[int]
     source: MappingSource | None
+    # Why the run does not write the Option (see _data_gap): the run still pairs it.
+    skipped: _Skipped | None = None
 
 
 def _option_code(row) -> tuple:
@@ -824,7 +856,8 @@ def upsert_options(
             space = opt.space or kea_paths.default_space(family)
             code = definition.code if definition is not None else opt.code
             source = key.source if key is not None else None
-            planned.append(_PlannedOption(opt, path, space, code, definition, classes, source))
+            skipped = _data_gap(opt, definition, capabilities, family, path)
+            planned.append(_PlannedOption(opt, path, space, code, definition, classes, source, skipped))
     mapped = [mapped_target(server, family, item.source) if item.source is not None else None for item in planned]
     adopts = parent is not None and not options_mapped(server, family, parent)
     # An Option without a source pairs on every run; one with a source only while its object adopts.
@@ -848,6 +881,10 @@ def upsert_options(
         if parent is not None:
             mark_options_mapped(server, family, parent)
     for item, row in zip(planned, mapped, strict=True):
+        if item.skipped is not None:
+            summary.record(item.skipped.entry)
+            summary.warn(item.skipped.warning)
+            continue
         target = row if row is not None else paired.get(id(item))
         _write_option(item, target, parent_obj, ct, family, references, summary, capabilities)
 
@@ -1968,6 +2005,7 @@ def upsert_pools(
     for planned_pool in planned.pools:
         pool_intent = planned_pool.intent
         path = pool_path(parent_path, planned_pool, intent.family)
+        options = planned_options(planned_pool, intent.family, references.definitions.declared)
         try:
             with event_scope.atomic():
                 pool = planned_pool.key.range if planned_pool.key is not None else None
@@ -1997,12 +2035,13 @@ def upsert_pools(
         except Exception as exc:  # noqa: BLE001 — one bad pool must not abort the import
             summary.record(write_failed(intent.family, Kind.POOL, path))
             summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: {exc}")
+            _skip_options(summary, intent.family, path, options)
             continue
         if range_obj is None:
             summary.record(_unusable_pool(intent.family, path, planned_pool.key, result))
             summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: unusable range, skipped")
+            _skip_options(summary, intent.family, path, options)
             continue
-        options = planned_options(planned_pool, intent.family, references.definitions.declared)
         if pool_obj is None:
             _skip_options(summary, intent.family, path, options)
             continue

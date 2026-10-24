@@ -251,28 +251,27 @@ class _ParseLog:
         )
 
 
-def _optional_dhcp_option(raw, path: str, log: _ParseLog) -> DHCPOption | None:
+def _optional_dhcp_option(raw, path: str, kind: Kind, log: _ParseLog) -> DHCPOption | None:
     try:
         return parse_dhcp_option(raw)
     except ValueError as exc:
         logger.warning("Discarded an invalid option-data entry: %r", raw, exc_info=True)
-        log.dropped.append(DroppedEntry(Kind.OPTION, path, str(exc)))
+        log.dropped.append(DroppedEntry(Kind.OPTION, path, str(exc), parent=kind))
         return None
 
 
-def _options(raw_list, parent: str, log: _ParseLog) -> tuple[DHCPOption, ...]:
-    """Normalize the ``option-data`` list of the object at *parent*, dropping invalid entries."""
+def _options(raw_list, parent: str, kind: Kind, log: _ParseLog) -> tuple[DHCPOption, ...]:
+    """Normalize the ``option-data`` list of the object of *kind* at *parent*, dropping invalid entries."""
     if raw_list is None:
         return ()
     if not isinstance(raw_list, list):
         logger.warning("Discarded a non-list option-data collection: %r", raw_list)
-        log.dropped.append(
-            DroppedEntry(Kind.OPTION, kea_paths.option_collection(parent), "The collection is not a list.")
-        )
+        path = kea_paths.option_collection(parent)
+        log.dropped.append(DroppedEntry(Kind.OPTION, path, "The collection is not a list.", parent=kind))
         return ()
     options = []
     for index, raw in enumerate(raw_list):
-        option = _optional_dhcp_option(raw, kea_paths.option_entry(parent, index), log)
+        option = _optional_dhcp_option(raw, kea_paths.option_entry(parent, index), kind, log)
         if option is not None:
             log.leave_out(kea_paths.OPTION_DATA, Kind.OPTION, kea_paths.option(parent, option, log.family), raw)
             options.append(option)
@@ -336,7 +335,7 @@ def _pools(raw_list, subnet_path: str, log: _ParseLog) -> tuple[PoolIntent, ...]
         out.append(
             PoolIntent(
                 pool=pool,
-                options=_options(entry.get("option-data"), path, log),
+                options=_options(entry.get("option-data"), path, Kind.POOL, log),
                 pool_id=_pool_id(entry.get(kea_paths.POOL_ID), Kind.POOL, path, log),
                 client_classes=_class_list(entry, kea_paths.CLIENT_CLASSES, Kind.POOL, path, log),
                 evaluate_additional_classes=_class_list(
@@ -401,7 +400,7 @@ def _pd_pool_intent(raw, subnet_path: str, log: _ParseLog) -> PDPoolIntent | Non
         prefix=prefix,
         delegated_length=delegated,
         excluded_prefix=_excluded_prefix(entry, path, log),
-        options=_options(entry.get(kea_paths.OPTION_DATA), path, log),
+        options=_options(entry.get(kea_paths.OPTION_DATA), path, Kind.PD_POOL, log),
         pool_id=_pool_id(entry.get(kea_paths.POOL_ID), Kind.PD_POOL, path, log),
         client_classes=_class_list(entry, kea_paths.CLIENT_CLASSES, Kind.PD_POOL, path, log),
         evaluate_additional_classes=_class_list(entry, kea_paths.EVALUATE_ADDITIONAL_CLASSES, Kind.PD_POOL, path, log),
@@ -464,7 +463,7 @@ def _subnet_intent(raw, family: int, shared_network: str | None, path: str, log:
         family=family,
         shared_network=shared_network,
         pools=_pools(raw.get("pools", []), subnet_path, log),
-        options=_options(raw.get("option-data"), subnet_path, log),
+        options=_options(raw.get("option-data"), subnet_path, Kind.SUBNET, log),
         settings=_settings(raw),
         client_classes=_class_list(raw, kea_paths.CLIENT_CLASSES, Kind.SUBNET, subnet_path, log),
         evaluate_additional_classes=_class_list(
@@ -492,7 +491,7 @@ def _client_class_intent(raw, family: int, path: str, log: _ParseLog) -> ClientC
         test=raw.get("test", "") or "",
         template_test=raw.get("template-test", "") or "",
         only_in_additional_list=only,
-        options=_options(raw.get("option-data"), kea_paths.client_class(family, name), log),
+        options=_options(raw.get("option-data"), kea_paths.client_class(family, name), Kind.CLIENT_CLASS, log),
         settings=_settings(raw),
         user_context=raw.get(kea_paths.USER_CONTEXT),
         option_defs=_option_defs(raw.get(kea_paths.OPTION_DEF, []), family, log, name),
@@ -541,7 +540,7 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
     root = kea_paths.daemon(family)
     log = _ParseLog(family, result.dropped)
     log.leave_out(root, Kind.SERVER, root, conf)
-    result.global_options = _options(conf.get("option-data"), root, log)
+    result.global_options = _options(conf.get("option-data"), root, Kind.SERVER, log)
     result.option_defs = _option_defs(conf.get(kea_paths.OPTION_DEF, []), family, log)
     result.global_settings = _settings(conf)
     # Global-only keys behind a DHCP Plugin Capability.
@@ -575,7 +574,7 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
             SharedNetworkIntent(
                 name=name,
                 family=family,
-                options=_options(raw_net.get("option-data"), net_path, log),
+                options=_options(raw_net.get("option-data"), net_path, Kind.SHARED_NETWORK, log),
                 settings=_settings(raw_net),
                 client_classes=_class_list(raw_net, kea_paths.CLIENT_CLASSES, Kind.SHARED_NETWORK, net_path, log),
                 evaluate_additional_classes=_class_list(

@@ -59,6 +59,7 @@ urlpatterns = (
         name="combined_server_status_badge",
     ),
     path("settings/", settings_page.SettingsView.as_view(), name="settings"),
+    path("settings/<slug:section>/", settings_page.SettingsSectionView.as_view(), name="settings_section"),
     path("sync-jobs/", sync_jobs.SyncJobsView.as_view(), name="sync_jobs"),
     path("servers/<int:pk>/sync-now/", sync_jobs.ServerSyncNowView.as_view(), name="server_sync_now"),
     path("servers/<int:pk>/sync-toggle/", sync_jobs.ServerSyncToggleView.as_view(), name="server_sync_toggle"),

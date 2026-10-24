@@ -143,6 +143,9 @@ mapping, and the next run updates the same Option. Then the mapping of the objec
 whatever the writes do. After that, the object takes no unmapped Option again. The global configuration, client classes,
 Shared Networks, Subnets, Pools, delegated-prefix Pools and Reservations take them this way. A run that cannot read the
 Reservations does not reach them, so a later run that reads them maps their Options.
+A branch revert keeps the fact that the Options of an object are mapped, as main recorded it. When change log retention
+has removed the change log entry of the merge, the revert restores that fact from the branch, so the restored object can
+take Options without a mapping again.
 
 A mapping keeps 517 characters. A DHCP Option whose identity is longer has no mapping, and neither has a DHCP Option
 of an object without a mapping. On every run, such an Option takes an Option without a mapping of the same object, as
@@ -180,7 +183,7 @@ unsupported: the run reports it with the capability and its row in the
 run imports. With netbox-plugin-dhcp 0.2.0, the plugin has none of these capabilities.
 
 The import reads the models of the installed DHCP plugin at each run: their fields, field types, choices, validators,
-nullability and uniqueness constraints. It does not compare version numbers, so a fork or a backport with the change
+nullability and uniqueness constraints. It also lets the plugin check samples of option data that Kea accepts. It does not compare version numbers, so a fork or a backport with the change
 also counts. When you upgrade to a DHCP plugin release that gains a capability, the next run imports the facts that
 need it. No netbox-kea upgrade is necessary.
 
@@ -200,6 +203,7 @@ need it. No netbox-kea upgrade is necessary.
 | `dhcp4o6_subnet_selection` | DHCPv4-over-DHCPv6 Subnet selection | 12 | `4o6-subnet`, `4o6-interface` and `4o6-interface-id` of a DHCPv4 Subnet |
 | `address_registration` | Address registration | 13 | `allow-address-registration` (DHCPv6) |
 | `stash_agent_options` | Stashed relay agent options | 14 | `stash-agent-options` (DHCPv4) |
+| `kea_option_data` | DHCP Option data in each form that Kea accepts | 17 | A DHCP Option whose data netbox-plugin-dhcp 0.2.0 refuses. The plugin checks each value of the data against the type of the Option Definition by its own rules, and it does not read `csv-format`. So it refuses for example hexadecimal data with `csv-format: false` (except for the binary and string types, and digits that it reads as a value of the type), a boolean `1` or `0`, an integer in hexadecimal (`0x10`), a single-label FQDN, tuple data that is not JSON, and a value with spaces around it, which Kea removes. The import runs the data check of the plugin before it writes the Option. If the data check fails with an error that is not a refusal, the Option is `write_failed`. A write that fails for a different reason, for example a custom validator, is also `write_failed` |
 
 A DHCP Option that needs an unsupported Option Definition is unsupported for the same reason. The DHCP plugin 0.2.0
 keeps the relay as free text, which the import does not write, so a value that you enter there stays.
@@ -300,8 +304,11 @@ DHCP Option whose client classes change, so the run removes the old row and crea
 object only after it read every Kea object of that kind. When the Server Configuration or the Reservation Snapshot was
 not read in full, the run keeps the objects of the kinds that the read covers, and one skipped entry for each kind
 tells why and how many objects it kept. The run judges a DHCP Option by the kind of its object. It removes the Option
-only when it read every DHCP Option entry and every object of that kind. So an unread Reservation Snapshot keeps the
-Options of Reservations, and the run can still remove a global, Subnet or Pool Option. The run also keeps an object
+only when it read every object of that kind and every DHCP Option entry of those objects. So an invalid `option-data`
+entry of a Pool keeps only the Options of Pools, and an unread Reservation Snapshot keeps only the Options of
+Reservations. The Options of Reservations come from the Reservation Snapshot, so a Server Configuration that was not read
+in full keeps the global Options and the Options of the configuration objects, but not the Options of Reservations.
+The run also keeps an object
 when its removal would remove a DHCP plugin row that the run keeps, for example a Pool that an operator added to a
 stale Subnet, a Subnet that an operator added to a stale Shared Network, or a mapped DHCP Option that the run cannot
 judge. It also keeps an object when an Option that the run keeps still uses a stale Option Definition, or when a row

@@ -49,7 +49,7 @@ SITES = (
     SaveSite("ipam_reconciliation.py", "_remove_stale_network_link", "locked", "loaded", count=2),
     SaveSite("sync.py", "sync_mac_address", "mac_obj", "loaded"),
     SaveSite("views/sync_jobs.py", "ServerSyncToggleView.post", "server", "loaded"),
-    SaveSite("views/settings_page.py", "SettingsView.post", "instance", "loaded"),
+    SaveSite("views/settings_page.py", "SettingsSectionView.post", "instance", "loaded"),
     SaveSite("integrations/dhcp_plugin.py", "_save_changes", "obj", "loaded"),
     SaveSite("integrations/dhcp_plugin.py", "_move_family_options", "option", "loaded"),
     SaveSite("integrations/dhcp_plugin.py", "_move_subnet_ids", "row", "loaded"),

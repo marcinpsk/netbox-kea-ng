@@ -10,6 +10,7 @@ gated on ``netbox_dhcp`` being installed.  Only the Kea HTTP transport is stubbe
 from __future__ import annotations
 
 import unittest
+from functools import partial
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
@@ -729,21 +730,102 @@ class DriftPartialTest(TestCase):
         self.assertEqual(len(self._objects(page)), len(_MAPPED))
         self.assertEqual(set(self._links(page)), {"subnet"})
 
+    def test_the_card_names_each_option_with_the_object_it_is_assigned_to(self):
+        self._import()
+        option = apps.get_model(DHCP_PLUGIN, "Option").objects.get()
+
+        page = self._drift(_sync_responses({4: {"subnet4": []}}, {4: []}))
+
+        (cell,) = [row.select("td")[3] for row in page.select("tr[data-state][data-kind=option]")]
+        self.assertEqual(" ".join(cell.get_text().split()), f"{option} on {option.assigned_object}")
+        self.assertEqual(
+            [link["href"] for link in cell.select("a")],
+            [option.get_absolute_url(), option.assigned_object.get_absolute_url()],
+        )
+
+    def test_the_card_names_the_object_of_an_option_only_when_the_user_may_view_it(self):
+        from django.contrib.auth import get_user_model
+
+        from .utils import _grant
+
+        self._import()
+        option = apps.get_model(DHCP_PLUGIN, "Option").objects.get()
+        pool = option.assigned_object
+        viewer = get_user_model().objects.create_user("drift-option-viewer")
+        _grant([Server], ["view"], user=viewer)
+        _grant([apps.get_model(DHCP_PLUGIN, "Option")], ["view"], user=viewer)
+        self.client.force_login(viewer)
+
+        with stub_kea(_sync_responses({4: {"subnet4": []}}, {4: []})):
+            resp = self.client.get(self.url, HTTP_HX_REQUEST="true")
+
+        page = BeautifulSoup(resp.content, "html.parser")
+        (cell,) = [row.select("td")[3] for row in page.select("tr[data-state][data-kind=option]")]
+        # The user may not view the Option Definition either, so the Option is named by its kind.
+        self.assertEqual(" ".join(cell.get_text().split()), "DHCP Option")
+        self.assertEqual([link["href"] for link in cell.select("a")], [option.get_absolute_url()])
+        self.assertNotIn(str(pool), resp.content.decode())
+        self.assertNotIn(pool.get_absolute_url(), resp.content.decode())
+
+    def test_the_card_names_an_option_and_its_definition_without_a_dhcp_server_the_user_may_not_view(self):
+        from django.contrib.auth import get_user_model
+
+        from .utils import _grant
+
+        self._import()
+        model = partial(apps.get_model, DHCP_PLUGIN)
+        option = model("Option").objects.get()
+        definition, pool = option.definition, option.assigned_object
+        dhcp_server = definition.dhcp_server
+        viewer = get_user_model().objects.create_user("drift-label-viewer")
+        _grant([Server, model("Option"), model("OptionDefinition"), model("Pool")], ["view"], user=viewer)
+        _grant([model("DHCPServer")], ["view"], user=viewer, constraints={"name": "another server"})
+        self.client.force_login(viewer)
+
+        with stub_kea(_sync_responses({4: {"subnet4": []}}, {4: []})):
+            resp = self.client.get(self.url, HTTP_HX_REQUEST="true")
+
+        page = BeautifulSoup(resp.content, "html.parser")
+        cells = {
+            str(row["data-kind"]): row.select("td")[3]
+            for row in page.select("tr[data-state]")
+            if row["data-kind"] in ("option", "option_definition")
+        }
+        label = f"{definition.space} {definition.name} ({definition.code})"
+        self.assertEqual(
+            {kind: " ".join(cell.get_text().split()) for kind, cell in cells.items()},
+            {"option": f"{label} on {pool}", "option_definition": label},
+        )
+        self.assertEqual(
+            {kind: [link["href"] for link in cell.select("a")] for kind, cell in cells.items()},
+            {
+                "option": [option.get_absolute_url(), pool.get_absolute_url()],
+                "option_definition": [definition.get_absolute_url()],
+            },
+        )
+        # The import names the Pool after its DHCP Server: that is a field of the Pool, which the user may view.
+        self.assertNotIn(f"[{dhcp_server.name}]", resp.content.decode())
+        self.assertNotIn(dhcp_server.get_absolute_url(), resp.content.decode())
+
     def test_the_card_reads_a_fixed_number_of_queries_for_any_number_of_rows(self):
         def stale_card_queries(codes: range) -> int:
+            # Each code is an Option of the DHCP Server and an Option of its own client class.
             config = {
                 4: {
                     "option-def": [{"name": f"opt-{code}", "code": code, "type": "uint8"} for code in codes],
                     "option-data": [{"code": code, "data": "1"} for code in codes],
+                    "client-classes": [
+                        {"name": f"class-{code}", "option-data": [{"code": code, "data": "2"}]} for code in codes
+                    ],
                 }
             }
             with stub_kea(_sync_responses(config, {4: []})):
                 self.client.post(reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk]))
             with stub_kea(_sync_responses({4: {}}, {4: []})), CaptureQueriesContext(connection) as queries:
                 page = BeautifulSoup(self.client.get(self.url, HTTP_HX_REQUEST="true").content, "html.parser")
-            # One link for each kind: the Option Definitions and their Options.
-            self.assertEqual(len(self._links(page)), 2 if len(codes) else 0)
-            self.assertEqual(len(page.select("tr[data-state=stale]")), 2 * len(codes))
+            # One link for each kind: the Option Definitions, the client classes and the Options.
+            self.assertEqual(len(self._links(page)), 3 if len(codes) else 0)
+            self.assertEqual(len(page.select("tr[data-state=stale]")), 4 * len(codes))
             return len(queries.captured_queries)
 
         self.assertEqual(stale_card_queries(range(230, 231)), stale_card_queries(range(230, 234)))

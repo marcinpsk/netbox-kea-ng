@@ -23,7 +23,7 @@ from ..integrations import dhcp_plugin
 from ..jobs import KeaIpamSyncJob
 from ..models import Server, SyncConfig
 from .dhcp_plugin_sync import sync_nav_context
-from .settings_page import visible_sections
+from .settings_page import section_url, visible_sections
 from .workspace import ServerFamilyMixin, server_family_url
 
 logger = logging.getLogger(__name__)
@@ -193,7 +193,7 @@ class ServerSyncStatusView(ServerFamilyMixin, generic.ObjectView):
             "sync_toggle_url": server_family_url(request, instance, self, "server_sync_toggle"),
             "sync_now_url": server_family_url(request, instance, self, "server_sync_now"),
             "sync_cfg": sync_cfg,
-            "can_view_settings": bool(visible_sections(request.user)),
+            "sync_settings_url": section_url(request.user, SyncConfig),
             **sync_nav_context(request, instance, self, "ipam", integration_runs=dhcp_plugin.runs_for(instance)),
         }
 

@@ -66,6 +66,9 @@ after merge. A branch cannot delete that newer association through an unrecorded
 Timestamp-only mapping observations do not conflict with an otherwise unchanged association.
 `options_mapped` only goes from False to True. A revert that restores a mapping keeps True when main recorded True at
 its deletion, also when the branch history holds an older False.
+The rule reads the main change log record of that deletion. When change log retention removed the record, the revert
+restores `options_mapped` from the branch history, so the object can adopt unmapped Options again on its next run.
+This limit stays: without the record, neither value is known to be correct.
 
 Affected actions require the dependency-aware squash strategy. Refuse iterative replay before any
 mutation, explain the squash requirement and preserve the selected strategy. Strategy selection

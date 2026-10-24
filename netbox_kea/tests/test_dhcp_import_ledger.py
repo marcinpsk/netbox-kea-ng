@@ -14,7 +14,7 @@ from pathlib import Path
 
 from django.apps import apps
 from django.core.exceptions import FieldDoesNotExist
-from django.test import SimpleTestCase, tag
+from django.test import SimpleTestCase, TestCase, tag
 
 from netbox_kea.constants import Family
 from netbox_kea.integrations import dhcp_import_fields as fields
@@ -472,8 +472,11 @@ class RecordedKeaBehaviourTest(SimpleTestCase):
 
 
 @tag("dhcp_plugin")
-class LedgerAgreesWithTheImportTest(SimpleTestCase):
-    """The mapped keys are the ones the import's field maps write, to fields the installed plugin has."""
+class LedgerAgreesWithTheImportTest(TestCase):
+    """The mapped keys are the ones the import's field maps write, to fields the installed plugin has.
+
+    A TestCase: the capability probe cleans unsaved Options, and NetBox reads the custom fields of the model for that.
+    """
 
     @classmethod
     def setUpClass(cls):

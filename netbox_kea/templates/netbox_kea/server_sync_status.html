@@ -95,8 +95,8 @@
               <i class="mdi mdi-alert-outline" aria-hidden="true"></i> Sync is globally disabled — all types are inactive regardless of per-server settings.
             </div>
             {% endif %}
-            <p class="small text-muted mb-1">Global sync types{% if can_view_settings %}
-              (<a href="{% url 'plugins:netbox_kea:settings' %}">configure</a>){% endif %}:
+            <p class="small text-muted mb-1">Global sync types{% if sync_settings_url %}
+              (<a href="{{ sync_settings_url }}">configure</a>){% endif %}:
             </p>
             <div class="d-flex flex-wrap gap-1 mb-2">
               <span class="badge {% if sync_cfg.sync_enabled and sync_cfg.sync_leases_enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">Leases</span>

@@ -214,7 +214,7 @@ URL request
       fan_out.py        (the per-Server read pool of combined Subnets, Shared Networks, Reservations)
       sync_views.py     (per-server IPAM sync UI)
       sync_jobs.py      (jobs tab, periodic sync management)
-      settings_page.py  (Settings page: one section per settings singleton; ADR 0010)
+      settings_page.py  (Settings page: one tab per settings singleton; ADR 0010)
   → reservation_edit.py (Reservation add/edit/import, signed form state, Published Name rules and after-apply facts)
   → config_write.py     (Configuration Changes, Reservation writes included: typed outcome, advisory lock, persist step)
   → change_outcome.py   (ChangeRejected and the Application classifier that every change shares; ADR 0011)
@@ -258,11 +258,12 @@ URL request
   KeaClientConfig with the migrations' values, every other row with its model defaults. They
   inherit `ChangeLoggingMixin` (not a `NetBoxModel`), so a save in a request writes an ObjectChange;
   `api/serializers.py` has a brief serializer for each because NetBox's change log API serializes each changed
-  object. The Settings page (`views/settings_page.py`) has one section for each row (`SECTIONS`): a section shows
-  with the view permission of its model, a save needs the change permission too, and the view calls `snapshot()`
-  before the form changes the row. A section whose `available()` is false (the DHCP Plugin section without
-  `netbox_dhcp`) does not show, and a save of it is refused. `navigation.py` builds one menu item for each available
-  section. The adoption cleanup locks the `Server`, `SyncConfig` and `DhcpIntegrationConfig` tables to freeze policy.
+  object. The Settings page (`views/settings_page.py`) has one tab for each row (`SECTIONS`), at
+  `settings/<slug>/`: a tab shows with the view permission of its model, a save needs the change permission too, and
+  the view calls `snapshot()` before the form changes the row. `settings/` redirects to the first visible tab. A
+  section whose `available()` is false (the DHCP Plugin section without `netbox_dhcp`) has no tab, and its URL gives
+  404, as does a hidden one; a user who can view no section gets 403. `navigation.py` has one Settings item that needs
+  `view_server`, like the other items: NetBox needs every listed permission, so the item cannot follow the tabs. The adoption cleanup locks the `Server`, `SyncConfig` and `DhcpIntegrationConfig` tables to freeze policy.
   A new settings row needs a model, a migration that creates the row, a brief serializer and a `SECTIONS` line. The
   page builds the form from the model fields (`modelform_factory`) and renders them with `inc/settings_fields.html`
   unless the section names its own include; a test fails while a singleton has no section. A section can give a
@@ -379,7 +380,7 @@ URL request
 - **DHCP Import** (`integrations/`): `dhcp_import.run_dhcp_plugin_import(server, trigger)` reads Kea for every
   enabled family, plans each family (`dhcp_import_plan.py`) and applies each plan (`dhcp_plugin.apply_plan`). Each
   DHCP Server, Shared Network, Subnet, Pool, delegated-prefix Pool, Reservation, client class, custom Option
-  Definition and DHCP Option that the apply writes has a DHCP Import Mapping (`KeaDhcpLink`: a kind of `MAPPING_KINDS` and the source columns of `dhcp_import_plan.MappingSource`). The source of a DHCP Option is an `OptionKey`: the source of its parent plus its ADR 0014 identity. `planned_options` keys the options of a planned object for both the plan and the apply. `PlannedOptions.paths` names each of them, by its key when it has one, also in a removal (OpenGrep `kea-option-path-outside-planned-options`). `KindObservation.gap` judges a stale Option by its own gaps and by the observation of its parent's kind. `KeaDhcpLink.options_mapped` records on the mapping of a parent that its Options are mapped; until then, its Options adopt unmapped rows. It only goes from False to True: a branch revert keeps the True that main recorded (`_mapped_options_at_deletion`). `mapped_target` and `observe_mapping` in `dhcp_mapping_lifecycle.py` read and
+  Definition and DHCP Option that the apply writes has a DHCP Import Mapping (`KeaDhcpLink`: a kind of `MAPPING_KINDS` and the source columns of `dhcp_import_plan.MappingSource`). The source of a DHCP Option is an `OptionKey`: the source of its parent plus its ADR 0014 identity. `planned_options` keys the options of a planned object for both the plan and the apply. `PlannedOptions.paths` names each of them, by its key when it has one, also in a removal (OpenGrep `kea-option-path-outside-planned-options`). `KindObservation.gap` judges a stale Option by the gaps of its parent's kind: the observation of that kind, and the `option-data` entries of that kind that the parse dropped (`DroppedEntry.parent`). `KeaDhcpLink.options_mapped` records on the mapping of a parent that its Options are mapped; until then, its Options adopt unmapped rows. It only goes from False to True: a branch revert keeps the True that main recorded (`_mapped_options_at_deletion`). `mapped_target` and `observe_mapping` in `dhcp_mapping_lifecycle.py` read and
   write it through that source; an unmapped row that matches by structure is adopted once. Each Kea
   fact of a run is an `ImportEntry` (`dhcp_import_report.py`): a kind, a Kea path from `kea_paths.py`, an outcome and,
   for a fact that was not written, a reason from a closed set. The reason gives the outcome (`REASON_OUTCOME`).
