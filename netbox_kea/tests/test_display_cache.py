@@ -280,9 +280,8 @@ class DisplayCacheSettingsPageTest(_ViewTestBase):
         self.assertEqual(kea.commands(), [], "the second read is cached")
 
         response = self.client.post(
-            reverse("plugins:netbox_kea:settings"),
+            reverse("plugins:netbox_kea:settings_section", args=["display-cache"]),
             {
-                "section": "display-cache",
                 "display-cache-configuration_ttl": 300,
                 "display-cache-reservations_ttl": 300,
                 "display-cache-leases_ttl": 30,

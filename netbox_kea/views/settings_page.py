@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""The Settings page: one section for each runtime settings singleton (ADR 0010)."""
+"""The Settings page: one tab for each runtime settings singleton (ADR 0010)."""
 
 from __future__ import annotations
 
@@ -13,8 +13,9 @@ from django.contrib.auth import get_permission_codename
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import PermissionDenied
 from django.forms import modelform_factory
-from django.http import HttpResponse, HttpResponseBadRequest
+from django.http import Http404, HttpResponse
 from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.views import View
 
 from ..integrations import dhcp_plugin
@@ -32,15 +33,15 @@ def _dhcp_plugin_installed() -> bool:
 
 @dataclass(frozen=True)
 class SettingsSection:
-    """One singleton on the Settings page. Its model's permissions decide who sees and who changes it."""
+    """One singleton in its tab of the Settings page. Its model's permissions decide who sees and who changes it."""
 
     slug: str
     model: type[SettingsSingleton]
-    #: The text of the section's item in the Settings menu group.
-    menu_text: str
+    #: The text of the section's tab.
+    tab_text: str
     #: The include that renders the form. The default renders each field in model order.
     template_name: str = "netbox_kea/inc/settings_fields.html"
-    #: False hides the section, its menu item and its save, for a setting whose integration is not installed.
+    #: False hides the section, its tab and its save, for a setting whose integration is not installed.
     available: Callable[[], bool] = _always
     #: One sentence under the heading, for a fact about the whole section rather than one field.
     description: str = ""
@@ -81,7 +82,6 @@ SECTIONS = (
     ),
     SettingsSection("dhcp-integration", DhcpIntegrationConfig, "DHCP Plugin", available=_dhcp_plugin_installed),
 )
-_BY_SLUG = {section.slug: section for section in SECTIONS}
 
 
 def visible_sections(user) -> list[SettingsSection]:
@@ -89,50 +89,69 @@ def visible_sections(user) -> list[SettingsSection]:
     return [section for section in SECTIONS if section.available() and user.has_perm(section.view_permission)]
 
 
-@dataclass(frozen=True)
-class _ShownSection:
-    section: SettingsSection
-    form: django_forms.ModelForm
-    can_change: bool
+def section_url(user, model: type[SettingsSingleton]) -> str | None:
+    """Return the tab URL of *model*'s section, or None when *user* may not view it."""
+    for section in visible_sections(user):
+        if section.model is model:
+            return reverse("plugins:netbox_kea:settings_section", args=[section.slug])
+    return None
+
+
+def _visible_or_403(user) -> list[SettingsSection]:
+    """Return the sections that *user* may view; a user who may view none gets 403."""
+    sections = visible_sections(user)
+    if not sections:
+        raise PermissionDenied
+    return sections
 
 
 class SettingsView(LoginRequiredMixin, View):
-    """Show each section that the user may view, and save one section per POST."""
+    """Open the first tab that the user may view."""
+
+    def get(self, request) -> HttpResponse:
+        """Redirect to the first visible tab; a user who can view no section gets 403."""
+        return redirect("plugins:netbox_kea:settings_section", section=_visible_or_403(request.user)[0].slug)
+
+
+class SettingsSectionView(LoginRequiredMixin, View):
+    """Show one section in its tab, and save that section on POST."""
 
     template_name = "netbox_kea/settings.html"
 
-    def get(self, request) -> HttpResponse:
-        """Render every visible section; a user who can view no section gets 403."""
-        return self._render(request)
+    def get(self, request, section: str) -> HttpResponse:
+        """Render the tab of *section*."""
+        tabs, shown = self._tab(request, section)
+        return self._render(request, tabs, shown, shown.form_class(instance=shown.model.get(), prefix=shown.slug))
 
-    def post(self, request) -> HttpResponse:
-        """Save the posted section. It needs the view and the change permission of the section's model."""
-        section = _BY_SLUG.get(request.POST.get("section", ""))
-        if section is None or not section.available():
-            return HttpResponseBadRequest("Unknown settings section.")
-        if not request.user.has_perms((section.view_permission, section.change_permission)):
+    def post(self, request, section: str) -> HttpResponse:
+        """Save the section. It needs the view and the change permission of the section's model."""
+        tabs, shown = self._tab(request, section)
+        if not request.user.has_perm(shown.change_permission):
             raise PermissionDenied
-        instance = section.model.get()
+        instance = shown.model.get()
         instance.snapshot()
-        form = section.form_class(request.POST, instance=instance, prefix=section.slug)
+        form = shown.form_class(request.POST, instance=instance, prefix=shown.slug)
         if not form.is_valid():
-            return self._render(request, form)
+            return self._render(request, tabs, shown, form)
         instance.save()
-        messages.success(request, f"{section.title} saved.")
-        return redirect("plugins:netbox_kea:settings")
+        messages.success(request, f"{shown.title} saved.")
+        return redirect("plugins:netbox_kea:settings_section", section=shown.slug)
 
-    def _render(self, request, posted: django_forms.ModelForm | None = None) -> HttpResponse:
-        shown = []
-        for section in visible_sections(request.user):
-            can_change = request.user.has_perm(section.change_permission)
-            if posted is not None and posted.prefix == section.slug:
-                form = posted
-            else:
-                form = section.form_class(instance=section.model.get(), prefix=section.slug)
-            if not can_change:
-                for field in form.fields.values():
-                    field.disabled = True
-            shown.append(_ShownSection(section, form, can_change))
-        if not shown:
-            raise PermissionDenied
-        return render(request, self.template_name, {"sections": shown})
+    @staticmethod
+    def _tab(request, slug: str) -> tuple[list[SettingsSection], SettingsSection]:
+        """Return the visible sections and the one of *slug*: 403 without a visible section, else 404 for *slug*."""
+        tabs = _visible_or_403(request.user)
+        shown = next((section for section in tabs if section.slug == slug), None)
+        if shown is None:
+            raise Http404("Unknown settings section.")
+        return tabs, shown
+
+    def _render(
+        self, request, tabs: list[SettingsSection], shown: SettingsSection, form: django_forms.ModelForm
+    ) -> HttpResponse:
+        can_change = request.user.has_perm(shown.change_permission)
+        if not can_change:
+            for field in form.fields.values():
+                field.disabled = True
+        context = {"tabs": tabs, "section": shown, "form": form, "can_change": can_change}
+        return render(request, self.template_name, context)

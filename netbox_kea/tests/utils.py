@@ -377,9 +377,9 @@ def _grant(models, actions, *, user=None, group=None, constraints=None, enabled=
 
 
 def _sync_page_urls(server: Server) -> tuple[str, str, str]:
-    """Return the pages that read SyncConfig: the Settings page, the Sync Jobs page and the Server's Sync tab."""
+    """Return the pages that read SyncConfig: the Sync tab of Settings, the Sync Jobs page and the Server's Sync tab."""
     return (
-        reverse("plugins:netbox_kea:settings"),
+        reverse("plugins:netbox_kea:settings_section", args=["sync"]),
         reverse("plugins:netbox_kea:sync_jobs"),
         reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]),
     )
