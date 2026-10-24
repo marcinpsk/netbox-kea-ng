@@ -1033,18 +1033,18 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
             cursor.execute("SELECT object_id FROM netbox_kea_keadhcplink WHERE server_id = %s", [server.pk])
             self.assertEqual({row[0] for row in cursor.fetchall()}, {1})
 
-    def test_0038_gives_an_existing_mapping_a_confirmation_below_every_cutoff(self):
+    def test_0029_gives_an_existing_mapping_a_confirmation_below_every_cutoff(self):
         from django.db import connection
         from django.db.migrations.executor import MigrationExecutor
 
         server = _make_db_server(name="confirmed-mappings")
         object_type = ContentType.objects.get_for_model(Server)
-        current = self._migrate_to("0037_keadhcplink_option")
+        current = self._migrate_to("0028_dhcp_import")
         with connection.cursor() as cursor:
             cursor.execute(
                 "INSERT INTO netbox_kea_keadhcplink (server_id, family, kind, kea_subnet_id, object_type_id, "
-                "object_id, options_mapped, created, last_synced, last_updated) "
-                "VALUES (%s, 4, 'subnet', 7, %s, %s, false, NOW(), NOW(), NOW())",
+                "object_id, created, last_synced, last_updated) "
+                "VALUES (%s, 4, 'subnet', 7, %s, %s, NOW(), NOW(), NOW())",
                 [server.pk, object_type.pk, server.pk],
             )
             cursor.execute("SET CONSTRAINTS ALL IMMEDIATE")
