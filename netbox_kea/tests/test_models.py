@@ -36,6 +36,8 @@ from netbox_kea.kea import KeaClient, KeaCommand
 from netbox_kea.models import (
     DhcpIntegrationConfig,
     DisplayCacheConfig,
+    IPAMOwnershipLink,
+    IPAMOwnershipSource,
     KeaClientConfig,
     KeaDhcpLink,
     Server,
@@ -982,6 +984,71 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         with connection.cursor() as cursor:
             cursor.execute("SELECT object_id FROM netbox_kea_keadhcplink WHERE server_id = %s", [server.pk])
             self.assertEqual({row[0] for row in cursor.fetchall()}, {1, 2})
+
+    def test_0028_reversed_accepts_every_mapping_kind_and_ownership_source(self):
+        from django.db import connection
+        from ipam.models import Prefix
+
+        identity_shapes = {
+            "server": ((None, None),),
+            "shared_network": ((None, "shared"),),
+            "subnet": ((7, None),),
+            "pool": ((7, "198.18.0.10-198.18.0.20"),),
+            "pd_pool": ((7, "2001:db8::/48:64"),),
+            "reservation": ((None, "duid:01:02:03"), (7, "duid:01:02:03")),
+            "client_class": ((None, "voip"),),
+            "option_definition": ((None, "voip:dhcp6:1234"),),
+        }
+        kinds = dict(KeaDhcpLink._meta.get_field("kind").choices)
+        self.assertEqual(
+            set(identity_shapes),
+            set(kinds),
+            "Add the identity shape AND a reverse cleanup for each new mapping kind.",
+        )
+        server = _make_db_server(name="all-mapping-kinds")
+        object_type = ContentType.objects.get_for_model(Server)
+        max_length = KeaDhcpLink._meta.get_field("kea_identity").max_length
+        expected_mappings = []
+        object_id = 0
+        for kind in kinds:
+            for subnet_id, identity in identity_shapes[kind]:
+                identities = (None,) if identity is None else (identity, "a" * 393, "b" * 394, "c" * max_length)
+                for value in identities:
+                    object_id += 1
+                    KeaDhcpLink.objects.create(
+                        server=server,
+                        family=6,
+                        kind=kind,
+                        kea_subnet_id=subnet_id,
+                        kea_identity=value,
+                        object_type=object_type,
+                        object_id=object_id,
+                    )
+                    if kind == "subnet" or (kind == "reservation" and subnet_id is None and len(value) <= 393):
+                        expected_mappings.append((object_id, subnet_id, value))
+        prefixes = []
+        for index, source in enumerate(IPAMOwnershipSource.values, start=1):
+            prefix = Prefix.objects.create(prefix=f"2001:db8:{index}::/64", description="Owned Prefix", status="active")
+            prefixes.append((prefix.pk, prefix.description, prefix.status))
+            IPAMOwnershipLink.objects.create(server=server, family=6, source=source, prefix=prefix, confirmation=1)
+
+        self._migrate_to("0027_displaycacheconfig")
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT object_id, kea_subnet_id, kea_identity FROM netbox_kea_keadhcplink WHERE server_id = %s",
+                [server.pk],
+            )
+            self.assertCountEqual(cursor.fetchall(), expected_mappings)
+            cursor.execute("SELECT source FROM netbox_kea_ipamownershiplink WHERE server_id = %s", [server.pk])
+            self.assertEqual(
+                {row[0] for row in cursor.fetchall()},
+                set(IPAMOwnershipSource.values) - {IPAMOwnershipSource.PD_POOL},
+            )
+            cursor.execute(
+                "SELECT id, description, status FROM ipam_prefix WHERE id = ANY(%s)", [[p[0] for p in prefixes]]
+            )
+            self.assertCountEqual(cursor.fetchall(), prefixes)
 
     def test_0028_reversed_removes_the_family_mappings_that_the_older_schema_cannot_hold(self):
         server = _make_db_server(name="family-mappings")
