@@ -1461,3 +1461,29 @@ rules:
               ...
           except (..., DatabaseError, ...):
               ...
+
+  - id: kea-option-path-outside-planned-options
+    languages: [python]
+    severity: ERROR
+    message: >-
+      The DHCP Import names a DHCP Option of a planned object with PlannedOptions.paths(). A keyed Option takes the
+      path of its OptionKey, which a later run also uses when it removes the Option; kea_paths.option() takes the code,
+      else the name, so one Kea option gets two paths in the stored run results. Pass the planned_options() of the
+      object and use its paths.
+      Limits: the rule sees kea_paths.option() in netbox_kea/integrations/; an import of the function by name and a
+      call through a helper are not seen. The parse step (mappers/) runs before the definitions are known and keeps
+      the literal path.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/integrations/**"
+        - "kea-option-path-outside-planned-options.py"
+      exclude:
+        - "**/tests/**"
+    patterns:
+      - pattern: kea_paths.option(...)
+      - pattern-not-inside: |
+          class PlannedOptions:
+              ...

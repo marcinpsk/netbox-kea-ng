@@ -39,8 +39,7 @@ from netbox_kea.integrations.dhcp_import_report import (
 )
 from netbox_kea.models import DhcpImportEntry, DhcpImportRun, DhcpImportTrigger, Server
 
-from .kea_stub import _subnet_list, stub_kea
-from .test_views_dhcp_plugin import _sync_responses
+from .kea_stub import _subnet_list, _sync_responses, stub_kea
 from .utils import DISPATCHED_EVENTS, _grant, _make_db_server
 
 DHCP_PLUGIN = "netbox_dhcp"
@@ -77,7 +76,7 @@ _FIRST_RUN = {
     ("client_class", "created", "", "Dhcp4/client-classes[name=voip]"),
     ("server", "created", "", "Dhcp4"),
     ("server", "unsupported", "plugin_gap", "Dhcp4"),
-    ("shared_network", "not_imported", "not_in_scope", "Dhcp4/shared-networks[name=office]"),
+    ("shared_network", "unsupported", "plugin_gap", "Dhcp4/shared-networks[name=office]"),
     ("subnet", "created", "", _SUBNET),
     ("subnet", "created", "", "Dhcp4/subnet4[id=30]"),
     ("option", "created", "", f"{_SUBNET}/option-data[code=3]"),
@@ -265,7 +264,7 @@ class LatestRunPageTest(_ImportRunTestCase):
         self.assertIn(("DHCPv4", "Subnet", "2", "0", "0", "0", "0", "0"), counts)
         self.assertIn(("DHCPv4", "Reservation", "1", "0", "0", "0", "0", "1"), counts)
         self.assertIn(("DHCPv4", "DHCP Option", "1", "0", "0", "1", "0", "1"), counts)
-        self.assertIn(("DHCPv4", "Shared Network", "0", "0", "0", "0", "0", "1"), counts)
+        self.assertIn(("DHCPv4", "Shared Network", "0", "0", "0", "1", "0", "0"), counts)
         text = card.get_text(" ", strip=True)
         self.assertIn(f"{_SUBNET}/option-data[space=vendor-x,code=1]", text)
         self.assertIn("The DHCP plugin cannot hold it", text)
@@ -815,7 +814,12 @@ class StaleRemovalTest(_ImportRunTestCase):
         run = self._sync(self.config, self.hosts)
 
         self.assertEqual(
-            self._removed(run), {("pool", _STALE_POOL), ("option_definition", "Dhcp4/option-def[code=241]")}
+            self._removed(run),
+            {
+                ("pool", _STALE_POOL),
+                ("option", f"{_STALE_POOL}/option-data[code=241]"),
+                ("option_definition", "Dhcp4/option-def[code=241]"),
+            },
         )
         self.assertEqual(self._mapped(Kind.OPTION_DEFINITION), [])
 
@@ -834,6 +838,8 @@ class StaleRemovalTest(_ImportRunTestCase):
 
     @override_settings(EVENTS_PIPELINE=["netbox_kea.tests.utils.record_dispatched_events"])
     def test_a_blocked_class_removal_dispatches_no_event_for_the_options_of_the_class(self):
+        from netbox_kea.models import KeaDhcpLink
+
         Option = apps.get_model(DHCP_PLUGIN, "Option")
         boot = {
             "name": "boot",
@@ -846,10 +852,14 @@ class StaleRemovalTest(_ImportRunTestCase):
         with_boot[4]["option-data"] = [{"code": 15, "data": "boot.example.org", "client-classes": ["boot"]}]
         self._sync(with_boot, self.hosts)
         own = Option.objects.get(definition__code=231)
+        # An operator takes over both Options: without a mapping, an Option is never stale on its own.
+        naming = Option.objects.get(definition__code=15)
+        option_type = ContentType.objects.get_for_model(Option)
+        KeaDhcpLink.objects.filter(object_type=option_type, object_id__in=[own.pk, naming.pk]).delete()
         DISPATCHED_EVENTS.clear()
         self.addCleanup(DISPATCHED_EVENTS.clear)
 
-        # Kea drops the class and the option that names it, so the unpaired global Option keeps the class.
+        # Kea drops the class and the option that names it, so the operator's global Option keeps the class.
         run = self._sync(self.config, self.hosts)
 
         entry = DhcpImportEntry.objects.get(run=run, kea_path="Dhcp4/client-classes[name=boot]")
@@ -918,7 +928,10 @@ class StaleRemovalTest(_ImportRunTestCase):
         # The Reservation of Subnet 41 now names a Subnet that Kea does not have, so the Snapshot quarantines it.
         run = self._sync(self.config, self.hosts)
 
-        self.assertEqual(self._removed(run), {("pool", _STALE_POOL)})
+        # The Option of the Pool is judged by the Pool observation, which is Complete.
+        self.assertEqual(
+            self._removed(run), {("pool", _STALE_POOL), ("option", f"{_STALE_POOL}/option-data[code=241]")}
+        )
         entry = DhcpImportEntry.objects.filter(run=run).get(kind=Kind.SUBNET.value, reason=Reason.REMOVAL_BLOCKED.value)
         self.assertEqual(entry.kea_path, _STALE_SUBNET)
         self.assertIn("host reservation", entry.detail.lower())
@@ -947,6 +960,7 @@ class StaleRemovalTest(_ImportRunTestCase):
                 ("pool", "Dhcp4/subnet4[*]/pools[*]"),
                 ("client_class", "Dhcp4/client-classes[*]"),
                 ("option_definition", "Dhcp4/option-def[*]"),
+                ("option", "Dhcp4/option-data[*]"),
                 ("reservation", "Dhcp4/reservations[*]"),
             },
         )

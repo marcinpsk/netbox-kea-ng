@@ -168,7 +168,7 @@ class KeaIpamSyncJob(JobRunner):
     Iterates over all configured ``Server`` objects and syncs their active
     leases and/or reservations into NetBox ``IPAddress`` records.  Error on
     one server does not prevent syncing the remaining servers.  With the scheduled
-    DHCP Import on, it then runs the DHCP Import of each Server that the integration
+    DHCP Import on, it first runs the DHCP Import of each Server that the integration
     runs for.
 
     The sync is idempotent: existing ``IPAddress`` objects are updated in place
@@ -341,148 +341,169 @@ class KeaIpamSyncJob(JobRunner):
         return actor
 
     def _run_sync(self, *args: Any, **kwargs: Any) -> None:
-        """Run the IPAM sync, then the scheduled DHCP Import; fail the job when either one failed."""
+        """Run the scheduled DHCP Import, then the IPAM sync; fail the job when either one failed."""
+        from .models import SyncConfig
+
+        if self.job.interval:
+            # handle() schedules the successor with job.interval, also when a pass raises.
+            self.job.interval = SyncConfig.get().interval_minutes
         server_pk = kwargs.get("server_pk")
-        failed = self._run_ipam_sync(server_pk)
-        # A Run Now of one Server syncs its IPAM only: its trigger is not the schedule.
-        if server_pk is None:
-            failed = self._run_scheduled_imports() or failed
+        failed = False
+        finished = False
+        summary: list[dict] = []
+        started: dict[int, str] = {}
+        try:
+            # A Run Now of one Server syncs its IPAM only: its trigger is not the schedule.
+            if server_pk is None:
+                # The stale DHCP plugin rows go first, so the IPAM cleanup no longer counts their objects as used.
+                failed = self._run_scheduled_imports(started)
+            failed = self._run_ipam_sync(server_pk, summary, started) or failed
+            finished = True
+        finally:
+            # A pass raised: each Server that it left without an IPAM summary gets an entry without counts.
+            synced = {entry["pk"] for entry in summary}
+            unfinished = (
+                [] if finished else [{"name": name, "pk": pk} for pk, name in started.items() if pk not in synced]
+            )
+            self._save_summary([*summary, *unfinished])
         if failed:
             raise JobFailed
 
-    def _run_ipam_sync(self, server_pk: int | None) -> bool:
-        """Apply the configured IPAM synchronization, retain the per-server summary, and return whether it failed."""
+    def _save_summary(self, summary: list[dict]) -> None:
+        """Store the per-server summary, which attributes a periodic job to its Servers."""
+        if not isinstance(self.job.data, dict):
+            self.job.data = {}
+        self.job.data["summary"] = summary
+        try:
+            self.job.save(update_fields=["data"])
+        except Exception:
+            logger.exception("Failed to persist sync job summary data")
+
+    def _run_ipam_sync(self, server_pk: int | None, summary: list[dict], started: dict[int, str]) -> bool:
+        """Apply the configured IPAM synchronization, add a summary entry per Server, and return whether it failed.
+
+        *started* gets each Server before its sync starts.
+        """
         from .models import Server, SyncConfig
 
-        summary: list[dict] = []
-        try:
-            sync_cfg = SyncConfig.get()
-            if self.job.interval:
-                # handle() schedules the successor with job.interval after run() returns.
-                self.job.interval = sync_cfg.interval_minutes
-            if not sync_cfg.sync_enabled:
-                self.logger.info("Global sync kill-switch is active (SyncConfig.sync_enabled=False) — skipping.")
-                return False
+        sync_cfg = SyncConfig.get()
+        if not sync_cfg.sync_enabled:
+            self.logger.info("Global sync kill-switch is active (SyncConfig.sync_enabled=False) — skipping.")
+            return False
 
-            sync_leases = sync_cfg.sync_leases_enabled
-            sync_reservations = sync_cfg.sync_reservations_enabled
-            sync_prefixes = sync_cfg.sync_prefixes_enabled
-            sync_ip_ranges = sync_cfg.sync_ip_ranges_enabled
-            max_leases = sync_cfg.sync_max_leases_per_server
+        sync_leases = sync_cfg.sync_leases_enabled
+        sync_reservations = sync_cfg.sync_reservations_enabled
+        sync_prefixes = sync_cfg.sync_prefixes_enabled
+        sync_ip_ranges = sync_cfg.sync_ip_ranges_enabled
+        max_leases = sync_cfg.sync_max_leases_per_server
 
-            if not any([sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges]):
-                self.logger.info("All sync type flags are False — nothing to do.")
-                return False
+        if not any([sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges]):
+            self.logger.info("All sync type flags are False — nothing to do.")
+            return False
 
-            server_qs = Server.objects.filter(pk=server_pk) if server_pk is not None else Server.objects.all()
-            servers = list(server_qs)
+        server_qs = Server.objects.filter(pk=server_pk) if server_pk is not None else Server.objects.all()
+        servers = list(server_qs)
 
-            if not servers:
-                self.logger.info("No Kea servers configured. Count unowned IPAM objects.")
+        if not servers:
+            self.logger.info("No Kea servers configured. Count unowned IPAM objects.")
 
-            self.logger.info(f"Starting Kea IPAM sync for {len(servers)} server(s).")
-            total = SyncReport()
-            total_conflicts = 0
-            total_disagreements = 0
+        self.logger.info(f"Starting Kea IPAM sync for {len(servers)} server(s).")
+        total = SyncReport()
+        total_conflicts = 0
+        total_disagreements = 0
 
-            for server in servers:
-                # In Run Now mode (server_pk provided), honour the explicit selection
-                # and skip the per-server enabled check.
-                if server_pk is None and not server.sync_enabled:
-                    self.logger.info(f"Server {server.name}: sync_enabled=False — skipping.")
-                    continue
+        for server in servers:
+            # In Run Now mode (server_pk provided), honour the explicit selection
+            # and skip the per-server enabled check.
+            if server_pk is None and not server.sync_enabled:
+                self.logger.info(f"Server {server.name}: sync_enabled=False — skipping.")
+                continue
 
-                # Per-server type overrides: AND global flag with server flag.
-                effective_leases = sync_leases and server.sync_leases_enabled
-                effective_reservations = sync_reservations and server.sync_reservations_enabled
-                effective_prefixes = sync_prefixes and server.sync_prefixes_enabled
-                effective_ip_ranges = sync_ip_ranges and server.sync_ip_ranges_enabled
+            # Per-server type overrides: AND global flag with server flag.
+            effective_leases = sync_leases and server.sync_leases_enabled
+            effective_reservations = sync_reservations and server.sync_reservations_enabled
+            effective_prefixes = sync_prefixes and server.sync_prefixes_enabled
+            effective_ip_ranges = sync_ip_ranges and server.sync_ip_ranges_enabled
 
-                self.logger.debug(f"Syncing server: {server.name} (pk={server.pk})")
-                report = SyncReport()
+            self.logger.debug(f"Syncing server: {server.name} (pk={server.pk})")
+            started[server.pk] = server.name
+            report = SyncReport()
 
-                try:
-                    report = _sync_one_server(
-                        server,
-                        effective_leases,
-                        effective_reservations,
-                        effective_prefixes,
-                        effective_ip_ranges,
-                        max_leases,
-                    )
-                except event_scope.EventDispatchError:
-                    raise
-                except Exception as exc:
-                    # The job log keeps only the message, so the traceback goes to the module logger.
-                    logger.exception("Unhandled error syncing server %s", server.name)
-                    self.logger.error(  # noqa: TRY400 - the module logger above has the traceback
-                        f"Unhandled error syncing server {server.name}: {type(exc).__name__}: {exc};"
-                        " the worker log has the traceback"
-                    )
-                    report.errors += 1
-
-                self.logger.info(
-                    f"Server {server.name}: created={report.created}"
-                    f" updated={report.updated} errors={report.errors}"
-                    f" prefix_errors={report.prefix_errors}"
-                    f" conflicts={len(report.conflicts)}"
-                    f" disagreements={len(report.disagreements)}"
-                    f" skipped={len(report.skipped_reservations)}"
-                    f" waiting={report.waiting}"
-                    f" unclassified={report.unclassified}"
-                )
-                # No row pks here: the list URL applies the viewer's own IPAM permissions.
-                for dup in report.duplicates:
-                    self.logger.error(
-                        f"Server {server.name}: Kea {dup.kea_object} matches duplicate NetBox {dup.rows};"
-                        f" the sync leaves them unchanged. Review them at {dup.list_url}"
-                    )
-                total.merge(report)
-                total_conflicts += len(report.conflicts)
-                total_disagreements += len(report.disagreements)
-
-                summary.append(
-                    {
-                        "name": server.name,
-                        "pk": server.pk,
-                        "created": report.created,
-                        "updated": report.updated,
-                        "errors": report.errors,
-                        "prefix_errors": report.prefix_errors,
-                        "conflicts": len(report.conflicts),
-                        "conflict_sample": sorted(report.conflicts)[:_CONFLICT_SAMPLE_SIZE],
-                        "conflicts_truncated": max(0, len(report.conflicts) - _CONFLICT_SAMPLE_SIZE),
-                        "disagreements": len(report.disagreements),
-                        "skipped": len(report.skipped_reservations),
-                        "waiting": report.waiting,
-                        "unclassified": report.unclassified,
-                    }
-                )
-
-            counts = upgrade_counts()
-            total.unowned_objects = counts.unowned_objects
-            total.waiting_objects = counts.waiting_objects
-            self.logger.info(
-                f"Kea IPAM sync complete — servers={len(summary)}"
-                f" created={total.created} updated={total.updated}"
-                f" errors={total.errors} prefix_errors={total.prefix_errors}"
-                f" conflicts={total_conflicts} disagreements={total_disagreements} skipped={len(total.skipped_reservations)}"
-                f" unowned={total.unowned} waiting={total.waiting} unclassified={total.unclassified}"
-            )
-            return total.errors > 0 or total.prefix_errors > 0
-        finally:
-            if not isinstance(self.job.data, dict):
-                self.job.data = {}
-            self.job.data["summary"] = summary
             try:
-                self.job.save(update_fields=["data"])
-            except Exception:
-                logger.exception("Failed to persist sync job summary data")
+                report = _sync_one_server(
+                    server,
+                    effective_leases,
+                    effective_reservations,
+                    effective_prefixes,
+                    effective_ip_ranges,
+                    max_leases,
+                )
+            except event_scope.EventDispatchError:
+                raise
+            except Exception as exc:
+                # The job log keeps only the message, so the traceback goes to the module logger.
+                logger.exception("Unhandled error syncing server %s", server.name)
+                self.logger.error(  # noqa: TRY400 - the module logger above has the traceback
+                    f"Unhandled error syncing server {server.name}: {type(exc).__name__}: {exc};"
+                    " the worker log has the traceback"
+                )
+                report.errors += 1
 
-    def _run_scheduled_imports(self) -> bool:
+            self.logger.info(
+                f"Server {server.name}: created={report.created}"
+                f" updated={report.updated} errors={report.errors}"
+                f" prefix_errors={report.prefix_errors}"
+                f" conflicts={len(report.conflicts)}"
+                f" disagreements={len(report.disagreements)}"
+                f" skipped={len(report.skipped_reservations)}"
+                f" waiting={report.waiting}"
+                f" unclassified={report.unclassified}"
+            )
+            # No row pks here: the list URL applies the viewer's own IPAM permissions.
+            for dup in report.duplicates:
+                self.logger.error(
+                    f"Server {server.name}: Kea {dup.kea_object} matches duplicate NetBox {dup.rows};"
+                    f" the sync leaves them unchanged. Review them at {dup.list_url}"
+                )
+            total.merge(report)
+            total_conflicts += len(report.conflicts)
+            total_disagreements += len(report.disagreements)
+
+            summary.append(
+                {
+                    "name": server.name,
+                    "pk": server.pk,
+                    "created": report.created,
+                    "updated": report.updated,
+                    "errors": report.errors,
+                    "prefix_errors": report.prefix_errors,
+                    "conflicts": len(report.conflicts),
+                    "conflict_sample": sorted(report.conflicts)[:_CONFLICT_SAMPLE_SIZE],
+                    "conflicts_truncated": max(0, len(report.conflicts) - _CONFLICT_SAMPLE_SIZE),
+                    "disagreements": len(report.disagreements),
+                    "skipped": len(report.skipped_reservations),
+                    "waiting": report.waiting,
+                    "unclassified": report.unclassified,
+                }
+            )
+
+        counts = upgrade_counts()
+        total.unowned_objects = counts.unowned_objects
+        total.waiting_objects = counts.waiting_objects
+        self.logger.info(
+            f"Kea IPAM sync complete — servers={len(summary)}"
+            f" created={total.created} updated={total.updated}"
+            f" errors={total.errors} prefix_errors={total.prefix_errors}"
+            f" conflicts={total_conflicts} disagreements={total_disagreements} skipped={len(total.skipped_reservations)}"
+            f" unowned={total.unowned} waiting={total.waiting} unclassified={total.unclassified}"
+        )
+        return total.errors > 0 or total.prefix_errors > 0
+
+    def _run_scheduled_imports(self, started: dict[int, str]) -> bool:
         """Run the DHCP Import of each Server that the integration runs for, when the setting is on.
 
         Return whether the import of a Server failed. A failure of one Server does not stop the others.
+        *started* gets each Server before its import starts.
         """
         from .integrations import dhcp_plugin
         from .models import DhcpIntegrationConfig, Server
@@ -496,7 +517,10 @@ class KeaIpamSyncJob(JobRunner):
                 self.logger.info(f"Scheduled DHCP Import of Server {server.name} skipped: {refusal}")
             else:
                 servers.append(server)
-        failed = sum(not self._import_one(server) for server in servers)
+        failed = 0
+        for server in servers:
+            started[server.pk] = server.name
+            failed += not self._import_one(server)
         self.logger.info(f"Scheduled DHCP Import complete: servers={len(servers)} failed={failed}")
         return failed > 0
 

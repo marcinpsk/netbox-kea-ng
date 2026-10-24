@@ -73,6 +73,8 @@ class ReplayOperation:
     endpoint_deletions: dict = dataclass_field(default_factory=dict)
     restorations: dict = dataclass_field(default_factory=dict)
     restoration_births: dict = dataclass_field(default_factory=dict)
+    # The mappings that a revert restores whose Options main had mapped when it deleted them.
+    mapped_options: set = dataclass_field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -226,10 +228,13 @@ def mapped_target(server, family: int, source: MappingSource):
 
 
 def observe_mapping(server, family: int, target, source: MappingSource):
-    """Record a source association, or refresh its observation without a semantic history change."""
+    """Record a source association, or refresh its observation without a semantic history change.
+
+    Each call confirms the mapping with a new number of the confirmation sequence (ADR 0006).
+    """
     from django.contrib.contenttypes.models import ContentType
 
-    from .models import KeaDhcpLink
+    from .models import KeaDhcpLink, next_confirmation_number
 
     lookup = _source_lookup(server, family, source)
     association = {
@@ -239,19 +244,40 @@ def observe_mapping(server, family: int, target, source: MappingSource):
     }
     with metadata_scope():
         mapping = KeaDhcpLink.objects.filter(**lookup).first()
-        desired = KeaDhcpLink(**association)
+        desired = KeaDhcpLink(**association, confirmation=next_confirmation_number())
         if mapping is None:
             desired.save()
             return desired
         if mapping_identity(mapping) == mapping_identity(desired):
-            mapping.last_synced = timezone.now()
-            KeaDhcpLink.objects.filter(pk=mapping.pk).update(last_synced=mapping.last_synced)
+            mapping.confirmation = desired.confirmation
+            KeaDhcpLink.objects.filter(pk=mapping.pk).update(confirmation=mapping.confirmation)
             return mapping
         mapping.snapshot()
         for name, value in association.items():
             setattr(mapping, name, value)
+        mapping.confirmation = desired.confirmation
         mapping.save()
         return mapping
+
+
+def options_mapped(server, family: int, source: MappingSource) -> bool:
+    """Return whether the import has mapped the DHCP Options of the object of *source*. It must have a mapping."""
+    from .models import KeaDhcpLink
+
+    return (
+        KeaDhcpLink.objects.filter(**_source_lookup(server, family, source))
+        .values_list("options_mapped", flat=True)
+        .get()
+    )
+
+
+def mark_options_mapped(server, family: int, source: MappingSource) -> None:
+    """Record that the import has mapped the DHCP Options of the object of *source*, without a history change."""
+    from .models import KeaDhcpLink
+
+    KeaDhcpLink.objects.filter(**_source_lookup(server, family, source), options_mapped=False).update(
+        options_mapped=True
+    )
 
 
 class MappingUnavailable(AbortRequest):
@@ -575,6 +601,28 @@ def prepare_replay(branch, collapsed, operation: str, request, *, named_request=
                 replay.mappings[change.key[1]] = (
                     change.prechange_data if operation == "merge" else change.postchange_data
                 )
+        if operation == "revert":
+            restored = [pk for pk, change in mappings.items() if change.final_action == "delete"]
+            replay.mapped_options.update(_mapped_options_at_deletion(restored))
+
+
+def _mapped_options_at_deletion(pks: list) -> set:
+    """Return the mappings of *pks* whose last deletion in main recorded that their Options were mapped.
+
+    ``options_mapped`` only goes from False to True, so a revert that restores a mapping from older branch history
+    keeps the True that main recorded when it deleted the mapping.
+    """
+    from core.models import ObjectChange
+    from django.contrib.contenttypes.models import ContentType
+
+    from .models import KeaDhcpLink
+
+    deletions = ObjectChange.objects.using("default").filter(
+        changed_object_type=ContentType.objects.get_for_model(KeaDhcpLink), changed_object_id__in=pks, action="delete"
+    )
+    # Later deletions overwrite earlier ones, so each mapping keeps its last deletion.
+    latest = dict(deletions.order_by("time", "pk").values_list("changed_object_id", "prechange_data"))
+    return {pk for pk, payload in latest.items() if payload and payload.get("options_mapped") is True}
 
 
 def record_endpoint_deletion(receipt, using: str, created: bool) -> None:
@@ -1075,7 +1123,7 @@ def _validate_history_payload(model, payload) -> None:
     required = {
         "custom_fields" if field.name == "custom_field_data" else field.name
         for field in model._meta.concrete_fields
-        if field.serialize and not field.primary_key and field.name not in {"last_updated", "last_synced"}
+        if field.serialize and not field.primary_key and field.name not in {"last_updated", "confirmation"}
     }
     required.update(field.name for field in model._meta.many_to_many)
     if not isinstance(payload, dict) or not required.issubset(payload):
@@ -1092,7 +1140,7 @@ def _precise_serialization(original):
     @wraps(original)
     def serialized(self, *args, **kwargs):
         payload = original(self, *args, **kwargs)
-        for name in ("created", "last_updated", "last_synced"):
+        for name in ("created", "last_updated"):
             value = getattr(self, name, None)
             if name in payload and value is not None:
                 payload[name] = value.isoformat(timespec="microseconds")
@@ -1108,14 +1156,16 @@ def _complete_history(original):
         if action in {"create", "delete"}:
             payload = change.postchange_data if action == "create" else change.prechange_data
             precise = self.serialize_object()
-            for name in ("created", "last_updated", "last_synced"):
+            for name in ("created", "last_updated"):
                 if name in precise:
                     payload[name] = precise[name]
-        elif type(self)._meta.label_lower == "netbox_kea.keadhcplink":
+        if type(self)._meta.label_lower == "netbox_kea.keadhcplink" and action != "create":
+            # A main refresh changes the number, so a recorded one would be a false branch conflict.
             for payload in (change.prechange_data, change.postchange_data):
                 if payload is not None:
-                    for name in ("last_synced", "last_updated"):
-                        payload.pop(name, None)
+                    payload.pop("confirmation", None)
+                    if action == "update":
+                        payload.pop("last_updated", None)
         return change
 
     return recorded
@@ -1469,7 +1519,7 @@ def _late_save_guard(sender, instance, using, **kwargs):
     from django.contrib.contenttypes.models import ContentType
     from netbox.context import current_request
 
-    from .models import KeaDhcpLink
+    from .models import KeaDhcpLink, next_confirmation_number
 
     replay = _replay_operation.get()
     if replay is not None:
@@ -1477,6 +1527,11 @@ def _late_save_guard(sender, instance, using, **kwargs):
             _validate_named_write(instance, using)
     if replay is None or using != "default" or current_request.get() not in replay.native_requests:
         return
+    if sender is KeaDhcpLink:
+        # The replay confirms the mapping now; the recorded number would be older than a cutoff taken before it.
+        instance.confirmation = next_confirmation_number()
+        if instance.pk in replay.mapped_options:
+            instance.options_mapped = True
     with metadata_scope(using):
         key = (sender, instance.pk)
         _validate_native_mapping_destination(instance, using)

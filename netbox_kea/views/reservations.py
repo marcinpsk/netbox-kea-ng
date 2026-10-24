@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
@@ -181,6 +182,15 @@ def _reservation_matches(reservation: Reservation, q: str, subnet_id: int | None
     )
 
 
+def _user_context_summary(context: Any) -> str:
+    """Return the folded label of a user context: its key or item count when it has one."""
+    if isinstance(context, dict | list):
+        count = len(context)
+        unit = "key" if isinstance(context, dict) else "item"
+        return f"User context ({count} {unit}{'' if count == 1 else 's'})"
+    return "User context"
+
+
 def _reservation_table_record(reservation: Reservation, server: Server) -> dict[str, Any]:
     """Build one presentation row from a typed Reservation."""
     if isinstance(reservation.scope, InSubnetReservationScope):
@@ -192,6 +202,7 @@ def _reservation_table_record(reservation: Reservation, server: Server) -> dict[
         subnet_id = 0
         subnet_cidr = ""
     addresses = [str(address) for address in reservation.addresses]
+    excluded = {pair.delegated: str(pair.excluded) for pair in reservation.excluded_prefixes}
     record = {
         "family": reservation.family,
         "scope_kind": scope_kind,
@@ -206,9 +217,19 @@ def _reservation_table_record(reservation: Reservation, server: Server) -> dict[
         "ip_address": addresses[0] if addresses else "",
         "ip_addresses": addresses,
         "extra_ips": addresses[1:],
-        "prefixes": [str(prefix) for prefix in reservation.delegated_prefixes],
+        "prefixes": [
+            {"delegated": str(prefix), "excluded": excluded.get(prefix, "")}
+            for prefix in reservation.delegated_prefixes
+        ],
         "hostname": reservation.hostname,
         "options": reservation.options,
+        "client_classes": reservation.client_classes,
+        "next_server": "" if reservation.next_server is None else str(reservation.next_server),
+        "server_hostname": reservation.server_hostname,
+        "boot_file_name": reservation.boot_file_name,
+        # Read-only and opaque, shown as Kea holds it; compact, so that it wraps inside the Identifier cell.
+        "user_context": "" if reservation.user_context is None else json.dumps(reservation.user_context),
+        "user_context_summary": _user_context_summary(reservation.user_context),
         "reservation": reservation,
         "server_name": server.name,
         "server_pk": server.pk,

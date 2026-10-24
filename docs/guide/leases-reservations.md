@@ -152,7 +152,21 @@ Integrations that read leases from the plugin must change with the typed lease r
   reports them as *skipped*: there is no address to record in NetBox. Their **Lease**
   column matches the client identifier against the leases of the reservation's own
   subnet, there being no reserved address to match on
-- Per-reservation DHCP options
+- Per-reservation DHCP options. Each option row also takes the client classes that receive the option
+- Client classes of the Reservation, and for DHCPv4 the boot fields **Next Server**, **Server Hostname** and
+  **Boot File Name**. Kea refuses a broadcast next server, a server hostname of more than 63 characters and a boot
+  file name of more than 127 characters, and so does the form. A class field refuses a repeated name. Kea keeps a
+  comma or a line break in a class name, and the spaces around a class name of an option. A class field cannot show
+  such a name exactly. While the field keeps the text that it showed, the edit keeps the classes. Any other text is
+  refused: change those classes in Kea
+- DHCPv6 excluded prefixes (RFC 6603). Enter each excluded prefix. An excluded prefix stays with its delegated
+  prefix while you keep that one, so you can reorder the delegated prefixes. A new excluded prefix pairs with the
+  delegated prefix that holds it. The form refuses an excluded prefix that is not a longer prefix inside exactly one
+  delegated prefix, and a second one for the same delegated prefix. The table shows each delegated prefix with the
+  prefix that it excludes
+- The user context of a Reservation shows read-only on the edit page, in the REST API, and in the table, folded
+  below the identifier. An edit keeps the value that Kea holds, also when another tool changed it after you opened
+  the form
 - The hostname field takes the name that clients get. Kea adds the effective `ddns-qualifying-suffix`
   (the Pool that contains the reserved address, then the Subnet, the Shared Network and the global value) to a
   reserved hostname, except to a name that ends in a dot or already ends in the suffix. When a Pool of the
@@ -187,6 +201,11 @@ Integrations that read leases from the plugin must change with the typed lease r
   by its position in the document (`reservations[N]`) and its identity: the entries that Kea created, the entry
   where the import stopped, and the entries that NetBox did not send. The document hostname is the stored
   hostname, so transfer preserves it exactly instead of applying the add form's published-name conversion
+- A transfer document carries `client_classes`, `next_server`, `server_hostname` and `boot_file_name` (DHCPv4),
+  `excluded_prefixes` (DHCPv6, a list of `delegated_prefix` and `excluded_prefix` pairs), `user_context`, and the
+  `client_classes` of each option. Each of them is optional, so a document from an earlier release still imports.
+  An import sets each of them except `user_context`, which is read-only: the import accepts it in the document and
+  does not send it to Kea
 - The import's **Sync to NetBox** option claims each created Reservation's addresses in NetBox IPAM. NetBox checks
   the manual Sync permissions once before it sends any entry. A missing permission refuses the import. A failed
   IPAM claim appears on that entry in the report, and the import continues with the next entry. Without this option,

@@ -1,27 +1,35 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
-{% extends "base/layout.html" %}
+{% extends 'generic/_base.html' %}
 
-{% block title %}Kea Settings{% endblock %}
+{% block title %}Settings{% endblock %}
+
+{% block tabs %}
+<ul class="nav nav-tabs" role="presentation">
+  {% for tab in tabs %}
+  <li class="nav-item">
+    <a class="nav-link{% if tab == section %} active{% endif %}" href="{% url 'plugins:netbox_kea:settings_section' tab.slug %}"{% if tab == section %} aria-current="page"{% endif %}>{{ tab.tab_text }}</a>
+  </li>
+  {% endfor %}
+</ul>
+{% endblock %}
 
 {% block content %}
 <div class="row">
   <div class="col-lg-8">
-    {% for shown in sections %}
-    <div class="card mb-4" id="{{ shown.section.slug }}">
-      <h5 class="card-header">{{ shown.section.title }}</h5>
+    <div class="card">
+      <h5 class="card-header">{{ section.title }}</h5>
       <div class="card-body">
-        {% if shown.section.description %}
-        <p class="settings-description text-muted small">{{ shown.section.description }}</p>
+        {% if section.description %}
+        <p class="settings-description text-muted small">{{ section.description }}</p>
         {% endif %}
-        {% if shown.can_change %}
+        {% if can_change %}
         <form method="post">
           {% csrf_token %}
-          <input type="hidden" name="section" value="{{ shown.section.slug }}">
-          {% for error in shown.form.non_field_errors %}
+          {% for error in form.non_field_errors %}
           <div class="alert alert-danger" role="alert">{{ error }}</div>
           {% endfor %}
-          {% include shown.section.template_name with form=shown.form %}
+          {% include section.template_name with form=form %}
           <div class="text-end">
             <button type="submit" class="btn btn-primary">
               <i class="mdi mdi-content-save-outline" aria-hidden="true"></i> Save
@@ -29,12 +37,11 @@
           </div>
         </form>
         {% else %}
-        {% include shown.section.template_name with form=shown.form %}
+        {% include section.template_name with form=form %}
         <p class="text-muted small mb-0">You can view these settings, but you cannot change them.</p>
         {% endif %}
       </div>
     </div>
-    {% endfor %}
   </div>
 </div>
 {% endblock %}

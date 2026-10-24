@@ -7,6 +7,12 @@ SPDX-License-Identifier: Apache-2.0
 
 Research date: 2026-08-13.
 
+> **Superseded for the DHCP Import (2026-10-22, #107).** The import never links a Prefix to a Shared Network. With
+> netbox-plugin-dhcp 0.2.0, which requires one, every Shared Network is unsupported (#88 gap 1), and its member Subnets
+> import onto the DHCP Server. Once the plugin makes the Prefix optional, Shared Networks import with no Prefix and
+> hold their member Subnets. The "Current project decision" and "Recommendation" sections below describe the earlier
+> plan.
+
 ## Result
 
 The optional integration targets sys4's [`netbox-plugin-dhcp`](https://github.com/sys4/netbox-plugin-dhcp), whose Django app is `netbox_dhcp`. The baseline for this brief is [0.1.10](https://pypi.org/project/netbox-plugin-dhcp/0.1.10/), published on 2026-08-04, which was the latest release without a pre-release suffix on the research date. Upstream has published 0.1.11 (2026-08-20) and [0.2.0](https://pypi.org/project/netbox-plugin-dhcp/0.2.0/) (2026-09-02) since then, so every version-specific statement below describes 0.1.10 and needs a fresh reading against 0.2.0 before the optional CI leg targets it. Upstream still classifies the project as Beta. Release 0.1.10 requires Python 3.12 or later and supports NetBox 4.5.x and 4.6.x, as stated by its immutable [package metadata](https://github.com/sys4/netbox-plugin-dhcp/blob/3248f32e604ac324da973638deb6fc9701781353/pyproject.toml#L1-L17) and [compatibility matrix](https://github.com/sys4/netbox-plugin-dhcp/blob/3248f32e604ac324da973638deb6fc9701781353/COMPATIBILITY.md#L1-L8).

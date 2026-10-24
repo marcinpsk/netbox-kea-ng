@@ -111,6 +111,7 @@ class Capability(str, Enum):
     DHCP4O6_SUBNET_SELECTION = "dhcp4o6_subnet_selection"
     ADDRESS_REGISTRATION = "address_registration"
     STASH_AGENT_OPTIONS = "stash_agent_options"
+    KEA_OPTION_DATA = "kea_option_data"
 
 
 #: The row of each capability in the #88 gap table.
@@ -129,6 +130,7 @@ GAPS: dict[Capability, int] = {
     Capability.DHCP4O6_SUBNET_SELECTION: 12,
     Capability.ADDRESS_REGISTRATION: 13,
     Capability.STASH_AGENT_OPTIONS: 14,
+    Capability.KEA_OPTION_DATA: 17,
 }
 _CAPABILITY_NAMES: dict[Capability, str] = {
     Capability.SHARED_NETWORK_OPTIONAL_PREFIX: "Shared Network without one enclosing Prefix",
@@ -145,6 +147,7 @@ _CAPABILITY_NAMES: dict[Capability, str] = {
     Capability.DHCP4O6_SUBNET_SELECTION: "DHCPv4-over-DHCPv6 Subnet selection",
     Capability.ADDRESS_REGISTRATION: "Address registration",
     Capability.STASH_AGENT_OPTIONS: "Stashed relay agent options",
+    Capability.KEA_OPTION_DATA: "DHCP Option data in each form that Kea accepts",
 }
 CAPABILITY_LABELS: dict[Capability, str] = {
     capability: f"{name} (#88 gap {GAPS[capability]})" for capability, name in _CAPABILITY_NAMES.items()
@@ -234,3 +237,11 @@ class DroppedEntry:
     kind: Kind
     path: str
     detail: str
+    # The kinds whose entries the dropped entry holds, which the parse did not read.
+    hides: tuple[Kind, ...] = ()
+    # The kind of the object that assigns a dropped DHCP Option; None for every other kind.
+    parent: Kind | None = None
+
+    def __post_init__(self) -> None:
+        if (self.kind == Kind.OPTION) != (self.parent is not None):
+            raise ValueError(f"A dropped {self.kind.value} entry names the kind of its parent only for a DHCP Option.")

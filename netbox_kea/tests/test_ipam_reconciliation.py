@@ -12,6 +12,7 @@ import time
 import uuid
 from collections.abc import Callable, Sequence
 from contextlib import suppress
+from typing import TYPE_CHECKING
 
 from core.exceptions import JobFailed
 from core.models import Job
@@ -46,6 +47,11 @@ from netbox_kea.tests.kea_stub import (
 )
 from netbox_kea.tests.test_jobs import _lease_page, _make_job, _patch_kea
 from netbox_kea.tests.utils import _make_db_server, lease_phase, with_sync_config
+
+if TYPE_CHECKING:
+    from netbox_kea.integrations.dhcp_plugin import ImportSummary
+    from netbox_kea.ipam_reconciliation import ReservationObservation
+    from netbox_kea.models import Server
 
 ADDRESS = "10.0.0.5"
 SUBNET = {"id": 1, "subnet": "10.0.0.0/24"}
@@ -1488,6 +1494,34 @@ class ConcurrencyHarness(TransactionTestCase):
         return result
 
 
+def _import_reservations(server: Server, observation: ReservationObservation, summary: ImportSummary) -> None:
+    """Run the Reservation step, then the delegated-prefix cleanup of a DHCPv6 import, in one transaction."""
+    from netbox_kea import event_scope
+    from netbox_kea.integrations.dhcp_plugin import (
+        ClassReferences,
+        CustomDefinitions,
+        OptionReferences,
+        import_reservation_snapshot,
+        reconcile_delegated_prefixes,
+    )
+    from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+
+    references = OptionReferences(CustomDefinitions(server, {}, ()), ClassReferences(6, frozenset(), {}))
+    with event_scope.atomic():
+        step = import_reservation_snapshot(
+            server,
+            None,
+            observation,
+            references,
+            summary,
+            family=6,
+            adoption_servers=(),
+            capabilities=PluginCapabilities(frozenset()),
+        )
+        assert step is not None
+        reconcile_delegated_prefixes(server, 6, step, set(), summary)
+
+
 class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
     """Concurrent runs, row locks and operator edits, each on its own connection, in a fixed order."""
 
@@ -1797,8 +1831,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
     def test_import_retains_policy_locks_without_deadlocking_a_later_marker_release(self):
         from django.db import DatabaseError
 
-        from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
-        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+        from netbox_kea.integrations.dhcp_plugin import ImportSummary
         from netbox_kea.ipam_reconciliation import ReservationObservation
         from netbox_kea.models import Server
         from netbox_kea.reservations import ReservationSnapshot
@@ -1854,16 +1887,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
 
         def run_import():
             with connection.execute_wrapper(observe_import):
-                import_reservation_snapshot(
-                    owner,
-                    None,
-                    observation,
-                    {},
-                    summary,
-                    family=6,
-                    adoption_servers=(),
-                    capabilities=PluginCapabilities(frozenset()),
-                )
+                _import_reservations(owner, observation, summary)
 
         self._start("delete-server", delete_server)
         try:
@@ -1880,16 +1904,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         self.assertFalse(summary.ownership.complete)
         self.assertTrue(IPAMOwnershipLink.objects.filter(server=owner, prefix=released).exists())
         retry = ImportSummary()
-        import_reservation_snapshot(
-            owner,
-            None,
-            observation,
-            {},
-            retry,
-            family=6,
-            adoption_servers=(),
-            capabilities=PluginCapabilities(frozenset()),
-        )
+        _import_reservations(owner, observation, retry)
         self.assertEqual(retry.errors, 0)
         self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=released).exists())
         released.refresh_from_db()
@@ -1899,8 +1914,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         from django.db import DatabaseError
         from netaddr import IPNetwork
 
-        from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
-        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+        from netbox_kea.integrations.dhcp_plugin import ImportSummary
         from netbox_kea.ipam_reconciliation import ReservationObservation, SubnetClaim
         from netbox_kea.models import Server
         from netbox_kea.reservations import ReservationSnapshot
@@ -1959,16 +1973,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
 
         def run_import():
             with connection.execute_wrapper(observe_import):
-                import_reservation_snapshot(
-                    owner,
-                    None,
-                    observation,
-                    {},
-                    summary,
-                    family=6,
-                    adoption_servers=(),
-                    capabilities=PluginCapabilities(frozenset()),
-                )
+                _import_reservations(owner, observation, summary)
 
         def delete_server():
             with connection.execute_wrapper(observe_delete):
@@ -1996,16 +2001,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         self.assertFalse(summary.ownership.complete)
         self.assertTrue(IPAMOwnershipLink.objects.filter(server=owner, prefix=second).exists())
         retry = ImportSummary()
-        import_reservation_snapshot(
-            owner,
-            None,
-            observation,
-            {},
-            retry,
-            family=6,
-            adoption_servers=(),
-            capabilities=PluginCapabilities(frozenset()),
-        )
+        _import_reservations(owner, observation, retry)
         self.assertEqual(retry.errors, 0)
 
     def test_receipt_completion_does_not_block_an_ownership_foreign_key_at_commit(self):
@@ -2142,7 +2138,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         from django.apps import apps
 
         from netbox_kea.models import DhcpImportTrigger
-        from netbox_kea.tests.test_views_dhcp_plugin import _sync_responses
+        from netbox_kea.tests.kea_stub import _sync_responses
         from netbox_kea.views.dhcp_plugin_sync import run_dhcp_plugin_import
 
         if not apps.is_installed("netbox_dhcp"):

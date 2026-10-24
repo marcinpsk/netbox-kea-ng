@@ -22,7 +22,13 @@ from netbox_kea.reservation_transfer import (
     export_reservation_document,
     parse_reservation_document,
 )
-from netbox_kea.reservations import InSubnetReservationScope, IPv4Reservation, IPv6Reservation, ReservationIdentity
+from netbox_kea.reservations import (
+    ExcludedPrefix,
+    InSubnetReservationScope,
+    IPv4Reservation,
+    IPv6Reservation,
+    ReservationIdentity,
+)
 from netbox_kea.signals import reservation_created
 from netbox_kea.subnet_catalogue import SubnetIdentity
 
@@ -263,3 +269,49 @@ class ReservationImportTests(TestCase):
                         self.assertEqual(outcome.intended.hostname, hostname)
                         sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
                         self.assertEqual(sent.get("hostname", ""), hostname)
+
+    def test_a_document_creates_each_widened_fact_but_not_its_user_context(self):
+        delegated = (ip_network("2001:db8:500::/56"), ip_network("2001:db8:600::/56"))
+        records = {
+            4: IPv4Reservation(
+                scope=InSubnetReservationScope(SubnetIdentity(20, ip_network(_CIDR[4]))),
+                identity=ReservationIdentity("hw-address", "02:00:00:00:00:20"),
+                addresses=(ip_address("198.18.0.20"),),
+                client_classes=("voip",),
+                next_server=ip_address("192.0.2.5"),
+                server_hostname="boot.example.org",
+                boot_file_name="host.efi",
+                user_context={"asset": 42},
+            ),
+            6: IPv6Reservation(
+                scope=InSubnetReservationScope(SubnetIdentity(20, ip_network(_CIDR[6]))),
+                identity=ReservationIdentity("hw-address", "02:00:00:00:00:21"),
+                addresses=(),
+                delegated_prefixes=delegated,
+                client_classes=("voip",),
+                excluded_prefixes=(ExcludedPrefix(delegated[0], ip_network("2001:db8:500:ff::/64")),),
+                user_context=["opaque"],
+            ),
+        }
+        expected = {
+            4: {
+                "client-classes": ["voip"],
+                "next-server": "192.0.2.5",
+                "server-hostname": "boot.example.org",
+                "boot-file-name": "host.efi",
+                "user-context": None,
+            },
+            6: {
+                "client-classes": ["voip"],
+                "prefixes": ["2001:db8:500::/56", "2001:db8:600::/56"],
+                "excluded-prefixes": ["2001:db8:500:ff::/64", ""],
+                "user-context": None,
+            },
+        }
+        for family, record in records.items():
+            (proposal,) = parse_reservation_document(export_reservation_document((record,), "yaml"), "yaml").proposals
+            with self.subTest(family=family), _import_kea(family) as kea:
+                outcome = reservation_edit.save_import(self.server, proposal)
+            self.assertEqual((outcome.application, outcome.verification), ("applied", "verified"))
+            sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
+            self.assertEqual({key: sent.get(key) for key in expected[family]}, expected[family])

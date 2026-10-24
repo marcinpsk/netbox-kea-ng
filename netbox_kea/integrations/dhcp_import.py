@@ -104,8 +104,7 @@ def _fetch_config_intent(server: Server, version: Family) -> ServerConfigIntent 
     # Imported here: the views package imports this module.
     from ..views.notices import failed_load
 
-    # Taken before config-get: a mapping or IPAM link confirmed after them belongs to a newer read.
-    started = timezone.now()
+    # Taken before config-get: a mapping or IPAM link confirmed after it belongs to a newer read.
     cutoff = next_confirmation_number()
     read = server_configuration.for_import(server, version)
     if isinstance(read, ServerConfigurationSnapshot):
@@ -119,8 +118,7 @@ def _fetch_config_intent(server: Server, version: Family) -> ServerConfigIntent 
         )
         return None
     intent.configuration_complete = not read.snapshot.subnet_diagnostics
-    intent.read_started = started
-    intent.ipam_cutoff = cutoff
+    intent.cutoff = cutoff
     intent.host_reservation_identifiers = read.snapshot.host_reservation_identifiers
     return intent
 
