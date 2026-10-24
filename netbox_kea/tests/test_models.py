@@ -1033,6 +1033,29 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
             cursor.execute("SELECT object_id FROM netbox_kea_keadhcplink WHERE server_id = %s", [server.pk])
             self.assertEqual({row[0] for row in cursor.fetchall()}, {1})
 
+    def test_0029_reversed_removes_the_option_mappings_that_the_older_schema_cannot_hold(self):
+        from django.db import connection
+
+        server = _make_db_server(name="option-mappings")
+        object_type = ContentType.objects.get_for_model(Server)
+        for object_id, kind, identity in ((1, "subnet", None), (2, "option", '["subnet",null,"dhcp4",6,[],0]')):
+            KeaDhcpLink.objects.create(
+                confirmation=next_confirmation_number(),
+                server=server,
+                family=4,
+                kind=kind,
+                kea_subnet_id=7,
+                kea_identity=identity,
+                object_type=object_type,
+                object_id=object_id,
+            )
+
+        self._migrate_to("0028_dhcp_import")
+
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT object_id, kind FROM netbox_kea_keadhcplink WHERE server_id = %s", [server.pk])
+            self.assertEqual(cursor.fetchall(), [(1, "subnet")])
+
     def test_0029_gives_an_existing_mapping_a_confirmation_below_every_cutoff(self):
         from django.db import connection
         from django.db.migrations.executor import MigrationExecutor

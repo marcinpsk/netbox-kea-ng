@@ -5,6 +5,12 @@
 from django.db import migrations, models
 
 
+def remove_option_links(apps, schema_editor):
+    """Remove the Option mappings that the schema before this migration cannot hold. The next import adopts their rows."""
+    KeaDhcpLink = apps.get_model("netbox_kea", "KeaDhcpLink")
+    KeaDhcpLink.objects.using(schema_editor.connection.alias).filter(kind="option").delete()
+
+
 # netbox_kea tables stay in main (ADR 0007), and KeaDhcpLink follows its targets into branches (ADR 0008),
 # but branch migrate fakes every plugin migration.
 fake_on_branch = True
@@ -41,4 +47,5 @@ class Migration(migrations.Migration):
             model_name='keadhcplink',
             name='last_synced',
         ),
+        migrations.RunPython(migrations.RunPython.noop, remove_option_links),
     ]
