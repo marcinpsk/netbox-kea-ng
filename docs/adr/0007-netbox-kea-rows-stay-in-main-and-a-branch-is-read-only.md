@@ -28,7 +28,7 @@ for DHCP Import Mappings and their recovery lifecycle:
   `False` for those models. A delete in a branch reaches a main-only plugin model with a writing foreign key to a
   branchable model outside the plugin. Such a key must be a concrete `CASCADE` key, so the
   `pre_delete` receiver refuses the delete. The ADR 0006 ownership link is the first
-  (`docs/design/ipam-ownership-branching.md`).
+  ([design record #171](https://github.com/marcinpsk/netbox-kea-ng/issues/171)).
 - `Server.sync_vrf` is `PROTECT`, so a VRF delete in a branch cannot null a main row through the
   branch connection's `search_path`.
 - Every write through the plugin is refused: in plugin middleware (also for an unusable branch
@@ -37,7 +37,7 @@ for DHCP Import Mappings and their recovery lifecycle:
   `update()`, `bulk_create()`, `bulk_update()` and raw SQL on those main-only models send no model signal,
   so they are outside this guarantee, as for every non-branchable model in NetBox.
 
-The design, with its evidence, is `docs/design/netbox-branching.md`. Issue #231 tracks the
+The design, with its evidence, is [design record #175](https://github.com/marcinpsk/netbox-kea-ng/issues/175). Issue #231 tracks the
 implementation in the increments that the design lists. Each refusal applies from the increment
 that adds it.
 

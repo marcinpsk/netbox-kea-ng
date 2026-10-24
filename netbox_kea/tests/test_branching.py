@@ -111,12 +111,12 @@ from netbox_kea.tests.utils import (  # noqa: E402
     with_dhcp_integration_config,
 )
 
-# Changing this set needs a design decision (docs/design/ipam-ownership-branching.md).
+# Changing this set needs a design decision (design record #171).
 EXPOSED_RELATIONS: frozenset[tuple[str, str]] = frozenset(
     (f"netbox_kea.IPAMOwnershipLink.{key}", "CASCADE") for key in ("ip_address", "prefix", "ip_range")
 )
 _DESIGN_DECISION = (
-    "This change needs a design decision (docs/design/ipam-ownership-branching.md): the resolver keeps "
+    "This change needs a design decision (design record #171): the resolver keeps "
     "main-only plugin models in main, so a delete in a branch that reaches one of these relations writes main's table."
 )
 
@@ -284,7 +284,7 @@ class BranchabilityGuardProbeTest(SimpleTestCase):
         self.assertIn("SetNullProbe.vrf (SET_NULL) -> ipam.VRF", "\n".join(changed))
         self.assertEqual(len(pinned_too), 1, pinned_too)
         self.assertIn("SetNullProbe.vrf is SET_NULL, not CASCADE", pinned_too[0])
-        self.assertIn("docs/design/ipam-ownership-branching.md", pinned_too[0])
+        self.assertIn("design record #171", pinned_too[0])
 
     def test_an_auto_created_many_to_many_through_model_fails(self):
         rule_models = self._probe("ManyToManyProbe", prefixes=models.ManyToManyField(Prefix, related_name="+"))

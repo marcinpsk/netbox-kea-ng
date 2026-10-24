@@ -159,7 +159,7 @@ uv run python scripts/check_docs_media.py site docs/guide/assets
   It runs `test_branching.py` and `test_dhcp_mapping_recovery.py` with
   `NETBOX_KEA_REQUIRE_BRANCHING=1`, so these modules fail
   instead of skipping when netbox-branching is absent. `netbox_kea/branching.py` is the only
-  module that imports `netbox_branching` (ADR 0007, `docs/design/netbox-branching.md`).
+  module that imports `netbox_branching` (ADR 0007; design record #175).
   Every migration sets `fake_on_branch`; guard 4 in `test_branching.py` checks the value.
   `BranchRefusalMiddleware` in `branching.py` refuses every unsafe request to a netbox_kea URL
   callback in a branch, or with an unusable branch selection. Below the middleware, `KeaClient.command()`
@@ -173,8 +173,8 @@ uv run python scripts/check_docs_media.py site docs/guide/assets
   DHCP Import Mappings follow their imported target (one netbox_dhcp model for each kind in
   `MAPPING_KINDS`, `models.py`) through native squash merge and revert. `dhcp_mapping_lifecycle.py` owns their history and writer boundaries.
   Before changing mapping writes, target deletion or branch replay, read ADR 0008 and
-  `docs/design/dhcp-import-mapping-transactions.md` for the recovery contract and lock order.
-  Read `docs/design/dhcp-import-mapping-lock-scope.md` before changing which writes, deletions or
+  design record #169 for the recovery contract and lock order.
+  Read design record #168 before changing which writes, deletions or
   imports take the mapping lock, or how a lock error maps to a refusal.
 - **Compatibility matrix**: runs the integration suite (`test_setup.sh`) against
   NetBox v4.3 (floor), v4.7 (ceiling), and the dev snapshot (allowed to fail).
@@ -363,7 +363,7 @@ URL request
   Complete whole-workflow job and DHCP import receipts protect each adopted object's last link until all
   relevant enabled owners have observed their sources. `Server.ipam_first_complete_at` records the initial
   completion time. Internal scoped receipts protect newly enabled sources after that time.
-  Read `docs/design/ipam-upgrade-adoption.md` when changing adoption, completion receipts or upgrade cleanup.
+  Read design record #172 when changing adoption, completion receipts or upgrade cleanup.
   The job reads one `LeaseObservation` per family for its address `LeasePhase` and its DHCPv6 `LeasePrefixPhase`
   (source `lease-prefix`, enabled by the lease and the Prefix flags together). Both own objects only through Current Leases.
   A lease link records its `allocation_kind`; an unclassified DHCPv6 lease link is never cleaned up (ADR 0006).
@@ -766,7 +766,7 @@ resort, reserved for true external boundaries you cannot run locally.
   dispatch after its COMMIT or not at all. Put `except event_scope.EventDispatchError: raise` before a broad
   `except`. The one exception is a side effect after a change that Kea applied: the Lease add view reports failed
   IPAM event dispatch separately; `reservation_edit.after_apply` returns it as a fact for Reservation views.
-  The request must report the applied change. Read `docs/design/savepoint-event-queue.md` (sections 22 and 24) before you change it.
+  The request must report the applied change. Read design record #176 (sections 22 and 24) before you change it.
 - **Kea option names per family**: DNS is `domain-name-servers` (v4) or `dns-servers` (v6), and NTP is
   `ntp-servers` (v4) or `sntp-servers` (v6). `dhcp_options._FORM_MANAGED_OPTIONS` maps each form field to them.
 - **Forms**: lease search forms inherit `BaseLeasesSarchForm` (the typo is

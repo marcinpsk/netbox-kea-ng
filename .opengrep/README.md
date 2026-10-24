@@ -78,7 +78,7 @@ It also rejects a later snapshot that overwrites the old values. An explicit
 inventory classifies direct save sites; new or changed sites require review.
 The checker runs in the native suite and the `snapshot-discipline` pre-commit
 hook. Its direct-receiver scope and limits are documented in
-[the design record](../docs/design/snapshot-discipline.md).
+[the design record](https://github.com/marcinpsk/netbox-kea-ng/issues/178).
 It has no baseline or inline suppression marker.
 
 ## Running locally

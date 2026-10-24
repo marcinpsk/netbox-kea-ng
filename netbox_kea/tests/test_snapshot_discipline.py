@@ -90,21 +90,6 @@ def test_inventory_accounts_for_loaded_creates_and_bookkeeping():
     assert {site.kind for site in SITES} == {"loaded", "create", "plain", "framework"}
 
 
-def test_documented_inventory_counts_match_the_scanner():
-    document = (PACKAGE_ROOT.parent / "docs/design/snapshot-discipline.md").read_text()
-    counts = re.search(r"covers (\d+) saves: (\d+) loaded updates and\s+(\d+) explicit", document)
-    assert counts is not None
-    loaded = sum(site.count for site in SITES if site.kind == "loaded")
-    other = sum(site.count for site in SITES if site.kind != "loaded")
-    assert tuple(map(int, counts.groups())) == (loaded + other, loaded, other)
-    variants = re.search(
-        r"The tree has (\d+) runtime snapshots\. Each of the (\d+) .*?All (\d+) variants", document, re.DOTALL
-    )
-    assert variants is not None
-    tested = len(_snapshot_sites())
-    assert tuple(map(int, variants.groups())) == (len(_snapshot_sites(inventoried=False)), tested, 2 * tested)
-
-
 def test_production_tree_has_no_snapshot_violations():
     assert scan_tree() == []
 
