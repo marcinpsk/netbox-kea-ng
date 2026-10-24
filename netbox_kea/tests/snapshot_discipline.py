@@ -3,7 +3,7 @@
 """Check reviewed direct-save sites and their local snapshot sequence.
 
 This inventory does not infer model types, helper effects or heap aliases.
-See docs/design/snapshot-discipline.md for its supported scope.
+See design record #178 for its supported scope.
 """
 
 from __future__ import annotations

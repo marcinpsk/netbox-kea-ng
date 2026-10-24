@@ -22,9 +22,9 @@ new replay, concurrency and schema-compatibility work. Affected operations requi
 and revert must preserve newer main state through atomic refusal when history or identities conflict.
 
 The policy and operator recovery rules are in
-[the design record](../design/dhcp-import-mapping-branching.md).
+[design record #167](https://github.com/marcinpsk/netbox-kea-ng/issues/167).
 The writer boundaries and lock order are in
-[the transaction design](../design/dhcp-import-mapping-transactions.md).
+[design record #169](https://github.com/marcinpsk/netbox-kea-ng/issues/169).
 Affected actions require dependency-aware squash. Iterative replay cannot restore the target before
 its mapping, so the action is refused before mutation. Native history remains the recovery authority;
 branch status alone does not authorize replay. Existing schemas and already-lost mappings require

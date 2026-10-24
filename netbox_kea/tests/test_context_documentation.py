@@ -33,18 +33,6 @@ def test_agent_architecture_lists_server_scope():
     assert "server_scope.py   (Server selection, view permissions, and family availability)" in architecture
 
 
-def test_branching_decisions_keep_ownership_links_in_main():
-    """The decisions must agree with the ownership link's main-only routing."""
-    design = (REPOSITORY_ROOT / "docs/design/netbox-branching.md").read_text()
-    decisions = design.split("## Decisions\n", 1)[1].split("## Design\n", 1)[0]
-    opening, table = decisions.split("| # |", 1)
-    assert "ADR 0006 link model main-only" in " ".join(opening.split())
-    exemption_decision = next(row for row in table.splitlines() if row.startswith("| D14 |"))
-    assert "first branchable plugin model" not in exemption_decision
-    assert "ADR 0006" in exemption_decision
-    assert "main-only" in exemption_decision
-
-
 def test_agent_sync_lifecycle_uses_the_current_ownership_interfaces():
     """Direct agents to the phase reconciler and the claim-only entry point."""
     instructions = (REPOSITORY_ROOT / "AGENTS.md").read_text()
@@ -85,7 +73,6 @@ def test_the_mapping_kind_lists_name_every_kind_of_mapping_kinds():
     # The guides list what the import writes, and it does not write a Shared Network yet.
     imported = [term for kind, term in terms.items() if kind != Kind.SHARED_NETWORK]
     passages = (
-        ("docs/design/dhcp-import-mapping-branching.md", "## contract", "| operation |", terms.values()),
         (
             "docs/adr/0008-dhcp-import-mappings-follow-target-branch-history.md",
             "follow their targets",

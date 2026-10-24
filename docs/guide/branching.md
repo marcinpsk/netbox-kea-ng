@@ -55,7 +55,7 @@ changes in the same branch. A required missing, renamed or replaced Tag also cau
 Mappings lost under the previous policy require explicit operator repair. Preserve the existing
 target, verify its Server, family and source identity from trusted records, and repair the association
 on main through an audited operator procedure. A matching target name does not prove that association.
-See [the recovery contract](https://github.com/marcinpsk/netbox-kea-ng/blob/main/docs/design/dhcp-import-mapping-branching.md).
+See [the recovery contract](https://github.com/marcinpsk/netbox-kea-ng/issues/167).
 
 **Upgrade with open branches.** Earlier releases let netbox-branching copy the Kea servers table
 into each new branch. Nothing removes that copy: branch sync no longer updates it, and branch
