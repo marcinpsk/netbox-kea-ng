@@ -1019,6 +1019,7 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
             "reservation": ((None, "duid:01:02:03"), (7, "duid:01:02:03")),
             "client_class": ((None, "voip"),),
             "option_definition": ((None, "voip:dhcp6:1234"),),
+            "option": ((None, '["dhcpserver",null,"dhcp6",23,[],0]'), (7, '["subnet",7,"dhcp6",23,[],0]')),
         }
         kinds = dict(KeaDhcpLink._meta.get_field("kind").choices)
         self.assertEqual(
@@ -1037,6 +1038,7 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
                 for value in identities:
                     object_id += 1
                     KeaDhcpLink.objects.create(
+                        confirmation=next_confirmation_number(),
                         server=server,
                         family=6,
                         kind=kind,
