@@ -826,13 +826,14 @@ def upsert_options(
 
     They are assigned to *parent_obj*, the Kea object at *parent_path*. One Option per Kea option: the same definition
     with other client classes is another Option. Each Option has a DHCP Import Mapping from its key, and a re-import
-    finds the row through it. Until the mapping of the object records that its Options are mapped (the first run that
-    reaches it after the upgrade), an Option without a mapped row adopts an unmapped Option of *parent_obj*
-    (:func:`_paired_rows`). The adoptions and that record are written before the Options, whatever their writes do. After that, every unmapped Option is an operator's and stays. An Option without a mapping
-    source pairs with an unmapped Option on every run, so it is updated in place and never removed. The options of a
-    client class also resolve its own Option Definitions. An Option whose definition cannot be resolved, whose class
-    has no row, or whose data the plugin refuses, is reported and does not stop the import. An Option whose values did
-    not change has no entry.
+    finds the row through it. Until the mapping of the object records that its Options are mapped, an Option without
+    a mapped row adopts an unmapped Option of *parent_obj* (:func:`_paired_rows`). The adoptions are written before the
+    Options, and that record waits only for a failed Option Definition write or a defined client class that this run
+    did not import. After that, every unmapped Option is an operator's and stays. An Option without a mapping source
+    pairs with an unmapped Option on every run, so it is updated in place and never removed. The options of a client
+    class also resolve its own Option Definitions. An Option whose definition cannot be resolved, whose class has no
+    row, or whose data the plugin refuses, is reported and does not stop the import. An Option whose values did not
+    change has no entry.
     """
     server, parent = references.server, planned_set.parent
     if not planned_set.options:
@@ -844,10 +845,12 @@ def upsert_options(
     ct = ContentType.objects.get_for_model(type(parent_obj))
     class_name = planned_set.class_name
     planned: list[_PlannedOption] = []
+    pending_dependency = False
     paths = planned_set.paths(parent_path, family)
     for opt, key, path in zip(planned_set.options, planned_set.keys, paths, strict=True):
         definition = _resolve_option_definition(opt, family, references.definitions, capabilities, class_name)
         if isinstance(definition, _Unresolved):
+            pending_dependency |= definition.reason == Reason.PARENT_NOT_IMPORTED
             summary.record(definition.entry(family, Kind.OPTION, path))
             summary.warn(f"option {option_identity(opt, family)}: skipped. {definition.detail}")
             continue
@@ -858,6 +861,8 @@ def upsert_options(
             source = key.source if key is not None else None
             skipped = _data_gap(opt, definition, capabilities, family, path)
             planned.append(_PlannedOption(opt, path, space, code, definition, classes, source, skipped))
+        else:
+            pending_dependency |= references.classes.has_pending_import(opt.client_classes)
     mapped = [mapped_target(server, family, item.source) if item.source is not None else None for item in planned]
     adopts = parent is not None and not options_mapped(server, family, parent)
     # An Option without a source pairs on every run; one with a source only while its object adopts.
@@ -878,7 +883,7 @@ def upsert_options(
         for item in pairing:
             if item.source is not None and paired[id(item)] is not None:
                 observe_mapping(server, family, paired[id(item)], item.source)
-        if parent is not None:
+        if parent is not None and not pending_dependency:
             mark_options_mapped(server, family, parent)
     for item, row in zip(planned, mapped, strict=True):
         if item.skipped is not None:
@@ -1906,6 +1911,10 @@ class ClassReferences:
         detail = f"{cause} Without the class the option would reach more clients."
         summary.record(not_written(self.family, Kind.OPTION, path, Reason.PARENT_NOT_IMPORTED, detail))
         return None
+
+    def has_pending_import(self, names: tuple[str, ...]) -> bool:
+        """Return whether Kea defines a named class that this run did not import."""
+        return any(name in self.defined and name not in self.imported for name in names)
 
     def relations(self, intent, parent_path: str, kind: Kind, summary: ImportSummary) -> dict[str, set[int]]:
         """Return the imported client classes of the class lists of the Shared Network, Subnet or Pool *intent*.

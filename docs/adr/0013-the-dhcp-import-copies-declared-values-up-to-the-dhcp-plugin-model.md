@@ -107,3 +107,5 @@ Prefix in Kea while the plugin requires one. A reverse direction from the plugin
 - Hand edits to managed fields of mapped rows are overwritten at the next run.
 - The first run after upgrade adopts the existing DHCPServer as the primary family's. It adds mappings for objects
   that were matched by structure until now.
+  A parent keeps adopting unmapped DHCP Options only while an Option waits for a failed Option Definition write or
+  a defined client class that this run did not import.

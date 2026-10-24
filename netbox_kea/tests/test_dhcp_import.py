@@ -3040,6 +3040,98 @@ class OptionMappingTest(TestCase):
         self.assertEqual(self._changes(valid), {(Kind.OPTION, routers, Outcome.UPDATED, None): 1})
         self.assertEqual(list(Option.objects.values_list("pk", "data")), [(legacy.pk, "192.0.2.5")])
 
+    def test_a_permanently_unresolved_option_closes_legacy_option_adoption(self):
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        config = {
+            "shared-networks": [],
+            "subnet4": [{"id": 10, "subnet": "192.0.2.0/24", "option-data": [{"code": 6, "data": "192.0.2.53"}]}],
+        }
+        self._run(config)
+        (legacy,) = Option.objects.all()
+        _before_option_mappings(self.server)
+        config["subnet4"][0]["option-data"].append({"code": 231, "data": "hello"})
+
+        summary = self._run(config)
+
+        self.assertEqual(summary.count(Kind.OPTION, Reason.PLUGIN_GAP), 1, summary.warnings)
+        parent = KeaDhcpLink.objects.get(server=self.server, kind="subnet", kea_subnet_id=10)
+        self.assertTrue(parent.options_mapped)
+        self.assertEqual(KeaDhcpLink.objects.get(server=self.server, kind="option").object_id, legacy.pk)
+        self.assertEqual(list(Option.objects.values_list("pk", "data")), [(legacy.pk, "192.0.2.53")])
+
+    def test_a_failed_option_definition_keeps_legacy_option_adoption_open(self):
+        from extras.models import CustomField
+
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        OptionDefinition = apps.get_model(DHCP_PLUGIN, "OptionDefinition")
+        config = {
+            "option-def": [{"name": "site-text", "code": 231, "type": "string", "space": "dhcp4"}],
+            "shared-networks": [],
+            "subnet4": [{"id": 10, "subnet": "192.0.2.0/24", "option-data": [{"code": 231, "data": "0A0B"}]}],
+        }
+        self._run(config)
+        (legacy,) = Option.objects.all()
+        _before_option_mappings(self.server)
+        required = CustomField.objects.create(name="kea_required_note", type="text", required=True)
+        required.object_types.set([ContentType.objects.get_for_model(OptionDefinition)])
+        config["option-def"][0]["type"] = "binary"
+
+        failing = self._run(config)
+
+        self.assertEqual(failing.count(Kind.OPTION_DEFINITION, Reason.WRITE_FAILED), 1, failing.warnings)
+        self.assertEqual(failing.count(Kind.OPTION, Reason.PARENT_NOT_IMPORTED), 1, failing.warnings)
+        parent = KeaDhcpLink.objects.get(server=self.server, kind="subnet", kea_subnet_id=10)
+        self.assertFalse(parent.options_mapped)
+        self.assertFalse(KeaDhcpLink.objects.filter(server=self.server, kind="option", object_id=legacy.pk).exists())
+        required.delete()
+
+        succeeding = self._run(config)
+
+        self.assertEqual(self._write_failures(succeeding), [])
+        self.assertEqual(KeaDhcpLink.objects.get(server=self.server, kind="option").object_id, legacy.pk)
+        self.assertEqual(list(Option.objects.values_list("pk", "data")), [(legacy.pk, "0A0B")])
+        parent.refresh_from_db()
+        self.assertTrue(parent.options_mapped)
+
+    def test_a_failed_client_class_keeps_legacy_option_adoption_open(self):
+        Option = apps.get_model(DHCP_PLUGIN, "Option")
+        config = {
+            "client-classes": [{"name": "printers", "test": "option[60].text == 'printer'"}],
+            "shared-networks": [],
+            "subnet4": [
+                {
+                    "id": 10,
+                    "subnet": "192.0.2.0/24",
+                    "option-data": [{"code": 6, "data": "192.0.2.53", "client-classes": ["printers"]}],
+                }
+            ],
+        }
+        self._run(config)
+        (legacy,) = Option.objects.all()
+        _before_option_mappings(self.server)
+        config["client-classes"][0]["only-in-additional-list"] = "yes"
+
+        responses = _sync_responses({4: config}, {4: _recorded_hosts(config, 4)})
+        with stub_kea(responses):
+            ((_, failing),) = run_dhcp_plugin_import(self.server, cast("DhcpImportTrigger", DhcpImportTrigger.MANUAL))
+        assert isinstance(failing, dhcp_plugin.ImportSummary), failing
+
+        self.assertEqual(failing.count(Kind.CLIENT_CLASS, Reason.WRITE_FAILED), 1, failing.warnings)
+        self.assertEqual(failing.count(Kind.OPTION, Reason.PARENT_NOT_IMPORTED), 1, failing.warnings)
+        parent = KeaDhcpLink.objects.get(server=self.server, kind="subnet", kea_subnet_id=10)
+        self.assertFalse(parent.options_mapped)
+        self.assertFalse(KeaDhcpLink.objects.filter(server=self.server, kind="option", object_id=legacy.pk).exists())
+        del config["client-classes"][0]["only-in-additional-list"]
+
+        succeeding = self._run(config)
+
+        self.assertEqual(self._write_failures(succeeding), [])
+        self.assertEqual(KeaDhcpLink.objects.get(server=self.server, kind="option").object_id, legacy.pk)
+        self.assertEqual(list(Option.objects.values_list("pk", "data")), [(legacy.pk, "192.0.2.53")])
+        self.assertEqual(list(legacy.client_classes.values_list("name", flat=True)), ["printers"])
+        parent.refresh_from_db()
+        self.assertTrue(parent.options_mapped)
+
     def test_the_first_run_after_the_upgrade_maps_each_option_that_pairs_and_keeps_the_others(self):
         Option = apps.get_model(DHCP_PLUGIN, "Option")
         self._run()
