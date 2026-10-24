@@ -13,6 +13,14 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.8.2 (2026-10-24)
+
+### Bug Fixes
+
+- **deps-dev**: Bump ruff from 0.17.0 to 0.17.1
+  ([`3baabef`](https://github.com/marcinpsk/netbox-kea-ng/commit/3baabefee17a17b054a8596b9582a41d9faadcc4))
+
+
 ## v3.8.1 (2026-10-22)
 
 ### Bug Fixes
