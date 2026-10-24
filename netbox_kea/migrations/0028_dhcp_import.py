@@ -4,6 +4,9 @@
 
 import django.db.models.deletion
 from django.db import migrations, models
+from django.db.models.functions import Length
+
+PREVIOUS_IDENTITY_MAX_LENGTH = 393
 
 
 def backfill_kind(apps, schema_editor):
@@ -26,6 +29,18 @@ def remove_family_links(apps, schema_editor):
     """Remove the family mappings, which the schema before this migration cannot hold."""
     KeaDhcpLink = apps.get_model("netbox_kea", "KeaDhcpLink")
     KeaDhcpLink.objects.using(schema_editor.connection.alias).filter(kind="server").delete()
+
+
+def remove_unheld_sources(apps, schema_editor):
+    """Remove the sources which the schema before this migration cannot hold."""
+    KeaDhcpLink = apps.get_model("netbox_kea", "KeaDhcpLink")
+    IPAMOwnershipLink = apps.get_model("netbox_kea", "IPAMOwnershipLink")
+    links = KeaDhcpLink.objects.using(schema_editor.connection.alias)
+    links.filter(kind="pd_pool").delete()
+    links.annotate(identity_length=Length("kea_identity")).filter(
+        identity_length__gt=PREVIOUS_IDENTITY_MAX_LENGTH
+    ).delete()
+    IPAMOwnershipLink.objects.using(schema_editor.connection.alias).filter(source="pd-pool").delete()
 
 
 # netbox_kea tables stay in main (ADR 0007), and KeaDhcpLink follows its targets into branches (ADR 0008),
@@ -273,4 +288,5 @@ class Migration(migrations.Migration):
             model_name='keadhcplink',
             constraint=models.CheckConstraint(condition=models.Q(models.Q(('kind', 'server'), ('kea_identity__isnull', True), ('kea_subnet_id__isnull', True), models.Q(('kea_identity', ''), _negated=True)), models.Q(('kind', 'shared_network'), ('kea_identity__isnull', False), ('kea_subnet_id__isnull', True), models.Q(('kea_identity', ''), _negated=True)), models.Q(('kind', 'subnet'), ('kea_identity__isnull', True), ('kea_subnet_id__isnull', False), models.Q(('kea_identity', ''), _negated=True)), models.Q(('kind', 'pool'), ('kea_identity__isnull', False), ('kea_subnet_id__isnull', False), models.Q(('kea_identity', ''), _negated=True)), models.Q(('kind', 'pd_pool'), ('kea_identity__isnull', False), ('kea_subnet_id__isnull', False), models.Q(('kea_identity', ''), _negated=True)), models.Q(('kind', 'reservation'), models.Q(models.Q(('kea_identity__isnull', False), ('kea_subnet_id__isnull', False)), models.Q(('kea_identity__isnull', False), ('kea_subnet_id__isnull', True)), _connector='OR'), models.Q(('kea_identity', ''), _negated=True)), models.Q(('kind', 'client_class'), ('kea_identity__isnull', False), ('kea_subnet_id__isnull', True), models.Q(('kea_identity', ''), _negated=True)), models.Q(('kind', 'option_definition'), ('kea_identity__isnull', False), ('kea_subnet_id__isnull', True), models.Q(('kea_identity', ''), _negated=True)), _connector='OR'), name='keadhcplink_kind_identity'),
         ),
+        migrations.RunPython(migrations.RunPython.noop, remove_unheld_sources),
     ]
