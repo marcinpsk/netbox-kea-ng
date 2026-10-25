@@ -940,3 +940,24 @@ class TestWidenedTransferDocument(SimpleTestCase):
             parsed = parse_reservation_document(json.dumps({"version": 1, "reservations": [record]}), "json")
             with self.subTest(field=field):
                 self.assertEqual([item.source_position for item in parsed.diagnostics], [f"reservations[0].{field}"])
+
+    def test_non_string_boot_texts_remain_invalid(self):
+        for family in (4, 6):
+            for field in ("server_hostname", "boot_file_name"):
+                for value in (0, False, ["pxe.efi"]):
+                    with self.subTest(family=family, field=field, value=value):
+                        document = {"version": 1, "reservations": [_record(family, **{field: value})]}
+                        parsed = parse_reservation_document(json.dumps(document), "json")
+                        self.assertEqual(
+                            [(item.code, item.source_position) for item in parsed.diagnostics],
+                            [("invalid-boot-field", f"reservations[0].{field}")],
+                        )
+                        self.assertEqual(parsed.proposals, ())
+
+    def test_empty_next_server_means_none_for_each_family(self):
+        for family in (4, 6):
+            with self.subTest(family=family):
+                document = {"version": 1, "reservations": [_record(family, next_server="")]}
+                parsed = parse_reservation_document(json.dumps(document), "json")
+                self.assertEqual(parsed.diagnostics, ())
+                self.assertIsNone(parsed.proposals[0].next_server)

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Reservation import permission, claim and pool facts through real writes and ORM."""
 
+import json
 from contextlib import contextmanager
 from dataclasses import replace
 from ipaddress import ip_address, ip_network
@@ -315,3 +316,32 @@ class ReservationImportTests(TestCase):
             self.assertEqual((outcome.application, outcome.verification), ("applied", "verified"))
             sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
             self.assertEqual({key: sent.get(key) for key in expected[family]}, expected[family])
+
+    def test_null_boot_texts_parse_and_import_for_each_family(self):
+        for family in (4, 6):
+            for format_name in ("yaml", "json"):
+                with self.subTest(family=family, format=format_name):
+                    reservation = (
+                        IPv4Reservation(
+                            scope=InSubnetReservationScope(SubnetIdentity(20, ip_network(_CIDR[family]))),
+                            identity=ReservationIdentity("hw-address", "02:00:00:00:00:20"),
+                            addresses=(),
+                        )
+                        if family == 4
+                        else IPv6Reservation(
+                            scope=InSubnetReservationScope(SubnetIdentity(20, ip_network(_CIDR[family]))),
+                            identity=ReservationIdentity("hw-address", "02:00:00:00:00:20"),
+                            addresses=(),
+                            delegated_prefixes=(),
+                        )
+                    )
+                    document = json.loads(export_reservation_document((reservation,), "json"))
+                    document["reservations"][0].update(server_hostname=None, boot_file_name=None)
+                    parsed = parse_reservation_document(json.dumps(document), format_name)
+                    self.assertEqual(parsed.diagnostics, ())
+                    with _import_kea(family) as kea:
+                        outcome = reservation_edit.save_import(self.server, parsed.proposals[0])
+                        self.assertEqual((outcome.application, outcome.verification), ("applied", "verified"))
+                        sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
+                        self.assertNotIn("server-hostname", sent)
+                        self.assertNotIn("boot-file-name", sent)

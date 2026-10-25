@@ -474,7 +474,7 @@ def _parse_boot_fields(
     valid = True
     next_server = None
     value = raw.get("next_server")
-    if value is not None:
+    if value is not None and value != "":
         try:
             if family == 6:
                 raise ValueError("DHCPv6 Reservations have no next server.")
@@ -485,7 +485,9 @@ def _parse_boot_fields(
             valid = False
     texts: list[str] = []
     for key in ("server_hostname", "boot_file_name"):
-        text = raw.get(key, "")
+        text = raw.get(key)
+        if text is None:
+            text = ""
         if problem := boot_text_problem(key, text, family):
             diagnostics.append(_diagnostic("invalid-boot-field", problem, f"{base}.{key}"))
             valid = False
