@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for the repository's domain-language documentation."""
 
+import re
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -97,5 +98,9 @@ def test_the_mapping_kind_lists_name_every_kind_of_mapping_kinds():
     for path, start, end, expected in passages:
         text = " ".join((REPOSITORY_ROOT / path).read_text().split()).lower()
         passage = text.split(start, 1)[1].split(end, 1)[0]
-        missing[path] = [term for term in expected if term not in passage]
+        missing[path] = []
+        for term in expected:
+            plural = "(?:es)?" if term == "client class" else "s?"
+            if not re.search(rf"(?<![a-z-])(?<!delegated-prefix ){re.escape(term)}{plural}(?![a-z])", passage):
+                missing[path].append(term)
     assert missing == {path: [] for path, *_ in passages}
