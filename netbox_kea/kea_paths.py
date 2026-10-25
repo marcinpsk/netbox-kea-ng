@@ -49,14 +49,8 @@ ADAPTIVE_LEASE_TIME_THRESHOLD = "adaptive-lease-time-threshold"
 SERVER_ID_PARAMETERS = {"identifier": "", "enterprise-id": 0, "htype": 0, "time": 0}
 
 
-_INTERFACES = "interfaces"
-_RESERVATION_RECORDS = "reservation-get-page"
-#: The steps of the settings whose path ends in a bracket: the class references and the interface entries.
-_BRACKETED_SETTINGS = (
-    f"]/{CLIENT_CLASSES}[",
-    f"/{EVALUATE_ADDITIONAL_CLASSES}[",
-    f"/{INTERFACES_CONFIG}/{_INTERFACES}[",
-)
+class SettingPath(str):
+    """The display path of one setting of a Kea object."""
 
 
 def _step(key: str, identity: str | int) -> str:
@@ -134,9 +128,9 @@ def client_class(family: int, name: str) -> str:
     return f"{daemon(family)}/{_step(CLIENT_CLASSES, f'name={name}')}"
 
 
-def class_reference(parent: str, key: str, name: str) -> str:
+def class_reference(parent: str, key: str, name: str) -> SettingPath:
     """Return the path of the class *name* in the class list *key* of the object at *parent*."""
-    return f"{parent}/{_step(key, name)}"
+    return SettingPath(f"{parent}/{_step(key, name)}")
 
 
 def client_class_entry(family: int, index: int) -> str:
@@ -195,22 +189,19 @@ def _option_path(
     return f"{parent}/{_step(OPTION_DATA, identity)}"
 
 
-def interface(family: int, entry: str) -> str:
+def interface(family: int, entry: str) -> SettingPath:
     """Return the path of one entry of the interface list of a daemon."""
-    return f"{daemon(family)}/{INTERFACES_CONFIG}/{_step(_INTERFACES, entry)}"
+    return SettingPath(f"{daemon(family)}/{INTERFACES_CONFIG}/{_step('interfaces', entry)}")
 
 
-def setting(parent: str, key: str) -> str:
+def setting(parent: str, key: str) -> SettingPath:
     """Return the path of the configuration key *key* of the object at *parent*."""
-    return f"{parent}/{key}"
+    return SettingPath(f"{parent}/{key}")
 
 
 def is_setting(path: str) -> bool:
-    """Return whether *path* names a setting of an object, not the object itself or a Reservation record."""
-    if "/" not in path or f"/{_RESERVATION_RECORDS}/" in path:
-        return False
-    # A class reference and an interface entry end in a bracket, as an object step does.
-    return not path.endswith("]") or any(step in path for step in _BRACKETED_SETTINGS)
+    """Return whether a builder marked *path* as one setting of an object."""
+    return isinstance(path, SettingPath)
 
 
 def option_collection(parent: str) -> str:
@@ -236,4 +227,4 @@ def reservation(family: int, subnet_id: int | None, identifier_type: str, value:
 
 def reservation_record(family: int, source_position: str) -> str:
     """Return the path of a Reservation record by its position in the reservation-get-page reply, in any Scope."""
-    return f"{daemon(family)}/{_RESERVATION_RECORDS}/{source_position}"
+    return f"{daemon(family)}/reservation-get-page/{source_position}"

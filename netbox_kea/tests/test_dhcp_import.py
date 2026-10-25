@@ -2437,6 +2437,19 @@ class OptionMappingTest(TestCase):
         self.assertEqual(summary.errors, 0, summary.warnings)
         return summary
 
+    def test_a_shared_network_with_setting_text_in_its_name_counts_as_created(self):
+        optional_shared_network_prefix(self)
+        name = "office/evaluate-additional-classes[lab"
+
+        summary = self._run({"subnet4": [], "shared-networks": [{"name": name, "subnet4": []}]})
+
+        self.assertTrue(apps.get_model(DHCP_PLUGIN, "SharedNetwork").objects.filter(name=name).exists())
+        self.assertIn(
+            (kea_paths.shared_network(4, name), Outcome.CREATED),
+            {(entry.path, entry.outcome) for entry in summary.entries if entry.kind == Kind.SHARED_NETWORK},
+        )
+        self.assertEqual(summary.shared_networks_created, 1)
+
     def test_option_settings_stay_in_the_result_without_counting_as_skipped_options(self):
         def option(code, data):
             return {"code": code, "data": data, "metadata": {"revision": 1}, "user-context": {"asset": 42}}

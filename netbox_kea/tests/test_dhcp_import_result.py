@@ -376,6 +376,21 @@ class EntryVocabularyTest(SimpleTestCase):
         root = kea_paths.daemon(4)
         subnet = kea_paths.subnet(4, 20)
         option = _option(code=3)
+        names = (
+            "office/evaluate-additional-classes[lab",
+            "office]/client-classes[lab",
+            "office/interfaces-config/interfaces[lab",
+            "office/reservation-get-page/lab",
+        )
+        named_objects = tuple(
+            path
+            for name in names
+            for path in (
+                kea_paths.shared_network(4, name),
+                kea_paths.client_class(4, name),
+                kea_paths.option(subnet, _option(name=name), 4),
+            )
+        )
         objects = (
             root,
             subnet,
@@ -397,6 +412,7 @@ class EntryVocabularyTest(SimpleTestCase):
             kea_paths.reservation(4, 20, "hw-address", "02:00:00:00:00:01"),
             kea_paths.reservation_record(4, "hosts[1].hw-address"),
             kea_paths.every_entry(kea_paths.reservations(4)),
+            *named_objects,
         )
         settings = (
             kea_paths.setting(root, kea_paths.SERVER_ID),
@@ -405,9 +421,18 @@ class EntryVocabularyTest(SimpleTestCase):
             kea_paths.class_reference(subnet, kea_paths.CLIENT_CLASSES, "missing"),
             kea_paths.class_reference(subnet, kea_paths.EVALUATE_ADDITIONAL_CLASSES, "missing"),
             kea_paths.interface(4, "eth0/198.18.0.1"),
+            *(kea_paths.setting(path, "metadata") for path in named_objects),
+            *(kea_paths.setting(path, "key[lab]") for path in named_objects),
+            *(kea_paths.class_reference(path, kea_paths.CLIENT_CLASSES, "missing") for path in named_objects),
+            *(
+                kea_paths.class_reference(path, kea_paths.EVALUATE_ADDITIONAL_CLASSES, "missing")
+                for path in named_objects
+            ),
+            *(kea_paths.interface(4, name) for name in names),
         )
         for path in objects:
             with self.subTest(object=path):
+                self.assertIs(type(path), str)
                 self.assertFalse(kea_paths.is_setting(path))
         for path in settings:
             with self.subTest(setting=path):
