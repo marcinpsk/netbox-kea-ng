@@ -49,6 +49,16 @@ ADAPTIVE_LEASE_TIME_THRESHOLD = "adaptive-lease-time-threshold"
 SERVER_ID_PARAMETERS = {"identifier": "", "enterprise-id": 0, "htype": 0, "time": 0}
 
 
+_INTERFACES = "interfaces"
+_RESERVATION_RECORDS = "reservation-get-page"
+#: The steps of the settings whose path ends in a bracket: the class references and the interface entries.
+_BRACKETED_SETTINGS = (
+    f"]/{CLIENT_CLASSES}[",
+    f"/{EVALUATE_ADDITIONAL_CLASSES}[",
+    f"/{INTERFACES_CONFIG}/{_INTERFACES}[",
+)
+
+
 def _step(key: str, identity: str | int) -> str:
     return f"{key}[{identity}]"
 
@@ -187,12 +197,20 @@ def _option_path(
 
 def interface(family: int, entry: str) -> str:
     """Return the path of one entry of the interface list of a daemon."""
-    return f"{daemon(family)}/{INTERFACES_CONFIG}/{_step('interfaces', entry)}"
+    return f"{daemon(family)}/{INTERFACES_CONFIG}/{_step(_INTERFACES, entry)}"
 
 
 def setting(parent: str, key: str) -> str:
     """Return the path of the configuration key *key* of the object at *parent*."""
     return f"{parent}/{key}"
+
+
+def is_setting(path: str) -> bool:
+    """Return whether *path* names a setting of an object, not the object itself or a Reservation record."""
+    if "/" not in path or f"/{_RESERVATION_RECORDS}/" in path:
+        return False
+    # A class reference and an interface entry end in a bracket, as an object step does.
+    return not path.endswith("]") or any(step in path for step in _BRACKETED_SETTINGS)
 
 
 def option_collection(parent: str) -> str:
@@ -218,4 +236,4 @@ def reservation(family: int, subnet_id: int | None, identifier_type: str, value:
 
 def reservation_record(family: int, source_position: str) -> str:
     """Return the path of a Reservation record by its position in the reservation-get-page reply, in any Scope."""
-    return f"{daemon(family)}/reservation-get-page/{source_position}"
+    return f"{daemon(family)}/{_RESERVATION_RECORDS}/{source_position}"

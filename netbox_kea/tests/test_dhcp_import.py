@@ -2437,6 +2437,53 @@ class OptionMappingTest(TestCase):
         self.assertEqual(summary.errors, 0, summary.warnings)
         return summary
 
+    def test_option_settings_stay_in_the_result_without_counting_as_skipped_options(self):
+        def option(code, data):
+            return {"code": code, "data": data, "metadata": {"revision": 1}, "user-context": {"asset": 42}}
+
+        config = {
+            "shared-networks": [],
+            "option-data": [option(3, "198.18.0.1")],
+            "subnet4": [
+                {
+                    "id": 20,
+                    "subnet": "198.18.0.0/24",
+                    "option-data": [option(6, "198.18.0.53")],
+                    "pools": [{"pool": "198.18.0.10-198.18.0.20", "option-data": [option(15, "lab.example.invalid")]}],
+                }
+            ],
+        }
+        summary = self._run(config)
+        paths = {
+            "Dhcp4/option-data[code=3]",
+            "Dhcp4/subnet4[id=20]/option-data[code=6]",
+            "Dhcp4/subnet4[id=20]/pools[pool=198.18.0.10-198.18.0.20]/option-data[code=15]",
+        }
+        self.assertEqual(summary.options_created, 3)
+        self.assertEqual(apps.get_model(DHCP_PLUGIN, "Option").objects.count(), 3)
+        self.assertEqual(summary.options_skipped, 0)
+        run = DhcpImportRun.objects.get(server=self.server)
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertIn(
+                    (path + "/metadata", Reason.NO_PLUGIN_HOME),
+                    {(entry.path, entry.reason) for entry in summary.entries},
+                )
+                self.assertTrue(
+                    run.entries.filter(kea_path=path + "/metadata", reason=Reason.NO_PLUGIN_HOME.value).exists()
+                )
+                if not probe().has(Capability.USER_CONTEXT):
+                    self.assertTrue(
+                        run.entries.filter(
+                            kea_path=path + "/user-context",
+                            outcome=Outcome.UNSUPPORTED.value,
+                            capability=Capability.USER_CONTEXT.value,
+                        ).exists()
+                    )
+        config["option-data"][0]["data"] = "198.18.0.2"
+        updated = self._run(config)
+        self.assertEqual((updated.options_created, updated.options_updated, updated.options_skipped), (0, 1, 0))
+
     @staticmethod
     def _changes(summary) -> dict:
         """Count each entry that wrote or removed a row, or kept a stale one, by kind, path, outcome and reason."""

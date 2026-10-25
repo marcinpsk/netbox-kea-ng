@@ -257,7 +257,7 @@ class _Count:
         self.matches = matches
 
     def __get__(self, summary: ImportSummary | None, owner: type) -> int:
-        return summary.count(self.kind, *self.matches) if summary is not None else 0
+        return summary.count(self.kind, *self.matches, objects_only=True) if summary is not None else 0
 
 
 @dataclass
@@ -295,14 +295,7 @@ class ImportSummary:
     shared_networks_created = _Count(Kind.SHARED_NETWORK, Outcome.CREATED)
     shared_networks_updated = _Count(Kind.SHARED_NETWORK, Outcome.UPDATED)
 
-    @property
-    def shared_networks_unsupported(self) -> int:
-        """Return the Shared Networks that the DHCP plugin refused whole, not one setting of an imported one."""
-        # The path of the Shared Network ends with its name step; the path of one of its settings does not.
-        return sum(
-            entry.kind == Kind.SHARED_NETWORK and entry.outcome == Outcome.UNSUPPORTED and entry.path.endswith("]")
-            for entry in self.entries
-        )
+    shared_networks_unsupported = _Count(Kind.SHARED_NETWORK, Outcome.UNSUPPORTED)
 
     @property
     def removed(self) -> int:
@@ -313,10 +306,13 @@ class ImportSummary:
         """Add the entry of one Kea fact."""
         self.entries.append(entry)
 
-    def count(self, kind: Kind, *matches: Outcome | Reason) -> int:
-        """Return the number of entries of *kind* whose outcome or reason is one of *matches*."""
+    def count(self, kind: Kind, *matches: Outcome | Reason, objects_only: bool = False) -> int:
+        """Count matching facts of *kind*, or only object entries when *objects_only* is true."""
         return sum(
-            entry.kind == kind and (entry.outcome in matches or entry.reason in matches) for entry in self.entries
+            entry.kind == kind
+            and (entry.outcome in matches or entry.reason in matches)
+            and (not objects_only or not kea_paths.is_setting(entry.path))
+            for entry in self.entries
         )
 
     @property
