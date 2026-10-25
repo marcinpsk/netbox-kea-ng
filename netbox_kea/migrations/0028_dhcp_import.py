@@ -41,6 +41,14 @@ def remove_unheld_sources(apps, schema_editor):
         identity_length__gt=PREVIOUS_IDENTITY_MAX_LENGTH
     ).delete()
     IPAMOwnershipLink.objects.using(schema_editor.connection.alias).filter(source="pd-pool").delete()
+    Server = apps.get_model("netbox_kea", "Server")
+    for server in Server.objects.using(schema_editor.connection.alias).exclude(ipam_initial_observations={}):
+        # The older receipt reader refuses a whole receipt that names an unknown source.
+        server.ipam_initial_observations = {
+            workflow: {**receipt, "sources": [pair for pair in receipt["sources"] if pair[1] != "pd-pool"]}
+            for workflow, receipt in server.ipam_initial_observations.items()
+        }
+        server.save(update_fields=["ipam_initial_observations"])
 
 
 # netbox_kea tables stay in main (ADR 0007), and KeaDhcpLink follows its targets into branches (ADR 0008),
@@ -92,6 +100,7 @@ class Migration(migrations.Migration):
                             ('shared_network', 'Shared Network'),
                             ('subnet', 'Subnet'),
                             ('pool', 'Pool'),
+                            ('pd_pool', 'Delegated-prefix Pool'),
                             ('reservation', 'Reservation'),
                             ('option', 'DHCP Option'),
                         ],

@@ -161,7 +161,8 @@ dual-stack Server, the Subnet is unsupported, together with its Pools, delegated
 Reservations. The entry names the
 Subnet that holds the ID. The import never gives a Subnet another ID.
 
-Each run of **Sync to DHCP plugin now** stores its result. The **DHCP Plugin** page under Sync shows the latest run:
+Each run, from **Sync to DHCP plugin now** or the scheduled import, stores its result with its trigger. The
+**DHCP Plugin** page under Sync shows the latest run of either trigger:
 the counts for each family, object kind and outcome, and one entry for each Kea fact that the run created, updated,
 removed or did not write. An entry names its fact by a Kea path, for example `Dhcp4/subnet4[id=20]/option-data[code=150]`. A
 fact that the run did not write has a reason:
