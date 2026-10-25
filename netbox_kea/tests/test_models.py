@@ -6,6 +6,7 @@ All Kea HTTP calls are mocked; these tests require no running services.
 """
 
 import importlib
+import json
 import os
 import tempfile
 import uuid
@@ -29,6 +30,7 @@ from django.db.migrations.state import ProjectState
 from django.db.models import ProtectedError
 from django.test import RequestFactory, SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 from netbox.models import NetBoxModel
 
 import netbox_kea
@@ -752,6 +754,15 @@ class TestMigrationState(TestCase):
         except SystemExit:
             self.fail("netbox_kea models changed with no matching migration. Run makemigrations.")
 
+    def test_recorded_choices_match_the_models(self):
+        # NetBox leaves choices out of deconstruct(), so makemigrations cannot see this drift.
+        state = MigrationLoader(None).project_state()
+        for model in apps.get_app_config("netbox_kea").get_models():
+            for name, field in state.models["netbox_kea", model._meta.model_name].fields.items():
+                if field.choices:
+                    with self.subTest(model=model.__name__, field=name):
+                        self.assertEqual(list(field.choices), list(model._meta.get_field(name).choices))
+
     def test_ownership_metadata_is_excluded_from_generated_fields(self):
         ownership = apps.get_model("netbox_kea", "IPAMOwnershipLink")
         for name, attribute in (
@@ -1054,6 +1065,14 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
             prefix = Prefix.objects.create(prefix=f"2001:db8:{index}::/64", description="Owned Prefix", status="active")
             prefixes.append((prefix.pk, prefix.description, prefix.status))
             IPAMOwnershipLink.objects.create(server=server, family=6, source=source, prefix=prefix, confirmation=1)
+        held_sources = set(IPAMOwnershipSource.values) - {IPAMOwnershipSource.PD_POOL}
+        completed_at = timezone.now().isoformat()
+        Server.objects.filter(pk=server.pk).update(
+            ipam_initial_observations={
+                workflow: {"sources": [[6, source] for source in sorted(sources)], "completed_at": completed_at}
+                for workflow, sources in (("job", held_sources), ("import", IPAMOwnershipSource.values))
+            }
+        )
 
         self._migrate_to("0027_displaycacheconfig")
 
@@ -1064,9 +1083,14 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
             )
             self.assertCountEqual(cursor.fetchall(), expected_mappings)
             cursor.execute("SELECT source FROM netbox_kea_ipamownershiplink WHERE server_id = %s", [server.pk])
+            self.assertEqual({row[0] for row in cursor.fetchall()}, held_sources)
+            cursor.execute("SELECT ipam_initial_observations FROM netbox_kea_server WHERE id = %s", [server.pk])
+            (observations,) = cursor.fetchone()
+            if isinstance(observations, str):
+                observations = json.loads(observations)
             self.assertEqual(
-                {row[0] for row in cursor.fetchall()},
-                set(IPAMOwnershipSource.values) - {IPAMOwnershipSource.PD_POOL},
+                {workflow: {tuple(pair) for pair in receipt["sources"]} for workflow, receipt in observations.items()},
+                {workflow: {(6, source) for source in held_sources} for workflow in ("job", "import")},
             )
             cursor.execute(
                 "SELECT id, description, status FROM ipam_prefix WHERE id = ANY(%s)", [[p[0] for p in prefixes]]

@@ -317,6 +317,26 @@ class LatestRunPageTest(_ImportRunTestCase):
             self.assertTrue(any(f"page={3 - page_number}" in link for link in links), links)
         self.assertEqual(shown, [paths[:5], paths[5:]])
 
+    def test_the_page_shows_a_scheduled_run_that_is_newer_than_the_manual_run(self):
+        started = timezone.now()
+        manual, scheduled = "Dhcp4/subnet4[id=1]", "Dhcp4/subnet4[id=2]"
+        store_run(
+            self.server,
+            DhcpImportTrigger.MANUAL,
+            started - timedelta(minutes=5),
+            [written(4, Kind.SUBNET, manual, Outcome.CREATED)],
+        )
+        store_run(
+            self.server, DhcpImportTrigger.SCHEDULED, started, [written(4, Kind.SUBNET, scheduled, Outcome.CREATED)]
+        )
+
+        card = BeautifulSoup(self._page().content, "html.parser").select_one("#dhcp-import-latest-run")
+
+        text = card.get_text(" ", strip=True)
+        self.assertIn("Scheduled run, started", text)
+        self.assertIn(scheduled, text)
+        self.assertNotIn(manual, text)
+
     def test_the_page_says_when_no_run_is_stored(self):
         page = BeautifulSoup(self._page().content, "html.parser")
 

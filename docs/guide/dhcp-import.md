@@ -211,8 +211,8 @@ keeps the relay as free text, which the import does not write, so a value that y
 
 ## The run result
 
-Each run stores its result. The **DHCP Plugin** page under Sync shows the latest run: the counts for each family,
-object kind and outcome, and one entry for each Kea fact that the run created, updated, removed or did not write. An
+Each run, from **Sync to DHCP plugin now** or the scheduled import, stores its result with its trigger. The **DHCP
+Plugin** page under Sync shows the latest run of either trigger: the counts for each family, object kind and outcome, and one entry for each Kea fact that the run created, updated, removed or did not write. An
 entry names its fact by a Kea path, for example `Dhcp4/subnet4[id=20]/option-data[code=150]`. An object that did not
 change has no entry. A run that stops part way also stores its result, with an entry for the family that stopped.
 NetBox keeps the 10 latest runs of each Server and deletes the older runs when it stores a new one. Runs are not in
