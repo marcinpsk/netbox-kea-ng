@@ -2438,23 +2438,24 @@ class TestWidenedReservationForms(_ViewTestBase):
 
     def test_the_edit_page_shows_each_widened_fact_and_the_read_only_user_context(self):
         for family in (4, 6):
-            with self.subTest(family=family), stub_kea(self._responses(family, _WIDENED[family])):
-                page = self.client.get(self._edit_url(family))
-            self.assertEqual(page.status_code, 200)
-            initial = page.context["form"].initial
-            self.assertEqual(initial["client_classes"], ", ".join(_WIDENED[family]["client-classes"]))
-            if family == 4:
-                self.assertEqual(
-                    (initial["next_server"], initial["server_hostname"], initial["boot_file_name"]),
-                    ("192.0.2.5", "boot.example.org", "host.efi"),
-                )
-                self.assertEqual(page.context["options_formset"].initial[0]["client_classes"], "lab")
-            else:
-                self.assertEqual(initial["excluded_prefixes"], "2001:db8:500:ff::/64")
-            soup = BeautifulSoup(page.content, "html.parser")
-            context = soup.find(id="reservation-user-context")
-            self.assertEqual(json.loads(context.get_text()), {"asset": 42})
-            self.assertIsNone(soup.find(attrs={"name": "user_context"}))
+            with self.subTest(family=family):
+                with stub_kea(self._responses(family, _WIDENED[family])):
+                    page = self.client.get(self._edit_url(family))
+                self.assertEqual(page.status_code, 200)
+                initial = page.context["form"].initial
+                self.assertEqual(initial["client_classes"], ", ".join(_WIDENED[family]["client-classes"]))
+                if family == 4:
+                    self.assertEqual(
+                        (initial["next_server"], initial["server_hostname"], initial["boot_file_name"]),
+                        ("192.0.2.5", "boot.example.org", "host.efi"),
+                    )
+                    self.assertEqual(page.context["options_formset"].initial[0]["client_classes"], "lab")
+                else:
+                    self.assertEqual(initial["excluded_prefixes"], "2001:db8:500:ff::/64")
+                soup = BeautifulSoup(page.content, "html.parser")
+                context = soup.find(id="reservation-user-context")
+                self.assertEqual(json.loads(context.get_text()), {"asset": 42})
+                self.assertIsNone(soup.find(attrs={"name": "user_context"}))
 
     def test_an_unchanged_edit_sends_every_widened_key_back(self):
         for family in (4, 6):
@@ -2462,11 +2463,12 @@ class TestWidenedReservationForms(_ViewTestBase):
             with stub_kea(self._responses(family, current)):
                 page = self.client.get(self._edit_url(family))
             data = self._form_data(page)
-            with self.subTest(family=family), stub_kea(self._responses(family, current, current)) as kea:
-                response = self.client.post(self._edit_url(family), data)
-            self.assertEqual(response.status_code, 302)
-            sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
-            self.assertEqual({key: sent[key] for key in current}, current)
+            with self.subTest(family=family):
+                with stub_kea(self._responses(family, current, current)) as kea:
+                    response = self.client.post(self._edit_url(family), data)
+                self.assertEqual(response.status_code, 302)
+                sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+                self.assertEqual({key: sent[key] for key in current}, current)
 
     def test_an_unchanged_boot_text_keeps_its_live_spaces(self):
         current = {**_WIDENED[4], "server-hostname": " boot.example.org ", "boot-file-name": "host.efi "}
@@ -2593,12 +2595,13 @@ class TestWidenedReservationForms(_ViewTestBase):
                 **submitted,
             }
             expected = {key: value for key, value in _WIDENED[family].items() if key != "user-context"}
-            with self.subTest(family=family), stub_kea(self._responses(family, expected)) as kea:
-                response = self.client.post(
-                    reverse(f"plugins:netbox_kea:server_reservation{family}_add", args=[self.server.pk]), data
-                )
-            self.assertEqual(response.status_code, 302)
-            self.assertEqual(kea.bodies("reservation-add")[0]["arguments"]["reservation"], expected)
+            with self.subTest(family=family):
+                with stub_kea(self._responses(family, expected)) as kea:
+                    response = self.client.post(
+                        reverse(f"plugins:netbox_kea:server_reservation{family}_add", args=[self.server.pk]), data
+                    )
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(kea.bodies("reservation-add")[0]["arguments"]["reservation"], expected)
 
     def test_invalid_widened_fields_are_form_errors_before_any_kea_write(self):
         cases = (

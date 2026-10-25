@@ -795,12 +795,13 @@ class WidenedReservationEditTests(TestCase):
         for family, submitted, expected in cases:
             values = reservation_edit.SubmittedValues((ip_address(_ADDRESS[family]),), **submitted)
             added = {**_raw(family, hostname=""), **expected}
-            with self.subTest(family=family), stub_kea(_responses(family, raw=added)) as kea:
-                outcome = reservation_edit.save_add(self.server, family, _CIDR[family], _IDENTITY, values)
-            self.assertEqual(outcome.application, "applied")
-            sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
-            self.assertEqual({key: sent[key] for key in expected}, expected)
-            self.assertNotIn("user-context", sent)
+            with self.subTest(family=family):
+                with stub_kea(_responses(family, raw=added)) as kea:
+                    outcome = reservation_edit.save_add(self.server, family, _CIDR[family], _IDENTITY, values)
+                self.assertEqual(outcome.application, "applied")
+                sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
+                self.assertEqual({key: sent[key] for key in expected}, expected)
+                self.assertNotIn("user-context", sent)
 
     def test_edit_sets_and_clears_each_widened_field_and_keeps_the_user_context(self):
         for family in (4, 6):
@@ -917,9 +918,10 @@ class WidenedReservationEditTests(TestCase):
         ):
             raw = _widened_raw(family)
             current, _state = self._shown(family, raw)
-            with self.subTest(family=family, changed=changed), self.assertRaises(ChangeRejected) as raised:
-                self._save_edit(family, raw, self._values(current, hostname="renamed"), live={**raw, **changed})
-            self.assertEqual(raised.exception.reason, "target-changed")
+            with self.subTest(family=family, changed=changed):
+                with self.assertRaises(ChangeRejected) as raised:
+                    self._save_edit(family, raw, self._values(current, hostname="renamed"), live={**raw, **changed})
+                self.assertEqual(raised.exception.reason, "target-changed")
 
     def test_a_concurrent_user_context_change_is_kept_and_is_no_conflict(self):
         raw = _widened_raw(4)

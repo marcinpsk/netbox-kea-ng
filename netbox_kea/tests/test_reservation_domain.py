@@ -1578,9 +1578,10 @@ class TestWidenedReservationKeys(SimpleTestCase):
             ),
         )
         for reservation, expected in cases:
-            with self.subTest(family=reservation.family), stub_kea({"reservation-add": {"result": 0}}) as kea:
-                self.kea.reservation_add(reservation)
-            self.assertEqual(kea.bodies("reservation-add")[0]["arguments"]["reservation"], expected)
+            with self.subTest(family=reservation.family):
+                with stub_kea({"reservation-add": {"result": 0}}) as kea:
+                    self.kea.reservation_add(reservation)
+                self.assertEqual(kea.bodies("reservation-add")[0]["arguments"]["reservation"], expected)
 
     def test_the_fingerprint_covers_each_editable_key_and_not_the_user_context(self):
         recorded = self._read(4, recorded_host(4), "198.51.100.128/25")

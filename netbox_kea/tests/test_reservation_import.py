@@ -311,11 +311,12 @@ class ReservationImportTests(TestCase):
         }
         for family, record in records.items():
             (proposal,) = parse_reservation_document(export_reservation_document((record,), "yaml"), "yaml").proposals
-            with self.subTest(family=family), _import_kea(family) as kea:
-                outcome = reservation_edit.save_import(self.server, proposal)
-            self.assertEqual((outcome.application, outcome.verification), ("applied", "verified"))
-            sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
-            self.assertEqual({key: sent.get(key) for key in expected[family]}, expected[family])
+            with self.subTest(family=family):
+                with _import_kea(family) as kea:
+                    outcome = reservation_edit.save_import(self.server, proposal)
+                self.assertEqual((outcome.application, outcome.verification), ("applied", "verified"))
+                sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
+                self.assertEqual({key: sent.get(key) for key in expected[family]}, expected[family])
 
     def test_null_boot_texts_parse_and_import_for_each_family(self):
         for family in (4, 6):
