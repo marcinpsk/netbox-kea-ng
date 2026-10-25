@@ -610,7 +610,7 @@ class KindObservationTest(SimpleTestCase):
 
         self.assertEqual(
             {kind for kind, o in observed.items() if not o.complete},
-            {Kind.SHARED_NETWORK, Kind.SUBNET, Kind.POOL, Kind.PD_POOL, Kind.RESERVATION},
+            {Kind.SHARED_NETWORK, Kind.SUBNET, Kind.POOL, Kind.PD_POOL, Kind.RESERVATION, Kind.OPTION},
         )
         for kind, label in ((Kind.SUBNET, "Subnet"), (Kind.POOL, "Pool"), (Kind.PD_POOL, "Delegated-prefix Pool")):
             with self.subTest(kind=kind):
