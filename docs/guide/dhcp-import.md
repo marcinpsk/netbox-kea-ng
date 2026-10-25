@@ -10,7 +10,8 @@ The DHCP Import copies the Kea configuration and the Reservations of one Server 
 writes to Kea.
 
 The DHCP Import needs netbox-plugin-dhcp 0.2.0 or later. With an older release installed, **Sync to DHCP plugin now**
-refuses before it reads Kea, names the required version, and changes nothing.
+refuses before it reads Kea, names the required version, and changes nothing. The scheduled import also refuses before
+it reads Kea. The job records the failure, continues with the next Server, and ends as failed.
 
 ## When the import runs
 

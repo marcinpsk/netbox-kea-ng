@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for the repository's domain-language documentation."""
 
+import re
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -53,6 +54,16 @@ def test_agent_reconciler_scopes_the_two_phase_last_link_rule_to_ip_addresses():
     assert "The last link of a Server needs" not in reconciler
 
 
+def test_the_dhcp_import_guide_states_the_scheduled_import_version_refusal():
+    """Document the scheduled job's failure when the DHCP plugin is too old."""
+    guide = " ".join((REPOSITORY_ROOT / "docs/guide/dhcp-import.md").read_text().split())
+    requirement = "The DHCP Import needs netbox-plugin-dhcp 0.2.0 or later."
+    passage = guide.split(requirement, 1)[1].split("## When the import runs", 1)[0]
+
+    assert "The scheduled import also refuses before it reads Kea." in passage
+    assert "The job records the failure, continues with the next Server, and ends as failed." in passage
+
+
 def test_the_mapping_kind_lists_name_every_kind_of_mapping_kinds():
     """Every prose list of the DHCP Import Mapping kinds must follow ``MAPPING_KINDS``."""
     from netbox_kea.integrations.dhcp_import_report import Kind
@@ -86,7 +97,11 @@ def test_the_mapping_kind_lists_name_every_kind_of_mapping_kinds():
     for path, start, end, expected in passages:
         text = " ".join((REPOSITORY_ROOT / path).read_text().split()).lower()
         passage = text.split(start, 1)[1].split(end, 1)[0]
-        missing[path] = [term for term in expected if term not in passage]
+        missing[path] = []
+        for term in expected:
+            plural = "(?:es)?" if term == "client class" else "s?"
+            if not re.search(rf"(?<![a-z-])(?<!delegated-prefix ){re.escape(term)}{plural}(?![a-z])", passage):
+                missing[path].append(term)
     assert missing == {path: [] for path, *_ in passages}
 
 
