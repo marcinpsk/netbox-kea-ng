@@ -59,7 +59,8 @@ IPAM sync or of an import, the job stops. While a branch is active in the worker
 anything, so no import runs.
 
 The DHCP Import needs netbox-plugin-dhcp 0.2.0 or later. With an older release installed, **Sync to DHCP plugin now**
-refuses before it reads Kea, names the required version, and changes nothing.
+refuses before it reads Kea, names the required version, and changes nothing. The scheduled import also refuses before
+it reads Kea. The job records the failure, continues with the next Server, and ends as failed.
 
 Kea runs DHCPv4 and DHCPv6 as separate daemons, so the import writes one DHCP Server for each enabled family of a
 Server, named for example `kea1 DHCPv4` and `kea1 DHCPv6`. Each DHCP Server holds only the global configuration,

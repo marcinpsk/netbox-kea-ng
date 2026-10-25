@@ -53,6 +53,16 @@ def test_agent_reconciler_scopes_the_two_phase_last_link_rule_to_ip_addresses():
     assert "The last link of a Server needs" not in reconciler
 
 
+def test_the_configuration_guide_states_the_scheduled_import_version_refusal():
+    """Document the scheduled job's failure when the DHCP plugin is too old."""
+    guide = " ".join((REPOSITORY_ROOT / "docs/guide/configuration.md").read_text().split())
+    requirement = "The DHCP Import needs netbox-plugin-dhcp 0.2.0 or later."
+    passage = guide.split(requirement, 1)[1].split("Kea runs DHCPv4", 1)[0]
+
+    assert "The scheduled import also refuses before it reads Kea." in passage
+    assert "The job records the failure, continues with the next Server, and ends as failed." in passage
+
+
 def test_the_mapping_kind_lists_name_every_kind_of_mapping_kinds():
     """Every prose list of the DHCP Import Mapping kinds must follow ``MAPPING_KINDS``."""
     from netbox_kea.integrations.dhcp_import_report import Kind
