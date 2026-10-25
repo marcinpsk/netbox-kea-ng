@@ -537,9 +537,9 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
         name = raw_net.get("name") if isinstance(raw_net, dict) else None
         if not isinstance(name, str) or not name:
             path = kea_paths.shared_network_entry(family, net_index)
-            dropped.append(
-                DroppedEntry(Kind.SHARED_NETWORK, path, "The entry has no name, so its Subnets were not read.")
-            )
+            detail = "The entry has no name, so its Subnets were not read."
+            hidden = (Kind.SUBNET, Kind.POOL, Kind.PD_POOL)
+            dropped.append(DroppedEntry(Kind.SHARED_NETWORK, path, detail, hides=hidden))
             continue
         net_path = kea_paths.shared_network(family, name)
         result.shared_networks.append(
