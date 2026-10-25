@@ -880,6 +880,22 @@ class StaleRemovalTest(_ImportRunTestCase):
         self.assertTrue(Prefix.objects.filter(pk=prefix).exists())
         self.assertTrue(IPRange.objects.filter(pk=ip_range).exists())
 
+    def test_a_shared_network_entry_without_a_name_keeps_the_subnets_and_pools_it_hides(self):
+        # Kea refuses a nameless Shared Network, so only a malformed config-get reply has one.
+        self.config[4]["shared-networks"] = [{"subnet4": [self.config[4]["subnet4"].pop(1)]}]
+
+        run = self._sync(self.config, self.hosts)
+
+        self.assertEqual(self._removed(run), set())
+        self.assertEqual(sorted(row.subnet_id for row in self._mapped(Kind.SUBNET)), [41, 42])
+        self.assertEqual(len(self._mapped(Kind.POOL)), 2)
+        suppressed = {
+            entry.kind: entry.detail
+            for entry in DhcpImportEntry.objects.filter(run=run, reason=Reason.INCOMPLETE_OBSERVATION.value)
+        }
+        self.assertIn("A Shared Network entry that is not valid hides the Subnet entries in it.", suppressed["subnet"])
+        self.assertIn("A Shared Network entry that is not valid hides the Pool entries in it.", suppressed["pool"])
+
     def test_a_pool_whose_range_changed_is_removed_and_the_new_pool_is_created(self):
         from ipam.models import IPRange
 

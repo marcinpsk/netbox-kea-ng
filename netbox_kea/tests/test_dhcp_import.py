@@ -601,6 +601,24 @@ class KindObservationTest(SimpleTestCase):
 
         self.assertIn("hides its delegated-prefix Pools", observed[Kind.PD_POOL].incomplete)
 
+    def test_a_shared_network_entry_without_a_name_hides_its_subnets_pools_and_pd_pools(self):
+        subnet = {"id": 1, "subnet": "2001:db8:1::/64"}
+        intent = parse_dhcp_config({"shared-networks": [{"subnet6": [subnet]}]}, 6)
+        intent.configuration_complete = True
+
+        observed = observations(plan_family(intent, None))
+
+        self.assertEqual(
+            {kind for kind, o in observed.items() if not o.complete},
+            {Kind.SHARED_NETWORK, Kind.SUBNET, Kind.POOL, Kind.PD_POOL, Kind.RESERVATION},
+        )
+        for kind, label in ((Kind.SUBNET, "Subnet"), (Kind.POOL, "Pool"), (Kind.PD_POOL, "Delegated-prefix Pool")):
+            with self.subTest(kind=kind):
+                self.assertIn(
+                    f"A Shared Network entry that is not valid hides the {label} entries in it.",
+                    observed[kind].incomplete,
+                )
+
     def test_a_pd_pool_of_a_subnet_without_a_kea_id_makes_pd_pools_incomplete(self):
         config = {
             "subnet6": [
