@@ -13,6 +13,14 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.8.3 (2026-10-25)
+
+### Bug Fixes
+
+- **deps**: Bump the github-actions group with 4 updates
+  ([`07c0b66`](https://github.com/marcinpsk/netbox-kea-ng/commit/07c0b66b46fb60c9a3ac71c8210ddb46906ee9cb))
+
+
 ## v3.8.2 (2026-10-24)
 
 ### Bug Fixes
