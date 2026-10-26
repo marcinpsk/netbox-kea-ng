@@ -348,7 +348,8 @@ class KeaIpamSyncJob(JobRunner):
         if server_pk is None:
             failed = self._run_scheduled_imports() or failed
         if failed:
-            raise JobFailed
+            self.job.error = "The Kea IPAM sync or a scheduled DHCP Import failed. The job log has the details."
+            raise JobFailed(self.job.error)
 
     def _run_ipam_sync(self, server_pk: int | None) -> bool:
         """Apply the configured IPAM synchronization, retain the per-server summary, and return whether it failed."""
