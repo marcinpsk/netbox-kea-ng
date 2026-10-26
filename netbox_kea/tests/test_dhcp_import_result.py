@@ -731,9 +731,12 @@ class ServerImportLockTest(_ImportRunTestCase):
             finally:
                 connections.close_all()
 
+        started: list[bool] = []
+
         def config_get(body):
             # Run A has started its read; run B tries to start now, as in a read-then-apply interleaving.
-            if not refusals:
+            if not started:
+                started.append(True)
                 thread = threading.Thread(target=second_run)
                 thread.start()
                 thread.join()
