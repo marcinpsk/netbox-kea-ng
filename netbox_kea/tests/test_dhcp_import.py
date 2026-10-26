@@ -3030,6 +3030,28 @@ class OptionMappingTest(TestCase):
         )
         self.assertEqual(self._subnet_10_rows(), [(6, "192.0.2.53")])
 
+    def test_a_mapping_relinked_to_another_client_class_adopts_its_options(self):
+        config = {
+            "subnet4": [],
+            "shared-networks": [],
+            "client-classes": [{"name": "lab", "option-data": [{"code": 6, "data": "192.0.2.1"}]}],
+        }
+        self._run(config)
+        link = KeaDhcpLink.objects.filter(server=self.server, kind="client_class")
+        class_pk = link.get().object_id
+        KeaDhcpLink.objects.filter(server=self.server, kind=Kind.OPTION.value).delete()
+        # A dangling mapping, from an installation without target cleanup, that mapped the Options of its old target.
+        link.update(object_id=class_pk + 1000)
+        released = dhcp_plugin._released_client_class_name(self.server, "lab")
+        apps.get_model(DHCP_PLUGIN, "ClientClass").objects.filter(pk=class_pk).update(name=released)
+        self.assertTrue(link.get().options_mapped)
+
+        self._run(config)
+
+        self.assertEqual(link.get().object_id, class_pk)
+        self.assertEqual(self._option_rows(), Counter({("clientclass", 6, "192.0.2.1", (), True): 1}))
+        self.assertTrue(link.get().options_mapped)
+
     def test_an_option_that_the_plugin_rejects_closes_adoption_and_an_operator_option_stays(self):
         from django.contrib.contenttypes.models import ContentType
 

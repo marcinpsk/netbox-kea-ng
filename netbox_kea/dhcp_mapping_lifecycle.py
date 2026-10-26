@@ -253,6 +253,9 @@ def observe_mapping(server, family: int, target, source: MappingSource):
             KeaDhcpLink.objects.filter(pk=mapping.pk).update(confirmation=mapping.confirmation)
             return mapping
         mapping.snapshot()
+        if (mapping.object_type_id, mapping.object_id) != (desired.object_type_id, desired.object_id):
+            # The new target has not adopted its Options yet.
+            mapping.options_mapped = False
         for name, value in association.items():
             setattr(mapping, name, value)
         mapping.confirmation = desired.confirmation
@@ -609,8 +612,8 @@ def prepare_replay(branch, collapsed, operation: str, request, *, named_request=
 def _mapped_options_at_deletion(pks: list) -> set:
     """Return the mappings of *pks* whose last deletion in main recorded that their Options were mapped.
 
-    ``options_mapped`` only goes from False to True, so a revert that restores a mapping from older branch history
-    keeps the True that main recorded when it deleted the mapping.
+    ``options_mapped`` only goes from False to True for one target, so a revert that restores a mapping from older
+    branch history keeps the True that main recorded when it deleted the mapping.
     """
     from core.models import ObjectChange
     from django.contrib.contenttypes.models import ContentType
