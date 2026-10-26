@@ -10,6 +10,7 @@ gated on ``netbox_dhcp`` being installed.  Only the Kea HTTP transport is stubbe
 from __future__ import annotations
 
 import unittest
+from copy import deepcopy
 from functools import partial
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
@@ -697,6 +698,20 @@ class DriftPartialTest(TestCase):
             | {("unseen", kind, path) for kind, path in _MAPPED if kind == "reservation"},
         )
         self.assertIn("The Reservation Snapshot could not be read.", page.get_text())
+
+    def test_an_incomplete_option_observation_still_labels_an_option_outside_its_gaps_stale(self):
+        self._import()
+        config = deepcopy(_DRIFT_CONF)
+        del config[4]["subnet4"][0]["pools"][0]["option-data"]
+
+        page = self._drift(_sync_responses(config, reservations_available=False))
+
+        option = next(row for row in page.select("tr[data-kind-summary]") if row["data-kind"] == "option")
+        self.assertIn("Incomplete", option.get_text())
+        path = f"{_SUBNET_51}/pools[pool=10.86.0.10-10.86.0.20]/option-data[code=251]"
+        self.assertIn(("stale", "option", path), self._objects(page))
+        legend = " ".join(page.select_one(".drift-legend").get_text().split())
+        self.assertIn("A DHCP Option is not seen only when the read of its own entries or of its object", legend)
 
     def test_a_client_class_whose_name_is_not_text_makes_client_classes_incomplete(self):
         self._import()

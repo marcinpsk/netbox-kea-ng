@@ -129,9 +129,9 @@ class DriftState(str, Enum):
 
     # Kea has the object, and no mapping names it.
     MISSING = "missing"
-    # A Complete observation no longer reports the mapped row, so the next run removes it.
+    # The observation no longer reports the mapped row, and no gap of it covers the row, so the next run removes it.
     STALE = "stale"
-    # An Incomplete observation did not report the mapped row, so it cannot judge it.
+    # The observation did not report the mapped row, and a gap of it covers the row, so it cannot judge it.
     UNSEEN = "unseen"
     # Kea was not read for the family.
     UNKNOWN = "unknown"
@@ -209,9 +209,10 @@ class FamilyDrift:
 def family_drift(server: Server, family: Family, user) -> FamilyDrift:
     """Compare a live read of *family* with its DHCP Import Mappings, through the rule that the removal uses.
 
-    A missing object is in Kea without a mapping. A stale object has a mapping that a Complete observation no longer
-    reports, so the next run removes it. An Incomplete observation cannot judge its unobserved rows, and a family that
-    Kea did not give leaves every mapped row unknown. An object names its imported row only when *user* may view it.
+    A missing object is in Kea without a mapping. A stale object has a mapping that the observation no longer reports
+    and that no gap of the observation covers, so the next run removes it. An unobserved row that a gap covers is not
+    seen, and a family that Kea did not give leaves every mapped row unknown. An object names its imported row only
+    when *user* may view it.
     """
     mapped = dhcp_plugin.mapped_rows(server, family)
     drift = FamilyDrift(family)

@@ -325,6 +325,7 @@ the import needs the delete permission of each DHCP plugin model that it can rem
 The **Drift** card of the **DHCP Plugin** page reads Kea after the page opens and compares it with the imported rows
 of each mapped kind. It lists each missing object (Kea has it, NetBox has no imported row) and each stale object (the
 next run removes it), with a count of the objects that are in step. When Kea was not read in full for a kind, the
-card shows why, and it lists the imported rows that it did not see as not seen, never as stale. When Kea cannot be
-read, the card shows the error and lists the imported rows as unknown. Its **Latest run** link opens the stored result
-of the last run.
+card shows why, and it lists the imported rows that it did not see as not seen, never as stale. A DHCP Option is
+judged by the read of its own entries and of its object, so its kind can show why the read is not complete and still
+list a stale Option of an object that Kea gave in full. When Kea cannot be read, the card shows the error and lists
+the imported rows as unknown. Its **Latest run** link opens the stored result of the last run.

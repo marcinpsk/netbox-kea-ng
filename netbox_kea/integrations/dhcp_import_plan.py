@@ -604,7 +604,7 @@ def mapped_kinds(family: int) -> tuple[Kind, ...]:
 class KindObservation:
     """The Kea sources of one mapped kind that a read reports, and why the observation is Incomplete.
 
-    Only a Complete observation can make a mapped row stale.
+    Only a mapped row that no gap covers (:meth:`gap`) can be stale.
     """
 
     sources: frozenset[MappingSource]
