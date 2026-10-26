@@ -54,7 +54,8 @@ Prefix in Kea while the plugin requires one. A reverse direction from the plugin
   - delegated-prefix Pool, by Subnet, prefix and delegated length
   - Reservation in either scope, by Reservation Identity
   - client class, by name
-  - custom Option Definition, by space and code
+  - custom Option Definition, by space and code, with the name of its client class for a definition that a client
+    class declares
   - DHCP Option, by the identity of the object that assigns it and its own identity (ADR 0014): space, code and
     client class set. Duplicates of one identity in one object are told apart by their order, so a reorder in Kea
     swaps their mappings.

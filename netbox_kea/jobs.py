@@ -367,7 +367,8 @@ class KeaIpamSyncJob(JobRunner):
             )
             self._save_summary([*summary, *unfinished])
         if failed:
-            raise JobFailed
+            self.job.error = "The Kea IPAM sync or a scheduled DHCP Import failed. The job log has the details."
+            raise JobFailed(self.job.error)
 
     def _save_summary(self, summary: list[dict]) -> None:
         """Store the per-server summary, which attributes a periodic job to its Servers."""
