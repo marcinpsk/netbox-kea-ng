@@ -743,11 +743,14 @@ class TestMigrationState(TestCase):
     def test_recorded_choices_match_the_models(self):
         # NetBox leaves choices out of deconstruct(), so makemigrations cannot see this drift.
         state = MigrationLoader(None).project_state()
+        checked = 0
         for model in apps.get_app_config("netbox_kea").get_models():
             for name, field in state.models["netbox_kea", model._meta.model_name].fields.items():
                 if field.choices:
+                    checked += 1
                     with self.subTest(model=model.__name__, field=name):
                         self.assertEqual(list(field.choices), list(model._meta.get_field(name).choices))
+        self.assertGreater(checked, 0, "No recorded field has choices, so this test checked nothing.")
 
     def test_ownership_metadata_is_excluded_from_generated_fields(self):
         ownership = apps.get_model("netbox_kea", "IPAMOwnershipLink")
