@@ -53,7 +53,8 @@ share no enclosing Prefix. A reverse direction from the plugin to Kea must stay 
   - delegated-prefix Pool, by Subnet, prefix and delegated length
   - Reservation in either scope, by Reservation Identity
   - client class, by name
-  - custom Option Definition, by space and code
+  - custom Option Definition, by space and code, with the name of its client class for a definition that a client
+    class declares
 
   A client class and a Shared Network keep their Kea name. While the plugin requires names to be unique across all
   servers, a second Server's object of the same name fails as unsupported. Subnets, Pools and Reservations have no
