@@ -793,6 +793,15 @@ class DriftPartialTest(TestCase):
         self.assertEqual(len(page.select("tr[data-state]")), dps._SHOWN_OBJECTS)
         self.assertIn(f"{80 - dps._SHOWN_OBJECTS} more objects are not shown.", page.get_text())
 
+    def test_the_card_names_one_hidden_object_in_the_singular(self):
+        codes = range(200, 200 + dps._SHOWN_OBJECTS + 1)
+        config = {4: {"option-def": [{"name": f"opt-{code}", "code": code, "type": "uint8"} for code in codes]}}
+
+        page = self._drift(_sync_responses(config, {4: []}))
+
+        self.assertEqual(len(page.select("tr[data-state]")), dps._SHOWN_OBJECTS)
+        self.assertIn("1 more object is not shown.", page.get_text())
+
     def test_a_failed_read_returns_the_notice_and_lists_the_mapped_rows_as_unknown(self):
         self._import()
 

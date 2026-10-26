@@ -87,7 +87,7 @@
               </tr>
             {% endfor %}
             {% if drift.hidden %}
-              <tr><td colspan="4" class="text-muted">{{ drift.hidden }} more objects are not shown.</td></tr>
+              <tr><td colspan="4" class="text-muted">{{ drift.hidden }} more object{{ drift.hidden|pluralize }} {{ drift.hidden|pluralize:"is,are" }} not shown.</td></tr>
             {% endif %}
           </tbody>
         </table>
