@@ -21,6 +21,7 @@ import ast
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeGuard
 
 TESTS_ROOT = Path(__file__).resolve().parent
 _DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
@@ -99,7 +100,7 @@ def _called(item: ast.withitem) -> str | None:
     return None
 
 
-def _is_subtest(node: ast.stmt) -> bool:
+def _is_subtest(node: ast.stmt) -> TypeGuard[ast.With | ast.AsyncWith]:
     return isinstance(node, (ast.With, ast.AsyncWith)) and any(_called(item) == "subTest" for item in node.items)
 
 
