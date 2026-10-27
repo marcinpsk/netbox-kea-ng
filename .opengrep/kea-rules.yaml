@@ -104,7 +104,7 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      Do not leak exception details to user-facing responses. str(exc) or an
+      Do not leak exception details to user-facing responses or a job log. str(exc) or an
       f-string interpolating a caught exception can expose internal URLs, TLS
       details, or Kea API config. Log server-side with logger.exception() and
       return a generic message (or kea_error_message(), which shows Kea's own reply text).
@@ -143,6 +143,10 @@ rules:
           - pattern: JsonResponse(str($E), ...)
           - pattern: Response(str($E), ...)
           - pattern: Response(f"...{$E}...", ...)
+          # A JobRunner's job log is shown in the NetBox UI and the REST API.
+          - pattern: self.logger.$LEVEL(str($E), ...)
+          - pattern: self.logger.$LEVEL(f"...{$E}...", ...)
+          - pattern: self.logger.$LEVEL(f"...{$E}..." "...", ...)
 
   - id: kea-command-result-indexed-without-guard
     languages: [python]
