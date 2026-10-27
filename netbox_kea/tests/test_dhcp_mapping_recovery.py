@@ -61,7 +61,7 @@ from netbox_kea.tests.test_branching import (
 )
 from netbox_kea.tests.test_integration_dhcp_plugin import _mapped_conf, _reservation_snapshot
 from netbox_kea.tests.test_ipam_reconciliation import _lease, _reconcile, _row
-from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server, with_sync_config
+from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server, with_sync_config, without_dhcp_plugin
 
 
 class DhcpMappingRecoveryTest(TransactionTestCase):
@@ -1200,6 +1200,14 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             response = self.client.get(reverse("plugins:netbox_kea:server_list"))
         self.assertEqual(response.status_code, 200)
         self._assert_old_branch_read_refused(branch, link)
+
+    def test_without_dhcp_plugin_restores_the_boundaries_when_it_ends(self):
+        from netbox_kea.dhcp_mapping_lifecycle import ensure_boundaries
+
+        self.addCleanup(ensure_boundaries)
+        with without_dhcp_plugin():
+            pass
+        self.assertEqual(self._unguarded(), [])
 
     def test_the_boundary_recheck_sends_no_query(self):
         from netbox_kea.dhcp_mapping_lifecycle import ensure_boundaries
