@@ -202,13 +202,10 @@ class ScheduledImportTest(_ScheduledImportTestCase):
         self.assertEqual(DhcpImportRun.objects.get(server=healthy).trigger, DhcpImportTrigger.SCHEDULED)
         self.assertIsNotNone(imported_dhcp_server(healthy, 4))
         lines = _scheduled_lines(job)
-        self.assertTrue(
-            any(
-                "Scheduled DHCP Import of Server a-broken failed: ProgrammingError: dhcp server storage is down" in line
-                for line in lines
-            ),
-            lines,
+        self.assertIn(
+            "Scheduled DHCP Import of Server a-broken failed: ProgrammingError; the worker log has the details", lines
         )
+        self.assertFalse(any("dhcp server storage is down" in line for line in lines), lines)
         self.assertTrue(any("Scheduled DHCP Import of Server b-healthy, DHCPv4: created=" in line for line in lines))
         self.assertIn("Scheduled DHCP Import complete: servers=2 failed=1", lines[-1])
 
