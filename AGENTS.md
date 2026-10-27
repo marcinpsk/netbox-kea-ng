@@ -249,7 +249,7 @@ URL request
   `lease_query_max_unpaged_leases`, and `Server.get_client()` reads it on each call. `DhcpIntegrationConfig` holds
   `enabled`, the global switch of the DHCP plugin integration, and `scheduled_import_enabled`.
   `DisplayCacheConfig` holds the TTL of each read kind of the display cache. `dhcp_plugin.integration_refusal(server)` is the one
-  rule that combines `is_available()`, `Server.sync_dhcp_plugin_enabled` and that switch; no other code combines
+  rule that combines `is_available()`, `Server.sync_dhcp_plugin_enabled`, an enabled DHCP family and that switch; no other code combines
   them. Guards that keep DHCP plugin references safe from cleanup check `is_available()` only. Defaults live on the
   model fields. Migrations 0018, 0025, 0026 and 0027 create the rows, and 0018 and 0025 copy the values of
   `PLUGINS_CONFIG` once, so `get()` only reads. After that the plugin reads no `PLUGINS_CONFIG` key:
