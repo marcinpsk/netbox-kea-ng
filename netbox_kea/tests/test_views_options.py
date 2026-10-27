@@ -1249,11 +1249,12 @@ class TestCombinedStatusBadgeError(_ViewTestBase):
             (requests.ConnectionError("unreachable"), "ConnectionError"),
             (["not", "a", "reply"], "MalformedReply"),
         ):
-            with self.subTest(name), stub_kea({"version-get": failure}):
-                with self.assertLogs("netbox_kea.views.options", level="WARNING") as logs:
-                    response = self.client.get(url)
-            self.assertIn("offline", response.content.decode().lower())
-            self.assertIn(f"did not answer the status badge read ({name})", logs.output[0])
+            with self.subTest(name):
+                with stub_kea({"version-get": failure}):
+                    with self.assertLogs("netbox_kea.views.options", level="WARNING") as logs:
+                        response = self.client.get(url)
+                self.assertIn("offline", response.content.decode().lower())
+                self.assertIn(f"did not answer the status badge read ({name})", logs.output[0])
 
 
 class TestConfigurationOptionIdentity(_ViewTestBase):

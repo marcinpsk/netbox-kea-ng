@@ -149,20 +149,21 @@ class JobLeasePhaseOwnershipTest(TestCase):
         _reconcile(server, [_lease()])
         existing = _row()
         for mapping in ({}, {1: 24}):
-            with self.subTest(mapping=mapping), _kea([_lease("10.0.0.8", **{"subnet-id": 2})]):
-                report = reconcile(
-                    server,
-                    4,
-                    [
-                        lease_phase(server, 4, mapping),
-                        ReservationPhase(subnet_catalogue.for_synchronization(server, 4)),
-                    ],
-                )
-            self.assertEqual(report.errors, 1)
-            self.assertIn("lease", report.incomplete)
-            self.assertTrue(NbIP.objects.filter(pk=existing.pk).exists())
-            self.assertFalse(NbIP.objects.filter(address__net_host="10.0.0.8").exists())
-            self.assertEqual(set(_links(existing)), {"owner"})
+            with self.subTest(mapping=mapping):
+                with _kea([_lease("10.0.0.8", **{"subnet-id": 2})]):
+                    report = reconcile(
+                        server,
+                        4,
+                        [
+                            lease_phase(server, 4, mapping),
+                            ReservationPhase(subnet_catalogue.for_synchronization(server, 4)),
+                        ],
+                    )
+                self.assertEqual(report.errors, 1)
+                self.assertIn("lease", report.incomplete)
+                self.assertTrue(NbIP.objects.filter(pk=existing.pk).exists())
+                self.assertFalse(NbIP.objects.filter(address__net_host="10.0.0.8").exists())
+                self.assertEqual(set(_links(existing)), {"owner"})
 
     def test_valid_lease_still_applies_when_another_lease_has_an_unknown_subnet(self):
         server = _server("owner")

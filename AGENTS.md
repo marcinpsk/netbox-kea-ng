@@ -687,6 +687,12 @@ resort, reserved for true external boundaries you cannot run locally.
   A real-tree test fails while a budget is above the count in the tree. Record a decrease in
   the change that makes it.
   The pre-commit hook and the real-tree suite test enforce the budgets.
+- **subTest-discipline gate.** `netbox_kea/tests/subtest_discipline.py` (+
+  `test_subtest_discipline.py`, a pre-commit hook) refuses a `with self.subTest(...)` block
+  in a loop when a later statement of the same body reads a name that the block binds. When
+  the block fails, `subTest` continues, the read raises `NameError`, and the loop stops before
+  its other iterations. Keep the assertions inside the block; close a stub such as `stub_kea`
+  in an inner `with` when the assertions must run after it. There is no baseline.
 - **Standard NetBox model coverage via mixins.** For the `Server` model (a
   `NetBoxModel` with standard generic views + `NetBoxModelViewSet`), use NetBox's
   `ViewTestCases` / `APIViewTestCases` (see `test_server_generic.py`). Wire plugin

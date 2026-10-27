@@ -1408,11 +1408,12 @@ class OwnedObjectDeleteInBranchTest(_OwnedObjectsTestCase):
 
     def test_a_queryset_delete_of_an_owned_object_is_refused(self):
         for name, obj in self.owned.items():
-            with self.subTest(name), activate_branch(self.branch), self.assertRaises(AbortRequest) as refused:
-                type(obj).objects.filter(pk=obj.pk).delete()
+            with self.subTest(name):
+                with activate_branch(self.branch), self.assertRaises(AbortRequest) as refused:
+                    type(obj).objects.filter(pk=obj.pk).delete()
 
-            self.assertIsInstance(refused.exception, branching.BranchActive)
-            self.assertIs(refused.exception.branch, self.branch)
+                self.assertIsInstance(refused.exception, branching.BranchActive)
+                self.assertIs(refused.exception.branch, self.branch)
         self._assert_nothing_changed()
 
     def test_a_device_delete_that_reaches_an_owned_ip_address_is_refused(self):

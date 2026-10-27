@@ -597,14 +597,15 @@ class TestServerSubnet4WipeView(_ViewTestBase):
         """A lost or malformed reply asks the operator to check the Server, never an HTTP 500."""
         for name, reply in (("lost", requests.ReadTimeout("read timed out")), ("malformed", ["ok"])):
             self._fresh_client()
-            with self.subTest(name), stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": reply}) as kea:
-                response = self.client.post(self._url())
-            self.assertEqual(response.status_code, 302)
-            self.assertEqual(
-                [str(message) for message in get_messages(response.wsgi_request)],
-                [f"{UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable."],
-            )
-            self.assertEqual(kea.commands(), ["lease4-wipe"])
+            with self.subTest(name):
+                with stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": reply}) as kea:
+                    response = self.client.post(self._url())
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(
+                    [str(message) for message in get_messages(response.wsgi_request)],
+                    [f"{UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable."],
+                )
+                self.assertEqual(kea.commands(), ["lease4-wipe"])
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""
@@ -830,9 +831,10 @@ class TestServerSubnet4EditView(_ViewTestBase):
         for data, expected in (("10.0.0.1", "10.0.0.1"), ("10.0.0.1, 10.0.0.2", "")):
             subnet = deepcopy(_SUBNET4_GET_FULL[0])
             subnet["arguments"]["subnet4"][0]["option-data"] = [{"code": 3, "data": data}]
-            with self.subTest(data=data), self._get_stub(subnet=subnet):
-                response = self.client.get(self._url())
-            self.assertEqual(response.context["form"].initial.get("gateway", ""), expected)
+            with self.subTest(data=data):
+                with self._get_stub(subnet=subnet):
+                    response = self.client.get(self._url())
+                self.assertEqual(response.context["form"].initial.get("gateway", ""), expected)
 
     def test_get_prefills_membership_from_the_live_declaration_when_the_target_is_incomplete(self):
         """An incomplete live declaration still decides membership; the cached catalogue never does."""
@@ -3878,15 +3880,15 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
             {"result": 0, "arguments": {}},
             {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[1, None, None]]}}},
         ):
-            with (
-                self.subTest(reply=reply),
-                self.assertLogs("netbox_kea.views._base", level="WARNING"),
-                self._list_stub(_config_with_one_subnet()[0], stat=reply),
-            ):
-                response = self.client.get(self._subnets4_url())
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(len(response.context["table"].data), 1)
-            self.assertNotIn("utilization", next(iter(response.context["table"].data)))
+            with self.subTest(reply=reply):
+                with (
+                    self.assertLogs("netbox_kea.views._base", level="WARNING"),
+                    self._list_stub(_config_with_one_subnet()[0], stat=reply),
+                ):
+                    response = self.client.get(self._subnets4_url())
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(len(response.context["table"].data), 1)
+                self.assertNotIn("utilization", next(iter(response.context["table"].data)))
 
     def test_a_statistics_error_warns_and_a_missing_hook_does_not(self):
         """Only a missing stat_cmds hook is an expected state; another Kea error is a failed read."""
@@ -3894,14 +3896,14 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
             ({"result": 1, "text": "database failure"}, self.assertLogs),
             (_STAT_ABSENT4, self.assertNoLogs),
         ):
-            with (
-                self.subTest(stat=stat),
-                logs("netbox_kea.views._base", level="WARNING"),
-                self._list_stub(_config_with_one_subnet()[0], stat=stat),
-            ):
-                response = self.client.get(self._subnets4_url())
-            self.assertEqual(response.status_code, 200)
-            self.assertNotIn("utilization", next(iter(response.context["table"].data)))
+            with self.subTest(stat=stat):
+                with (
+                    logs("netbox_kea.views._base", level="WARNING"),
+                    self._list_stub(_config_with_one_subnet()[0], stat=stat),
+                ):
+                    response = self.client.get(self._subnets4_url())
+                self.assertEqual(response.status_code, 200)
+                self.assertNotIn("utilization", next(iter(response.context["table"].data)))
 
     def test_stats_request_exception_still_renders_subnets(self):
         """When stat-lease4-get raises RequestException, subnets render without utilisation."""
@@ -4014,15 +4016,16 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
             "Pool 10.0.0.100-10.0.0.200 was not checked against existing Reservations."
         )
         for name, reply, line in READ_FAILURES:
-            with self.subTest(name), self._pool_add_stub(**{"reservation-get-page": reply}):
-                self._fresh_client()
-                response = self.client.post(
-                    self._pool_add_url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"}
-                )
-            shown = [(message.level, str(message)) for message in get_messages(response.wsgi_request)]
-            self.assertEqual(shown[0][0], django_messages.SUCCESS)
-            notice_text = " ".join([HEADLINES["reservation"], *([line] if line else [])])
-            self.assertEqual(shown[1:], [(django_messages.WARNING, f"{not_checked} {notice_text}")])
+            with self.subTest(name):
+                with self._pool_add_stub(**{"reservation-get-page": reply}):
+                    self._fresh_client()
+                    response = self.client.post(
+                        self._pool_add_url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"}
+                    )
+                shown = [(message.level, str(message)) for message in get_messages(response.wsgi_request)]
+                self.assertEqual(shown[0][0], django_messages.SUCCESS)
+                notice_text = " ".join([HEADLINES["reservation"], *([line] if line else [])])
+                self.assertEqual(shown[1:], [(django_messages.WARNING, f"{not_checked} {notice_text}")])
 
     def test_pool_add_client_creation_failure_shows_an_error(self):
         """A real get_client() failure (cert without key → ValueError) leaves no Subnet to add the Pool to."""

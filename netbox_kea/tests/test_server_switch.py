@@ -177,54 +177,52 @@ class TestServerSwitch(_ViewTestBase):
         )
         url = reverse("plugins:netbox_kea:server_switch", args=[self.server.pk])
         for family, cidr in ((4, "198.18.0.0/24"), (6, "2001:db8::/64")):
-            with (
-                self.subTest(family=family),
-                stub_kea(_catalogue_responses_for_subnets(family, [{"id": 7, "subnet": cidr}])) as kea,
-            ):
-                response = self.client.get(
-                    url,
+            with self.subTest(family=family):
+                with stub_kea(_catalogue_responses_for_subnets(family, [{"id": 7, "subnet": cidr}])) as kea:
+                    response = self.client.get(
+                        url,
+                        {
+                            "target": target.pk,
+                            "section": "reservations",
+                            "family": family,
+                            "q": "printer",
+                            "subnet_id": "7",
+                            "scope": "in-subnet",
+                            "cursor": "old-server-cursor",
+                            "page": "3",
+                            "export": "yaml",
+                            "return_url": previous,
+                        },
+                    )
+                self.assertEqual(
+                    urlsplit(response.url).path,
+                    reverse(f"plugins:netbox_kea:server_reservations{family}", args=[target.pk]),
+                )
+                self.assertEqual(
+                    parse_qs(urlsplit(response.url).query),
                     {
-                        "target": target.pk,
-                        "section": "reservations",
-                        "family": family,
-                        "q": "printer",
-                        "subnet_id": "7",
-                        "scope": "in-subnet",
-                        "cursor": "old-server-cursor",
-                        "page": "3",
-                        "export": "yaml",
-                        "return_url": previous,
+                        "q": ["printer"],
+                        "subnet_id": ["7"],
+                        "scope": ["in-subnet"],
+                        "return_url": [previous],
                     },
                 )
-            self.assertEqual(
-                urlsplit(response.url).path,
-                reverse(f"plugins:netbox_kea:server_reservations{family}", args=[target.pk]),
-            )
-            self.assertEqual(
-                parse_qs(urlsplit(response.url).query),
-                {
-                    "q": ["printer"],
-                    "subnet_id": ["7"],
-                    "scope": ["in-subnet"],
-                    "return_url": [previous],
-                },
-            )
-            self.assertEqual(kea.commands(), [f"subnet{family}-list"])
-            self.assertEqual(kea.urls(), [target.ca_url])
-            self.assertEqual(list(get_messages(response.wsgi_request)), [])
-            with stub_kea(
-                {
-                    **_catalogue_responses_for_subnets(family, [{"id": 7, "subnet": cidr}]),
-                    "reservation-get-page": _res_page([]),
-                }
-            ):
-                destination = self.client.get(response.url)
-            self.assertEqual(destination.status_code, 200)
-            page = BeautifulSoup(destination.content, "html.parser")
-            self.assertEqual(page.select_one("#id_q")["value"], "printer")
-            self.assertEqual(page.select_one("#id_subnet_id option[selected]")["value"], "7")
-            self.assertEqual(page.select_one("#id_scope option[selected]")["value"], "in-subnet")
-            self.assertEqual(page.select_one('[aria-label="Server Scope"]').text, target.name)
+                self.assertEqual(kea.commands(), [f"subnet{family}-list"])
+                self.assertEqual(kea.urls(), [target.ca_url])
+                self.assertEqual(list(get_messages(response.wsgi_request)), [])
+                with stub_kea(
+                    {
+                        **_catalogue_responses_for_subnets(family, [{"id": 7, "subnet": cidr}]),
+                        "reservation-get-page": _res_page([]),
+                    }
+                ):
+                    destination = self.client.get(response.url)
+                self.assertEqual(destination.status_code, 200)
+                page = BeautifulSoup(destination.content, "html.parser")
+                self.assertEqual(page.select_one("#id_q")["value"], "printer")
+                self.assertEqual(page.select_one("#id_subnet_id option[selected]")["value"], "7")
+                self.assertEqual(page.select_one("#id_scope option[selected]")["value"], "in-subnet")
+                self.assertEqual(page.select_one('[aria-label="Server Scope"]').text, target.name)
 
     def test_lease_subnet_search_uses_fresh_target_identities(self):
         target = _make_db_server(name="second-server")
@@ -310,13 +308,14 @@ class TestServerSwitch(_ViewTestBase):
     def test_invalid_target_values_are_refused_without_kea_reads(self):
         url = reverse("plugins:netbox_kea:server_switch", args=[self.server.pk])
         for target in ("", "bad", "-1", "١", "9" * 500, "999999", None):
-            with self.subTest(target=target), stub_kea({}) as kea:
-                query = {"section": "leases", "family": "4"}
-                if target is not None:
-                    query["target"] = target
-                response = self.client.get(url, query)
-            self.assertIn(response.status_code, (400, 404))
-            self.assertEqual(kea.commands(), [])
+            with self.subTest(target=target):
+                with stub_kea({}) as kea:
+                    query = {"section": "leases", "family": "4"}
+                    if target is not None:
+                        query["target"] = target
+                    response = self.client.get(url, query)
+                self.assertIn(response.status_code, (400, 404))
+                self.assertEqual(kea.commands(), [])
 
     def test_missing_subnet_filter_is_dropped_with_an_explanation(self):
         target = _make_db_server(name="second-server")
@@ -325,20 +324,21 @@ class TestServerSwitch(_ViewTestBase):
             ("reservations", {"subnet_id": "7", "q": "printer", "scope": "in-subnet"}),
             ("leases", {"by": "subnet_id", "q": "7", "state": "0"}),
         ):
-            with self.subTest(section=section), stub_kea(_catalogue_responses_for_subnets(4, [])):
-                response = self.client.get(url, {"target": target.pk, "section": section, "family": "4", **search})
-            self.assertEqual(response.status_code, 302)
-            query = parse_qs(urlsplit(response.url).query)
-            self.assertNotIn("subnet_id", query)
-            if section == "leases":
-                self.assertNotIn("q", query)
-                self.assertNotIn("by", query)
-                self.assertEqual(query["state"], ["0"])
-            else:
-                self.assertEqual(query, {"q": ["printer"], "scope": ["in-subnet"]})
-            self.assertTrue(
-                any("Subnet filter dropped" in str(message) for message in get_messages(response.wsgi_request))
-            )
+            with self.subTest(section=section):
+                with stub_kea(_catalogue_responses_for_subnets(4, [])):
+                    response = self.client.get(url, {"target": target.pk, "section": section, "family": "4", **search})
+                self.assertEqual(response.status_code, 302)
+                query = parse_qs(urlsplit(response.url).query)
+                self.assertNotIn("subnet_id", query)
+                if section == "leases":
+                    self.assertNotIn("q", query)
+                    self.assertNotIn("by", query)
+                    self.assertEqual(query["state"], ["0"])
+                else:
+                    self.assertEqual(query, {"q": ["printer"], "scope": ["in-subnet"]})
+                self.assertTrue(
+                    any("Subnet filter dropped" in str(message) for message in get_messages(response.wsgi_request))
+                )
 
     def test_lease_search_switch_keeps_filters_and_resets_pagination(self):
         target = _make_db_server(name="second-server")
