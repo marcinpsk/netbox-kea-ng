@@ -154,6 +154,21 @@ class ScheduledImportTest(_ScheduledImportTestCase):
         )
         self.assertEqual(lines[-1], "Scheduled DHCP Import complete: servers=1 failed=0")
 
+    def test_a_server_saved_without_a_dhcp_family_is_skipped(self):
+        # Server.save() does not call clean(), so the ORM can store a Server with no family.
+        server = _server("no-family", dhcp4=False)
+
+        job = self._run()
+
+        self.assertFalse(DhcpImportRun.objects.filter(server=server).exists())
+        self.assertEqual(
+            _scheduled_lines(job),
+            [
+                "Scheduled DHCP Import of Server no-family skipped: Enable DHCPv4 or DHCPv6 on this server first.",
+                "Scheduled DHCP Import complete: servers=0 failed=0",
+            ],
+        )
+
     def test_the_import_runs_before_the_ipam_sync_of_the_same_server(self):
         server = _server("both", sync_enabled=True)
 

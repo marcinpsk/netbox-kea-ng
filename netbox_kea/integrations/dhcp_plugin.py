@@ -186,6 +186,9 @@ def integration_refusal(server: Server, switch: DhcpIntegrationConfig | None = N
         return "The NetBox DHCP plugin (netbox_dhcp) is not installed."
     if not server.sync_dhcp_plugin_enabled:
         return "Enable 'Sync to DHCP plugin' on this server first."
+    if not server.dhcp4 and not server.dhcp6:
+        # Server.save() does not call clean(), so a row can have no family.
+        return "Enable DHCPv4 or DHCPv6 on this server first."
     # Read last, so that a Server that opts out costs no query.
     if not (switch or DhcpIntegrationConfig.get()).enabled:
         return "The DHCP plugin integration is off for all Servers. Turn it on in DHCP Kea > Settings."
