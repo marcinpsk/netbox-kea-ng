@@ -378,12 +378,13 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
             ("Unreserved", {"result": 3}, "+ Reserve"),
         )
         for label, reservation_get, exported in cases:
-            with self.subTest(label), _lease_stub(self._badge_responses(**{"reservation-get": reservation_get})):
-                response = self.client.get(url, {"by": "ip", "q": "192.168.1.100", "export": "table"})
+            with self.subTest(label):
+                with _lease_stub(self._badge_responses(**{"reservation-get": reservation_get})):
+                    response = self.client.get(url, {"by": "ip", "q": "192.168.1.100", "export": "table"})
 
-            self.assertEqual(response.status_code, 200)
-            rows = list(csv.DictReader(io.StringIO(response.content.decode())))
-            self.assertEqual([row.get("Reserved") for row in rows], [exported])
+                self.assertEqual(response.status_code, 200)
+                rows = list(csv.DictReader(io.StringIO(response.content.decode())))
+                self.assertEqual([row.get("Reserved") for row in rows], [exported])
 
     def test_the_table_export_shows_an_ignored_reservation_as_the_badge_does(self):
         """Kea's default reservations-global is false, so it ignores a Global Reservation."""
@@ -2993,10 +2994,11 @@ class TestLeaseEditPostInvalidForm(_ViewTestBase):
     def test_a_post_without_the_shown_facts_sends_nothing(self):
         url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
         for shown in ("", "10.0.0.1", shown_token(lease_record("10.0.0.2", subnet_id=1))):
-            with self.subTest(shown=shown), _lease_stub({}) as kea:
-                response = self.client.post(url, {"shown": shown, "hostname": "new"})
-            self.assertEqual(response.status_code, 302)
-            self.assertEqual(kea.commands(), [])
+            with self.subTest(shown=shown):
+                with _lease_stub({}) as kea:
+                    response = self.client.post(url, {"shown": shown, "hostname": "new"})
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(kea.commands(), [])
 
 
 # ---------------------------------------------------------------------------
@@ -3582,19 +3584,20 @@ class TestLeaseDeleteLoopTransportErrors(_ViewTestBase):
                 return {"result": 0}
 
             held, selected = _held4("10.0.0.1", "10.0.0.2")
-            with self.subTest(name), _lease_stub({**held, "lease4-del": del_resp}) as kea:
-                response = self.client.post(self._url(), {"pk": selected, "_confirm": "1"})
-            self.assertEqual(response.status_code, 302)
-            self.assertEqual(kea.commands().count("lease4-del"), 1)
-            shown = [str(message) for message in get_messages(response.wsgi_request)]
-            self.assertEqual(
-                shown,
-                [
-                    f"Lease 10.0.0.1: {UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable.",
-                    "NetBox stopped at lease 10.0.0.1 and did not send the delete of 1 lease(s): 10.0.0.2.",
-                ],
-            )
-            self.assertNotIn("bad JSON", " ".join(shown))
+            with self.subTest(name):
+                with _lease_stub({**held, "lease4-del": del_resp}) as kea:
+                    response = self.client.post(self._url(), {"pk": selected, "_confirm": "1"})
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(kea.commands().count("lease4-del"), 1)
+                shown = [str(message) for message in get_messages(response.wsgi_request)]
+                self.assertEqual(
+                    shown,
+                    [
+                        f"Lease 10.0.0.1: {UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable.",
+                        "NetBox stopped at lease 10.0.0.1 and did not send the delete of 1 lease(s): 10.0.0.2.",
+                    ],
+                )
+                self.assertNotIn("bad JSON", " ".join(shown))
 
 
 class TestLeaseExportTransportErrors(_ViewTestBase):
@@ -3690,14 +3693,15 @@ class TestLeaseAddValueError(_ViewTestBase):
         url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
         for name, reply in (("value error", ValueError("bad value")), ("malformed", ["ok"])):
             self._fresh_client()
-            with self.subTest(name), _lease_stub({"lease4-add": reply}) as kea:
-                response = self.client.post(url, {"ip_address": "10.0.0.99", "hw_address": "aa:bb:cc:00:00:99"})
-            self.assertEqual(response.status_code, 302)
-            self.assertEqual(kea.commands(), ["lease4-add"])
-            self.assertEqual(
-                [str(message) for message in get_messages(response.wsgi_request)],
-                [f"Lease 10.0.0.99: {UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable."],
-            )
+            with self.subTest(name):
+                with _lease_stub({"lease4-add": reply}) as kea:
+                    response = self.client.post(url, {"ip_address": "10.0.0.99", "hw_address": "aa:bb:cc:00:00:99"})
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(kea.commands(), ["lease4-add"])
+                self.assertEqual(
+                    [str(message) for message in get_messages(response.wsgi_request)],
+                    [f"Lease 10.0.0.99: {UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable."],
+                )
         self.assertFalse(JournalEntry.objects.filter(assigned_object_id=self.server.pk).exists())
 
 
@@ -3869,13 +3873,14 @@ class TestLeaseAddPostErrors(_ViewTestBase):
         """A SQL backend can store the Lease and still answer a failure result, so Kea's text goes with a check."""
         for reply in ({"result": 1, "text": "dup"}, {"result": 4, "text": "IPv4 lease already exists."}):
             self._fresh_client()
-            with self.subTest(result=reply["result"]), _lease_stub({"lease4-add": reply}):
-                response = self.client.post(self._url(), self._valid_form())
-            self.assertEqual(response.status_code, 302)
-            self.assertEqual(
-                [str(message) for message in get_messages(response.wsgi_request)],
-                [f"Lease 10.0.0.1: {UNCONFIRMED_RUNTIME} Kea replied: {reply['text']}"],
-            )
+            with self.subTest(result=reply["result"]):
+                with _lease_stub({"lease4-add": reply}):
+                    response = self.client.post(self._url(), self._valid_form())
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(
+                    [str(message) for message in get_messages(response.wsgi_request)],
+                    [f"Lease 10.0.0.1: {UNCONFIRMED_RUNTIME} Kea replied: {reply['text']}"],
+                )
 
     def test_a_refused_connection_rerenders_the_form(self):
         """Nothing reached Kea, so the operator can correct the form and send it again."""
@@ -4366,17 +4371,18 @@ class TestLeaseSearchSubnetDropdown(_ViewTestBase):
 
     def test_each_subnet_attribute_offers_the_subnets_with_cidr_and_id_labels(self):
         for by, values in (("subnet", ["10.0.1.0/24", "10.0.2.0/24"]), ("subnet_id", ["2", "3"])):
-            with self.subTest(by=by), _lease_stub({"subnet4-list": self._LISTING}):
-                control = self._search_value(self.client.get(self._url(), {"by": by, "q": values[1]}))
-            self.assertEqual(
-                self._options(control),
-                [
-                    ("", "---------", False),
-                    (values[0], "10.0.1.0/24 (ID 2)", False),
-                    (values[1], "10.0.2.0/24 (ID 3)", True),
-                ],
-            )
-            self.assertEqual(control.select("datalist"), [])
+            with self.subTest(by=by):
+                with _lease_stub({"subnet4-list": self._LISTING}):
+                    control = self._search_value(self.client.get(self._url(), {"by": by, "q": values[1]}))
+                self.assertEqual(
+                    self._options(control),
+                    [
+                        ("", "---------", False),
+                        (values[0], "10.0.1.0/24 (ID 2)", False),
+                        (values[1], "10.0.2.0/24 (ID 3)", True),
+                    ],
+                )
+                self.assertEqual(control.select("datalist"), [])
 
     def test_other_attributes_keep_the_text_input(self):
         with _lease_stub({"subnet4-list": self._LISTING}):
@@ -4437,23 +4443,24 @@ class TestLeaseSearchSubnetDropdown(_ViewTestBase):
             ({"by": "subnet_id", "q": "printer"}, "select", ""),
         )
         for query, element, selected in cases:
-            with self.subTest(query), _lease_stub({"subnet4-list": self._LISTING}) as kea:
-                response = self.client.get(self._url(), {"value_control": "1", **query}, HTTP_HX_REQUEST="true")
-            self.assertEqual(response.status_code, 200)
-            control = BeautifulSoup(response.content, "html.parser")
-            self.assertEqual(control.find(id=True)["id"], "lease-search-value")
-            self.assertEqual(control.find(id="lease-search-value").name, "fieldset")
-            q = control.select_one("#id_q")
-            self.assertEqual(q.name, element)
-            if element == "select":
-                chosen = q.select_one("option[selected]")
-                self.assertEqual(chosen["value"] if chosen else "", selected)
-                self.assertNotIn("(not listed)", response.content.decode())
-            else:
-                self.assertEqual(q["value"], selected)
-            # A control that the user has not submitted shows no validation error.
-            self.assertNotContains(response, "text-danger")
-            self.assertFalse([command for command in kea.commands() if command.startswith("lease")])
+            with self.subTest(query):
+                with _lease_stub({"subnet4-list": self._LISTING}) as kea:
+                    response = self.client.get(self._url(), {"value_control": "1", **query}, HTTP_HX_REQUEST="true")
+                self.assertEqual(response.status_code, 200)
+                control = BeautifulSoup(response.content, "html.parser")
+                self.assertEqual(control.find(id=True)["id"], "lease-search-value")
+                self.assertEqual(control.find(id="lease-search-value").name, "fieldset")
+                q = control.select_one("#id_q")
+                self.assertEqual(q.name, element)
+                if element == "select":
+                    chosen = q.select_one("option[selected]")
+                    self.assertEqual(chosen["value"] if chosen else "", selected)
+                    self.assertNotIn("(not listed)", response.content.decode())
+                else:
+                    self.assertEqual(q["value"], selected)
+                # A control that the user has not submitted shows no validation error.
+                self.assertNotContains(response, "text-danger")
+                self.assertFalse([command for command in kea.commands() if command.startswith("lease")])
 
     def test_missing_hook_explains_where_the_subnet_list_comes_from(self):
         """Without subnet_cmds the search still works, so say that rather than fail silently."""

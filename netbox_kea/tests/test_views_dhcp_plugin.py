@@ -365,29 +365,29 @@ class FetchConfigIntentTest(TestCase):
 
     def test_malformed_config_get_is_logged_and_skipped(self):
         for reply in ([], {"result": 0, "arguments": ["not", "a", "dict"]}, {"result": 0, "arguments": {}}):
-            with (
-                self.subTest(reply=reply),
-                stub_kea({"config-get": reply}),
-                self.assertLogs("netbox_kea.integrations.dhcp_import", level="WARNING") as cm,
-            ):
-                result = dhcp_import._fetch_config_intent(self.server, 4)
-            # A malformed reply is a logged read failure with the configuration Notice, not a silent "no config".
-            self.assertIsInstance(result, Notice)
-            self.assertTrue(result.unavailable)
-            self.assertTrue(any("config-get failed" in line for line in cm.output))
+            with self.subTest(reply=reply):
+                with (
+                    stub_kea({"config-get": reply}),
+                    self.assertLogs("netbox_kea.integrations.dhcp_import", level="WARNING") as cm,
+                ):
+                    result = dhcp_import._fetch_config_intent(self.server, 4)
+                # A malformed reply is a logged read failure with the configuration Notice, not a silent "no config".
+                self.assertIsInstance(result, Notice)
+                self.assertTrue(result.unavailable)
+                self.assertTrue(any("config-get failed" in line for line in cm.output))
 
     def test_the_read_logs_why_a_reply_has_no_configuration(self):
         for reply, reason in (
             ({"result": 0, "arguments": ["not", "a", "dict"]}, "malformed configuration arguments"),
             ({"result": 0, "arguments": {}}, "no Dhcp4 configuration object"),
         ):
-            with (
-                self.subTest(reply=reply),
-                stub_kea({"config-get": reply}),
-                self.assertLogs("netbox_kea.server_configuration", level="WARNING") as cm,
-            ):
-                self.assertIsInstance(dhcp_import._fetch_config_intent(self.server, 4), Notice)
-            self.assertTrue(any(reason in line for line in cm.output), cm.output)
+            with self.subTest(reply=reply):
+                with (
+                    stub_kea({"config-get": reply}),
+                    self.assertLogs("netbox_kea.server_configuration", level="WARNING") as cm,
+                ):
+                    self.assertIsInstance(dhcp_import._fetch_config_intent(self.server, 4), Notice)
+                self.assertTrue(any(reason in line for line in cm.output), cm.output)
 
 
 class FetchConfigCollectionsTest(TestCase):
@@ -452,19 +452,19 @@ class SyncNowErrorHandlingTest(TestCase):
             ("malformed", ["not", "a", "reply"], "Kea returned a malformed configuration response."),
         )
         for name, reply, line in cases:
-            with (
-                self.subTest(name),
-                patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True),
-                stub_kea({"config-get": reply}) as kea,
-            ):
-                self.client.cookies.pop("messages", None)
-                response = self.client.post(self.url)
-            self.assertEqual(response.status_code, 302)
-            self.assertEqual(kea.commands(), ["config-get"])
-            self.assertEqual(
-                [str(message) for message in get_messages(response.wsgi_request)],
-                [f"DHCPv4: {HEADLINES['configuration']}", f"DHCPv4: {line}"],
-            )
+            with self.subTest(name):
+                with (
+                    patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True),
+                    stub_kea({"config-get": reply}) as kea,
+                ):
+                    self.client.cookies.pop("messages", None)
+                    response = self.client.post(self.url)
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(kea.commands(), ["config-get"])
+                self.assertEqual(
+                    [str(message) for message in get_messages(response.wsgi_request)],
+                    [f"DHCPv4: {HEADLINES['configuration']}", f"DHCPv4: {line}"],
+                )
 
     def test_unexpected_exception_is_caught_not_leaked(self):
         # A non-contract error (e.g. a DB error) still hits the fallback: logged,

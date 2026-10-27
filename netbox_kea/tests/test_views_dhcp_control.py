@@ -97,12 +97,13 @@ class TestServerDHCP4EnableView(_ViewTestBase):
             ("forward failure", _FORWARD_FAILURE),
         ):
             self._fresh_client()
-            with self.subTest(name), _control_stub(**{"dhcp-enable": reply}):
-                response = self.client.post(self._url(), follow=True)
-            self.assertEqual(response.status_code, 200)
-            self.assertNotIn("kea_secret", response.content.decode())
-            (message,) = _messages(response)
-            self.assertTrue(message.startswith(_UNCONFIRMED), message)
+            with self.subTest(name):
+                with _control_stub(**{"dhcp-enable": reply}):
+                    response = self.client.post(self._url(), follow=True)
+                self.assertEqual(response.status_code, 200)
+                self.assertNotIn("kea_secret", response.content.decode())
+                (message,) = _messages(response)
+                self.assertTrue(message.startswith(_UNCONFIRMED), message)
 
     def test_a_raw_tls_failure_while_reading_the_reply_is_unconfirmed(self):
         failures = (
@@ -229,10 +230,13 @@ class TestServerDHCP4DisableView(_ViewTestBase):
             ({"confirm": "1", "max_period": "300"}, f"DHCPv4 disabled on {self.server} for up to 300s."),
         ):
             self._fresh_client()
-            with self.subTest(data=data), _control_stub():
-                response = self.client.post(self._url(), data)
-            levels = [(message.level, str(message)) for message in django_messages.get_messages(response.wsgi_request)]
-            self.assertEqual(levels, [(django_messages.WARNING, text)])
+            with self.subTest(data=data):
+                with _control_stub():
+                    response = self.client.post(self._url(), data)
+                levels = [
+                    (message.level, str(message)) for message in django_messages.get_messages(response.wsgi_request)
+                ]
+                self.assertEqual(levels, [(django_messages.WARNING, text)])
 
     def test_post_with_invalid_max_period_rerenders_form(self):
         """POST with non-integer max_period must re-render the form (no Kea call)."""
@@ -258,12 +262,13 @@ class TestServerDHCP4DisableView(_ViewTestBase):
             ("forward failure", _FORWARD_FAILURE),
         ):
             self._fresh_client()
-            with self.subTest(name), _control_stub(**{"dhcp-disable": reply}):
-                response = self.client.post(self._url(), {"confirm": "1"}, follow=True)
-            self.assertEqual(response.status_code, 200)
-            self.assertNotIn("kea_secret", response.content.decode())
-            (message,) = _messages(response)
-            self.assertTrue(message.startswith(_UNCONFIRMED), message)
+            with self.subTest(name):
+                with _control_stub(**{"dhcp-disable": reply}):
+                    response = self.client.post(self._url(), {"confirm": "1"}, follow=True)
+                self.assertEqual(response.status_code, 200)
+                self.assertNotIn("kea_secret", response.content.decode())
+                (message,) = _messages(response)
+                self.assertTrue(message.startswith(_UNCONFIRMED), message)
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""

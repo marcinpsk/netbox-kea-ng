@@ -73,6 +73,13 @@ repos:
         pass_filenames: false
         files: (^netbox_kea/.*\.py$|^\.pre-commit-config\.yaml$)
 
+      - id: subtest-discipline
+        name: subtest-discipline (reads of a looped subTest block stay inside it)
+        entry: python3 netbox_kea/tests/subtest_discipline.py
+        language: system
+        pass_filenames: false
+        files: (^netbox_kea/tests/.*\.py$|^\.pre-commit-config\.yaml$)
+
   # Type-check netbox_kea and fail only on errors absent from mypy-baseline.txt.
   # Runs on pre-push (not every commit) because a cold mypy cache takes ~20s. CI runs
   # the same script in the lint job, so both gates share one definition.
