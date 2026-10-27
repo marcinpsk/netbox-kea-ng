@@ -78,11 +78,13 @@ class without_dhcp_plugin(TestContextDecorator):
 
 
 def _clear_registry_caches() -> None:
-    """Clear the app registry and the model sets that dhcp_mapping_lifecycle derives from it once per process."""
+    """Clear the app registry and the model sets that dhcp_mapping_lifecycle derives from it, and restore its guards."""
     apps.clear_cache()
     for value in vars(dhcp_mapping_lifecycle).values():
         if hasattr(value, "cache_clear"):
             value.cache_clear()
+    # apps.clear_cache() builds new managers without the mapping boundary querysets.
+    dhcp_mapping_lifecycle.ensure_boundaries()
 
 
 def with_kea_client_config(**values) -> SettingsRowOverride:
