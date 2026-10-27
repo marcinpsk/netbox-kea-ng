@@ -186,6 +186,8 @@ def test_a_read_after_an_enclosing_block_in_the_loop_is_reported(outer):
         "match x:\n    case 0:\n        outcome = 0",
         "outcome: int",
         "with self.assertRaises(ZeroDivisionError):\n    outcome = 1 / 0",
+        "with pytest.raises(ZeroDivisionError):\n    outcome = 1 / 0",
+        "with self.assertRaisesMessage(ZeroDivisionError, 'division'):\n    outcome = 1 / 0",
         "with self.subTest(step=2):\n    outcome = g(x)",
         "with suppress(ValueError), nullcontext(g(x)) as outcome:\n    pass",
         pytest.param(
@@ -193,7 +195,17 @@ def test_a_read_after_an_enclosing_block_in_the_loop_is_reported(outer):
             marks=pytest.mark.skipif(sys.version_info < (3, 11), reason="except* needs Python 3.11"),
         ),
     ],
-    ids=["nested-def", "match", "annotation", "assert-raises", "subtest", "suppressed-target", "except-star"],
+    ids=[
+        "nested-def",
+        "match",
+        "annotation",
+        "assert-raises",
+        "pytest-raises",
+        "assert-raises-message",
+        "subtest",
+        "suppressed-target",
+        "except-star",
+    ],
 )
 def test_an_assignment_that_may_not_run_is_not_a_rebinding(between):
     source = "def test_it(self):\n    for x in y:\n        with self.subTest(x=x):\n            outcome = f(x)\n"

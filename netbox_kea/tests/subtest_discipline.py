@@ -28,7 +28,17 @@ _DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 _COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 _COMPOUND = (ast.For, ast.AsyncFor, ast.While, ast.Try, getattr(ast, "TryStar", ast.Try), ast.Match)
 # Context managers that can swallow an exception from their body, so its assignments may not run.
-_SUPPRESSING = {"subTest", "assertRaises", "assertRaisesRegex", "assertWarns", "assertWarnsRegex", "suppress"}
+_SUPPRESSING = {
+    "subTest",
+    "assertRaises",
+    "assertRaisesRegex",
+    "assertRaisesMessage",
+    "assertWarns",
+    "assertWarnsRegex",
+    "assertWarnsMessage",
+    "raises",
+    "suppress",
+}
 
 
 @dataclass(frozen=True, order=True)
