@@ -459,12 +459,11 @@ _STALE_HOST = {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:81:12", "ip-address": 
 class ScheduledImportStaleCleanupTest(_ScheduledImportTestCase):
     """The import removes the stale DHCP plugin rows before the IPAM sync cleans up the objects they referenced."""
 
-    def _run_with(self, subnets: list[dict], hosts: list[dict], runs: int = 1) -> None:
+    def _run_with(self, subnets: list[dict], hosts: list[dict]) -> None:
         responses = _sync_responses({4: {"subnet4": subnets}}, {4: hosts})
         responses["lease4-get-page"] = lease_pages([])
-        for _ in range(runs):
-            with stub_kea(responses):
-                KeaIpamSyncJob(_make_job()).run()
+        with stub_kea(responses):
+            KeaIpamSyncJob(_make_job()).run()
 
     def test_a_removed_subnet_deprecates_its_prefix_and_ip_range(self):
         from ipam.models import IPRange, Prefix
@@ -474,7 +473,7 @@ class ScheduledImportStaleCleanupTest(_ScheduledImportTestCase):
         self.assertEqual(Prefix.objects.get(prefix="10.81.0.0/24").status, "active")
         self.assertEqual(IPRange.objects.get(start_address__net_host="10.81.0.100").status, "active")
 
-        self._run_with([], [], runs=2)
+        self._run_with([], [])
 
         self.assertFalse(apps.get_model(DHCP_PLUGIN, "Subnet").objects.exists())
         self.assertFalse(apps.get_model(DHCP_PLUGIN, "Pool").objects.exists())
@@ -486,7 +485,7 @@ class ScheduledImportStaleCleanupTest(_ScheduledImportTestCase):
         self._run_with([_STALE_SUBNET], [_STALE_HOST])
         self.assertEqual(IPAddress.objects.get(address__net_host="10.81.0.12").status, "reserved")
 
-        self._run_with([_STALE_SUBNET], [], runs=2)
+        self._run_with([_STALE_SUBNET], [])
 
         self.assertFalse(apps.get_model(DHCP_PLUGIN, "HostReservation").objects.exists())
 
