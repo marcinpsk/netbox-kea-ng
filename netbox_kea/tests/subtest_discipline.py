@@ -76,6 +76,17 @@ def _stores(node: ast.AST) -> set[str]:
     return {part.id for part in _scope_nodes(node) if isinstance(part, ast.Name) and isinstance(part.ctx, ast.Store)}
 
 
+def _definite_stores(node: ast.AST) -> set[str]:
+    """Return the names *node* stores, without those in a part that a short-circuit operator or a conditional skips."""
+    skipped: set[str] = set()
+    for part in _scope_nodes(node):
+        if isinstance(part, ast.BoolOp):
+            skipped |= set().union(*map(_stores, part.values[1:]))
+        elif isinstance(part, ast.IfExp):
+            skipped |= _stores(part.body) | _stores(part.orelse)
+    return _stores(node) - skipped
+
+
 def _reads(node: ast.AST) -> set[str]:
     """Return the names that *node* reads from this scope, also through lambda and comprehension bodies."""
     if isinstance(node, ast.Name):
@@ -141,7 +152,7 @@ def _first_reads(body: list[ast.stmt], watched: set[str], rebound: set[str]) -> 
         else:
             reads |= (_reads(node) & watched) - rebound
             if not (isinstance(node, ast.AnnAssign) and node.value is None):
-                rebound = rebound | _stores(node)
+                rebound = rebound | _definite_stores(node)
     return reads, rebound
 
 

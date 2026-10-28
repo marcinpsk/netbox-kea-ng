@@ -134,6 +134,14 @@ def test_a_read_anywhere_in_a_later_statement_is_reported(after):
                 outcome = g(kea)
             self.assertTrue(outcome)
         """,
+        # The first operand of a short-circuit operator always runs.
+        """
+        for x in y:
+            with self.subTest(x=x):
+                outcome = f(x)
+            (outcome := g(x)) and x
+            self.assertTrue(outcome)
+        """,
         # A comprehension variable belongs to the comprehension.
         """
         for x in y:
@@ -151,6 +159,7 @@ def test_a_read_anywhere_in_a_later_statement_is_reported(after):
         "not-bound",
         "earlier-context-manager",
         "rebound-in-later-block",
+        "first-operand-walrus",
         "comprehension",
     ],
 )
@@ -190,6 +199,8 @@ def test_a_read_after_an_enclosing_block_in_the_loop_is_reported(outer):
         "with self.assertRaisesMessage(ZeroDivisionError, 'division'):\n    outcome = 1 / 0",
         "with self.subTest(step=2):\n    outcome = g(x)",
         "with suppress(ValueError), nullcontext(g(x)) as outcome:\n    pass",
+        "x and (outcome := g(x))",
+        "h((outcome := g(x)) if x else None)",
         pytest.param(
             "try:\n    pass\nexcept* ValueError:\n    outcome = 0",
             marks=pytest.mark.skipif(sys.version_info < (3, 11), reason="except* needs Python 3.11"),
@@ -204,6 +215,8 @@ def test_a_read_after_an_enclosing_block_in_the_loop_is_reported(outer):
         "assert-raises-message",
         "subtest",
         "suppressed-target",
+        "short-circuit-walrus",
+        "conditional-walrus",
         "except-star",
     ],
 )
