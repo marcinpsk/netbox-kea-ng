@@ -6,7 +6,7 @@ When a call in a ``with self.subTest(...)`` block raises, ``subTest`` records th
 continues. A later statement that reads a name the block did not bind then raises
 ``NameError``, which stops the loop and hides the real failure. This guard reports a
 ``subTest`` block inside a loop when a statement after it in the same loop iteration reads a
-name that the block binds (by assignment or ``as``) before it assigns the name again.
+name that the block binds (by assignment, ``as``, import or definition) before it assigns the name again.
 
 Stdlib only, so it runs as a pre-commit hook without NetBox. Limits: it does not follow reads
 after an inner loop, or in a nested ``def`` with its defaults and decorators. An assignment in a branch, loop, ``try`` or
@@ -65,7 +65,10 @@ def _scope_nodes(node: ast.AST):
     if isinstance(node, (*_DEFINITIONS, ast.Lambda)):
         return
     for child in ast.iter_child_nodes(node):
-        if not isinstance(child, (*_DEFINITIONS, ast.Lambda, *_COMPREHENSIONS)):
+        if isinstance(child, _DEFINITIONS):
+            # A definition binds its name here; its body is another scope.
+            yield child
+        elif not isinstance(child, (ast.Lambda, *_COMPREHENSIONS)):
             yield from _scope_nodes(child)
         elif isinstance(child, _COMPREHENSIONS):
             # The first iterable runs in this scope; the rest belongs to the comprehension.
@@ -73,7 +76,15 @@ def _scope_nodes(node: ast.AST):
 
 
 def _stores(node: ast.AST) -> set[str]:
-    return {part.id for part in _scope_nodes(node) if isinstance(part, ast.Name) and isinstance(part.ctx, ast.Store)}
+    names: set[str] = set()
+    for part in _scope_nodes(node):
+        if isinstance(part, ast.Name) and isinstance(part.ctx, ast.Store):
+            names.add(part.id)
+        elif isinstance(part, (ast.Import, ast.ImportFrom)):
+            names |= {alias.asname or alias.name.split(".")[0] for alias in part.names if alias.name != "*"}
+        elif isinstance(part, _DEFINITIONS):
+            names.add(part.name)
+    return names
 
 
 def _definite_stores(node: ast.AST) -> set[str]:

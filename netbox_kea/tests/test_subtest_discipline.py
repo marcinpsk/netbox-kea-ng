@@ -44,6 +44,24 @@ def test_a_name_bound_by_another_context_manager_of_the_block_is_reported():
 
 
 @pytest.mark.parametrize(
+    "binding",
+    [
+        "import outcome",
+        "import outcome.sub",
+        "from module import value as outcome",
+        "def outcome():\n    pass",
+        "class outcome:\n    pass",
+        "if x:\n    def outcome():\n        pass",
+    ],
+    ids=["import", "dotted-import", "import-from", "def", "class", "nested-def"],
+)
+def test_an_import_or_definition_in_the_block_is_a_binding(binding):
+    source = "def test_it(self):\n    for x in y:\n        with self.subTest(x=x):\n"
+    source += textwrap.indent(binding, " " * 12) + "\n        self.assertTrue(outcome)\n"
+    assert [hit.names for hit in scan_source(source)] == [("outcome",)]
+
+
+@pytest.mark.parametrize(
     "after",
     [
         "if outcome:\n    pass",
@@ -149,6 +167,22 @@ def test_a_read_anywhere_in_a_later_statement_is_reported(after):
                 f([row for row in x])
             self.assertTrue(row)
         """,
+        # A later import assigns the name again before it reads it.
+        """
+        for x in y:
+            with self.subTest(x=x):
+                outcome = f(x)
+            from module import outcome
+            self.assertTrue(outcome)
+        """,
+        # A name assigned in a nested definition belongs to that definition.
+        """
+        for x in y:
+            with self.subTest(x=x):
+                def helper():
+                    outcome = f(x)
+            self.assertTrue(outcome)
+        """,
     ],
     ids=[
         "inside",
@@ -161,6 +195,8 @@ def test_a_read_anywhere_in_a_later_statement_is_reported(after):
         "rebound-in-later-block",
         "first-operand-walrus",
         "comprehension",
+        "later-import",
+        "definition-local",
     ],
 )
 def test_nearby_valid_shapes_pass(body):
