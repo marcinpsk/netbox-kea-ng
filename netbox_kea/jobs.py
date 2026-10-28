@@ -360,12 +360,11 @@ class KeaIpamSyncJob(JobRunner):
             failed = self._run_ipam_sync(server_pk, summary, started) or failed
             finished = True
         finally:
-            # A pass raised: each Server that it left without an IPAM summary gets an entry without counts.
+            # Each started Server without IPAM counts keeps an entry: a skip after a finished job, else an interruption.
             synced = {entry["pk"] for entry in summary}
-            unfinished = (
-                [] if finished else [{"name": name, "pk": pk} for pk, name in started.items() if pk not in synced]
-            )
-            self._save_summary([*summary, *unfinished])
+            skipped = {"ipam_skipped": True} if finished else {}
+            uncounted = [{"name": name, "pk": pk, **skipped} for pk, name in started.items() if pk not in synced]
+            self._save_summary([*summary, *uncounted])
         if failed:
             self.job.error = "The Kea IPAM sync or a scheduled DHCP Import failed. The job log has the details."
             raise JobFailed(self.job.error)

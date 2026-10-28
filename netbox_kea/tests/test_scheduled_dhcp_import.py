@@ -293,9 +293,10 @@ class ScheduledImportTest(_ScheduledImportTestCase):
     def test_the_ipam_sync_kill_switch_does_not_stop_the_scheduled_import(self):
         server = _server("kill-switch", sync_enabled=True)
 
-        self._run()
+        job = self._run()
 
         self.assertEqual(DhcpImportRun.objects.get(server=server).trigger, DhcpImportTrigger.SCHEDULED)
+        self.assertEqual(job.data["summary"], [{"name": "kill-switch", "pk": server.pk, "ipam_skipped": True}])
 
     @with_sync_config(
         sync_leases_enabled=False,
@@ -306,9 +307,29 @@ class ScheduledImportTest(_ScheduledImportTestCase):
     def test_the_scheduled_import_runs_with_every_ipam_sync_type_off(self):
         server = _server("no-types", sync_enabled=True)
 
-        self._run()
+        job = self._run()
 
         self.assertEqual(DhcpImportRun.objects.get(server=server).trigger, DhcpImportTrigger.SCHEDULED)
+        self.assertEqual(job.data["summary"], [{"name": "no-types", "pk": server.pk, "ipam_skipped": True}])
+
+    def test_a_server_with_its_ipam_sync_off_keeps_the_job_in_its_history(self):
+        from django.urls import reverse
+
+        server = _server("ipam-off")
+        job = _make_db_job()
+
+        with stub_kea(_kea()):
+            KeaIpamSyncJob(job).run()
+
+        job.refresh_from_db()
+        self.assertEqual(job.data["summary"], [{"name": "ipam-off", "pk": server.pk, "ipam_skipped": True}])
+        self.assertIn(job, get_all_jobs_for_server(server.pk))
+        self.client.force_login(User.objects.create(username="ipam-off", is_superuser=True, is_active=True))
+        jobs_tab = self.client.get(reverse("plugins:netbox_kea:server_jobs", args=[server.pk]))
+        self.assertContains(jobs_tab, job.get_absolute_url())
+        sync_tab = self.client.get(reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]))
+        self.assertContains(sync_tab, "The job skipped the IPAM sync of this Server.")
+        self.assertNotContains(sync_tab, "The job stopped before the IPAM sync of this Server finished.")
 
     def test_a_dual_family_server_imports_both_families(self):
         server = _server("dual", dhcp6=True)
