@@ -214,6 +214,23 @@ class _Scanner(ast.NodeVisitor):
 
     visit_For = visit_AsyncFor = visit_While = _loop
 
+    def _try(self, node: ast.Try) -> None:
+        if self.after is None:
+            self.generic_visit(node)
+            return
+        # The else and finally clauses run after a failure that subTest records in an earlier clause.
+        for body, then in ((node.body, node.orelse + node.finalbody), (node.orelse, node.finalbody)):
+            self.after.append(then)
+            self._block(body)
+            self.after.pop()
+        self.after.append(node.finalbody)
+        for handler in node.handlers:
+            self.visit(handler)
+        self.after.pop()
+        self._block(node.finalbody)
+
+    visit_Try = visit_TryStar = _try
+
     def _check(self, node: ast.With | ast.AsyncWith) -> None:
         # A context manager before the subTest binds its name before subTest can hide a failure.
         items = node.items[[_called(item) for item in node.items].index("subTest") :]

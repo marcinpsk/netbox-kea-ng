@@ -225,6 +225,42 @@ def test_a_read_after_an_enclosing_block_in_the_loop_is_reported(outer):
 
 
 @pytest.mark.parametrize(
+    "block",
+    [
+        "try:\n    {subtest}\nfinally:\n    {read}",
+        "try:\n    {subtest}\nexcept ValueError:\n    pass\nelse:\n    {read}",
+        "try:\n    {subtest}\nexcept ValueError:\n    pass\nfinally:\n    {read}",
+        "try:\n    pass\nexcept ValueError:\n    {subtest}\nfinally:\n    {read}",
+        "try:\n    pass\nexcept ValueError:\n    pass\nelse:\n    {subtest}\nfinally:\n    {read}",
+        "try:\n    pass\nfinally:\n    {subtest}\n    {read}",
+    ],
+    ids=["finally", "else", "finally-after-handler", "handler-then-finally", "else-then-finally", "inside-finally"],
+)
+def test_a_read_in_a_later_clause_of_the_try_statement_is_reported(block):
+    body = block.format(subtest="with self.subTest(x=x):\n        outcome = f(x)", read="self.assertTrue(outcome)")
+    source = "def test_it(self):\n    for x in y:\n" + textwrap.indent(body, " " * 8) + "\n"
+    assert [hit.names for hit in scan_source(source)] == [("outcome",)]
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        # A finally clause that assigns the name before it reads it.
+        "try:\n    {subtest}\nfinally:\n    outcome = g(x)\n    self.assertTrue(outcome)",
+        # A handler does not run after a failure that subTest records.
+        "try:\n    {subtest}\nexcept ValueError:\n    self.assertTrue(outcome)",
+        # A finally clause without a subTest before it in the try statement.
+        "try:\n    f(x)\nfinally:\n    self.assertTrue(row)",
+    ],
+    ids=["finally-rebinds", "handler", "no-subtest"],
+)
+def test_a_later_clause_of_the_try_statement_that_is_valid_passes(block):
+    body = block.format(subtest="with self.subTest(x=x):\n        outcome = f(x)")
+    source = "def test_it(self, y, row=None):\n    for x in y:\n" + textwrap.indent(body, " " * 8) + "\n"
+    assert scan_source(source) == []
+
+
+@pytest.mark.parametrize(
     "between",
     [
         "def helper():\n    outcome = 1",
