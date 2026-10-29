@@ -15,7 +15,7 @@ from typing import Literal, get_args
 
 from django.db.models import Q
 
-MarkerKind = Literal["lease", "reservation", "lease + reservation", "subnet", "delegated prefix", "pool"]
+MarkerKind = Literal["lease", "reservation", "lease + reservation", "subnet", "delegated prefix", "pool", "pd pool"]
 MARKER_KINDS: tuple[MarkerKind, ...] = get_args(MarkerKind)
 
 #: The length limit of ``description`` on NetBox IP addresses, Prefixes and IP Ranges.

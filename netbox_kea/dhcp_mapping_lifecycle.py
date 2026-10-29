@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import datetime
 from functools import cache, wraps
+from typing import TYPE_CHECKING
 
 from asgiref.sync import sync_to_async
 from django.apps import apps
@@ -23,7 +24,12 @@ from utilities.exceptions import AbortRequest
 
 from . import branching, event_scope
 
-MAPPING_IDENTITY_FIELDS = ("server", "family", "kea_subnet_id", "kea_identity", "object_type", "object_id")
+if TYPE_CHECKING:
+    from .integrations.dhcp_import_plan import MappingSource
+
+# The source of a mapping identifies it; with the target, it is the semantic identity of the association.
+MAPPING_SOURCE_FIELDS = ("server", "family", "kind", "kea_subnet_id", "kea_identity")
+MAPPING_IDENTITY_FIELDS = (*MAPPING_SOURCE_FIELDS, "object_type", "object_id")
 _METADATA_LOCK = (0x4B4541, 0x44484350)
 _TAG_INSTRUCTION = (
     "Apply Tag changes separately on main or in a Tag-only branch. Create a fresh branch for DHCP changes."
@@ -38,6 +44,14 @@ _COORDINATED_REQUEST = "_netbox_kea_mapping_coordination"
 
 class MetadataBusy(AbortRequest):
     """The retry refusal of DHCP mapping coordination: the operation changed nothing and can run again."""
+
+
+class ImportEventsNotDispatched(event_scope.EventDispatchError):
+    """The import of one family committed, and NetBox could not dispatch its events. It keeps the import summary."""
+
+    def __init__(self, summary) -> None:
+        super().__init__("NetBox could not dispatch the events of a committed DHCP-plugin import")
+        self.summary = summary
 
 
 @dataclass(frozen=True)
@@ -199,25 +213,32 @@ def mapping_identity(mapping) -> tuple:
     return tuple(getattr(mapping, mapping._meta.get_field(name).attname) for name in MAPPING_IDENTITY_FIELDS)
 
 
-def observe_mapping(server, family: int, target, *, subnet_id=None, reservation_identity=None):
+def _source_lookup(server, family: int, source: MappingSource) -> dict:
+    return {"server": server, "family": family, **source.columns()}
+
+
+def mapped_target(server, family: int, source: MappingSource):
+    """Return the target that *source* maps to, or ``None`` when it has no mapping or its target is gone."""
+    from .models import KeaDhcpLink
+
+    mapping = KeaDhcpLink.objects.filter(**_source_lookup(server, family, source)).first()
+    return mapping.sys4_object if mapping is not None else None
+
+
+def observe_mapping(server, family: int, target, source: MappingSource):
     """Record a source association, or refresh its observation without a semantic history change."""
     from django.contrib.contenttypes.models import ContentType
 
     from .models import KeaDhcpLink
 
-    source = {"server": server, "family": family}
-    source["kea_subnet_id" if subnet_id is not None else "kea_identity"] = (
-        subnet_id if subnet_id is not None else reservation_identity
-    )
+    lookup = _source_lookup(server, family, source)
     association = {
-        **source,
-        "kea_subnet_id": subnet_id,
-        "kea_identity": reservation_identity,
+        **lookup,
         "object_type": ContentType.objects.get_for_model(target),
         "object_id": target.pk,
     }
     with metadata_scope():
-        mapping = KeaDhcpLink.objects.filter(**source).first()
+        mapping = KeaDhcpLink.objects.filter(**lookup).first()
         desired = KeaDhcpLink(**association)
         if mapping is None:
             desired.save()
@@ -238,10 +259,12 @@ class MappingUnavailable(AbortRequest):
 
 
 def target_models():
-    """Return the supported imported target classes when the DHCP plugin is installed."""
+    """Return the model of each DHCP Import Mapping kind when the DHCP plugin is installed."""
+    from .models import MAPPING_KINDS
+
     if not apps.is_installed("netbox_dhcp"):
         return ()
-    return tuple(apps.get_model("netbox_dhcp", name) for name in ("Subnet", "HostReservation"))
+    return tuple(apps.get_model("netbox_dhcp", name) for name, _ in MAPPING_KINDS.values())
 
 
 @cache
@@ -899,9 +922,8 @@ def _validate_mapping_restoration(pk, payload, restores, deleted):
         and not target._base_manager.using("default").filter(pk=payload["object_id"]).exists()
     ):
         raise AbortRequest("A DHCP mapping target dependency is missing. Nothing changed.")
-    source_field = "kea_subnet_id" if payload["kea_subnet_id"] is not None else "kea_identity"
     lookups = (
-        {name: payload[name] for name in ("server", "family", source_field)},
+        {name: payload[name] for name in MAPPING_SOURCE_FIELDS},
         {name: payload[name] for name in ("object_type", "object_id")},
     )
     for lookup in lookups:
@@ -1237,6 +1259,10 @@ def coordinated_import(original):
                     f"Nothing changed for DHCPv{config.family}. Run the import again."
                 ) from error
             raise
+        except event_scope.EventDispatchError as error:
+            if summary is None:
+                raise
+            raise ImportEventsNotDispatched(summary) from error
         return summary
 
     return importing

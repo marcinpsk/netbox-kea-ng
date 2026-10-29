@@ -47,10 +47,18 @@ uniqueness scope. A fact without its capability is unsupported: the DHCP Import 
 an installed plugin release gains the capability.
 _Avoid_: Plugin gap, plugin version check
 
+**DHCP Import Result**:
+The stored record of one DHCP Import run: the Server, the start and end times, the trigger, and one entry for each
+Kea fact that the run created, updated, removed or did not write. An entry names its fact by a Kea path, such as
+`Dhcp4/subnet4[id=20]/option-data[code=150]`. A fact that the run did not write has a reason from a closed set, and
+the reason gives its outcome: unsupported, not imported or skipped. An object that did not change has no entry.
+_Avoid_: Import log, import summary
+
 **Stale DHCP Import Object**:
 A NetBox DHCP object with a DHCP Import Mapping whose Kea source a Complete observation of the same kind no longer
 reports. The DHCP Import removes it. An Incomplete observation cannot make an object stale. A Pool whose range
-changes in Kea is a different Pool, so the old one becomes stale.
+changes in Kea is a different Pool, so the old one becomes stale. So is a delegated-prefix Pool whose prefix or
+delegated length changes.
 _Avoid_: Orphan, orphaned Subnet
 
 **Declared Value**:
@@ -63,7 +71,9 @@ An association between a Kea source object and its imported NetBox DHCP object. 
 Import has one: the global configuration of one address family, a Shared Network, a Subnet, a Pool, a
 delegated-prefix Pool, a Reservation, a client class, and a custom Option Definition. The source identity includes
 the Server, address family, and the Kea identity of the object: a Shared Network name, a Kea subnet ID, a Pool within
-its Subnet, a Reservation Identity, a client class name, or an Option Definition's space and code. A DHCP Option is identified within the object that
+its Subnet, a delegated-prefix Pool's prefix and delegated length within its Subnet, a Reservation Identity, a client
+class name, or an Option Definition's space and code (with the name of its client class, for a definition that a
+client class declares). A DHCP Option is identified within the object that
 assigns it.
 _Avoid_: DHCP Link, ownership link
 
@@ -187,7 +197,8 @@ _Avoid_: Identity fallback
 **Option Definition**:
 A declaration that gives a DHCP Option its code, name, option space, and data type. A standard definition is built
 into Kea for the default DHCPv4 or DHCPv6 space. A custom definition comes from `option-def` in the Server
-Configuration. It defines an option. It does not assign a value.
+Configuration, or in a DHCPv4 client class, where it defines options for that class only. It defines an option. It
+does not assign a value.
 _Avoid_: option-def, custom option
 
 **Server Configuration**:
@@ -220,9 +231,9 @@ _Avoid_: Kea action, direct action, runtime write
 
 **IPAM Ownership**:
 The fact that one Server and address family synchronized a NetBox IP address, Prefix, or IP Range from one Kea
-source: an address lease, a delegated-prefix lease, a Reservation, a Subnet, a Pool, or a Reservation delegated
-prefix. Only a Current Lease is a lease source. One object can have several owners. An operator
-ends every ownership of an object when the description no longer starts with a well-formed marker block
+source: an address lease, a delegated-prefix lease, a Reservation, a Subnet, a Pool, a Reservation delegated
+prefix, or a delegated-prefix Pool. Only a Current Lease is a lease source. One object can have several owners. An
+operator ends every ownership of an object when the description no longer starts with a well-formed marker block
 (`[kea-sync: <kind>]`): the block is missing, moved or malformed. A block of another known kind still marks the
 object. Text after the block is an operator note, and the synchronization keeps it.
 _Avoid_: Kea-managed IP, synced description

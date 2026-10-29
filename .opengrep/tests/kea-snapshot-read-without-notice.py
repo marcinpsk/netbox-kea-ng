@@ -78,11 +78,6 @@ def _read_reservations(server, family, query):
     return server.get_client(version=family).reservation_snapshot(family, None)
 
 
-def _read_reservation_observation(client, catalogue):
-    # ok: kea-snapshot-read-without-notice
-    return client.reservation_snapshot(4, catalogue)
-
-
 def good_form_carries_the_notice(server):
     # ok: kea-snapshot-read-without-notice
     snapshot = subnet_catalogue.display(server, 4)

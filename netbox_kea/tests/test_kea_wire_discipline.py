@@ -5,7 +5,6 @@
 import ast
 import re
 from collections import Counter
-from pathlib import Path
 
 import pytest
 
@@ -86,6 +85,7 @@ _NON_WIRE_HYPHENATED = {
     "invalid-type": "Lease validation diagnostic",
     "invalid-version": "Transfer validation diagnostic",
     "lease-prefix": "IPAM Ownership source (ADR 0006)",
+    "pd-pool": "IPAM Ownership source (ADR 0006)",
     "kea-modal-workspace-shell": "Server delete modal HTML element ID",
     "lease-search": "Leases section HTML element ID",
     "malformed-configuration-response": "Configuration snapshot diagnostic",
@@ -204,17 +204,9 @@ def test_existing_wire_payload_fields_are_flagged(key):
 
 
 def test_all_registered_kea_settings_have_guard_coverage():
-    path = Path(__file__).parents[1] / "mappers" / "kea_to_dhcp.py"
-    module = ast.parse(path.read_text())
-    declaration = next(
-        node
-        for node in module.body
-        if isinstance(node, ast.AnnAssign)
-        and isinstance(node.target, ast.Name)
-        and node.target.id == "KEA_SETTINGS_KEYS"
-    )
-    keys = ast.literal_eval(declaration.value)
-    assert all(wd.scan_source(f"value = payload[{key!r}]") for key in keys if "-" in key)
+    from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS
+
+    assert all(wd.scan_source(f"value = payload[{key!r}]") for key in KEA_SETTINGS_KEYS if "-" in key)
 
 
 @pytest.mark.parametrize(

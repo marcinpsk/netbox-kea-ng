@@ -14,10 +14,13 @@ from django.apps import apps
 from django.db import connection
 from django.db.models.signals import post_save
 from django.test import SimpleTestCase, TestCase
+from django.test.utils import CaptureQueriesContext
 from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 
 from netbox_kea.integrations import dhcp_plugin
+from netbox_kea.integrations.dhcp_import_report import Kind, Outcome, Reason
+from netbox_kea.integrations.dhcp_plugin_capabilities import probe
 from netbox_kea.ipam_reconciliation import (
     DelegatedPrefixPhase,
     PoolClaim,
@@ -26,7 +29,7 @@ from netbox_kea.ipam_reconciliation import (
     reconcile,
 )
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
-from netbox_kea.models import IPAMOwnershipLink, next_confirmation_number
+from netbox_kea.models import DhcpImportTrigger, IPAMOwnershipLink, next_confirmation_number
 from netbox_kea.pools import parse_pool
 from netbox_kea.views.dhcp_plugin_sync import _summary_problems, run_dhcp_plugin_import
 from netbox_kea.views.notices import Notice
@@ -34,7 +37,7 @@ from netbox_kea.views.notices import Notice
 from .kea_stub import observed_configuration, stub_kea
 from .test_integration_dhcp_plugin import _reservation_snapshot
 from .test_views_dhcp_plugin import _sync_responses
-from .utils import _make_db_server
+from .utils import _make_db_server, take_reservation_name
 
 
 class ImportOwnershipTest(TestCase):
@@ -55,11 +58,27 @@ class ImportOwnershipTest(TestCase):
         self.server.sync_dhcp_plugin_enabled = True
         self.server.save()
         with stub_kea(_sync_responses({6: self.config}, {6: []})):
-            results = run_dhcp_plugin_import(self.server)
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.assertEqual(results[0][1].errors, 0)
         self.server.refresh_from_db()
         self.assertIsNotNone(self.server.ipam_first_complete_at)
         self.assertIn("import", self.server.ipam_initial_observations)
+
+    def test_a_dhcpv6_import_that_did_not_read_every_pd_pool_records_no_receipt(self):
+        self.server.sync_enabled = False
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        config = {"subnet6": [{"id": 1, "subnet": "2001:db8:1::/64", "pd-pools": [{"prefix": "2001:db8:100::"}]}]}
+
+        with stub_kea(_sync_responses({6: config}, {6: []})):
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+
+        summary = results[0][1]
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(summary.ownership.incomplete, {"pd-pool"})
+        self.server.refresh_from_db()
+        self.assertIsNone(self.server.ipam_first_complete_at)
+        self.assertEqual(self.server.ipam_initial_observations, {})
 
     def test_global_option_diagnostics_do_not_block_network_import_completion(self):
 
@@ -85,7 +104,7 @@ class ImportOwnershipTest(TestCase):
                 self.assertTrue(observed.diagnostics)
                 self.assertEqual(observed.subnet_diagnostics, ())
                 with stub_kea(_sync_responses({6: config}, {6: []})):
-                    results = run_dhcp_plugin_import(server)
+                    results = run_dhcp_plugin_import(server, DhcpImportTrigger.MANUAL)
                 summary = results[0][1]
                 self.assertEqual(summary.errors, 0)
                 server.refresh_from_db()
@@ -118,7 +137,7 @@ class ImportOwnershipTest(TestCase):
         observed = observed_configuration(6, config, self.server)
         self.assertTrue(observed.subnet_diagnostics)
         with stub_kea(_sync_responses({6: config}, {6: []})):
-            results = run_dhcp_plugin_import(self.server)
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         summary = results[0][1]
         self.assertEqual(summary.errors, 0)
         self.assertTrue({"subnet", "pool"} <= summary.ownership.incomplete)
@@ -136,7 +155,7 @@ class ImportOwnershipTest(TestCase):
         self.server.save()
         stale = Server.objects.get(pk=self.server.pk)
         with stub_kea(_sync_responses({6: self.config}, {6: []})):
-            results = run_dhcp_plugin_import(self.server)
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.assertEqual(results[0][1].errors, 0)
         self.server.refresh_from_db()
         receipts = self.server.ipam_initial_observations
@@ -156,7 +175,7 @@ class ImportOwnershipTest(TestCase):
         Prefix.objects.create(prefix=self.network, description="Operator delegation")
         hosts = [{"subnet-id": 0, "duid": "01:02:03:04", "prefixes": [self.network]}]
         with stub_kea(_sync_responses({6: self.config}, {6: hosts})):
-            results = run_dhcp_plugin_import(self.server)
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.assertEqual(results[0][1].errors, 0)
         self.server.refresh_from_db()
         self.assertIsNotNone(self.server.ipam_first_complete_at)
@@ -169,7 +188,7 @@ class ImportOwnershipTest(TestCase):
         responses = _sync_responses({6: self.config}, {6: []})
         responses["subnet4-list"] = {"result": 1, "text": "unavailable"}
         with stub_kea(responses):
-            run_dhcp_plugin_import(self.server)
+            run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.server.refresh_from_db()
         self.assertIsNone(self.server.ipam_first_complete_at)
         self.assertEqual(self.server.ipam_initial_observations, {})
@@ -191,7 +210,7 @@ class ImportOwnershipTest(TestCase):
 
                 responses["config-get"] = config_get
                 with stub_kea(responses):
-                    results = run_dhcp_plugin_import(self.server)
+                    results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
                 # The unread DHCPv4 configuration is a Notice; only DHCPv6 is imported.
                 self.assertEqual(
                     [(family, isinstance(item, Notice)) for family, item in results], [(4, True), (6, False)]
@@ -204,7 +223,7 @@ class ImportOwnershipTest(TestCase):
                 self.assertIsNone(self.server.ipam_first_complete_at)
                 self.assertEqual(self.server.ipam_initial_observations, {})
         with stub_kea(_sync_responses({4: {"subnet4": []}, 6: self.config}, {4: [], 6: []})):
-            run_dhcp_plugin_import(self.server)
+            run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.server.refresh_from_db()
         self.assertIsNotNone(self.server.ipam_first_complete_at)
         self.assertEqual(set(self.server.ipam_initial_observations), {"import"})
@@ -232,7 +251,7 @@ class ImportOwnershipTest(TestCase):
         self.assertEqual(prefix.status, "active")
         self.assertTrue(IPAMOwnershipLink.objects.filter(prefix=prefix).exists())
         with stub_kea(_sync_responses({6: {"subnet6": []}}, {6: []})):
-            run_dhcp_plugin_import(self.server)
+            run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.server.refresh_from_db()
         self.assertIsNotNone(self.server.ipam_first_complete_at)
         run_job({"subnet6": []})
@@ -249,12 +268,12 @@ class ImportOwnershipTest(TestCase):
             responses = _sync_responses(configs, {4: [], 6: []})
             responses[f"subnet{failed}-list"] = {"result": 1, "text": "unavailable"}
             with stub_kea(responses):
-                run_dhcp_plugin_import(self.server)
+                run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
             self.server.refresh_from_db()
             self.assertIsNone(self.server.ipam_first_complete_at)
             self.assertEqual(self.server.ipam_initial_observations, {})
         with stub_kea(_sync_responses(configs, {4: [], 6: []})):
-            run_dhcp_plugin_import(self.server)
+            run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.server.refresh_from_db()
         self.assertIsNotNone(self.server.ipam_first_complete_at)
 
@@ -265,7 +284,7 @@ class ImportOwnershipTest(TestCase):
         for _ in range(2):
             Prefix.objects.create(prefix="2001:db8:1::/64", description="[kea-sync: subnet]")
         with stub_kea(_sync_responses({6: self.config}, {6: []})):
-            results = run_dhcp_plugin_import(self.server)
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.assertGreater(results[0][1].errors, 0)
         self.server.refresh_from_db()
         self.assertIsNone(self.server.ipam_first_complete_at)
@@ -302,7 +321,7 @@ class ImportOwnershipTest(TestCase):
             self.assertNotEqual(obj.status, "deprecated")
         self.assertEqual(IPAMOwnershipLink.objects.filter(server=owner).count(), 3)
         with stub_kea(_sync_responses({4: {"subnet4": []}}, {4: []})):
-            run_dhcp_plugin_import(unknown)
+            run_dhcp_plugin_import(unknown, DhcpImportTrigger.MANUAL)
         run_job({"subnet4": []}, [])
         self.assertFalse(IPAddress.objects.filter(pk=address.pk).exists())
         for obj in (prefix, ip_range):
@@ -317,6 +336,62 @@ class ImportOwnershipTest(TestCase):
 
     def delegated(self):
         return Prefix.objects.get(prefix=self.network)
+
+    def test_reservation_outcome_follows_its_ipv6_addresses_and_delegated_prefixes(self):
+        HostReservation = apps.get_model("netbox_dhcp", "HostReservation")
+        path = "Dhcp6/subnet6[id=1]/reservations[duid=01:02:03:04]"
+        for addresses, prefixes, outcome in (
+            (["2001:db8:1::10"], ["2001:db8:100::/56"], Outcome.CREATED),
+            (["2001:db8:1::10"], ["2001:db8:100::/56"], None),
+            (["2001:db8:1::11"], ["2001:db8:100::/56"], Outcome.UPDATED),
+            (["2001:db8:1::11"], ["2001:db8:200::/56"], Outcome.UPDATED),
+            ([], [], Outcome.UPDATED),
+            ([], [], None),
+        ):
+            with self.subTest(addresses=addresses, prefixes=prefixes):
+                summary = self.import_hosts([{**self.identity, "ip-addresses": addresses, "prefixes": prefixes}])
+                self.assertEqual(summary.errors, 0, summary.warnings)
+                written = [(e.outcome, e.path) for e in summary.entries if e.kind == Kind.RESERVATION]
+                self.assertEqual(written, [(outcome, path)] if outcome else [])
+                reservation = HostReservation.objects.get()
+                self.assertEqual(
+                    sorted(str(ip.address.ip) for ip in reservation.ipv6_addresses.all()), sorted(addresses)
+                )
+                self.assertEqual(sorted(str(p.prefix) for p in reservation.ipv6_prefixes.all()), sorted(prefixes))
+
+    def test_reservation_relation_reads_grow_once_per_row(self):
+        HostReservation = apps.get_model("netbox_dhcp", "HostReservation")
+        tables = {
+            relation: HostReservation._meta.get_field(relation).remote_field.through._meta.db_table
+            for relation in ("ipv6_addresses", "ipv6_prefixes")
+        }
+
+        def reads(count):
+            hosts = [
+                {
+                    "subnet-id": 1,
+                    "duid": f"01:02:03:{count:02x}:{row:02x}",
+                    "ip-addresses": [f"2001:db8:1::{count:x}{row:02x}"],
+                    "prefixes": [f"2001:db8:{count:x}{row:02x}::/56"],
+                }
+                for row in range(count)
+            ]
+            self.import_hosts(hosts)
+            with CaptureQueriesContext(connection) as queries:
+                summary = self.import_hosts(hosts)
+            self.assertEqual(summary.errors, 0, summary.warnings)
+            selects = [query["sql"] for query in queries if query["sql"].startswith("SELECT")]
+            return {relation: sum(f'"{table}"' in sql for sql in selects) for relation, table in tables.items()}
+
+        one, three = reads(1), reads(3)
+        # Per row: the pre-write read of each relation, and the delegated phase's Prefix set().
+        self.assertEqual(
+            {relation: (three[relation] - one[relation]) / 2 for relation in tables},
+            {
+                "ipv6_addresses": 1,
+                "ipv6_prefixes": 2,
+            },
+        )
 
     def test_shared_subnet_and_delegated_prefix_keeps_marker_and_repeat_import_is_unchanged(self):
         self.network = self.config["subnet6"][0]["subnet"]
@@ -456,11 +531,11 @@ class ImportOwnershipTest(TestCase):
     def test_failed_reservation_keeps_stale_delegated_link_and_healthy_sibling_imports(self):
         self.server.sync_deprecate_prefixes_and_ranges = True
         self.server.save()
-        common = ":".join(["aa"] * 83)
-        failed = {**self.identity, "duid": common + ":01"}
+        failed = {**self.identity, "duid": "01:02:05:01"}
         self.import_hosts([{**failed, "prefixes": [self.network]}])
         before = IPAMOwnershipLink.objects.values().get(prefix=self.delegated())
-        summary = self.import_hosts([{**failed, "duid": common + ":02"}, self.identity])
+        take_reservation_name(f"{self.server.name} DHCPv6 subnet 1", "01:02:05:02")
+        summary = self.import_hosts([{**failed, "duid": "01:02:05:02"}, self.identity])
         self.assertEqual(summary.errors, 1, summary.warnings)
         self.assertEqual(summary.reservations_created, 1)
         self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix=self.delegated()), before)
@@ -472,7 +547,9 @@ class ImportOwnershipTest(TestCase):
         conf = {"subnet6": [{"id": 9, "subnet": "2001:db8:9::/64"}]}
         observation = _reservation_snapshot(conf, 6, [{**self.identity, "subnet-id": 9}])
         summary = dhcp_plugin.ImportSummary()
-        dhcp_plugin.import_reservation_snapshot(self.server, None, observation, None, summary)
+        dhcp_plugin.import_reservation_snapshot(
+            self.server, None, observation, None, summary, family=6, adoption_servers=(), capabilities=probe()
+        )
         self.assertEqual(summary.reservations_skipped, 1)
         self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix=self.delegated()), before)
 
@@ -571,7 +648,7 @@ class ImportOwnershipTest(TestCase):
 
         responses["subnet6-list"] = confirm
         with stub_kea(responses):
-            results = run_dhcp_plugin_import(self.server)
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0][1].errors, 0)
         self.assertEqual(len(confirmations), 1)
@@ -579,11 +656,17 @@ class ImportOwnershipTest(TestCase):
 
     def test_address_pool_prefix_and_global_attachment_stay_in_server_vrf(self):
         self.config["subnet6"][0]["pools"] = [{"pool": "2001:db8:1::10-2001:db8:1::20"}]
-        for name in ("first", "second"):
+        # netbox-plugin-dhcp 0.2.0 keeps Subnet IDs unique across servers, so each Server uses a different Subnet ID.
+        for name, subnet_id in (("first", 1), ("second", 2)):
+            self.config["subnet6"][0]["id"] = subnet_id
             server = _make_db_server(name=name, sync_vrf=VRF.objects.create(name=name))
-            summary = self.import_hosts(
-                [{**self.identity, "ip-addresses": ["2001:db8:1::15"], "prefixes": [self.network]}], server=server
-            )
+            host = {
+                **self.identity,
+                "subnet-id": subnet_id,
+                "ip-addresses": ["2001:db8:1::15"],
+                "prefixes": [self.network],
+            }
+            summary = self.import_hosts([host], server=server)
             self.assertEqual(summary.errors, 0, summary.warnings)
             objects = IPAMOwnershipLink.objects.filter(server=server).select_related("ip_address", "prefix", "ip_range")
             self.assertEqual(objects.count(), 4)
@@ -727,6 +810,11 @@ class ImportOwnershipTest(TestCase):
         self.assertEqual((summary.errors, summary.subnets_created, summary.pools_created), (0, 1, 0))
         self.assertFalse(IPRange.objects.exists())
         self.assertTrue(any("unusable range, skipped" in warning for warning in summary.warnings))
+        (entry,) = [entry for entry in summary.entries if entry.kind == Kind.POOL]
+        self.assertEqual(
+            (entry.path, entry.outcome, entry.reason),
+            ("Dhcp6/subnet6[id=1]/pools[pool=2001:db8:1::/64]", Outcome.UNSUPPORTED, Reason.PLUGIN_GAP),
+        )
 
 
 class TypedNetworkClaimTest(TestCase):
@@ -883,6 +971,114 @@ class TypedNetworkClaimTest(TestCase):
         self.assertFalse(Prefix.objects.exists())
         self.assertFalse(IPRange.objects.exists())
         self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+
+class PDPoolOwnershipTest(TestCase):
+    """The DHCP Import owns the Prefixes of delegated-prefix Pools through its own source, pd-pool (ADR 0006)."""
+
+    def setUp(self):
+        self.server = _make_db_server(name="pd-owner", dhcp4=False, sync_deprecate_prefixes_and_ranges=True)
+        self.network = ipaddress.ip_network("2001:db8:100::/48")
+
+    @staticmethod
+    def _sources(prefix) -> list[str]:
+        return sorted(IPAMOwnershipLink.objects.filter(prefix=prefix).values_list("source", flat=True))
+
+    def test_a_pd_pool_claim_creates_the_prefix_with_its_own_marker_and_source(self):
+        from netbox_kea.ipam_reconciliation import PDPoolClaim
+
+        result = claim(self.server, 6, [PDPoolClaim(self.network)], force=False)
+
+        self.assertEqual(result.prefixes[str(self.network)].outcome, "created")
+        prefix = Prefix.objects.get(prefix=str(self.network))
+        self.assertEqual((prefix.description, prefix.status), ("[kea-sync: pd pool]", "active"))
+        self.assertEqual(self._sources(prefix), ["pd-pool"])
+
+    def test_the_job_subnet_phase_leaves_a_pd_pool_link_alone(self):
+        from netbox_kea.ipam_reconciliation import PDPoolClaim, SubnetPhase, read_catalogue
+
+        from .kea_stub import _catalogue_responses_for_subnets
+
+        claim(self.server, 6, [PDPoolClaim(self.network)], force=False)
+        with stub_kea(_catalogue_responses_for_subnets(6, [])):
+            observation = read_catalogue(self.server, 6)
+
+        report = reconcile(self.server, 6, [SubnetPhase(observation)])
+
+        self.assertTrue(report.complete)
+        prefix = Prefix.objects.get(prefix=str(self.network))
+        self.assertEqual((prefix.status, self._sources(prefix)), ("active", ["pd-pool"]))
+
+    def test_a_complete_pd_pool_phase_drops_its_stale_link_and_deprecates_by_opt_in(self):
+        from netbox_kea.ipam_reconciliation import PDPoolClaim, PDPoolPhase
+
+        kept = ipaddress.ip_network("2001:db8:200::/48")
+        claim(self.server, 6, [PDPoolClaim(self.network), PDPoolClaim(kept)], force=False)
+
+        report = reconcile(self.server, 6, [PDPoolPhase([kept], next_confirmation_number(), True)])
+
+        self.assertEqual((report.errors, report.prefix_errors, report.deprecated), (0, 0, 1))
+        self.assertEqual(report.completed_sources, {"pd-pool"})
+        stale = Prefix.objects.get(prefix=str(self.network))
+        self.assertEqual(stale.status, "deprecated")
+        self.assertEqual(Prefix.objects.get(prefix=str(kept)).status, "active")
+        self.assertEqual(self._sources(Prefix.objects.get(prefix=str(kept))), ["pd-pool"])
+
+    def test_an_incomplete_pd_pool_phase_keeps_every_link(self):
+        from netbox_kea.ipam_reconciliation import PDPoolClaim, PDPoolPhase
+
+        claim(self.server, 6, [PDPoolClaim(self.network)], force=False)
+        before = IPAMOwnershipLink.objects.values().get()
+
+        for cutoff, complete in ((next_confirmation_number(), False), (None, True)):
+            with self.subTest(cutoff=cutoff, complete=complete):
+                report = reconcile(self.server, 6, [PDPoolPhase([], cutoff, complete)])
+
+                self.assertEqual(report.incomplete, {"pd-pool"})
+                self.assertEqual(IPAMOwnershipLink.objects.values().get(), before)
+                self.assertEqual(Prefix.objects.get().status, "active")
+
+    def test_a_subnet_prefix_keeps_the_subnet_marker_and_takes_the_pd_pool_marker_after_it(self):
+        from netbox_kea.ipam_reconciliation import PDPoolClaim, SubnetPhase, read_catalogue
+
+        from .kea_stub import _catalogue_responses_for_subnets
+
+        claim(self.server, 6, [SubnetClaim(self.network)], force=False)
+        claim(self.server, 6, [PDPoolClaim(self.network)], force=False)
+        prefix = Prefix.objects.get()
+        self.assertEqual((prefix.description, self._sources(prefix)), ("[kea-sync: subnet]", ["pd-pool", "subnet"]))
+        with stub_kea(_catalogue_responses_for_subnets(6, [])):
+            observation = read_catalogue(self.server, 6)
+
+        reconcile(self.server, 6, [SubnetPhase(observation)])
+
+        prefix.refresh_from_db()
+        self.assertEqual((prefix.description, prefix.status), ("[kea-sync: pd pool]", "active"))
+        self.assertEqual(self._sources(prefix), ["pd-pool"])
+
+    def test_a_pd_pool_prefix_of_another_family_fails_before_writing(self):
+        from netbox_kea.ipam_reconciliation import PDPoolClaim, PDPoolPhase
+
+        with self.assertRaisesMessage(ValueError, "network does not match"):
+            claim(self.server, 4, [PDPoolClaim(self.network)], force=False)
+        with self.assertRaisesMessage(ValueError, "prefix does not match"):
+            reconcile(self.server, 4, [PDPoolPhase([self.network], next_confirmation_number(), True)])
+        self.assertFalse(Prefix.objects.exists())
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+    def test_a_dhcpv6_import_owns_the_pd_pool_source(self):
+        from netbox_kea.ipam_reconciliation import effective_sources
+
+        if not dhcp_plugin.is_available():
+            self.skipTest("The import scope needs netbox_dhcp")
+        self.server.dhcp4 = True
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+
+        scope = effective_sources(self.server)["import"]
+
+        self.assertIn((6, "pd-pool"), scope)
+        self.assertNotIn((4, "pd-pool"), scope)
 
 
 class AdapterOwnershipBoundaryTest(SimpleTestCase):

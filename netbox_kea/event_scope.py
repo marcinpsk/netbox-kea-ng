@@ -4,7 +4,7 @@
 
 At the top level of a tracked request (no connection holds a transaction) the block is a unit inside its own
 ``event_tracking``: its events dispatch after its COMMIT, or not at all. Elsewhere it is a plain transaction or
-savepoint. See docs/design/savepoint-event-queue.md, sections 22, 24 and 26.
+savepoint. See design record #176, sections 22, 24 and 26.
 """
 
 from __future__ import annotations

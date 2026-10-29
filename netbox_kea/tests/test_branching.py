@@ -83,6 +83,7 @@ from netbox_kea import display_cache  # noqa: E402
 from netbox_kea.jobs import KeaIpamSyncJob  # noqa: E402
 from netbox_kea.kea import KeaCommand, KeaException  # noqa: E402
 from netbox_kea.models import (  # noqa: E402
+    DhcpImportRun,
     DhcpIntegrationConfig,
     DisplayCacheConfig,
     IPAMOwnershipLink,
@@ -107,14 +108,15 @@ from netbox_kea.tests.utils import (  # noqa: E402
     _make_db_server,
     _refusal_receivers,
     linked_dhcp_targets,
+    with_dhcp_integration_config,
 )
 
-# Changing this set needs a design decision (docs/design/ipam-ownership-branching.md).
+# Changing this set needs a design decision (design record #171).
 EXPOSED_RELATIONS: frozenset[tuple[str, str]] = frozenset(
     (f"netbox_kea.IPAMOwnershipLink.{key}", "CASCADE") for key in ("ip_address", "prefix", "ip_range")
 )
 _DESIGN_DECISION = (
-    "This change needs a design decision (docs/design/ipam-ownership-branching.md): the resolver keeps "
+    "This change needs a design decision (design record #171): the resolver keeps "
     "main-only plugin models in main, so a delete in a branch that reaches one of these relations writes main's table."
 )
 
@@ -233,6 +235,8 @@ class BranchabilityPinTest(SimpleTestCase):
                 "netbox_kea.DisplayCacheConfig",
                 "netbox_kea.KeaDhcpLink",
                 "netbox_kea.IPAMOwnershipLink",
+                "netbox_kea.DhcpImportRun",
+                "netbox_kea.DhcpImportEntry",
             },
         )
 
@@ -280,7 +284,7 @@ class BranchabilityGuardProbeTest(SimpleTestCase):
         self.assertIn("SetNullProbe.vrf (SET_NULL) -> ipam.VRF", "\n".join(changed))
         self.assertEqual(len(pinned_too), 1, pinned_too)
         self.assertIn("SetNullProbe.vrf is SET_NULL, not CASCADE", pinned_too[0])
-        self.assertIn("docs/design/ipam-ownership-branching.md", pinned_too[0])
+        self.assertIn("design record #171", pinned_too[0])
 
     def test_an_auto_created_many_to_many_through_model_fails(self):
         rule_models = self._probe("ManyToManyProbe", prefixes=models.ManyToManyField(Prefix, related_name="+"))
@@ -1067,6 +1071,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
         self.link = KeaDhcpLink.objects.create(
             server=self.server,
             family=4,
+            kind="subnet",
             kea_subnet_id=7,
             object_type=ContentType.objects.get_for_model(VRF),
             object_id=1,
@@ -1093,6 +1098,8 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
                 "netbox_kea.DisplayCacheConfig",
                 "netbox_kea.KeaDhcpLink",
                 "netbox_kea.IPAMOwnershipLink",
+                "netbox_kea.DhcpImportRun",
+                "netbox_kea.DhcpImportEntry",
             },
         )
         main_only = {
@@ -1102,6 +1109,8 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
             "netbox_kea.DhcpIntegrationConfig",
             "netbox_kea.DisplayCacheConfig",
             "netbox_kea.IPAMOwnershipLink",
+            "netbox_kea.DhcpImportRun",
+            "netbox_kea.DhcpImportEntry",
         }
         self.assertEqual((_refusal_receivers(pre_save), _refusal_receivers(pre_delete)), (main_only, main_only))
 
@@ -1185,11 +1194,7 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
         self.assertEqual(_ipam_state(), before)
 
     def test_a_settings_page_post_in_a_branch_is_refused_and_changes_nothing(self):
-        from unittest.mock import patch
-
         from core.models import ObjectChange
-
-        from netbox_kea.integrations import dhcp_plugin
 
         client = Client()
         client.force_login(get_user_model().objects.create_superuser("settings-in-branch"))
@@ -1225,12 +1230,13 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
                 31,
             ),
         }
+        # The Settings page shows the DHCP Plugin section only with netbox_dhcp.
+        if not apps.is_installed("netbox_dhcp"):
+            if _required:
+                self.fail("The branching CI job requires netbox_dhcp for the DHCP Plugin settings section.")
+            del sections["dhcp-integration"]
         for slug, (data, saved, expected) in sections.items():
-            # The DHCP Plugin section shows only with netbox_dhcp; its row and the branch refusal do not need it.
-            with (
-                self.subTest(section=slug),
-                patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True),
-            ):
+            with self.subTest(section=slug):
                 before = (self._main(), ObjectChange.objects.count())
                 client.cookies[COOKIE_NAME] = self.branch.schema_id
 
@@ -1245,6 +1251,20 @@ class PluginRowWritesInBranchTest(TransactionTestCase):
                 self.assertEqual(client.post(url, data).status_code, 302)
                 self.assertEqual(saved(), expected)
                 self.assertEqual(ObjectChange.objects.count(), before[1] + 1)
+
+    def test_a_dhcp_import_in_a_branch_is_refused_and_stores_no_result(self):
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        client = Client()
+        client.force_login(get_user_model().objects.create_superuser("import-in-branch"))
+        client.cookies[COOKIE_NAME] = self.branch.schema_id
+
+        with stub_kea({}) as kea, _writes(self.branch) as writes:
+            response = client.post(reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk]))
+
+        self.assertContains(response, f"Branch {self.branch.name} is active.", status_code=409)
+        self.assertEqual((writes, kea.commands()), ([], []))
+        self.assertFalse(DhcpImportRun.objects.exists())
 
     def test_on_main_a_save_and_a_delete_are_not_refused(self):
         self.server.ca_url = _AFTER
@@ -1563,8 +1583,10 @@ class OwnershipBranchLifecycleTest(_OwnedObjectsTestCase):
 class SyncJobInBranchTest(TransactionTestCase):
     """KeaIpamSyncJob runs on main only: in a branch it fails before any read."""
 
+    @with_dhcp_integration_config(scheduled_import_enabled=True)
     def test_the_sync_job_fails_in_a_branch_before_any_query_or_kea_command(self):
-        _make_db_server(name="job")
+        # The scheduled DHCP Import is on for this Server, so the refusal also covers it.
+        _make_db_server(name="job", sync_dhcp_plugin_enabled=True)
         branch = _provisioned_branch(self, "job")
         job = Job.objects.create(name="Kea IPAM Sync", job_id=uuid.uuid4())
 

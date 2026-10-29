@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from contextvars import copy_context
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
 from core import signals as core_signals
@@ -27,11 +27,12 @@ from netbox.context_managers import event_tracking
 from netbox.jobs import JobRunner, system_job
 
 if TYPE_CHECKING:
+    from .integrations.dhcp_plugin import ImportSummary
     from .models import Server
 
 # Runtime imports: get_type_hints() resolves this module's annotations, so a
 # TYPE_CHECKING-only Family or SyncReport would raise NameError.
-from . import branching
+from . import branching, event_scope
 from .constants import Family
 from .dhcp_mapping_lifecycle import ensure_boundaries
 from .ipam_reconciliation import SyncReport, complete_job_observation, upgrade_counts
@@ -46,6 +47,17 @@ _DEFAULT_INTERVAL = 5
 #: tells an operator nothing about which manually-curated IPs the sync left alone.
 _CONFLICT_SAMPLE_SIZE = 20
 _SYNC_USER = "netbox-kea-sync"
+
+
+def _failed_facts(summary: ImportSummary) -> int:
+    """Return the facts of one family that the DHCP Import could not read or write, and its IPAM reconciliation errors.
+
+    ``ImportSummary.errors`` leaves out failed reads and failed Option writes, so the job counts them here.
+    """
+    from .integrations.dhcp_import_report import Reason
+
+    failed = (Reason.READ_FAILED, Reason.WRITE_FAILED)
+    return sum(entry.reason in failed for entry in summary.entries) + summary.ownership_errors
 
 
 class _SyncJobRequest(HttpRequest):
@@ -155,7 +167,9 @@ class KeaIpamSyncJob(JobRunner):
 
     Iterates over all configured ``Server`` objects and syncs their active
     leases and/or reservations into NetBox ``IPAddress`` records.  Error on
-    one server does not prevent syncing the remaining servers.
+    one server does not prevent syncing the remaining servers.  With the scheduled
+    DHCP Import on, it then runs the DHCP Import of each Server that the integration
+    runs for.
 
     The sync is idempotent: existing ``IPAddress`` objects are updated in place
     when their fields have changed; unchanged records are left untouched.
@@ -327,7 +341,18 @@ class KeaIpamSyncJob(JobRunner):
         return actor
 
     def _run_sync(self, *args: Any, **kwargs: Any) -> None:
-        """Apply the configured synchronization and retain the per-server summary."""
+        """Run the IPAM sync, then the scheduled DHCP Import; fail the job when either one failed."""
+        server_pk = kwargs.get("server_pk")
+        failed = self._run_ipam_sync(server_pk)
+        # A Run Now of one Server syncs its IPAM only: its trigger is not the schedule.
+        if server_pk is None:
+            failed = self._run_scheduled_imports() or failed
+        if failed:
+            self.job.error = "The Kea IPAM sync or a scheduled DHCP Import failed. The job log has the details."
+            raise JobFailed(self.job.error)
+
+    def _run_ipam_sync(self, server_pk: int | None) -> bool:
+        """Apply the configured IPAM synchronization, retain the per-server summary, and return whether it failed."""
         from .models import Server, SyncConfig
 
         summary: list[dict] = []
@@ -338,7 +363,7 @@ class KeaIpamSyncJob(JobRunner):
                 self.job.interval = sync_cfg.interval_minutes
             if not sync_cfg.sync_enabled:
                 self.logger.info("Global sync kill-switch is active (SyncConfig.sync_enabled=False) — skipping.")
-                return
+                return False
 
             sync_leases = sync_cfg.sync_leases_enabled
             sync_reservations = sync_cfg.sync_reservations_enabled
@@ -348,9 +373,8 @@ class KeaIpamSyncJob(JobRunner):
 
             if not any([sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges]):
                 self.logger.info("All sync type flags are False — nothing to do.")
-                return
+                return False
 
-            server_pk = kwargs.get("server_pk")
             server_qs = Server.objects.filter(pk=server_pk) if server_pk is not None else Server.objects.all()
             servers = list(server_qs)
 
@@ -387,12 +411,14 @@ class KeaIpamSyncJob(JobRunner):
                         effective_ip_ranges,
                         max_leases,
                     )
+                except event_scope.EventDispatchError:
+                    raise
                 except Exception as exc:
                     # The job log keeps only the message, so the traceback goes to the module logger.
                     logger.exception("Unhandled error syncing server %s", server.name)
                     self.logger.error(  # noqa: TRY400 - the module logger above has the traceback
-                        f"Unhandled error syncing server {server.name}: {type(exc).__name__}: {exc};"
-                        " the worker log has the traceback"
+                        f"Unhandled error syncing server {server.name}: {type(exc).__name__};"
+                        " the worker log has the details"
                     )
                     report.errors += 1
 
@@ -444,8 +470,7 @@ class KeaIpamSyncJob(JobRunner):
                 f" conflicts={total_conflicts} disagreements={total_disagreements} skipped={len(total.skipped_reservations)}"
                 f" unowned={total.unowned} waiting={total.waiting} unclassified={total.unclassified}"
             )
-            if total.errors > 0 or total.prefix_errors > 0:
-                raise JobFailed
+            return total.errors > 0 or total.prefix_errors > 0
         finally:
             if not isinstance(self.job.data, dict):
                 self.job.data = {}
@@ -454,3 +479,86 @@ class KeaIpamSyncJob(JobRunner):
                 self.job.save(update_fields=["data"])
             except Exception:
                 logger.exception("Failed to persist sync job summary data")
+
+    def _run_scheduled_imports(self) -> bool:
+        """Run the DHCP Import of each Server that the integration runs for, when the setting is on.
+
+        Return whether the import of a Server failed. A failure of one Server does not stop the others.
+        """
+        from .integrations import dhcp_plugin
+        from .models import DhcpIntegrationConfig, Server
+
+        switch = DhcpIntegrationConfig.get()
+        if not switch.scheduled_import_enabled:
+            return False
+        servers = []
+        for server in Server.objects.all():
+            if refusal := dhcp_plugin.integration_refusal(server, switch):
+                self.logger.info(f"Scheduled DHCP Import of Server {server.name} skipped: {refusal}")
+            else:
+                servers.append(server)
+        failed = sum(not self._import_one(server) for server in servers)
+        self.logger.info(f"Scheduled DHCP Import complete: servers={len(servers)} failed={failed}")
+        return failed > 0
+
+    def _import_one(self, server: Server) -> bool:
+        """Run the scheduled DHCP Import of *server*, log its result per family, and return whether it succeeded.
+
+        The import stores its own result with the trigger "scheduled", also when it fails after its first read.
+        """
+        from .dhcp_mapping_lifecycle import MetadataBusy
+        from .integrations.dhcp_import import (
+            ImportRunning,
+            UnsupportedPluginVersion,
+            enabled_versions,
+            run_dhcp_plugin_import,
+        )
+        from .integrations.dhcp_import_report import Outcome
+        from .integrations.dhcp_plugin import ImportSummary
+        from .models import DhcpImportTrigger
+
+        run = f"Scheduled DHCP Import of Server {server.name}"
+        # The type check sees a TextChoices member as its (value, label) tuple; at runtime it is the member.
+        trigger = cast("DhcpImportTrigger", DhcpImportTrigger.SCHEDULED)
+        try:
+            results = run_dhcp_plugin_import(server, trigger)
+        except ImportRunning as error:
+            self.logger.warning(f"{run} skipped: {error.message}")
+            return True
+        except (MetadataBusy, UnsupportedPluginVersion) as error:
+            self.logger.error(f"{run} failed: {error.message}")  # noqa: TRY400 - a typed refusal, no traceback
+            return False
+        except event_scope.EventDispatchError:
+            self.logger.error(  # noqa: TRY400 - NetBox records the traceback of the raised error
+                f"{run} saved its changes, but NetBox could not dispatch their events. The job stops."
+            )
+            raise
+        except Exception as exc:
+            # The job log keeps only the message, so the traceback goes to the module logger.
+            logger.exception("Scheduled DHCP Import failed for server %s", server.name)
+            self.logger.error(  # noqa: TRY400 - the module logger above has the traceback
+                f"{run} failed: {type(exc).__name__}; the worker log has the details"
+            )
+            return False
+
+        succeeded = True
+        for family, result in results:
+            if isinstance(result, ImportSummary):
+                counts = " ".join(
+                    f"{outcome.value}={sum(entry.outcome == outcome for entry in result.entries)}"
+                    for outcome in Outcome
+                )
+                failed = _failed_facts(result)
+                line = f"{run}, DHCPv{family}: {counts} failed={failed}"
+                if failed:
+                    self.logger.error(line)
+                    succeeded = False
+                else:
+                    self.logger.info(line)
+            else:
+                self.logger.error(f"{run}, DHCPv{family}: {' '.join(result.lines)}")
+                succeeded = False
+        for family in sorted(set(enabled_versions(server)) - {family for family, _ in results}):
+            self.logger.error(f"{run}, DHCPv{family}: the configuration could not be parsed")
+            succeeded = False
+        return succeeded

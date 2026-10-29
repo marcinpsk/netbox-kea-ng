@@ -44,7 +44,10 @@ _EXEMPT = {
     "server_journal": "A NetBox page that reads no Kea data.",
     "server_jobs": "The job list reads no Kea data.",
     "server_sync_status": "The Sync tab reads no Kea data.",
-    "server_dhcp_plugin": "It reads config-get for the import drift without a Snapshot, and shows its own state.",
+    "server_dhcp_plugin": "The page reads no Kea data; htmx loads its drift card from server_dhcp_plugin_drift.",
+    "server_dhcp_plugin_drift": (
+        "An htmx card that reads nothing while the integration is off; DriftPartialTest covers its Notice."
+    ),
     "server_dhcp4_enable": "A confirmation page that reads no Kea data.",
     "server_dhcp4_disable": "A confirmation page that reads no Kea data.",
     "server_dhcp6_enable": "A confirmation page that reads no Kea data.",
