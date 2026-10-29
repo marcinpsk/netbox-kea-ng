@@ -160,6 +160,33 @@ def test_a_read_anywhere_in_a_later_statement_is_reported(after):
             (outcome := g(x)) and x
             self.assertTrue(outcome)
         """,
+        # An if test always runs, so its assignment expression binds the name on both branches.
+        """
+        for x in y:
+            with self.subTest(x=x):
+                outcome = f(x)
+            if (outcome := g(x)):
+                pass
+            self.assertTrue(outcome)
+        """,
+        # The first operand of a short-circuit operator in an if test always runs.
+        """
+        for x in y:
+            with self.subTest(x=x):
+                outcome = f(x)
+            if (outcome := g(x)) and x:
+                self.assertTrue(outcome)
+            self.assertTrue(outcome)
+        """,
+        # A context manager expression runs before the body of its block.
+        """
+        for x in y:
+            with self.subTest(x=x):
+                outcome = f(x)
+            with nullcontext(outcome := g(x)):
+                self.assertTrue(outcome)
+            self.assertTrue(outcome)
+        """,
         # A comprehension variable belongs to the comprehension.
         """
         for x in y:
@@ -194,6 +221,9 @@ def test_a_read_anywhere_in_a_later_statement_is_reported(after):
         "earlier-context-manager",
         "rebound-in-later-block",
         "first-operand-walrus",
+        "if-test-walrus",
+        "if-test-first-operand-walrus",
+        "context-manager-walrus",
         "comprehension",
         "later-import",
         "definition-local",
@@ -272,6 +302,7 @@ def test_a_later_clause_of_the_try_statement_that_is_valid_passes(block):
         "with self.subTest(step=2):\n    outcome = g(x)",
         "with suppress(ValueError), nullcontext(g(x)) as outcome:\n    pass",
         "x and (outcome := g(x))",
+        "if x and (outcome := g(x)):\n    pass",
         "h((outcome := g(x)) if x else None)",
         pytest.param(
             "try:\n    pass\nexcept* ValueError:\n    outcome = 0",
@@ -288,6 +319,7 @@ def test_a_later_clause_of_the_try_statement_that_is_valid_passes(block):
         "subtest",
         "suppressed-target",
         "short-circuit-walrus",
+        "if-test-short-circuit-walrus",
         "conditional-walrus",
         "except-star",
     ],

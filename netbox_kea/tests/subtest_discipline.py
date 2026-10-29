@@ -10,7 +10,7 @@ name that the block binds (by assignment, ``as``, import or definition) before i
 
 Stdlib only, so it runs as a pre-commit hook without NetBox. Limits: it does not follow reads
 after an inner loop, or in a nested ``def`` with its defaults and decorators. An assignment in a branch, loop, ``try`` or
-``match``, or in the body of a context manager that can swallow an exception, does not count
+``match``, or in a ``with`` statement whose context manager can swallow an exception, does not count
 as a rebinding. It reads the loads of one statement before its stores, and it does not see
 an assignment expression in a comprehension.
 """
@@ -144,6 +144,7 @@ def _first_reads(body: list[ast.stmt], watched: set[str], rebound: set[str]) -> 
             before = rebound
             for item in node.items:
                 reads |= (_reads(item.context_expr) & watched) - rebound
+                rebound = rebound | _definite_stores(item.context_expr)
                 if item.optional_vars is not None:
                     reads |= (_reads(item.optional_vars) & watched) - rebound
                     rebound = rebound | _stores(item.optional_vars)
@@ -152,6 +153,7 @@ def _first_reads(body: list[ast.stmt], watched: set[str], rebound: set[str]) -> 
             rebound = before if any(_called(item) in _SUPPRESSING for item in node.items) else assigned
         elif isinstance(node, ast.If):
             reads |= (_reads(node.test) & watched) - rebound
+            rebound = rebound | _definite_stores(node.test)
             reads_if_true, when_true = _first_reads(node.body, watched, rebound)
             reads_if_false, when_false = _first_reads(node.orelse, watched, rebound)
             reads |= reads_if_true | reads_if_false
