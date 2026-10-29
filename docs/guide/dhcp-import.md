@@ -141,7 +141,9 @@ without a mapped Option takes an Option without a mapping of the same object. It
 and client classes first. Then it takes one with the same space and code, for example one that an earlier release
 wrote without classes. The run maps each Option that it takes before it writes it, so a write that fails keeps the
 mapping, and the next run updates the same Option. Then the mapping of the object records that its Options are mapped,
-whatever the writes do. After that, the object takes no unmapped Option again. The global configuration, client classes,
+whatever the writes do, and the object takes no unmapped Option again. The exception is an Option that waits for a
+custom Option Definition that failed to write, or for a client class that Kea defines and this run did not import. Then
+the run does not record it, and the next run takes Options without a mapping again. The global configuration, client classes,
 Shared Networks, Subnets, Pools, delegated-prefix Pools and Reservations take them this way. A run that cannot read the
 Reservations does not reach them, so a later run that reads them maps their Options.
 A branch revert keeps the fact that the Options of an object are mapped, as main recorded it. When change log retention

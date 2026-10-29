@@ -105,8 +105,8 @@ def test_the_mapping_kind_lists_name_every_kind_of_mapping_kinds():
     assert missing == {path: [] for path, *_ in passages}
 
 
-def test_context_qualifies_mapping_ownership_for_a_subnet_without_an_id():
-    """Objects created without a Kea subnet ID can have no mapping."""
+def test_context_qualifies_mapping_ownership_for_a_subnet_without_an_id_and_a_long_option_identity():
+    """Objects created without a Kea subnet ID, and an Option whose identity a mapping cannot hold, have no mapping."""
     context = (REPOSITORY_ROOT / "CONTEXT.md").read_text()
     mapping = " ".join(context.split("**DHCP Import Mapping**:\n", 1)[1].split("\n_Avoid_:", 1)[0].split())
 
@@ -114,4 +114,5 @@ def test_context_qualifies_mapping_ownership_for_a_subnet_without_an_id():
         "The exception is a Kea Subnet without a subnet ID: it, its Pools, its delegated-prefix Pools and each DHCP "
         "Option of these objects have no mapping." in mapping
     )
-    assert "Apart from that exception, a DHCP Option without a mapping" in mapping
+    assert "A DHCP Option whose identity is longer than a mapping holds has no mapping either." in mapping
+    assert "Apart from these exceptions, a DHCP Option without a mapping" in mapping
