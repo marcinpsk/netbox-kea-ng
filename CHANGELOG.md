@@ -13,6 +13,9 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.10.0 (2026-10-29)
+
+
 ## v3.9.0 (2026-10-29)
 
 
