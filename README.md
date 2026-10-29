@@ -78,6 +78,7 @@ a warning for each key that is still set. See [Configuration](https://marcinpsk.
 - [Installation](https://marcinpsk.github.io/netbox-kea-ng/installation/) and [Configuration](https://marcinpsk.github.io/netbox-kea-ng/configuration/)
 - [Kea Servers](https://marcinpsk.github.io/netbox-kea-ng/servers/): single URL, dual URL and credentials
 - [IPAM Sync](https://marcinpsk.github.io/netbox-kea-ng/ipam-sync/): background sync, permissions and upgrade notes
+- [DHCP Import](https://marcinpsk.github.io/netbox-kea-ng/dhcp-import/): copy a Server into the NetBox DHCP plugin
 - [Leases, Reservations and Subnets](https://marcinpsk.github.io/netbox-kea-ng/leases-reservations/)
 - [Event rules and webhooks](https://marcinpsk.github.io/netbox-kea-ng/event-rules/), [DNS](https://marcinpsk.github.io/netbox-kea-ng/dns/) and [Custom links](https://marcinpsk.github.io/netbox-kea-ng/custom-links/)
 - [netbox-branching](https://marcinpsk.github.io/netbox-kea-ng/branching/)

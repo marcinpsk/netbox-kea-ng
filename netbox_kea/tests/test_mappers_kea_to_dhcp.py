@@ -10,14 +10,22 @@ from __future__ import annotations
 
 from django.test import SimpleTestCase
 
-from netbox_kea.dhcp_options import DHCPOption, DHCPOptionIdentity, option_identity
-from netbox_kea.integrations.dhcp_import_report import Kind
+from netbox_kea import kea_paths
+from netbox_kea.constants import Family
+from netbox_kea.dhcp_options import DHCPOption, DHCPOptionIdentity, option_identity, parse_dhcp_option
+from netbox_kea.integrations.dhcp_import_ledger import LEDGER, NotImported
+from netbox_kea.integrations.dhcp_import_report import Kind, Outcome
 from netbox_kea.mappers.kea_to_dhcp import (
     OptionDefIntent,
     parse_dhcp_config,
 )
 from netbox_kea.tests.test_kea_recordings import _recording
 from netbox_kea.tests.utils import without_dhcp_plugin
+
+
+def _left_out(family: Family, table: str) -> dict:
+    """Return each key of the ledger *table* that the import does not write, with an empty value."""
+    return {key: {} for key, entry in LEDGER[family][table].items() if isinstance(entry, NotImported)}
 
 
 class TestParseDhcpConfigStructure(SimpleTestCase):
@@ -46,6 +54,32 @@ class TestParseDhcpConfigStructure(SimpleTestCase):
         by_id = {s.kea_subnet_id: s for s in result.subnets}
         self.assertIsNone(by_id[1].shared_network)
         self.assertEqual(by_id[2].shared_network, "office")
+
+    def test_a_shared_network_carries_its_class_lists_and_user_context(self):
+        network = {
+            "name": "office",
+            "client-classes": ["voip"],
+            "evaluate-additional-classes": ["late"],
+            "user-context": {"floor": 2},
+        }
+
+        (parsed,) = parse_dhcp_config({"shared-networks": [network]}, 4).shared_networks
+
+        self.assertEqual(
+            (parsed.client_classes, parsed.evaluate_additional_classes, parsed.user_context),
+            (("voip",), ("late",), {"floor": 2}),
+        )
+
+    def test_a_shared_network_class_list_that_is_not_valid_is_dropped(self):
+        network = {"name": "office", "client-classes": "voip"}
+
+        result = parse_dhcp_config({"shared-networks": [network]}, 4)
+
+        self.assertIsNone(result.shared_networks[0].client_classes)
+        self.assertEqual(
+            [(entry.kind, entry.path) for entry in result.dropped],
+            [(Kind.SHARED_NETWORK, "Dhcp4/shared-networks[name=office]/client-classes")],
+        )
 
     def test_v6_uses_subnet6_key_and_family_6(self):
         conf = {"subnet6": [{"id": 7, "subnet": "2001:db8::/64"}]}
@@ -383,6 +417,60 @@ class TestParseDhcpConfigSettings(SimpleTestCase):
         self.assertEqual(settings["valid-lifetime"], 7200)
         self.assertEqual(settings["relay"], {"ip-addresses": ["10.0.0.3"]})
         self.assertIs(settings["rapid-commit"], False)
+
+    def test_each_key_that_the_ledger_does_not_import_has_an_entry_on_every_object(self):
+        self._assert_left_out(4, 6, "10.0.0.0/24", "10.0.0.10-10.0.0.20")
+        self._assert_left_out(6, 23, "2001:db8::/64", "2001:db8::10-2001:db8::20")
+
+    def _assert_left_out(self, family: Family, option_code: int, subnet: str, pool: str):
+        option = {"code": option_code, "data": "x", **_left_out(family, "option-data")}
+        conf = {
+            **_left_out(family, f"Dhcp{family}"),
+            "interfaces-config": {"interfaces": [], **_left_out(family, "interfaces-config")},
+            "option-def": [{"name": "x", "code": 222, "type": "string", **_left_out(family, "option-def")}],
+            "option-data": [option],
+            "client-classes": [{"name": "c", **_left_out(family, "client-classes")}],
+            f"subnet{family}": [
+                {
+                    "id": 1,
+                    "subnet": subnet,
+                    "pools": [{"pool": pool, **_left_out(family, "pools")}],
+                    **_left_out(family, f"subnet{family}"),
+                }
+            ],
+            "shared-networks": [{"name": "n", f"subnet{family}": [], **_left_out(family, "shared-networks")}],
+        }
+        root = kea_paths.daemon(family)
+        subnet_path = kea_paths.subnet(family, 1, subnet)
+        objects = {
+            f"Dhcp{family}": (Kind.SERVER, root),
+            "interfaces-config": (Kind.SERVER, kea_paths.setting(root, kea_paths.INTERFACES_CONFIG)),
+            "option-def": (Kind.OPTION_DEFINITION, kea_paths.option_definition(family, f"dhcp{family}", 222)),
+            "option-data": (Kind.OPTION, kea_paths.option(root, parse_dhcp_option(option), family)),
+            "client-classes": (Kind.CLIENT_CLASS, kea_paths.client_class(family, "c")),
+            f"subnet{family}": (Kind.SUBNET, subnet_path),
+            "pools": (Kind.POOL, kea_paths.pool(subnet_path, pool)),
+            "shared-networks": (Kind.SHARED_NETWORK, kea_paths.shared_network(family, "n")),
+        }
+        if family == 6:
+            pd_pool = {"prefix": "2001:db8:100::", "prefix-len": 48, "delegated-len": 56, **_left_out(6, "pd-pools")}
+            conf["subnet6"][0]["pd-pools"] = [pd_pool]
+            objects["pd-pools"] = (Kind.PD_POOL, kea_paths.pd_pool(subnet_path, "2001:db8:100::/48", 56))
+
+        entries = parse_dhcp_config(conf, family).not_imported
+
+        self.assertEqual(
+            {(entry.kind, entry.path, entry.outcome, entry.reason) for entry in entries},
+            {
+                (kind, kea_paths.setting(path, key), Outcome.NOT_IMPORTED, entry.reason)
+                for table, (kind, path) in objects.items()
+                for key, entry in LEDGER[family][table].items()
+                if isinstance(entry, NotImported)
+            },
+        )
+        # The Reservations come from their own read, and the ledger leaves none of their keys out.
+        self.assertEqual(set(LEDGER[family]) - set(objects), {"reservations"})
+        self.assertEqual(_left_out(family, "reservations"), {})
 
     def test_settings_default_empty(self):
         conf = {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}

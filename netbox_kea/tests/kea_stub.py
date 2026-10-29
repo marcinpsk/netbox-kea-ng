@@ -192,6 +192,17 @@ def _recorded_lease_templates() -> dict[int, dict[str, Any]]:
     return templates
 
 
+def recorded_host(family: int) -> dict[str, Any]:
+    """Return the In-Subnet host of the coverage configuration of *family*, as Kea returned it, in Subnet 21.
+
+    The host sets every key that the typed Reservation reads. reservation-get returns the host of config-get with
+    its subnet-id.
+    """
+    recording = json.loads((_RECORDINGS / f"dhcp{family}.json").read_text())
+    office = recording["config-get"]["arguments"][f"Dhcp{family}"]["shared-networks"][1]
+    return {**office[f"subnet{family}"][1]["reservations"][0], "subnet-id": 21}
+
+
 def lease_record(address: str, *, drop: Sequence[str] = (), **changes: Any) -> dict[str, Any]:
     """Return a Current Kea lease record of the family of *address*, copied from a recorded real reply.
 
@@ -325,6 +336,39 @@ def _assert_kea_would_accept(body: dict[str, Any]) -> None:
                 )
 
 
+def _assert_kea_would_accept_host(body: dict[str, Any]) -> None:
+    """Fail on a host key that Kea's host reservation parser refuses, or on an excluded-prefixes count it refuses."""
+    arguments = body.get("arguments")
+    host = arguments.get("reservation") if isinstance(arguments, dict) else None
+    if not isinstance(host, dict):
+        return
+    # host_cmds takes subnet-id inside the host; the configuration parser has no such key.
+    accepted = {family: {"subnet-id"} | _accepted_keys(family)["reservations"] for family in (4, 6)}
+    family = _host_family(body, host, accepted)
+    unknown = set(host) - accepted[family]
+    if unknown:
+        raise AssertionError(
+            f"KeaHttpStub: {body.get('command')} sends {sorted(unknown)} in a host, which the host reservation "
+            f"keyword tables in kea_recordings/accepted-keys.json do not accept on a DHCPv{family} host."
+        )
+    if "excluded-prefixes" in host and len(host["excluded-prefixes"]) != len(host.get("prefixes", [])):
+        raise AssertionError(
+            f"KeaHttpStub: {body.get('command')} sends excluded-prefixes that do not pair one to one with prefixes, "
+            "which Kea refuses."
+        )
+
+
+def _host_family(body: dict[str, Any], host: dict[str, Any], accepted: dict[int, set[str]]) -> int:
+    """Return the family of a host write: the Control Agent service, else the family of its family-only keys.
+
+    Without a service, a host whose family-only keys all belong to the other family passes as that family.
+    """
+    service = body.get("service")
+    if service in (["dhcp4"], ["dhcp6"]):
+        return int(service[0][-1])
+    return 6 if set(host) & (accepted[6] - accepted[4]) else 4
+
+
 def _assert_kea_has(commands: Any, verb: str) -> None:
     """Fail on a command name that the harness Kea's list-commands reply does not contain."""
     unknown = sorted(str(command) for command in set(commands) - WIRE_COMMANDS)
@@ -379,6 +423,8 @@ class KeaHttpStub:
             _assert_kea_has([cmd], "receives")
             if cmd in ("config-test", "config-set"):
                 _assert_kea_would_accept(body)
+            if cmd in ("reservation-add", "reservation-update"):
+                _assert_kea_would_accept_host(body)
             if cmd not in self._responses:
                 raise AssertionError(f"KeaHttpStub: no response registered for command {cmd!r} (url={url})")
             spec = self._responses[cmd]
@@ -1133,3 +1179,47 @@ def observed_configuration(
     observed = server or Server(pk=1, name="observed", ca_url="http://kea.example.invalid")
     with stub_kea({"config-get": {"result": 0, "arguments": {f"Dhcp{family}": configuration}}}):
         return server_configuration.for_verification(observed, family)
+
+
+def _request_version(body: dict) -> int:
+    """Return the DHCP family one stubbed request targets, from its ``service``."""
+    service = body.get("service")
+    if service == ["dhcp4"]:
+        return 4
+    if service == ["dhcp6"]:
+        return 6
+    raise AssertionError(f"Expected exactly one DHCP service, got {service!r}")
+
+
+def _sync_responses(
+    conf_by_version: dict[int, dict],
+    hosts_by_version: dict[int, list] | None = None,
+    *,
+    reservations_available: bool = True,
+) -> dict:
+    """Kea responses for the DHCP-plugin sync path, answered per requested family.
+
+    Registered by command name for :func:`stub_kea`, so the real ``KeaClient`` builds
+    the requests and validates every response envelope. ``config-get`` and
+    ``reservation-get-page`` are callables because one stub must answer both families,
+    which a Control Agent distinguishes by ``service``.
+    """
+    hosts = hosts_by_version or {}
+
+    def config_get(body):
+        version = _request_version(body)
+        return {"result": 0, "arguments": {f"Dhcp{version}": conf_by_version.get(version, {})}}
+
+    def reservation_get_page(body):
+        if not reservations_available:
+            # host_cmds not loaded: the real client turns result 2 into a KeaException.
+            return {"result": 2, "text": "command not supported"}
+        return _res_page(hosts.get(_request_version(body), []))
+
+    responses: dict = {"config-get": config_get, "reservation-get-page": reservation_get_page}
+    for version, conf in conf_by_version.items():
+        subnets = list(conf.get(f"subnet{version}", []))
+        for shared_network in conf.get("shared-networks", []):
+            subnets.extend(shared_network.get(f"subnet{version}", []))
+        responses[f"subnet{version}-list"] = _subnet_list(version, subnets)
+    return responses

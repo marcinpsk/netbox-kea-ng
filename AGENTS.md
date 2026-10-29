@@ -214,7 +214,7 @@ URL request
       fan_out.py        (the per-Server read pool of combined Subnets, Shared Networks, Reservations)
       sync_views.py     (per-server IPAM sync UI)
       sync_jobs.py      (jobs tab, periodic sync management)
-      settings_page.py  (Settings page: one section per settings singleton; ADR 0010)
+      settings_page.py  (Settings page: one tab per settings singleton; ADR 0010)
   → reservation_edit.py (Reservation add/edit/import, signed form state, Published Name rules and after-apply facts)
   → config_write.py     (Configuration Changes, Reservation writes included: typed outcome, advisory lock, persist step)
   → change_outcome.py   (ChangeRejected and the Application classifier that every change shares; ADR 0011)
@@ -258,11 +258,12 @@ URL request
   KeaClientConfig with the migrations' values, every other row with its model defaults. They
   inherit `ChangeLoggingMixin` (not a `NetBoxModel`), so a save in a request writes an ObjectChange;
   `api/serializers.py` has a brief serializer for each because NetBox's change log API serializes each changed
-  object. The Settings page (`views/settings_page.py`) has one section for each row (`SECTIONS`): a section shows
-  with the view permission of its model, a save needs the change permission too, and the view calls `snapshot()`
-  before the form changes the row. A section whose `available()` is false (the DHCP Plugin section without
-  `netbox_dhcp`) does not show, and a save of it is refused. `navigation.py` builds one menu item for each available
-  section. The adoption cleanup locks the `Server`, `SyncConfig` and `DhcpIntegrationConfig` tables to freeze policy.
+  object. The Settings page (`views/settings_page.py`) has one tab for each row (`SECTIONS`), at
+  `settings/<slug>/`: a tab shows with the view permission of its model, a save needs the change permission too, and
+  the view calls `snapshot()` before the form changes the row. `settings/` redirects to the first visible tab. A
+  section whose `available()` is false (the DHCP Plugin section without `netbox_dhcp`) has no tab, and its URL gives
+  404, as does a hidden one; a user who can view no section gets 403. `navigation.py` has one Settings item that needs
+  `view_server`, like the other items: NetBox needs every listed permission, so the item cannot follow the tabs. The adoption cleanup locks the `Server`, `SyncConfig` and `DhcpIntegrationConfig` tables to freeze policy.
   A new settings row needs a model, a migration that creates the row, a brief serializer and a `SECTIONS` line. The
   page builds the form from the model fields (`modelform_factory`) and renders them with `inc/settings_fields.html`
   unless the section names its own include; a test fails while a singleton has no section. A section can give a
@@ -366,37 +367,46 @@ URL request
   The job reads one `LeaseObservation` per family for its address `LeasePhase` and its DHCPv6 `LeasePrefixPhase`
   (source `lease-prefix`, enabled by the lease and the Prefix flags together). Both own objects only through Current Leases.
   A lease link records its `allocation_kind`; an unclassified DHCPv6 lease link is never cleaned up (ADR 0006).
-- **`jobs.py`**: `KeaIpamSyncJob` (`@system_job`). Iterates all `Server` objects,
-  runs subnet/lease/reservation/prefix/range sync phases, writes a per-server
-  summary to the job log. Then, with `DhcpIntegrationConfig.scheduled_import_enabled` on, a separate pass calls
-  `run_dhcp_plugin_import(server, DhcpImportTrigger.SCHEDULED)` for each Server that `integration_refusal` accepts.
-  A Run Now of one Server (`server_pk`) skips that pass. A Server fails when a family has a `READ_FAILED` or
+- **`jobs.py`**: `KeaIpamSyncJob` (`@system_job`). First, with `DhcpIntegrationConfig.scheduled_import_enabled` on,
+  a separate pass calls `run_dhcp_plugin_import(server, DhcpImportTrigger.SCHEDULED)` for each Server that
+  `integration_refusal` accepts. Then it iterates all `Server` objects, runs subnet/lease/reservation/prefix/range
+  sync phases, and writes a per-server summary to the job log. The import goes first because the IPAM stale cleanup
+  keeps an object that a DHCP plugin row references; a removed row lets the cleanup deprecate or remove it (#153).
+  The cost: the import attaches the IP that the lease phase creates for a Global Reservation one run later.
+  A Run Now of one Server (`server_pk`) skips the import pass. A Server fails when a family has a `READ_FAILED` or
   `WRITE_FAILED` entry of any kind or IPAM ownership errors (`_failed_facts`; `ImportSummary.errors` counts less),
   or when the import raises. A failed Server fails the job and the pass continues. Only `ImportRunning` (another run
   holds the import lock) skips a Server. An `EventDispatchError` of either pass stops the job.
 - **DHCP Import** (`integrations/`): `dhcp_import.run_dhcp_plugin_import(server, trigger)` reads Kea for every
   enabled family, plans each family (`dhcp_import_plan.py`) and applies each plan (`dhcp_plugin.apply_plan`). Each
-  DHCP Server, Subnet, Pool, delegated-prefix Pool, Reservation, client class and custom Option Definition that the
-  apply writes has a DHCP Import Mapping (`KeaDhcpLink`: a kind of `MAPPING_KINDS` and the source columns of `dhcp_import_plan.MappingSource`). `mapped_target` and `observe_mapping` in `dhcp_mapping_lifecycle.py` read and
+  DHCP Server, Shared Network, Subnet, Pool, delegated-prefix Pool, Reservation, client class, custom Option
+  Definition and DHCP Option that the apply writes has a DHCP Import Mapping (`KeaDhcpLink`: a kind of `MAPPING_KINDS` and the source columns of `dhcp_import_plan.MappingSource`). The source of a DHCP Option is an `OptionKey`: the source of its parent plus its ADR 0014 identity. `planned_options` keys the options of a planned object for both the plan and the apply. `PlannedOptions.paths` names each of them, by its key when it has one, also in a removal (OpenGrep `kea-option-path-outside-planned-options`). `KindObservation.gap` judges a stale Option by the gaps of its parent's kind: the observation of that kind, and the `option-data` entries of that kind that the parse dropped (`DroppedEntry.parent`). `KeaDhcpLink.options_mapped` records on the mapping of a parent that its Options are mapped; until then, its Options adopt unmapped rows. It only goes from False to True while the mapping keeps its target (`observe_mapping` resets it on a relink): a branch revert keeps the True that main recorded (`_mapped_options_at_deletion`). `mapped_target` and `observe_mapping` in `dhcp_mapping_lifecycle.py` read and
   write it through that source; an unmapped row that matches by structure is adopted once. Each Kea
   fact of a run is an `ImportEntry` (`dhcp_import_report.py`): a kind, a Kea path from `kea_paths.py`, an outcome and,
   for a fact that was not written, a reason from a closed set. The reason gives the outcome (`REASON_OUTCOME`).
   `ImportSummary` counts only its entries, and an unchanged row has no entry. `store_run` stores a `DhcpImportRun`
   with its `DhcpImportEntry` rows, keeps the `RETAINED_RUNS` latest runs of the Server, and logs a database failure
   instead of raising it. The rows are main-only (ADR 0007) and not change-logged.
+- **Before you change the DHCP Import**, read ADR 0013, the capability probe reference (`CHECKS` in
+  `integrations/dhcp_plugin_capabilities.py`, one check for each #88 gap, and #88 itself) and the parity ledger below.
+  The user guide page `docs/guide/dhcp-import.md` lists each capability and reason code, and
+  `test_dhcp_import_fields.py` compares both tables with `CAPABILITY_LABELS`, `REASON_LABELS` and `REASON_OUTCOME`.
 - **Parity ledger** (`integrations/dhcp_import_ledger.py`, ADR 0013): every key that Kea accepts on an object the
   DHCP Import can meet is listed once, as mapped (with the DHCP Plugin Capability its write needs), not imported
-  (with a reason), pending (with the #89 ticket that maps it) or deprecated (with the key Kea returns instead).
+  (with a reason) or deprecated (with the key Kea returns instead). The parse gives each not-imported key of every
+  Kea object an entry of the run (`_ParseLog.leave_out` in `mappers/kea_to_dhcp.py`).
   `MERGED_KEYS` lists the keys Kea merges into `config-get` from the parent object, and `KEA_DEFAULTS` the values
   Kea returns when no level declares a key. `test_dhcp_import_ledger.py` compares them with the recordings, and in
-  the DHCP plugin job with the import's field maps and the plugin models.
+  the DHCP plugin job with the import's field maps and the plugin models. `CoverageImportTest` in
+  `test_dhcp_import.py` runs the coverage configuration through `run_dhcp_plugin_import` and compares the stored
+  unsupported and not-imported entries with the ledger and the probe.
   When a change maps a key, change its entry in the same change.
   - **After a Kea upgrade:** set the new `KEA_VERSION`, run `scripts/record_kea_config_get.py`, and list each key the
     ledger test reports as missing. Remove each key that Kea no longer has. When Kea deprecates a key, set it on its
     object in `kea-dhcp{4,6}.conf`, record again, and list it as deprecated. When a merged-key or Kea-default
     assertion fails, update `MERGED_KEYS` or `KEA_DEFAULTS` (the Declared Value inference reads both).
   - **After a netbox-plugin-dhcp upgrade:** run the DHCP plugin job. A "no plugin home" key whose name is now a plugin
-    field fails; move it to pending or mapped. A mapped target that the plugin removed fails. When the upgrade ships
+    field fails; map it. A mapped target that the plugin removed fails. When the upgrade ships
     a #88 change, check that the capability check matches the shipped shape, as #88 says. The entries that name the
     capability stay: the capability probe (#106) finds it present at run time.
 - **Sync interval**: `SyncConfig.interval_minutes` is the only runtime source.
@@ -478,7 +488,13 @@ A Subnet or a Reservation that is gone, a changed fingerprint and result 3 on `r
 `unknown`, with no read after it. The persist step runs after `applied` and `unknown`, and the verification read only
 after `applied`. `KeaClient` keeps the single commands (`reservation_add`, `reservation_update`, `reservation_del`,
 sent through `_config_mutation_command`, so a display read during the write is not kept), the reads and the raw
-record handling (`FreshReservation.updated` keeps each Kea field that NetBox does not manage). The OpenGrep rule
+record handling (`FreshReservation.updated` keeps each Kea field that NetBox does not manage: since #102 only
+`user-context`). The typed Reservation carries client classes, the DHCPv4 boot fields, the DHCPv6 excluded prefixes
+(`ExcludedPrefix` pairs each with its delegated prefix; the serializer builds Kea's positional list) and the read-only
+`user_context`. The managed-fact fingerprint covers every field except the options and `user_context`.
+`reservation_edit.excluded_prefix_pairs` pairs the excluded prefixes of the form under the lock: a live pair stays
+while its delegated prefix stays, and another excluded prefix pairs with the one delegated prefix that holds it. A
+Transfer Document import does not send `user_context`. The OpenGrep rule
 `kea-reservation-write-outside-config-write` refuses a call to these write primitives outside `config_write`. The
 bulk Reservation import calls `reservation_edit.save_import` for each entry through
 `_run_change_loop(..., stop_on_rejection=True)`, so an unknown or a rejected entry stops it. The import checks the

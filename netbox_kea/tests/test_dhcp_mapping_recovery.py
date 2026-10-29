@@ -44,13 +44,15 @@ from netbox_branching.models import Branch
 from netbox_branching.signals import pre_merge, squash_dependency_graph_built
 from netbox_branching.utilities import activate_branch
 from utilities.exceptions import AbortRequest
+from utilities.serialization import deserialize_object
 
+from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
 from netbox_kea.integrations.dhcp_import_plan import MappingSource
 from netbox_kea.integrations.dhcp_import_report import Kind, Reason
 from netbox_kea.integrations.dhcp_plugin import import_server_config
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
-from netbox_kea.models import KeaDhcpLink, Server
-from netbox_kea.tests.kea_stub import _res_page, stub_kea
+from netbox_kea.models import DhcpImportTrigger, KeaDhcpLink, Server, next_confirmation_number
+from netbox_kea.tests.kea_stub import _res_page, _sync_responses, stub_kea
 from netbox_kea.tests.test_branching import (
     _KEA_OBJECTS,
     _change_request,
@@ -160,6 +162,53 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertEqual(again.reservations_created, 0)
         self.assertEqual(KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=family).pk, link.pk)
         self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).sys4_object.pk, target.pk)
+
+    def test_a_revert_keeps_the_options_that_main_mapped_and_leaves_the_operator_option_alone(self):
+        from netbox_dhcp.models import Option, OptionDefinition, Subnet
+
+        server, intent, observation, target, link = self._imported("subnet", 4, "options-mapped")
+        # A mapping from before Option mappings: the import has not mapped the Options of its Subnet yet.
+        KeaDhcpLink.objects.filter(pk=link.pk).update(options_mapped=False)
+        # A TransactionTestCase flushes the seeded standard Option Definitions.
+        routers, _ = OptionDefinition.objects.get_or_create(
+            standard=True,
+            space="dhcp4",
+            code=3,
+            defaults={"name": "routers", "family": 4, "type": "ipv4-address", "array": True},
+        )
+        with event_tracking(_change_request(self.user)):
+            operator = Option.objects.create(
+                definition=routers,
+                assigned_object_type=ContentType.objects.get_for_model(Subnet),
+                assigned_object_id=target.pk,
+                data="198.18.0.77",
+            )
+        branch = _provisioned_branch(self, "mapping-options-mapped")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        self._delete(branch, target)
+        with event_tracking(_change_request(self.user)):
+            import_server_config(server, intent, observation)
+        self.assertTrue(KeaDhcpLink.objects.get(pk=link.pk).options_mapped)
+
+        branch.merge(user=self.user)
+        branch.revert(user=self.user)
+
+        self.assertTrue(KeaDhcpLink.objects.get(pk=link.pk).options_mapped)
+        (subnet,) = intent.subnets
+        declared = {
+            "id": subnet.kea_subnet_id,
+            "subnet": subnet.cidr,
+            "option-data": [{"code": 3, "data": "198.18.0.1"}],
+        }
+        with event_tracking(_change_request(self.user)):
+            summary = import_server_config(server, parse_dhcp_config({"subnet4": [declared]}, 4), observation)
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        option_links = KeaDhcpLink.objects.filter(server=server, kind="option")
+        self.assertEqual(
+            sorted(Option.objects.filter(assigned_object_id=target.pk).values_list("data", "pk")),
+            sorted([("198.18.0.1", option_links.get().object_id), ("198.18.0.77", operator.pk)]),
+        )
 
     def test_squash_restores_imported_subnets(self):
         for family in (4, 6):
@@ -781,11 +830,11 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         def observing(sender, operation, **kwargs):
             if operation == "revert":
                 before = ObjectChange.objects.count()
-                previous = KeaDhcpLink.objects.get(pk=link.pk).last_synced
+                previous = KeaDhcpLink.objects.get(pk=link.pk).confirmation
                 with event_tracking(_change_request(self.user)):
                     mapping = observe_mapping(merged_source, 4, target, MappingSource.subnet(7))
                 self.assertEqual(mapping.pk, link.pk)
-                self.assertGreater(mapping.last_synced, previous)
+                self.assertGreater(mapping.confirmation, previous)
                 self.assertEqual(ObjectChange.objects.count(), before)
                 observed.append(mapping.server_id)
 
@@ -845,13 +894,14 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertIsNone(current_request.get())
 
     def _mapped_kinds(self, family, suffix):
-        """Create one mapped target of each kind of *family*; its Pools and In-Subnet Reservation are in the Subnet."""
+        """Create one mapped target of each kind of *family*; its Pools, In-Subnet Reservation and Option are in the Subnet."""
         from ipam.models import IPRange, Prefix
         from netaddr import IPNetwork
         from netbox_dhcp.models import (
             ClientClass,
             DHCPServer,
             HostReservation,
+            Option,
             OptionDefinition,
             PDPool,
             Pool,
@@ -905,6 +955,13 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                     dhcp_server=parent,
                 ),
             }
+            # The Subnet delete takes the Option before the delete of its Option Definition.
+            targets[MappingSource(Kind.OPTION, 40, f'["subnet",null,"dhcp{family}",222,[],0]')] = Option.objects.create(
+                definition=targets[MappingSource(Kind.OPTION_DEFINITION, kea_identity=f"dhcp{family}:222")],
+                assigned_object_type=ContentType.objects.get_for_model(Subnet),
+                assigned_object_id=subnet.pk,
+                data="1",
+            )
             if family == 6:
                 targets[MappingSource(Kind.PD_POOL, 40, "2001:db8:4000::/48/56")] = PDPool.objects.create(
                     name=f"mapping-{suffix}-pd-pool",
@@ -926,9 +983,9 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 branch = _provisioned_branch(self, f"mapping-every-kind-{family}")
                 branch.merge_strategy = "squash"
                 branch.save(provision=False)
-                # The Subnet delete also deletes its Pools and its In-Subnet Reservation.
+                # The Subnet delete also deletes its Pools, its In-Subnet Reservation and its Option.
                 for source, target in targets.items():
-                    if source.kind not in (Kind.POOL, Kind.PD_POOL, Kind.RESERVATION):
+                    if source.kind not in (Kind.POOL, Kind.PD_POOL, Kind.RESERVATION, Kind.OPTION):
                         self._delete(branch, target)
                 with activate_branch(branch):
                     for source, target in targets.items():
@@ -1026,7 +1083,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         targets = {(type(link.sys4_object), link.object_id): link.sys4_object.created for link in links()}
         self.assertEqual(
             sorted(links().values_list("kind", flat=True)),
-            ["client_class", "option_definition", "pool", "reservation", "server", "subnet"],
+            ["client_class", "option", "option", "option_definition", "pool", "reservation", "server", "subnet"],
         )
         dhcp_server = links().get(kind="server").sys4_object
         branch = _provisioned_branch(self, "mapping-imported-kinds")
@@ -1256,6 +1313,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         with connection.cursor() as cursor:
             cursor.execute('DROP TABLE "' + branch.schema_name + '"."' + KeaDhcpLink._meta.db_table + '"')
         replacement = KeaDhcpLink(
+            confirmation=next_confirmation_number(),
             pk=link.pk,
             server_id=link.server_id,
             family=link.family,
@@ -2149,7 +2207,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 values = {
                     field.attname: getattr(original, field.attname)
                     for field in original._meta.concrete_fields
-                    if not field.primary_key and field.name not in {"created", "last_updated", "last_synced"}
+                    if not field.primary_key and field.name not in {"created", "last_updated"}
                 }
                 with event_tracking(_change_request(self.user)):
                     original.delete()
@@ -2197,7 +2255,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         values = {
             field.attname: getattr(original, field.attname)
             for field in original._meta.concrete_fields
-            if not field.primary_key and field.name not in {"created", "last_updated", "last_synced"}
+            if not field.primary_key and field.name not in {"created", "last_updated"}
         }
         with event_tracking(_change_request(self.user)):
             original.delete()
@@ -2276,6 +2334,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             target.snapshot()
             target.tags.add(endpoint)
             _link = KeaDhcpLink.objects.create(
+                confirmation=next_confirmation_number(),
                 server=server,
                 family=4,
                 kind="reservation",
@@ -2624,6 +2683,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             link.save_base,
             lambda: KeaDhcpLink.objects.filter(pk=link.pk).update(kea_subnet_id=99),
             lambda: KeaDhcpLink.objects.create(
+                confirmation=next_confirmation_number(),
                 server_id=link.server_id,
                 family=6,
                 kind="subnet",
@@ -2635,6 +2695,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             lambda: KeaDhcpLink.objects.bulk_create(
                 [
                     KeaDhcpLink(
+                        confirmation=next_confirmation_number(),
                         server_id=link.server_id,
                         family=6,
                         kind="subnet",
@@ -2668,12 +2729,12 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         )
         before = changes.count()
         created = link.created
-        synced = link.last_synced
+        confirmed = link.confirmation
         with event_tracking(_change_request(self.user)):
             summary = import_server_config(server, intent, observation)
         self.assertEqual(summary.errors, 0, summary.warnings)
         link.refresh_from_db()
-        self.assertGreater(link.last_synced, synced)
+        self.assertGreater(link.confirmation, confirmed)
         self.assertEqual(link.created, created)
         self.assertEqual(link.object_id, target.pk)
         self.assertEqual(changes.count(), before)
@@ -2842,8 +2903,8 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             row.description = "branch change"
             row.save()
         request_finished.send(sender=type(self))
-        # Kea no longer reports the Subnet, and the configuration read, which starts now, is Complete.
-        intent.subnets, intent.configuration_complete, intent.read_started = [], True, timezone.now()
+        # Kea no longer reports the Subnet, and the configuration read, which takes its cutoff now, is Complete.
+        intent.subnets, intent.configuration_complete, intent.cutoff = [], True, next_confirmation_number()
         with event_tracking(_change_request(self.user)):
             summary = import_server_config(server, intent, observation)
         self.assertEqual([entry.kind for entry in summary.entries if entry.outcome.value == "removed"], [Kind.SUBNET])
@@ -2899,6 +2960,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             dhcp_server=target.dhcp_server,
         )
         KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
             pk=link.pk,
             server_id=link.server_id,
             family=link.family,
@@ -2942,6 +3004,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self._delete(branch, target)
         KeaDhcpLink.objects.filter(pk=link.pk).delete()
         KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
             pk=link.pk,
             server_id=link.server_id,
             family=link.family,
@@ -3382,6 +3445,207 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertEqual(KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=4).pk, link.pk)
         self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).object_id, target.pk)
 
+    def _import_with_replay_during_read(self, server, branch, action):
+        """Run the real import of *server* while Kea reports no Subnet, and replay *branch* after the read started."""
+        responses = _sync_responses({4: {"subnet4": []}, 6: {"subnet6": []}})
+        read_config, replayed = responses["config-get"], []
+
+        def replay():
+            try:
+                getattr(Branch.objects.get(pk=branch.pk), action)(user=self.user)
+            finally:
+                connections.close_all()
+
+        def config_get(body):
+            # The import took its cutoff before config-get and holds no mapping lock until its apply.
+            if not replayed:
+                with ThreadPoolExecutor(1) as pool:
+                    pool.submit(replay).result(timeout=30)
+                replayed.append(action)
+            return read_config(body)
+
+        responses["config-get"] = config_get
+        with stub_kea(responses), event_tracking(_change_request(self.user)):
+            results = run_dhcp_plugin_import(server, DhcpImportTrigger.MANUAL)
+        self.assertEqual(replayed, [action])
+        return [summary for _, summary in results]
+
+    def _replayable_mapping(self, action, suffix):
+        """Return the Server, target, mapping and branch of a squash *action* that writes the mapping in main.
+
+        ``create``: a merge inserts the mapping that the branch created. ``update``: a merge changes the source Server
+        of the mapping. ``restore``: a revert restores the mapping that the merged branch deleted with its target.
+        """
+        server, _, _, target, original = self._imported("subnet", 4, suffix)
+        if action == "create":
+            values = {
+                field.attname: getattr(original, field.attname)
+                for field in original._meta.concrete_fields
+                if not field.primary_key and field.name not in {"created", "last_updated"}
+            }
+            with event_tracking(_change_request(self.user)):
+                original.delete()
+            request_finished.send(sender=type(self))
+        branch = _provisioned_branch(self, f"mapping-{suffix}")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        if action == "create":
+            with activate_branch(branch), event_tracking(_change_request(self.user)):
+                mapping = KeaDhcpLink.objects.create(**values)
+            request_finished.send(sender=type(self))
+        elif action == "update":
+            source = _make_db_server(name=f"mapping-{suffix}-source", ca_url="https://kea.example.invalid")
+            with activate_branch(branch), event_tracking(_change_request(self.user)):
+                mapping = KeaDhcpLink.objects.get(pk=original.pk)
+                mapping.server = source
+                mapping.save()
+            request_finished.send(sender=type(self))
+            server = source
+        else:
+            self._delete(branch, target)
+            branch.merge(user=self.user)
+            mapping = original
+        return server, target, mapping, branch
+
+    def test_a_replay_during_an_import_read_keeps_the_mapping_that_it_writes(self):
+        for action, replay in (("create", "merge"), ("update", "merge"), ("restore", "revert")):
+            with self.subTest(action=action):
+                server, target, mapping, branch = self._replayable_mapping(action, f"replay-during-read-{action}")
+
+                summaries = self._import_with_replay_during_read(server, branch, replay)
+
+                for summary in summaries:
+                    self.assertEqual(summary.errors, 0, summary.warnings)
+                    self.assertEqual([entry for entry in summary.entries if entry.outcome.value == "removed"], [])
+                self.assertTrue(type(target).objects.filter(pk=target.pk).exists())
+                self.assertEqual(KeaDhcpLink.objects.get(pk=mapping.pk).object_id, target.pk)
+
+    def test_a_replay_stamps_a_new_confirmation_number(self):
+        for action, replay in (("create", "merge"), ("update", "merge"), ("restore", "revert")):
+            with self.subTest(action=action):
+                _, _, mapping, branch = self._replayable_mapping(action, f"replay-confirmation-{action}")
+                before = next_confirmation_number()
+
+                getattr(branch, replay)(user=self.user)
+
+                self.assertGreater(KeaDhcpLink.objects.get(pk=mapping.pk).confirmation, before)
+
+    def test_a_merge_and_revert_of_combined_mapping_history_stamp_new_confirmation_numbers(self):
+        """Squash collapses several branch changes of one mapping; each payload it replays must deserialize."""
+        histories = {
+            "update then mapping delete": ("update", "delete mapping"),
+            "update then target delete": ("update", "delete target"),
+            "create then update": ("create", "update"),
+            "update then update": ("update", "update"),
+        }
+        for index, (label, steps) in enumerate(histories.items()):
+            with self.subTest(label):
+                suffix = f"combined-history-{index}"
+                server, _, _, target, original = self._imported("subnet", 4, suffix)
+                pk = original.pk
+                # Servers live in main, so the test creates the source Servers of the updates before the branch.
+                sources = iter(
+                    [
+                        _make_db_server(name=f"mapping-{suffix}-{n}", ca_url="https://kea.example.invalid")
+                        for n in range(steps.count("update"))
+                    ]
+                )
+                if steps[0] == "create":
+                    values = {
+                        field.attname: getattr(original, field.attname)
+                        for field in original._meta.concrete_fields
+                        if not field.primary_key and field.name not in {"created", "last_updated"}
+                    }
+                    with event_tracking(_change_request(self.user)):
+                        original.delete()
+                    request_finished.send(sender=type(self))
+                branch = _provisioned_branch(self, f"mapping-{suffix}")
+                branch.merge_strategy = "squash"
+                branch.save(provision=False)
+                for step in steps:
+                    with activate_branch(branch), event_tracking(_change_request(self.user)):
+                        if step == "create":
+                            pk = KeaDhcpLink.objects.create(**values).pk
+                        elif step == "update":
+                            mapping = KeaDhcpLink.objects.get(pk=pk)
+                            mapping.snapshot()
+                            mapping.server = next(sources)
+                            mapping.save()
+                        elif step == "delete mapping":
+                            KeaDhcpLink.objects.get(pk=pk).delete()
+                        else:
+                            type(target).objects.get(pk=target.pk).delete()
+                    request_finished.send(sender=type(self))
+                created = steps[0] == "create"
+                deleted = steps[-1].startswith("delete")
+                history = branch.get_changes().filter(
+                    changed_object_type=ContentType.objects.get_for_model(KeaDhcpLink), changed_object_id=pk
+                )
+                for change in history.exclude(action="create"):
+                    # Only a create records the number; a revert restores a deletion without one.
+                    self.assertNotIn("confirmation", change.prechange_data)
+                    self.assertNotIn("confirmation", change.postchange_data or {})
+                    if change.action == "delete":
+                        restored = deserialize_object(KeaDhcpLink, change.prechange_data_clean, pk=pk).object
+                        self.assertIsNone(restored.confirmation)
+
+                before_merge = next_confirmation_number()
+                branch.merge(user=self.user)
+                branch.refresh_from_db()
+                merged = KeaDhcpLink.objects.filter(pk=pk).first()
+                self.assertEqual(merged is None, deleted)
+                if merged is not None:
+                    self.assertGreater(merged.confirmation, before_merge)
+
+                before_revert = next_confirmation_number()
+                branch.revert(user=self.user)
+                reverted = KeaDhcpLink.objects.filter(pk=pk).first()
+                self.assertEqual(reverted is None, created)
+                if reverted is not None:
+                    self.assertEqual((reverted.server_id, reverted.object_id), (server.pk, target.pk))
+                    self.assertGreater(reverted.confirmation, before_revert)
+
+    def test_a_main_refresh_before_a_branch_mapping_change_records_no_branch_conflict(self):
+        """A confirmation number is not a branch change, so the native conflict gate must not list it."""
+        from netbox_branching.models import ChangeDiff
+
+        histories = {
+            "update then mapping delete": ("update", "delete mapping"),
+            "update then target delete": ("update", "delete target"),
+            "target delete": ("delete target",),
+            "update": ("update",),
+        }
+        for index, (label, steps) in enumerate(histories.items()):
+            with self.subTest(label):
+                suffix = f"refresh-conflict-{index}"
+                server, intent, observation, target, link = self._imported("subnet", 4, suffix)
+                source = _make_db_server(name=f"mapping-{suffix}-source", ca_url="https://kea.example.invalid")
+                branch = _provisioned_branch(self, f"mapping-{suffix}")
+                branch.merge_strategy = "squash"
+                branch.save(provision=False)
+                # A no-op import in main confirms the mapping again after the branch copied it.
+                with event_tracking(_change_request(self.user)):
+                    summary = import_server_config(server, intent, observation)
+                self.assertEqual(summary.errors, 0, summary.warnings)
+                self.assertGreater(KeaDhcpLink.objects.get(pk=link.pk).confirmation, link.confirmation)
+                for step in steps:
+                    with activate_branch(branch), event_tracking(_change_request(self.user)):
+                        if step == "update":
+                            mapping = KeaDhcpLink.objects.get(pk=link.pk)
+                            mapping.snapshot()
+                            mapping.server = source
+                            mapping.save()
+                        elif step == "delete mapping":
+                            KeaDhcpLink.objects.get(pk=link.pk).delete()
+                        else:
+                            type(target).objects.get(pk=target.pk).delete()
+                    request_finished.send(sender=type(self))
+
+                diff = ChangeDiff.objects.get(
+                    branch=branch, object_type=ContentType.objects.get_for_model(KeaDhcpLink), object_id=link.pk
+                )
+                self.assertIsNone(diff.conflicts)
+
     def test_missing_source_server_refuses_branch_deletion_capture(self):
         server, _, _, target, link = self._imported("reservation", 4, "missing-source-capture")
         branch = _provisioned_branch(self, "mapping-missing-source-capture")
@@ -3612,7 +3876,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertFalse(branch.applied_changes.exists())
         self.assertEqual(ObjectChange.objects.count(), before)
         self.assertEqual(type(target).objects.get(pk=target.pk).valid_lifetime, target.valid_lifetime)
-        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).last_synced, link.last_synced)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).confirmation, link.confirmation)
         self.assertIsNone(current_request.get())
 
     def test_conflicting_mapping_target_identity_refuses_the_whole_revert(self):
@@ -3624,6 +3888,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         branch.merge(user=self.user)
         branch.refresh_from_db()
         conflicting = KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
             server_id=link.server_id,
             family=6,
             kind="reservation",

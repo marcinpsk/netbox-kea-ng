@@ -6,6 +6,7 @@ Import from this module instead of duplicating scaffold code in each test file.
 """
 
 import re
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import requests
@@ -14,6 +15,7 @@ from django.contrib import messages as django_messages
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.db import connection
+from django.db.models.signals import pre_delete
 from django.test import Client, TestCase
 from django.test.utils import CaptureQueriesContext, TestContextDecorator
 from django.urls import reverse
@@ -146,6 +148,31 @@ def imported_dhcp_servers(server) -> list[int]:
     return list(KeaDhcpLink.objects.filter(server=server, kind="server").values_list("object_id", flat=True))
 
 
+def optional_shared_network_prefix(test: TestCase):
+    """Give netbox_dhcp the optional Shared Network prefix of #88 gap 1 for one test, and return the probe."""
+    from unittest import mock
+
+    from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+
+    if not connection.in_atomic_block:
+        raise RuntimeError("The schema change must roll back with the test transaction.")
+    shared_network, subnet = apps.get_model("netbox_dhcp", "SharedNetwork"), apps.get_model("netbox_dhcp", "Subnet")
+    prefix = shared_network._meta.get_field("prefix")
+    with connection.cursor() as cursor:
+        cursor.execute(f'ALTER TABLE "{shared_network._meta.db_table}" ALTER COLUMN "{prefix.column}" DROP NOT NULL')
+    inside_prefix = subnet.clean
+
+    def clean(row):
+        if row.shared_network is not None and row.shared_network.prefix_id is None:
+            return super(subnet, row).clean()
+        return inside_prefix(row)
+
+    for patcher in (mock.patch.object(prefix, "null", True), mock.patch.object(subnet, "clean", clean)):
+        patcher.start()
+        test.addCleanup(patcher.stop)
+    return probe()
+
+
 def linked_dhcp_targets(server):
     """Create one linked target of each DHCP Import Mapping kind, with object IDs that collide across models.
 
@@ -234,11 +261,35 @@ def linked_dhcp_targets(server):
             ),
             {"kind": "option_definition", "kea_identity": "dhcp4:222"},
         ),
+        (
+            # A TransactionTestCase flushes the seeded standard Option Definitions, so the Option has its own. It is
+            # standard, so it has no parent whose delete would cascade to it while the Option protects it.
+            model("Option").objects.create(
+                pk=100,
+                definition=model("OptionDefinition").objects.create(
+                    name="linked-option-definition-in-use",
+                    standard=True,
+                    family=4,
+                    space="dhcp4",
+                    code=223,
+                    type="uint8",
+                ),
+                assigned_object_type=ContentType.objects.get_for_model(dhcp_server),
+                assigned_object_id=dhcp_server.pk,
+                data="1",
+            ),
+            {"kind": "option", "kea_identity": '["server",null,"dhcp4",223,[],0]'},
+        ),
         # Last: deleting the DHCPServer cascades to the targets that it holds.
         (dhcp_server, {"kind": "server"}),
     ]
     return tuple(
-        (target, KeaDhcpLink.objects.create(server=server, sys4_object=target, **{"family": 4, **source}))
+        (
+            target,
+            KeaDhcpLink.objects.create(
+                confirmation=next_confirmation_number(), server=server, sys4_object=target, **{"family": 4, **source}
+            ),
+        )
         for target, source in targets
     )
 
@@ -337,9 +388,9 @@ def _grant(models, actions, *, user=None, group=None, constraints=None, enabled=
 
 
 def _sync_page_urls(server: Server) -> tuple[str, str, str]:
-    """Return the pages that read SyncConfig: the Settings page, the Sync Jobs page and the Server's Sync tab."""
+    """Return the pages that read SyncConfig: the Sync tab of Settings, the Sync Jobs page and the Server's Sync tab."""
     return (
-        reverse("plugins:netbox_kea:settings"),
+        reverse("plugins:netbox_kea:settings_section", args=["sync"]),
         reverse("plugins:netbox_kea:sync_jobs"),
         reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]),
     )
@@ -542,3 +593,18 @@ class _ReadModifyWriteMessages(_ViewTestBase):
                 applied = label.startswith(("applied", "unknown"))
                 self.assertEqual("config-set" in kea.commands(), applied)
                 self.assertEqual("config-write" in kea.commands(), applied and "not requested" not in label)
+
+
+@contextmanager
+def refused_delete(model, pk: int):
+    """Make the ORM delete of the *model* row *pk* fail, as a removal that NetBox refuses."""
+
+    def refuse(sender, instance, **kwargs):
+        if instance.pk == pk:
+            raise RuntimeError(f"the delete of {model._meta.model_name} {pk} fails")
+
+    pre_delete.connect(refuse, sender=model, weak=False)
+    try:
+        yield
+    finally:
+        pre_delete.disconnect(refuse, sender=model)

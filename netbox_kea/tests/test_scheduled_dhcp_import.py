@@ -6,26 +6,36 @@ from __future__ import annotations
 
 import re
 import unittest
+import uuid
 from unittest.mock import MagicMock, patch
 
 from core.exceptions import JobFailed
 from django.apps import apps
 from django.db import connection
 from django.test import TestCase, TransactionTestCase, override_settings
+from ipam.models import IPAddress
 
 from netbox_kea import event_scope
 from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK, ImportEventsNotDispatched
 from netbox_kea.jobs import KeaIpamSyncJob
-from netbox_kea.models import DhcpImportEntry, DhcpImportRun, DhcpImportTrigger, DhcpIntegrationConfig
+from netbox_kea.models import (
+    DhcpImportEntry,
+    DhcpImportRun,
+    DhcpImportTrigger,
+    DhcpIntegrationConfig,
+    IPAMOwnershipLink,
+)
+from netbox_kea.views.sync_jobs import get_all_jobs_for_server, get_recent_jobs_for_servers
 
-from .kea_stub import complete_lease, lease_pages, stub_kea
-from .test_dhcp_import import _recorded_config
+from .kea_stub import _sync_responses, complete_lease, lease_pages, stub_kea
+from .test_dhcp_import import LONG_TUPLE_DEFINITION, LONG_TUPLE_OPTION, _recorded_config
 from .test_dhcp_import_result import _held_elsewhere, _lock_key, _new_session
 from .test_event_scope import _FAILING_PIPELINE, NESTED_TRACKING
 from .test_jobs import _make_job
 from .test_kea_recordings import _recording
-from .test_views_dhcp_plugin import _sync_responses
+from .test_views_sync_jobs import _make_job as _make_db_job
 from .utils import (
+    User,
     _make_db_server,
     imported_dhcp_server,
     with_dhcp_integration_config,
@@ -159,7 +169,7 @@ class ScheduledImportTest(_ScheduledImportTestCase):
             ],
         )
 
-    def test_the_import_runs_after_the_ipam_sync_of_the_same_server(self):
+    def test_the_import_runs_before_the_ipam_sync_of_the_same_server(self):
         server = _server("both", sync_enabled=True)
 
         job = self._run()
@@ -170,7 +180,7 @@ class ScheduledImportTest(_ScheduledImportTestCase):
         scheduled = next(
             index for index, message in enumerate(log) if "Scheduled DHCP Import of Server both" in message
         )
-        self.assertLess(ipam, scheduled)
+        self.assertLess(scheduled, ipam)
 
     @with_dhcp_integration_config(enabled=False)
     def test_clearing_the_global_switch_stops_every_scheduled_import(self):
@@ -283,9 +293,10 @@ class ScheduledImportTest(_ScheduledImportTestCase):
     def test_the_ipam_sync_kill_switch_does_not_stop_the_scheduled_import(self):
         server = _server("kill-switch", sync_enabled=True)
 
-        self._run()
+        job = self._run()
 
         self.assertEqual(DhcpImportRun.objects.get(server=server).trigger, DhcpImportTrigger.SCHEDULED)
+        self.assertEqual(job.data["summary"], [{"name": "kill-switch", "pk": server.pk, "ipam_skipped": True}])
 
     @with_sync_config(
         sync_leases_enabled=False,
@@ -296,9 +307,29 @@ class ScheduledImportTest(_ScheduledImportTestCase):
     def test_the_scheduled_import_runs_with_every_ipam_sync_type_off(self):
         server = _server("no-types", sync_enabled=True)
 
-        self._run()
+        job = self._run()
 
         self.assertEqual(DhcpImportRun.objects.get(server=server).trigger, DhcpImportTrigger.SCHEDULED)
+        self.assertEqual(job.data["summary"], [{"name": "no-types", "pk": server.pk, "ipam_skipped": True}])
+
+    def test_a_server_with_its_ipam_sync_off_keeps_the_job_in_its_history(self):
+        from django.urls import reverse
+
+        server = _server("ipam-off")
+        job = _make_db_job()
+
+        with stub_kea(_kea()):
+            KeaIpamSyncJob(job).run()
+
+        job.refresh_from_db()
+        self.assertEqual(job.data["summary"], [{"name": "ipam-off", "pk": server.pk, "ipam_skipped": True}])
+        self.assertIn(job, get_all_jobs_for_server(server.pk))
+        self.client.force_login(User.objects.create(username="ipam-off", is_superuser=True, is_active=True))
+        jobs_tab = self.client.get(reverse("plugins:netbox_kea:server_jobs", args=[server.pk]))
+        self.assertContains(jobs_tab, job.get_absolute_url())
+        sync_tab = self.client.get(reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]))
+        self.assertContains(sync_tab, "The job skipped the IPAM sync of this Server.")
+        self.assertNotContains(sync_tab, "The job stopped before the IPAM sync of this Server finished.")
 
     def test_a_dual_family_server_imports_both_families(self):
         server = _server("dual", dhcp6=True)
@@ -351,6 +382,53 @@ class ScheduledImportTest(_ScheduledImportTestCase):
         self.assertTrue(any(_FAILED_FAMILY.search(line) for line in lines), lines)
         self.assertEqual(lines[-1], "Scheduled DHCP Import complete: servers=1 failed=1")
 
+    def test_an_option_that_an_operator_validator_refuses_fails_the_server_and_the_job(self):
+        server = _server("site-rules")
+        config = {
+            "subnet4": [{"id": 1, "subnet": "198.18.1.0/24", "option-data": [{"code": 42, "data": "192.0.2.99"}]}]
+        }
+        validators = {"netbox_dhcp.option": ["netbox_kea.tests.test_dhcp_import.RefuseOperatorDataValidator"]}
+
+        with override_settings(CUSTOM_VALIDATORS=validators):
+            job = self._run_failed(_sync_responses({4: config}))
+
+        run = DhcpImportRun.objects.get(server=server)
+        self.assertIn(
+            ("option", "skipped", "write_failed", ""),
+            set(run.entries.values_list("kind", "outcome", "reason", "capability")),
+        )
+        lines = _scheduled_lines(job)
+        self.assertTrue(any(_FAILED_FAMILY.search(line) for line in lines), lines)
+        self.assertEqual(lines[-1], "Scheduled DHCP Import complete: servers=1 failed=1")
+
+    def test_an_option_that_the_data_check_of_the_plugin_fails_on_fails_the_server_and_the_job(self):
+        server = _server("long-tuple", dhcp4=False, dhcp6=True)
+        config = {
+            "option-def": [LONG_TUPLE_DEFINITION],
+            "subnet6": [
+                {
+                    "id": 1,
+                    "subnet": "2001:db8:1::/64",
+                    "option-data": [LONG_TUPLE_OPTION, {"code": 23, "data": "2001:db8::53"}],
+                }
+            ],
+        }
+
+        job = self._run_failed(_sync_responses({6: config}))
+
+        run = DhcpImportRun.objects.get(server=server)
+        self.assertEqual(
+            set(run.entries.filter(kind="option").values_list("kea_path", "outcome", "reason")),
+            {
+                ("Dhcp6/subnet6[id=1]/option-data[code=222]", "skipped", "write_failed"),
+                ("Dhcp6/subnet6[id=1]/option-data[code=23]", "created", ""),
+            },
+        )
+        self.assertIn(("subnet", "created"), set(run.entries.values_list("kind", "outcome")))
+        lines = _scheduled_lines(job)
+        self.assertTrue(any(re.search(r"DHCPv6: .* failed=[1-9]", line) for line in lines), lines)
+        self.assertEqual(lines[-1], "Scheduled DHCP Import complete: servers=1 failed=1")
+
     def test_a_mapping_lock_refusal_after_the_reads_fails_the_server_and_the_job(self):
         server = _server("mapping-busy")
         holder = _new_session()
@@ -388,6 +466,64 @@ class ScheduledImportTest(_ScheduledImportTestCase):
         )
 
 
+def fail_ip_address_dispatch(events: list) -> None:
+    """Stand in for an events pipeline that fails only for IP address events, which only the IPAM sync makes here."""
+    if any(event["object_type"].model == "ipaddress" for event in events):
+        raise RuntimeError("The events pipeline is down")
+
+
+_STALE_SUBNET = {"id": 1, "subnet": "10.81.0.0/24", "pools": [{"pool": "10.81.0.100-10.81.0.200"}]}
+_STALE_HOST = {"subnet-id": 1, "hw-address": "aa:bb:cc:dd:81:12", "ip-address": "10.81.0.12", "hostname": "stale-host"}
+
+
+@with_dhcp_integration_config(scheduled_import_enabled=True)
+class ScheduledImportStaleCleanupTest(_ScheduledImportTestCase):
+    """The import removes the stale DHCP plugin rows before the IPAM sync cleans up the objects they referenced."""
+
+    def _run_with(self, subnets: list[dict], hosts: list[dict]) -> None:
+        responses = _sync_responses({4: {"subnet4": subnets}}, {4: hosts})
+        responses["lease4-get-page"] = lease_pages([])
+        with stub_kea(responses):
+            KeaIpamSyncJob(_make_job()).run()
+
+    def test_a_removed_subnet_deprecates_its_prefix_and_ip_range(self):
+        from ipam.models import IPRange, Prefix
+
+        _server("stale-subnet", sync_enabled=True, sync_deprecate_prefixes_and_ranges=True)
+        self._run_with([_STALE_SUBNET], [])
+        self.assertEqual(Prefix.objects.get(prefix="10.81.0.0/24").status, "active")
+        self.assertEqual(IPRange.objects.get(start_address__net_host="10.81.0.100").status, "active")
+
+        self._run_with([], [])
+
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "Subnet").objects.exists())
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "Pool").objects.exists())
+        self.assertEqual(Prefix.objects.get(prefix="10.81.0.0/24").status, "deprecated")
+        self.assertEqual(IPRange.objects.get(start_address__net_host="10.81.0.100").status, "deprecated")
+
+    def _remove_reservation(self) -> None:
+        _server("stale-host", sync_enabled=True)
+        self._run_with([_STALE_SUBNET], [_STALE_HOST])
+        self.assertEqual(IPAddress.objects.get(address__net_host="10.81.0.12").status, "reserved")
+
+        self._run_with([_STALE_SUBNET], [])
+
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "HostReservation").objects.exists())
+
+    def test_a_removed_reservation_removes_its_ip_address(self):
+        self._remove_reservation()
+
+        self.assertFalse(IPAddress.objects.filter(address__net_host="10.81.0.12").exists())
+
+    @with_sync_config(stale_ip_cleanup="deprecate")
+    def test_a_removed_reservation_deprecates_its_ip_address_in_the_deprecate_mode(self):
+        self._remove_reservation()
+
+        ip = IPAddress.objects.get(address__net_host="10.81.0.12")
+        self.assertEqual(ip.status, "deprecated")
+        self.assertTrue(IPAMOwnershipLink.objects.filter(ip_address=ip).exists())
+
+
 @unittest.skipUnless(NESTED_TRACKING, "Units need the nestable event_tracking of NetBox 4.6.9")
 @override_settings(EVENTS_PIPELINE=[_FAILING_PIPELINE])
 class ScheduledImportEventsTest(TransactionTestCase):
@@ -419,9 +555,57 @@ class ScheduledImportEventsTest(TransactionTestCase):
             " The job stops.",
         )
 
+    @with_sync_config(interval_minutes=23)
     @with_dhcp_integration_config(scheduled_import_enabled=True)
-    def test_events_of_the_ipam_sync_that_cannot_be_dispatched_stop_the_job_before_the_import(self):
-        _server("ipam-events", sync_enabled=True)
+    def test_an_import_event_failure_schedules_the_successor_and_stays_in_the_server_history(self):
+        from core.models import Job
+        from django.utils import timezone
+
+        server = _server("interval", sync_enabled=True)
+        earlier = _make_db_job(
+            data={"summary": [{"name": "interval", "pk": server.pk, "created": 1, "updated": 0, "errors": 0}]},
+            delta_seconds=600,
+        )
+        conf = {4: {"subnet4": [{"id": 1, "subnet": "10.79.0.0/24"}]}}
+        job = Job.objects.create(
+            name=KeaIpamSyncJob.name, status="scheduled", scheduled=timezone.now(), interval=5, job_id=uuid.uuid4()
+        )
+
+        with stub_kea(_sync_responses(conf)):
+            KeaIpamSyncJob.handle(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, "errored")
+        self.assertIn("ImportEventsNotDispatched", job.error)
+        successors = Job.objects.filter(name=KeaIpamSyncJob.name).exclude(pk__in=[job.pk, earlier.pk])
+        self.assertEqual(list(successors.values_list("interval", flat=True)), [23])
+        self.assertEqual(job.data["summary"], [{"name": "interval", "pk": server.pk}])
+        self.assertEqual(get_recent_jobs_for_servers([server.pk])[server.pk], [job])
+        self.assertIn(job, get_all_jobs_for_server(server.pk))
+        self._assert_pages_show_the_errored_job(server, job)
+
+    def _assert_pages_show_the_errored_job(self, server, job) -> None:
+        """The Jobs tab lists the job; the Sync tab and the overview show it with no IPAM counts."""
+        from bs4 import BeautifulSoup
+        from django.urls import reverse
+
+        self.client.force_login(User.objects.create(username="history", is_superuser=True, is_active=True))
+        jobs_tab = self.client.get(reverse("plugins:netbox_kea:server_jobs", args=[server.pk]))
+        self.assertContains(jobs_tab, job.get_absolute_url())
+        sync_tab = self.client.get(reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]))
+        self.assertContains(sync_tab, "The job stopped before the IPAM sync of this Server finished.")
+        self.assertNotContains(sync_tab, "Created:")
+        overview = BeautifulSoup(self.client.get(reverse("plugins:netbox_kea:sync_jobs")).content, "html.parser")
+        link = overview.find("a", string=server.name)
+        row = link.find_parent("tr") if link is not None else None
+        assert row is not None, "The overview has no row for the Server"
+        cells = [cell.get_text(strip=True) for cell in row.find_all("td")]
+        self.assertEqual(cells[3:8], ["errored", "—", "—", "—", "—"])
+
+    @override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_scheduled_dhcp_import.fail_ip_address_dispatch"])
+    @with_dhcp_integration_config(scheduled_import_enabled=True)
+    def test_events_of_the_ipam_sync_that_cannot_be_dispatched_stop_the_job_after_the_import(self):
+        server = _server("ipam-events", sync_enabled=True)
         conf = {4: {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}}
         responses = _sync_responses(conf)
         lease = {"ip-address": "10.0.0.1", "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "host1", "subnet-id": 1}
@@ -431,5 +615,7 @@ class ScheduledImportEventsTest(TransactionTestCase):
         with stub_kea(responses), self.assertRaises(event_scope.EventDispatchError):
             KeaIpamSyncJob(job).run()
 
-        self.assertFalse(DhcpImportRun.objects.exists())
-        self.assertEqual(_scheduled_lines(job), [])
+        stored = DhcpImportRun.objects.get(server=server)
+        self.assertIn(("subnet", "created"), set(stored.entries.values_list("kind", "outcome")))
+        self.assertEqual(_scheduled_lines(job)[-1], "Scheduled DHCP Import complete: servers=1 failed=0")
+        self.assertEqual(job.data["summary"], [{"name": "ipam-events", "pk": server.pk}])

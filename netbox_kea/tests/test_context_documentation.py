@@ -54,11 +54,11 @@ def test_agent_reconciler_scopes_the_two_phase_last_link_rule_to_ip_addresses():
     assert "The last link of a Server needs" not in reconciler
 
 
-def test_the_configuration_guide_states_the_scheduled_import_version_refusal():
+def test_the_dhcp_import_guide_states_the_scheduled_import_version_refusal():
     """Document the scheduled job's failure when the DHCP plugin is too old."""
-    guide = " ".join((REPOSITORY_ROOT / "docs/guide/configuration.md").read_text().split())
+    guide = " ".join((REPOSITORY_ROOT / "docs/guide/dhcp-import.md").read_text().split())
     requirement = "The DHCP Import needs netbox-plugin-dhcp 0.2.0 or later."
-    passage = guide.split(requirement, 1)[1].split("Kea runs DHCPv4", 1)[0]
+    passage = guide.split(requirement, 1)[1].split("## When the import runs", 1)[0]
 
     assert "The scheduled import also refuses before it reads Kea." in passage
     assert "The job records the failure, continues with the next Server, and ends as failed." in passage
@@ -78,11 +78,10 @@ def test_the_mapping_kind_lists_name_every_kind_of_mapping_kinds():
         Kind.RESERVATION: "reservation",
         Kind.CLIENT_CLASS: "client class",
         Kind.OPTION_DEFINITION: "option definition",
+        Kind.OPTION: "dhcp option",
     }
     assert set(terms) == set(MAPPING_KINDS)
 
-    # The guides list what the import writes, and it does not write a Shared Network yet.
-    imported = [term for kind, term in terms.items() if kind != Kind.SHARED_NETWORK]
     passages = (
         (
             "docs/adr/0008-dhcp-import-mappings-follow-target-branch-history.md",
@@ -90,9 +89,9 @@ def test_the_mapping_kind_lists_name_every_kind_of_mapping_kinds():
             ")",
             terms.values(),
         ),
-        ("docs/guide/branching.md", "- dhcp import mappings follow", " - ", imported),
-        ("docs/guide/configuration.md", "keeps a dhcp import mapping from", ".", imported),
-        ("AGENTS.md", "applies each plan (`dhcp_plugin.apply_plan`).", "that the apply writes", imported),
+        ("docs/guide/branching.md", "- dhcp import mappings follow", " - ", terms.values()),
+        ("docs/guide/dhcp-import.md", "keeps a dhcp import mapping from", ".", terms.values()),
+        ("AGENTS.md", "applies each plan (`dhcp_plugin.apply_plan`).", "that the apply writes", terms.values()),
     )
     missing = {}
     for path, start, end, expected in passages:
@@ -104,3 +103,28 @@ def test_the_mapping_kind_lists_name_every_kind_of_mapping_kinds():
             if not re.search(rf"(?<![a-z-])(?<!delegated-prefix ){re.escape(term)}{plural}(?![a-z])", passage):
                 missing[path].append(term)
     assert missing == {path: [] for path, *_ in passages}
+
+
+def test_context_qualifies_mapping_ownership_for_a_subnet_without_an_id_and_a_long_option_identity():
+    """Objects created without a Kea subnet ID, and an Option whose identity a mapping cannot hold, have no mapping."""
+    context = (REPOSITORY_ROOT / "CONTEXT.md").read_text()
+    mapping = " ".join(context.split("**DHCP Import Mapping**:\n", 1)[1].split("\n_Avoid_:", 1)[0].split())
+
+    assert (
+        "The exception is a Kea Subnet without a subnet ID: it, its Pools, its delegated-prefix Pools and each DHCP "
+        "Option of these objects have no mapping." in mapping
+    )
+    assert "A DHCP Option whose identity is longer than a mapping holds has no mapping either." in mapping
+    assert "Apart from these exceptions, a DHCP Option without a mapping" in mapping
+
+
+def test_the_dhcp_import_guide_names_every_option_that_takes_an_unmapped_option():
+    """The upgrade and an Option that a mapping cannot hold both take an Option without a mapping."""
+    guide = " ".join((REPOSITORY_ROOT / "docs/guide/dhcp-import.md").read_text().split())
+
+    assert "The one exception is the upgrade." not in guide
+    assert (
+        "A Kea option without a mapped Option gets a new DHCP Option. There are two exceptions: the upgrade, and a "
+        "DHCP Option that has no mapping (see below)." in guide
+    )
+    assert "On every run, such an Option takes an Option without a mapping of the same object" in guide

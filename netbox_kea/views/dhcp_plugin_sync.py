@@ -105,6 +105,8 @@ def _summary_text(version: int, summary) -> str:
         f"{summary.options_created} options created, {summary.options_updated} updated, "
         f"{summary.client_classes_created} client classes created, "
         f"{summary.client_classes_updated} updated, "
+        f"{summary.shared_networks_created} shared networks created, "
+        f"{summary.shared_networks_updated} updated, "
         f"{summary.removed} stale objects removed"
     )
     notes = []
@@ -114,11 +116,8 @@ def _summary_text(version: int, summary) -> str:
         notes.append(f"{summary.pd_pools_created} delegated-prefix Pool(s) created")
     if summary.options_skipped:
         notes.append(f"{summary.options_skipped} option(s) skipped (unresolved/invalid)")
-    if summary.shared_networks_not_imported:
-        notes.append(
-            f"{summary.shared_networks_not_imported} Shared Network(s) not imported; "
-            "their Subnets were imported without them"
-        )
+    if summary.shared_networks_unsupported:
+        notes.append(f"{summary.shared_networks_unsupported} Shared Network(s) unsupported; see Latest run")
     return f"{text} ({'; '.join(notes)})" if notes else text
 
 
@@ -130,9 +129,9 @@ class DriftState(str, Enum):
 
     # Kea has the object, and no mapping names it.
     MISSING = "missing"
-    # A Complete observation no longer reports the mapped row, so the next run removes it.
+    # The observation no longer reports the mapped row, and no gap of it covers the row, so the next run removes it.
     STALE = "stale"
-    # An Incomplete observation did not report the mapped row, so it cannot judge it.
+    # The observation did not report the mapped row, and a gap of it covers the row, so it cannot judge it.
     UNSEEN = "unseen"
     # Kea was not read for the family.
     UNKNOWN = "unknown"
@@ -156,6 +155,10 @@ class DriftObject:
     state: DriftState
     # The mapped DHCP plugin row; a missing object has none. The plugin is optional, so its models have no type here.
     target: Any = None
+    # The name of the imported row, from its own fields and the related rows that the user may view.
+    name: str = ""
+    # The object that the imported DHCP Option is assigned to, when the user may view it.
+    assigned: Any = None
 
     @property
     def label(self) -> str:
@@ -206,9 +209,10 @@ class FamilyDrift:
 def family_drift(server: Server, family: Family, user) -> FamilyDrift:
     """Compare a live read of *family* with its DHCP Import Mappings, through the rule that the removal uses.
 
-    A missing object is in Kea without a mapping. A stale object has a mapping that a Complete observation no longer
-    reports, so the next run removes it. An Incomplete observation cannot judge its unobserved rows, and a family that
-    Kea did not give leaves every mapped row unknown. An object names its imported row only when *user* may view it.
+    A missing object is in Kea without a mapping. A stale object has a mapping that the observation no longer reports
+    and that no gap of the observation covers, so the next run removes it. An unobserved row that a gap covers is not
+    seen, and a family that Kea did not give leaves every mapped row unknown. An object names its imported row only
+    when *user* may view it.
     """
     mapped = dhcp_plugin.mapped_rows(server, family)
     drift = FamilyDrift(family)
@@ -224,31 +228,32 @@ def family_drift(server: Server, family: Family, user) -> FamilyDrift:
         observation, rows = observed[kind], mapped[kind]
         missing = dict.fromkeys(observation.sources - rows.keys())
         unobserved = {source: row for source, row in rows.items() if source not in observation.sources}
-        state = DriftState.STALE if observation.complete else DriftState.UNSEEN
+        stale = {source: row for source, row in unobserved.items() if not observation.gap(source)}
+        unseen = {source: row for source, row in unobserved.items() if source not in stale}
         drift.kinds.append(
             KindDrift(
                 kind,
                 in_step=len(rows) - len(unobserved),
                 missing=len(missing),
-                stale=len(unobserved) if observation.complete else 0,
-                unseen=0 if observation.complete else len(unobserved),
+                stale=len(stale),
+                unseen=len(unseen),
                 incomplete=observation.incomplete,
             )
         )
         drift.show(_drift_objects(family, kind, missing, DriftState.MISSING))
-        drift.show(_drift_objects(family, kind, unobserved, state))
+        drift.show(_drift_objects(family, kind, stale, DriftState.STALE))
+        drift.show(_drift_objects(family, kind, unseen, DriftState.UNSEEN))
     drift.objects = _viewable_targets(drift.objects, user)
     return drift
 
 
-# The relations that the name of a DHCP plugin row reads, by model.
-_NAME_RELATIONS: dict[str, tuple[str, ...]] = {"optiondefinition": ("dhcp_server", "client_class")}
-
-
 def _viewable_targets(objects: list[DriftObject], user) -> list[DriftObject]:
-    """Keep the imported row of each object only when *user* may view it, loaded with what its name reads.
+    """Keep the imported row of each object only when *user* may view it, and name it from what *user* may view.
 
-    One query for each model, so the card reads a fixed number of queries for any number of rows.
+    An Option and an Option Definition take their name from their own fields and the related rows that *user* may
+    view: the definition of the Option, the DHCP Server or client class of the definition. An Option also names the
+    object that it is assigned to, when *user* may view it. Each related model takes one restricted query, so the card
+    reads a fixed number of queries for any number of rows.
     """
     pks: dict[Any, set[int]] = defaultdict(set)
     for obj in objects:
@@ -256,15 +261,80 @@ def _viewable_targets(objects: list[DriftObject], user) -> list[DriftObject]:
             pks[obj.target._meta.concrete_model].add(obj.target.pk)
     viewable = {}
     for model, selected in pks.items():
-        queryset = model.objects.restrict(user, "view").filter(pk__in=selected)
-        for row in queryset.select_related(*_NAME_RELATIONS.get(model._meta.model_name, ())):
+        for row in model.objects.restrict(user, "view").filter(pk__in=selected):
             viewable[model, row.pk] = row
-    return [
-        replace(obj, target=viewable.get((obj.target._meta.concrete_model, obj.target.pk)))
-        if obj.target is not None
-        else obj
-        for obj in objects
-    ]
+    rows = list(viewable.values())
+    options = [row for row in rows if row._meta.model_name == "option"]
+    names = _names(rows, options, user)
+    assigned = _viewable_assigned(options, user)
+    return [_shown(obj, viewable, names, assigned) for obj in objects]
+
+
+def _shown(obj: DriftObject, viewable: dict, names: dict, assigned: dict[int, Any]) -> DriftObject:
+    """Return *obj* with its viewable row and its name, and for an Option the viewable object that it is assigned to."""
+    if obj.target is None:
+        return obj
+    row = viewable.get((obj.target._meta.concrete_model, obj.target.pk))
+    if row is None:
+        return replace(obj, target=None)
+    parent = assigned.get(row.pk) if obj.kind == Kind.OPTION else None
+    return replace(obj, target=row, name=names[row._meta.model_name, row.pk], assigned=parent)
+
+
+def _restricted(model, pks: set[int], user) -> dict[int, Any]:
+    """Return the rows of *model* among *pks* that *user* may view, by pk: one query, none for no pk."""
+    return {row.pk: row for row in model.objects.restrict(user, "view").filter(pk__in=pks)} if pks else {}
+
+
+def _names(rows: list, options: list, user) -> dict[tuple[str, int], str]:
+    """Return the name of each viewable row, by model name and pk, with no related name that *user* may not view."""
+    definitions = [row for row in rows if row._meta.model_name == "optiondefinition"]
+    if options:
+        model = options[0]._meta.get_field("definition").related_model
+        of_options = _restricted(model, {option.definition_id for option in options}, user)
+        definitions.extend(of_options.values())
+    owners = {}
+    if definitions:
+        meta = definitions[0]._meta
+        for field in ("dhcp_server", "client_class"):
+            pks = {getattr(definition, f"{field}_id") for definition in definitions} - {None}
+            owners[field] = _restricted(meta.get_field(field).related_model, pks, user)
+
+    def definition_name(definition) -> str:
+        name = f"{definition.space} {definition.name} ({definition.code})"
+        for field, viewable in owners.items():
+            owner = viewable.get(getattr(definition, f"{field}_id"))
+            if owner is not None:
+                return f"{name} [{owner.name}]"
+        return name
+
+    by_pk = {definition.pk: definition_name(definition) for definition in definitions}
+    names = {
+        (row._meta.model_name, row.pk): str(row)
+        for row in rows
+        if row._meta.model_name not in ("option", "optiondefinition")
+    }
+    names.update({("optiondefinition", pk): name for pk, name in by_pk.items()})
+    # An Option whose definition the user may not view is named by its kind.
+    names.update(
+        {("option", option.pk): by_pk.get(option.definition_id, KIND_LABELS[Kind.OPTION]) for option in options}
+    )
+    return names
+
+
+def _viewable_assigned(options: list, user) -> dict[int, Any]:
+    """Return the object that each Option is assigned to, by Option pk, when *user* may view it. One query per model."""
+    from django.contrib.contenttypes.models import ContentType
+
+    pks: dict[int, set[int]] = defaultdict(set)
+    for option in options:
+        pks[option.assigned_object_type_id].add(option.assigned_object_id)
+    found = {}
+    for type_id, selected in pks.items():
+        model = ContentType.objects.get_for_id(type_id).model_class()
+        for row in model.objects.restrict(user, "view").filter(pk__in=selected):
+            found[type_id, row.pk] = row
+    return {option.pk: found.get((option.assigned_object_type_id, option.assigned_object_id)) for option in options}
 
 
 def _drift_objects(family: int, kind: Kind, rows: dict[MappingSource, Any], state: DriftState) -> list[DriftObject]:

@@ -353,7 +353,7 @@ class ReservationEditTests(TestCase):
             hostname=state.initial["hostname"],
             option_rows=(
                 reservation_edit.OptionRow("custom", "other", True, original_option=current.options[1]),
-                reservation_edit.OptionRow("", "aabc", original_option=current.options[0]),
+                reservation_edit.OptionRow("", "aabc", original_option=current.options[0], client_classes="lab"),
             ),
         )
         with stub_kea(_responses(raw=raw)) as kea:
@@ -544,7 +544,11 @@ class ReservationEditTests(TestCase):
             current, state = self._shown(family, raw=raw)
             rows = [
                 reservation_edit.OptionRow(
-                    option.name or "", option.data, bool(option.always_send), original_option=option
+                    option.name or "",
+                    option.data,
+                    bool(option.always_send),
+                    original_option=option,
+                    client_classes=reservation_edit.class_text(option.client_classes),
                 )
                 for option in current.options
             ]
@@ -605,7 +609,13 @@ class ReservationEditTests(TestCase):
                 current.addresses,
                 hostname=state.initial["hostname"],
                 option_rows=tuple(
-                    reservation_edit.OptionRow(option.name, "new", original_option=option) for option in current.options
+                    reservation_edit.OptionRow(
+                        option.name,
+                        "new",
+                        original_option=option,
+                        client_classes=reservation_edit.class_text(option.client_classes),
+                    )
+                    for option in current.options
                 ),
             )
             with self.subTest(family=family), stub_kea(responses) as kea:
@@ -699,3 +709,415 @@ class ReservationEditTests(TestCase):
                     self.server, 4, 20, _IDENTITY, reservation_fingerprint(current), lambda _current, _catalogue: change
                 )
             self.assertNotIn("reservation-update", kea.commands())
+
+
+_DELEGATED = ("2001:db8:500::/56", "2001:db8:600::/56")
+
+
+def _widened_raw(family):
+    """Return a Reservation of Subnet 20 that sets every widened key, as Kea 3.2 returns it."""
+    raw = {**_raw(family), "client-classes": ["voip", "boot"], "user-context": {"asset": 42, "tags": ["a", None]}}
+    if family == 4:
+        raw.update({"next-server": "192.0.2.5", "server-hostname": "boot.example.org", "boot-file-name": "host.efi"})
+    else:
+        raw.update({"prefixes": list(_DELEGATED), "excluded-prefixes": ["2001:db8:500:ff::/64", ""]})
+    return raw
+
+
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
+class WidenedReservationEditTests(TestCase):
+    """The widened Reservation facts through the public add and edit operations, with Kea stubbed at the transport."""
+
+    def setUp(self):
+        self.server = _make_db_server()
+
+    def _shown(self, family, raw):
+        with stub_kea(_responses(family, raw=raw)):
+            catalogue = subnet_catalogue.for_verification(self.server, family)
+            scope = InSubnetReservationScope(catalogue.find_by_id(20).identity)
+            with self.server.get_client(version=family) as client:
+                reservation = client.reservation_by_identity(family, catalogue, scope, _IDENTITY)
+        return reservation, reservation_edit.form_state(reservation, catalogue)
+
+    def _save_edit(self, family, raw, values, *, live=None):
+        _current, state = self._shown(family, raw)
+        with stub_kea(_responses(family, raw=raw if live is None else live)) as kea:
+            outcome = reservation_edit.save_edit(
+                self.server, family, 20, _IDENTITY, state.initial["managed_fingerprint"], values
+            )
+        return outcome, kea
+
+    def _values(self, current, **changes):
+        """Return the values that the form submits unchanged for *current*, with *changes*."""
+        values = reservation_edit.SubmittedValues(
+            current.addresses,
+            current.delegated_prefixes,
+            current.hostname,
+            client_classes=reservation_edit.class_text(current.client_classes),
+            next_server=current.next_server,
+            server_hostname=current.server_hostname,
+            boot_file_name=current.boot_file_name,
+            excluded_prefixes=tuple(pair.excluded for pair in current.excluded_prefixes),
+        )
+        return replace(values, **changes)
+
+    def test_add_sets_each_widened_field(self):
+        cases = (
+            (
+                4,
+                {
+                    "client_classes": "voip",
+                    "next_server": ip_address("192.0.2.5"),
+                    "server_hostname": "boot.example.org",
+                    "boot_file_name": "host.efi",
+                },
+                {
+                    "client-classes": ["voip"],
+                    "next-server": "192.0.2.5",
+                    "server-hostname": "boot.example.org",
+                    "boot-file-name": "host.efi",
+                },
+            ),
+            (
+                6,
+                {
+                    "client_classes": "voip",
+                    "delegated_prefixes": tuple(IPv6Network(prefix) for prefix in _DELEGATED),
+                    "excluded_prefixes": (IPv6Network("2001:db8:600:ff::/64"),),
+                },
+                {
+                    "client-classes": ["voip"],
+                    "prefixes": list(_DELEGATED),
+                    "excluded-prefixes": ["", "2001:db8:600:ff::/64"],
+                },
+            ),
+        )
+        for family, submitted, expected in cases:
+            values = reservation_edit.SubmittedValues((ip_address(_ADDRESS[family]),), **submitted)
+            added = {**_raw(family, hostname=""), **expected}
+            with self.subTest(family=family):
+                with stub_kea(_responses(family, raw=added)) as kea:
+                    outcome = reservation_edit.save_add(self.server, family, _CIDR[family], _IDENTITY, values)
+                self.assertEqual(outcome.application, "applied")
+                sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
+                self.assertEqual({key: sent[key] for key in expected}, expected)
+                self.assertNotIn("user-context", sent)
+
+    def test_edit_sets_and_clears_each_widened_field_and_keeps_the_user_context(self):
+        for family in (4, 6):
+            raw = _widened_raw(family)
+            current, _state = self._shown(family, raw)
+            if family == 4:
+                set_values = {
+                    "client_classes": "printers",
+                    "next_server": ip_address("192.0.2.9"),
+                    "server_hostname": "tftp.example.org",
+                    "boot_file_name": "pxe.efi",
+                }
+                set_sent = {
+                    "client-classes": ["printers"],
+                    "next-server": "192.0.2.9",
+                    "server-hostname": "tftp.example.org",
+                    "boot-file-name": "pxe.efi",
+                }
+                cleared = {"client_classes": "", "next_server": None, "server_hostname": "", "boot_file_name": ""}
+            else:
+                set_values = {
+                    "client_classes": "printers",
+                    "excluded_prefixes": (IPv6Network("2001:db8:600:fe::/64"),),
+                }
+                set_sent = {"client-classes": ["printers"], "excluded-prefixes": ["", "2001:db8:600:fe::/64"]}
+                cleared = {"client_classes": "", "excluded_prefixes": ()}
+            for label, changes, expected, absent in (
+                ("set", set_values, set_sent, ()),
+                ("clear", cleared, {}, tuple(set_sent)),
+            ):
+                with self.subTest(family=family, change=label):
+                    outcome, kea = self._save_edit(family, raw, self._values(current, **changes))
+                    self.assertEqual(outcome.application, "applied")
+                    sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+                    self.assertEqual({key: sent[key] for key in expected}, expected)
+                    self.assertEqual([key for key in absent if key in sent], [])
+                    self.assertEqual(sent["user-context"], raw["user-context"])
+
+    def test_an_edit_of_another_field_keeps_each_widened_key(self):
+        for family in (4, 6):
+            raw = _widened_raw(family)
+            current, _state = self._shown(family, raw)
+            with self.subTest(family=family):
+                _outcome, kea = self._save_edit(family, raw, self._values(current, hostname="renamed"))
+                sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+                unchanged = {key: value for key, value in raw.items() if key != "hostname"}
+                self.assertEqual({key: value for key, value in sent.items() if key != "hostname"}, unchanged)
+
+    def test_a_delegated_prefix_change_keeps_each_excluded_prefix_with_the_prefix_that_holds_it(self):
+        raw = _widened_raw(6)
+        current, _state = self._shown(6, raw)
+        swapped = tuple(reversed(current.delegated_prefixes))
+        outcome, kea = self._save_edit(6, raw, self._values(current, delegated_prefixes=swapped))
+        self.assertEqual(outcome.application, "applied")
+        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+        self.assertEqual(sent["prefixes"], ["2001:db8:600::/56", "2001:db8:500::/56"])
+        self.assertEqual(sent["excluded-prefixes"], ["", "2001:db8:500:ff::/64"])
+        wider = (IPv6Network("2001:db8:500::/48"), current.delegated_prefixes[1])
+        _outcome, kea = self._save_edit(6, raw, self._values(current, delegated_prefixes=wider))
+        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+        self.assertEqual(sent["excluded-prefixes"], ["2001:db8:500:ff::/64", ""])
+
+    def test_an_excluded_prefix_without_one_delegated_prefix_that_holds_it_refuses_the_edit(self):
+        raw = _widened_raw(6)
+        current, _state = self._shown(6, raw)
+        other = IPv6Network("2001:db8:600::/56")
+        for label, changes, message in (
+            (
+                "its delegated prefix is removed",
+                {"delegated_prefixes": (other,)},
+                "2001:db8:500:ff::/64 is not inside a delegated prefix",
+            ),
+            (
+                "two delegated prefixes hold a new one",
+                {
+                    "delegated_prefixes": (IPv6Network("2001:db8:500::/48"), current.delegated_prefixes[0]),
+                    "excluded_prefixes": (IPv6Network("2001:db8:500:fe::/64"),),
+                },
+                "2001:db8:500:fe::/64 is inside more than one delegated prefix",
+            ),
+            (
+                "one delegated prefix would exclude two",
+                {"excluded_prefixes": (IPv6Network("2001:db8:500:ff::/64"), IPv6Network("2001:db8:500:fe::/64"))},
+                "2001:db8:500::/56 can exclude one prefix only",
+            ),
+            (
+                "it is the delegated prefix",
+                {"excluded_prefixes": (IPv6Network("2001:db8:600::/56"),)},
+                "2001:db8:600::/56 is not inside a delegated prefix",
+            ),
+        ):
+            with self.subTest(label), stub_kea(_responses(6, raw=raw)) as kea:
+                with self.assertRaises(reservation_edit.EditConflict) as raised:
+                    reservation_edit.save_edit(
+                        self.server,
+                        6,
+                        20,
+                        _IDENTITY,
+                        self._shown(6, raw)[1].initial["managed_fingerprint"],
+                        self._values(current, **changes),
+                    )
+                self.assertEqual(raised.exception.field, "excluded_prefixes")
+                self.assertIn(message, raised.exception.message)
+                self.assertNotIn("reservation-update", kea.commands())
+
+    def test_a_concurrent_change_to_a_widened_field_is_a_fingerprint_conflict(self):
+        for family, changed in (
+            (4, {"client-classes": ["voip"]}),
+            (4, {"next-server": "192.0.2.6"}),
+            (4, {"server-hostname": "other.example.org"}),
+            (4, {"boot-file-name": "other.efi"}),
+            (6, {"client-classes": []}),
+            (6, {"excluded-prefixes": ["2001:db8:500:fe::/64", ""]}),
+        ):
+            raw = _widened_raw(family)
+            current, _state = self._shown(family, raw)
+            with self.subTest(family=family, changed=changed):
+                with self.assertRaises(ChangeRejected) as raised:
+                    self._save_edit(family, raw, self._values(current, hostname="renamed"), live={**raw, **changed})
+                self.assertEqual(raised.exception.reason, "target-changed")
+
+    def test_a_concurrent_user_context_change_is_kept_and_is_no_conflict(self):
+        raw = _widened_raw(4)
+        current, _state = self._shown(4, raw)
+        # Kea 3.2 keeps any JSON value, also null, and returns it as stored.
+        for context in (["changed", {"by": "another writer"}], None):
+            live = {**raw, "user-context": context}
+            with self.subTest(context=context):
+                outcome, kea = self._save_edit(4, raw, self._values(current, hostname="renamed"), live=live)
+                self.assertEqual(outcome.application, "applied")
+                sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+                self.assertIn("user-context", sent)
+                self.assertEqual(sent["user-context"], context)
+
+    def test_option_rows_set_and_clear_the_client_classes_of_an_option(self):
+        classed = {"name": "domain-name", "data": "lab.example.org", "client-classes": ["lab"]}
+        raw = {**_raw(), "option-data": [classed]}
+        current, _state = self._shown(4, raw)
+        (option,) = current.options
+        for classes, expected in (("lab, voip", ["lab", "voip"]), ("", None)):
+            row = reservation_edit.OptionRow(option.name, option.data, original_option=option, client_classes=classes)
+            with self.subTest(classes=classes):
+                _outcome, kea = self._save_edit(4, raw, self._values(current, option_rows=(row,)))
+                (sent,) = kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"]
+                self.assertEqual(sent.get("client-classes"), expected)
+        added = reservation_edit.OptionRow("domain-name", "voip.example.org", client_classes="voip")
+        kept = reservation_edit.OptionRow(option.name, option.data, original_option=option, client_classes="lab")
+        _outcome, kea = self._save_edit(4, raw, self._values(current, option_rows=(kept, added)))
+        self.assertEqual(
+            kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
+            [classed, {"name": "domain-name", "data": "voip.example.org", "client-classes": ["voip"]}],
+        )
+
+    def test_a_class_field_drops_empty_names_and_keeps_repeated_ones_for_the_check(self):
+        self.assertEqual(reservation_edit.class_names(" voip, ,printers, voip "), ("voip", "printers", "voip"))
+
+    def test_a_changed_class_field_refuses_a_repeated_name(self):
+        raw = {**_raw(), "client-classes": ["voip"]}
+        current, _state = self._shown(4, raw)
+        with stub_kea(_responses(raw=raw)) as kea, self.assertRaises(reservation_edit.EditConflict) as raised:
+            reservation_edit.save_edit(
+                self.server,
+                4,
+                20,
+                _IDENTITY,
+                self._shown(4, raw)[1].initial["managed_fingerprint"],
+                self._values(current, client_classes="voip, printers, voip"),
+            )
+        self.assertEqual(raised.exception.field, "client_classes")
+        self.assertIn("once", raised.exception.message)
+        self.assertNotIn("reservation-update", kea.commands())
+
+    def test_a_class_field_cannot_change_live_names_that_its_text_cannot_show(self):
+        # A comma in a name makes the text ambiguous: an added or removed name would split or keep another one.
+        option = {"name": "domain-name", "data": "lab.example.org", "client-classes": ["a,b"]}
+        for live, entered in ((["a,b"], "a,b, new"), (["x,y", "x"], "x,y")):
+            raw = {**_raw(), "client-classes": live, "option-data": [option]}
+            current, state = self._shown(4, raw)
+            row = reservation_edit.OptionRow(
+                option["name"],
+                option["data"],
+                original_option=current.options[0],
+                client_classes=state.options_initial[0]["client_classes"],
+            )
+            changes = (
+                ("client_classes", {"client_classes": entered, "option_rows": (row,)}),
+                (None, {"option_rows": (replace(row, client_classes="a,b, new"),)}),
+            )
+            for field, change in changes:
+                with self.subTest(live=live, field=field), stub_kea(_responses(raw=raw)) as kea:
+                    with self.assertRaises(reservation_edit.EditConflict) as raised:
+                        reservation_edit.save_edit(
+                            self.server,
+                            4,
+                            20,
+                            _IDENTITY,
+                            state.initial["managed_fingerprint"],
+                            self._values(current, **change),
+                        )
+                    self.assertEqual(raised.exception.field, field)
+                    self.assertIn("comma", raised.exception.message)
+                    self.assertNotIn("reservation-update", kea.commands())
+
+    def test_a_changed_text_of_a_class_field_never_drops_or_renames_a_name_that_it_cannot_show(self):
+        # Kea 3.2 keeps a comma-only host class, an embedded line break and the spaces around an option class tag.
+        option = {"name": "domain-name", "data": "lab.example.org", "client-classes": [" c "]}
+        for live, entered in ((["x", ","], "x"), (["a\nb"], "ab")):
+            raw = {**_raw(), "client-classes": live, "option-data": [option]}
+            current, state = self._shown(4, raw)
+            row = reservation_edit.OptionRow(
+                option["name"], option["data"], original_option=current.options[0], client_classes=" c "
+            )
+            for field, change in (
+                ("client_classes", {"client_classes": entered, "option_rows": (row,)}),
+                (None, {"option_rows": (replace(row, client_classes="c"),)}),
+            ):
+                with self.subTest(live=live, field=field), stub_kea(_responses(raw=raw)) as kea:
+                    with self.assertRaises(reservation_edit.EditConflict) as raised:
+                        reservation_edit.save_edit(
+                            self.server,
+                            4,
+                            20,
+                            _IDENTITY,
+                            state.initial["managed_fingerprint"],
+                            self._values(current, **change),
+                        )
+                    self.assertEqual(raised.exception.field, field)
+                    self.assertNotIn("reservation-update", kea.commands())
+
+    def test_an_unchanged_class_field_keeps_live_names_that_the_text_cannot_show(self):
+        # Kea keeps a comma in a class name, and untrimmed names of an option. "x" repeats a part of "x,y".
+        option = {"name": "domain-name", "data": "lab.example.org", "client-classes": ["a,b", " c "]}
+        raw = {**_raw(), "client-classes": ["x,y", "x"], "option-data": [option]}
+        current, state = self._shown(4, raw)
+        self.assertEqual(state.initial["client_classes"], "x,y, x")
+        self.assertEqual(state.options_initial[0]["client_classes"], "a,b,  c ")
+        shown_option = current.options[0]
+        row = reservation_edit.OptionRow(
+            shown_option.name,
+            "changed.example.org",
+            original_option=shown_option,
+            client_classes=state.options_initial[0]["client_classes"],
+        )
+        values = self._values(
+            current,
+            client_classes=state.initial["client_classes"],
+            option_rows=(row,),
+        )
+        _outcome, kea = self._save_edit(4, raw, values)
+        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+        self.assertEqual(sent["client-classes"], ["x,y", "x"])
+        self.assertEqual(sent["option-data"], [{**option, "data": "changed.example.org"}])
+
+    def test_a_concurrent_change_to_the_client_classes_of_an_option_is_a_conflict(self):
+        option = {"name": "domain-name", "data": "lab.example.org", "client-classes": ["lab"]}
+        raw = {**_raw(), "option-data": [option]}
+        current, _state = self._shown(4, raw)
+        live = {**raw, "option-data": [{**option, "client-classes": ["voip"]}]}
+        row = reservation_edit.OptionRow(
+            "domain-name", "changed.example.org", original_option=current.options[0], client_classes="lab"
+        )
+        with self.assertRaisesRegex(ReservationConflict, "domain-name"):
+            self._save_edit(4, raw, self._values(current, option_rows=(row,)), live=live)
+
+    def test_an_edit_keeps_a_live_pair_that_two_delegated_prefixes_could_hold(self):
+        # A /48 and a /56 inside it both hold the excluded prefix; Kea pairs it with the /56 by position.
+        raw = {
+            **_raw(6),
+            "prefixes": ["2001:db8:500::/48", "2001:db8:500:100::/56"],
+            "excluded-prefixes": ["", "2001:db8:500:100:ff::/80"],
+        }
+        current, _state = self._shown(6, raw)
+        outcome, kea = self._save_edit(6, raw, self._values(current, hostname="renamed"))
+        self.assertEqual(outcome.application, "applied")
+        sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+        self.assertEqual(sent["excluded-prefixes"], ["", "2001:db8:500:100:ff::/80"])
+
+    def test_a_change_of_a_repeated_excluded_prefix_that_fits_two_delegations_is_refused(self):
+        both = ["2001:db8:500:100:ff::/80", "2001:db8:500:100:ff::/80"]
+        raw = {**_raw(6), "prefixes": ["2001:db8:500::/48", "2001:db8:500:100::/56"], "excluded-prefixes": both}
+        current, state = self._shown(6, raw)
+        # One exclusion goes, and the field cannot say which delegation keeps its own.
+        values = self._values(current, excluded_prefixes=(IPv6Network(both[0]),))
+        with stub_kea(_responses(6, raw=raw)) as kea, self.assertRaises(reservation_edit.EditConflict) as raised:
+            reservation_edit.save_edit(self.server, 6, 20, _IDENTITY, state.initial["managed_fingerprint"], values)
+        self.assertEqual(raised.exception.field, "excluded_prefixes")
+        self.assertIn("Change it in Kea", raised.exception.message)
+        self.assertNotIn("reservation-update", kea.commands())
+
+    def test_a_repeated_excluded_prefix_follows_the_delegation_that_an_edit_keeps(self):
+        both = ["2001:db8:500:100:ff::/80", "2001:db8:500:100:ff::/80"]
+        raw = {**_raw(6), "prefixes": ["2001:db8:500::/48", "2001:db8:500:100::/56"], "excluded-prefixes": both}
+        current, _state = self._shown(6, raw)
+        wide, narrow = current.delegated_prefixes
+        other = IPv6Network("2001:db8:900::/56")
+        for label, delegated, excluded, expected in (
+            ("reordered", (narrow, wide), both, both),
+            ("one delegation removed with its exclusion", (narrow,), both[:1], both[:1]),
+            ("an unrelated delegation added", (wide, narrow, other), both, [*both, ""]),
+        ):
+            values = self._values(
+                current,
+                delegated_prefixes=delegated,
+                excluded_prefixes=tuple(IPv6Network(prefix) for prefix in excluded),
+            )
+            with self.subTest(label):
+                _outcome, kea = self._save_edit(6, raw, values)
+                sent = kea.bodies("reservation-update")[0]["arguments"]["reservation"]
+                self.assertEqual(sent["excluded-prefixes"], expected)
+
+    def test_an_edit_keeps_one_excluded_prefix_that_two_delegations_exclude(self):
+        # Kea 3.2 stores an exclusion for each delegation, so a /48 and a /56 inside it can exclude the same prefix.
+        both = ["2001:db8:500:100:ff::/80", "2001:db8:500:100:ff::/80"]
+        raw = {**_raw(6), "prefixes": ["2001:db8:500::/48", "2001:db8:500:100::/56"], "excluded-prefixes": both}
+        current, state = self._shown(6, raw)
+        self.assertEqual(state.initial["excluded_prefixes"], ",".join(both))
+        outcome, kea = self._save_edit(6, raw, self._values(current, hostname="renamed"))
+        self.assertEqual(outcome.application, "applied")
+        self.assertEqual(kea.bodies("reservation-update")[0]["arguments"]["reservation"]["excluded-prefixes"], both)
