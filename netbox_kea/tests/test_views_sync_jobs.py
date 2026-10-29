@@ -54,9 +54,19 @@ def _make_job(*, name="Kea IPAM Sync", object_id=None, object_type=None, data=_M
     return job
 
 
+def _tab(slug: str) -> str:
+    """Return the URL of the Settings tab of the section *slug*."""
+    return reverse("plugins:netbox_kea:settings_section", args=[slug])
+
+
+def _body_links(response, href: str) -> list:
+    """Return the links to *href* in the page body, not in the menu."""
+    return BeautifulSoup(response.content, "html.parser").select(f'.page-body a[href="{href}"]')
+
+
 def _section_data(slug: str, values: dict[str, object]) -> dict[str, object]:
     """Return the POST data of a Settings section, as a browser sends it: a checkbox that is off is left out."""
-    data: dict[str, object] = {"section": slug}
+    data: dict[str, object] = {}
     for name, value in values.items():
         if value is not False:
             data[f"{slug}-{name}"] = "on" if value is True else value
@@ -100,7 +110,7 @@ class TestSyncJobsView(TestCase):
 
     def test_get_links_to_the_settings_page_and_shows_no_settings_form(self):
         response = self.client.get(reverse("plugins:netbox_kea:sync_jobs"))
-        self.assertContains(response, f'href="{reverse("plugins:netbox_kea:settings")}"')
+        self.assertTrue(_body_links(response, reverse("plugins:netbox_kea:settings")))
         self.assertNotContains(response, "interval_minutes")
 
     def test_the_page_accepts_no_post(self):
@@ -116,12 +126,12 @@ class TestSyncJobsView(TestCase):
 
 
 class TestSettingsView(TestCase):
-    """GET and POST /plugins/kea/settings/ as a superuser."""
+    """GET and POST of the Sync tab of the Settings page as a superuser."""
 
     def setUp(self):
         self.user = User.objects.create_superuser("settings-admin", "a@a.com", "pass")
         self.client.force_login(self.user)
-        self.url = reverse("plugins:netbox_kea:settings")
+        self.url = _tab("sync")
 
     def test_get_shows_the_stored_values(self):
         SyncConfig.objects.filter(pk=1).update(interval_minutes=13, sync_leases_enabled=False)
@@ -131,13 +141,19 @@ class TestSettingsView(TestCase):
         self.assertTrue(page.find(id="id_sync-sync_reservations_enabled").has_attr("checked"))
         self.assertIsNotNone(page.select_one('form[method="post"] button[type="submit"]'))
 
-    def test_get_shows_each_section_in_a_card_with_its_anchor(self):
-        page = BeautifulSoup(self.client.get(self.url).content, "html.parser")
+    def test_each_tab_shows_its_section_in_a_card_and_no_other_section(self):
         for slug, title in (("sync", "Sync Configuration"), ("kea-client", "Kea Client Configuration")):
             with self.subTest(section=slug):
-                card = page.find(id=slug)
-                self.assertIn("card", card["class"])
+                page = BeautifulSoup(self.client.get(_tab(slug)).content, "html.parser")
+                (card,) = page.select(".page-body .card")
                 self.assertEqual(card.find(class_="card-header").get_text(strip=True), title)
+                names = {
+                    field["name"]
+                    for field in page.select(".page-body [name]")
+                    if field["name"] != "csrfmiddlewaretoken"
+                }
+                self.assertTrue(names)
+                self.assertEqual({name for name in names if not name.startswith(f"{slug}-")}, set())
 
     def test_post_saves_every_field_and_redirects(self):
         response = self.client.post(
@@ -207,7 +223,8 @@ class TestSettingsView(TestCase):
 
         self.assertContains(response, "Sync Configuration")
         hrefs = [link["href"] for link in BeautifulSoup(response.content, "html.parser").find_all("a", href=True)]
-        self.assertEqual([href for href in hrefs if href.startswith(self.url) and href.endswith("changelog/")], [])
+        settings = reverse("plugins:netbox_kea:settings")
+        self.assertEqual([href for href in hrefs if href.startswith(settings) and href.endswith("changelog/")], [])
 
     def test_the_change_log_api_lists_a_settings_change(self):
         """NetBox serializes each changed object for the change log API, so SyncConfig needs a serializer."""
@@ -238,9 +255,12 @@ class TestSettingsView(TestCase):
             with self.subTest(interval=interval):
                 response = self.client.post(self.url, _sync_settings(interval_minutes=interval, sync_enabled=False))
                 self.assertEqual(response.status_code, 200)
-                (entry,) = [shown for shown in response.context["sections"] if shown.section.slug == "sync"]
-                self.assertIn("interval_minutes", entry.form.errors)
-                self.assertEqual(entry.form["interval_minutes"].value(), str(interval))
+                self.assertEqual(response.context["section"].slug, "sync")
+                form = response.context["form"]
+                self.assertIn("interval_minutes", form.errors)
+                self.assertEqual(form["interval_minutes"].value(), str(interval))
+                page = BeautifulSoup(response.content, "html.parser")
+                self.assertIn("active", page.select_one(f'.nav-tabs a[href="{self.url}"]')["class"])
                 self.assertEqual(SyncConfig.get().interval_minutes, 5)
                 self.assertTrue(SyncConfig.get().sync_enabled)
 
@@ -259,18 +279,59 @@ class TestSettingsView(TestCase):
             with self.subTest(field=field, value=value):
                 response = self.client.post(self.url, _sync_settings(**{field: value}))
                 self.assertEqual(response.status_code, 200)
-                (entry,) = [shown for shown in response.context["sections"] if shown.section.slug == "sync"]
-                self.assertIn(field, entry.form.errors)
+                self.assertIn(field, response.context["form"].errors)
                 config = SyncConfig.get()
                 self.assertEqual(
                     (config.sync_max_leases_per_server, config.stale_ip_cleanup),
                     (before.sync_max_leases_per_server, before.stale_ip_cleanup),
                 )
 
-    def test_post_to_an_unknown_section_is_a_bad_request(self):
-        response = self.client.post(self.url, {"section": "unknown", "sync-interval_minutes": 9})
-        self.assertEqual(response.status_code, 400)
+    def test_an_unknown_section_is_not_found(self):
+        url = _tab("unknown")
+        self.assertEqual(self.client.get(url).status_code, 404)
+        self.assertEqual(self.client.post(url, {"unknown-interval_minutes": 9}).status_code, 404)
         self.assertEqual(SyncConfig.get().interval_minutes, 5)
+
+    def test_the_settings_url_opens_the_first_tab_and_accepts_no_post(self):
+        url = reverse("plugins:netbox_kea:settings")
+        self.assertRedirects(self.client.get(url), self.url)
+        self.assertEqual(self.client.post(url, _sync_settings(interval_minutes=9)).status_code, 405)
+        self.assertEqual(SyncConfig.get().interval_minutes, 5)
+
+    def test_a_post_saves_only_its_section_and_returns_to_its_tab(self):
+        from core.models import ObjectChange
+
+        url = _tab("kea-client")
+        data = {**_sync_settings(interval_minutes=9, sync_enabled=False), **_kea_client_settings(kea_timeout=11)}
+
+        response = self.client.post(url, data, follow=True)
+
+        self.assertRedirects(response, url)
+        self.assertContains(response, "Kea Client Configuration saved.")
+        page = BeautifulSoup(response.content, "html.parser")
+        self.assertIn("active", page.select_one(f'.nav-tabs a[href="{url}"]')["class"])
+        self.assertEqual(KeaClientConfig.get().kea_timeout, 11)
+        config = SyncConfig.get()
+        self.assertEqual((config.interval_minutes, config.sync_enabled), (5, True))
+        self.assertEqual(ObjectChange.objects.count(), 1)
+
+    def test_each_visible_section_is_a_tab_and_the_shown_one_is_active(self):
+        expected = [
+            (_tab("sync"), "Sync"),
+            (_tab("kea-client"), "Kea Client"),
+            (_tab("display-cache"), "Display Cache"),
+            (_tab("dhcp-integration"), "DHCP Plugin"),
+        ]
+        with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True):
+            for url, _ in expected:
+                with self.subTest(url=url):
+                    page = BeautifulSoup(self.client.get(url).content, "html.parser")
+                    links = page.select(".page-tabs ul.nav-tabs a.nav-link")
+                    self.assertEqual([(link["href"], link.get_text(strip=True)) for link in links], expected)
+                    active = [link["href"] for link in links if "active" in link["class"]]
+                    self.assertEqual(active, [url])
+                    current = [link["href"] for link in links if link.get("aria-current") == "page"]
+                    self.assertEqual(current, [url])
 
     def test_post_without_syncconfig_row_raises(self):
         """A missing row is a server error, not a message that hides it."""
@@ -283,9 +344,11 @@ class TestSettingsView(TestCase):
 
     def test_get_without_login_redirects(self):
         self.client.logout()
-        response = self.client.get(self.url)
-        self.assertEqual(response.status_code, 302)
-        self.assertIn("/login/", response["Location"])
+        for url in (reverse("plugins:netbox_kea:settings"), self.url):
+            with self.subTest(url=url):
+                response = self.client.get(url)
+                self.assertEqual(response.status_code, 302)
+                self.assertIn("/login/", response["Location"])
 
 
 class TestSettingsPermissions(TestCase):
@@ -294,9 +357,8 @@ class TestSettingsPermissions(TestCase):
     def setUp(self):
         self.user = User.objects.create_user("settings-user")
         self.client.force_login(self.user)
-        self.url = reverse("plugins:netbox_kea:settings")
-        self.link = f'href="{self.url}"'
-        self.menu_link = f'href="{self.url}#'
+        self.settings_url = reverse("plugins:netbox_kea:settings")
+        self.url = _tab("sync")
 
     def test_a_viewer_sees_the_values_read_only_without_a_submit_control(self):
         _grant([SyncConfig], ["view"], user=self.user)
@@ -312,6 +374,7 @@ class TestSettingsPermissions(TestCase):
         self.assertTrue(page.find(id="id_sync-sync_enabled").has_attr("disabled"))
         self.assertIsNone(page.select_one('form[method="post"]'))
         self.assertEqual(page.select('.page-body [type="submit"]'), [])
+        self.assertContains(response, "You can view these settings, but you cannot change them.")
 
     def test_a_viewer_post_is_refused_and_changes_nothing(self):
         _grant([SyncConfig], ["view"], user=self.user)
@@ -340,48 +403,64 @@ class TestSettingsPermissions(TestCase):
 
         response = self.client.post(self.url, _sync_settings(interval_minutes=30, sync_enabled=True))
 
-        self.assertEqual(response.status_code, 302)
+        self.assertRedirects(response, self.url, fetch_redirect_response=False)
         self.assertEqual(SyncConfig.get().interval_minutes, 30)
 
-    def test_a_user_who_can_view_no_section_gets_403_and_no_menu_item(self):
+    def test_a_user_who_can_view_no_section_gets_403_on_every_settings_url(self):
         _grant([Server], ["view"], user=self.user)
 
-        self.assertEqual(self.client.get(self.url).status_code, 403)
+        for url in (self.settings_url, self.url, _tab("kea-client"), _tab("unknown")):
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 403)
         self.assertEqual(self.client.post(self.url, _sync_settings(interval_minutes=30)).status_code, 403)
         self.assertEqual(SyncConfig.get().interval_minutes, 5)
-        home = self.client.get(reverse("home"))
-        self.assertContains(home, f'href="{reverse("plugins:netbox_kea:server_list")}"')
-        self.assertNotContains(home, self.menu_link)
-        self.assertNotContains(self.client.get(reverse("plugins:netbox_kea:sync_jobs")), self.link)
+        self.assertEqual(_body_links(self.client.get(reverse("plugins:netbox_kea:sync_jobs")), self.settings_url), [])
 
-    def test_a_viewer_gets_the_menu_item_and_the_sync_jobs_link(self):
-        _grant([SyncConfig, Server], ["view"], user=self.user)
+    def test_a_partial_viewer_sees_only_their_tabs_and_a_hidden_tab_is_not_found(self):
+        _grant([KeaClientConfig], ["view", "change"], user=self.user)
 
-        self.assertContains(self.client.get(reverse("home")), f'{self.menu_link}sync"')
-        self.assertContains(self.client.get(reverse("plugins:netbox_kea:sync_jobs")), self.link)
+        self.assertRedirects(self.client.get(self.settings_url), _tab("kea-client"))
+        page = BeautifulSoup(self.client.get(_tab("kea-client")).content, "html.parser")
+        tabs = [link["href"] for link in page.select(".page-tabs ul.nav-tabs a.nav-link")]
+        self.assertEqual(tabs, [_tab("kea-client")])
+        self.assertEqual(self.client.get(self.url).status_code, 404)
+        response = self.client.post(self.url, _sync_settings(interval_minutes=30, sync_enabled=False))
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(SyncConfig.get().interval_minutes, 5)
 
-    def test_each_section_has_a_menu_item_for_a_user_who_can_view_that_section(self):
-        """The Settings menu group holds one item per available section, so a new section gets its item and its permission."""
-        from netbox_kea.views.settings_page import SECTIONS
-
-        for section in (section for section in SECTIONS if section.available()):
-            with self.subTest(section=section.slug):
-                user = User.objects.create_user(f"settings-only-{section.slug}")
-                _grant([section.model], ["view"], user=user)
+    def test_the_menu_has_one_settings_item_for_a_user_who_can_view_servers(self):
+        superuser = User.objects.create_superuser("settings-menu-admin", "m@m.com", "pass")
+        server_viewer = User.objects.create_user("settings-menu-server-viewer")
+        _grant([Server], ["view"], user=server_viewer)
+        section_only = User.objects.create_user("settings-menu-section-only")
+        _grant([KeaClientConfig], ["view"], user=section_only)
+        expected = {superuser: ["Settings"], server_viewer: ["Settings"], section_only: [], self.user: []}
+        for user, items in expected.items():
+            with self.subTest(user=user.username):
                 self.client.force_login(user)
                 menu = BeautifulSoup(self.client.get(reverse("home")).content, "html.parser")
-                items = {link["href"]: link.get_text(strip=True) for link in menu.select(f'a[href^="{self.url}#"]')}
-                self.assertEqual(items, {f"{self.url}#{section.slug}": section.menu_text})
+                links = [link.get_text(strip=True) for link in menu.select(f'a[href^="{self.settings_url}"]')]
+                self.assertEqual(links, items)
+        # The page does not depend on the menu permission.
+        self.client.force_login(section_only)
+        self.assertRedirects(self.client.get(self.settings_url), _tab("kea-client"))
 
-    def test_the_server_sync_tab_links_to_settings_only_for_a_user_who_can_view_them(self):
+    def test_a_viewer_gets_the_sync_jobs_link(self):
+        _grant([SyncConfig, Server], ["view"], user=self.user)
+
+        self.assertTrue(_body_links(self.client.get(reverse("plugins:netbox_kea:sync_jobs")), self.settings_url))
+
+    def test_the_server_sync_tab_links_to_the_sync_settings_only_for_a_user_who_can_view_them(self):
         server = _make_db_server()
         tab = reverse("plugins:netbox_kea:server_sync_status", args=[server.pk])
+        link = f'href="{self.url}"'
         _grant([Server], ["view"], user=self.user)
         _grant([SyncConfig], ["change"], user=self.user)
+        _grant([KeaClientConfig], ["view"], user=self.user)
 
-        self.assertNotContains(self.client.get(tab), self.link)
+        self.assertNotContains(self.client.get(tab), link)
         _grant([SyncConfig], ["view"], user=self.user)
-        self.assertContains(self.client.get(tab), self.link)
+        self.assertContains(self.client.get(tab), link)
 
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)
@@ -859,19 +938,19 @@ class TestServerJobsView(TestCase):
 
 
 class TestKeaClientSettingsView(TestCase):
-    """The Kea Client section of the Settings page, as a superuser."""
+    """The Kea Client tab of the Settings page, as a superuser."""
 
     def setUp(self):
         self.user = User.objects.create_superuser("kea-client-admin", "k@k.com", "pass")
         self.client.force_login(self.user)
-        self.url = reverse("plugins:netbox_kea:settings")
+        self.url = _tab("kea-client")
 
     def test_get_shows_the_stored_values(self):
         KeaClientConfig.objects.filter(pk=1).update(kea_timeout=12, lease_query_max_unpaged_leases=0)
 
         page = BeautifulSoup(self.client.get(self.url).content, "html.parser")
 
-        section = page.find(id="kea-client")
+        section = page.select_one(".page-body .card")
         self.assertEqual(section.find(id="id_kea-client-kea_timeout")["value"], "12")
         self.assertEqual(section.find(id="id_kea-client-lease_query_max_unpaged_leases")["value"], "0")
         self.assertIsNotNone(section.select_one('form[method="post"] button[type="submit"]'))
@@ -901,8 +980,7 @@ class TestKeaClientSettingsView(TestCase):
             with self.subTest(field=field, value=value):
                 response = self.client.post(self.url, _kea_client_settings(**{field: value}))
                 self.assertEqual(response.status_code, 200)
-                (entry,) = [shown for shown in response.context["sections"] if shown.section.slug == "kea-client"]
-                self.assertIn(field, entry.form.errors)
+                self.assertIn(field, response.context["form"].errors)
                 config = KeaClientConfig.get()
                 self.assertEqual((config.kea_timeout, config.lease_query_max_unpaged_leases), (30, 1000))
 
@@ -932,17 +1010,19 @@ class TestKeaClientSettingsView(TestCase):
 
 
 class TestDhcpIntegrationSettingsView(TestCase):
-    """The DHCP Plugin section of the Settings page holds the global switch. It shows only with netbox_dhcp."""
+    """The DHCP Plugin tab of the Settings page holds the global switch. It shows only with netbox_dhcp."""
 
     def setUp(self):
         self.user = User.objects.create_superuser("dhcp-integration-admin", "d@d.com", "pass")
         self.client.force_login(self.user)
-        self.url = reverse("plugins:netbox_kea:settings")
+        self.url = _tab("dhcp-integration")
 
-    def _slugs(self) -> list[str]:
-        response = self.client.get(self.url)
+    def _tabs(self) -> list[str]:
+        response = self.client.get(_tab("sync"))
         self.assertEqual(response.status_code, 200)
-        return [shown.section.slug for shown in response.context["sections"]]
+        return [
+            str(link["href"]) for link in BeautifulSoup(response.content, "html.parser").select(".page-tabs a.nav-link")
+        ]
 
     def test_a_save_turns_the_integration_off_and_the_change_log_api_lists_it(self):
         from core.models import ObjectChange
@@ -953,7 +1033,7 @@ class TestDhcpIntegrationSettingsView(TestCase):
             page = BeautifulSoup(self.client.get(self.url).content, "html.parser")
             response = self.client.post(self.url, _section_data("dhcp-integration", {"enabled": False}), follow=True)
 
-        self.assertTrue(page.find(id="dhcp-integration").find(id="id_dhcp-integration-enabled").has_attr("checked"))
+        self.assertTrue(page.find(id="id_dhcp-integration-enabled").has_attr("checked"))
         self.assertRedirects(response, self.url)
         self.assertContains(response, "DHCP Plugin Integration saved.")
         self.assertIs(DhcpIntegrationConfig.get().enabled, False)
@@ -975,7 +1055,7 @@ class TestDhcpIntegrationSettingsView(TestCase):
                 self.url, _section_data("dhcp-integration", {"enabled": True, "scheduled_import_enabled": True})
             )
 
-        field = page.find(id="dhcp-integration").find(id="id_dhcp-integration-scheduled_import_enabled")
+        field = page.find(id="id_dhcp-integration-scheduled_import_enabled")
         self.assertFalse(field.has_attr("checked"))
         self.assertEqual(page.find("label", attrs={"for": field["id"]}).get_text(strip=True), "Scheduled Import")
         self.assertEqual(response.status_code, 302)
@@ -997,26 +1077,20 @@ class TestDhcpIntegrationSettingsView(TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertIs(DhcpIntegrationConfig.get().scheduled_import_enabled, False)
 
-    def test_without_the_dhcp_plugin_the_section_is_hidden_and_a_post_is_refused(self):
+    def test_the_tab_follows_the_dhcp_plugin_on_each_request(self):
+        tabs = [_tab("sync"), _tab("kea-client"), _tab("display-cache")]
         with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True):
-            self.assertIn("dhcp-integration", self._slugs())
+            self.assertEqual(self._tabs(), [*tabs, self.url])
+            self.assertEqual(self.client.get(self.url).status_code, 200)
         with patch.object(dhcp_plugin, "is_available", return_value=False, autospec=True):
-            self.assertEqual(self._slugs(), ["sync", "kea-client", "display-cache"])
+            self.assertEqual(self._tabs(), tabs)
+            self.assertEqual(self.client.get(self.url).status_code, 404)
             response = self.client.post(self.url, _section_data("dhcp-integration", {"enabled": False}))
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIs(DhcpIntegrationConfig.get().enabled, True)
-
-    def test_without_the_dhcp_plugin_the_settings_menu_has_no_dhcp_plugin_item(self):
-        from netbox_kea import navigation
-
-        def menu_texts():
-            return [item.link_text for item in navigation._settings_items()]
-
         with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True):
-            self.assertEqual(menu_texts(), ["Sync", "Kea Client", "Display Cache", "DHCP Plugin"])
-        with patch.object(dhcp_plugin, "is_available", return_value=False, autospec=True):
-            self.assertEqual(menu_texts(), ["Sync", "Kea Client", "Display Cache"])
+            self.assertEqual(self._tabs(), [*tabs, self.url])
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIs(DhcpIntegrationConfig.get().enabled, True)
 
 
 class TestSettingsSectionsCoverEverySingleton(SimpleTestCase):
@@ -1045,12 +1119,11 @@ class TestSettingsSectionsRenderEveryField(TestCase):
 
         user = User.objects.create_superuser("settings-fields", "f@f.com", "pass")
         self.client.force_login(user)
-        page = BeautifulSoup(self.client.get(reverse("plugins:netbox_kea:settings")).content, "html.parser")
-
         sections = visible_sections(user)
         self.assertTrue(sections)
         for section in sections:
-            card = page.find(id=section.slug)
+            page = BeautifulSoup(self.client.get(_tab(section.slug)).content, "html.parser")
+            card = page.select_one(".page-body .card")
             for name in section.form_class.base_fields:
                 with self.subTest(section=section.slug, field=name):
                     self.assertIsNotNone(card.find(attrs={"name": f"{section.slug}-{name}"}))
@@ -1064,38 +1137,38 @@ class TestDisplayCacheSettingsSection(TestCase):
     def test_the_section_shows_its_description_under_the_heading_and_no_field_repeats_it(self):
         user = User.objects.create_superuser("display-cache-admin", "d@d.com", "pass")
         self.client.force_login(user)
-        page = BeautifulSoup(self.client.get(reverse("plugins:netbox_kea:settings")).content, "html.parser")
+        page = BeautifulSoup(self.client.get(_tab("display-cache")).content, "html.parser")
 
-        card = page.find(id="display-cache")
+        card = page.select_one(".page-body .card")
         self.assertEqual(card.find(class_="settings-description").get_text(strip=True), self._DESCRIPTION)
         self.assertNotIn("save", " ".join(field.help_text for field in DisplayCacheConfig._meta.fields))
 
     def test_a_section_without_a_description_shows_none(self):
         user = User.objects.create_superuser("kea-client-description", "e@e.com", "pass")
         self.client.force_login(user)
-        page = BeautifulSoup(self.client.get(reverse("plugins:netbox_kea:settings")).content, "html.parser")
+        page = BeautifulSoup(self.client.get(_tab("kea-client")).content, "html.parser")
 
-        self.assertIsNone(page.find(id="kea-client").find(class_="settings-description"))
+        self.assertIsNone(page.select_one(".page-body .card").find(class_="settings-description"))
 
 
 class TestKeaClientSettingsPermissions(TestCase):
-    """The Kea Client section shows with view_keaclientconfig and saves with change_keaclientconfig as well."""
+    """The Kea Client tab shows with view_keaclientconfig and saves with change_keaclientconfig as well."""
 
     def setUp(self):
         self.user = User.objects.create_user("kea-client-user")
         self.client.force_login(self.user)
-        self.url = reverse("plugins:netbox_kea:settings")
+        self.url = _tab("kea-client")
 
-    def _shown_sections(self) -> list[str]:
+    def _shown_tabs(self) -> list[str]:
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
-        return [shown.section.slug for shown in response.context["sections"]]
+        return [section.slug for section in response.context["tabs"]]
 
-    def test_each_section_shows_only_with_its_own_view_permission(self):
+    def test_each_tab_shows_only_with_its_own_view_permission(self):
         _grant([KeaClientConfig], ["view", "change"], user=self.user)
-        self.assertEqual(self._shown_sections(), ["kea-client"])
+        self.assertEqual(self._shown_tabs(), ["kea-client"])
         _grant([SyncConfig], ["view"], user=self.user)
-        self.assertEqual(self._shown_sections(), ["sync", "kea-client"])
+        self.assertEqual(self._shown_tabs(), ["sync", "kea-client"])
 
     def test_a_viewer_sees_the_values_read_only_without_a_submit_control(self):
         _grant([KeaClientConfig], ["view"], user=self.user)
@@ -1110,7 +1183,8 @@ class TestKeaClientSettingsPermissions(TestCase):
         self.assertIsNone(page.select_one('form[method="post"]'))
 
     def test_a_post_without_both_permissions_is_refused_and_changes_nothing(self):
-        for actions in (["view"], ["change"]):
+        # Without the view permission the tab is hidden, so it is not found.
+        for actions, status in ((["view"], 403), (["change"], 404)):
             with self.subTest(actions=actions):
                 user = User.objects.create_user(f"kea-client-{'-'.join(actions)}")
                 _grant([KeaClientConfig], actions, user=user)
@@ -1119,7 +1193,7 @@ class TestKeaClientSettingsPermissions(TestCase):
 
                 response = self.client.post(self.url, _kea_client_settings(kea_timeout=10))
 
-                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.status_code, status)
                 self.assertEqual(KeaClientConfig.get().kea_timeout, 30)
 
     def test_a_user_with_view_and_change_saves(self):

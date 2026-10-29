@@ -15,10 +15,11 @@
     <p class="small text-muted mb-0 drift-legend">
       A live read of Kea, compared with the DHCP Import Mappings. <strong>Missing</strong>: Kea has the object, and
       NetBox has no imported row for it. <strong>Stale</strong>: NetBox has an imported row whose Kea object is gone,
-      so the next run removes it. <strong>Not seen</strong>: Kea was not read in full for that kind, so nothing can
-      be stale. <strong>Unknown</strong>: Kea could not be read, or its configuration could not be parsed, so the
-      state of each imported row is not known. The import does not write Shared Networks yet, so each one shows as
-      missing.
+      so the next run removes it. <strong>Not seen</strong>: Kea was not read in full for that row, so it cannot be
+      stale. A DHCP Option is not seen only when the read of its own entries or of its object is not complete.
+      <strong>Unknown</strong>: Kea could not be read, or its configuration could not be parsed, so the state of each
+      imported row is not known. An object that the installed DHCP plugin cannot hold, such as a Shared
+      Network or a DHCP Option without its Option Definition, has no imported row, so it shows as missing.
     </p>
   </div>
   {% for drift in families %}
@@ -83,7 +84,7 @@
                 <td>{{ obj.label }}</td>
                 <td><code>{{ obj.path }}</code></td>
                 <td><span class="badge text-bg-{{ obj.badge.1 }}">{{ obj.badge.0 }}</span></td>
-                <td>{{ obj.target|linkify|placeholder }}</td>
+                <td>{% if obj.target %}<a href="{{ obj.target.get_absolute_url }}">{{ obj.name }}</a>{% else %}{{ obj.target|placeholder }}{% endif %}{% if obj.assigned %} on {{ obj.assigned|linkify }}{% endif %}</td>
               </tr>
             {% endfor %}
             {% if drift.hidden %}

@@ -82,7 +82,7 @@ def test_the_harness_pauses_the_periodic_ipam_sync(page: Page, netbox_login: Non
     IPAddress rows these fixtures create and delete. That race made the lease-to-object
     tests fail intermittently. tests/docker/plugins.py holds the kill-switch off.
     """
-    page.goto(f"{plugin_base}/settings/")
+    page.goto(f"{plugin_base}/settings/sync/")
     toggle = page.locator("#id_sync-sync_enabled")
     toggle.wait_for()
 

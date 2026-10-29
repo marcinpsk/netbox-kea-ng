@@ -71,21 +71,22 @@
                 <td>
                   {% if job and job.data.summary %}
                     {% for entry in job.data.summary %}
-                      {% if entry.pk == server.pk %}{{ entry.created }}{% endif %}
+                      {% if entry.pk == server.pk %}{% if "created" in entry %}{{ entry.created }}{% else %}—{% endif %}{% endif %}
                     {% endfor %}
                   {% else %}—{% endif %}
                 </td>
                 <td>
                   {% if job and job.data.summary %}
                     {% for entry in job.data.summary %}
-                      {% if entry.pk == server.pk %}{{ entry.updated }}{% endif %}
+                      {% if entry.pk == server.pk %}{% if "updated" in entry %}{{ entry.updated }}{% else %}—{% endif %}{% endif %}
                     {% endfor %}
                   {% else %}—{% endif %}
                 </td>
                 <td>
                   {% if job and job.data.summary %}
                     {% for entry in job.data.summary %}
-                      {% if entry.pk == server.pk %}
+                      {% if entry.pk == server.pk and "errors" not in entry %}—
+                      {% elif entry.pk == server.pk %}
                         {% if entry.errors > 0 %}
                           <span class="text-danger">{{ entry.errors }}</span>
                         {% else %}
@@ -98,7 +99,8 @@
                 <td>
                   {% if job and job.data.summary %}
                     {% for entry in job.data.summary %}
-                      {% if entry.pk == server.pk %}
+                      {% if entry.pk == server.pk and "conflicts" not in entry %}—
+                      {% elif entry.pk == server.pk %}
                         {% if entry.conflicts %}
                           <span class="text-warning" title="Foreign NetBox IPs skipped to avoid overwriting them">{{ entry.conflicts }}</span>
                         {% else %}

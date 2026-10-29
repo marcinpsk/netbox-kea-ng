@@ -39,9 +39,8 @@ from netbox_kea.integrations.dhcp_import_report import (
 )
 from netbox_kea.models import DhcpImportEntry, DhcpImportRun, DhcpImportTrigger, Server
 
-from .kea_stub import _subnet_list, stub_kea
-from .test_views_dhcp_plugin import _sync_responses
-from .utils import DISPATCHED_EVENTS, _grant, _make_db_server
+from .kea_stub import _subnet_list, _sync_responses, stub_kea
+from .utils import DISPATCHED_EVENTS, _grant, _make_db_server, without_dhcp_plugin
 
 DHCP_PLUGIN = "netbox_dhcp"
 
@@ -77,7 +76,7 @@ _FIRST_RUN = {
     ("client_class", "created", "", "Dhcp4/client-classes[name=voip]"),
     ("server", "created", "", "Dhcp4"),
     ("server", "unsupported", "plugin_gap", "Dhcp4"),
-    ("shared_network", "not_imported", "not_in_scope", "Dhcp4/shared-networks[name=office]"),
+    ("shared_network", "unsupported", "plugin_gap", "Dhcp4/shared-networks[name=office]"),
     ("subnet", "created", "", _SUBNET),
     ("subnet", "created", "", "Dhcp4/subnet4[id=30]"),
     ("option", "created", "", f"{_SUBNET}/option-data[code=3]"),
@@ -265,7 +264,7 @@ class LatestRunPageTest(_ImportRunTestCase):
         self.assertIn(("DHCPv4", "Subnet", "2", "0", "0", "0", "0", "0"), counts)
         self.assertIn(("DHCPv4", "Reservation", "1", "0", "0", "0", "0", "1"), counts)
         self.assertIn(("DHCPv4", "DHCP Option", "1", "0", "0", "1", "0", "1"), counts)
-        self.assertIn(("DHCPv4", "Shared Network", "0", "0", "0", "0", "0", "1"), counts)
+        self.assertIn(("DHCPv4", "Shared Network", "0", "0", "0", "1", "0", "0"), counts)
         text = card.get_text(" ", strip=True)
         self.assertIn(f"{_SUBNET}/option-data[space=vendor-x,code=1]", text)
         self.assertIn("The DHCP plugin cannot hold it", text)
@@ -364,6 +363,7 @@ class LatestRunPageTest(_ImportRunTestCase):
         self.assertNotContains(response, "Dhcp4/shared-networks[name=office]", status_code=403)
 
 
+@without_dhcp_plugin()
 class EntryVocabularyTest(SimpleTestCase):
     """The reason of an entry gives its outcome, and each Kea path names one object."""
 
@@ -389,6 +389,94 @@ class EntryVocabularyTest(SimpleTestCase):
         for outcome, reason in ((Outcome.CREATED, Reason.WRITE_FAILED), (Outcome.SKIPPED, None)):
             with self.subTest(outcome=outcome), self.assertRaises(ValueError):
                 ImportEntry(4, Kind.SUBNET, "Dhcp4/subnet4[id=1]", outcome, reason)
+
+    def test_setting_paths_are_distinct_from_object_paths(self):
+        from netbox_kea.dhcp_options import option_identity
+
+        root = kea_paths.daemon(4)
+        subnet = kea_paths.subnet(4, 20)
+        option = _option(code=3)
+        names = (
+            "office/evaluate-additional-classes[lab",
+            "office]/client-classes[lab",
+            "office/interfaces-config/interfaces[lab",
+            "office/reservation-get-page/lab",
+        )
+        named_objects = tuple(
+            path
+            for name in names
+            for path in (
+                kea_paths.shared_network(4, name),
+                kea_paths.client_class(4, name),
+                kea_paths.option(subnet, _option(name=name), 4),
+            )
+        )
+        objects = (
+            root,
+            subnet,
+            kea_paths.subnet(4, None, "198.18.0.0/24"),
+            kea_paths.subnet_entry(root, 4, 0),
+            kea_paths.shared_network(4, "office"),
+            kea_paths.shared_network_entry(4, 0),
+            kea_paths.pool(subnet, "198.18.0.10-198.18.0.20"),
+            kea_paths.pool_entry(subnet, 0),
+            kea_paths.pd_pool(subnet, "2001:db8::/56", 64),
+            kea_paths.pd_pool_entry(subnet, 0),
+            kea_paths.client_class(4, "voip"),
+            kea_paths.client_class_entry(4, 0),
+            kea_paths.option_definition(4, "dhcp4", 224),
+            kea_paths.option_definition_entry(4, 0),
+            kea_paths.option(subnet, option, 4),
+            kea_paths.option_of_identity(subnet, option_identity(option, 4), 4),
+            kea_paths.option_entry(subnet, 0),
+            kea_paths.reservation(4, 20, "hw-address", "02:00:00:00:00:01"),
+            kea_paths.reservation_record(4, "hosts[1].hw-address"),
+            kea_paths.every_entry(kea_paths.reservations(4)),
+            *named_objects,
+        )
+        settings = (
+            kea_paths.setting(root, kea_paths.SERVER_ID),
+            kea_paths.setting(kea_paths.option(subnet, option, 4), "metadata"),
+            kea_paths.setting(kea_paths.setting(root, kea_paths.SERVER_ID), "type"),
+            kea_paths.class_reference(subnet, kea_paths.CLIENT_CLASSES, "missing"),
+            kea_paths.class_reference(subnet, kea_paths.EVALUATE_ADDITIONAL_CLASSES, "missing"),
+            kea_paths.interface(4, "eth0/198.18.0.1"),
+            *(kea_paths.setting(path, "metadata") for path in named_objects),
+            *(kea_paths.setting(path, "key[lab]") for path in named_objects),
+            *(kea_paths.class_reference(path, kea_paths.CLIENT_CLASSES, "missing") for path in named_objects),
+            *(
+                kea_paths.class_reference(path, kea_paths.EVALUATE_ADDITIONAL_CLASSES, "missing")
+                for path in named_objects
+            ),
+            *(kea_paths.interface(4, name) for name in names),
+        )
+        for path in objects:
+            with self.subTest(object=path):
+                self.assertIs(type(path), str)
+                self.assertFalse(kea_paths.is_setting(path))
+        for path in settings:
+            with self.subTest(setting=path):
+                self.assertTrue(kea_paths.is_setting(path))
+
+    def test_every_object_counter_excludes_setting_entries(self):
+        from netbox_kea.integrations.dhcp_plugin import ImportSummary, _Count
+
+        for name, counter in vars(ImportSummary).items():
+            if not isinstance(counter, _Count):
+                continue
+            match = counter.matches[0]
+            path = kea_paths.setting(kea_paths.daemon(4), "metadata")
+            entry = (
+                written(4, counter.kind, path, match)
+                if isinstance(match, Outcome) and match in (Outcome.CREATED, Outcome.UPDATED, Outcome.REMOVED)
+                else not_written(4, counter.kind, path, match)
+                if isinstance(match, Reason)
+                else ImportEntry(4, counter.kind, path, match, Reason.PLUGIN_GAP)
+            )
+            summary = ImportSummary(entries=[entry])
+            with self.subTest(counter=name):
+                self.assertEqual(getattr(summary, name), 0)
+                self.assertEqual(summary.count(counter.kind, match), 1)
 
     def test_kea_paths(self):
         subnet = kea_paths.subnet(6, 20, "2001:db8::/64")
@@ -854,7 +942,12 @@ class StaleRemovalTest(_ImportRunTestCase):
         run = self._sync(self.config, self.hosts)
 
         self.assertEqual(
-            self._removed(run), {("pool", _STALE_POOL), ("option_definition", "Dhcp4/option-def[code=241]")}
+            self._removed(run),
+            {
+                ("pool", _STALE_POOL),
+                ("option", f"{_STALE_POOL}/option-data[code=241]"),
+                ("option_definition", "Dhcp4/option-def[code=241]"),
+            },
         )
         self.assertEqual(self._mapped(Kind.OPTION_DEFINITION), [])
 
@@ -873,6 +966,8 @@ class StaleRemovalTest(_ImportRunTestCase):
 
     @override_settings(EVENTS_PIPELINE=["netbox_kea.tests.utils.record_dispatched_events"])
     def test_a_blocked_class_removal_dispatches_no_event_for_the_options_of_the_class(self):
+        from netbox_kea.models import KeaDhcpLink
+
         Option = apps.get_model(DHCP_PLUGIN, "Option")
         boot = {
             "name": "boot",
@@ -885,10 +980,14 @@ class StaleRemovalTest(_ImportRunTestCase):
         with_boot[4]["option-data"] = [{"code": 15, "data": "boot.example.org", "client-classes": ["boot"]}]
         self._sync(with_boot, self.hosts)
         own = Option.objects.get(definition__code=231)
+        # An operator takes over both Options: without a mapping, an Option is never stale on its own.
+        naming = Option.objects.get(definition__code=15)
+        option_type = ContentType.objects.get_for_model(Option)
+        KeaDhcpLink.objects.filter(object_type=option_type, object_id__in=[own.pk, naming.pk]).delete()
         DISPATCHED_EVENTS.clear()
         self.addCleanup(DISPATCHED_EVENTS.clear)
 
-        # Kea drops the class and the option that names it, so the unpaired global Option keeps the class.
+        # Kea drops the class and the option that names it, so the operator's global Option keeps the class.
         run = self._sync(self.config, self.hosts)
 
         entry = DhcpImportEntry.objects.get(run=run, kea_path="Dhcp4/client-classes[name=boot]")
@@ -957,7 +1056,10 @@ class StaleRemovalTest(_ImportRunTestCase):
         # The Reservation of Subnet 41 now names a Subnet that Kea does not have, so the Snapshot quarantines it.
         run = self._sync(self.config, self.hosts)
 
-        self.assertEqual(self._removed(run), {("pool", _STALE_POOL)})
+        # The Option of the Pool is judged by the Pool observation, which is Complete.
+        self.assertEqual(
+            self._removed(run), {("pool", _STALE_POOL), ("option", f"{_STALE_POOL}/option-data[code=241]")}
+        )
         entry = DhcpImportEntry.objects.filter(run=run).get(kind=Kind.SUBNET.value, reason=Reason.REMOVAL_BLOCKED.value)
         self.assertEqual(entry.kea_path, _STALE_SUBNET)
         self.assertIn("host reservation", entry.detail.lower())
@@ -986,6 +1088,7 @@ class StaleRemovalTest(_ImportRunTestCase):
                 ("pool", "Dhcp4/subnet4[*]/pools[*]"),
                 ("client_class", "Dhcp4/client-classes[*]"),
                 ("option_definition", "Dhcp4/option-def[*]"),
+                ("option", "Dhcp4/option-data[*]"),
                 ("reservation", "Dhcp4/reservations[*]"),
             },
         )

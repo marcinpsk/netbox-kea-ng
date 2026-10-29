@@ -179,8 +179,53 @@ import would link them again. With the source `delegated-prefix`, their cleanup 
 Snapshot, and a failed Reservation read would keep the stale links of the configuration. The `pd-pool` phase takes
 its cutoff before the import reads the configuration, and it is complete only when that read is Complete for
 delegated-prefix Pools. The import runs the phase after it removes the Stale DHCP Import Objects, so the DHCP plugin
-reference guard does not keep a Prefix that only a removed delegated-prefix Pool used. When a Prefix has more than
-one live source, the `subnet` marker wins over `pd pool`, and `pd pool` wins over `delegated prefix`.
+reference guard does not keep a Prefix that only a removed delegated-prefix Pool used. A delegated-prefix Pool that
+Kea no longer reports and that is still in NetBox references its Prefixes, so the phase is then not complete
+(marcinpsk/netbox-kea-ng#150).
+When a Prefix has more than one live source, the `subnet` marker wins over `pd pool`, and `pd pool` wins over
+`delegated prefix`.
+
+### Delegated and excluded prefixes of Reservations
+
+This section was added for marcinpsk/netbox-kea-ng#150. The Reservation step of the DHCP plugin import claims the
+delegated and excluded prefixes of the imported Reservations with `claim`, and attaches them in the same transaction.
+The `delegated-prefix` phase runs after the import removes the Stale DHCP Import Objects, the same as the `pd-pool`
+phase. Before, the phase ran in the Reservation step. A stale Reservation then still referenced its Prefixes, so the
+DHCP plugin reference guard dropped their links without deprecation, and the next step removed the Reservation. The
+Prefix stayed active, with no link that a later run could find. After the removal, the import reads which mapped
+Reservations and delegated-prefix Pools Kea no longer reports but NetBox still holds: a kind whose observation was
+incomplete, a removal that failed or was blocked, a mapping that another writer confirmed after the cutoff, or a
+plan without a cutoff. Such a row still references its Prefixes, so the phase of its source is then not complete
+and keeps every link. A Prefix whose claim failed before its attachment counts as one error, also when the later
+claim of the phase succeeds.
+
+### Order of the sync job passes
+
+This section was added for marcinpsk/netbox-kea-ng#153. The sync job runs its scheduled DHCP plugin import before
+the IPAM sync. The `subnet`, `pool` and `reservation` phases of the job clean up objects that the import also
+references. When the job ran the IPAM sync first, the stale DHCP plugin rows still existed, so the DHCP plugin
+reference guard dropped the stale links without deprecation or removal. The import then removed the rows, and the
+Prefix, IP Range or IP address stayed with no link that a later run could find. With the import first, the rows are
+gone when the cleanup reads the guard. The cleanup rule does not change: an unmapped DHCP plugin row still protects
+the objects that it references. Two limits are accepted. A Run Now of one Server syncs IPAM only, and a manual import
+can run after the job, so both can still leave such an object without an owner. The import attaches the existing IP
+address of a Global Reservation and never creates it, so an address that the `lease` phase creates is attached in
+the next run.
+
+### DHCP Import Mappings
+
+This section was added for marcinpsk/netbox-kea-ng#143. A DHCP Import Mapping (`KeaDhcpLink`) is also a user of the
+confirmation sequence. Each confirmation of a mapping stores a new number in its `confirmation` column: an import that
+creates or refreshes the mapping (`observe_mapping`), and an ADR 0008 merge or revert replay that creates, restores or
+changes it in main. A replay takes a new number and does not restore the recorded one. The import takes one cutoff
+before `config-get`, and the same number is the cutoff of the `pd-pool` phase. A mapping is a Stale DHCP Import
+Object candidate only when its number is lower than that cutoff. So a mapping that a replay writes while the import
+reads Kea stays, and no removal decision compares wall-clock times of two hosts. The per-Server import lock keeps two
+imports of one Server apart. The cutoff orders the other writers.
+
+The migration gives each existing mapping the number 0. The sequence starts at 1, so 0 is lower than every cutoff,
+also the cutoff of a read that runs during the upgrade. A number taken by the migration would be higher than that
+cutoff and would protect the mapping from a read that started before it.
 
 ### Interface
 
@@ -194,8 +239,8 @@ claim(server, family, records, force) -> ClaimResult  # one or more records, lin
 The job and the bulk views call `reconcile`. The per-row Sync, lease add and the DHCP plugin import call `claim`.
 The records of one `claim` call count as one phase for the fact comparison, so the DHCP plugin import passes all
 records of one snapshot in one call. The DHCP plugin import also calls `reconcile` for its `delegated-prefix` and
-`pd-pool` phases. The job reads one Lease Snapshot per family, with one cutoff, for its `lease` and `lease-prefix`
-phases.
+`pd-pool` phases, after it removes the Stale DHCP Import Objects. The job reads one Lease Snapshot per family, with
+one cutoff, for its `lease` and `lease-prefix` phases.
 
 Before `claim` and `reconcile` look up or create an object, or change its links, they take a transaction-level
 PostgreSQL advisory lock on the object identity: the VRF and the address, Prefix or IP Range. They decide the
@@ -274,6 +319,8 @@ per Server, and the synchronization never removes them.
 - A data migration that assigns owners: rejected because overlapping Subnets make it a guess.
 - Confirmation times from the PostgreSQL clock (`clock_timestamp()`): rejected because the clock can step back,
   and a claim made after the cutoff then gets an earlier time and loses its link.
+- Confirmation times from the clock of the application host for DHCP Import Mappings: rejected because two hosts can
+  disagree, and a replay of a raw save keeps the recorded time (marcinpsk/netbox-kea-ng#143).
 - Let cleanup detect a `claim` that waits for the identity lock: rejected because a claim that starts just after
   the removal commits gets the same new ID, so the window only gets smaller.
 - Move a legacy global-VRF row into the `sync_vrf` of the first Server that adopts it: rejected because the row's

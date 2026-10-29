@@ -20,10 +20,29 @@ from rest_framework.test import APIClient
 from netbox_kea import display_cache
 from netbox_kea.models import Server
 
-from .kea_stub import _catalogue_responses, _http_response, _raw_http_response, _res_get, _res_page, stub_kea
+from .kea_stub import (
+    _catalogue_responses,
+    _catalogue_responses_for_subnets,
+    _http_response,
+    _raw_http_response,
+    _res_get,
+    _res_page,
+    recorded_host,
+    stub_kea,
+)
 
 User = get_user_model()
 
+
+#: The widened facts of a Reservation that sets none of them.
+_NO_WIDENED_FACTS: dict[str, object] = {
+    "client_classes": [],
+    "next_server": None,
+    "server_hostname": "",
+    "boot_file_name": "",
+    "excluded_prefixes": [],
+    "user_context": None,
+}
 
 # Not found — reservation-get result=3
 _RESERVATION_NOT_FOUND = [{"result": 3, "text": "Host not found."}]
@@ -345,6 +364,7 @@ class TestReservation4API(_APITestBase):
                         "delegated_prefixes": [],
                         "hostname": "",
                         "options": [],
+                        **_NO_WIDENED_FACTS,
                     }
                 ],
                 "diagnostics": [],
@@ -741,6 +761,7 @@ class TestReservation6API(_APITestBase):
                         "delegated_prefixes": ["2001:db8:100::/56"],
                         "hostname": "",
                         "options": [],
+                        **_NO_WIDENED_FACTS,
                     }
                 ],
                 "diagnostics": [],
@@ -805,6 +826,7 @@ class TestReservation6API(_APITestBase):
                         "delegated_prefixes": ["2001:db8:100::/56"],
                         "hostname": "host.example.invalid",
                         "options": [],
+                        **_NO_WIDENED_FACTS,
                     }
                 ],
                 "diagnostics": [
@@ -897,3 +919,67 @@ class TestReservation6API(_APITestBase):
                 with stub_kea(responses):
                     response = self.api_client.get(self._url(), {"hostname": "host.example.invalid"})
                 self.assertEqual(response.status_code, 502)
+
+
+class TestWidenedReservationAPI(_APITestBase):
+    """The REST response shows each widened fact of a Reservation as Kea 3.2 returned it."""
+
+    _CIDR = {4: "198.51.100.128/25", 6: "2001:db8:3::/64"}
+    _IDENTIFIER = {4: "hw-address", 6: "duid"}
+
+    def _url(self, family):
+        return reverse(f"plugins-api:netbox_kea-api:server-reservations{family}", args=[self.server.pk])
+
+    def _result(self, family, host):
+        responses = _catalogue_responses_for_subnets(family, [{"id": 21, "subnet": self._CIDR[family]}])
+        responses["reservation-get"] = _res_get(host)
+        identifier = self._IDENTIFIER[family]
+        query = {"scope": "in-subnet", "subnet_id": "21", "identifier_type": identifier, "identifier": host[identifier]}
+        with stub_kea(responses):
+            response = self.api_client.get(self._url(family), query)
+        self.assertEqual(response.status_code, 200)
+        (result,) = response.json()["results"]
+        return result
+
+    def test_the_response_shows_each_widened_fact(self):
+        host4 = recorded_host(4)
+        # Kea 3.2 returns the client classes of an option of a host as stored.
+        host4["option-data"] = [{**host4["option-data"][0], "client-classes": ["voip"]}]
+        result4 = self._result(4, host4)
+        result6 = self._result(6, recorded_host(6))
+
+        self.assertEqual(
+            {key: result4[key] for key in _NO_WIDENED_FACTS},
+            {
+                "client_classes": ["voip"],
+                "next_server": "192.0.2.5",
+                "server_hostname": "boot.example.org",
+                "boot_file_name": "host.efi",
+                "excluded_prefixes": [],
+                "user_context": {"asset": 42},
+            },
+        )
+        self.assertEqual(result4["options"][0]["client_classes"], ["voip"])
+        self.assertEqual(
+            {key: result6[key] for key in _NO_WIDENED_FACTS},
+            {
+                "client_classes": ["voip"],
+                "next_server": None,
+                "server_hostname": "",
+                "boot_file_name": "",
+                "excluded_prefixes": [
+                    {"delegated_prefix": "2001:db8:400:100::/56", "excluded_prefix": "2001:db8:400:100:ff::/80"}
+                ],
+                "user_context": {"asset": 42},
+            },
+        )
+
+    def test_the_reservation_routes_refuse_every_write(self):
+        for family in (4, 6):
+            for method in ("post", "put", "patch", "delete"):
+                with self.subTest(family=family, method=method), stub_kea({}) as kea:
+                    response = getattr(self.api_client, method)(
+                        self._url(family), {"user_context": {"asset": 1}}, format="json"
+                    )
+                    self.assertEqual(response.status_code, 405)
+                    self.assertEqual(kea.commands(), [])

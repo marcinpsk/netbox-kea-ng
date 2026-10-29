@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 import ipaddress
+import json
 import logging
 from typing import Any
 from urllib.parse import urlencode
@@ -85,7 +86,7 @@ def _submitted_values(
         addresses = tuple(
             ipaddress.IPv6Address(value) for value in (cleaned_data.get("ip_addresses") or "").split(",") if value
         )
-    prefixes = tuple(ipaddress.IPv6Network(value) for value in (cleaned_data.get("prefixes") or "").split(",") if value)
+    prefixes = _networks(cleaned_data.get("prefixes"))
     rows = tuple(
         reservation_edit.OptionRow(
             name=row.get("name", ""),
@@ -95,11 +96,28 @@ def _submitted_values(
             original_option=parse_dhcp_option(row["original_option"])
             if row.get("original_option") is not None
             else None,
+            client_classes=row.get("client_classes", ""),
         )
         for row in (getattr(options_formset, "cleaned_data", []) or [])
         if row
     )
-    return reservation_edit.SubmittedValues(addresses, prefixes, cleaned_data.get("hostname", ""), rows)
+    next_server = cleaned_data.get("next_server")
+    return reservation_edit.SubmittedValues(
+        addresses,
+        prefixes,
+        cleaned_data.get("hostname", ""),
+        rows,
+        client_classes=cleaned_data.get("client_classes", ""),
+        next_server=ipaddress.IPv4Address(next_server) if next_server else None,
+        server_hostname=cleaned_data.get("server_hostname", ""),
+        boot_file_name=cleaned_data.get("boot_file_name", ""),
+        excluded_prefixes=_networks(cleaned_data.get("excluded_prefixes")),
+    )
+
+
+def _networks(value: str | None) -> tuple[ipaddress.IPv6Network, ...]:
+    """Parse a cleaned comma-separated prefix field."""
+    return tuple(ipaddress.IPv6Network(item) for item in (value or "").split(",") if item)
 
 
 def reservation_identity_from_request(request: HttpRequest, version: Family) -> ReservationIdentity:
@@ -353,6 +371,7 @@ class _ReservationMutationView(_KeaChangeMixin, ServerFamilyMixin, generic.Objec
         *,
         subnet_cmds_available: bool = True,
         published_name_query: str = "",
+        user_context: Any = None,
     ) -> dict[str, Any]:
         preview_url = reverse(
             f"plugins:netbox_kea:server_reservation{self.dhcp_version}_published_name", args=[server.pk]
@@ -368,6 +387,8 @@ class _ReservationMutationView(_KeaChangeMixin, ServerFamilyMixin, generic.Objec
             "subnet_cmds_available": subnet_cmds_available,
             "mutation_available": bool(capabilities and capabilities.mutation_available),
             "published_name_url": f"{preview_url}?{published_name_query}" if published_name_query else preview_url,
+            # Read-only: no form field edits it, and an edit keeps the live value.
+            "user_context": None if user_context is None else json.dumps(user_context, indent=2),
         }
 
     def _render(
@@ -508,6 +529,7 @@ class _ReservationEditView(_ReservationMutationView):
             form,
             forms.ReservationOptionsFormSet(initial=state.options_initial, prefix="options"),
             capabilities,
+            user_context=reservation.user_context,
         )
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
@@ -580,7 +602,7 @@ class _ReservationEditView(_ReservationMutationView):
                         _show_applied_details(request, outcome)
                     return redirect(return_url)
         show_notices(request, notice(catalogue))
-        return self._render(request, server, form, options_formset, capabilities)
+        return self._render(request, server, form, options_formset, capabilities, user_context=current.user_context)
 
     def _form_for(
         self,

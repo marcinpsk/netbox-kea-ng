@@ -270,8 +270,13 @@ _MANAGED_RESERVATION_KEYS = frozenset(
         "ip-address",
         "ip-addresses",
         "prefixes",
+        "excluded-prefixes",
         "hostname",
         "option-data",
+        "client-classes",
+        "next-server",
+        "server-hostname",
+        "boot-file-name",
     }
 )
 

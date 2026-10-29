@@ -55,3 +55,8 @@
     top: 3.5rem;
   }
 }
+
+/* A Kea path breaks at any character, so the drift table fits a phone without a sideways scroll. */
+.drift-table code {
+  overflow-wrap: anywhere;
+}

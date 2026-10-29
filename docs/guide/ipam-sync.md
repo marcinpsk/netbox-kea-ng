@@ -61,12 +61,16 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
    stays marked stale until an applied report restores its active status, or another owner supersedes the stale link.
    Removing the description marker releases every link without deprecation. DHCP plugin references prevent deprecation.
 6. Links each current DHCPv6 delegated-prefix lease to a Prefix in the server's `sync_vrf` (source `lease-prefix`),
-   when lease sync and Prefix sync are both on. The DHCP plugin import owns delegated prefixes through its own
-   source, so neither cleans up the other's links. These Prefixes follow the rules of step 5. A delegated prefix
-   never creates an IP address. The DHCP plugin import also owns the prefix and the excluded prefix of each DHCPv6
-   delegated-prefix Pool (`pd-pools`), through the source `pd-pool` and the marker `[kea-sync: pd pool]`. The job
-   reads no delegated-prefix Pool, so it never drops these links. The import drops them after it read every
-   delegated-prefix Pool, with the rules of step 5
+   when lease sync and Prefix sync are both on. The DHCP plugin import owns the delegated prefixes of Reservations,
+   and the prefixes that they exclude, through its own source, so neither cleans up the other's links. These
+   Prefixes follow the rules of step 5. A delegated prefix never creates an IP address. The DHCP plugin import also
+   owns the prefix and the excluded prefix of each DHCPv6 delegated-prefix Pool (`pd-pools`), through the source
+   `pd-pool` and the marker `[kea-sync: pd pool]`. The job reads no delegated-prefix Pool, so it never drops these
+   links. The import drops them after it read every delegated-prefix Pool, with the rules of step 5.
+   The import drops its stale `delegated-prefix` and `pd-pool` links after it removed the Stale DHCP Import Objects.
+   So a Prefix that only a removed Reservation or delegated-prefix Pool used follows the rules of step 5. When a
+   Reservation or delegated-prefix Pool that Kea no longer reports stays in NetBox, for example because its removal
+   failed, it still uses its Prefixes, and the run drops no link of that source (`delegated-prefix` or `pd-pool`).
 7. One server failing does not block others
 8. Summary logged per server and in total
 
@@ -130,9 +134,9 @@ missing or constrained permission, and the server refuses the request with the s
 group mapping (`FIND_GROUP_PERMS`) gives does not count.
 
 **Sync to DHCP plugin now** also writes the DHCP plugin objects. It needs add and change on DHCP Server, Option
-Definition, Option, Client Class, Subnet, Pool, Prefix Delegation Pool and Host Reservation. It removes Stale DHCP
-Import Objects (see [Configuration](configuration.md)), so it also needs delete on Option Definition, Option, Client
-Class, Shared Network, Subnet, Pool, Prefix Delegation Pool and Host Reservation.
+Definition, Option, Client Class, Shared Network, Subnet, Pool, Prefix Delegation Pool and Host Reservation. It
+removes Stale DHCP Import Objects (see [DHCP Import](dhcp-import.md#removal-of-stale-dhcp-import-objects)), so it also needs delete on Option
+Definition, Option, Client Class, Shared Network, Subnet, Pool, Prefix Delegation Pool and Host Reservation.
 
 ## Upgrade to ownership links
 
@@ -146,7 +150,7 @@ different VRFs keep the global row and create their own scoped rows. A global-VR
 Adopted objects keep their last link until every potential owner completes all relevant enabled observations.
 Periodic jobs and DHCP imports record completion separately. An incomplete phase or missing family does not
 count as complete. Disabled sources and families do not hold the barrier. A Server whose DHCP plugin integration
-does not run (see [Configuration](configuration.md)) has no DHCP import to wait for. The read-only
+does not run (see [DHCP Import](dhcp-import.md#when-the-import-runs)) has no DHCP import to wait for. The read-only
 `ipam_first_complete_at` field shows when a server first completed its enabled observations. Newly enabled
 sources still require complete observations, even when that timestamp is already set.
 

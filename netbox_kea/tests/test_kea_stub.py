@@ -23,6 +23,7 @@ from netbox_kea.tests.kea_stub import (
     _typed_reservation,
     kea_client,
     queued,
+    recorded_host,
     stub_kea,
 )
 
@@ -273,3 +274,38 @@ def test_config_writes_carry_only_keys_a_real_kea_returns(family):
         with pytest.raises(AssertionError, match=r"sends \['description'\]"):
             stub("https://kea.example.invalid/", json={"command": "config-test", "arguments": arguments})
         del entry["description"]
+
+
+@pytest.mark.parametrize("family", [4, 6])
+@pytest.mark.parametrize("command", ["reservation-add", "reservation-update"])
+def test_host_writes_carry_only_keys_and_pairs_a_real_kea_takes(family, command):
+    stub = KeaHttpStub({command: {"result": 0}})
+    host = recorded_host(family)
+
+    def send(reservation):
+        return stub(
+            "https://kea.example.invalid/", json={"command": command, "arguments": {"reservation": reservation}}
+        )
+
+    assert send(host).ok
+    with pytest.raises(AssertionError, match=r"sends \['excluded_prefixes'\] in a host"):
+        send({**host, "excluded_prefixes": []})
+    with pytest.raises(AssertionError, match="do not pair one to one"):
+        send({**recorded_host(6), "prefixes": ["2001:db8:500::/56"], "excluded-prefixes": ["", ""]})
+    other = {"next-server": "192.0.2.5"} if family == 6 else {"prefixes": ["2001:db8:500::/56"]}
+    # A host that mixes the keys of both families is refused, whichever family the stub takes it for.
+    with pytest.raises(AssertionError, match=r"not accept on a DHCPv[46] host"):
+        send({**host, **other})
+
+
+@pytest.mark.parametrize("family", [4, 6])
+def test_a_control_agent_service_names_the_family_of_a_host_write(family):
+    stub = KeaHttpStub({"reservation-add": {"result": 0}})
+    # A DHCPv6 host with only keys that both families take, plus a DHCPv4 boot field, looks like a DHCPv4 host.
+    host = {"subnet-id": 21, "hw-address": "aa:bb:cc:00:01:00", "next-server": "192.0.2.5"}
+    body = {"command": "reservation-add", "service": [f"dhcp{family}"], "arguments": {"reservation": host}}
+    if family == 4:
+        assert stub("https://kea.example.invalid/", json=body).ok
+    else:
+        with pytest.raises(AssertionError, match=r"\['next-server'\]"):
+            stub("https://kea.example.invalid/", json=body)

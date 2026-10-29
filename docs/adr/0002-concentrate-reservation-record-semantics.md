@@ -14,8 +14,8 @@ _Amended 2026-10-17 by ADR 0013: the typed Reservation also carries every host r
 can represent: client classes, `next-server`, `server-hostname`, `boot-file-name`, `excluded-prefixes`, and the
 client classes of each DHCP Option. It exposes `user-context` read-only as one opaque JSON value, so the DHCP
 Import can plan it. Our forms never edit it, and an update preserves it. This is the target model:
-marcinpsk/netbox-kea-ng#102 builds it, and marcinpsk/netbox-kea-ng#100 and #104 import it. Until then, these keys
-stay unknown fields that an update preserves._
+marcinpsk/netbox-kea-ng#102 builds it, and marcinpsk/netbox-kea-ng#100 and #104 import it. Since #102,
+`user-context` is the only host key that an update keeps as an unknown field._
 
 ## Context
 

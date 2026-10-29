@@ -18,6 +18,7 @@ from netbox_kea.kea import KeaCommand
 from netbox_kea.reservations import (
     MAX_IDENTITY_LENGTH,
     ClearValue,
+    ExcludedPrefix,
     Family,
     GlobalReservationScope,
     InSubnetReservationScope,
@@ -31,7 +32,9 @@ from netbox_kea.reservations import (
     ReservationSynchronizationState,
     SetValue,
     SynchronizationLabel,
+    _reservation_to_raw,
     apply_reservation_change,
+    reservation_fingerprint,
     reservation_identifier_types,
     reservation_match,
 )
@@ -54,6 +57,7 @@ from .kea_stub import (
     lease_record,
     observed_configuration,
     queued,
+    recorded_host,
     stub_kea,
     typed_lease,
 )
@@ -1437,3 +1441,191 @@ class TestReservationMatchContract(SimpleTestCase):
         global_reservation = _typed_reservation({"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:ff"})
         with self.assertRaisesRegex(ValueError, "only where Kea tries it"):
             reservation_match(self._lease, self._subnet, None, None, global_reservation=global_reservation)
+
+
+#: Kea's next-server of a host that sets none, not an address to bind.
+_UNSET_NEXT_SERVER = "0.0.0.0"  # noqa: S104
+
+
+class TestWidenedReservationKeys(SimpleTestCase):
+    """The adapter reads every host reservation key that the DHCP Import needs, as Kea 3.2 returns it."""
+
+    def setUp(self):
+        self.kea = kea_client(url="http://kea.example.invalid", send_service=False)
+
+    def _read(self, family: Family, raw: dict, cidr: str):
+        catalogue = _catalogue(family, raw["subnet-id"], cidr)
+        scope = InSubnetReservationScope(SubnetIdentity(raw["subnet-id"], ip_network(cidr)))
+        identity = next(
+            ReservationIdentity(key, raw[key]) for key in reservation_identifier_types(family) if key in raw
+        )
+        with stub_kea({"reservation-get": _res_get(raw)}):
+            return self.kea.reservation_by_identity(family, catalogue, scope, identity)
+
+    def test_the_recorded_dhcpv4_host_keeps_its_classes_boot_fields_and_user_context(self):
+        reservation = self._read(4, recorded_host(4), "198.51.100.128/25")
+
+        self.assertEqual(reservation.client_classes, ("voip",))
+        self.assertEqual(reservation.next_server, ip_address("192.0.2.5"))
+        self.assertEqual(reservation.server_hostname, "boot.example.org")
+        self.assertEqual(reservation.boot_file_name, "host.efi")
+        self.assertEqual(reservation.user_context, {"asset": 42})
+
+    def test_the_unset_boot_fields_that_kea_returns_are_empty(self):
+        raw = {**recorded_host(4), "next-server": _UNSET_NEXT_SERVER, "server-hostname": "", "boot-file-name": ""}
+        raw.pop("user-context")
+
+        reservation = self._read(4, raw, "198.51.100.128/25")
+
+        self.assertIsNone(reservation.next_server)
+        self.assertEqual((reservation.server_hostname, reservation.boot_file_name), ("", ""))
+        self.assertIsNone(reservation.user_context)
+
+    def test_the_recorded_dhcpv6_host_pairs_its_excluded_prefix_with_its_delegated_prefix(self):
+        reservation = self._read(6, recorded_host(6), "2001:db8:3::/64")
+
+        self.assertEqual(reservation.client_classes, ("voip",))
+        self.assertEqual(
+            reservation.excluded_prefixes,
+            (ExcludedPrefix(ip_network("2001:db8:400:100::/56"), ip_network("2001:db8:400:100:ff::/80")),),
+        )
+        self.assertEqual(reservation.user_context, {"asset": 42})
+
+    def test_an_empty_entry_is_a_delegated_prefix_without_an_excluded_prefix(self):
+        # Kea 3.2 returns one entry for each prefix, and an empty one for a prefix that excludes nothing.
+        raw = {
+            **recorded_host(6),
+            "prefixes": ["2001:db8:500::/56", "2001:db8:600::/56"],
+            "excluded-prefixes": ["", "2001:db8:600:ff::/64"],
+        }
+
+        reservation = self._read(6, raw, "2001:db8:3::/64")
+
+        self.assertEqual(
+            reservation.excluded_prefixes,
+            (ExcludedPrefix(ip_network("2001:db8:600::/56"), ip_network("2001:db8:600:ff::/64")),),
+        )
+
+    def test_records_that_kea_would_refuse_are_quarantined(self):
+        v4, v6 = recorded_host(4), recorded_host(6)
+        cases = (
+            (4, {**v4, "client-classes": "voip"}, "client-classes"),
+            (4, {**v4, "client-classes": ["voip", "voip"]}, "client-classes"),
+            (4, {**v4, "client-classes": [""]}, "client-classes"),
+            (4, {**v4, "next-server": "2001:db8::1"}, "next-server"),
+            (4, {**v4, "next-server": "255.255.255.255"}, "next-server"),
+            (4, {**v4, "server-hostname": "s" * 64}, "server-hostname"),
+            (4, {**v4, "boot-file-name": "b" * 128}, "boot-file-name"),
+            (4, {**v4, "excluded-prefixes": ["2001:db8::/64"]}, "excluded-prefixes"),
+            (6, {**v6, "excluded-prefixes": []}, "excluded-prefixes"),
+            (6, {**v6, "excluded-prefixes": ["2001:db8:400:100:ff::/80", ""]}, "excluded-prefixes"),
+            (6, {**v6, "excluded-prefixes": ["2001:db8:700:ff::/64"]}, "excluded-prefixes"),
+            (6, {**v6, "excluded-prefixes": ["2001:db8:400::/48"]}, "excluded-prefixes"),
+            (6, {**v6, "excluded-prefixes": ["2001:db8:400:100:ff::1/80"]}, "excluded-prefixes"),
+            (6, {**v6, "next-server": "192.0.2.1"}, "next-server"),
+            (6, {**v6, "boot-file-name": "pxe.efi"}, "boot-file-name"),
+        )
+        for family, raw, field in cases:
+            cidr = "198.51.100.128/25" if family == 4 else "2001:db8:3::/64"
+            with self.subTest(family=family, raw={key: raw[key] for key in raw if key == field}):
+                with self.assertRaises(MalformedReservation) as raised:
+                    self._read(family, raw, cidr)
+                # An entry error names its position, such as excluded-prefixes[0].
+                self.assertEqual(raised.exception.field.split("[")[0], field)
+
+    def test_an_add_sends_each_widened_key_in_the_form_that_kea_reads(self):
+        scope4 = InSubnetReservationScope(SubnetIdentity(21, ip_network("198.51.100.128/25")))
+        scope6 = InSubnetReservationScope(SubnetIdentity(21, ip_network("2001:db8:3::/64")))
+        delegated = (ip_network("2001:db8:500::/56"), ip_network("2001:db8:600::/56"))
+        cases = (
+            (
+                IPv4Reservation(
+                    scope=scope4,
+                    identity=ReservationIdentity("hw-address", "aa:bb:cc:00:01:00"),
+                    addresses=(),
+                    client_classes=("voip", "boot"),
+                    next_server=ip_address("192.0.2.5"),
+                    server_hostname="boot.example.org",
+                    boot_file_name="host.efi",
+                    user_context={"asset": 42},
+                ),
+                {
+                    "subnet-id": 21,
+                    "hw-address": "aa:bb:cc:00:01:00",
+                    "client-classes": ["voip", "boot"],
+                    "next-server": "192.0.2.5",
+                    "server-hostname": "boot.example.org",
+                    "boot-file-name": "host.efi",
+                    "user-context": {"asset": 42},
+                },
+            ),
+            (
+                IPv6Reservation(
+                    scope=scope6,
+                    identity=ReservationIdentity("duid", "00:01:02:03"),
+                    addresses=(),
+                    delegated_prefixes=delegated,
+                    client_classes=("voip",),
+                    excluded_prefixes=(ExcludedPrefix(delegated[1], ip_network("2001:db8:600:ff::/64")),),
+                ),
+                {
+                    "subnet-id": 21,
+                    "duid": "00:01:02:03",
+                    "prefixes": ["2001:db8:500::/56", "2001:db8:600::/56"],
+                    "excluded-prefixes": ["", "2001:db8:600:ff::/64"],
+                    "client-classes": ["voip"],
+                },
+            ),
+        )
+        for reservation, expected in cases:
+            with self.subTest(family=reservation.family):
+                with stub_kea({"reservation-add": {"result": 0}}) as kea:
+                    self.kea.reservation_add(reservation)
+                self.assertEqual(kea.bodies("reservation-add")[0]["arguments"]["reservation"], expected)
+
+    def test_the_fingerprint_covers_each_editable_key_and_not_the_user_context(self):
+        recorded = self._read(4, recorded_host(4), "198.51.100.128/25")
+        fingerprint = reservation_fingerprint(recorded)
+        for changed in (
+            {"client_classes": ("voip", "boot")},
+            {"next_server": ip_address("192.0.2.6")},
+            {"server_hostname": "other.example.org"},
+            {"boot_file_name": "other.efi"},
+        ):
+            with self.subTest(changed=changed):
+                self.assertNotEqual(reservation_fingerprint(replace(recorded, **changed)), fingerprint)
+        self.assertEqual(reservation_fingerprint(replace(recorded, user_context={"asset": 43})), fingerprint)
+        v6 = self._read(6, recorded_host(6), "2001:db8:3::/64")
+        moved = ExcludedPrefix(v6.delegated_prefixes[0], ip_network("2001:db8:400:100:fe::/80"))
+        self.assertNotEqual(
+            reservation_fingerprint(replace(v6, excluded_prefixes=(moved,))), reservation_fingerprint(v6)
+        )
+
+    def test_an_update_replaces_each_key_that_the_serializer_writes(self):
+        # An update keeps every key outside the managed set, so a written key missing from it could never be cleared.
+        for family, cidr in ((4, "198.51.100.128/25"), (6, "2001:db8:3::/64")):
+            reservation = self._read(family, recorded_host(family), cidr)
+            with self.subTest(family=family):
+                self.assertLessEqual(
+                    set(_reservation_to_raw(reservation)) - {"user-context"}, kea._MANAGED_RESERVATION_KEYS
+                )
+
+    def test_the_model_refuses_values_that_kea_refuses(self):
+        v4 = self._read(4, recorded_host(4), "198.51.100.128/25")
+        v6 = self._read(6, recorded_host(6), "2001:db8:3::/64")
+        other = ExcludedPrefix(ip_network("2001:db8:900::/56"), ip_network("2001:db8:900:ff::/64"))
+        for reservation, changed in (
+            (v4, {"client_classes": ("voip", "voip")}),
+            (v4, {"client_classes": (" voip",)}),
+            (v4, {"next_server": ip_address(_UNSET_NEXT_SERVER)}),
+            (v4, {"next_server": ip_address("255.255.255.255")}),
+            (v4, {"server_hostname": "s" * 64}),
+            (v4, {"boot_file_name": "b" * 128}),
+            (v6, {"excluded_prefixes": (other,)}),
+            (v6, {"excluded_prefixes": (*v6.excluded_prefixes, *v6.excluded_prefixes)}),
+            (v6, {"boot_file_name": "pxe.efi"}),
+        ):
+            with self.subTest(family=reservation.family, changed=changed), self.assertRaises(ValueError):
+                replace(reservation, **changed)
+        with self.assertRaisesRegex(ValueError, "longer prefix inside"):
+            ExcludedPrefix(ip_network("2001:db8:900::/56"), ip_network("2001:db8:900::/48"))

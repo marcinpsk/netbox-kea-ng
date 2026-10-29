@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 import requests
@@ -9,6 +10,7 @@ from bs4 import BeautifulSoup
 from django.contrib import messages as django_messages
 from django.urls import reverse
 
+from netbox_kea import display_cache
 from netbox_kea.views.notices import HEADLINES, Notice
 from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
@@ -21,6 +23,7 @@ from .kea_stub import (
     complete_lease,
     lease_record,
     queued,
+    recorded_host,
     stub_kea,
 )
 from .utils import _make_db_server, _ViewTestBase, with_display_cache_config
@@ -1229,3 +1232,86 @@ class TestReservationIgnoredBadgeOnLeases(_ViewTestBase):
                 self.assertEqual(badge.get("href"), row["reservation_url"])
                 self.assertIsNone(row["create_reservation_url"])
                 self.assertIsNotNone(row.get("sync_url"), "Kea gives the Lease from the pool, so Sync is offered")
+
+
+class TestWidenedReservationPage(_ViewTestBase):
+    """The Reservation page shows each widened fact of a Reservation as Kea 3.2 returned it."""
+
+    def _row(self, family, cidr, host):
+        # Each call shows another host, so no cached page of an earlier call may answer it.
+        display_cache.rotate_after_write(self.server, family, configuration=True)
+        responses = _catalogue_responses(family, 21, cidr)
+        responses["reservation-get-page"] = _res_page([host])
+        no_leases = {"result": 0, "arguments": {"leases": []}}
+        responses.update({f"lease{family}-get-by-state": no_leases, f"lease{family}-get-all": no_leases})
+        url = reverse(f"plugins:netbox_kea:server_reservations{family}", args=[self.server.pk])
+        with stub_kea(responses):
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        table = BeautifulSoup(response.content, "html.parser").find("table", class_="table")
+        headers = [header.get_text(" ", strip=True) for header in table.find("thead").find_all("th")]
+        cells = table.find("tbody").find("tr").find_all("td")
+        return dict(zip(headers, cells, strict=True))
+
+    def _assert_user_context(self, row, value, summary):
+        """The default page folds the user context into the Identifier cell, so it adds no column."""
+        self.assertNotIn("User Context", row)
+        details = row["Identifier"].find("details")
+        self.assertEqual(details.find("summary").get_text(" ", strip=True), summary)
+        self.assertEqual(json.loads(details.find("code").get_text()), value)
+
+    def test_the_summary_counts_the_keys_or_items_of_the_user_context(self):
+        for context, summary in (
+            ({"a": 1, "b": 2}, "User context (2 keys)"),
+            (["x"], "User context (1 item)"),
+            ("note", "User context"),
+        ):
+            with self.subTest(context=context):
+                row = self._row(4, "198.51.100.128/25", {**recorded_host(4), "user-context": context})
+                self._assert_user_context(row, context, summary)
+
+    def test_a_reservation_without_a_user_context_shows_no_toggle(self):
+        host = recorded_host(4)
+        host.pop("user-context")
+        self.assertIsNone(self._row(4, "198.51.100.128/25", host)["Identifier"].find("details"))
+
+    def test_the_dhcpv4_page_shows_classes_boot_fields_option_classes_and_user_context(self):
+        host = recorded_host(4)
+        # Kea 3.2 returns the client classes of an option of a host as stored.
+        host["option-data"] = [{**host["option-data"][0], "client-classes": ["voip"]}]
+        row = self._row(4, "198.51.100.128/25", host)
+
+        self.assertEqual(row["Client Classes"].get_text(" ", strip=True), "voip")
+        self.assertEqual(
+            row["Boot"].get_text(" ", strip=True),
+            "Next server 192.0.2.5 Server hostname boot.example.org Boot file name host.efi",
+        )
+        self.assertIn("Client classes: voip", row["DHCP Options"].get_text(" ", strip=True))
+        self._assert_user_context(row, {"asset": 42}, "User context (1 key)")
+
+    def test_the_dhcpv6_page_shows_each_excluded_prefix_with_its_delegated_prefix(self):
+        row = self._row(6, "2001:db8:3::/64", recorded_host(6))
+
+        self.assertEqual(row["Client Classes"].get_text(" ", strip=True), "voip")
+        self.assertEqual(
+            row["Delegated Prefixes"].get_text(" ", strip=True),
+            "2001:db8:400:100::/56 excludes 2001:db8:400:100:ff::/80",
+        )
+        self._assert_user_context(row, {"asset": 42}, "User context (1 key)")
+        self.assertNotIn("Boot", row)
+
+    def test_a_global_reservation_shows_its_widened_facts_without_a_change_action(self):
+        row = self._row(4, "198.51.100.128/25", {**recorded_host(4), "subnet-id": 0})
+
+        self.assertEqual(row["Scope"].get_text(" ", strip=True), "Global")
+        self.assertEqual(row["Client Classes"].get_text(" ", strip=True), "voip")
+        self._assert_user_context(row, {"asset": 42}, "User context (1 key)")
+        self.assertEqual(
+            [
+                link["href"]
+                for cell in row.values()
+                for link in cell.find_all("a", href=True)
+                if "/edit" in link["href"] or "/delete" in link["href"]
+            ],
+            [],
+        )

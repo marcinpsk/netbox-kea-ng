@@ -645,6 +645,8 @@ MAPPING_KINDS: dict[Kind, tuple[str, models.Q]] = {
     Kind.RESERVATION: ("HostReservation", _IN_SUBNET_SOURCE | _GLOBAL_SOURCE),
     Kind.CLIENT_CLASS: ("ClientClass", _GLOBAL_SOURCE),
     Kind.OPTION_DEFINITION: ("OptionDefinition", _GLOBAL_SOURCE),
+    # The identity of a DHCP Option holds its parent; it takes the Kea subnet ID of a parent in a Subnet.
+    Kind.OPTION: ("Option", _IN_SUBNET_SOURCE | _GLOBAL_SOURCE),
 }
 
 
@@ -652,9 +654,9 @@ class KeaDhcpLink(ChangeLoggingMixin):
     """A DHCP Import Mapping: maps a Kea source object to the netbox-plugin-dhcp (``netbox_dhcp``) row imported from it.
 
     The source is ``(server, family, kind, kea_subnet_id, kea_identity)``. ``kea_subnet_id`` holds the Kea subnet ID
-    of a Subnet, or of the Subnet of a Pool, a delegated-prefix Pool or an In-Subnet Reservation. ``kea_identity`` holds
-    the identity inside that Subnet, or inside the Server and family for a global kind
-    (``dhcp_import_plan.MappingSource``). The global configuration of a family sets neither, because the Server and
+    of a Subnet, or of the Subnet of a Pool, a delegated-prefix Pool, an In-Subnet Reservation or the DHCP Option of
+    one of them. ``kea_identity`` holds the identity inside that Subnet, or inside the Server and family for a global
+    kind (``dhcp_import_plan.MappingSource``). The global configuration of a family sets neither, because the Server and
     family identify it. Kea's ``subnet-id`` is unique only per ``(server, family)``, and ``netbox_dhcp`` has one global
     ``Subnet.subnet_id`` namespace, so Kea's identity lives here. The ``GenericForeignKey`` keeps ``netbox_dhcp``
     optional.
@@ -696,8 +698,17 @@ class KeaDhcpLink(ChangeLoggingMixin):
     )
     object_id = models.PositiveBigIntegerField()
     sys4_object = GenericForeignKey("object_type", "object_id")
+    options_mapped: models.BooleanField = models.BooleanField(
+        default=False,
+        help_text="Whether the import has mapped the DHCP Options of the object; until then it adopts unmapped ones.",
+    )
     created = models.DateTimeField(auto_now_add=True)
-    last_synced = models.DateTimeField(auto_now=True)
+    # blank, but no default: a replayed payload has no number and validates, and the replay stamps one before the
+    # insert; a writer that does not stamp fails on NOT NULL.
+    confirmation: models.BigIntegerField = models.BigIntegerField(
+        blank=True,
+        help_text="The confirmation sequence number that a writer took when it last confirmed the mapping.",
+    )
 
     class Meta:
         app_label = "netbox_kea"
@@ -801,12 +812,12 @@ class DhcpImportEntry(models.Model):
         return f"{self.kea_path}: {self.outcome}"
 
 
-# One sequence gives every link confirmation and every phase cutoff number (ADR 0006); migration 0019 creates it.
+# One sequence gives every link and mapping confirmation and every cutoff number (ADR 0006); migration 0019 creates it.
 CONFIRMATION_SEQUENCE = "netbox_kea_ipam_ownership_confirmation"
 
 
 def next_confirmation_number() -> int:
-    """Take the next number of the confirmation sequence, for a link confirmation or a phase cutoff."""
+    """Take the next number of the confirmation sequence, for a link or mapping confirmation or a cutoff."""
     with connection.cursor() as cursor:
         cursor.execute("SELECT nextval(%s)", [CONFIRMATION_SEQUENCE])
         (number,) = cursor.fetchone()
