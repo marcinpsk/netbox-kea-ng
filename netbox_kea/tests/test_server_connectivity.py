@@ -48,9 +48,10 @@ class ServerLocalValidationTest(TestCase):
         )
         with stub_kea({}) as kea:
             for values, field in cases:
-                with self.subTest(field=field, values=values), self.assertRaises(ValidationError) as error:
-                    Server(name="invalid-local", ca_url="https://local.example.invalid", **values).full_clean()
-                self.assertIn(field, error.exception.message_dict)
+                with self.subTest(field=field, values=values):
+                    with self.assertRaises(ValidationError) as error:
+                        Server(name="invalid-local", ca_url="https://local.example.invalid", **values).full_clean()
+                    self.assertIn(field, error.exception.message_dict)
             self.assertEqual(kea.requests, [])
 
 

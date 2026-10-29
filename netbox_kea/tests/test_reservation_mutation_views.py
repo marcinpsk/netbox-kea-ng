@@ -1297,18 +1297,16 @@ class TestReservationMutationViews(_ViewTestBase):
                         f"options-{index}-original_option": json.dumps(row["original_option"]),
                     }
                 )
-            with (
-                self.subTest(family=family),
-                stub_kea(
+            with self.subTest(family=family):
+                with stub_kea(
                     {**responses, "reservation-get": _res_get(current), "reservation-update": {"result": 0}}
-                ) as kea,
-            ):
-                result = self.client.post(url, data)
-            self.assertEqual(result.status_code, 302)
-            self.assertEqual(
-                kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
-                [duplicate, {"name": name, "data": "new"}, duplicate],
-            )
+                ) as kea:
+                    result = self.client.post(url, data)
+                self.assertEqual(result.status_code, 302)
+                self.assertEqual(
+                    kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
+                    [duplicate, {"name": name, "data": "new"}, duplicate],
+                )
             added = {**current, "option-data": [*current["option-data"], {"name": "concurrent", "data": "added"}]}
             with stub_kea({**responses, "reservation-get": _res_get(added)}) as kea:
                 conflict = self.client.post(url, data)
@@ -1318,14 +1316,12 @@ class TestReservationMutationViews(_ViewTestBase):
             self.assertNotIn("config-test", kea.commands())
             for original in ("not-json", json.dumps({"data": "missing identity"})):
                 malformed = {**data, "options-1-original_option": original}
-                with (
-                    self.subTest(family=family, original=original),
-                    stub_kea({**responses, "reservation-get": _res_get(current)}) as kea,
-                ):
-                    refused = self.client.post(url, malformed)
-                self.assertEqual(refused.status_code, 200)
-                self.assertIn(f"DHCP Option '{name}':", BeautifulSoup(refused.content, "html.parser").get_text())
-                self.assertNotIn("reservation-update", kea.commands())
+                with self.subTest(family=family, original=original):
+                    with stub_kea({**responses, "reservation-get": _res_get(current)}) as kea:
+                        refused = self.client.post(url, malformed)
+                    self.assertEqual(refused.status_code, 200)
+                    self.assertIn(f"DHCP Option '{name}':", BeautifulSoup(refused.content, "html.parser").get_text())
+                    self.assertNotIn("reservation-update", kea.commands())
 
 
 class TestReservationDocumentImport(_ViewTestBase):

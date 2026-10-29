@@ -25,18 +25,19 @@ class TestServerWorkspace(_ViewTestBase):
     def test_dhcp_controls_keep_the_route_family_on_success_and_error_redirects(self):
         for action in ("enable", "disable"):
             for result in ({"result": 0}, requests.ConnectionError("Unavailable")):
-                with self.subTest(action=action, result=result), stub_kea({f"dhcp-{action}": result}) as kea:
-                    response = self.client.post(
-                        reverse(f"plugins:netbox_kea:server_dhcp6_{action}", args=[self.server.pk]),
-                        {"confirm": "1", "max_period": 300},
+                with self.subTest(action=action, result=result):
+                    with stub_kea({f"dhcp-{action}": result}) as kea:
+                        response = self.client.post(
+                            reverse(f"plugins:netbox_kea:server_dhcp6_{action}", args=[self.server.pk]),
+                            {"confirm": "1", "max_period": 300},
+                        )
+                    self.assertEqual(response.status_code, 302)
+                    self.assertEqual(parse_qs(urlsplit(response.url).query).get("family"), ["6"])
+                    destination = BeautifulSoup(self.client.get(response.url).content, "html.parser")
+                    self.assertEqual(
+                        destination.select_one('[aria-label="DHCP family"] [aria-current="page"]').text, "DHCPv6"
                     )
-                self.assertEqual(response.status_code, 302)
-                self.assertEqual(parse_qs(urlsplit(response.url).query).get("family"), ["6"])
-                destination = BeautifulSoup(self.client.get(response.url).content, "html.parser")
-                self.assertEqual(
-                    destination.select_one('[aria-label="DHCP family"] [aria-current="page"]').text, "DHCPv6"
-                )
-                self.assertEqual(kea.commands(), [f"dhcp-{action}"])
+                    self.assertEqual(kea.commands(), [f"dhcp-{action}"])
 
     def test_sync_controls_keep_family_from_emitted_form_actions_through_redirects(self):
         from core.models import Job
@@ -77,28 +78,29 @@ class TestServerWorkspace(_ViewTestBase):
         tabs = page.select('[aria-label="Server object tabs"] a')
         self.assertTrue(tabs)
         for tab in tabs:
-            with self.subTest(label=tab.text.strip()), stub_kea({}) as kea:
-                target = tab["href"]
-                self.assertEqual(parse_qs(urlsplit(target).query).get("family"), ["6"])
-                destination = self.client.get(target)
-                destination_page = BeautifulSoup(destination.content, "html.parser")
-                leases = next(
-                    link
-                    for link in destination_page.select('[aria-label="Workspace sections"] a')
-                    if link.text == "Leases"
-                )
+            with self.subTest(label=tab.text.strip()):
+                with stub_kea({}) as kea:
+                    target = tab["href"]
+                    self.assertEqual(parse_qs(urlsplit(target).query).get("family"), ["6"])
+                    destination = self.client.get(target)
+                    destination_page = BeautifulSoup(destination.content, "html.parser")
+                    leases = next(
+                        link
+                        for link in destination_page.select('[aria-label="Workspace sections"] a')
+                        if link.text == "Leases"
+                    )
+                    self.assertEqual(
+                        urlsplit(leases["href"]).path,
+                        reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk]),
+                    )
+                    self.assertEqual(kea.commands(), [])
+                with stub_kea(_catalogue_responses_for_subnets(6, [])):
+                    returned = self.client.get(leases["href"])
+                returned_page = BeautifulSoup(returned.content, "html.parser")
+                self.assertEqual(returned.status_code, 200)
                 self.assertEqual(
-                    urlsplit(leases["href"]).path,
-                    reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk]),
+                    returned_page.select_one('[aria-label="DHCP family"] [aria-current="page"]').text, "DHCPv6"
                 )
-                self.assertEqual(kea.commands(), [])
-            with stub_kea(_catalogue_responses_for_subnets(6, [])):
-                returned = self.client.get(leases["href"])
-            returned_page = BeautifulSoup(returned.content, "html.parser")
-            self.assertEqual(returned.status_code, 200)
-            self.assertEqual(
-                returned_page.select_one('[aria-label="DHCP family"] [aria-current="page"]').text, "DHCPv6"
-            )
 
     def test_sync_override_configuration_link_retains_the_selected_family(self):
         url = reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk])
@@ -154,14 +156,15 @@ class TestServerWorkspace(_ViewTestBase):
             (requests.ConnectionError("Unavailable"), "Failed to load the Server Configuration from Kea."),
             (partial, "Kea returned an invalid DHCP Option."),
         ):
-            with self.subTest(marker=marker), _status_stub(**{"config-get": config}):
-                response = self.client.get(
-                    reverse("plugins:netbox_kea:server_status_data", args=[self.server.pk]), HTTP_HX_REQUEST="true"
-                )
-            self.assertContains(response, marker)
-            self.assertContains(response, 'role="alert"')
-            self.assertNotContains(response, "kea-workspace-shell")
-            self.assertEqual(list(get_messages(response.wsgi_request)), [])
+            with self.subTest(marker=marker):
+                with _status_stub(**{"config-get": config}):
+                    response = self.client.get(
+                        reverse("plugins:netbox_kea:server_status_data", args=[self.server.pk]), HTTP_HX_REQUEST="true"
+                    )
+                self.assertContains(response, marker)
+                self.assertContains(response, 'role="alert"')
+                self.assertNotContains(response, "kea-workspace-shell")
+                self.assertEqual(list(get_messages(response.wsgi_request)), [])
 
     @override_settings(LOGIN_REQUIRED=False, EXEMPT_VIEW_PERMISSIONS=["netbox_kea.server"])
     def test_permitted_anonymous_reader_sees_disabled_family_without_kea_requests(self):
@@ -301,19 +304,20 @@ class TestServerWorkspace(_ViewTestBase):
                 ("dhcp{family}_options_edit", "Configuration"),
                 ("option_def{family}_add", "Configuration"),
             ):
-                with self.subTest(family=family, route=route), stub_kea(_catalogue_responses_for_subnets(family, [])):
-                    response = self.client.get(
-                        reverse("plugins:netbox_kea:server_" + route.format(family=family), args=[self.server.pk])
+                with self.subTest(family=family, route=route):
+                    with stub_kea(_catalogue_responses_for_subnets(family, [])):
+                        response = self.client.get(
+                            reverse("plugins:netbox_kea:server_" + route.format(family=family), args=[self.server.pk])
+                        )
+                    page = BeautifulSoup(response.content, "html.parser")
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(
+                        page.select_one('[aria-label="Workspace sections"] [aria-current="page"]').text, section
                     )
-                page = BeautifulSoup(response.content, "html.parser")
-                self.assertEqual(response.status_code, 200)
-                self.assertEqual(
-                    page.select_one('[aria-label="Workspace sections"] [aria-current="page"]').text, section
-                )
-                self.assertEqual(len(page.select('[aria-label="DHCP family"]')), 1)
-                self.assertEqual(
-                    page.select_one('[aria-label="DHCP family"] [aria-current="page"]').text, f"DHCPv{family}"
-                )
+                    self.assertEqual(len(page.select('[aria-label="DHCP family"]')), 1)
+                    self.assertEqual(
+                        page.select_one('[aria-label="DHCP family"] [aria-current="page"]').text, f"DHCPv{family}"
+                    )
 
     def test_overview_and_sync_show_explicit_disabled_query_family(self):
         self.server.dhcp6 = False
