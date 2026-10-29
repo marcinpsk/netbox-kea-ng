@@ -135,8 +135,9 @@ creates a new DHCP Option and removes the old one. When the definition of an opt
 `option-def` to a client class, the Option keeps its row and binds to the new definition.
 
 A DHCP Option that you add to an imported object has no mapping. The run does not change it and does not remove it.
-A Kea option without a mapped Option gets a new DHCP Option. The one exception is the upgrade. Each imported object
-takes the Options without a mapping once: on the first run that reaches it after the upgrade. Then a Kea option
+A Kea option without a mapped Option gets a new DHCP Option. There are two exceptions: the upgrade, and a DHCP
+Option that has no mapping (see below). Each imported object takes the Options without a mapping once: on the first
+run that reaches it after the upgrade. Then a Kea option
 without a mapped Option takes an Option without a mapping of the same object. It takes one with the same space, code
 and client classes first. Then it takes one with the same space and code, for example one that an earlier release
 wrote without classes. The run maps each Option that it takes before it writes it, so a write that fails keeps the
