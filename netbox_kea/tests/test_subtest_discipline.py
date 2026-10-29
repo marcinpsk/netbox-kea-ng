@@ -52,10 +52,29 @@ def test_a_name_bound_by_another_context_manager_of_the_block_is_reported():
         "def outcome():\n    pass",
         "class outcome:\n    pass",
         "if x:\n    def outcome():\n        pass",
+        "match x:\n    case outcome:\n        pass",
+        "match x:\n    case int() as outcome:\n        pass",
+        "match x:\n    case [*outcome]:\n        pass",
+        "match x:\n    case {'value': outcome}:\n        pass",
+        "match x:\n    case {**outcome}:\n        pass",
+        "try:\n    f(x)\nexcept ValueError as outcome:\n    pass",
     ],
-    ids=["import", "dotted-import", "import-from", "def", "class", "nested-def"],
+    ids=[
+        "import",
+        "dotted-import",
+        "import-from",
+        "def",
+        "class",
+        "nested-def",
+        "match-capture",
+        "match-as",
+        "match-star",
+        "match-mapping-value",
+        "match-mapping-rest",
+        "except-alias",
+    ],
 )
-def test_an_import_or_definition_in_the_block_is_a_binding(binding):
+def test_an_import_definition_capture_or_alias_in_the_block_is_a_binding(binding):
     source = "def test_it(self):\n    for x in y:\n        with self.subTest(x=x):\n"
     source += textwrap.indent(binding, " " * 12) + "\n        self.assertTrue(outcome)\n"
     assert [hit.names for hit in scan_source(source)] == [("outcome",)]

@@ -6,7 +6,7 @@ When a call in a ``with self.subTest(...)`` block raises, ``subTest`` records th
 continues. A later statement that reads a name the block did not bind then raises
 ``NameError``, which stops the loop and hides the real failure. This guard reports a
 ``subTest`` block inside a loop when a statement after it in the same loop iteration reads a
-name that the block binds (by assignment, ``as``, import or definition) before it assigns the name again.
+name that the block binds (by assignment, ``as``, a ``match`` capture, import or definition) before it assigns the name again.
 
 Stdlib only, so it runs as a pre-commit hook without NetBox. Limits: it does not follow reads
 after an inner loop, or in a nested ``def`` with its defaults and decorators. An assignment in a branch, loop, ``try`` or
@@ -82,8 +82,10 @@ def _stores(node: ast.AST) -> set[str]:
             names.add(part.id)
         elif isinstance(part, (ast.Import, ast.ImportFrom)):
             names |= {alias.asname or alias.name.split(".")[0] for alias in part.names if alias.name != "*"}
-        elif isinstance(part, _DEFINITIONS):
+        elif isinstance(part, (*_DEFINITIONS, ast.MatchAs, ast.MatchStar, ast.ExceptHandler)) and part.name:
             names.add(part.name)
+        elif isinstance(part, ast.MatchMapping) and part.rest:
+            names.add(part.rest)
     return names
 
 
