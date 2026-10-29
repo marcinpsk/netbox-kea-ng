@@ -13,6 +13,55 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.8.4 (2026-10-25)
+
+### Bug Fixes
+
+- **deps**: Bump the uv group across 1 directory with 2 updates
+  ([`64b3e94`](https://github.com/marcinpsk/netbox-kea-ng/commit/64b3e9439b101dbf959eb13b860cc53e6c3fcc73))
+
+
+## v3.8.3 (2026-10-25)
+
+### Bug Fixes
+
+- **deps**: Bump the github-actions group with 4 updates
+  ([`07c0b66`](https://github.com/marcinpsk/netbox-kea-ng/commit/07c0b66b46fb60c9a3ac71c8210ddb46906ee9cb))
+
+
+## v3.8.2 (2026-10-24)
+
+### Bug Fixes
+
+- **deps-dev**: Bump ruff from 0.17.0 to 0.17.1
+  ([`3baabef`](https://github.com/marcinpsk/netbox-kea-ng/commit/3baabefee17a17b054a8596b9582a41d9faadcc4))
+
+
+## v3.8.1 (2026-10-22)
+
+### Bug Fixes
+
+- **deps**: Bump the uv group across 1 directory with 2 updates
+  ([#154](https://github.com/marcinpsk/netbox-kea-ng/pull/154),
+  [`540fd92`](https://github.com/marcinpsk/netbox-kea-ng/commit/540fd92933cfa9c1aac92525033e2a23c378d566))
+
+
+## v3.8.0 (2026-10-20)
+
+### Bug Fixes
+
+- **options**: Keep csv-format when an option row replaces its data
+  ([`80b0104`](https://github.com/marcinpsk/netbox-kea-ng/commit/80b0104a0011bb61920fb54805ce8bae3e91b8de))
+
+- **options**: Refuse an added or changed DHCP Option whose identity another entry holds
+  ([`cb1d513`](https://github.com/marcinpsk/netbox-kea-ng/commit/cb1d513b00102457ea9f571f303b8b4566ce4fd8))
+
+### Testing
+
+- **options**: Use hexadecimal data where csv-format is false
+  ([`7027533`](https://github.com/marcinpsk/netbox-kea-ng/commit/7027533dbdb0e5bde56a17a0eb1e5b722a1887d8))
+
+
 ## v3.7.0 (2026-10-18)
 
 ### Bug Fixes

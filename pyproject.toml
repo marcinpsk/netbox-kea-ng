@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 [project]
 name = "netbox-kea-ng"
-version = "3.7.0"
+version = "3.8.4"
 description = "NetBox plugin for the Kea DHCP server (fork of netbox-kea)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -69,7 +69,7 @@ dev = [
   # This pin plus uv.lock is the only place a ruff version appears: the commit hook and
   # CI both resolve it through `uv run`. Exact, not a range, so a dependabot bump updates
   # this line as well as the lock rather than the lock alone. See test_lint_pins.py.
-  "ruff==0.17.0",
+  "ruff==0.17.1",
   "reuse",
   "pre-commit",
   "python-semantic-release",
