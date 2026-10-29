@@ -116,5 +116,6 @@ class IPAMFieldTypesTest(TestCase):
             entry["message"] for entry in job.log_entries if "Unhandled error syncing server" in entry["message"]
         ]
         self.assertEqual(len(failures), 1, job.log_entries)
-        self.assertIn("ValidationError: ", failures[0])
+        self.assertIn("ValidationError; the worker log has the details", failures[0])
+        self.assertNotIn("DNS views", failures[0])
         self.assertNotIn("%s", failures[0])

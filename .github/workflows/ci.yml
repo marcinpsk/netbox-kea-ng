@@ -203,13 +203,30 @@ jobs:
           TEST_REDIS_HOST: localhost
         run: |
           pytest ${{ github.workspace }}/netbox_kea/tests/test_integration_dhcp_plugin.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_dhcp_import.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_dhcp_import_result.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_dhcp_import_ledger.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_views_dhcp_plugin.py \
             ${{ github.workspace }}/netbox_kea/tests/test_event_scope.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_dhcp_import_ownership.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_prechange_data.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_ipam_upgrade.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_ipam_reconciliation.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_manual_sync_permissions.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_prefix_pool_reconciliation.py \
+            ${{ github.workspace }}/netbox_kea/tests/test_scheduled_dhcp_import.py \
             --override-ini="DJANGO_SETTINGS_MODULE=netbox_kea.tests.isolated_settings" \
             --override-ini="pythonpath=${{ github.workspace }}/netbox/netbox" \
             -n 1 \
             --maxschedchunk=1 \
             --reuse-db \
+            --cov=netbox_kea \
+            --cov-config=${{ github.workspace }}/pyproject.toml \
+            --cov-report=xml:${{ github.workspace }}/coverage.xml \
             --no-header -q
+
+      # Only this job runs the tests that need netbox_dhcp; Codecov merges this report with the others.
+      - *upload-coverage
 
   branching-test:
     runs-on: ubuntu-latest

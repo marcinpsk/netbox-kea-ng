@@ -117,8 +117,8 @@ class TestRecordedKeaConfiguration(TestCase):
 
     def test_recorded_facts_keep_their_values(self):
         cases = {
-            4: ("192.0.2.0/24", "198.51.100.1", 9, ("uint8", "string")),
-            6: ("2001:db8:1::/64", "2001:db8:ffff::1", 9, ("uint16", "string")),
+            4: ("192.0.2.0/24", "198.51.100.1", 10, ("uint8", "string")),
+            6: ("2001:db8:1::/64", "2001:db8:ffff::1", 10, ("uint16", "string")),
         }
         for family, (cidr, relay, global_options, record_types) in cases.items():
             with self.subTest(family=family):

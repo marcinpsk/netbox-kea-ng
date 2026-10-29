@@ -968,6 +968,35 @@ class TestDhcpIntegrationSettingsView(TestCase):
         (entry,) = listed.json()["results"]
         self.assertEqual(entry["changed_object"], {"id": 1, "display": "DHCP Plugin Integration"})
 
+    def test_the_section_shows_the_scheduled_import_off_and_a_save_turns_it_on(self):
+        with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True):
+            page = BeautifulSoup(self.client.get(self.url).content, "html.parser")
+            response = self.client.post(
+                self.url, _section_data("dhcp-integration", {"enabled": True, "scheduled_import_enabled": True})
+            )
+
+        field = page.find(id="dhcp-integration").find(id="id_dhcp-integration-scheduled_import_enabled")
+        self.assertFalse(field.has_attr("checked"))
+        self.assertEqual(page.find("label", attrs={"for": field["id"]}).get_text(strip=True), "Scheduled Import")
+        self.assertEqual(response.status_code, 302)
+        config = DhcpIntegrationConfig.get()
+        self.assertEqual((config.enabled, config.scheduled_import_enabled), (True, True))
+
+    def test_a_viewer_sees_the_scheduled_import_read_only_and_cannot_save_it(self):
+        viewer = User.objects.create_user("dhcp-integration-viewer")
+        _grant([DhcpIntegrationConfig], ["view"], user=viewer)
+        self.client.force_login(viewer)
+
+        with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True):
+            page = BeautifulSoup(self.client.get(self.url).content, "html.parser")
+            response = self.client.post(
+                self.url, _section_data("dhcp-integration", {"enabled": True, "scheduled_import_enabled": True})
+            )
+
+        self.assertTrue(page.find(id="id_dhcp-integration-scheduled_import_enabled").has_attr("disabled"))
+        self.assertEqual(response.status_code, 403)
+        self.assertIs(DhcpIntegrationConfig.get().scheduled_import_enabled, False)
+
     def test_without_the_dhcp_plugin_the_section_is_hidden_and_a_post_is_refused(self):
         with patch.object(dhcp_plugin, "is_available", return_value=True, autospec=True):
             self.assertIn("dhcp-integration", self._slugs())

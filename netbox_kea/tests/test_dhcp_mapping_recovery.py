@@ -9,6 +9,7 @@ from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from datetime import timedelta
 from io import StringIO
+from itertools import count
 from threading import Event, get_ident
 
 import pytest
@@ -29,7 +30,7 @@ from django.contrib.messages import get_messages
 from django.core.management import call_command
 from django.core.serializers.json import DjangoJSONEncoder
 from django.core.signals import request_finished
-from django.db import IntegrityError, OperationalError, connection, connections, transaction
+from django.db import IntegrityError, OperationalError, connection, connections, models, transaction
 from django.db.models.signals import m2m_changed, post_delete, post_save, pre_delete, pre_save
 from django.test import TransactionTestCase, override_settings
 from django.test.utils import CaptureQueriesContext
@@ -44,6 +45,8 @@ from netbox_branching.signals import pre_merge, squash_dependency_graph_built
 from netbox_branching.utilities import activate_branch
 from utilities.exceptions import AbortRequest
 
+from netbox_kea.integrations.dhcp_import_plan import MappingSource
+from netbox_kea.integrations.dhcp_import_report import Kind, Reason
 from netbox_kea.integrations.dhcp_plugin import import_server_config
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.models import KeaDhcpLink, Server
@@ -56,9 +59,9 @@ from netbox_kea.tests.test_branching import (
     _provisioned_branch,
     _recorded_kea,
 )
-from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
+from netbox_kea.tests.test_integration_dhcp_plugin import _mapped_conf, _reservation_snapshot
 from netbox_kea.tests.test_ipam_reconciliation import _lease, _reconcile, _row
-from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server, with_sync_config
+from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server, with_sync_config, without_dhcp_plugin
 
 
 class DhcpMappingRecoveryTest(TransactionTestCase):
@@ -95,11 +98,16 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                             self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
 
     def _imported(self, kind, family, suffix):
+        from netbox_dhcp.models import Subnet
+
         server = _make_db_server(name=f"mapping-{suffix}", ca_url="https://kea.example.invalid")
         config = {f"subnet{family}": []}
         observation = None
         if kind == "subnet":
-            config[f"subnet{family}"] = [{"id": 7, "subnet": "198.18.0.0/24" if family == 4 else "2001:db8::/64"}]
+            # netbox-plugin-dhcp 0.2.0 keeps Subnet IDs unique across all DHCP servers.
+            subnet_id = next(n for n in count(7) if not Subnet.objects.filter(subnet_id=n).exists())
+            prefix = "198.18.0.0/24" if family == 4 else "2001:db8::/64"
+            config[f"subnet{family}"] = [{"id": subnet_id, "subnet": prefix}]
         else:
             observation = _reservation_snapshot(
                 config, family, [{"subnet-id": 0, "hw-address": "02:00:00:00:00:07", "hostname": "mapping"}]
@@ -108,7 +116,8 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         with event_tracking(_change_request(self.user)):
             summary = import_server_config(server, intent, observation)
         self.assertEqual(summary.errors, 0, summary.warnings)
-        link = KeaDhcpLink.objects.get(server=server, family=family)
+        self.assertEqual([e for e in summary.entries if e.reason == Reason.SUBNET_ID_CLASH], [], summary.warnings)
+        link = KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=family)
         return server, intent, observation, link.sys4_object, link
 
     def _delete(self, branch, target, queryset=False):
@@ -149,7 +158,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertEqual(again.errors, 0, again.warnings)
         self.assertEqual(again.subnets_created, 0)
         self.assertEqual(again.reservations_created, 0)
-        self.assertEqual(KeaDhcpLink.objects.get(server=server, family=family).pk, link.pk)
+        self.assertEqual(KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=family).pk, link.pk)
         self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).sys4_object.pk, target.pk)
 
     def test_squash_restores_imported_subnets(self):
@@ -372,7 +381,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 with event_tracking(_change_request(self.user)):
                     summary = import_server_config(server, changed_intent)
                 self.assertEqual(summary.errors, 0, summary.warnings)
-                self.assertEqual(KeaDhcpLink.objects.get(server=server, family=4).pk, link.pk)
+                self.assertEqual(KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=4).pk, link.pk)
                 observed.append(type(target).objects.get(pk=target.pk).valid_lifetime)
 
         squash_dependency_graph_built.connect(importing, weak=False)
@@ -645,7 +654,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 with event_tracking(_change_request(self.user)):
                     current = type(target).objects.create(pk=created_pk, **values)
                     current.tags.add(tag)
-                    mapping = observe_mapping(server, 4, current, subnet_id=current.subnet_id)
+                    mapping = observe_mapping(server, 4, current, MappingSource.subnet(current.subnet_id))
                 request_finished.send(sender=type(self))
                 if strategy == "iterative":
                     self._assert_tag_replay_refused(branch)
@@ -774,7 +783,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 before = ObjectChange.objects.count()
                 previous = KeaDhcpLink.objects.get(pk=link.pk).last_synced
                 with event_tracking(_change_request(self.user)):
-                    mapping = observe_mapping(merged_source, 4, target, subnet_id=7)
+                    mapping = observe_mapping(merged_source, 4, target, MappingSource.subnet(7))
                 self.assertEqual(mapping.pk, link.pk)
                 self.assertGreater(mapping.last_synced, previous)
                 self.assertEqual(ObjectChange.objects.count(), before)
@@ -835,6 +844,223 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).server_id, server.pk)
         self.assertIsNone(current_request.get())
 
+    def _mapped_kinds(self, family, suffix):
+        """Create one mapped target of each kind of *family*; its Pools and In-Subnet Reservation are in the Subnet."""
+        from ipam.models import IPRange, Prefix
+        from netaddr import IPNetwork
+        from netbox_dhcp.models import (
+            ClientClass,
+            DHCPServer,
+            HostReservation,
+            OptionDefinition,
+            PDPool,
+            Pool,
+            SharedNetwork,
+            Subnet,
+        )
+
+        from netbox_kea.dhcp_mapping_lifecycle import observe_mapping
+
+        server = _make_db_server(name=f"mapping-{suffix}", ca_url="https://kea.example.invalid")
+        network, shared, start, end = (
+            ("198.18.40.0/24", "198.18.41.0/24", "198.18.40.10", "198.18.40.20")
+            if family == 4
+            else ("2001:db8:40::/64", "2001:db8:41::/64", "2001:db8:40::10", "2001:db8:40::20")
+        )
+        length = network.split("/")[1]
+        with event_tracking(_change_request(self.user)):
+            parent = DHCPServer.objects.create(name=f"mapping-{suffix}")
+            subnet = Subnet.objects.create(
+                name=f"mapping-{suffix}-subnet",
+                prefix=Prefix.objects.create(prefix=IPNetwork(network)),
+                dhcp_server=parent,
+            )
+            ip_range = IPRange.objects.create(
+                start_address=IPNetwork(f"{start}/{length}"), end_address=IPNetwork(f"{end}/{length}")
+            )
+            targets = {
+                MappingSource.named(Kind.SHARED_NETWORK, "office"): SharedNetwork.objects.create(
+                    name=f"mapping-{suffix}-shared",
+                    dhcp_server=parent,
+                    prefix=Prefix.objects.create(prefix=IPNetwork(shared)),
+                ),
+                MappingSource.subnet(40): subnet,
+                MappingSource(Kind.POOL, 40, f"{start}-{end}"): Pool.objects.create(
+                    name=f"mapping-{suffix}-pool", subnet=subnet, ip_range=ip_range
+                ),
+                MappingSource(Kind.RESERVATION, 40, "duid:01:02:40"): HostReservation.objects.create(
+                    name=f"mapping-{suffix}-reservation", subnet=subnet, duid="01:02:40"
+                ),
+                MappingSource.named(Kind.CLIENT_CLASS, "voip"): ClientClass.objects.create(
+                    name=f"mapping-{suffix}-class", dhcp_server=parent
+                ),
+                MappingSource(
+                    Kind.OPTION_DEFINITION, kea_identity=f"dhcp{family}:222"
+                ): OptionDefinition.objects.create(
+                    name=f"mapping-{suffix}-definition",
+                    family=family,
+                    space=f"dhcp{family}",
+                    code=222,
+                    type="uint8",
+                    dhcp_server=parent,
+                ),
+            }
+            if family == 6:
+                targets[MappingSource(Kind.PD_POOL, 40, "2001:db8:4000::/48/56")] = PDPool.objects.create(
+                    name=f"mapping-{suffix}-pd-pool",
+                    subnet=subnet,
+                    prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:4000::/48")),
+                    delegated_length=56,
+                )
+            mappings = {source: observe_mapping(server, family, target, source) for source, target in targets.items()}
+        request_finished.send(sender=type(self))
+        return targets, mappings
+
+    def test_squash_restores_every_mapped_target_kind(self):
+        from netbox_kea.dhcp_mapping_lifecycle import mapping_identity
+        from netbox_kea.integrations.dhcp_import_report import Kind
+
+        for family in (4, 6):
+            with self.subTest(family=family):
+                targets, mappings = self._mapped_kinds(family, f"every-kind-{family}")
+                branch = _provisioned_branch(self, f"mapping-every-kind-{family}")
+                branch.merge_strategy = "squash"
+                branch.save(provision=False)
+                # The Subnet delete also deletes its Pools and its In-Subnet Reservation.
+                for source, target in targets.items():
+                    if source.kind not in (Kind.POOL, Kind.PD_POOL, Kind.RESERVATION):
+                        self._delete(branch, target)
+                with activate_branch(branch):
+                    for source, target in targets.items():
+                        self.assertFalse(type(target).objects.filter(pk=target.pk).exists(), source)
+                        self.assertFalse(KeaDhcpLink.objects.filter(pk=mappings[source].pk).exists(), source)
+                for source, target in targets.items():
+                    self.assertTrue(type(target).objects.filter(pk=target.pk).exists(), source)
+                    self.assertTrue(KeaDhcpLink.objects.filter(pk=mappings[source].pk).exists(), source)
+
+                branch.merge(user=self.user)
+                branch.refresh_from_db()
+                self.assertEqual(branch.status, "merged")
+                for source, target in targets.items():
+                    self.assertFalse(type(target).objects.filter(pk=target.pk).exists(), source)
+                    self.assertFalse(KeaDhcpLink.objects.filter(pk=mappings[source].pk).exists(), source)
+
+                branch.revert(user=self.user)
+                branch.refresh_from_db()
+                for source, target in targets.items():
+                    restored = KeaDhcpLink.objects.get(pk=mappings[source].pk)
+                    self.assertEqual(mapping_identity(restored), mapping_identity(mappings[source]), source)
+                    self.assertEqual(restored.created, mappings[source].created, source)
+                    self.assertEqual(type(target).objects.get(pk=target.pk).created, target.created, source)
+
+    def test_squash_restores_an_imported_pd_pool_and_reimport_creates_none(self):
+        from netbox_dhcp.models import PDPool, Subnet
+
+        from netbox_kea.dhcp_mapping_lifecycle import mapping_identity
+
+        # netbox-plugin-dhcp 0.2.0 keeps Subnet IDs unique across all DHCP servers.
+        subnet_id = next(n for n in count(7) if not Subnet.objects.filter(subnet_id=n).exists())
+        pd_pool = {
+            "prefix": "2001:db8:700::",
+            "prefix-len": 48,
+            "delegated-len": 56,
+            "excluded-prefix": "2001:db8:700:ff::",
+            "excluded-prefix-len": 64,
+        }
+        conf = {"subnet6": [{"id": subnet_id, "subnet": "2001:db8:7::/64", "pd-pools": [pd_pool]}]}
+        server = _make_db_server(name="mapping-imported-pd-pool", ca_url="https://kea.example.invalid", dhcp4=False)
+        intent, observation = parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6)
+        with event_tracking(_change_request(self.user)):
+            summary = import_server_config(server, intent, observation)
+        self.assertEqual(summary.errors, 0, summary.warnings)
+
+        def links():
+            return KeaDhcpLink.objects.filter(server=server)
+
+        mappings = {link.pk: (mapping_identity(link), link.created) for link in links()}
+        targets = {(type(link.sys4_object), link.object_id): link.sys4_object.created for link in links()}
+        self.assertEqual(sorted(links().values_list("kind", flat=True)), ["pd_pool", "server", "subnet"])
+        dhcp_server = links().get(kind="server").sys4_object
+        branch = _provisioned_branch(self, "mapping-imported-pd-pool")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        # The Subnet takes its PD Pool; the DHCPServer goes last.
+        for target in (Subnet.objects.get(dhcp_server=dhcp_server), dhcp_server):
+            self._delete(branch, target)
+        with activate_branch(branch):
+            self.assertEqual(list(links().values_list("kind", flat=True)), [])
+            self.assertFalse(PDPool.objects.exists())
+
+        branch.merge(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertEqual(list(links().values_list("kind", flat=True)), [])
+
+        branch.revert(user=self.user)
+        self.assertEqual({link.pk: (mapping_identity(link), link.created) for link in links()}, mappings)
+        for (model, pk), created in targets.items():
+            self.assertEqual(model.objects.get(pk=pk).created, created, model)
+
+        with event_tracking(_change_request(self.user)):
+            again = import_server_config(server, intent, observation)
+        self.assertEqual(again.errors, 0, again.warnings)
+        self.assertEqual([entry.path for entry in again.entries if entry.outcome.value == "created"], [])
+        self.assertEqual(set(links().values_list("pk", flat=True)), set(mappings))
+
+    def test_squash_restores_imported_rows_of_every_kind_and_reimport_creates_none(self):
+        from netbox_dhcp.models import ClientClass, OptionDefinition, Subnet
+
+        from netbox_kea.dhcp_mapping_lifecycle import mapping_identity
+
+        conf = _mapped_conf()
+        server = _make_db_server(name="mapping-imported-kinds", ca_url="https://kea.example.invalid")
+        intent, observation = parse_dhcp_config(conf, 4), _reservation_snapshot(conf, 4)
+        with event_tracking(_change_request(self.user)):
+            summary = import_server_config(server, intent, observation)
+        self.assertEqual(summary.errors, 0, summary.warnings)
+
+        def links():
+            return KeaDhcpLink.objects.filter(server=server)
+
+        mappings = {link.pk: (mapping_identity(link), link.created) for link in links()}
+        targets = {(type(link.sys4_object), link.object_id): link.sys4_object.created for link in links()}
+        self.assertEqual(
+            sorted(links().values_list("kind", flat=True)),
+            ["client_class", "option_definition", "pool", "reservation", "server", "subnet"],
+        )
+        dhcp_server = links().get(kind="server").sys4_object
+        branch = _provisioned_branch(self, "mapping-imported-kinds")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        # The Subnet takes its Pool, its Reservation and their Options; the DHCPServer goes last.
+        for target in (
+            Subnet.objects.get(dhcp_server=dhcp_server),
+            ClientClass.objects.get(dhcp_server=dhcp_server),
+            OptionDefinition.objects.get(standard=False, dhcp_server=dhcp_server),
+            dhcp_server,
+        ):
+            self._delete(branch, target)
+        with activate_branch(branch):
+            self.assertEqual(list(links().values_list("kind", flat=True)), [])
+
+        branch.merge(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertEqual(list(links().values_list("kind", flat=True)), [])
+        for model, pk in targets:
+            self.assertFalse(model.objects.filter(pk=pk).exists(), model)
+
+        branch.revert(user=self.user)
+        self.assertEqual({link.pk: (mapping_identity(link), link.created) for link in links()}, mappings)
+        for (model, pk), created in targets.items():
+            self.assertEqual(model.objects.get(pk=pk).created, created, model)
+
+        with event_tracking(_change_request(self.user)):
+            again = import_server_config(server, intent, observation)
+        self.assertEqual(again.errors, 0, again.warnings)
+        self.assertEqual([entry.path for entry in again.entries if entry.outcome.value == "created"], [])
+        self.assertEqual(set(links().values_list("pk", flat=True)), set(mappings))
+
     def test_squash_restores_global_reservations(self):
         for family in (4, 6):
             for queryset in (False, True):
@@ -884,13 +1110,17 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         branch = _provisioned_branch(self, "mapping-fresh-tab")
         self.client.force_login(self.user)
         self.client.cookies[COOKIE_NAME] = branch.schema_id
-        with stub_kea(_recorded_kea()), CaptureQueriesContext(connections["default"]) as queries:
-            response = self.client.get(reverse("plugins:netbox_kea:server_dhcp_plugin", args=[server.pk]))
-        self.assertEqual(response.status_code, 200)
-        self.assertNotContains(response, "Create a fresh branch")
-        catalog = [query for query in queries.captured_queries if "pg_attribute" in query["sql"]]
-        # compute_drift, the guarded KeaDhcpLink query of each family, and the sources header: one round each.
-        self.assertEqual(len(catalog), 4 * (1 + len(target_models())))
+        rounds = 1 + len(target_models())
+        # Each reply: its mapping check and the sources header. The drift card also: the guarded KeaDhcpLink query of
+        # each family. One round each.
+        for name, expected in (("server_dhcp_plugin", 2 * rounds), ("server_dhcp_plugin_drift", 4 * rounds)):
+            with self.subTest(name), stub_kea(_recorded_kea()):
+                with CaptureQueriesContext(connections["default"]) as queries:
+                    response = self.client.get(reverse(f"plugins:netbox_kea:{name}", args=[server.pk]))
+                self.assertEqual(response.status_code, 200)
+                self.assertNotContains(response, "Create a fresh branch")
+                catalog = [query for query in queries.captured_queries if "pg_attribute" in query["sql"]]
+                self.assertEqual(len(catalog), expected)
 
     def test_affected_iterative_merge_refuses_before_mutation(self):
         _, _, _, target, link = self._imported("subnet", 4, "iterative")
@@ -928,6 +1158,98 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         with activate_branch(branch), self.assertRaisesMessage(AbortRequest, "Create a fresh branch"):
             KeaDhcpLink.objects.filter(pk=link.pk).exists()
 
+    def _old_branch_mapping(self, suffix):
+        _, _, _, _, link = self._imported("subnet", 6, suffix)
+        branch = _provisioned_branch(self, f"mapping-{suffix}")
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'ALTER TABLE "' + branch.schema_name + '"."' + KeaDhcpLink._meta.db_table + '" DROP COLUMN last_updated'
+            )
+        return branch, link
+
+    def _reset_boundaries(self):
+        """Expire every Options cache as Apps.register_model does, and restore the guards when the test ends."""
+        from django.apps import apps
+
+        from netbox_kea.dhcp_mapping_lifecycle import ensure_boundaries
+
+        self.addCleanup(ensure_boundaries)
+        apps.clear_cache()
+        self.assertNotEqual(self._unguarded(), [])
+
+    def _unguarded(self):
+        from netbox_kea.dhcp_mapping_lifecycle import delete_effect_models
+
+        return sorted(
+            f"{model._meta.label}.{manager.name}"
+            for model in delete_effect_models()
+            for manager in (*model._meta.managers, model._default_manager, model._base_manager)
+            if not manager._queryset_class.__name__.endswith("DhcpMappingBoundary")
+        )
+
+    def _assert_old_branch_read_refused(self, branch, link):
+        with activate_branch(branch), self.assertRaisesMessage(AbortRequest, "Create a fresh branch"):
+            KeaDhcpLink.objects.filter(pk=link.pk).exists()
+        self.assertEqual(self._unguarded(), [])
+
+    def test_a_request_restores_the_boundaries_after_a_cache_reset(self):
+        branch, link = self._old_branch_mapping("reset-request")
+        self.client.force_login(self.user)
+        self._reset_boundaries()
+        with stub_kea(_recorded_kea()):
+            response = self.client.get(reverse("plugins:netbox_kea:server_list"))
+        self.assertEqual(response.status_code, 200)
+        self._assert_old_branch_read_refused(branch, link)
+
+    def test_without_dhcp_plugin_restores_the_boundaries_when_it_ends(self):
+        from netbox_kea.dhcp_mapping_lifecycle import ensure_boundaries
+
+        self.addCleanup(ensure_boundaries)
+        with without_dhcp_plugin():
+            pass
+        self.assertEqual(self._unguarded(), [])
+
+    def test_the_boundary_recheck_sends_no_query(self):
+        from netbox_kea.dhcp_mapping_lifecycle import ensure_boundaries
+
+        self._reset_boundaries()
+        with self.assertNumQueries(0):
+            ensure_boundaries()
+        self.assertEqual(self._unguarded(), [])
+
+    def test_a_sync_job_restores_the_boundaries_after_a_cache_reset(self):
+        from netbox_kea.jobs import KeaIpamSyncJob
+
+        branch, link = self._old_branch_mapping("reset-job")
+        job = Job.objects.create(name=KeaIpamSyncJob.name, job_id=uuid.uuid4())
+        self._reset_boundaries()
+        with with_sync_config(sync_enabled=False):
+            KeaIpamSyncJob.handle(job)
+        job.refresh_from_db()
+        self.assertEqual(job.status, "completed")
+        self._assert_old_branch_read_refused(branch, link)
+
+    def test_a_dhcp_import_restores_the_boundaries_after_a_cache_reset(self):
+        self._reset_boundaries()
+        self._imported("subnet", 4, "reset-import")
+        self.assertEqual(self._unguarded(), [])
+        branch, link = self._old_branch_mapping("reset-import-read")
+        self._assert_old_branch_read_refused(branch, link)
+
+    def test_branch_action_hooks_restore_the_boundaries_after_a_cache_reset(self):
+        from netbox_kea.dhcp_mapping_lifecycle import preflight_action, prepare_replay
+
+        branch, link = self._old_branch_mapping("reset-hooks")
+        hooks = {
+            "preflight_action": lambda: preflight_action(branch, "merge"),
+            "prepare_replay": lambda: prepare_replay(branch, {}, "merge", None),
+        }
+        for name, hook in hooks.items():
+            with self.subTest(hook=name):
+                self._reset_boundaries()
+                hook()
+                self._assert_old_branch_read_refused(branch, link)
+
     def test_old_branch_mapping_save_refuses_main_fallback(self):
         _, _, _, _, link = self._imported("subnet", 4, "old-save")
         branch = _provisioned_branch(self, "mapping-old-save")
@@ -937,6 +1259,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             pk=link.pk,
             server_id=link.server_id,
             family=link.family,
+            kind="subnet",
             kea_subnet_id=99,
             object_type_id=link.object_type_id,
             object_id=link.object_id,
@@ -995,18 +1318,29 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
     def test_native_endpoint_deletion_composes_with_mapped_target_cleanup(self):
         from netbox_dhcp.models import ClientClass
 
-        for kind in ("client-class", "mac-address"):
+        from netbox_kea.dhcp_mapping_lifecycle import observe_mapping
+        from netbox_kea.integrations.dhcp_import_report import Kind
+
+        for kind in ("client-class", "mapped-client-class", "mac-address"):
             with self.subTest(kind=kind):
-                _, _, _, target, link = self._imported(
-                    "subnet" if kind == "client-class" else "reservation", 4, f"endpoint-cleanup-{kind}"
+                server, _, _, target, link = self._imported(
+                    "reservation" if kind == "mac-address" else "subnet", 4, f"endpoint-cleanup-{kind}"
                 )
-                if kind == "client-class":
+                endpoint_link = None
+                if kind == "mac-address":
+                    endpoint = target.hw_address
+                else:
                     endpoint = ClientClass.objects.create(
                         name=f"mapping-cleanup-{kind}", dhcp_server=target.dhcp_server
                     )
                     target.client_classes.add(endpoint)
-                else:
-                    endpoint = target.hw_address
+                if kind == "mapped-client-class":
+                    # The class is a mapped target and an endpoint of the mapped Subnet.
+                    with event_tracking(_change_request(self.user)):
+                        endpoint_link = observe_mapping(
+                            server, 4, endpoint, MappingSource.named(Kind.CLIENT_CLASS, "voip")
+                        )
+                    request_finished.send(sender=type(self))
                 model = type(endpoint)
                 branch = _provisioned_branch(self, f"mapping-endpoint-cleanup-{kind}")
                 branch.merge_strategy = "squash"
@@ -1021,21 +1355,26 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                     request_finished.send(sender=type(self))
                 with activate_branch(branch):
                     local = type(target).objects.get(pk=target.pk)
-                    self.assertFalse(local.client_classes.exists() if kind == "client-class" else local.hw_address_id)
+                    self.assertFalse(local.hw_address_id if kind == "mac-address" else local.client_classes.exists())
                 branch.merge(user=self.user)
                 merged = type(target).objects.get(pk=target.pk)
-                self.assertFalse(merged.client_classes.exists() if kind == "client-class" else merged.hw_address_id)
+                self.assertFalse(merged.hw_address_id if kind == "mac-address" else merged.client_classes.exists())
                 self.assertFalse(model.objects.filter(pk=endpoint.pk).exists())
                 self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+                if endpoint_link is not None:
+                    self.assertFalse(KeaDhcpLink.objects.filter(pk=endpoint_link.pk).exists())
                 branch.revert(user=self.user)
                 restored = type(target).objects.get(pk=target.pk)
-                if kind == "client-class":
-                    self.assertEqual(list(restored.client_classes.values_list("pk", flat=True)), [endpoint.pk])
-                else:
+                if kind == "mac-address":
                     self.assertEqual(restored.hw_address_id, endpoint.pk)
                     self.assertEqual(restored.description, target.description)
+                else:
+                    self.assertEqual(list(restored.client_classes.values_list("pk", flat=True)), [endpoint.pk])
                 self.assertTrue(model.objects.filter(pk=endpoint.pk).exists())
                 self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+                if endpoint_link is not None:
+                    restored_link = KeaDhcpLink.objects.get(pk=endpoint_link.pk)
+                    self.assertEqual((restored_link.object_id, restored_link.kind), (endpoint.pk, "client_class"))
 
     def test_native_endpoint_cleanup_composes_with_mapped_target_deletion(self):
         from netbox_dhcp.models import ClientClass
@@ -1939,6 +2278,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             _link = KeaDhcpLink.objects.create(
                 server=server,
                 family=4,
+                kind="reservation",
                 kea_identity="hw-address:02:00:00:00:00:08",
                 object_type=ContentType.objects.get_for_model(target),
                 object_id=target.pk,
@@ -2286,6 +2626,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             lambda: KeaDhcpLink.objects.create(
                 server_id=link.server_id,
                 family=6,
+                kind="subnet",
                 kea_subnet_id=99,
                 object_type_id=link.object_type_id,
                 object_id=link.object_id,
@@ -2296,6 +2637,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                     KeaDhcpLink(
                         server_id=link.server_id,
                         family=6,
+                        kind="subnet",
                         kea_subnet_id=99,
                         object_type_id=link.object_type_id,
                         object_id=link.object_id,
@@ -2357,6 +2699,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             ("created", "invalid"),
             ("created", "2026-10-04T01:00:00"),
             ("kea_identity", "missing"),
+            ("kind", "missing"),
             ("object_type", "missing"),
         )
         for index, (field, value) in enumerate(malformed):
@@ -2441,7 +2784,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 with event_tracking(_change_request(self.user)):
                     summary = import_server_config(server, intent, observation)
                 self.assertEqual(summary.errors, 0, summary.warnings)
-                mapping = KeaDhcpLink.objects.get(server=server, family=4)
+                mapping = KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=4)
                 self.assertEqual(mapping.object_id, target.pk)
                 adopted.append(mapping.pk)
             finally:
@@ -2487,6 +2830,31 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertTrue(VRF.objects.filter(pk=unrelated.pk).exists())
         self.assertEqual(type(target).objects.get(pk=target.pk).description, "main retained change")
         self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
+
+    def test_a_main_import_removal_of_a_target_that_a_branch_changed_refuses_the_whole_merge(self):
+        server, intent, observation, target, link = self._imported("subnet", 4, "removal-branch-change")
+        branch = _provisioned_branch(self, "mapping-removal-branch-change")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        with activate_branch(branch), event_tracking(_change_request(self.user)):
+            row = type(target).objects.get(pk=target.pk)
+            row.snapshot()
+            row.description = "branch change"
+            row.save()
+        request_finished.send(sender=type(self))
+        # Kea no longer reports the Subnet, and the configuration read, which starts now, is Complete.
+        intent.subnets, intent.configuration_complete, intent.read_started = [], True, timezone.now()
+        with event_tracking(_change_request(self.user)):
+            summary = import_server_config(server, intent, observation)
+        self.assertEqual([entry.kind for entry in summary.entries if entry.outcome.value == "removed"], [Kind.SUBNET])
+        # ADR 0008: the merge refuses atomically and keeps the newer main state, the removal.
+        with self.assertRaisesMessage(AbortRequest, "A main DHCP mapping from the selected branch is missing."):
+            branch.merge(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "ready")
+        self.assertFalse(branch.applied_changes.exists())
+        self.assertFalse(type(target).objects.filter(pk=target.pk).exists())
+        self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
 
     def test_revert_refuses_a_reused_target_primary_key(self):
         _, _, _, target, link = self._imported("subnet", 6, "reused-target")
@@ -2534,6 +2902,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             pk=link.pk,
             server_id=link.server_id,
             family=link.family,
+            kind=link.kind,
             kea_subnet_id=link.kea_subnet_id,
             object_type_id=link.object_type_id,
             object_id=target.pk,
@@ -2576,6 +2945,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             pk=link.pk,
             server_id=link.server_id,
             family=link.family,
+            kind=link.kind,
             kea_identity=link.kea_identity,
             object_type_id=link.object_type_id,
             object_id=target.pk,
@@ -3009,7 +3379,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertEqual(summaries[0].errors, 0, summaries[0].warnings)
         self.assertEqual(summaries[0].subnets_created, 0)
         self.assertTrue(blocked, "The importer selected mapping state before coordination")
-        self.assertEqual(KeaDhcpLink.objects.get(server=server, family=4).pk, link.pk)
+        self.assertEqual(KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=4).pk, link.pk)
         self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).object_id, target.pk)
 
     def test_missing_source_server_refuses_branch_deletion_capture(self):
@@ -3097,7 +3467,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         with event_tracking(_change_request(self.user)):
             summary = import_server_config(server, intent, observation)
         self.assertEqual(summary.errors, 0, summary.warnings)
-        replacement = KeaDhcpLink.objects.get(server=server, family=4)
+        replacement = KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=4)
         self.assertNotEqual(replacement.pk, link.pk)
         before = ObjectChange.objects.count()
         with self.assertRaisesMessage(AbortRequest, "identity"):
@@ -3131,7 +3501,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             with event_tracking(_change_request(self.user)):
                 summary = import_server_config(server, intent, observation)
             self.assertEqual(summary.errors, 0, summary.warnings)
-            adopted.append(KeaDhcpLink.objects.get(server=server, family=4))
+            adopted.append(KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=4))
 
         pre_merge.connect(import_after_preflight, weak=False)
         try:
@@ -3164,7 +3534,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         with event_tracking(_change_request(self.user)):
             summary = import_server_config(server, intent, observation)
         self.assertEqual(summary.errors, 0, summary.warnings)
-        adopted = KeaDhcpLink.objects.get(server=server, family=6)
+        adopted = KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=6)
         self.assertEqual(adopted.object_id, created.pk)
         before = ObjectChange.objects.count()
         with self.assertRaisesMessage(AbortRequest, "mapping"):
@@ -3190,7 +3560,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                 with event_tracking(_change_request(self.user)):
                     summary = import_server_config(server, intent, observation)
                 self.assertEqual(summary.errors, 0, summary.warnings)
-                adopted.append(KeaDhcpLink.objects.get(server=server, family=4).pk)
+                adopted.append(KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=4).pk)
 
         squash_dependency_graph_built.connect(importing, weak=False)
         try:
@@ -3225,7 +3595,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
                     summary = import_server_config(server, changed_intent)
                 self.assertEqual(summary.errors, 0, summary.warnings)
                 current = type(target).objects.get(pk=target.pk)
-                mapping = KeaDhcpLink.objects.get(server=server, family=4)
+                mapping = KeaDhcpLink.objects.exclude(kind="server").get(server=server, family=4)
                 self.assertEqual(current.valid_lifetime, 600)
                 self.assertEqual(mapping.pk, link.pk)
                 observed.append(current.pk)
@@ -3256,6 +3626,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         conflicting = KeaDhcpLink.objects.create(
             server_id=link.server_id,
             family=6,
+            kind="reservation",
             kea_identity="new-global-identity",
             object_type_id=link.object_type_id,
             object_id=target.pk,
@@ -3639,18 +4010,27 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
 
     def test_a_deletion_made_relevant_after_its_probe_refuses_before_any_change(self):
         from ipam.models import IPAddress
-        from netbox_dhcp.models import DHCPServer
+        from netbox_dhcp.models import DHCPCluster
 
-        _, _, _, target, link = self._imported("reservation", 4, "made-relevant")
-        empty = DHCPServer.objects.create(name="lock-scope-empty")
+        server, _, _, reservation, link = self._imported("reservation", 4, "made-relevant")
+        dhcp_server = reservation.dhcp_server
+        server_link = KeaDhcpLink.objects.get(server=server, family=4, kind="server")
+        empty = DHCPCluster.objects.create(name="lock-scope-empty")
         loose = IPAddress.objects.create(address="203.0.113.50/24")
         cases = (
-            # A writer moves the mapped reservation under the probed DHCP server before the native collection.
-            ("collection", empty, lambda sql: sql.startswith("SAVEPOINT"), {"dhcp_server": empty}),
+            # A writer puts the mapped DHCP server in the probed cluster before the native collection.
+            (
+                "collection",
+                empty,
+                lambda sql: sql.startswith("SAVEPOINT"),
+                dhcp_server,
+                server_link,
+                {"dhcp_cluster": empty},
+            ),
             # A writer commits a reference to the probed address before the row fence.
-            ("fence", loose, lambda sql: sql.endswith("FOR UPDATE"), {"ipv4_address": loose}),
+            ("fence", loose, lambda sql: sql.endswith("FOR UPDATE"), reservation, link, {"ipv4_address": loose}),
         )
-        for name, deleted, paused_at, change in cases:
+        for name, deleted, paused_at, target, mapping, change in cases:
             with self.subTest(name):
                 outcome = self._deletion_raced_by_a_writer(deleted, paused_at, target, change)
                 self.assertEqual(outcome, [_STALE_GATE])
@@ -3658,58 +4038,18 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
                 current = type(target).objects.get(pk=target.pk)
                 for field, value in change.items():
                     self.assertEqual(getattr(current, f"{field}_id"), value.pk)
-                self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk, object_id=target.pk).exists())
+                self.assertTrue(KeaDhcpLink.objects.filter(pk=mapping.pk, object_id=target.pk).exists())
 
-    @override_settings(EVENTS_PIPELINE=[_EVENTS_RECORDER])
-    def test_limit_c_a_caught_late_delete_guard_inside_a_transaction_dispatches_the_reverted_delete(self):
-        from netbox_dhcp.models import DHCPServer
+    def test_a_delete_that_cascades_to_a_dhcp_target_starts_from_a_dhcp_target(self):
+        """Each cascade parent of a DHCP target is a target, so its delete is coordinated from the start (#94)."""
+        from netbox_kea.dhcp_mapping_lifecycle import target_models
 
-        _, _, _, target, link = self._imported("reservation", 4, "late-guard-events")
-        empty = DHCPServer.objects.create(name="lock-scope-late-guard-events")
-        paused, release, outcome = Event(), Event(), []
-        DISPATCHED_EVENTS.clear()
-        self.addCleanup(DISPATCHED_EVENTS.clear)
-
-        def pause(execute, sql, params, many, context):
-            if not paused.is_set() and sql.startswith("SAVEPOINT"):
-                paused.set()
-                release.wait(20)
-            return execute(sql, params, many, context)
-
-        def delete_in_a_caller_transaction():
-            # A caller that catches the refusal and commits, as a plugin row loop inside a transaction would.
-            try:
-                with event_tracking(_change_request(self.user)), transaction.atomic():
-                    with connections["default"].execute_wrapper(pause):
-                        try:
-                            DHCPServer.objects.get(pk=empty.pk).delete()
-                        except AbortRequest as error:
-                            outcome.append(error.message)
-            finally:
-                connections.close_all()
-
-        def move_the_reservation():
-            try:
-                current = type(target).objects.get(pk=target.pk)
-                current.dhcp_server = empty
-                current.save()
-            finally:
-                connections.close_all()
-
-        workers = self._workers()
-        deleting = workers.submit(delete_in_a_caller_transaction)
-        try:
-            self.assertTrue(paused.wait(20), "The deletion did not reach its savepoint")
-            workers.submit(move_the_reservation).result(timeout=20)
-        finally:
-            release.set()
-        deleting.result(timeout=20)
-        self.assertEqual(outcome, [_STALE_GATE])
-        self.assertTrue(type(target).objects.filter(pk=target.pk).exists())
-        self.assertTrue(KeaDhcpLink.objects.filter(pk=link.pk).exists())
-        # Accepted limit (#302): NetBox queued the delete event before the guard refused, and the caller committed.
-        dispatched = [(e["object_type"].model_class(), e["object_id"], e["event_type"]) for e in DISPATCHED_EVENTS]
-        self.assertIn((type(target), target.pk, "object_deleted"), dispatched)
+        targets = set(target_models())
+        for model in targets:
+            for field in model._meta.concrete_fields:
+                if isinstance(field, models.ForeignKey) and field.remote_field.on_delete is models.CASCADE:
+                    with self.subTest(model=model.__name__, field=field.name):
+                        self.assertIn(field.related_model, targets)
 
     def test_dependency_delete_during_replay_rolls_back_the_whole_revert(self):
         _, _, _, target, link = self._imported("subnet", 4, "dependency-replay")
@@ -3942,7 +4282,8 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
         mac = MACAddress.objects.create(mac_address="02:00:00:00:00:41")
         hosts = {
             4: _KEA_OBJECTS[4].reservation,
-            6: {"subnet-id": 10, "hw-address": "02:00:00:00:00:41", "ip-addresses": ["2001:db8:1::16"]},
+            # DHCPv4 holds plugin Subnet ID 10, so a Global Reservation carries the DHCPv6 MAC reference.
+            6: {"subnet-id": 0, "hw-address": "02:00:00:00:00:41"},
         }
         kea = _recorded_kea() | {"reservation-get-page": lambda body: _res_page([hosts[_family(body)]])}
         workers = self._workers()

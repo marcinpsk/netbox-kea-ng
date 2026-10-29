@@ -11,8 +11,11 @@ NetBox 4.7 with netbox-branching 1.2.1. List `netbox_branching` last in `PLUGINS
 
 - Kea Servers, sync settings and IPAM ownership links stay in main. A branch has
   no copy of them, so it shows main's values.
-- DHCP Import Mappings follow imported Subnets and Global Reservations in a fresh branch.
-  Deleting either target removes its branch mapping while main retains both. Discard preserves main.
+- DHCP Import Mappings follow their imported DHCP Servers, Subnets, Pools, delegated-prefix Pools,
+  Reservations, client classes and custom Option Definitions in a fresh branch. Deleting a target removes its
+  branch mapping (a Subnet also removes the mappings of its Pools, delegated-prefix Pools and Reservations)
+  while main retains both. Discard
+  preserves main.
   Squash merge deletes the matching main pair; revert restores both original identities, so reimport
   updates the restored object. This applies to IPv4, IPv6, instance deletion and queryset deletion.
   Mapping recovery adds no manual editor or branch-local import.
@@ -52,7 +55,7 @@ changes in the same branch. A required missing, renamed or replaced Tag also cau
 Mappings lost under the previous policy require explicit operator repair. Preserve the existing
 target, verify its Server, family and source identity from trusted records, and repair the association
 on main through an audited operator procedure. A matching target name does not prove that association.
-See [the recovery contract](https://github.com/marcinpsk/netbox-kea-ng/blob/main/docs/design/dhcp-import-mapping-branching.md).
+See [the recovery contract](https://github.com/marcinpsk/netbox-kea-ng/issues/167).
 
 **Upgrade with open branches.** Earlier releases let netbox-branching copy the Kea servers table
 into each new branch. Nothing removes that copy: branch sync no longer updates it, and branch

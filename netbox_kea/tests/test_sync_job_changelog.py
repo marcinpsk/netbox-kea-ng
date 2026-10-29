@@ -304,6 +304,13 @@ class SyncJobChangeRecordTest(TestCase):
             for variable, token in reversed(tokens):
                 variable.reset(token)
 
+    def test_a_failed_sync_saves_its_reason_on_the_job(self):
+        # A client certificate without its key makes the Kea client refuse to start.
+        _make_db_server(name="z-broken", client_cert_path="/cert.pem", dhcp6=False)
+        job = self._run(leases=[_LEASE])
+        self.assertEqual(job.status, "failed")
+        self.assertEqual(job.error, "The Kea IPAM sync or a scheduled DHCP Import failed. The job log has the details.")
+
     def test_retry_after_a_rolled_back_cleanup_records_the_successful_delete(self):
         seeded = self._run(leases=[_LEASE])
         self.assertEqual(seeded.status, "completed")

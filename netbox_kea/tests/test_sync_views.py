@@ -856,6 +856,7 @@ class TestReservation6SyncView(_SyncViewBase):
         ):
             response = self.client.post(self._url())
         self.assertContains(response, "Synchronized 2/2")
+        self.assertContains(response, 'title="2 of 2 addresses synchronized"')
         for address in ("2001:db8:1::50", "2001:db8:1::51"):
             self.assertContains(response, address)
             ip = NbIP.objects.get(vrf=vrf, address__net_host=address)

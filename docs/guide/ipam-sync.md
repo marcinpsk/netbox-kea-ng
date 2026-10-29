@@ -63,7 +63,10 @@ The `Kea IPAM Sync` job runs automatically when `rqworker` is active:
 6. Links each current DHCPv6 delegated-prefix lease to a Prefix in the server's `sync_vrf` (source `lease-prefix`),
    when lease sync and Prefix sync are both on. The DHCP plugin import owns delegated prefixes through its own
    source, so neither cleans up the other's links. These Prefixes follow the rules of step 5. A delegated prefix
-   never creates an IP address
+   never creates an IP address. The DHCP plugin import also owns the prefix and the excluded prefix of each DHCPv6
+   delegated-prefix Pool (`pd-pools`), through the source `pd-pool` and the marker `[kea-sync: pd pool]`. The job
+   reads no delegated-prefix Pool, so it never drops these links. The import drops them after it read every
+   delegated-prefix Pool, with the rules of step 5
 7. One server failing does not block others
 8. Summary logged per server and in total
 
@@ -126,9 +129,10 @@ delete permission. When a user does not have a required grant, the Sync control 
 missing or constrained permission, and the server refuses the request with the same text. A grant that only an LDAP
 group mapping (`FIND_GROUP_PERMS`) gives does not count.
 
-**Sync to DHCP plugin now** also writes the DHCP plugin objects. It needs add and change on DHCP Server, Option,
-Client Class, Subnet and Host Reservation, and add on Option Definition and Pool. The import never changes a Pool or
-an Option Definition that exists.
+**Sync to DHCP plugin now** also writes the DHCP plugin objects. It needs add and change on DHCP Server, Option
+Definition, Option, Client Class, Subnet, Pool, Prefix Delegation Pool and Host Reservation. It removes Stale DHCP
+Import Objects (see [Configuration](configuration.md)), so it also needs delete on Option Definition, Option, Client
+Class, Shared Network, Subnet, Pool, Prefix Delegation Pool and Host Reservation.
 
 ## Upgrade to ownership links
 

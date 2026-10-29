@@ -946,6 +946,7 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Synchronized 1/1")
+        self.assertContains(response, 'title="1 of 1 address synchronized"')
 
     def test_only_a_managed_address_in_the_sync_vrf_counts_as_synchronized(self):
         from ipam.models import VRF
