@@ -34,6 +34,7 @@ from ..ipam_reconciliation import (
     address_ownership,
     claim,
     claim_permissions,
+    periodic_sync_enabled,
     prefix_ownership,
 )
 from ..kea import (
@@ -921,7 +922,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
         return self.form_class(
             data,
             sync_refusal=gate.reason,
-            automatic_sync=server.sync_enabled and server.sync_leases_enabled,
+            automatic_sync=periodic_sync_enabled(server, LEASE),
         )
 
     def _render(self, request: HttpRequest, server: Server, form: forms._LeaseAddForm) -> HttpResponse:

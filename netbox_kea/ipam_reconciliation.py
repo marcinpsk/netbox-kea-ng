@@ -422,6 +422,21 @@ Workflow = Literal["job", "import"]
 SourceScope = frozenset[tuple[Family, str]]
 
 
+_SOURCE_FLAGS = {
+    "lease": "sync_leases_enabled",
+    "reservation": "sync_reservations_enabled",
+    "subnet": "sync_prefixes_enabled",
+    "pool": "sync_ip_ranges_enabled",
+}
+
+
+def periodic_sync_enabled(server: Server, source: str, config: SyncConfig | None = None) -> bool:
+    """Return whether the periodic sync job syncs *source* (a key of ``_SOURCE_FLAGS``) for *server*."""
+    config = SyncConfig.get() if config is None else config
+    flag = _SOURCE_FLAGS[source]
+    return config.sync_enabled and server.sync_enabled and getattr(config, flag) and getattr(server, flag)
+
+
 def effective_sources(server: Server) -> dict[Workflow, SourceScope]:
     """Return current potential owners, shared by workflow completion and the upgrade barrier."""
     return _effective_sources(server, SyncConfig.get())
@@ -433,17 +448,11 @@ def _effective_sources(
     families: tuple[Family, ...] = tuple(
         cast("Family", family) for family, enabled in ((4, server.dhcp4), (6, server.dhcp6)) if enabled
     )
-    sources = {
-        "lease": "sync_leases_enabled",
-        "reservation": "sync_reservations_enabled",
-        "subnet": "sync_prefixes_enabled",
-        "pool": "sync_ip_ranges_enabled",
-    }
     job = frozenset(
         (family, source)
         for family in families
-        for source, flag in sources.items()
-        if config.sync_enabled and server.sync_enabled and getattr(config, flag) and getattr(server, flag)
+        for source in _SOURCE_FLAGS
+        if periodic_sync_enabled(server, source, config)
     )
     job |= {
         (family, LEASE_PREFIX)
