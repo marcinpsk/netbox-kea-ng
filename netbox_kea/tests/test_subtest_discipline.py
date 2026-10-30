@@ -167,7 +167,7 @@ def test_a_read_anywhere_in_a_later_statement_is_reported(after):
         for x in y:
             with self.subTest(x=x):
                 outcome = f(x)
-            with stub() as kea:
+            with stub_kea({}) as kea:
                 outcome = g(kea)
             self.assertTrue(outcome)
         """,
@@ -320,6 +320,8 @@ def test_a_later_clause_of_the_try_statement_that_is_valid_passes(block):
         "with self.assertRaisesMessage(ZeroDivisionError, 'division'):\n    outcome = 1 / 0",
         "with self.subTest(step=2):\n    outcome = g(x)",
         "with suppress(ValueError), nullcontext(g(x)) as outcome:\n    pass",
+        "with ignore_errors():\n    outcome = g(x)",
+        "with patch('module.g'), stub_kea({}):\n    outcome = g(x)",
         "x and (outcome := g(x))",
         "if x and (outcome := g(x)):\n    pass",
         "h((outcome := g(x)) if x else None)",
@@ -337,6 +339,8 @@ def test_a_later_clause_of_the_try_statement_that_is_valid_passes(block):
         "assert-raises-message",
         "subtest",
         "suppressed-target",
+        "unlisted-manager",
+        "unlisted-manager-first",
         "short-circuit-walrus",
         "if-test-short-circuit-walrus",
         "conditional-walrus",

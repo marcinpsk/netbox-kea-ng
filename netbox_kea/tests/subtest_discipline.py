@@ -10,9 +10,9 @@ name that the block binds (by assignment, ``as``, a ``match`` capture, import or
 
 Stdlib only, so it runs as a pre-commit hook without NetBox. Limits: it does not follow reads
 after an inner loop, or in a nested ``def`` with its defaults and decorators. An assignment in a branch, loop, ``try`` or
-``match``, or in a ``with`` statement whose context manager can swallow an exception, does not count
-as a rebinding. It reads the loads of one statement before its stores, and it does not see
-an assignment expression in a comprehension.
+``match`` does not count as a rebinding. An assignment in a ``with`` statement counts only when
+``_NON_SUPPRESSING`` names each context manager before it. It reads the loads of one statement
+before its stores, and it does not see an assignment expression in a comprehension.
 """
 
 from __future__ import annotations
@@ -27,18 +27,8 @@ TESTS_ROOT = Path(__file__).resolve().parent
 _DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 _COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 _COMPOUND = (ast.For, ast.AsyncFor, ast.While, ast.Try, getattr(ast, "TryStar", ast.Try), ast.Match)
-# Context managers that can swallow an exception from their body, so its assignments may not run.
-_SUPPRESSING = {
-    "subTest",
-    "assertRaises",
-    "assertRaisesRegex",
-    "assertRaisesMessage",
-    "assertWarns",
-    "assertWarnsRegex",
-    "assertWarnsMessage",
-    "raises",
-    "suppress",
-}
+# Context managers that never swallow an exception; any other one can skip the assignments after it.
+_NON_SUPPRESSING = {"stub_kea"}
 
 
 @dataclass(frozen=True, order=True)
@@ -143,16 +133,18 @@ def _first_reads(body: list[ast.stmt], watched: set[str], rebound: set[str]) -> 
     reads: set[str] = set()
     for node in body:
         if isinstance(node, (ast.With, ast.AsyncWith)):
-            before = rebound
+            kept = None
             for item in node.items:
                 reads |= (_reads(item.context_expr) & watched) - rebound
                 rebound = rebound | _definite_stores(item.context_expr)
                 if item.optional_vars is not None:
                     reads |= (_reads(item.optional_vars) & watched) - rebound
                     rebound = rebound | _stores(item.optional_vars)
+                if kept is None and _called(item) not in _NON_SUPPRESSING:
+                    kept = rebound
             inner, assigned = _first_reads(node.body, watched, rebound)
             reads |= inner
-            rebound = before if any(_called(item) in _SUPPRESSING for item in node.items) else assigned
+            rebound = assigned if kept is None else kept
         elif isinstance(node, ast.If):
             reads |= (_reads(node.test) & watched) - rebound
             rebound = rebound | _definite_stores(node.test)
