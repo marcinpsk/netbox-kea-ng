@@ -197,7 +197,7 @@ class LeaseTableCacheTest(_LeaseCacheBase):
         self.assertContains(response, "198.18.0.22")
 
     def test_a_failed_lease_read_is_read_again_on_the_next_render(self):
-        with self.assertLogs("netbox_kea.views.notices", "ERROR"):
+        with self.assertLogs("netbox_kea.read_failure", "WARNING"):
             failed, _ = self._leases({"lease4-get-page": requests.ConnectionError("kea unreachable")})
         self.assertContains(failed, HEADLINES["lease"])
 
@@ -342,7 +342,7 @@ class LeaseTableCacheTest(_LeaseCacheBase):
     def test_a_refresh_that_fails_shows_its_error_in_the_section_and_leaves_no_entry(self):
         page, _ = self._leases({"lease4-get-page": lease_pages([_lease("198.18.0.21")])})
 
-        with self.assertLogs("netbox_kea.views.notices", "ERROR"):
+        with self.assertLogs("netbox_kea.read_failure", "WARNING"):
             refreshed, _ = self._refresh_leases(page, {"lease4-get-page": requests.ConnectionError("kea unreachable")})
         self.assertIn(HEADLINES["lease"], _section(refreshed, "#lease-search").get_text())
         self.assertNotContains(refreshed, "198.18.0.21")
@@ -355,10 +355,11 @@ class LeaseTableCacheTest(_LeaseCacheBase):
         page, _ = self._leases({"lease4-get-page": lease_pages([_lease("198.18.0.21")])})
         save_key_without_certificate(self.server)
 
-        with self.assertLogs("netbox_kea.views.leases", "ERROR"):
+        with self.assertLogs("netbox_kea.read_failure", "WARNING"):
             refreshed, _ = self._refresh_leases(page, {"lease4-get-page": lease_pages([_lease("198.18.0.21")])})
 
-        self.assertIn("An internal error occurred", _section(refreshed, "#lease-search").get_text())
+        self.assertIn(HEADLINES["lease"], _section(refreshed, "#lease-search").get_text())
+        self.assertNotContains(refreshed, "198.18.0.21")
 
     def test_the_shared_error_template_names_no_section(self):
         self.assertNotIn("lease-search", render_to_string("netbox_kea/exception_htmx.html", {"error_id": "x"}))
@@ -409,7 +410,7 @@ class LeaseBadgeCacheTest(_LeaseCacheBase):
         self.assertEqual(_lease_commands(commands), [])
         self.assertContains(response, "198.18.0.21")
 
-    def test_failed_badge_lookups_log_no_traceback(self):
+    def test_failed_badge_lookups_are_logged_by_the_read_classifier(self):
         responses = {
             **_catalogue_responses(4, 20, _CIDR),
             "reservation-get-page": _res_page([_RESERVED, {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:02"}]),
@@ -419,10 +420,12 @@ class LeaseBadgeCacheTest(_LeaseCacheBase):
                 self.subTest(reply=reply),
                 stub_kea({**responses, "lease4-get-by-state": reply, "lease4-get-by-hw-address": reply}) as kea,
             ):
-                with self.assertNoLogs("netbox_kea.views.notices", "INFO"):
+                with self.assertLogs("netbox_kea.read_failure", "INFO") as logs:
                     response = self.client.get(
                         reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
                     )
+                lookup = f"The Lease lookup of Server {self.server.pk} failed"
+                self.assertTrue(all(record.getMessage().startswith(lookup) for record in logs.records), logs.output)
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("lease4-get-by-hw-address", kea.commands())
                 self.assertNotContains(response, "Lease</span>")
@@ -530,7 +533,7 @@ class StatusAndUtilizationCacheTest(_ViewTestBase):
         self.assertEqual(commands.count("status-get"), 3)
 
     def test_a_failed_status_read_is_read_again(self):
-        with self.assertLogs("netbox_kea.views.server", "ERROR"):
+        with self.assertLogs("netbox_kea.read_failure", "WARNING"):
             self._status(**{"status-get": {"result": 0, "arguments": None}})
 
         response, commands = self._status()

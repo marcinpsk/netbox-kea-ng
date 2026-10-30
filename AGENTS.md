@@ -218,6 +218,7 @@ URL request
   → reservation_edit.py (Reservation add/edit/import, signed form state, Published Name rules and after-apply facts)
   → config_write.py     (Configuration Changes, Reservation writes included: typed outcome, advisory lock, persist step)
   → change_outcome.py   (ChangeRejected and the Application classifier that every change shares; ADR 0011)
+  → read_failure.py     (attempt() and ReadFailure: the one classifier of a failed Kea read; ADR 0015)
   → runtime_change.py   (Runtime Changes: Lease add/edit/delete/wipe, DHCP enable/disable; ADR 0011)
   → kea.py              (HTTP POST to each daemon's / control socket)
   → display_cache.py    (the display cache: keys, generations, TTLs, admission; ADR 0009)
@@ -333,7 +334,7 @@ URL request
   predicate of `cached()`: an entry read before the table is read again. So a badge is never older than its table, and
   a Refresh, which reads the table live, also reads the badges of the shown rows live. No refresh flag reaches a badge. Utilization and status have no read age and no Refresh. The
   badge lookups run in worker threads that pin `DisplayCacheConfig` and `KeaClientConfig`, and a failed badge lookup
-  is a typed Unknown that logs no traceback (`lease_reservation_reads`).
+  is a typed Unknown, keyed by the kind of its `ReadFailure` (`lease_reservation_reads`).
   Each cached Lease, utilization and status read builds its client on a miss only and closes it
   (`views/_base.LazyClient`; the badge pool of Reservation and Lease rows builds one per worker thread, in
   `lease_reservation_reads.WorkerClients`); a close that fails is logged. Exports
@@ -426,8 +427,26 @@ URL request
 ```text
 Exception
  ├── KeaException                  # base: any non-ok result from Kea
+ ├── MalformedKeaReply             # malformed.py: Kea answered, but NetBox cannot use the reply
+ │    ├── MalformedReply           # kea.py: the reply envelope, or a plain malformed fact of a reply
+ │    ├── MalformedConfiguration   # kea.py: a config-get shape that NetBox cannot edit safely
+ │    ├── MalformedLeaseResponse   # leases.py: a Lease reply envelope or page cursor
+ │    └── MalformedReservation     # reservations.py: a raw Reservation record
+ ├── KeaClientSettingsError        # kea.py: KeaClient() and Server.get_client() refuse the client settings
  └── ChangeRejected                # change_outcome: the change is not live, with a reason
 ```
+
+**`read_failure.attempt()` classifies every failed Kea read** (ADR 0015). `attempt(label, read)` returns the value of
+the read, or a `ReadFailure` with a kind: `unsupported` (result 2), `refused` (another failure result), `unreachable`
+(a `requests.RequestException`, `KeaTLSFileError` and `KeaRequestEncodingError` included), `malformed`
+(`MalformedKeaReply`) or `misconfigured` (`KeaClientSettingsError`). `ReadFailure.reply` holds
+`kea_error_message()` for `unsupported` and `refused`. `attempt()` writes the one log line: INFO for `unsupported`,
+WARNING without a traceback for `misconfigured`, WARNING with a traceback for the others. A caller maps the kind to its
+presentation and catches and logs nothing for these failures. A refused Lease query (`LeaseQueryGuardError`), a
+`ValueError` and every other exception raise: a bare `ValueError` is a caller bug. The OpenGrep rule
+`kea-view-read-ladder` refuses a handler of `KeaException`, `requests.RequestException`, `MalformedKeaReply` or
+`KeaClientSettingsError` anywhere in `netbox_kea/` except `read_failure.py`, `kea.py` and the tests. Only the write
+classification is exempt by name: `change_outcome.mutate` and `config_write._test_before`.
 
 **`views/notices.py` owns every Snapshot notice and every notice of a failed Kea read** (ADR 0003, Presentation).
 - A view passes a Catalogue or Server Configuration Snapshot to `notice()`. It runs a Reservation or Lease read
@@ -437,25 +456,24 @@ Exception
 - When a load needs facts that a Catalogue or Server Configuration Snapshot cannot give, the view shows
   `failed_load(snapshot)`: the error Notice of that Snapshot. For example, a Reservation load whose `subnet{v}-list`
   read failed shows the Catalogue Notice, not a Reservation headline.
-- Both loaders share one classifier. A Kea refusal, a transport failure and a malformed reply become an unavailable
-  Notice, and the failure is logged. A malformed reply is a `MalformedReply`, a `MalformedLeaseResponse`, a
-  `MalformedReservation`, or a `LeaseLookupFailed` result of `load_target()`.
-- A Kea refusal adds `kea_error_message(exc)` as a line under the headline (`Notice.reply`). So every channel shows
-  Kea's answer.
+- Both loaders run the read through `read_failure.attempt()`, and `_failure_notice()` maps each `ReadFailure` to an
+  unavailable Notice. A `LeaseLookupFailed` result of `load_target()` is a malformed reply too.
+- A Kea refusal adds `ReadFailure.reply` (`kea_error_message()`) as a line under the headline (`Notice.reply`). So
+  every channel shows Kea's answer.
 - The channels are `show_notices()`, a template (`inc/notice_alert.html`), `ServerNotices` on a combined page, and
   `Notice.text` in a row badge or a plain-text reply. A view never chooses the level. It never writes its own
   read-failure text. All headlines live in `HEADLINES`.
 - When the `host_cmds` hook is missing, the Reservations tab shows its hook panel. It shows no Notice and no
   mutation warning for the same cause, so the guidance shows once.
-- A refused Lease query (`LeaseQueryGuardError`) still raises. Every `ValueError` except `MalformedReservation` still
-  raises. A site catches only a `ValueError` that it can raise (a bad selection, the client settings) and shows an
-  accurate message for it. `_client_settings_refusal()` in `views/_base.py` checks the client settings. A combined
-  page adds these errors to the `ServerNotices` lists itself.
+- A refused Lease query (`LeaseQueryGuardError`) and a `ValueError` still raise. A site catches only a `ValueError`
+  that it can raise (a bad selection) and shows an accurate message for it. A view that builds a client itself uses
+  `_client_or_refusal()` in `views/_base.py`, and `_client_settings_refusal()` checks the client settings before a
+  change. Both give the message that names the client settings. A combined page adds these errors to the
+  `ServerNotices` lists itself.
 - Three OpenGrep rules (`kea-snapshot-notice-outside-notice-module`, `kea-snapshot-read-without-notice`,
-  `kea-view-read-ladder`) and `test_snapshot_notice_sweep.py` guard the rule. `kea-view-read-ladder` refuses an
-  `except` of `KeaException` or `requests.RequestException` in `views/`. The reads that degrade silently and log
-  the failure are exempt by function name: utilization, status, the read back of a created Lease, a later page of a
-  Reservation search, and the Reservation read of the DHCP plugin import.
+  `kea-view-read-ladder`) and `test_snapshot_notice_sweep.py` guard the rule. The reads that degrade silently
+  (utilization, status, the read back of a created Lease, a later page of a Reservation search) run through
+  `attempt()` too.
 - A new Server page that reads no Snapshot needs an entry with a reason in the sweep's exempt list.
 
 **`config_write` owns every Configuration Change** (ADR 0005). An
@@ -571,23 +589,20 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
 - **Always pass `version=` to `server.get_client()`** when the DHCP version is known
   (`server.get_client(version=self.dhcp_version)`). Omitting it falls back to
   `ca_url` even when a protocol-specific URL is configured.
-- **Always call `server.get_client()` inside a try block** — client creation raises
-  `ValueError` on bad config and sends no request. A try block around `get_client()` alone
-  catches `ValueError` only, and a view reports it with `_client_settings_error()` in
-  `views/_base.py`, never as a connection failure. Request errors come from the Kea calls, so the "Catch" rule
-  below covers those calls. Never call it at module/class level or before error handling
-  is in scope.
+- **Build a client where a failure is handled** — client creation raises `KeaClientSettingsError` on bad
+  settings and sends no request. Build it inside the read that `attempt()` runs (kind `misconfigured`), or in a view
+  through `_client_or_refusal()` in `views/_base.py`, which names the client settings and never reports a
+  connection failure. Never build it at module/class level.
 - **Validate Kea response shape before indexing.** After `client.command()`, check
   `resp` is a non-empty list and `resp[0]` is a dict before reading
   `resp[0]["arguments"]`; check nested keys (`"leases"`, `"subnet4"`, …) are lists
-  before indexing. Malformed payloads should raise `RuntimeError` to hit existing
-  handlers.
-- **Run a user-facing Kea read through `load_snapshot()` or `load_target()`** in `views/notices.py`; a view
-  catches no `KeaException` or `requests.RequestException` itself (OpenGrep `kea-view-read-ladder`). A read
-  that degrades silently (a badge, a status) catches
-  `(KeaException, requests.RequestException, RuntimeError, ValueError)` and logs the failure.
-  `check_response()` raises `RuntimeError` for a malformed reply entry. A Configuration Change or a Runtime Change
-  goes through `_run_change` instead (see "Exception hierarchy").
+  before indexing. A malformed payload raises `MalformedReply` (or another `MalformedKeaReply`), never a plain
+  `RuntimeError` or `ValueError`, so `attempt()` classifies it as `malformed`.
+- **Run every Kea read through `read_failure.attempt()`**, and a user-facing read in a view through
+  `load_snapshot()` or `load_target()` in `views/notices.py`. No code catches `KeaException`,
+  `requests.RequestException`, `MalformedKeaReply` or `KeaClientSettingsError` itself (OpenGrep
+  `kea-view-read-ladder`). A Configuration Change or a Runtime Change goes through `_run_change` instead (see
+  "Exception hierarchy").
 - **Use `kea.kea_error_message(exc)` for user-facing Kea error messages**, also in change diagnostics: fixed guidance for result 2 (hook
   library not loaded) and result 128 (daemon not reachable), followed by `Kea replied: <text>` for every result. Show Kea's text, never
   the text of a Python exception.

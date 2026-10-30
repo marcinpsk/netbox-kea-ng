@@ -112,20 +112,18 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertEqual(_return_url(row["delete_url"]), [search])
 
     def test_a_client_that_cannot_be_built_shows_the_headline_in_the_section(self):
-        # A client certificate without its key fails the client construction with a ValueError.
+        # A client certificate without its key is a misconfigured read: its Notice shows in the section.
         self.server.client_cert_path = "/cert"
         self.server.save()
 
-        with stub_kea({}) as kea, self.assertLogs("netbox_kea.views.reservations", level="ERROR"):
+        with stub_kea({}) as kea, self.assertLogs("netbox_kea.read_failure", level="WARNING"):
             response = self.client.get(self._url())
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
-        self.assertContains(
-            response, f'<div class="alert alert-danger" role="alert">{HEADLINES["reservation"]}</div>', html=True
-        )
+        self.assertContains(response, HEADLINES["reservation"])
         self.assertNotIn(HEADLINES["reservation"], [str(message) for message in response.context["messages"]])
-        self.assertIsNone(response.context["reservation_notice"])
+        self.assertTrue(response.context["reservation_notice"].unavailable)
         self.assertFalse(response.context["snapshot_complete"])
         self.assertEqual(response.context["table"].data.data, [])
         self.assertEqual(
@@ -375,7 +373,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
                 ),
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
                 # The Catalogue read succeeds; the capability read of the Server Configuration fails.
-                "config-get": queued(responses["config-get"], RuntimeError("capability discovery failed")),
+                "config-get": queued(responses["config-get"], requests.ConnectionError("capability discovery failed")),
             }
         )
 
@@ -696,7 +694,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
                 ),
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
                 # The Catalogue read succeeds; the capability read of the Server Configuration fails.
-                "config-get": queued(responses["config-get"], RuntimeError("capability discovery failed")),
+                "config-get": queued(responses["config-get"], requests.ConnectionError("capability discovery failed")),
             }
         )
         url = reverse("plugins:netbox_kea:combined_reservations4")
@@ -1081,10 +1079,10 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
                 "Kea returned a Reservation lookup reply that cannot be read.",
             ),
             (
-                "invalid read",
+                "Reservation that does not fit the lookup",
                 _res_get({"subnet-id": 21, "hw-address": self._MAC, "ip-address": "198.18.0.20"}),
                 {},
-                "The Server settings are not valid, or Kea returned a Reservation that does not parse or fit the lookup.",
+                "Kea returned a Reservation lookup reply that cannot be read.",
             ),
             (
                 "foreign identifier",

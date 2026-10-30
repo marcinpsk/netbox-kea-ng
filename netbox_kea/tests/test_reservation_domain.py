@@ -15,6 +15,7 @@ from django.test import SimpleTestCase, TestCase
 from netbox_kea import kea, server_configuration
 from netbox_kea.dhcp_options import DHCPOptionChange, DHCPOptionEdit, parse_dhcp_options
 from netbox_kea.kea import KeaCommand
+from netbox_kea.malformed import MalformedKeaReply
 from netbox_kea.reservations import (
     MAX_IDENTITY_LENGTH,
     ClearValue,
@@ -436,7 +437,7 @@ class TestReservationPage(SimpleTestCase):
 
     def test_rejects_a_malformed_response_envelope(self):
         with stub_kea({"reservation-get-page": []}):
-            with self.assertRaisesRegex(RuntimeError, "one valid result"):
+            with self.assertRaisesRegex(MalformedKeaReply, "one valid result"):
                 self.kea.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"))
 
     def test_rejects_a_malformed_page_cursor(self):
@@ -448,7 +449,7 @@ class TestReservationPage(SimpleTestCase):
             },
         }
         with stub_kea({"reservation-get-page": page}):
-            with self.assertRaisesRegex(RuntimeError, "malformed next cursor"):
+            with self.assertRaisesRegex(MalformedKeaReply, "malformed next cursor"):
                 self.kea.reservation_page(4, _catalogue(4, 10, "198.18.0.0/24"))
 
     def test_preserves_a_global_addressless_reservation(self):
@@ -667,7 +668,7 @@ class TestReservationExactIdentity(SimpleTestCase):
         identity = ReservationIdentity("client-id", "01:aa:bb:cc:dd:ee:ff")
 
         with stub_kea({"reservation-get": {"result": 0, "text": "Host lookup completed."}}):
-            with self.assertRaisesRegex(RuntimeError, "malformed arguments"):
+            with self.assertRaisesRegex(MalformedKeaReply, "malformed arguments"):
                 self.kea.reservation_by_identity(4, self.catalogue, self.scope, identity)
 
 
@@ -702,7 +703,7 @@ class TestReservationScopedPrefix(SimpleTestCase):
 
     def test_a_host_that_reserves_another_length_at_the_base_fails_closed(self):
         with stub_kea({"reservation-get": _res_get(self._host("2001:db8:100:800::/60"))}):
-            with self.assertRaisesRegex(ValueError, "scoped target 2001:db8:100:800::/56"):
+            with self.assertRaisesRegex(MalformedKeaReply, "scoped target 2001:db8:100:800::/56"):
                 self.kea.reservation_by_prefix(self.catalogue, self.scope, ip_network("2001:db8:100:800::/56"))
 
     def test_no_host_is_none(self):
@@ -897,7 +898,7 @@ class TestReservationIteration(SimpleTestCase):
         client = kea_client(url="http://kea.example.invalid", send_service=False)
 
         with stub_kea({"reservation-get-page": stalled}):
-            with self.assertRaisesRegex(RuntimeError, "did not advance"):
+            with self.assertRaisesRegex(MalformedKeaReply, "did not advance"):
                 client.reservation_snapshot(4, _catalogue(4, 20, "198.18.0.0/24"), page_size=2)
 
     def test_bounds_empty_pages_whose_cursor_keeps_advancing(self):
@@ -911,7 +912,7 @@ class TestReservationIteration(SimpleTestCase):
         client = kea_client(url="http://kea.example.invalid", send_service=False)
 
         with stub_kea({"reservation-get-page": advancing}) as kea:
-            with self.assertRaisesRegex(RuntimeError, "only empty pages"):
+            with self.assertRaisesRegex(MalformedKeaReply, "only empty pages"):
                 client.reservation_page(4, _catalogue(4, 20, "198.18.0.0/24"), limit=2)
 
         self.assertEqual(len(kea.bodies("reservation-get-page")), 9)

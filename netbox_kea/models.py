@@ -312,6 +312,10 @@ class Server(JobsMixin, NetBoxModel):
                 (with per-field CA fallback) are used. If no protocol-specific URL is
                 configured, ``ca_url`` and CA-level credentials are always used.
 
+        Raises:
+            KeaClientSettingsError: If the client settings cannot build a client, for example a client key without
+                a certificate.
+
         """
         # Imported here: display_cache imports this module.
         from . import display_cache

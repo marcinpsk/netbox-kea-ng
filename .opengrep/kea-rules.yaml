@@ -1008,142 +1008,6 @@ rules:
               metavariable: $PARAMS
               regex: ^((self\.)?request\.(GET|POST|query_params|data)|params|query_params|(self\.)?cleaned_data)$
 
-  - id: kea-exception-handler-misses-runtime-error
-    languages: [python]
-    severity: ERROR
-    message: >-
-      This try catches KeaException or requests.RequestException but no clause
-      catches RuntimeError. KeaClient.command() raises RuntimeError for a reply
-      body that is not a JSON list, and check_response() for a malformed reply
-      entry, for example ["ok"] from a proxy, so the request fails with HTTP 500.
-      Add RuntimeError to the clause that reports the generic error. A try around
-      server.get_client() alone catches ValueError only.
-      Limits: a try with an else or finally clause is not checked, a RuntimeError
-      caught by an outer try is not seen, and a subclass such as
-      requests.ConnectionError or an aliased requests import is not matched. Suppress a true exception with
-      `# nosemgrep: kea-exception-handler-misses-runtime-error`.
-    metadata:
-      category: correctness
-      confidence: MEDIUM
-      references:
-        - "commit 8d7706c0: report a malformed Kea reply entry instead of failing with HTTP 500"
-    paths:
-      include:
-        - "**/views/**"
-        - "**/api/**"
-        - "**/templatetags/**"
-        - "**/forms.py"
-        - "**/server_connection.py"
-      exclude:
-        - "**/tests/**"
-    patterns:
-      - pattern-either:
-          - pattern: |
-              try:
-                  ...
-              except KeaException:
-                  ...
-          - pattern: |
-              try:
-                  ...
-              except KeaException as $E:
-                  ...
-          - pattern: |
-              try:
-                  ...
-              except (..., KeaException, ...):
-                  ...
-          - pattern: |
-              try:
-                  ...
-              except (..., KeaException, ...) as $E:
-                  ...
-          - pattern: |
-              try:
-                  ...
-              except requests.RequestException:
-                  ...
-          - pattern: |
-              try:
-                  ...
-              except requests.RequestException as $E:
-                  ...
-          - pattern: |
-              try:
-                  ...
-              except (..., requests.RequestException, ...):
-                  ...
-          - pattern: |
-              try:
-                  ...
-              except (..., requests.RequestException, ...) as $E:
-                  ...
-      - pattern-not: |
-          try:
-              ...
-          except RuntimeError:
-              ...
-      - pattern-not: |
-          try:
-              ...
-          except RuntimeError as $E2:
-              ...
-      - pattern-not: |
-          try:
-              ...
-          except (..., RuntimeError, ...):
-              ...
-      - pattern-not: |
-          try:
-              ...
-          except (..., RuntimeError, ...) as $E2:
-              ...
-      - pattern-not: |
-          try:
-              ...
-          except Exception:
-              ...
-      - pattern-not: |
-          try:
-              ...
-          except Exception as $E2:
-              ...
-      - pattern-not: |
-          try:
-              ...
-          except (..., Exception, ...):
-              ...
-      - pattern-not: |
-          try:
-              ...
-          except (..., Exception, ...) as $E2:
-              ...
-      - pattern-not: |
-          try:
-              ...
-          except BaseException:
-              ...
-      - pattern-not: |
-          try:
-              ...
-          except BaseException as $E2:
-              ...
-      - pattern-not: |
-          try:
-              ...
-          except (..., BaseException, ...):
-              ...
-      - pattern-not: |
-          try:
-              ...
-          except (..., BaseException, ...) as $E2:
-              ...
-      - pattern-not: |
-          try:
-              ...
-          except:
-              ...
-
   - id: kea-snapshot-notice-outside-notice-module
     languages: [python]
     severity: ERROR
@@ -1289,27 +1153,30 @@ rules:
     languages: [python]
     severity: ERROR
     message: >-
-      This view catches KeaException or requests.RequestException itself. A user-facing Kea read goes through
-      load_snapshot() or load_target() in views/notices.py: they turn a Kea refusal, a transport failure and a
-      malformed reply into one Notice with the shared headline and Kea's text (kea_error_message()), and they log
-      the failure. A hand-written ladder writes its own text, and the texts drift. Run the read through the loader,
-      and catch only a ValueError that the site can raise, with an accurate message.
-      Exempt by name: the reads that degrade silently and log the failure (utilization, status, the read back of a
-      created Lease, a later page of a Reservation search).
-      Limits: an except of Exception, of RuntimeError alone, of a subclass such as requests.ConnectionError, or of
-      an aliased import is not seen, and the rule does not check that a handler logs.
+      This code catches a failed Kea read itself: KeaException, requests.RequestException, the malformed reply base
+      MalformedKeaReply, or KeaClientSettingsError. read_failure.attempt() is the one classifier of a failed read
+      (ADR 0015). It returns a ReadFailure with the kind (unsupported, refused, unreachable, malformed,
+      misconfigured), and it logs the failure. Run the read through attempt(), or through load_snapshot() or
+      load_target() in a view, and map the kind to the presentation of the caller.
+      Exempt by name: the write classification of ADR 0005 and ADR 0011 (change_outcome.mutate and
+      config_write._test_before).
+      Limits: an except of Exception, of a subclass such as requests.ConnectionError or MalformedReply, or of an
+      aliased import is not seen.
     metadata:
       category: correctness
       confidence: HIGH
       references:
-        - "docs/adr/0003-separate-server-configuration-authority.md: Presentation"
-        - "docs/adr/0011-runtime-changes-return-a-typed-outcome.md: Consequences"
+        - "docs/adr/0015-kea-read-failures-are-classified-outside-keaclient-by-one-module.md"
+        - "docs/adr/0011-runtime-changes-return-a-typed-outcome.md: Application"
     paths:
       include:
-        - "netbox_kea/views/**"
+        - "netbox_kea/**"
         - "kea-view-read-ladder.py"
       exclude:
-        - "netbox_kea/views/notices.py"
+        - "netbox_kea/read_failure.py"
+        - "netbox_kea/kea.py"
+        # A test drives these failures and asserts on them.
+        - "netbox_kea/tests/**"
     patterns:
       - pattern-either:
           - pattern: |
@@ -1352,25 +1219,53 @@ rules:
                   ...
               except (..., requests.RequestException, ...) as $E:
                   ...
-      # Subnet utilization is optional: a failed read leaves the utilization columns empty.
+          - pattern: |
+              try:
+                  ...
+              except MalformedKeaReply:
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except MalformedKeaReply as $E:
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except (..., MalformedKeaReply, ...):
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except (..., MalformedKeaReply, ...) as $E:
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except KeaClientSettingsError:
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except KeaClientSettingsError as $E:
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except (..., KeaClientSettingsError, ...):
+                  ...
+          - pattern: |
+              try:
+                  ...
+              except (..., KeaClientSettingsError, ...) as $E:
+                  ...
+      # A change classifies a failed send as applied, unknown or rejected (ADR 0005, ADR 0011), not as a read.
       - pattern-not-inside: |
-          def _enrich_subnet_statistics(...):
+          def mutate(...):
               ...
-      # The Overview leaves a daemon whose status cannot be read out of its status table.
+      # config-test is a step of a Configuration Change: result 2 skips it, and a forward failure is not a refusal.
       - pattern-not-inside: |
-          def _get_statuses(...):
-              ...
-      # The combined dashboard badge shows a daemon that cannot be read as offline.
-      - pattern-not-inside: |
-          def _daemon_online(...):
-              ...
-      # The read back after an applied Lease add only feeds the IPAM sync; the add already succeeded.
-      - pattern-not-inside: |
-          def _read_created_lease(...):
-              ...
-      # A later page of a Reservation search ends the batch with a diagnostic; the first page raises to the loader.
-      - pattern-not-inside: |
-          def _read_later_search_page(...):
+          def _test_before(...):
               ...
 
   - id: kea-catalogue-absence-without-consistency

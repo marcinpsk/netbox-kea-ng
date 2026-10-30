@@ -57,6 +57,7 @@ from .leases import (
     read_lease_page,
     read_lease_page_count,
 )
+from .malformed import MalformedKeaReply
 from .pools import parse_pool
 from .reservations import (
     RESERVATION_PAGE_FETCH_FAILED,
@@ -324,7 +325,7 @@ def _reservation_get_arguments(result: KeaResponse) -> dict[str, Any] | None:
         return None
     arguments = result.get("arguments")
     if not isinstance(arguments, dict):
-        raise RuntimeError("reservation-get returned malformed arguments.")
+        raise MalformedReply("reservation-get returned malformed arguments.")
     return arguments
 
 
@@ -514,7 +515,7 @@ def _stat_lease_counts(command: KeaCommand, reply: KeaResponse, names: Sequence[
     """Return the *names* counts of each Subnet row of one ``stat-lease{4,6}-get`` reply.
 
     Raises:
-        RuntimeError: If the result set, a column, a row or a count is malformed, or two rows name one Subnet.
+        MalformedReply: If the result set, a column, a row or a count is malformed, or two rows name one Subnet.
 
     """
     arguments = reply.get("arguments")
@@ -522,21 +523,21 @@ def _stat_lease_counts(command: KeaCommand, reply: KeaResponse, names: Sequence[
     columns = result_set.get("columns") if isinstance(result_set, dict) else None
     rows = result_set.get("rows") if isinstance(result_set, dict) else None
     if not isinstance(columns, list) or not isinstance(rows, list):
-        raise RuntimeError(f"{command.value} returned malformed statistics.")
+        raise MalformedReply(f"{command.value} returned malformed statistics.")
     try:
         indexes = [columns.index(name) for name in ("subnet-id", *names)]
     except ValueError as exc:
-        raise RuntimeError(f"{command.value} omitted required statistics columns.") from exc
+        raise MalformedReply(f"{command.value} omitted required statistics columns.") from exc
 
     counts: dict[int, tuple[int, ...]] = {}
     for row in rows:
         if not isinstance(row, (list, tuple)) or len(row) <= max(indexes):
-            raise RuntimeError(f"{command.value} returned a malformed statistics row.")
+            raise MalformedReply(f"{command.value} returned a malformed statistics row.")
         subnet_id, *values = (row[index] for index in indexes)
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in (subnet_id, *values)):
-            raise RuntimeError(f"{command.value} returned an invalid lease count.")
+            raise MalformedReply(f"{command.value} returned an invalid lease count.")
         if subnet_id in counts:
-            raise RuntimeError(f"{command.value} returned two statistics rows for Subnet {subnet_id}.")
+            raise MalformedReply(f"{command.value} returned two statistics rows for Subnet {subnet_id}.")
         counts[subnet_id] = tuple(values)
     return counts
 
@@ -578,7 +579,8 @@ def _lease_snapshot(
         family=query.family,
         query=query,
         read_started=started,
-        read_finished=_now(),
+        # A wall clock that stepped back during the read would finish it before it started.
+        read_finished=max(started, _now()),
         records=records,
         diagnostics=read.diagnostics,
         coverage=coverage,
@@ -647,11 +649,11 @@ def _set_shared_network_description(network: dict[str, Any], description: str) -
         network.pop("user-context", None)
 
 
-class MalformedReply(RuntimeError):
+class MalformedReply(MalformedKeaReply):
     """Kea answered with a 2xx status, but the reply is not a list of entries that each carry a result."""
 
 
-class MalformedConfiguration(RuntimeError):
+class MalformedConfiguration(MalformedKeaReply):
     """The running configuration from ``config-get`` has a shape that NetBox cannot edit safely."""
 
 
@@ -967,15 +969,16 @@ class KeaClient:
                 cache generations. A failure is logged and does not interrupt the write.
 
         Raises:
-            ValueError: If only one of client_cert/client_key is provided.
+            KeaClientSettingsError: If only one of client_cert/client_key is provided, or *max_unpaged_leases* is
+                not a positive integer or None.
 
         """
         if (client_cert is not None and client_key is None) or (client_cert is None and client_key is not None):
-            raise ValueError("Key and Cert must be used together.")
+            raise KeaClientSettingsError("Key and Cert must be used together.")
         if max_unpaged_leases is not None and (
             isinstance(max_unpaged_leases, bool) or not isinstance(max_unpaged_leases, int) or max_unpaged_leases < 1
         ):
-            raise ValueError("max_unpaged_leases must be a positive integer or None.")
+            raise KeaClientSettingsError("max_unpaged_leases must be a positive integer or None.")
 
         self.url = url
         self.timeout = timeout
@@ -1020,9 +1023,10 @@ class KeaClient:
             BranchActive: If *command* is a write and the write guard refuses it, for example in a branch.
             KeaTLSFileError: If requests cannot find a TLS file of the client. It is a ``RequestException``.
             KeaRequestEncodingError: If requests cannot encode the Basic Auth credentials before the send. It is a
-                ``RequestException``. An encode failure after the send is a plain ``RequestException``.
+                ``RequestException``. A redirect reply that requests cannot prepare is a plain ``RequestException``.
             requests.HTTPError: If the HTTP response status is a redirect or not 2xx.
-            MalformedReply: If the reply body is not JSON or not a list, is empty, or has a malformed entry.
+            MalformedReply: If the reply body is not JSON or not a list, is nested deeper than ``MAX_REPLY_DEPTH``,
+                is empty, or has a malformed entry.
             KeaException: If any response result code is not in *check*.
 
         """
@@ -1057,7 +1061,7 @@ class KeaClient:
             raise requests.exceptions.SSLError("The TLS connection to Kea failed.") from exc
         except OSError as exc:
             raise KeaTLSFileError("A TLS CA, certificate or key file of the client could not be found.") from exc
-        except UnicodeEncodeError as exc:
+        except ValueError as exc:
             # requests prepares the next request of a redirect reply after the send, also without following it.
             raise requests.RequestException("requests could not handle the reply after it sent the request.") from exc
         finally:
@@ -1068,10 +1072,13 @@ class KeaClient:
         resp.raise_for_status()
         try:
             resp_json = resp.json()
-        except requests.JSONDecodeError as exc:
+        except (ValueError, RecursionError) as exc:
+            # Python's JSON reader also raises a plain ValueError (a long integer) and a RecursionError (deep nesting).
             raise MalformedReply("Kea returned a reply body that is not JSON.") from exc
         if not isinstance(resp_json, list):
             raise MalformedReply(f"Kea returned a reply that is not a list: {type(resp_json).__name__}")
+        if _deeper_than(resp_json, MAX_REPLY_DEPTH):
+            raise MalformedReply(f"Kea returned a reply nested deeper than {MAX_REPLY_DEPTH} levels.")
         if check is not None:
             check_response(resp_json, check)
         return resp_json
@@ -1151,16 +1158,16 @@ class KeaClient:
             return [], 0, 0
         args = reply.get("arguments")
         if not isinstance(args, dict) or not isinstance(args.get("hosts"), list):
-            raise RuntimeError("reservation-get-page returned malformed arguments.")
+            raise MalformedReply("reservation-get-page returned malformed arguments.")
         next_obj = args.get("next")
         if not isinstance(next_obj, dict):
-            raise RuntimeError("reservation-get-page returned a malformed next cursor.")
+            raise MalformedReply("reservation-get-page returned a malformed next cursor.")
         next_from = next_obj.get("from")
         next_source = next_obj.get("source-index")
         if any(
             isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in (next_from, next_source)
         ):
-            raise RuntimeError("reservation-get-page returned a malformed next cursor.")
+            raise MalformedReply("reservation-get-page returned a malformed next cursor.")
         return cast(list[dict[str, Any]], args["hosts"]), cast(int, next_from), cast(int, next_source)
 
     def reservation_page(
@@ -1200,7 +1207,7 @@ class KeaClient:
             )
             raw_pages += 1
             if len(page) > remaining:
-                raise RuntimeError("reservation-get-page exceeded the requested page limit.")
+                raise MalformedReply("reservation-get-page exceeded the requested page limit.")
             hosts.extend(page)
             if page:
                 # An empty page between real ones is a source transition, not a stall.
@@ -1210,13 +1217,13 @@ class KeaClient:
                 # keeps advancing the cursor over empty pages would never end it.
                 empty_pages += 1
                 if empty_pages > _MAX_EMPTY_RESERVATION_PAGES:
-                    raise RuntimeError("reservation-get-page returned only empty pages.")
+                    raise MalformedReply("reservation-get-page returned only empty pages.")
             candidate = (candidate_source, candidate_from)
             if candidate == (0, 0):
                 next_cursor = None
                 break
             if candidate in seen_cursors:
-                raise RuntimeError("Reservation page cursor did not advance.")
+                raise MalformedReply("Reservation page cursor did not advance.")
             next_source, next_from = candidate
             if len(hosts) == limit or (max_raw_pages is not None and raw_pages >= max_raw_pages):
                 next_cursor = _encode_reservation_cursor(next_source, next_from)
@@ -1248,7 +1255,7 @@ class KeaClient:
             ValueError: If *version* or the identifier type is not valid.
             KeaException: If Kea returns a failure result other than "not found".
             MalformedReservation: If Kea returns a record that does not match *scope* and *identity*.
-            RuntimeError: If the reply is malformed.
+            MalformedReply: If the reply is malformed.
 
         """
         if version not in (4, 6):
@@ -1365,7 +1372,7 @@ class KeaClient:
             return _parse_reservation_page([], version, catalogue, None, read_started=started)
         arguments = reply.get("arguments")
         if not isinstance(arguments, dict):
-            raise RuntimeError("reservation-get-by-hostname returned malformed arguments.")
+            raise MalformedReply("reservation-get-by-hostname returned malformed arguments.")
         return _parse_reservation_page(
             arguments.get("hosts"),
             version,
@@ -1405,7 +1412,7 @@ class KeaClient:
                     limit=page_size,
                     subnet_id=subnet_id,
                 )
-            except (KeaException, requests.RequestException, RuntimeError, ValueError):
+            except (KeaException, requests.RequestException, MalformedKeaReply, RuntimeError, ValueError):
                 if pages_fetched == 0:
                     raise
                 diagnostics.append(
@@ -1496,7 +1503,7 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a failure result.
-            RuntimeError: If the reply is malformed.
+            MalformedReply: If the reply is malformed.
 
         """
         subnet: dict[str, Any] = {"subnet": cidr, "id": subnet_id}
@@ -1521,7 +1528,7 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a failure result.
-            RuntimeError: If the reply is malformed.
+            MalformedReply: If the reply is malformed.
 
         """
         self._config_mutation_command(SUBNET_DEL[version], version, {"id": subnet_id})
@@ -1531,7 +1538,7 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a result other than 0 (found) or 3 (not found).
-            RuntimeError: If the reply is malformed or names another Shared Network.
+            MalformedReply: If the reply is malformed or names another Shared Network.
 
         """
         command = NETWORK_GET[version]
@@ -1546,7 +1553,7 @@ class KeaClient:
             or not isinstance(networks[0], dict)
             or networks[0].get("name") != name
         ):
-            raise RuntimeError(f"{command.value} returned a malformed Shared Network for {name!r}.")
+            raise MalformedReply(f"{command.value} returned a malformed Shared Network for {name!r}.")
         return True
 
     def network_add(self, version: Family, name: str) -> None:
@@ -1554,7 +1561,7 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a failure result.
-            RuntimeError: If the reply is malformed.
+            MalformedReply: If the reply is malformed.
 
         """
         self._config_mutation_command(NETWORK_ADD[version], version, {"shared-networks": [{"name": name}]})
@@ -1564,7 +1571,7 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a failure result.
-            RuntimeError: If the reply is malformed.
+            MalformedReply: If the reply is malformed.
 
         """
         self._config_mutation_command(NETWORK_DEL[version], version, {"name": name})
@@ -1587,7 +1594,7 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a failure result.
-            RuntimeError: If the reply is malformed.
+            MalformedReply: If the reply is malformed.
 
         """
         self._config_mutation_command(NETWORK_SUBNET_ADD[version], version, {"name": name, "id": subnet_id})
@@ -1597,7 +1604,7 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a failure result.
-            RuntimeError: If the reply is malformed.
+            MalformedReply: If the reply is malformed.
 
         """
         self._config_mutation_command(NETWORK_SUBNET_DEL[version], version, {"name": name, "id": subnet_id})
@@ -1607,19 +1614,19 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a failure result, or no Subnet.
-            RuntimeError: If the reply is malformed, names another Subnet ID, or has no valid CIDR or option-data.
+            MalformedReply: If the reply is malformed, names another Subnet ID, or has no valid CIDR or option-data.
 
         """
         entry = self.subnet_get(version, subnet_id)
         if not _is_subnet_id(entry.get("id"), subnet_id):
-            raise RuntimeError(f"subnet{version}-get returned another Subnet for ID {subnet_id}.")
+            raise MalformedReply(f"subnet{version}-get returned another Subnet for ID {subnet_id}.")
         try:
             network = subnet_network(entry.get("subnet"), version)
         except ValueError as exc:
-            raise RuntimeError(f"subnet{version}-get returned Subnet {subnet_id} without a valid CIDR.") from exc
+            raise MalformedReply(f"subnet{version}-get returned Subnet {subnet_id} without a valid CIDR.") from exc
         options = entry.get("option-data", [])
         if not isinstance(options, list) or not all(isinstance(option, dict) for option in options):
-            raise RuntimeError(f"subnet{version}-get returned Subnet {subnet_id} with a malformed option-data list.")
+            raise MalformedReply(f"subnet{version}-get returned Subnet {subnet_id} with a malformed option-data list.")
         return SubnetDefinition(version, subnet_id, network, json.dumps(entry, sort_keys=True))
 
     def subnet_update(self, family: Family, subnet: dict[str, Any]) -> None:
@@ -1629,7 +1636,7 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a failure result.
-            RuntimeError: If the reply is malformed.
+            MalformedReply: If the reply is malformed.
 
         """
         self._config_mutation_command(SUBNET_UPDATE[family], family, {f"subnet{family}": [subnet]})
@@ -1646,7 +1653,7 @@ class KeaClient:
         Raises:
             KeaException: If Kea returns a failure result (including result=1
                 when ``lease_cmds`` is not loaded).
-            RuntimeError: If the reply is malformed.
+            MalformedReply: If the reply is malformed.
 
         """
         # Kea answers result 3 when the Subnet holds no lease to delete.
@@ -1873,7 +1880,7 @@ class KeaClient:
             raise LeaseQueryPreflightUnavailable
         assigned, declined, *assigned_pds = counts
         if assigned < declined:
-            raise RuntimeError(f"{command.value} returned inconsistent lease counts.")
+            raise MalformedReply(f"{command.value} returned inconsistent lease counts.")
         delegated = assigned_pds[0] if assigned_pds else 0
         return _SubnetLeaseCounts(
             covered=assigned + delegated,
@@ -1886,7 +1893,7 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a failure result, for example when ``stat_cmds`` is not loaded.
-            RuntimeError: If the reply is malformed.
+            MalformedReply: If the reply is malformed.
 
         """
         command = STAT_LEASE_GET[version]
@@ -2058,7 +2065,7 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a non-zero result code.
-            RuntimeError: If the reply is malformed.
+            MalformedReply: If the reply is malformed.
 
         """
         arguments: dict[str, Any] | None = None
@@ -2071,7 +2078,7 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a non-zero result code.
-            RuntimeError: If the reply is malformed.
+            MalformedReply: If the reply is malformed.
 
         """
         self._one_command(KeaCommand.DHCP_ENABLE, family)
@@ -2081,7 +2088,7 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a failure result.
-            RuntimeError: If the reply is malformed.
+            MalformedReply: If the reply is malformed.
 
         """
         commands = SUBNET_DELTA_ADD if action == "add" else SUBNET_DELTA_DEL
@@ -2103,14 +2110,14 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a failure result.
-            RuntimeError: If the reply is malformed.
+            MalformedReply: If the reply is malformed.
             MalformedConfiguration: If the ``Dhcp{v}`` block is not an object.
 
         """
         reply = self._one_command(KeaCommand.CONFIG_GET, version)
         arguments = reply.get("arguments")
         if not isinstance(arguments, dict):
-            raise RuntimeError(f"config-get returned no configuration object for dhcp{version}.")
+            raise MalformedReply(f"config-get returned no configuration object for dhcp{version}.")
         # Kea 2.4+ adds "hash"; config-test and config-set reject it.
         arguments.pop("hash", None)
         return CandidateConfiguration(version, arguments)
@@ -2120,7 +2127,7 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a failure result.
-            RuntimeError: If the reply is malformed.
+            MalformedReply: If the reply is malformed.
 
         """
         self._one_command(KeaCommand.CONFIG_TEST, candidate.family, candidate.arguments)
@@ -2130,7 +2137,7 @@ class KeaClient:
 
         Raises:
             KeaException: If Kea returns a failure result.
-            RuntimeError: If the reply is malformed.
+            MalformedReply: If the reply is malformed.
 
         """
         self._config_mutation_command(KeaCommand.CONFIG_SET, candidate.family, candidate.arguments)
@@ -2138,8 +2145,9 @@ class KeaClient:
     def persist(self, version: Family) -> PersistResult:
         """Write the running configuration to disk: ``config-get``, ``config-test`` of it, then ``config-write``.
 
-        It never raises. ``failed`` means that NetBox cannot confirm that the disk copy holds the running
-        configuration. A failed phase stops the step, so NetBox never writes a configuration it could not test.
+        A Kea or transport failure does not raise; an invalid *version* raises ``ValueError``. ``failed`` means that
+        NetBox cannot confirm that the disk copy holds the running configuration. A failed phase stops the step, so
+        NetBox never writes a configuration it could not test.
         """
         if not self.persist_config:
             return PersistResult("not-requested")
@@ -2147,7 +2155,7 @@ class KeaClient:
         # OSError covers each requests error, KeaTLSFileError included.
         try:
             candidate = self.config_candidate(version)
-        except (KeaException, OSError, ValueError, RuntimeError):
+        except (KeaException, OSError, MalformedKeaReply):
             logger.warning("config-get failed for %s, so config-write was not sent", service, exc_info=True)
             return PersistResult("failed", ("Kea did not return its running configuration, so it was not saved.",))
         try:
@@ -2156,7 +2164,7 @@ class KeaClient:
             if not exc.unsupported_command:
                 logger.warning("config-test rejected the running configuration of %s: %s", service, exc)
                 return PersistResult("failed", (f"config-test rejected the running configuration: {exc.reply_text}",))
-        except (OSError, ValueError, RuntimeError):
+        except (OSError, MalformedKeaReply):
             logger.warning("config-test failed for %s, so config-write was not sent", service, exc_info=True)
             return PersistResult("failed", ("config-test did not return a usable reply, so nothing was saved.",))
         try:
@@ -2164,7 +2172,7 @@ class KeaClient:
         except KeaException as exc:
             logger.warning("config-write failed for %s: %s", service, exc)
             return PersistResult("failed", (f"config-write failed: {exc.reply_text}",))
-        except (OSError, ValueError, RuntimeError):
+        except (OSError, MalformedKeaReply):
             logger.warning("The config-write reply of %s was lost or unreadable", service, exc_info=True)
             return PersistResult("failed", ("The reply to config-write was lost or unreadable.",))
         return PersistResult("persisted")
@@ -2191,7 +2199,7 @@ class KeaClient:
         subnet_key = f"subnet{version}"
         args = self._one_command(SUBNET_GET[version], version, {"id": subnet_id}).get("arguments") or {}
         if not isinstance(args, dict) or not isinstance(args.get(subnet_key, []), list):
-            raise RuntimeError(f"subnet{version}-get returned an invalid subnet collection")
+            raise MalformedReply(f"subnet{version}-get returned an invalid subnet collection")
         subnets = args.get(subnet_key, [])
         if not subnets:
             raise KeaException(
@@ -2199,7 +2207,7 @@ class KeaClient:
                 index=0,
             )
         if not isinstance(subnets[0], dict):
-            raise RuntimeError(f"subnet{version}-get returned an invalid subnet")
+            raise MalformedReply(f"subnet{version}-get returned an invalid subnet")
         return dict(subnets[0])
 
 
@@ -2209,6 +2217,22 @@ def close_quietly(client: KeaClient) -> None:
         client.close()
     except Exception:
         logger.warning("Could not close a Kea client", exc_info=True)
+
+
+#: The deepest reply NetBox reads. repr() and the JSON writer recurse, so a deeper reply could fail any later step.
+MAX_REPLY_DEPTH = 100
+
+
+def _deeper_than(value: Any, limit: int) -> bool:
+    """Return whether *value* nests lists and dicts more than *limit* levels deep. It does not recurse."""
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, (dict, list)):
+            if depth > limit:
+                return True
+            stack.extend((child, depth + 1) for child in (item.values() if isinstance(item, dict) else item))
+    return False
 
 
 class KeaException(Exception):
@@ -2239,6 +2263,10 @@ class KeaException(Exception):
         """Return the text of Kea's failure reply, or its result code when the reply has no text."""
         text = self.response.get("text")
         return text if isinstance(text, str) and text else f"result {self.response.get('result')}"
+
+
+class KeaClientSettingsError(Exception):
+    """Raised when the client settings of a Server cannot build a ``KeaClient``. Nothing was sent."""
 
 
 def kea_error_message(exc: "KeaException") -> str:

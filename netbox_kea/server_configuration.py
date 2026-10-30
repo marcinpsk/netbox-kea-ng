@@ -28,19 +28,17 @@ from .dhcp_options import (
 from .kea import (
     CandidateConfiguration,
     KeaCommand,
-    KeaException,
-    MalformedReply,
     SharedNetworkEdit,
     SubnetDefinition,
     SubnetEdit,
     SubnetFields,
     description_as_shown,
-    kea_error_message,
     shared_network_description,
     subnet_network,
 )
 from .models import Server, require_persisted_server
 from .pools import Pool, parse_pool
+from .read_failure import ReadFailure, attempt
 from .reservations import IdentifierType, ReservationCapabilities, reservation_identifier_types
 from .subnet_settings import (
     RESERVATION_FLAG_KEYS,
@@ -216,33 +214,17 @@ def _read_configuration(
     server: Server, family: Family
 ) -> tuple[dict[str, Any], str | None] | ServerConfigurationSnapshot:
     """Read the live ``Dhcp{v}`` block and its hash, or return the unavailable Snapshot of a failed read."""
-    try:
-        client = server.get_client(version=family)
-        response = client.command(KeaCommand.CONFIG_GET, family)
-    except KeaException as exc:
-        logger.warning("Server configuration read failed for DHCPv%s", family, exc_info=True)
-        return _unavailable(
-            server,
-            family,
-            "configuration-unavailable",
-            f"Kea configuration facts are unavailable. {kea_error_message(exc)}",
-        )
-    except MalformedReply:
-        logger.warning("Server configuration read failed for DHCPv%s", family, exc_info=True)
-        return _unavailable(
-            server,
-            family,
-            "malformed-configuration-response",
-            "Kea returned a malformed configuration response.",
-        )
-    except (OSError, ValueError, RuntimeError):
-        logger.warning("Server configuration read failed for DHCPv%s", family, exc_info=True)
-        return _unavailable(
-            server,
-            family,
-            "configuration-unavailable",
-            "Kea configuration facts are unavailable.",
-        )
+    response = attempt(
+        f"The DHCPv{family} Server Configuration read of Server {server.pk}",
+        lambda: server.get_client(version=family).command(KeaCommand.CONFIG_GET, family),
+    )
+    if isinstance(response, ReadFailure):
+        if response.kind == "malformed":
+            return _unavailable(
+                server, family, "malformed-configuration-response", "Kea returned a malformed configuration response."
+            )
+        message = " ".join(text for text in ("Kea configuration facts are unavailable.", response.reply) if text)
+        return _unavailable(server, family, "configuration-unavailable", message)
 
     arguments = response[0].get("arguments")
     if not isinstance(arguments, dict):
@@ -601,11 +583,11 @@ def _parse_configured_fact(
 def subnet_for_display(server: Server, family: int, subnet_id: int) -> DeclaredSubnet | None:
     """Read one Subnet for form display without authorizing a mutation."""
     validated_family = validate_family(family)
-    try:
-        client = server.get_client(version=validated_family)
-        entry = client.subnet_get(validated_family, subnet_id)
-    except (KeaException, OSError, ValueError, RuntimeError, TypeError):
-        logger.warning("Subnet display read failed for DHCPv%s", family, exc_info=True)
+    entry = attempt(
+        f"The DHCPv{family} Subnet display read of Server {server.pk}",
+        lambda: server.get_client(version=validated_family).subnet_get(validated_family, subnet_id),
+    )
+    if isinstance(entry, ReadFailure):
         return None
     subnet = _complete_subnet(entry, validated_family)
     if subnet is None or subnet.declared_subnet_id != subnet_id:

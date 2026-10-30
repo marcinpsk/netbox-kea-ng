@@ -179,7 +179,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
     def test_capability_failure_leaves_the_add_form_visible_but_disables_save(self):
         responses = {
-            "config-get": RuntimeError("configuration read failed"),
+            "config-get": requests.ConnectionError("configuration read failed"),
             "subnet4-list": _subnet_list(4, [{"id": 20, "subnet": "198.18.0.0/24"}]),
         }
         url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
@@ -2037,7 +2037,7 @@ class TestMutationCapabilityGate(_ViewTestBase):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         responses.update(
             {
-                "config-get": queued(RuntimeError("capability read failed"), responses["config-get"]),
+                "config-get": queued(requests.ConnectionError("capability read failed"), responses["config-get"]),
                 "reservation-get-page": _res_page([]),
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
             }

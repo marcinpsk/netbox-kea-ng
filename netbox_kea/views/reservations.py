@@ -14,7 +14,6 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlencode
 
-import requests
 from django.core.exceptions import BadRequest
 from django.db import DatabaseError
 from django.http import HttpRequest, HttpResponse
@@ -34,9 +33,10 @@ from ..ipam_reconciliation import (
     claim_permissions,
     reconcile_permissions,
 )
-from ..kea import KeaClient, KeaException
+from ..kea import KeaClient
 from ..lease_reservation_reads import lease_presence
 from ..models import Server
+from ..read_failure import ReadFailure, attempt
 from ..reservation_transfer import export_reservation_document
 from ..reservations import (
     RESERVATION_PAGE_FETCH_FAILED,
@@ -302,14 +302,14 @@ class _ReservationPage:
 def _read_later_search_page(
     client: KeaClient, version: Family, catalogue: CatalogueSnapshot, cursor: str | None, subnet_id: int | None
 ) -> ReservationSnapshot | None:
-    """Read a later page of a Reservation search, or return None and log the failure: it ends the search batch."""
-    try:
-        return client.reservation_page(
+    """Read a later page of a Reservation search, or return None when the read fails: it ends the search batch."""
+    page = attempt(
+        f"A later DHCPv{version} Reservation search page",
+        lambda: client.reservation_page(
             version, catalogue, cursor=cursor, limit=_RESERVATION_PAGE_SIZE, subnet_id=subnet_id, max_raw_pages=1
-        )
-    except (KeaException, requests.RequestException, RuntimeError, ValueError):
-        logger.exception("Failed to continue DHCPv%s Reservation search", version)
-        return None
+        ),
+    )
+    return None if isinstance(page, ReadFailure) else page
 
 
 def _read_reservations(

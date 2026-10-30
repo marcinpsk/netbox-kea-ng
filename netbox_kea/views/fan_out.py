@@ -31,8 +31,8 @@ class FanOut(Generic[T]):
 def fan_out(servers: Sequence[Server], kind: SnapshotKind, fetch: Callable[[Server], T]) -> FanOut[T]:
     """Run *fetch* for each Server in worker threads.
 
-    *fetch* reads Kea only and gives a Kea, transport or reply failure as its own Notice. A ``ValueError``, a
-    configuration or argument error outside the Notice rule, becomes the error headline of *kind* for its Server.
+    *fetch* reads Kea only and gives a failed read (``read_failure.attempt``) as its own Notice. A ``ValueError``, an
+    argument error outside the Notice rule, becomes the error headline of *kind* for its Server.
     The workers read the Kea client and display cache rows that this thread read; any other settings row raises.
     """
     read: FanOut[T] = FanOut()

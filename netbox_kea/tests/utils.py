@@ -308,7 +308,7 @@ def save_key_without_certificate(server: Server) -> str:
     """Save a client key without a certificate, which ``Server.clean()`` refuses, and return the expected message.
 
     ``.update()`` skips validation, as a bulk update or a direct database change does. ``get_client()`` then raises
-    ``ValueError`` before it sends anything.
+    ``KeaClientSettingsError`` before it sends anything.
     """
     Server.objects.filter(pk=server.pk).update(client_key_path="/tls/client.key", client_cert_path="")
     return f"The Kea client settings of Server {server.name} are invalid. Check the client certificate and key."

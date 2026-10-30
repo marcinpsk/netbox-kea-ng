@@ -4,7 +4,9 @@
 # contains rule-violating code; excluded from ruff (see pyproject exclude).
 import requests
 
-from netbox_kea.kea import KeaException, kea_error_message
+from netbox_kea.kea import KeaClientSettingsError, KeaException, kea_error_message
+from netbox_kea.malformed import MalformedKeaReply
+from netbox_kea.read_failure import ReadFailure, attempt
 from netbox_kea.views.notices import Notice, load_snapshot, load_target, show_notices
 
 
@@ -51,22 +53,47 @@ def bad_ladder_after_a_value_error_clause(request, server, identity):
     return reservation
 
 
-def _read_reservations(server, version, query, catalogue):
-    client = server.get_client(version=version)
+def _enrich_subnet_statistics(rows, server, version):
     # ruleid: kea-view-read-ladder
     try:
-        return client.reservation_page(version, catalogue, cursor=query.cursor, limit=100)
-    except (KeaException, requests.RequestException, RuntimeError, ValueError):
-        return None
+        utilization = _read_utilization(server, version)
+    except KeaException:
+        logger.warning("Kea refused the Subnet utilization read of server %s", server.pk, exc_info=True)
+        return
+    rows.extend(utilization)
 
 
-def _read_later_search_page(client, version, catalogue, cursor, subnet_id):
-    # ok: kea-view-read-ladder
+def bad_malformed_reply_handler(server, family):
+    # ruleid: kea-view-read-ladder
     try:
-        return client.reservation_page(version, catalogue, cursor=cursor, limit=100, subnet_id=subnet_id)
-    except (KeaException, requests.RequestException, RuntimeError, ValueError):
-        logger.exception("Failed to continue DHCPv%s Reservation search", version)
+        return read_configuration(server, family)
+    except MalformedKeaReply:
+        return unavailable(server, family, "malformed-configuration-response")
+
+
+def bad_malformed_reply_in_a_tuple(server, family):
+    # ruleid: kea-view-read-ladder
+    try:
+        return observe_leases(server, family)
+    except (MalformedKeaReply, OSError) as exc:
+        return LeaseObservation(None, exc)
+
+
+def bad_client_settings_handler(request, server):
+    # ruleid: kea-view-read-ladder
+    try:
+        return server.get_client(version=4)
+    except KeaClientSettingsError as exc:
+        messages.error(request, "The client settings are not valid.")
         return None
+
+
+def good_attempt_maps_the_kind(server, family):
+    # ok: kea-view-read-ladder
+    read = attempt("The configuration read", lambda: read_configuration(server, family))
+    if isinstance(read, ReadFailure):
+        return unavailable(server, family, read.kind)
+    return read
 
 
 class GoodLeaseEditView:
@@ -89,35 +116,38 @@ def good_export_catches_only_its_value_error(request, server, client, search):
     return loaded
 
 
-def good_client_settings_check(request, server):
+def good_a_named_malformed_subclass_of_a_write_step(fresh, change):
     # ok: kea-view-read-ladder
     try:
-        server.get_client(version=4).close()
-    except ValueError as exc:
-        messages.error(request, _client_settings_error(server, exc))
+        return fresh.updated(change)
+    except (MalformedReservation, ValueError) as exc:
+        raise ChangeRejected("not-sent", ("unusable",)) from exc
 
 
-def _enrich_subnet_statistics(rows, server, version):
+def mutate(client, family, send, *, on_failure):
     # ok: kea-view-read-ladder
     try:
-        utilization = _read_utilization(server, version)
-    except KeaException:
-        logger.warning("Kea refused the Subnet utilization read of server %s", server.pk, exc_info=True)
-        return
-    except (requests.RequestException, RuntimeError, ValueError):
-        logger.warning("Could not read Subnet utilization from server %s", server.pk, exc_info=True)
-        return
-    rows.extend(utilization)
+        send()
+    except KeaException as exc:
+        return "unknown", (kea_error_message(exc),)
+    except requests.RequestException:
+        return "unknown", ()
+    except (MalformedKeaReply, ValueError, RuntimeError):
+        return "unknown", ()
+    return "applied", ()
 
 
-def _daemon_online(server, version):
-    # ok: kea-view-read-ladder
-    try:
-        daemon_version(server, version)
-    except (KeaException, requests.RequestException, OSError, RuntimeError, ValueError) as exc:
-        logger.warning("The DHCPv%s daemon of server %s did not answer (%s)", version, server.pk, type(exc).__name__)
-        return False
-    return True
+def _test_before(client, family, candidate):
+    def test():
+        # ok: kea-view-read-ladder
+        try:
+            client.config_test(candidate)
+        except KeaException as exc:
+            if exc.unsupported_command:
+                return
+            raise
+
+    before_change(test, "unusable")
 
 
 def good_broad_handler_is_another_rule(request, server):

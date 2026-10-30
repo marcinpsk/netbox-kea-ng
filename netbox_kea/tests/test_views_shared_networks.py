@@ -37,6 +37,7 @@ from .kea_stub import (
     _catalogue_responses_for_subnets,
     _network_absent,
     _network_present,
+    _raw_http_response,
     _refused_connection,
     queued,
     stub_kea,
@@ -1009,7 +1010,7 @@ class TestSharedNetworkEditAmbiguousWrite(_ViewTestBase):
             for error in (
                 requests.ConnectionError("connection refused"),
                 requests.Timeout("reply lost"),
-                ValueError("bad JSON"),
+                _raw_http_response(b"bad JSON"),
                 [],
                 [{}],
                 [None],

@@ -13,6 +13,7 @@ import json
 import re
 from pathlib import Path
 
+import requests
 from django.test import TestCase
 
 from netbox_kea import server_configuration
@@ -310,7 +311,9 @@ class TestRecordedQualifyingSuffix(TestCase):
 
     def test_an_identity_only_catalogue_does_not_know_a_suffix(self):
         recording = _recording(4)
-        with stub_kea({"config-get": RuntimeError("config-get failed"), "subnet4-list": recording["subnet4-list"]}):
+        with stub_kea(
+            {"config-get": requests.ConnectionError("config-get failed"), "subnet4-list": recording["subnet4-list"]}
+        ):
             catalogue = display(self.server, 4)
         self.assertIsNone(catalogue.global_qualifying_suffix)
         with self.assertRaises(CatalogueUnavailable):
@@ -447,7 +450,7 @@ class TestRecordedReservationFlags(TestCase):
                 self.assertEqual(
                     {subnet.subnet_id: subnet.reservation_flags for subnet in catalogue.subnets}, self._RECORDED
                 )
-                with stub_kea({"config-get": RuntimeError("config-get failed"), **listing}):
+                with stub_kea({"config-get": requests.ConnectionError("config-get failed"), **listing}):
                     identity_only = display(self.server, family)
                 self.assertEqual([subnet.reservation_flags for subnet in identity_only.subnets], [None] * 3)
 

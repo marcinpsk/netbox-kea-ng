@@ -9,6 +9,7 @@ the change, and no operation runs a side effect: the caller runs them after ``ap
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
@@ -17,7 +18,6 @@ from .change_outcome import (
     Application,
     ChangeRejected,
     FailurePolicy,
-    before_change,
     build_client,
     mutate,
     read_before,
@@ -38,6 +38,8 @@ from .leases import (
 
 if TYPE_CHECKING:
     from .models import Server
+
+logger = logging.getLogger(__name__)
 
 _EDIT_UNUSABLE = "NetBox could not build the update from the Lease that Kea returned."
 
@@ -79,7 +81,11 @@ def edit_lease(server: Server, family: Family, shown: ShownLease, edit: LeaseEdi
         raise ValueError("A Lease edit must write at least one field.")
     with build_client(server, family) as client:
         fresh = _as_shown(client, shown, edit, "the form")
-        body = before_change(lambda: fresh.edited(edit), _EDIT_UNUSABLE)
+        try:
+            body = fresh.edited(edit)
+        except ValueError as exc:
+            logger.warning("Could not build a Lease update", exc_info=True)
+            raise ChangeRejected("not-sent", (_EDIT_UNUSABLE,)) from exc
 
         def send() -> None:
             if not client.lease_update(family, body):

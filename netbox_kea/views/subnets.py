@@ -36,7 +36,7 @@ from ..utilities import (
 from ._base import (
     _POOL_RE,
     _catalogue_subnet_row,
-    _client_settings_error,
+    _client_or_refusal,
     _enrich_subnet_statistics,
     _KeaChangeMixin,
     _run_change,
@@ -178,10 +178,9 @@ def _warn_reservations_in_pool(
     not_checked = (
         f"The Reservation overlap check did not run. Pool {pool.range} was not checked against existing Reservations."
     )
-    try:
-        client = server.get_client(version=catalogue.family)
-    except ValueError as exc:
-        messages.warning(request, f"{_client_settings_error(server, exc)} {not_checked}")
+    client = _client_or_refusal(server, catalogue.family)
+    if isinstance(client, str):
+        messages.warning(request, f"{client} {not_checked}")
         return
     with client:
         loaded = load_snapshot(

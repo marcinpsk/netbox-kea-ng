@@ -7,6 +7,7 @@ import uuid
 from typing import Any
 from urllib.parse import urlencode
 
+import requests
 from core.models import Job, ObjectChange
 from dcim.models import MACAddress
 from django.contrib.auth import get_user_model
@@ -212,7 +213,7 @@ class TestReservationPublishedName(TestCase):
                 self.assertEqual(reservation_published_name(reservation, catalogue), expected)
 
     def test_an_unknown_suffix_fails_instead_of_using_the_stored_name(self):
-        catalogue = self._catalogue(RuntimeError("config-get failed"))
+        catalogue = self._catalogue(requests.ConnectionError("config-get failed"))
         in_21 = InSubnetReservationScope(catalogue.find_by_id(21).identity)
         for reservation in (self._reservation(in_21, "198.51.100.130"), self._reservation(GlobalReservationScope())):
             with self.subTest(reservation=reservation), self.assertRaises(CatalogueUnavailable):

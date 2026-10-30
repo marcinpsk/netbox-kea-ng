@@ -24,7 +24,7 @@ from django.utils import timezone
 from netbox_kea import kea as kea_module
 from netbox_kea import subnet_catalogue
 from netbox_kea.constants import Family
-from netbox_kea.kea import KeaClient
+from netbox_kea.kea import KeaClient, KeaCommand
 from netbox_kea.lease_reservation_reads import lease_presence, reservation_matches
 from netbox_kea.models import Server
 from netbox_kea.reservations import (
@@ -54,6 +54,7 @@ from .kea_stub import (
     _res_get,
     _subnet_stats,
     _typed_reservation,
+    client_failure,
     complete_lease,
     lease_record,
     lease_reply,
@@ -260,8 +261,8 @@ class LeasePresenceTest(_ViewTestBase):
 
         self.assertEqual(presences, (_unknown(UnknownLeasePresence.MALFORMED_REPLY),))
 
-    def test_a_snapshot_that_fails_validation_leaves_only_its_own_reservations_unknown(self):
-        """A Snapshot read across a backward clock step finishes before it starts, so the reader refuses it."""
+    def test_a_read_across_a_backward_clock_step_is_not_a_failure(self):
+        """The Snapshot of a read whose wall clock stepped back finishes when it starts."""
         stepped_back = threading.local()
         real_now = kea_module._now
 
@@ -281,7 +282,7 @@ class LeasePresenceTest(_ViewTestBase):
                 {"lease4-get-by-hw-address": lease_reply(), "lease4-get-by-state": leases},
             )
 
-        self.assertEqual(presences, (LeaseAbsent(), _unknown(UnknownLeasePresence.INVALID_READ)))
+        self.assertEqual(presences, (LeaseAbsent(), LeaseAbsent()))
 
     def test_a_failed_lookup_leaves_only_its_own_reservations_unknown(self):
         def leases(body):
@@ -333,8 +334,11 @@ class LeasePresenceTest(_ViewTestBase):
                 self.assertEqual(presences, expected)
 
     def test_an_unexpected_failure_raises(self):
-        with self.assertRaises(TypeError):
-            self._presence([_RESERVED], {"lease4-get-by-state": TypeError("unexpected worker failure")})
+        with (
+            client_failure(KeaCommand.LEASE4_GET_BY_STATE, TypeError("unexpected worker failure")),
+            self.assertRaises(TypeError),
+        ):
+            self._presence([_RESERVED], {})
 
     def test_a_reservation_of_another_family_is_refused(self):
         with self.assertRaises(ValueError):
@@ -464,18 +468,22 @@ class LeasePresenceLookupTest(_ViewTestBase):
                 release.set()
                 super().shutdown(wait=wait)
 
-        def leases(body):
-            subnet_id = body["arguments"]["subnet-id"]
+        real_command = KeaClient.command
+
+        # A real POST cannot raise a TypeError, so the unexpected failure comes from the client.
+        def command(client, *args, **kwargs):
+            subnet_id = kwargs["arguments"]["subnet-id"]
             asked.append(subnet_id)
             if subnet_id < 30:
                 all_workers.wait()
             if subnet_id == 20:
                 raise TypeError("unexpected worker failure")
             release.wait(timeout=10)
-            return {"result": 3}
+            return real_command(client, *args, **kwargs)
 
         with (
-            stub_kea({"lease4-get-by-state": leases}),
+            stub_kea({"lease4-get-by-state": {"result": 3}}),
+            patch.object(KeaClient, "command", autospec=True, side_effect=command),
             patch.object(concurrent.futures, "ThreadPoolExecutor", ReleaseAfterCancel),
             self.assertRaises(TypeError),
         ):
@@ -1137,7 +1145,7 @@ class ReservationMatchTest(_ViewTestBase):
 
         matches, _kea = self._matches([_address_lease()], _res_get(host))
 
-        self.assertEqual(matches, (_match_unknown(UnknownReservationMatch.INVALID_READ),))
+        self.assertEqual(matches, (_match_unknown(UnknownReservationMatch.MALFORMED_REPLY),))
 
     def test_invalid_server_settings_send_nothing_and_leave_each_lease_unknown(self):
         save_key_without_certificate(self.server)
@@ -1190,8 +1198,11 @@ class ReservationMatchTest(_ViewTestBase):
                 self.assertEqual(matches, expected)
 
     def test_an_unexpected_failure_raises(self):
-        with self.assertRaises(TypeError):
-            self._matches([_address_lease()], TypeError("unexpected worker failure"))
+        with (
+            client_failure(KeaCommand.RESERVATION_GET, TypeError("unexpected worker failure")),
+            self.assertRaises(TypeError),
+        ):
+            self._matches([_address_lease()], _NOT_FOUND)
 
     def test_a_lease_of_another_family_is_refused(self):
         with self.assertRaises(ValueError):
@@ -1253,9 +1264,9 @@ class ReservationMatchLookupTest(_ViewTestBase):
         matches, _lookups, _clients = self._matches(leases, reservation_get, read_since=timezone.now())
 
         self.assertEqual(matches, (_match_unknown(UnknownReservationMatch.KEA_ERROR),) * 3)
-        # Each raise of one exception object adds its frames to the traceback that every worker shares.
+        # Each raise of one exception object adds its frames to its traceback, so one read adds one attempt().
         frames = [frame.f_code.co_name for frame, _line in traceback.walk_tb(failure.__traceback__)]
-        self.assertEqual(frames.count("_find"), 1)
+        self.assertEqual(frames.count("attempt"), 1)
 
     def test_a_cache_hit_builds_no_kea_client(self):
         before = timezone.now()

@@ -45,10 +45,11 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from requests.adapters import HTTPAdapter
+from urllib3.exceptions import SSLError as Urllib3SSLError
 
 from netbox_kea import branching, server_configuration
 from netbox_kea.constants import Family
-from netbox_kea.kea import KeaClient
+from netbox_kea.kea import KeaClient, KeaCommand
 from netbox_kea.leases import Lease, read_lease_collection, shown_lease
 from netbox_kea.models import KeaClientConfig, Server
 from netbox_kea.reservations import (
@@ -143,6 +144,47 @@ def reply_read_failure(error: Exception) -> Iterator[list[requests.PreparedReque
 
     with patch.object(HTTPAdapter, "send", new=send):
         yield sent
+
+
+@contextmanager
+def client_failure(command: KeaCommand, error: Exception) -> Iterator[None]:
+    """Raise *error* from ``KeaClient.command`` for *command*, as a bug in the client would; send other commands.
+
+    The HTTP stub refuses an exception that a real POST cannot raise, so a test of an unexpected failure uses this.
+    """
+    real_command = KeaClient.command
+
+    def send(client: KeaClient, *args: Any, **kwargs: Any) -> Any:
+        if (args[0] if args else kwargs.get("command")) is command:
+            raise error
+        return real_command(client, *args, **kwargs)
+
+    with patch.object(KeaClient, "command", autospec=True, side_effect=send):
+        yield
+
+
+#: Errors other than a RequestException that a real ``Session.post`` raises and ``KeaClient.command`` handles.
+_RAW_POST_ERRORS = (Urllib3SSLError, ssl.SSLError)
+#: ``raise_for_status()`` and ``json()`` raise these after the POST returns: answer with a reply. requests also raises
+#: a ValueError, such as a UnicodeError, only for a redirect reply: answer with that reply through the real Session.
+_REPLY_ERRORS = (requests.HTTPError, requests.JSONDecodeError)
+
+
+def _real_post_error(kind: type[BaseException]) -> bool:
+    """Return whether a real ``requests`` POST raises *kind*."""
+    if issubclass(kind, requests.RequestException):
+        return kind.__module__ == "requests.exceptions" and not issubclass(kind, _REPLY_ERRORS)
+    # requests raises a plain OSError, not a subclass, for a missing TLS file.
+    return kind is OSError or issubclass(kind, _RAW_POST_ERRORS)
+
+
+def _refuse_impossible_post_error(command: Any, kind: type[BaseException]) -> None:
+    """Fail the test when a stubbed POST of *command* would raise *kind*, which a real POST cannot raise."""
+    if not _real_post_error(kind):
+        raise AssertionError(
+            f"KeaHttpStub: {command} raises {kind.__name__}, which a real requests POST cannot raise. Raise a "
+            "requests.RequestException, or answer a malformed reply with a payload that KeaClient rejects."
+        )
 
 
 def _is_exc(obj: Any) -> bool:
@@ -392,13 +434,14 @@ class KeaHttpStub:
     * a :class:`ResponseQueue` from :func:`queued` — sequential responses, one per
       call (the last repeats), for pagination / partial-failure paths;
     * a callable ``(body) -> payload`` — for argument-dependent responses;
-    * an exception instance or class — **raised** when the command is called, or
-      returned by a callable, to simulate a transport error (e.g.
-      ``requests.ConnectionError``) at the HTTP boundary. This lets error-path
-      tests drive the real ``KeaClient`` error handling instead of mocking
-      ``command.side_effect``. A KeaException-style failure is instead modelled by
-      returning a payload with a non-accepted ``result`` code, which the real
-      ``KeaClient.command()`` turns into a ``KeaException``.
+    * an instance or class of an exception that a real POST raises (``_real_post_error``,
+      e.g. ``requests.ConnectionError``) — **raised** when the command is called, or
+      returned or raised by a callable, to simulate a transport error at the HTTP
+      boundary. Any other exception fails the test (a callable may still raise an
+      ``AssertionError``); a test of an unexpected failure uses :func:`client_failure`.
+      A KeaException-style failure is instead modelled by returning a payload with a
+      non-accepted ``result`` code, and a malformed reply by a payload that the real
+      ``KeaClient`` rejects.
 
     ``KeaClient`` expects a JSON list (one entry per targeted service); a payload
     that is not already a list is wrapped in a single-element list.
@@ -432,8 +475,15 @@ class KeaHttpStub:
                 spec = spec.next()
         # Callables/exceptions are resolved outside the lock (they may be slow or raise).
         if callable(spec) and not _is_exc(spec):
-            spec = spec(body)
+            try:
+                spec = spec(body)
+            except AssertionError:
+                raise
+            except Exception as exc:
+                _refuse_impossible_post_error(cmd, type(exc))
+                raise
         if _is_exc(spec):
+            _refuse_impossible_post_error(cmd, spec if isinstance(spec, type) else type(spec))
             raise spec() if isinstance(spec, type) else spec
         if isinstance(spec, requests.Response):
             return spec
@@ -844,7 +894,7 @@ RUN = Run.RUN
 
 @dataclass(frozen=True)
 class Applied:
-    """A scripted answer of ``SubnetDaemon``: run the command, then answer with *answer* (a payload or an exception)."""
+    """A scripted ``SubnetDaemon`` answer: run the command, then answer with a payload or a transport error."""
 
     answer: Any
 
@@ -853,7 +903,7 @@ class SubnetDaemon:
     """One Kea daemon that holds Subnets and Shared Networks and answers the Subnet commands like Kea 3.2.0.
 
     ``script`` sets how the next calls of a command end, one entry per call. ``RUN`` runs the command. A payload or
-    an exception answers without running it. ``Applied(answer)`` runs it and then answers with *answer*. After the
+    a transport error answers without running it. ``Applied(answer)`` runs it and then answers with *answer*. After the
     script, each call runs. ``before`` queues a change of another writer that runs just before the next call.
     """
 
