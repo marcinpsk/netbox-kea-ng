@@ -2129,6 +2129,21 @@ class TestReservationFormFieldHelp(_ViewTestBase):
                 self.assertIn("A Reservation with no address is skipped.", tip)
                 self.assertEqual("The next scheduled sync run records a fixed address." in tip, enabled)
 
+    def test_the_global_sync_settings_turn_the_automatic_ipam_sync_state_off(self):
+        from netbox_kea.models import SyncConfig
+
+        self.server.sync_enabled = True
+        self.server.sync_reservations_enabled = True
+        self.server.save()
+        for global_fields in ({"sync_enabled": False}, {"sync_reservations_enabled": False}):
+            with self.subTest(**global_fields):
+                SyncConfig.objects.filter(pk=1).update(sync_enabled=True, sync_reservations_enabled=True)
+                SyncConfig.objects.filter(pk=1).update(**global_fields)
+                help_text = self._add_page(["hw-address"]).select_one("#id_sync_to_netbox_helptext")
+                self.assertIn("Automatic IPAM sync is disabled for this Server.", help_text.get_text())
+                tip = help_text.select_one("button")["data-bs-title"]
+                self.assertNotIn("The next scheduled sync run records a fixed address.", tip)
+
 
 def fail_first_ipv6_address_dispatch(events):
     """Fail the external event pipeline after the first IPv6 claim committed."""

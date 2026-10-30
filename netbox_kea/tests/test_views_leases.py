@@ -2197,6 +2197,22 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
                     self.assertEqual(tip["data-bs-toggle"], "tooltip")
                     self.assertEqual("The next scheduled sync run records this lease." in tip["data-bs-title"], enabled)
 
+    def test_the_global_sync_settings_turn_the_automatic_ipam_sync_state_off(self):
+        from netbox_kea.models import SyncConfig
+
+        self.server.sync_enabled = True
+        self.server.sync_leases_enabled = True
+        self.server.save()
+        for global_fields in ({"sync_enabled": False}, {"sync_leases_enabled": False}):
+            for version in (4, 6):
+                with self.subTest(version=version, **global_fields):
+                    SyncConfig.objects.filter(pk=1).update(sync_enabled=True, sync_leases_enabled=True)
+                    SyncConfig.objects.filter(pk=1).update(**global_fields)
+                    response = self.client.get(self._url(version=version))
+                    help_text = BeautifulSoup(response.content, "html.parser").select_one("#id_sync_to_netbox_helptext")
+                    self.assertIn("Automatic IPAM sync is disabled for this Server.", help_text.get_text())
+                    self.assertNotIn("The next scheduled sync run records this lease.", str(help_text))
+
     def test_post_lease4_add_with_sync_links_the_created_ip(self):
         from netbox_kea.models import IPAMOwnershipLink
 
