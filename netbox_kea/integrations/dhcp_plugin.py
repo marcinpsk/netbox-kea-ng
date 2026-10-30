@@ -1687,6 +1687,21 @@ def _report_inherited(summary: ImportSummary, planned: PlannedSubnet, capabiliti
         summary.record(entry)
 
 
+def _subnet_write_failed(
+    summary: ImportSummary,
+    planned: PlannedSubnet,
+    declared: Mapping[OptionDefinitionKey, OptionDefIntent],
+    subnet_ids: SubnetIdSettlement,
+) -> None:
+    """Skip the children of a Subnet that the run did not write, and its Reservations when it has a Kea subnet ID.
+
+    Only a write fails for a Subnet with a Kea subnet ID, so its Reservations must not attach to the stored row.
+    """
+    if planned.key is not None:
+        subnet_ids.failed.add(planned.key)
+    _skip_subnet_children(summary, planned, declared)
+
+
 def _skip_subnet_children(
     summary: ImportSummary,
     planned: PlannedSubnet,
@@ -1751,7 +1766,7 @@ class SubnetIdSettlement:
 
     taken: dict[int, SubnetIdTaken] = field(default_factory=dict)
     renumbered: set[int] = field(default_factory=set)
-    # The Subnets that need a move that failed.
+    # The Subnets that need a move that failed, and those whose write failed later in the run.
     failed: set[int] = field(default_factory=set)
 
 
@@ -3245,7 +3260,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
             keep,
         )
         if subnet_obj is None:
-            _skip_subnet_children(summary, planned_subnet, declared)
+            _subnet_write_failed(summary, planned_subnet, declared, subnet_ids)
             continue
         if network is None:
             _report_inherited(summary, planned_subnet, capabilities)

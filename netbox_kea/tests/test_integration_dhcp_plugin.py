@@ -13,11 +13,12 @@ from __future__ import annotations
 import ipaddress
 import unittest
 from functools import partial
+from unittest.mock import patch
 
 from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
-from django.db import connection, transaction
+from django.db import DatabaseError, connection, transaction
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, tag
 from django.urls import reverse
 from django.utils import timezone
@@ -2264,6 +2265,40 @@ class DhcpPluginSubnetIdImportTest(TestCase):
                 (Kind.OPTION, f"{path}/option-data[code=15]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
             ],
         )
+
+    def test_a_reservation_of_a_mapped_subnet_whose_update_failed_is_not_written(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
+        first, path = self._with_reservation_options(_subnet_id_conf(9410, 13))
+        self.assertEqual(self._import(self.server, first).errors, 0)
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        stored = HostReservation.objects.get(subnet=self._subnet(self.server, 9410))
+        conf, path = self._with_reservation_options(_subnet_id_conf(9410, 13))
+        conf["subnet4"][0]["valid-lifetime"] = 7200
+        conf["subnet4"][0]["reservations"][0]["hostname"] = "changed"
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        real_write = self.adapter._write_child
+
+        def write(row, *args, **kwargs):
+            # The database refuses the update of the mapped Subnet.
+            if isinstance(row, Subnet):
+                raise DatabaseError("the Subnet update failed")
+            return real_write(row, *args, **kwargs)
+
+        with patch.object(self.adapter, "_write_child", autospec=True, side_effect=write):
+            summary = self._import(self.server, conf)
+
+        self.assertEqual(self._not_written(summary)[0], (Kind.SUBNET, Reason.WRITE_FAILED, None))
+        self.assertEqual(
+            self._reservation_entries(summary, path),
+            [
+                (Kind.RESERVATION, path, Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+                (Kind.OPTION, f"{path}/option-data[code=6]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+                (Kind.OPTION, f"{path}/option-data[code=15]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+            ],
+        )
+        stored.refresh_from_db()
+        self.assertNotEqual(stored.hostname, "changed")
 
     def test_the_capability_probe_decides_the_clash(self):
         """With per-server Subnet IDs the import writes the ID. The installed plugin still refuses it in the database."""
