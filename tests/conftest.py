@@ -186,6 +186,7 @@ def kea_harness_daemons(kea_control_urls: dict[int, str]) -> dict[int, str]:
     """
     # Absolute and late: the unit suite loads this file without its package, where `from .kea` fails.
     from tests.kea import KeaClient, KeaCommand, KeaException
+    from tests.malformed import MalformedKeaReply
 
     for family, url in kea_control_urls.items():
         try:
@@ -198,7 +199,15 @@ def kea_harness_daemons(kea_control_urls: dict[int, str]) -> dict[int, str]:
             ) as client:
                 (reply,) = client.command(KeaCommand.CONFIG_GET, family)
             marker = reply["arguments"][f"Dhcp{family}"].get("user-context", {}).get(HARNESS_MARKER)
-        except (requests.RequestException, KeaException, RuntimeError, ValueError, KeyError, TypeError) as exc:
+        except (
+            requests.RequestException,
+            KeaException,
+            MalformedKeaReply,
+            RuntimeError,
+            ValueError,
+            KeyError,
+            TypeError,
+        ) as exc:
             marker = f"no configuration ({type(exc).__name__})"
         if marker is not True:
             pytest.fail(
