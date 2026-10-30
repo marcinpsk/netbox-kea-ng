@@ -84,13 +84,16 @@ def _stores(node: ast.AST) -> set[str]:
 
 
 def _definite_stores(node: ast.AST) -> set[str]:
-    """Return the names *node* stores, without those in a part that a short-circuit operator or a conditional skips."""
+    """Return the names *node* stores, without those in a part that a short-circuit, a conditional or a chain skips."""
     skipped: set[str] = set()
     for part in _scope_nodes(node):
         if isinstance(part, ast.BoolOp):
             skipped |= set().union(*map(_stores, part.values[1:]))
         elif isinstance(part, ast.IfExp):
             skipped |= _stores(part.body) | _stores(part.orelse)
+        elif isinstance(part, ast.Compare):
+            # A chained comparison skips each comparator after the first one that is false.
+            skipped |= set().union(*map(_stores, part.comparators[1:]))
     return _stores(node) - skipped
 
 
