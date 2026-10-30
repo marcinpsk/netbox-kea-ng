@@ -45,6 +45,7 @@ from extras.models import JournalEntry
 from ipam.models import IPAddress as NbIP
 
 from netbox_kea import constants
+from netbox_kea.kea import KeaCommand
 from netbox_kea.lease_reads import LeaseSearch
 from netbox_kea.models import Server
 from netbox_kea.signals import lease_added
@@ -63,6 +64,7 @@ from .kea_stub import (
     _refused_connection,
     _subnet_list,
     _subnet_stats,
+    client_failure,
     complete_lease,
     lease_page,
     lease_pages,
@@ -943,9 +945,9 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
                 {
                     "subnet4-list": self._SUBNETS4,
                     "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)},
-                    "reservation-get": TypeError("unexpected lookup failure"),
                 },
             ),
+            client_failure(KeaCommand.RESERVATION_GET, TypeError("unexpected lookup failure")),
             self.assertLogs("netbox_kea.views.leases", "WARNING") as logs,
         ):
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
@@ -3487,7 +3489,7 @@ class TestLeaseExportAllExceptNarrowing(_ViewTestBase):
     def test_attribute_error_propagates(self):
         """An AttributeError inside get_export_all must not be silently caught."""
         # get_export_all narrows its except clauses, so an AttributeError propagates.
-        with _lease_stub({"lease4-get-page": AttributeError("bad stub")}):
+        with _lease_stub({}), client_failure(KeaCommand.LEASE4_GET_PAGE, AttributeError("client programming bug")):
             with self.assertRaises(AttributeError):
                 self.client.get(self._url(), {"export_all": "1"})
 
@@ -3549,7 +3551,10 @@ class TestHtmxHandlerExceptNarrowing(_ViewTestBase):
         """An AttributeError inside the HTMX handler must propagate (not be caught silently)."""
         subnets = _subnet_list(4, [])
         # The HTMX handler narrows its except clauses, so an AttributeError propagates.
-        with _lease_stub({"subnet4-list": subnets, "lease4-get-all": AttributeError("stub programming bug")}):
+        with (
+            _lease_stub({"subnet4-list": subnets}),
+            client_failure(KeaCommand.LEASE4_GET_ALL, AttributeError("client programming bug")),
+        ):
             with self.assertRaises(AttributeError):
                 self.client.get(
                     self._url(),
@@ -3567,7 +3572,7 @@ class TestLeaseDeleteLoopTransportErrors(_ViewTestBase):
     def test_a_lost_or_unreadable_reply_stops_the_loop(self):
         for name, failure in (
             ("reset", requests.ConnectionError("down")),
-            ("value error", ValueError("bad JSON")),
+            ("not JSON", _raw_http_response(b"bad JSON")),
         ):
             self._fresh_client()
 
@@ -3687,7 +3692,7 @@ class TestLeaseAddValueError(_ViewTestBase):
         from extras.models import JournalEntry
 
         url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
-        for name, reply in (("value error", ValueError("bad value")), ("malformed", ["ok"])):
+        for name, reply in (("not JSON", _raw_http_response(b"bad value")), ("malformed", ["ok"])):
             self._fresh_client()
             with self.subTest(name):
                 with _lease_stub({"lease4-add": reply}) as kea:

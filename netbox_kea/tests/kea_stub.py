@@ -48,7 +48,7 @@ from requests.adapters import HTTPAdapter
 
 from netbox_kea import branching, server_configuration
 from netbox_kea.constants import Family
-from netbox_kea.kea import KeaClient
+from netbox_kea.kea import KeaClient, KeaCommand
 from netbox_kea.leases import Lease, read_lease_collection, shown_lease
 from netbox_kea.models import KeaClientConfig, Server
 from netbox_kea.reservations import (
@@ -143,6 +143,23 @@ def reply_read_failure(error: Exception) -> Iterator[list[requests.PreparedReque
 
     with patch.object(HTTPAdapter, "send", new=send):
         yield sent
+
+
+@contextmanager
+def client_failure(command: KeaCommand, error: Exception) -> Iterator[None]:
+    """Raise *error* from ``KeaClient.command`` for *command*, as a bug in the client would; send other commands.
+
+    The HTTP stub refuses an exception that a real POST cannot raise, so a test of an unexpected failure uses this.
+    """
+    real_command = KeaClient.command
+
+    def send(client: KeaClient, sent: KeaCommand, *args: Any, **kwargs: Any) -> Any:
+        if sent is command:
+            raise error
+        return real_command(client, sent, *args, **kwargs)
+
+    with patch.object(KeaClient, "command", autospec=True, side_effect=send):
+        yield
 
 
 def _is_exc(obj: Any) -> bool:
@@ -392,13 +409,14 @@ class KeaHttpStub:
     * a :class:`ResponseQueue` from :func:`queued` — sequential responses, one per
       call (the last repeats), for pagination / partial-failure paths;
     * a callable ``(body) -> payload`` — for argument-dependent responses;
-    * an exception instance or class — **raised** when the command is called, or
-      returned by a callable, to simulate a transport error (e.g.
-      ``requests.ConnectionError``) at the HTTP boundary. This lets error-path
-      tests drive the real ``KeaClient`` error handling instead of mocking
-      ``command.side_effect``. A KeaException-style failure is instead modelled by
-      returning a payload with a non-accepted ``result`` code, which the real
-      ``KeaClient.command()`` turns into a ``KeaException``.
+    * a ``requests.RequestException`` or ``OSError`` instance or class — **raised**
+      when the command is called, or returned by a callable, to simulate a transport
+      error (e.g. ``requests.ConnectionError``) at the HTTP boundary. Any other
+      exception fails the test, because a real POST cannot raise it; a test of an
+      unexpected failure uses :func:`client_failure`. A KeaException-style
+      failure is instead modelled by returning a payload with a non-accepted
+      ``result`` code, and a malformed reply by a payload that the real
+      ``KeaClient`` rejects.
 
     ``KeaClient`` expects a JSON list (one entry per targeted service); a payload
     that is not already a list is wrapped in a single-element list.
@@ -434,6 +452,13 @@ class KeaHttpStub:
         if callable(spec) and not _is_exc(spec):
             spec = spec(body)
         if _is_exc(spec):
+            kind = spec if isinstance(spec, type) else type(spec)
+            # requests raises a plain OSError for a missing TLS file; every RequestException is an OSError.
+            if not issubclass(kind, OSError):
+                raise AssertionError(
+                    f"KeaHttpStub: {cmd} raises {kind.__name__}, which a real requests POST cannot raise. Register a "
+                    "requests.RequestException or an OSError, or a malformed reply as a payload that KeaClient rejects."
+                )
             raise spec() if isinstance(spec, type) else spec
         if isinstance(spec, requests.Response):
             return spec
@@ -844,7 +869,7 @@ RUN = Run.RUN
 
 @dataclass(frozen=True)
 class Applied:
-    """A scripted answer of ``SubnetDaemon``: run the command, then answer with *answer* (a payload or an exception)."""
+    """A scripted answer of ``SubnetDaemon``: run the command, then answer with *answer* (a payload or a transport error)."""
 
     answer: Any
 
@@ -853,7 +878,7 @@ class SubnetDaemon:
     """One Kea daemon that holds Subnets and Shared Networks and answers the Subnet commands like Kea 3.2.0.
 
     ``script`` sets how the next calls of a command end, one entry per call. ``RUN`` runs the command. A payload or
-    an exception answers without running it. ``Applied(answer)`` runs it and then answers with *answer*. After the
+    a transport error answers without running it. ``Applied(answer)`` runs it and then answers with *answer*. After the
     script, each call runs. ``before`` queues a change of another writer that runs just before the next call.
     """
 
