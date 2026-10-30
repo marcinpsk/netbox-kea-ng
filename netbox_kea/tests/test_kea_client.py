@@ -7,9 +7,11 @@ These tests mock all HTTP calls and require no running services.
 """
 
 import dataclasses
+import io
 import ipaddress
 import json
 import os
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import get_args, get_origin, get_type_hints
@@ -17,9 +19,11 @@ from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from netbox_kea.constants import MAX_SUBNET_ID
 from netbox_kea.kea import (
+    MAX_REPLY_DEPTH,
     KeaClient,
     KeaClientSettingsError,
     KeaCommand,
@@ -1054,6 +1058,115 @@ class TestConfigChangeNotification(TestCase):
             ],
         )
         self.assertTrue(all(record.exc_info for record in logs.records))
+
+
+class TestPersistFailures(TestCase):
+    """persist() reports a Kea or transport failure as failed persistence; an error in the call propagates."""
+
+    def test_an_invalid_family_raises_and_sends_nothing(self) -> None:
+        client = kea_client(url="http://kea:8000")
+        responses = {
+            "config-get": {"result": 0, "arguments": {"Dhcp4": {}}},
+            "config-test": {"result": 0},
+            "config-write": {"result": 0},
+        }
+        with stub_kea(responses) as kea, self.assertRaisesRegex(ValueError, "target must be 4, 6 or None, not 5"):
+            client.persist(5)  # type: ignore[arg-type]
+
+        self.assertEqual(kea.commands(), [])
+
+    def test_a_reply_that_python_cannot_read_is_malformed_and_a_failed_persistence(self) -> None:
+        # Python's JSON reader raises a plain ValueError for a long integer, a RecursionError for deep nesting.
+        for name, value in (("long integer", b"1" * 5000), ("deep nesting", b"[" * 100000 + b"0" + b"]" * 100000)):
+            with self.subTest(name):
+                if name == "long integer" and not hasattr(sys, "get_int_max_str_digits"):
+                    self.skipTest("Python 3.10 has no integer digit limit")
+                self._assert_unreadable_reply_fails(
+                    _raw_http_response(b'[{"result": 0, "arguments": {"n": ' + value + b"}}]")
+                )
+
+    def _assert_unreadable_reply_fails(self, unreadable) -> None:
+        client = kea_client(url="http://kea:8000")
+        with stub_kea({"config-get": unreadable}), self.assertRaises(MalformedReply):
+            client.command(KeaCommand.CONFIG_GET, 4)
+        for phase, failed in (
+            ("config-get", "Kea did not return its running configuration, so it was not saved."),
+            ("config-test", "config-test did not return a usable reply, so nothing was saved."),
+            ("config-write", "The reply to config-write was lost or unreadable."),
+        ):
+            with self.subTest(phase=phase):
+                responses = {
+                    "config-get": {"result": 0, "arguments": {"Dhcp4": {}}},
+                    "config-test": {"result": 0},
+                    "config-write": {"result": 0},
+                    phase: unreadable,
+                }
+                with stub_kea(responses):
+                    persisted = client.persist(4)
+                self.assertEqual((persisted.persistence, persisted.diagnostics), ("failed", (failed,)))
+
+    def test_a_reply_nested_deeper_than_the_limit_is_malformed_and_a_failed_persistence(self) -> None:
+        # A deep reply that Python could read still breaks each later step that recurses: repr(), the JSON writer.
+        deep: object = 0
+        for _ in range(100000):
+            deep = {"a": deep}
+
+        class Decoded(requests.Response):
+            def __init__(self, entry):
+                super().__init__()
+                self.status_code = 200
+                self.entry = entry
+
+            def json(self, **kwargs):
+                return [self.entry]
+
+        for name, entry in (
+            ("configuration", {"result": 0, "arguments": {"Dhcp4": {"user-context": deep}}}),
+            ("error text", {"result": 1, "text": deep}),
+        ):
+            with self.subTest(name):
+                client = kea_client(url="http://kea:8000")
+                with stub_kea({"config-get": Decoded(entry)}) as kea:
+                    with self.assertRaisesRegex(MalformedReply, "nested deeper than"):
+                        client.command(KeaCommand.CONFIG_GET, 4)
+                    persisted = client.persist(4)
+                self.assertEqual(
+                    (persisted.persistence, persisted.diagnostics),
+                    ("failed", ("Kea did not return its running configuration, so it was not saved.",)),
+                )
+                self.assertEqual(kea.commands(), ["config-get", "config-get"])
+
+    def test_a_reply_at_the_depth_limit_is_read(self) -> None:
+        deep: object = 0
+        for _ in range(MAX_REPLY_DEPTH):
+            deep = [deep]
+        client = kea_client(url="http://kea:8000")
+        with stub_kea({"config-get": deep}):
+            self.assertEqual(client.command(KeaCommand.CONFIG_GET, 4, check=None), deep)
+        with stub_kea({"config-get": [deep]}), self.assertRaisesRegex(MalformedReply, "nested deeper than"):
+            client.command(KeaCommand.CONFIG_GET, 4, check=None)
+
+    def test_a_redirect_that_requests_cannot_prepare_is_a_request_error_and_a_failed_persistence(self) -> None:
+        # requests reads the Location header while it prepares the next request, also without following it.
+        for name, location in (("not UTF-8", "/caf\xe9"), ("invalid URL", "http://[")):
+
+            def send(adapter, request, *args, location=location, **kwargs):
+                response = _raw_http_response(b"", status=302, url=request.url or "")
+                response.headers["Location"] = location
+                response.request = request
+                response.raw = io.BytesIO(b"")
+                return response
+
+            with self.subTest(name):
+                client = kea_client(url="http://kea:8000")
+                with patch.object(HTTPAdapter, "send", new=send):
+                    with self.assertRaises(requests.RequestException):
+                        client.command(KeaCommand.CONFIG_GET, 4)
+                    persisted = client.persist(4)
+                self.assertEqual(
+                    (persisted.persistence, persisted.diagnostics),
+                    ("failed", ("Kea did not return its running configuration, so it was not saved.",)),
+                )
 
 
 # ---------------------------------------------------------------------------

@@ -164,8 +164,9 @@ def client_failure(command: KeaCommand, error: Exception) -> Iterator[None]:
 
 
 #: Errors other than a RequestException that a real ``Session.post`` raises and ``KeaClient.command`` handles.
-_RAW_POST_ERRORS = (UnicodeEncodeError, Urllib3SSLError, ssl.SSLError)
-#: ``Response.raise_for_status()`` and ``Response.json()`` raise these after the POST returns: answer with a reply.
+_RAW_POST_ERRORS = (Urllib3SSLError, ssl.SSLError)
+#: ``raise_for_status()`` and ``json()`` raise these after the POST returns: answer with a reply. requests also raises
+#: a ValueError, such as a UnicodeError, only for a redirect reply: answer with that reply through the real Session.
 _REPLY_ERRORS = (requests.HTTPError, requests.JSONDecodeError)
 
 
@@ -483,15 +484,7 @@ class KeaHttpStub:
                 raise
         if _is_exc(spec):
             _refuse_impossible_post_error(cmd, spec if isinstance(spec, type) else type(spec))
-            if isinstance(spec, type):
-                try:
-                    spec = spec()
-                except TypeError:
-                    raise AssertionError(
-                        f"KeaHttpStub: {cmd} registers the class {spec.__name__}, which needs arguments. "
-                        "Register an instance."
-                    ) from None
-            raise spec
+            raise spec() if isinstance(spec, type) else spec
         if isinstance(spec, requests.Response):
             return spec
         return _http_response(spec if isinstance(spec, list) else [spec], url=url)

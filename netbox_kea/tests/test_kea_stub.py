@@ -223,7 +223,6 @@ def test_typed_reservation_rejects_a_fixture_without_a_supported_identity(host):
         requests.Timeout("slow"),
         requests.exceptions.SSLError("bad certificate"),
         OSError("Could not find a suitable TLS CA certificate bundle, invalid path: /missing"),
-        UnicodeEncodeError("latin-1", "pass\u20ac", 4, 5, "ordinal not in range(256)"),
         Urllib3SSLError("decryption failed"),
         ssl.SSLError("unreadable TLS record"),
     ),
@@ -232,12 +231,6 @@ def test_a_transport_error_is_raised(error):
     stub = KeaHttpStub({"version-get": error})
     expected = error if isinstance(error, type) else type(error)
     with pytest.raises(expected):
-        _call(stub)
-
-
-def test_an_exception_class_that_needs_arguments_is_refused():
-    stub = KeaHttpStub({"version-get": UnicodeEncodeError})
-    with pytest.raises(AssertionError, match=r"version-get.*UnicodeEncodeError.*instance"):
         _call(stub)
 
 
@@ -259,6 +252,9 @@ def test_callable_returning_a_transport_error_is_raised():
         (requests.HTTPError("401 Unauthorized"), "HTTPError"),
         # requests wraps a socket error in requests.ConnectionError; KeaClient would read it as a missing TLS file.
         (ConnectionResetError(104, "reset"), "ConnectionResetError"),
+        # requests raises these only for a redirect reply; a test sends that reply through the real Session.
+        (UnicodeEncodeError("latin-1", "pass\u20ac", 4, 5, "ordinal not in range(256)"), "UnicodeEncodeError"),
+        (UnicodeDecodeError("utf-8", b"/caf\xe9", 4, 5, "unexpected end of data"), "UnicodeDecodeError"),
         # KeaClient.command raises these after a requests error; the plugin defines them.
         (KeaTLSFileError("missing file"), "KeaTLSFileError"),
         (KeaRequestEncodingError, "KeaRequestEncodingError"),

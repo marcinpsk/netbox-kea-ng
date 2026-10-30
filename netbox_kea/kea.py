@@ -1023,9 +1023,10 @@ class KeaClient:
             BranchActive: If *command* is a write and the write guard refuses it, for example in a branch.
             KeaTLSFileError: If requests cannot find a TLS file of the client. It is a ``RequestException``.
             KeaRequestEncodingError: If requests cannot encode the Basic Auth credentials before the send. It is a
-                ``RequestException``. An encode failure after the send is a plain ``RequestException``.
+                ``RequestException``. A redirect reply that requests cannot prepare is a plain ``RequestException``.
             requests.HTTPError: If the HTTP response status is a redirect or not 2xx.
-            MalformedReply: If the reply body is not JSON or not a list, is empty, or has a malformed entry.
+            MalformedReply: If the reply body is not JSON or not a list, is nested deeper than ``MAX_REPLY_DEPTH``,
+                is empty, or has a malformed entry.
             KeaException: If any response result code is not in *check*.
 
         """
@@ -1060,7 +1061,7 @@ class KeaClient:
             raise requests.exceptions.SSLError("The TLS connection to Kea failed.") from exc
         except OSError as exc:
             raise KeaTLSFileError("A TLS CA, certificate or key file of the client could not be found.") from exc
-        except UnicodeEncodeError as exc:
+        except ValueError as exc:
             # requests prepares the next request of a redirect reply after the send, also without following it.
             raise requests.RequestException("requests could not handle the reply after it sent the request.") from exc
         finally:
@@ -1071,10 +1072,13 @@ class KeaClient:
         resp.raise_for_status()
         try:
             resp_json = resp.json()
-        except requests.JSONDecodeError as exc:
+        except (ValueError, RecursionError) as exc:
+            # Python's JSON reader also raises a plain ValueError (a long integer) and a RecursionError (deep nesting).
             raise MalformedReply("Kea returned a reply body that is not JSON.") from exc
         if not isinstance(resp_json, list):
             raise MalformedReply(f"Kea returned a reply that is not a list: {type(resp_json).__name__}")
+        if _deeper_than(resp_json, MAX_REPLY_DEPTH):
+            raise MalformedReply(f"Kea returned a reply nested deeper than {MAX_REPLY_DEPTH} levels.")
         if check is not None:
             check_response(resp_json, check)
         return resp_json
@@ -2141,8 +2145,9 @@ class KeaClient:
     def persist(self, version: Family) -> PersistResult:
         """Write the running configuration to disk: ``config-get``, ``config-test`` of it, then ``config-write``.
 
-        It never raises. ``failed`` means that NetBox cannot confirm that the disk copy holds the running
-        configuration. A failed phase stops the step, so NetBox never writes a configuration it could not test.
+        A Kea or transport failure does not raise; an invalid *version* raises ``ValueError``. ``failed`` means that
+        NetBox cannot confirm that the disk copy holds the running configuration. A failed phase stops the step, so
+        NetBox never writes a configuration it could not test.
         """
         if not self.persist_config:
             return PersistResult("not-requested")
@@ -2150,7 +2155,7 @@ class KeaClient:
         # OSError covers each requests error, KeaTLSFileError included.
         try:
             candidate = self.config_candidate(version)
-        except (KeaException, OSError, MalformedKeaReply, ValueError, RuntimeError):
+        except (KeaException, OSError, MalformedKeaReply):
             logger.warning("config-get failed for %s, so config-write was not sent", service, exc_info=True)
             return PersistResult("failed", ("Kea did not return its running configuration, so it was not saved.",))
         try:
@@ -2159,7 +2164,7 @@ class KeaClient:
             if not exc.unsupported_command:
                 logger.warning("config-test rejected the running configuration of %s: %s", service, exc)
                 return PersistResult("failed", (f"config-test rejected the running configuration: {exc.reply_text}",))
-        except (OSError, MalformedKeaReply, ValueError, RuntimeError):
+        except (OSError, MalformedKeaReply):
             logger.warning("config-test failed for %s, so config-write was not sent", service, exc_info=True)
             return PersistResult("failed", ("config-test did not return a usable reply, so nothing was saved.",))
         try:
@@ -2167,7 +2172,7 @@ class KeaClient:
         except KeaException as exc:
             logger.warning("config-write failed for %s: %s", service, exc)
             return PersistResult("failed", (f"config-write failed: {exc.reply_text}",))
-        except (OSError, MalformedKeaReply, ValueError, RuntimeError):
+        except (OSError, MalformedKeaReply):
             logger.warning("The config-write reply of %s was lost or unreadable", service, exc_info=True)
             return PersistResult("failed", ("The reply to config-write was lost or unreadable.",))
         return PersistResult("persisted")
@@ -2212,6 +2217,22 @@ def close_quietly(client: KeaClient) -> None:
         client.close()
     except Exception:
         logger.warning("Could not close a Kea client", exc_info=True)
+
+
+#: The deepest reply NetBox reads. repr() and the JSON writer recurse, so a deeper reply could fail any later step.
+MAX_REPLY_DEPTH = 100
+
+
+def _deeper_than(value: Any, limit: int) -> bool:
+    """Return whether *value* nests lists and dicts more than *limit* levels deep. It does not recurse."""
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, (dict, list)):
+            if depth > limit:
+                return True
+            stack.extend((child, depth + 1) for child in (item.values() if isinstance(item, dict) else item))
+    return False
 
 
 class KeaException(Exception):
