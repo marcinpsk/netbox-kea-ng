@@ -253,6 +253,8 @@ def test_callable_returning_a_transport_error_is_raised():
         (KeaException({"result": 1, "text": "refused", "arguments": None}), "KeaException"),
         # Response.json() raises it, never Session.post(); it is a RequestException.
         (requests.JSONDecodeError("bad JSON", "x", 0), "JSONDecodeError"),
+        # raise_for_status() raises it after the POST returns; answer with an HTTP error reply instead.
+        (requests.HTTPError("401 Unauthorized"), "HTTPError"),
         # KeaClient.command raises these after a requests error; the plugin defines them.
         (KeaTLSFileError("missing file"), "KeaTLSFileError"),
         (KeaRequestEncodingError, "KeaRequestEncodingError"),
