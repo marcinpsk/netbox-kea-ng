@@ -165,7 +165,7 @@ class ServerReservationPageCacheTest(_ViewTestBase):
     def test_a_refresh_that_fails_leaves_no_entry(self):
         page, _ = self._render(_res_page([_OLD]))
 
-        with self.assertLogs("netbox_kea.views.notices", "ERROR"):
+        with self.assertLogs("netbox_kea.read_failure", "WARNING"):
             refreshed, reads = self._refresh(page, requests.ConnectionError("kea unreachable"))
         self.assertEqual(reads, 1)
         self.assertNotContains(refreshed, "198.18.0.21")
@@ -200,7 +200,7 @@ class ServerReservationPageCacheTest(_ViewTestBase):
         self.assertContains(response, "Read 42 s ago")
 
     def test_a_failed_page_read_is_read_again_on_the_next_render(self):
-        with self.assertLogs("netbox_kea.views.notices", "ERROR"):
+        with self.assertLogs("netbox_kea.read_failure", "WARNING"):
             self._render(requests.ConnectionError("kea unreachable"))
 
         response, reads = self._render(_res_page([_OLD]))
@@ -220,7 +220,7 @@ class ServerReservationPageCacheTest(_ViewTestBase):
 
     def test_a_search_whose_later_page_fails_is_read_again(self):
         unrelated = [{"subnet-id": 20, "flex-id": f"unrelated-{index}"} for index in range(100)]
-        with self.assertLogs("netbox_kea.views.reservations", "ERROR"):
+        with self.assertLogs("netbox_kea.read_failure", "WARNING"):
             first, reads = self._render(
                 _res_page(unrelated, next_from=100, next_source=1),
                 requests.ConnectionError("kea unreachable"),
@@ -306,7 +306,9 @@ class ServerReservationPageCacheTest(_ViewTestBase):
 
     def test_the_mutation_banner_is_inside_the_refreshed_section(self):
         responses = _responses(_res_page([_OLD]))
-        responses["config-get"] = queued(responses["config-get"], RuntimeError("capability discovery failed"))
+        responses["config-get"] = queued(
+            responses["config-get"], requests.ConnectionError("capability discovery failed")
+        )
         with stub_kea(responses):
             page = self.client.get(self._url())
 
@@ -319,7 +321,7 @@ class ServerReservationPageCacheTest(_ViewTestBase):
         self.server.client_cert_path = "/cert"
         self.server.save()
 
-        with self.assertLogs("netbox_kea.views.reservations", "ERROR"):
+        with self.assertLogs("netbox_kea.read_failure", "WARNING"):
             refreshed, reads = self._refresh(page, _res_page([_NEW]))
 
         self.assertEqual(reads, 0)

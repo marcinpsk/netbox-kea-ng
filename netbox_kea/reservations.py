@@ -24,6 +24,7 @@ from .dhcp_options import (
 )
 from .identifiers import normalize_hex
 from .leases import DHCPv4AddressLease, DHCPv6PrefixLease, Lease, LeaseSnapshot
+from .malformed import MalformedKeaReply
 
 if TYPE_CHECKING:
     from .subnet_catalogue import CatalogueSnapshot, SubnetIdentity, VerifiedSubnet
@@ -156,7 +157,7 @@ class UnknownLeasePresence(Enum):
     KEA_ERROR = auto()
     #: Kea returned a reply that the reader cannot use.
     MALFORMED_REPLY = auto()
-    #: The Server settings, the search or the Lease Snapshot of the read were not valid.
+    #: The client settings of the Server were not valid, so nothing was sent.
     INVALID_READ = auto()
     #: Kea has no Lease query for the identifier, and no reserved address can match.
     UNSEARCHABLE_IDENTIFIER = auto()
@@ -246,9 +247,9 @@ class UnknownReservationMatch(Enum):
     UNVERIFIED_SUBNET = auto()
     #: Kea returned a failure result, or the transport failed.
     KEA_ERROR = auto()
-    #: Kea returned a reply that the reader cannot use.
+    #: Kea returned a reply that the reader cannot use, or a Reservation that does not parse or fit the lookup.
     MALFORMED_REPLY = auto()
-    #: The Server settings were not valid, or Kea returned a Reservation that does not parse or fit the lookup.
+    #: The client settings of the Server were not valid, so nothing was sent.
     INVALID_READ = auto()
     #: No Reservation matched, and the Lease carries an identifier that no Reservation can hold.
     FOREIGN_IDENTIFIER = auto()
@@ -624,7 +625,7 @@ def reservation_identifier_choices(family: int) -> tuple[tuple[IdentifierType, s
     )
 
 
-class MalformedReservation(ValueError):
+class MalformedReservation(MalformedKeaReply):
     """A raw reservation cannot become one unambiguous domain record."""
 
     def __init__(self, code: str, message: str, field: str = "") -> None:
@@ -1498,7 +1499,7 @@ def _parse_reservation_page(
     """Build one typed Snapshot and quarantine malformed records individually."""
     parsed_family = _family(family)
     if not isinstance(hosts, list):
-        raise RuntimeError("reservation-get-page returned a malformed hosts collection.")
+        raise MalformedKeaReply("reservation-get-page returned a malformed hosts collection.")
     records: list[Reservation] = []
     diagnostics: list[ReservationDiagnostic] = []
     for index, raw in enumerate(hosts):

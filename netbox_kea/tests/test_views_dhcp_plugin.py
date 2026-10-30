@@ -81,7 +81,7 @@ class ReadReservationObservationTest(TestCase):
         responses = _sync_responses({4: {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]}})
         responses["reservation-get-page"] = requests.ConnectionError("read failed")
 
-        with self.assertLogs("netbox_kea.integrations.dhcp_import", level="WARNING"), stub_kea(responses):
+        with self.assertLogs("netbox_kea.read_failure", level="WARNING"), stub_kea(responses):
             snapshot = dhcp_import._read_reservation_observation(self._server(), 4)
 
         self.assertIsNone(snapshot)

@@ -1245,16 +1245,16 @@ class TestCombinedStatusBadgeError(_ViewTestBase):
     def test_a_daemon_that_does_not_answer_is_offline_and_logged(self):
         url = reverse("plugins:netbox_kea:combined_server_status_badge", args=[self.server.pk])
         for failure, name in (
-            ({"result": 1, "text": "error"}, "KeaException"),
-            (requests.ConnectionError("unreachable"), "ConnectionError"),
-            (["not", "a", "reply"], "MalformedReply"),
+            ({"result": 1, "text": "error"}, "refused"),
+            (requests.ConnectionError("unreachable"), "unreachable"),
+            (["not", "a", "reply"], "malformed"),
         ):
             with self.subTest(name):
                 with stub_kea({"version-get": failure}):
-                    with self.assertLogs("netbox_kea.views.options", level="WARNING") as logs:
+                    with self.assertLogs("netbox_kea.read_failure", level="WARNING") as logs:
                         response = self.client.get(url)
                 self.assertIn("offline", response.content.decode().lower())
-                self.assertIn(f"did not answer the status badge read ({name})", logs.output[0])
+                self.assertIn(f"status badge read of Server {self.server.pk} failed ({name})", logs.output[0])
 
 
 class TestConfigurationOptionIdentity(_ViewTestBase):

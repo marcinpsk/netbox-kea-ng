@@ -19,6 +19,8 @@ from urllib3.exceptions import MaxRetryError, NewConnectionError
 
 from .constants import Family
 from .kea import KeaClient, KeaException, KeaRequestEncodingError, KeaTLSFileError, kea_error_message
+from .malformed import MalformedKeaReply
+from .read_failure import ReadFailure, attempt
 
 if TYPE_CHECKING:
     from .models import Server
@@ -52,14 +54,13 @@ class ChangeRejected(Exception):
 
 def build_client(server: Server, family: Family) -> KeaClient:
     """Return the client of *server* for *family*. A client that cannot be built means that the change was not sent."""
-    try:
-        return server.get_client(version=family)
-    except ValueError as exc:
-        logger.warning("Could not build a DHCPv%s client for Server %s", family, server.pk, exc_info=True)
+    client = attempt(f"The DHCPv{family} client of Server {server.pk}", lambda: server.get_client(version=family))
+    if isinstance(client, ReadFailure):
         raise ChangeRejected(
             "invalid-client-configuration",
             ("NetBox could not build a Kea client from the Server connection settings.",),
-        ) from exc
+        )
+    return client
 
 
 def read_before(read: Callable[[], T]) -> T:
@@ -68,17 +69,22 @@ def read_before(read: Callable[[], T]) -> T:
 
 
 def before_change(step: Callable[[], T], unusable: str) -> T:
-    """Run a step before the change. A failure means that the change was not sent; *unusable* explains a bad reply."""
-    try:
-        return step()
-    except KeaException as exc:
-        logger.warning("A step before a change failed: %s", exc)
-        raise ChangeRejected("not-sent", (kea_error_message(exc),)) from exc
-    except (KeaTLSFileError, KeaRequestEncodingError) as exc:
-        raise _client_setting_failure(exc) from exc
-    except (requests.RequestException, ValueError, RuntimeError) as exc:
-        logger.warning("A step before a change failed", exc_info=True)
-        raise ChangeRejected("not-sent", (unusable,)) from exc
+    """Run a step that sends a Kea command before the change. A failure means that the change was not sent.
+
+    Kea's answer explains a refusal, *unusable* explains every other failure, and a TLS file or credential failure is
+    an invalid client configuration.
+    """
+
+    def settings_checked() -> T:
+        try:
+            return step()
+        except (KeaTLSFileError, KeaRequestEncodingError) as exc:
+            raise _client_setting_failure(exc) from exc
+
+    result = attempt("A step before a change", settings_checked)
+    if isinstance(result, ReadFailure):
+        raise ChangeRejected("not-sent", (result.reply or unusable,))
+    return result
 
 
 #: What a failure result of the change means: "reject" (the change is not live), "unknown", or a check read that
@@ -108,7 +114,8 @@ def mutate(
             return "unknown", (diagnostic,)
         try:
             unchanged = on_failure()
-        except (KeaException, OSError, ValueError, RuntimeError):
+        # A check read can also raise CatalogueUnavailable, a RuntimeError, when its observation is incomplete.
+        except (KeaException, OSError, MalformedKeaReply, ValueError, RuntimeError):
             logger.warning("The check read after a failed change failed", exc_info=True)
             return "unknown", (diagnostic, "The read after the failure did not succeed.")
         if unchanged:
@@ -123,7 +130,7 @@ def mutate(
             raise ChangeRejected("not-sent", (reason,)) from exc
         logger.warning("The reply to a change was lost or unreadable", exc_info=True)
         return "unknown", (_tls_failure(exc) or _REPLY_LOST,)
-    except (ValueError, RuntimeError):
+    except (MalformedKeaReply, ValueError, RuntimeError):
         logger.warning("The reply to a change was malformed", exc_info=True)
         return "unknown", (_REPLY_LOST,)
     return "applied", ()
