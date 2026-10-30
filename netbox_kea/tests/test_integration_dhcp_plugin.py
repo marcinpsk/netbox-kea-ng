@@ -2228,7 +2228,7 @@ class DhcpPluginSubnetIdImportTest(TestCase):
             if entry.path.startswith(path)
         ]
 
-    def test_the_options_of_a_reservation_of_a_taken_subnet_id_are_not_written(self):
+    def test_the_options_of_a_reservation_of_a_taken_subnet_id_have_the_reason_of_the_reservation(self):
         from netbox_kea.integrations.dhcp_import_report import Outcome
 
         self._import(self.other, _subnet_id_conf(9408, 9))
@@ -2241,8 +2241,8 @@ class DhcpPluginSubnetIdImportTest(TestCase):
             self._reservation_entries(summary, path),
             [
                 (Kind.RESERVATION, path, Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH),
-                (Kind.OPTION, f"{path}/option-data[code=6]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
-                (Kind.OPTION, f"{path}/option-data[code=15]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+                (Kind.OPTION, f"{path}/option-data[code=6]", Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH),
+                (Kind.OPTION, f"{path}/option-data[code=15]", Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH),
             ],
         )
 
