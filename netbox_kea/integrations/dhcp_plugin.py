@@ -1719,10 +1719,10 @@ def _skip_subnet_children(
 ) -> None:
     """Record the DHCP Options, Pools and PD Pools of a Subnet that was not imported.
 
-    A *taken* ID is also why its Pools and PD Pools were not.
+    A *taken* ID is also why its Options, Pools and PD Pools were not.
     """
     family, parent_path = planned.intent.family, subnet_path(planned)
-    _skip_options(summary, family, parent_path, planned_options(planned, family, declared))
+    _skip_options(summary, family, parent_path, planned_options(planned, family, declared), taken)
     children = [
         (Kind.POOL, pool_path(parent_path, pool, family), planned_options(pool, family, declared))
         for pool in planned.pools
@@ -1736,7 +1736,7 @@ def _skip_subnet_children(
             summary.record(not_written(family, kind, path, Reason.PARENT_NOT_IMPORTED))
         else:
             summary.record(taken.entry(family, kind, path))
-        _skip_options(summary, family, path, options)
+        _skip_options(summary, family, path, options, taken)
 
 
 def subnet_path(planned: PlannedSubnet) -> str:
