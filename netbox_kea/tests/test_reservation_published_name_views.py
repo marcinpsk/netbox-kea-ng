@@ -11,6 +11,7 @@ import copy
 from typing import Any
 from urllib.parse import urlencode
 
+import requests
 from django.urls import reverse
 
 from netbox_kea import display_cache
@@ -344,7 +345,7 @@ class TestPublishedNamePreview(_PublishedNameViewTest):
                     self.assertContains(response, "Enter a Subnet of this server")
 
     def test_an_unknown_suffix_says_so(self):
-        with stub_kea({**_recorded(4), "config-get": RuntimeError("config-get failed")}):
+        with stub_kea({**_recorded(4), "config-get": requests.ConnectionError("config-get failed")}):
             response = self._preview(4, **self._subnet(4, 21), hostname="printer")
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("published", response.context)

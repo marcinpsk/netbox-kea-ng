@@ -51,6 +51,7 @@ from .constants import (
     LeaseState,
 )
 from .identifiers import normalize_hex
+from .malformed import MalformedKeaReply
 
 # The last second that an aware datetime can hold.
 _MAX_TIMESTAMP = int(datetime.max.replace(microsecond=0, tzinfo=timezone.utc).timestamp())
@@ -649,7 +650,7 @@ def creation_mismatches(request: LeaseRequest, lease: Lease) -> tuple[LeaseFact,
     return tuple(name for name, differ in differs.items() if differ)
 
 
-class MalformedLeaseResponse(RuntimeError):
+class MalformedLeaseResponse(MalformedKeaReply):
     """Kea returned a lease reply envelope or page cursor that the read cannot use."""
 
 

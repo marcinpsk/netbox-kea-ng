@@ -2,18 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """Validate live connectivity when a submission creates or changes a Server connection."""
 
-import logging
+from functools import partial
 from typing import TYPE_CHECKING
 
 from django.core.exceptions import ValidationError
 
 from .constants import Family
-from .kea import KeaCommand, KeaException
+from .kea import KeaCommand
+from .read_failure import ReadFailure, attempt
 
 if TYPE_CHECKING:
     from .models import Server
-
-logger = logging.getLogger(__name__)
 
 CONNECTION_FIELDS = (
     "ca_url",
@@ -41,6 +40,11 @@ def connection_values(server: "Server") -> ConnectionValues:
     return tuple(getattr(server, field) for field in CONNECTION_FIELDS)
 
 
+def _version_get(server: "Server", family: Family) -> object:
+    """Send ``version-get`` to the DHCP daemon of *family*."""
+    return server.get_client(version=family).command(KeaCommand.VERSION_GET, family)
+
+
 def validate_connection_change(server: "Server", before: ConnectionValues | None) -> None:
     """Probe enabled services on creation or an actual connection change. None means creation."""
     if before is not None and connection_values(server) == before:
@@ -49,11 +53,10 @@ def validate_connection_change(server: "Server", before: ConnectionValues | None
     for field, family in services:
         if not getattr(server, field):
             continue
-        try:
-            server.get_client(version=family).command(KeaCommand.VERSION_GET, family)
-        except RuntimeError as exc:
-            logger.exception("Malformed response during DHCPv%s connectivity check", family)
-            raise ValidationError({field: "An internal error occurred."}) from exc
-        except (KeaException, OSError, ValueError) as exc:
-            logger.exception("DHCPv%s connectivity check failed during Server submission", family)
-            raise ValidationError({field: f"Unable to reach the Kea DHCPv{family} service."}) from exc
+        checked = attempt(
+            f"The DHCPv{family} connectivity check of a Server submission", partial(_version_get, server, family)
+        )
+        if isinstance(checked, ReadFailure):
+            if checked.kind == "malformed":
+                raise ValidationError({field: "An internal error occurred."})
+            raise ValidationError({field: f"Unable to reach the Kea DHCPv{family} service."})

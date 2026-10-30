@@ -735,7 +735,7 @@ class TestReservation4SyncView(_SyncViewBase):
                 "reservation-get": {"result": 2, "text": "unknown command 'reservation-get'"},
             }
         ):
-            with self.assertLogs("netbox_kea.views.notices", level="INFO"):
+            with self.assertLogs("netbox_kea.read_failure", level="INFO"):
                 response = self.client.post(self._url())
 
         self.assertContains(response, "The required hook library may not be loaded")

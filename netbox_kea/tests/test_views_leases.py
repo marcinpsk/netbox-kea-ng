@@ -94,11 +94,6 @@ _ERROR_TEMPLATE = re.compile(
 )
 
 
-def _assert_rendered_error_template(test, response):
-    """Assert the HTMX handler rendered exception_htmx.html with a real reference ID."""
-    test.assertRegex(response.content.decode(), _ERROR_TEMPLATE)
-
-
 def _assert_lease_read_failed(test, response):
     """Assert the partial keeps the form and shows the unavailable Lease Notice in place of the table."""
     test.assertEqual(response.status_code, 200)
@@ -2351,7 +2346,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
                 "malformed-id": {"result": 0, "arguments": {"ip-address": address, "subnet-id": []}},
                 "unsupported": {"result": 2},
                 "unavailable": requests.ConnectionError("readback unavailable"),
-                "invalid-json": ValueError("invalid JSON"),
+                "invalid-json": _raw_http_response(b"invalid JSON"),
                 "socket-error": OSError("readback unavailable"),
             }
             for name, readback in cases.items():
@@ -2902,15 +2897,13 @@ class TestHTMXExceptionHandler(_ViewTestBase):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
     def test_htmx_exception_returns_error_partial(self):
-        # A RuntimeError from the lease fetch must be caught and rendered as the HTMX error partial.
-        with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get": RuntimeError("boom")}):
+        # A failed lease fetch must render inside the section.
+        with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get": requests.ConnectionError("boom")}):
             response = self.client.get(
                 self._url() + "?q=10.0.0.1&by=ip",
                 HTTP_HX_REQUEST="true",
             )
-        # Must not crash — the outer handler catches the RuntimeError and renders
-        # the HTMX error partial (never a 500; accepting 500 would let a regression
-        # where the handler stops catching the error pass unnoticed).
+        # Never a 500: accepting 500 would let a regression where the read stops being classified pass unnoticed.
         self.assertEqual(response.status_code, 200)
 
 
@@ -3673,8 +3666,11 @@ class TestLeaseEditPostTransportErrors(_ViewTestBase):
 
     def test_a_failed_read_before_the_update_is_not_sent(self):
         """The fresh read of the shown Lease comes before the update, so its failure means nothing was sent."""
-        for failure in (requests.ConnectionError("down"), ValueError("bad value")):
-            with self.subTest(type(failure).__name__):
+        for name, failure in (
+            ("ConnectionError", requests.ConnectionError("down")),
+            ("not JSON", _raw_http_response(b"bad")),
+        ):
+            with self.subTest(name):
                 self._fresh_client()
                 messages = self._post({"lease4-get": failure})
                 self.assertEqual(
@@ -3780,10 +3776,10 @@ class TestLeaseExportClientError(_ViewTestBase):
             response = self.client.get(url, {"export": "form", "by": "subnet", "q": "10.0.0.0/24"})
         self.assertIn(response.status_code, [200, 302])
 
-    def test_runtime_error_during_fetch_redirects(self):
-        """RuntimeError during lease fetch in export redirects with error."""
+    def test_a_failed_read_during_fetch_redirects(self):
+        """A failed lease read during the export redirects with its error."""
         subnets = _subnet_list(4, [])
-        with _lease_stub({"subnet4-list": subnets, "lease4-get-all": RuntimeError("unexpected")}):
+        with _lease_stub({"subnet4-list": subnets, "lease4-get-all": requests.ConnectionError("unexpected")}):
             response = self.client.get(self._url(), {"export": "form", "by": "subnet_id", "q": "1"})
         self.assertIn(response.status_code, [200, 302])
 
@@ -4126,27 +4122,31 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
         self.assertEqual([item.get_text() for item in alert.select("li")], [READ_FAILURES[0][2]])
 
     def test_multiple_result_none_arguments_renders_error(self):
-        """Multiple-result with None arguments must trigger RuntimeError."""
+        """Multiple-result with None arguments is a malformed reply."""
         resp = {"result": 0, "arguments": None}
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get-by-hw-address": resp}):
             response = self._htmx_get(self._url(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
         _assert_lease_read_failed(self, response)
 
     def test_multiple_result_non_list_leases_renders_error(self):
-        """Multiple-result with non-list leases must trigger RuntimeError."""
+        """Multiple-result with non-list leases is a malformed reply."""
         resp = {"result": 0, "arguments": {"leases": "not-a-list"}}
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get-by-hw-address": resp}):
             response = self._htmx_get(self._url(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
         _assert_lease_read_failed(self, response)
 
-    def test_a_client_that_cannot_be_built_keeps_the_error_template(self):
-        """A ValueError is outside the Notice rule, so the partial still shows the error template."""
+    def test_a_client_that_cannot_be_built_shows_the_lease_notice(self):
+        """Invalid client settings are a misconfigured read, so the partial shows the unavailable Lease Notice."""
         Server.objects.filter(pk=self.server.pk).update(client_key_path="/tls/client.key", client_cert_path="")
         with _lease_stub({}) as kea:
             response = self._htmx_get(self._url(), {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
-        _assert_rendered_error_template(self, response)
+        alerts = [
+            alert.get_text() for alert in BeautifulSoup(response.content, "html.parser").select(".alert-danger strong")
+        ]
+        self.assertIn(HEADLINES["lease"], alerts)
+        _assert_no_error_template(self, response)
 
 
 class TestExportErrorPaths(_ViewTestBase):

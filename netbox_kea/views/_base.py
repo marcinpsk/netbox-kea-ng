@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 from urllib.parse import parse_qsl, unquote, urlparse, urlsplit
 from urllib.parse import urlencode as _urlencode
 
-import requests
 from django.contrib import messages
 from django.contrib.auth.models import PermissionsMixin
 from django.core.exceptions import ValidationError
@@ -26,8 +25,9 @@ from ..change_outcome import ChangeRejected, RejectionReason
 from ..config_write import ConfigChangeOutcome, ReservationChangeOutcome
 from ..constants import Family
 from ..dhcp_options import shown_options
-from ..kea import DaemonStatus, DaemonVersion, KeaClient, KeaCommand, KeaException, SubnetUtilization, close_quietly
+from ..kea import DaemonStatus, DaemonVersion, KeaClient, KeaCommand, SubnetUtilization, close_quietly
 from ..models import Server
+from ..read_failure import ReadFailure, attempt
 from ..runtime_change import RuntimeChangeOutcome
 from ..server_configuration import SharedNetwork
 from ..subnet_catalogue import ConfiguredSubnet, VerifiedSubnet
@@ -115,15 +115,16 @@ def _strip_empty_params(path: str) -> str:
     return parsed._replace(query=query).geturl()
 
 
-def _client_settings_error(server: Server, exc: ValueError) -> str:
-    """Log the ``ValueError`` of ``server.get_client()`` and return the message that names the Server setting.
+def _client_or_refusal(server: Server, version: Family) -> KeaClient | str:
+    """Return the Kea client of *server*, or the message that names its invalid client settings. It sends nothing.
 
-    ``get_client()`` sends nothing, so its ``ValueError`` is never a connection failure. The client also refuses an
-    invalid ``max_unpaged_leases``, but that value comes from ``lease_query_max_unpaged_leases``, which NetBox
-    validates at startup, so the remaining cause is a client key without a certificate, or the reverse.
+    The client also refuses an invalid ``max_unpaged_leases``, but NetBox validates that setting when it is saved, so
+    the remaining cause is a client key without a certificate, or the reverse.
     """
-    logger.error("Kea client settings of server %s are invalid", server.pk, exc_info=exc)
-    return f"The Kea client settings of Server {server.name} are invalid. Check the client certificate and key."
+    client = attempt(f"The DHCPv{version} client of Server {server.pk}", lambda: server.get_client(version=version))
+    if isinstance(client, ReadFailure):
+        return f"The Kea client settings of Server {server.name} are invalid. Check the client certificate and key."
+    return client
 
 
 def _client_settings_refusal(server: Server, version: Family) -> str:
@@ -131,10 +132,10 @@ def _client_settings_refusal(server: Server, version: Family) -> str:
 
     It builds the client and closes it again, so it sends nothing.
     """
-    try:
-        server.get_client(version=version).close()
-    except ValueError as exc:
-        return _client_settings_error(server, exc)
+    client = _client_or_refusal(server, version)
+    if isinstance(client, str):
+        return client
+    client.close()
     return ""
 
 
@@ -415,7 +416,7 @@ def daemon_status(client: LazyClient) -> DaemonStatus:
     Raises:
         KeaException: If Kea returns a failure result.
         requests.RequestException: If the transport fails.
-        RuntimeError: If the reply is malformed.
+        MalformedReply: If the reply is malformed.
 
     """
     return display_cache.cached(
@@ -433,7 +434,7 @@ def daemon_version(client: LazyClient) -> DaemonVersion:
     Raises:
         KeaException: If Kea returns a failure result.
         requests.RequestException: If the transport fails.
-        RuntimeError: If the reply is malformed.
+        MalformedReply: If the reply is malformed.
 
     """
     return display_cache.cached(
@@ -450,19 +451,15 @@ def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, versio
 
     With *live*, for an export, it reads Kea live and replaces the entry.
     """
-    try:
-        utilization = display_cache.cached(
+    read = attempt(
+        f"The DHCPv{version} Subnet utilization read of Server {server.pk}",
+        lambda: display_cache.cached(
             server, version, "utilization", lambda: _read_utilization(server, version), refresh=live
-        ).counts
-    except KeaException as exc:
-        if exc.unsupported_command:
-            logger.debug("stat_cmds hook unavailable", exc_info=True)
-        else:
-            logger.warning("Kea refused the Subnet utilization read of server %s", server.pk, exc_info=True)
+        ),
+    )
+    if isinstance(read, ReadFailure):
         return
-    except (requests.RequestException, RuntimeError, ValueError):
-        logger.warning("Could not read Subnet utilization from server %s", server.pk, exc_info=True)
-        return
+    utilization = read.counts
     for row in rows:
         if (counts := utilization.get(row["id"])) is not None:
             pct = round(counts.assigned / counts.total * 100) if counts.total > 0 else 0

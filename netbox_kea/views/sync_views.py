@@ -61,7 +61,7 @@ from ._base import (
     ConditionalLoginRequiredMixin,
     OutcomeT,
     RowT,
-    _client_settings_error,
+    _client_or_refusal,
     _client_settings_refusal,
     _journal_applied,
     _KeaChangeMixin,
@@ -121,10 +121,9 @@ class _BaseSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
             return _row_error(request, gate.reason)
 
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        try:
-            client = server.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            return _row_error(request, _client_settings_error(server, exc))
+        client = _client_or_refusal(server, self.dhcp_version)
+        if isinstance(client, str):
+            return _row_error(request, client)
 
         observed = load_target(server, "lease_target", lambda: client.lease_get(identity))
         if isinstance(observed, Notice):

@@ -42,6 +42,7 @@ from .kea_stub import (
     SubnetDaemon,
     _catalogue_responses_for_subnets,
     _network_present,
+    _raw_http_response,
     _refused_connection,
     _res_page,
     _subnet_list,
@@ -3325,11 +3326,11 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
         self.assertContains(response, "this form cannot be saved")
         self.assertEqual(response.context["form"].initial["subnet_cidr"], "10.0.0.0/24")
 
-    def test_value_error_renders_edit_form_with_warning(self):
-        """A ValueError on config-get must not cause a 500 in the edit view."""
+    def test_a_config_get_body_that_is_not_json_renders_edit_form_with_warning(self):
+        """A config-get reply that is not JSON must not cause a 500 in the edit view."""
         url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
         with stub_kea(
-            {**_ABSENT_READ_HOOKS, "subnet4-get": self._LIVE_SUBNET, "config-get": ValueError("bad response")}
+            {**_ABSENT_READ_HOOKS, "subnet4-get": self._LIVE_SUBNET, "config-get": _raw_http_response(b"bad response")}
         ):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -3512,14 +3513,14 @@ class TestPoolAddPostErrors(_ViewTestBase):
         malformed_probe = {"result": 0, "arguments": {"hosts": None, "next": {"from": 0, "source-index": 0}}}
 
         with self._pool_add_stub(**{"reservation-get-page": malformed_probe}) as kea:
-            with self.assertLogs("netbox_kea.views.notices", level="WARNING") as logs:
+            with self.assertLogs("netbox_kea.read_failure", level="WARNING") as logs:
                 response = self.client.post(
                     self._url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.10-10.0.0.20"}, follow=True
                 )
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("subnet4-delta-add", kea.commands())
-        read_records = [record for record in logs.records if "Failed to read reservation" in record.getMessage()]
+        read_records = [record for record in logs.records if "The reservation read of Server" in record.getMessage()]
         self.assertTrue(read_records, logs.output)
         self.assertIsNotNone(read_records[0].exc_info)
 
@@ -3720,10 +3721,12 @@ class TestSubnetAddGetClientError(_ViewTestBase):
 class TestGetSubnetsError(_ViewTestBase):
     """Cover get_subnets() error path."""
 
-    def test_config_get_value_error_shows_empty(self):
-        """A ValueError from config-get shows an empty subnet list with an error message, no 500."""
+    def test_a_config_get_body_that_is_not_json_shows_empty(self):
+        """A config-get reply that is not JSON shows an empty subnet list with an error message, no 500."""
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": ValueError("bad JSON"), "stat-lease4-get": _STAT_ABSENT4}):
+        with stub_kea(
+            {**_ABSENT_READ_HOOKS, "config-get": _raw_http_response(b"bad JSON"), "stat-lease4-get": _STAT_ABSENT4}
+        ):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -3863,16 +3866,6 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
 
     # ── 2. Stats enrichment exception paths ─────────────
 
-    def test_stats_value_error_still_renders_subnets(self):
-        """When stat-lease4-get raises ValueError, subnets render without utilisation."""
-        with self._list_stub(_config_with_one_subnet()[0], stat=ValueError("bad stat response")):
-            response = self.client.get(self._subnets4_url())
-        self.assertEqual(response.status_code, 200)
-        table = response.context["table"]
-        self.assertEqual(len(table.data), 1)
-        # No utilisation columns should be present
-        self.assertNotIn("utilization", next(iter(table.data)))
-
     def test_malformed_stats_render_subnets_without_utilization(self):
         """A malformed stat-lease4-get reply drops the utilization and logs a warning; the Subnets still render."""
         columns = ["subnet-id", "total-addresses", "assigned-addresses"]
@@ -3882,7 +3875,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         ):
             with self.subTest(reply=reply):
                 with (
-                    self.assertLogs("netbox_kea.views._base", level="WARNING"),
+                    self.assertLogs("netbox_kea.read_failure", level="WARNING"),
                     self._list_stub(_config_with_one_subnet()[0], stat=reply),
                 ):
                     response = self.client.get(self._subnets4_url())
@@ -3898,7 +3891,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         ):
             with self.subTest(stat=stat):
                 with (
-                    logs("netbox_kea.views._base", level="WARNING"),
+                    logs("netbox_kea.read_failure", level="WARNING"),
                     self._list_stub(_config_with_one_subnet()[0], stat=stat),
                 ):
                     response = self.client.get(self._subnets4_url())

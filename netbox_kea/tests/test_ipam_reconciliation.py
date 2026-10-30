@@ -565,7 +565,7 @@ class LeasePhaseStaleTest(TestCase):
         _reconcile(self.server, [_lease(hostname="host")], [_reservation(hostname="host")])
         ip = _row()
 
-        with self.assertLogs("netbox_kea.ipam_reconciliation", "WARNING") as logs:
+        with self.assertLogs("netbox_kea.read_failure", "WARNING") as logs:
             report = _reconcile(
                 self.server,
                 reservations=[_reservation(hostname="host")],

@@ -6,7 +6,7 @@ from netbox_kea.kea import KeaException
 
 
 def bad_get(client):
-    # ruleid: kea-exception-handler-misses-runtime-error, kea-view-read-ladder
+    # ruleid: kea-view-read-ladder
     try:
         client.command("subnet4-list")
     except KeaException as exc:
@@ -60,7 +60,7 @@ def ok_local_variable_other_code(exc):
 
 
 def ok_property(client):
-    # ruleid: kea-exception-handler-misses-runtime-error, kea-view-read-ladder
+    # ruleid: kea-view-read-ladder
     try:
         client.command("subnet4-list")
     except KeaException as exc:

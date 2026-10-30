@@ -5,7 +5,6 @@ import ipaddress
 import logging
 from typing import cast
 
-import requests
 from django.utils import timezone
 from netbox.api.viewsets import NetBoxModelViewSet
 from rest_framework import status
@@ -15,12 +14,12 @@ from rest_framework.response import Response
 from .. import constants, filtersets, models
 from ..constants import Family, LeaseState
 from ..decimal_text import parse_decimal
-from ..kea import KeaException, LeaseQueryGuardError, lease_query_guard_message
+from ..kea import LeaseQueryGuardError, lease_query_guard_message
 from ..leases import LeaseSnapshot, lease_record_data
+from ..read_failure import ReadFailure, ReadFailureKind, attempt
 from ..reservations import (
     GlobalReservationScope,
     InSubnetReservationScope,
-    MalformedReservation,
     Reservation,
     ReservationIdentity,
     ReservationScope,
@@ -35,25 +34,20 @@ from .serializers import ServerSerializer
 logger = logging.getLogger(__name__)
 
 
-class _KeaServerConfigurationError(RuntimeError):
-    """The stored Server fields cannot construct a Kea client."""
+#: The response of a failed Kea read, by its kind.
+_FAILURE_RESPONSES: dict[ReadFailureKind, tuple[str, int]] = {
+    "unreachable": ("Could not connect to Kea server.", status.HTTP_502_BAD_GATEWAY),
+    "refused": ("An internal error occurred", status.HTTP_502_BAD_GATEWAY),
+    "unsupported": ("An internal error occurred", status.HTTP_502_BAD_GATEWAY),
+    "malformed": ("An internal error occurred", status.HTTP_502_BAD_GATEWAY),
+    "misconfigured": ("Server configuration error.", status.HTTP_500_INTERNAL_SERVER_ERROR),
+}
 
 
-def _reservation_client(server, version: int):
-    """Return the configured client, with configuration failures kept distinct."""
-    try:
-        return server.get_client(version=version)
-    except ValueError as exc:
-        raise _KeaServerConfigurationError from exc
-
-
-def _server_configuration_error_response(server) -> Response:
-    # Only ever called from an except block, so exc_info is live.
-    logger.exception("Invalid Kea configuration on server %s", server.name)  # noqa: LOG004
-    return Response(
-        {"detail": "Invalid Kea server configuration."},
-        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-    )
+def _failure_response(failure: ReadFailure) -> Response:
+    """Return the response of a failed Kea read."""
+    detail, code = _FAILURE_RESPONSES[failure.kind]
+    return Response({"detail": detail}, status=code)
 
 
 def _reservation_snapshot_data(snapshot: ReservationSnapshot) -> dict:
@@ -95,6 +89,12 @@ def _lease_snapshot_data(snapshot: LeaseSnapshot) -> dict:
         "coverage": snapshot.coverage,
         "evaluated_at": snapshot.evaluated_at.isoformat(),
     }
+
+
+def _read_reservation_page(server, version: int, cursor: str | None, limit: int) -> ReservationSnapshot:
+    """Read one bounded Reservation page, parsed against the display Subnet Catalogue."""
+    client = server.get_client(version=version)
+    return client.reservation_page(version, subnet_catalogue(server, version), cursor=cursor, limit=limit)
 
 
 def _single_reservation_response(version: int, reservation: Reservation | None) -> Response:
@@ -219,31 +219,23 @@ class ServerViewSet(NetBoxModelViewSet):
             return Response({"detail": state_error}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            client = server.get_client(version=version)
-            snapshot = client.lease_search(version, selector, value, state=lease_state, server_id=server.pk)
+            snapshot = attempt(
+                f"The DHCPv{version} Lease API search of Server {server.pk}",
+                lambda: server.get_client(version=version).lease_search(
+                    version, selector, value, state=lease_state, server_id=server.pk
+                ),
+            )
         except LeaseQueryGuardError as exc:
             logger.info("Rejected unsafe Subnet lease API query on server %s", server.name)
             return Response(
                 {"detail": lease_query_guard_message(exc, lease_state)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        except requests.RequestException:
-            logger.exception("Kea connection error on server %s", server.name)
-            return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
-        except KeaException:
-            logger.exception("Kea error on server %s", server.name)
-            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
-        except ValueError:
-            logger.exception("Configuration error for server %s", server.name)
-            return Response({"detail": "Server configuration error."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        except RuntimeError:
-            # MalformedLeaseResponse and the malformed statistics and reply-entry errors are all RuntimeErrors.
-            logger.exception("Malformed Kea lease response on server %s", server.name)
-            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
         except Exception:
             logger.exception("Unexpected error fetching leases from %s", server.name)
             return Response({"detail": "An internal error occurred"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+        if isinstance(snapshot, ReadFailure):
+            return _failure_response(snapshot)
         return Response(_lease_snapshot_data(snapshot))
 
     # ─────────────────────────────────────────────────────────────────────
@@ -309,28 +301,15 @@ class ServerViewSet(NetBoxModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
-            client = _reservation_client(server, version)
-            catalogue = subnet_catalogue(server, version)
-            snapshot = client.reservation_page(
-                version,
-                catalogue,
-                cursor=params.get("cursor") or None,
-                limit=limit,
+            snapshot = attempt(
+                f"The DHCPv{version} Reservation API page of Server {server.pk}",
+                lambda: _read_reservation_page(server, version, params.get("cursor") or None, limit),
             )
-        except _KeaServerConfigurationError:
-            return _server_configuration_error_response(server)
-        except requests.RequestException:
-            logger.exception("Kea connection error on server %s", server.name)
-            return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
-        except KeaException:
-            logger.exception("Kea error on server %s", server.name)
-            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
         except ValueError:
             logger.info("Rejected invalid Reservation page parameters for server %s", server.name)
             return Response({"detail": "Invalid Reservation page parameters."}, status=status.HTTP_400_BAD_REQUEST)
-        except RuntimeError:
-            logger.exception("Malformed Kea Reservation page on server %s", server.name)
-            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
+        if isinstance(snapshot, ReadFailure):
+            return _failure_response(snapshot)
         return Response(_reservation_snapshot_data(snapshot))
 
     def _reservation_identity_response(self, server, params, version: int) -> Response:
@@ -342,7 +321,8 @@ class ServerViewSet(NetBoxModelViewSet):
                 {"detail": "identifier_type and identifier are both required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        try:
+
+        def read() -> Reservation | None:
             scope_name = params.get("scope")
             if scope_name == "global":
                 # An empty value is an unset form field, not a Subnet selection. Read every
@@ -355,7 +335,7 @@ class ServerViewSet(NetBoxModelViewSet):
             else:
                 raise ValueError("scope must be global or in-subnet.")
             identity = ReservationIdentity(identifier_type, identifier)
-            client = _reservation_client(server, version)
+            client = server.get_client(version=version)
             catalogue = subnet_catalogue(server, version)
             if subnet_id is None:
                 scope: ReservationScope = GlobalReservationScope()
@@ -364,61 +344,35 @@ class ServerViewSet(NetBoxModelViewSet):
                 if not isinstance(subnet, VerifiedSubnet):
                     raise ValueError("The Reservation Subnet is not verified.")
                 scope = InSubnetReservationScope(subnet.identity)
-            reservation = client.reservation_by_identity(version, catalogue, scope, identity)
-        except MalformedReservation:
-            logger.warning("Malformed exact Reservation target on server %s", server.name, exc_info=True)
-            return Response(
-                {"detail": "Kea returned a malformed Reservation target."}, status=status.HTTP_502_BAD_GATEWAY
-            )
-        except _KeaServerConfigurationError:
-            return _server_configuration_error_response(server)
-        except requests.RequestException:
-            logger.exception("Kea connection error on server %s", server.name)
-            return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
+            return client.reservation_by_identity(version, catalogue, scope, identity)
+
+        try:
+            reservation = attempt(f"The DHCPv{version} Reservation API identity read of Server {server.pk}", read)
         except (TypeError, ValueError):
             return Response({"detail": "Invalid Reservation identity selector."}, status=status.HTTP_400_BAD_REQUEST)
-        except KeaException:
-            logger.exception("Kea error on server %s", server.name)
-            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
-        except RuntimeError:
-            logger.exception("Malformed Kea Reservation response on server %s", server.name)
-            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
+        if isinstance(reservation, ReadFailure):
+            return _failure_response(reservation)
         return _single_reservation_response(version, reservation)
 
     def _reservation_address_response(self, server, params, version: int) -> Response:
         """Resolve one In-Subnet address to its canonical Reservation."""
-        try:
+
+        def read() -> Reservation | None:
             subnet_id = parse_decimal(params.get("subnet_id", ""))
-            client = _reservation_client(server, version)
+            client = server.get_client(version=version)
             catalogue = subnet_catalogue(server, version)
             subnet = catalogue.find_by_id(subnet_id)
             if not isinstance(subnet, VerifiedSubnet):
                 raise ValueError("The Reservation Subnet is not verified.")
             scope = InSubnetReservationScope(subnet.identity)
-            reservation = client.reservation_by_address(
-                version,
-                catalogue,
-                scope,
-                params.get("ip_address"),
-            )
-        except MalformedReservation:
-            logger.warning("Malformed scoped Reservation target on server %s", server.name, exc_info=True)
-            return Response(
-                {"detail": "Kea returned a malformed Reservation target."}, status=status.HTTP_502_BAD_GATEWAY
-            )
-        except _KeaServerConfigurationError:
-            return _server_configuration_error_response(server)
-        except requests.RequestException:
-            logger.exception("Kea connection error on server %s", server.name)
-            return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
+            return client.reservation_by_address(version, catalogue, scope, params.get("ip_address"))
+
+        try:
+            reservation = attempt(f"The DHCPv{version} Reservation API address read of Server {server.pk}", read)
         except (TypeError, ValueError):
             return Response({"detail": "Invalid scoped address selector."}, status=status.HTTP_400_BAD_REQUEST)
-        except KeaException:
-            logger.exception("Kea error on server %s", server.name)
-            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
-        except RuntimeError:
-            logger.exception("Malformed Kea Reservation response on server %s", server.name)
-            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
+        if isinstance(reservation, ReadFailure):
+            return _failure_response(reservation)
         return _single_reservation_response(version, reservation)
 
     def _reservation_hostname_response(self, server, hostname: str, version: int) -> Response:
@@ -426,20 +380,14 @@ class ServerViewSet(NetBoxModelViewSet):
         if not hostname:
             return Response({"detail": "Invalid hostname selector."}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            client = _reservation_client(server, version)
-            catalogue = subnet_catalogue(server, version)
-            snapshot = client.reservations_by_hostname(version, catalogue, hostname)
-        except _KeaServerConfigurationError:
-            return _server_configuration_error_response(server)
-        except requests.RequestException:
-            logger.exception("Kea connection error on server %s", server.name)
-            return Response({"detail": "Could not connect to Kea server."}, status=status.HTTP_502_BAD_GATEWAY)
-        except KeaException:
-            logger.exception("Kea error on server %s", server.name)
-            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
+            snapshot = attempt(
+                f"The DHCPv{version} Reservation API hostname read of Server {server.pk}",
+                lambda: server.get_client(version=version).reservations_by_hostname(
+                    version, subnet_catalogue(server, version), hostname
+                ),
+            )
         except ValueError:
             return Response({"detail": "Invalid hostname selector."}, status=status.HTTP_400_BAD_REQUEST)
-        except RuntimeError:
-            logger.exception("Malformed Kea Reservation response on server %s", server.name)
-            return Response({"detail": "An internal error occurred"}, status=status.HTTP_502_BAD_GATEWAY)
+        if isinstance(snapshot, ReadFailure):
+            return _failure_response(snapshot)
         return Response(_reservation_snapshot_data(snapshot))

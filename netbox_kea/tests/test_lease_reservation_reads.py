@@ -260,8 +260,8 @@ class LeasePresenceTest(_ViewTestBase):
 
         self.assertEqual(presences, (_unknown(UnknownLeasePresence.MALFORMED_REPLY),))
 
-    def test_a_snapshot_that_fails_validation_leaves_only_its_own_reservations_unknown(self):
-        """A Snapshot read across a backward clock step finishes before it starts, so the reader refuses it."""
+    def test_a_read_across_a_backward_clock_step_is_not_a_failure(self):
+        """The Snapshot of a read whose wall clock stepped back finishes when it starts."""
         stepped_back = threading.local()
         real_now = kea_module._now
 
@@ -281,7 +281,7 @@ class LeasePresenceTest(_ViewTestBase):
                 {"lease4-get-by-hw-address": lease_reply(), "lease4-get-by-state": leases},
             )
 
-        self.assertEqual(presences, (LeaseAbsent(), _unknown(UnknownLeasePresence.INVALID_READ)))
+        self.assertEqual(presences, (LeaseAbsent(), LeaseAbsent()))
 
     def test_a_failed_lookup_leaves_only_its_own_reservations_unknown(self):
         def leases(body):
@@ -1137,7 +1137,7 @@ class ReservationMatchTest(_ViewTestBase):
 
         matches, _kea = self._matches([_address_lease()], _res_get(host))
 
-        self.assertEqual(matches, (_match_unknown(UnknownReservationMatch.INVALID_READ),))
+        self.assertEqual(matches, (_match_unknown(UnknownReservationMatch.MALFORMED_REPLY),))
 
     def test_invalid_server_settings_send_nothing_and_leave_each_lease_unknown(self):
         save_key_without_certificate(self.server)
@@ -1253,9 +1253,9 @@ class ReservationMatchLookupTest(_ViewTestBase):
         matches, _lookups, _clients = self._matches(leases, reservation_get, read_since=timezone.now())
 
         self.assertEqual(matches, (_match_unknown(UnknownReservationMatch.KEA_ERROR),) * 3)
-        # Each raise of one exception object adds its frames to the traceback that every worker shares.
+        # Each raise of one exception object adds its frames to its traceback, so one read adds one attempt().
         frames = [frame.f_code.co_name for frame, _line in traceback.walk_tb(failure.__traceback__)]
-        self.assertEqual(frames.count("_find"), 1)
+        self.assertEqual(frames.count("attempt"), 1)
 
     def test_a_cache_hit_builds_no_kea_client(self):
         before = timezone.now()

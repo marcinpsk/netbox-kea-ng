@@ -928,7 +928,7 @@ class TestCombinedReservationCapabilityConcurrency(_ViewTestBase):
 
 class TestCombinedReservationFanOut(_ViewTestBase):
     def test_a_server_that_cannot_build_a_client_keeps_the_other_servers(self):
-        # A client certificate without its key fails the client construction with a ValueError.
+        # A client certificate without its key fails the client construction with a KeaClientSettingsError.
         broken = _make_db_server(name="broken-kea", ca_url="https://kea-broken.example.com", client_cert_path="/cert")
         hosts = [{"subnet-id": 1, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "printer"}]
         responses = {
@@ -938,7 +938,7 @@ class TestCombinedReservationFanOut(_ViewTestBase):
         }
         url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.server.pk}&server={broken.pk}"
 
-        with stub_kea(responses), self.assertLogs("netbox_kea.views.fan_out", level="ERROR"):
+        with stub_kea(responses), self.assertLogs("netbox_kea.read_failure", level="WARNING"):
             response = self.client.get(url)
 
         self.assertEqual(response.status_code, 200)
