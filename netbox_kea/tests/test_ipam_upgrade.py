@@ -15,7 +15,7 @@ from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 from rest_framework.test import APIClient
 
-from netbox_kea.ipam_reconciliation import claim, effective_sources, upgrade_counts
+from netbox_kea.ipam_reconciliation import POLICY_TABLES, claim, effective_sources, upgrade_counts
 from netbox_kea.models import IPAMOwnershipLink, Server
 from netbox_kea.tests.kea_stub import typed_lease
 from netbox_kea.tests.test_ipam_reconciliation import _kea, _lease, _reconcile, _run_job, _server
@@ -452,6 +452,13 @@ class UpgradeAdoptionTest(TestCase):
         self.assertEqual(set(server.ipam_initial_observations), {"job"})
         self.assertIn([4, "lease"], server.ipam_initial_observations["job"]["sources"])
         self.assertIn([6, "lease"], server.ipam_initial_observations["job"]["sources"])
+
+    def test_autovacuum_cannot_refuse_the_policy_lock_of_a_cleanup(self):
+        # Autovacuum conflicts with the NOWAIT share lock, so a test cleanup could fail at random.
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT relname, reloptions FROM pg_class WHERE relname = ANY(%s)", [list(POLICY_TABLES)])
+            options = {table: "autovacuum_enabled=false" in (reloptions or []) for table, reloptions in cursor}
+        self.assertEqual(options, dict.fromkeys(POLICY_TABLES, True))
 
     def test_unobserved_other_family_does_not_hold_the_address_barrier(self):
         from netbox_kea.tests.utils import _make_db_server

@@ -149,6 +149,8 @@ def _int4(text: str) -> int:
 
 # The first key of the two-key advisory lock form: config_write locks use another class, NetBox's one-key locks none.
 _LOCK_CLASS = _int4("netbox_kea.ipam_reconciliation")
+# The tables whose share lock freezes adoption policy during a final adopted-link cleanup.
+POLICY_TABLES = ("netbox_kea_server", "netbox_kea_syncconfig", "netbox_kea_dhcpintegrationconfig")
 
 
 @dataclass(frozen=True)
@@ -573,9 +575,7 @@ def _cleanup_adoption_waits(link: IPAMOwnershipLink, object_field: str) -> bool:
         return False
     with connection.cursor() as cursor:
         # Table locks also cover new Servers and bulk configuration updates.
-        cursor.execute(
-            "LOCK TABLE netbox_kea_server, netbox_kea_syncconfig, netbox_kea_dhcpintegrationconfig IN SHARE MODE NOWAIT"
-        )
+        cursor.execute(f"LOCK TABLE {', '.join(POLICY_TABLES)} IN SHARE MODE NOWAIT")
     return _adoption_waits(link, object_field, _pending_adoptions())
 
 
