@@ -170,7 +170,8 @@ _POST_ERRORS = (OSError, UnicodeEncodeError, Urllib3SSLError)
 
 def _refuse_impossible_post_error(command: Any, kind: type[BaseException]) -> None:
     """Fail the test when a stubbed POST of *command* would raise *kind*, which a real POST cannot raise."""
-    if not issubclass(kind, _POST_ERRORS):
+    # Response.json() raises a JSONDecodeError, never Session.post(): model it as a body that is not JSON.
+    if not issubclass(kind, _POST_ERRORS) or issubclass(kind, requests.JSONDecodeError):
         raise AssertionError(
             f"KeaHttpStub: {command} raises {kind.__name__}, which a real requests POST cannot raise. Raise a "
             "requests.RequestException, or answer a malformed reply with a payload that KeaClient rejects."

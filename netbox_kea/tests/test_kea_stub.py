@@ -245,6 +245,8 @@ def test_callable_returning_a_transport_error_is_raised():
         (RuntimeError, "RuntimeError"),
         (ValueError("x"), "ValueError"),
         (KeaException({"result": 1, "text": "refused", "arguments": None}), "KeaException"),
+        # Response.json() raises it, never Session.post(); it is a RequestException.
+        (requests.JSONDecodeError("bad JSON", "x", 0), "JSONDecodeError"),
     ),
 )
 def test_an_error_a_real_post_cannot_raise_is_refused(error, name):
