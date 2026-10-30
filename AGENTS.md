@@ -34,7 +34,7 @@ uv run ruff format --check .               # check formatting
 uv run ruff format .                       # auto-format
 uv run reuse lint                          # SPDX/REUSE compliance
 uv run --group docs zensical build --strict  # documentation site (Python 3.11+): mkdocs.yml, pages in docs/guide/
-uv run --native-tls pre-commit install --install-hooks  # install configured hook types
+uv run --system-certs pre-commit install --install-hooks  # install configured hook types
 ./scripts/opengrep-scan.sh                 # custom opengrep ruleset gate (pre-commit only)
 ./scripts/opengrep-test.sh                 # opengrep rule tests
 uv run ./scripts/mypy-gate.sh              # type check, new errors only (pre-push + CI)
@@ -65,9 +65,9 @@ runs `--create-db` next, and a shared Redis is written to by every worker.
 
 ```bash
 TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost \
-  uv run --native-tls pytest --reuse-db -n auto --maxschedchunk=1
+  uv run --system-certs pytest --reuse-db -n auto --maxschedchunk=1
 TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost \
-  uv run --native-tls pytest --reuse-db -n auto --maxschedchunk=1 netbox_kea/tests/test_views_leases.py -v
+  uv run --system-certs pytest --reuse-db -n auto --maxschedchunk=1 netbox_kea/tests/test_views_leases.py -v
 ```
 
 `pythonpath` is set to `/opt/netbox/netbox` and
@@ -78,7 +78,7 @@ TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost \
 
 ```bash
 ./tests/test_setup.sh   # generates TLS certs, builds a wheel, starts the compose stack
-uv run --native-tls pytest -p no:django tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
+uv run --system-certs pytest -p no:django tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
 ```
 
 `test_setup.sh` copies the CA bundle to `tests/docker/host_ca.crt` for the `host_ca` build
@@ -139,7 +139,7 @@ the read-only configuration.
 
 ```bash
 COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.docs.yml ./tests/test_setup.sh
-uv run --native-tls pytest -p no:django tests/docs_media --docs-media-dir docs/guide/assets
+uv run --system-certs pytest -p no:django tests/docs_media --docs-media-dir docs/guide/assets
 uv run --group docs zensical build --strict
 uv run python scripts/check_docs_media.py site docs/guide/assets
 ```
@@ -720,7 +720,7 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Query-count baselines.** The list-view mixins assert an exact SQL query count
   against `netbox_kea/tests/query_counts.json` to catch N+1 drift. Record/update with
   `TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost \
-  UPDATE_QUERY_COUNTS=1 uv run --native-tls pytest -n 1 ...`, then commit the file. One xdist
+  UPDATE_QUERY_COUNTS=1 uv run --system-certs pytest -n 1 ...`, then commit the file. One xdist
   worker prevents concurrent writes and keeps Redis isolated. A count is a fact about
   one NetBox release, not about the plugin alone: NetBox re-records its own baselines on
   patch releases. `QUERY_COUNT_NETBOX_VERSION` in `netbox_kea/tests/conftest.py` names

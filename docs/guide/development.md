@@ -28,11 +28,11 @@ uv build
 
 # Run unit tests; both variables are required (see AGENTS.md for picking values)
 TEST_DB_NAME=test_netbox_kea_local TEST_REDIS_HOST=localhost \
-  uv run --native-tls pytest --reuse-db -n auto --maxschedchunk=1 -q
+  uv run --system-certs pytest --reuse-db -n auto --maxschedchunk=1 -q
 
 # Run integration tests (requires Docker — see tests/test_setup.sh)
 ./tests/test_setup.sh
-uv run --native-tls pytest -p no:django tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
+uv run --system-certs pytest -p no:django tests/ --tracing=retain-on-failure -v --cov=netbox_kea --cov-report=xml
 ```
 
 [AGENTS.md](https://github.com/marcinpsk/netbox-kea-ng/blob/main/AGENTS.md) explains how to pick the test database and Redis values, and holds the
@@ -51,7 +51,7 @@ screenshots to `docs/guide/assets/screenshots/`, and the recordings (MP4, a PNG 
 
 ```bash
 COMPOSE_FILE=docker-compose.yml:docker-compose.override.yml:docker-compose.docs.yml ./tests/test_setup.sh
-uv run --native-tls pytest -p no:django tests/docs_media --docs-media-dir docs/guide/assets
+uv run --system-certs pytest -p no:django tests/docs_media --docs-media-dir docs/guide/assets
 uv run --group docs zensical build --strict
 uv run python scripts/check_docs_media.py site docs/guide/assets
 ```

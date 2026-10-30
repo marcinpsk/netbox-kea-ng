@@ -101,7 +101,7 @@ when Python files, `.opengrep/`, OpenGrep scripts, or the hook configuration cha
 It scans the whole package, `scripts/`, and `tests/`. Install the hook types once:
 
 ```bash
-uv run --native-tls pre-commit install --install-hooks
+uv run --system-certs pre-commit install --install-hooks
 ```
 
 The custom OpenGrep gate runs locally only. A commit made with `--no-verify`

@@ -38,13 +38,13 @@ repos:
       # filenames pre-commit passes still honour the exclude list.
       - id: ruff-check
         name: ruff check
-        entry: uv run --native-tls ruff check --fix --exit-non-zero-on-fix
+        entry: uv run --system-certs ruff check --fix --exit-non-zero-on-fix
         language: system
         types_or: [python, pyi]
         require_serial: true
       - id: ruff-format
         name: ruff format
-        entry: uv run --native-tls ruff format
+        entry: uv run --system-certs ruff format
         language: system
         types_or: [python, pyi]
         require_serial: true
@@ -87,7 +87,7 @@ repos:
     hooks:
       - id: mypy-gate
         name: mypy (new type errors only)
-        entry: uv run --native-tls scripts/mypy-gate.sh
+        entry: uv run --system-certs scripts/mypy-gate.sh
         language: system
         pass_filenames: false
         stages: [pre-push]
