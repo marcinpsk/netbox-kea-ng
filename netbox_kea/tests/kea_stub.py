@@ -163,21 +163,23 @@ def client_failure(command: KeaCommand, error: Exception) -> Iterator[None]:
         yield
 
 
-#: What a real ``Session.post`` raises, and ``KeaClient.command`` handles: every RequestException is an OSError, and
-#: requests also raises a plain OSError (missing TLS file), UnicodeEncodeError (redirect) and a urllib3 SSLError.
-_POST_ERRORS = (OSError, UnicodeEncodeError, Urllib3SSLError)
+#: Errors other than a RequestException that a real ``Session.post`` raises and ``KeaClient.command`` handles.
+_RAW_POST_ERRORS = (UnicodeEncodeError, Urllib3SSLError, ssl.SSLError)
 #: ``Response.raise_for_status()`` and ``Response.json()`` raise these after the POST returns: answer with a reply.
 _REPLY_ERRORS = (requests.HTTPError, requests.JSONDecodeError)
 
 
+def _real_post_error(kind: type[BaseException]) -> bool:
+    """Return whether a real ``requests`` POST raises *kind*."""
+    if issubclass(kind, requests.RequestException):
+        return kind.__module__ == "requests.exceptions" and not issubclass(kind, _REPLY_ERRORS)
+    # requests raises a plain OSError, not a subclass, for a missing TLS file.
+    return kind is OSError or issubclass(kind, _RAW_POST_ERRORS)
+
+
 def _refuse_impossible_post_error(command: Any, kind: type[BaseException]) -> None:
     """Fail the test when a stubbed POST of *command* would raise *kind*, which a real POST cannot raise."""
-    # KeaClient raises the plugin's own exceptions, never requests.
-    if (
-        not issubclass(kind, _POST_ERRORS)
-        or issubclass(kind, _REPLY_ERRORS)
-        or kind.__module__.split(".")[0] == "netbox_kea"
-    ):
+    if not _real_post_error(kind):
         raise AssertionError(
             f"KeaHttpStub: {command} raises {kind.__name__}, which a real requests POST cannot raise. Raise a "
             "requests.RequestException, or answer a malformed reply with a payload that KeaClient rejects."
@@ -431,7 +433,7 @@ class KeaHttpStub:
     * a :class:`ResponseQueue` from :func:`queued` — sequential responses, one per
       call (the last repeats), for pagination / partial-failure paths;
     * a callable ``(body) -> payload`` — for argument-dependent responses;
-    * an instance or class of an exception that a real POST raises (``_POST_ERRORS``,
+    * an instance or class of an exception that a real POST raises (``_real_post_error``,
       e.g. ``requests.ConnectionError``) — **raised** when the command is called, or
       returned or raised by a callable, to simulate a transport error at the HTTP
       boundary. Any other exception fails the test (a callable may still raise an
