@@ -2443,6 +2443,15 @@ def _record_snapshot_diagnostics(observation: ReservationObservation, family: in
         )
 
 
+def _skip_reservation_options(
+    summary: ImportSummary, planned: Planned[ReservationKey, Reservation], references: OptionReferences
+) -> None:
+    """Record the DHCP Options of an In-Subnet Reservation whose Subnet was not imported."""
+    family, key = planned.intent.family, planned.key
+    options = planned_options(planned, family, references.definitions.declared)
+    _skip_options(summary, family, reservation_path(key, family), options)
+
+
 def import_reservation_snapshot(
     server,
     dhcp_server,
@@ -2491,6 +2500,7 @@ def import_reservation_snapshot(
             if taken is not None:
                 complete = False
                 summary.record(taken.entry(family, Kind.RESERVATION, reservation_path(key, family)))
+                _skip_reservation_options(summary, planned, references)
                 continue
             if subnet_ids is not None and key.subnet_id in subnet_ids.failed:
                 subnet_obj = None
@@ -2508,6 +2518,7 @@ def import_reservation_snapshot(
                     )
                 )
                 summary.warn(f"reservation for unknown subnet-id {key.subnet_id} skipped")
+                _skip_reservation_options(summary, planned, references)
                 continue
         else:
             subnet_obj = None

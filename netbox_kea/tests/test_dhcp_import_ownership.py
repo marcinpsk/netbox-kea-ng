@@ -587,8 +587,11 @@ class ImportOwnershipTest(TestCase):
         conf = {"subnet6": [{"id": 9, "subnet": "2001:db8:9::/64"}]}
         observation = _reservation_snapshot(conf, 6, [{**self.identity, "subnet-id": 9}])
         summary = dhcp_plugin.ImportSummary()
+        references = dhcp_plugin.OptionReferences(
+            dhcp_plugin.CustomDefinitions(self.server, {}, ()), dhcp_plugin.ClassReferences(6, frozenset(), {})
+        )
         step = dhcp_plugin.import_reservation_snapshot(
-            self.server, None, observation, None, summary, family=6, adoption_servers=(), capabilities=probe()
+            self.server, None, observation, references, summary, family=6, adoption_servers=(), capabilities=probe()
         )
         dhcp_plugin.reconcile_delegated_prefixes(self.server, 6, step, set(), summary)
         self.assertEqual(summary.reservations_skipped, 1)

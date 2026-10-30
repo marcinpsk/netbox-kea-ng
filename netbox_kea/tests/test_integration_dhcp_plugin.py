@@ -2211,6 +2211,60 @@ class DhcpPluginSubnetIdImportTest(TestCase):
         self.assertFalse(Subnet.objects.filter(prefix__prefix="10.94.2.0/24").exists())
         self.assertEqual(Subnet.objects.get(pk=holder.pk).subnet_id, 9401)
 
+    @staticmethod
+    def _with_reservation_options(conf: dict) -> tuple[dict, str]:
+        """Give the Reservation of *conf* two DHCP Options, and return *conf* and the Kea path of the Reservation."""
+        subnet = conf["subnet4"][0]
+        reservation = subnet["reservations"][0]
+        reservation["option-data"] = [{"code": 6, "data": "10.94.0.53"}, {"code": 15, "data": "example.org"}]
+        return conf, f"Dhcp4/subnet4[id={subnet['id']}]/reservations[hw-address={reservation['hw-address']}]"
+
+    @staticmethod
+    def _reservation_entries(summary, path: str) -> list:
+        return [
+            (entry.kind, entry.path, entry.outcome, entry.reason)
+            for entry in summary.entries
+            if entry.path.startswith(path)
+        ]
+
+    def test_the_options_of_a_reservation_of_a_taken_subnet_id_are_not_written(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
+        self._import(self.other, _subnet_id_conf(9408, 9))
+        conf, path = self._with_reservation_options(_subnet_id_conf(9408, 10))
+
+        summary = self._import(self.server, conf)
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(
+            self._reservation_entries(summary, path),
+            [
+                (Kind.RESERVATION, path, Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH),
+                (Kind.OPTION, f"{path}/option-data[code=6]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+                (Kind.OPTION, f"{path}/option-data[code=15]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+            ],
+        )
+
+    def test_the_options_of_a_reservation_of_a_subnet_that_was_not_imported_are_not_written(self):
+        from netbox_kea.integrations.dhcp_import_report import Capability, Outcome
+        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+
+        self._import(self.other, _subnet_id_conf(9409, 11))
+        conf, path = self._with_reservation_options(_subnet_id_conf(9409, 12))
+
+        # With per-server Subnet IDs the import writes the Subnet, and the installed plugin refuses it.
+        summary = self._import(self.server, conf, PluginCapabilities(frozenset({Capability.SUBNET_ID_PER_SERVER})))
+
+        self.assertEqual(self._not_written(summary)[0], (Kind.SUBNET, Reason.WRITE_FAILED, None))
+        self.assertEqual(
+            self._reservation_entries(summary, path),
+            [
+                (Kind.RESERVATION, path, Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+                (Kind.OPTION, f"{path}/option-data[code=6]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+                (Kind.OPTION, f"{path}/option-data[code=15]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+            ],
+        )
+
     def test_the_capability_probe_decides_the_clash(self):
         """With per-server Subnet IDs the import writes the ID. The installed plugin still refuses it in the database."""
         from netbox_kea.integrations.dhcp_import_report import Capability
@@ -4535,7 +4589,13 @@ class SkippedReservationCompletenessTest(TestCase):
         self.server = _make_db_server()
 
     def test_record_for_an_unlinked_subnet_id_reports_the_record_as_skipped(self):
-        from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
+        from netbox_kea.integrations.dhcp_plugin import (
+            ClassReferences,
+            CustomDefinitions,
+            ImportSummary,
+            OptionReferences,
+            import_reservation_snapshot,
+        )
         from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
         from netbox_kea.views.dhcp_plugin_sync import _summary_problems
 
@@ -4549,7 +4609,7 @@ class SkippedReservationCompletenessTest(TestCase):
             self.server,
             None,
             snapshot,
-            None,
+            OptionReferences(CustomDefinitions(self.server, {}, ()), ClassReferences(4, frozenset(), {})),
             summary,
             family=4,
             adoption_servers=(),
