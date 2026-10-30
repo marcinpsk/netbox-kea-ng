@@ -232,6 +232,13 @@ the Leases of a Subnet, or disabling or enabling the DHCP service. It does not c
 applied, rejected, or unknown.
 _Avoid_: Kea action, direct action, runtime write
 
+**Read Failure**:
+A Kea read that gave no usable value, with its kind: unsupported (the hook library is not loaded), refused (Kea
+answered with a failure result), unreachable (nothing usable came back), malformed (NetBox cannot use the reply), or
+misconfigured (the client settings of the Server are not valid, so nothing was sent). Each caller presents the kind
+in its own way, for example as a Notice, a badge reason or an API status.
+_Avoid_: Kea error, read error, connection error
+
 **IPAM Ownership**:
 The fact that one Server and address family synchronized a NetBox IP address, Prefix, or IP Range from one Kea
 source: an address lease, a delegated-prefix lease, a Reservation, a Subnet, a Pool, a Reservation delegated

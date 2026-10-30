@@ -123,6 +123,9 @@ An operator who sees `unknown` after a Lease write can find the Lease changed wi
 User-facing view reads go through `load_snapshot()` or `load_target()`, which use the new formatter. The
 OpenGrep rule `kea-view-read-ladder` refuses a hand-written ladder in `views/`; only the named reads that
 degrade silently and log the failure keep their own handler.
+_Amended 2026-10-30 ([ADR 0015](0015-kea-read-failures-are-classified-outside-keaclient-by-one-module.md)): every
+Kea read runs through `read_failure.attempt()`, and the rule covers all of `netbox_kea/`. No read keeps its own
+handler._
 
 ## Rejected alternatives
 
