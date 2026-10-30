@@ -786,7 +786,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             responses={
                 "reservation-get-page": queued(
                     _res_page(hosts, next_from=len(hosts), next_source=1),
-                    RuntimeError("page fetch failed"),
+                    requests.ConnectionError("page fetch failed"),
                 )
             },
         ):

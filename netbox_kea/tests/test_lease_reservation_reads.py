@@ -24,7 +24,7 @@ from django.utils import timezone
 from netbox_kea import kea as kea_module
 from netbox_kea import subnet_catalogue
 from netbox_kea.constants import Family
-from netbox_kea.kea import KeaClient
+from netbox_kea.kea import KeaClient, KeaCommand
 from netbox_kea.lease_reservation_reads import lease_presence, reservation_matches
 from netbox_kea.models import Server
 from netbox_kea.reservations import (
@@ -54,6 +54,7 @@ from .kea_stub import (
     _res_get,
     _subnet_stats,
     _typed_reservation,
+    client_failure,
     complete_lease,
     lease_record,
     lease_reply,
@@ -333,8 +334,11 @@ class LeasePresenceTest(_ViewTestBase):
                 self.assertEqual(presences, expected)
 
     def test_an_unexpected_failure_raises(self):
-        with self.assertRaises(TypeError):
-            self._presence([_RESERVED], {"lease4-get-by-state": TypeError("unexpected worker failure")})
+        with (
+            client_failure(KeaCommand.LEASE4_GET_BY_STATE, TypeError("unexpected worker failure")),
+            self.assertRaises(TypeError),
+        ):
+            self._presence([_RESERVED], {})
 
     def test_a_reservation_of_another_family_is_refused(self):
         with self.assertRaises(ValueError):
@@ -1190,8 +1194,11 @@ class ReservationMatchTest(_ViewTestBase):
                 self.assertEqual(matches, expected)
 
     def test_an_unexpected_failure_raises(self):
-        with self.assertRaises(TypeError):
-            self._matches([_address_lease()], TypeError("unexpected worker failure"))
+        with (
+            client_failure(KeaCommand.RESERVATION_GET, TypeError("unexpected worker failure")),
+            self.assertRaises(TypeError),
+        ):
+            self._matches([_address_lease()], _NOT_FOUND)
 
     def test_a_lease_of_another_family_is_refused(self):
         with self.assertRaises(ValueError):

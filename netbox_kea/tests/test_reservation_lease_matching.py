@@ -8,6 +8,7 @@ from django.db import OperationalError
 from django.test import SimpleTestCase
 from django.urls import reverse
 
+from netbox_kea.kea import KeaCommand
 from netbox_kea.models import PinnedSettings
 from netbox_kea.reservations import LeaseIdentities, ReservationIdentity, lease_identifier_types, lease_identities
 
@@ -15,6 +16,7 @@ from .kea_stub import (
     _catalogue_responses_for_subnets,
     _leases_per_subnet,
     _res_page,
+    client_failure,
     complete_lease,
     lease_record,
     stub_kea,
@@ -134,13 +136,15 @@ class TestReservationLeaseRelationship(_ViewTestBase):
 
     def test_an_unexpected_worker_failure_is_logged_at_exception_level(self):
         """An unexpected enrichment failure is visible without DEBUG logging."""
-        with self.assertLogs("netbox_kea.views.reservations", level="ERROR") as logs:
+        with (
+            client_failure(KeaCommand.LEASE4_GET_BY_STATE, TypeError("unexpected worker failure")),
+            self.assertLogs("netbox_kea.views.reservations", level="ERROR") as logs,
+        ):
             response, rows, _kea = self._rows(
                 {
                     "reservation-get-page": _res_page(
                         [{"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}]
                     ),
-                    "lease4-get-by-state": TypeError("unexpected worker failure"),
                 }
             )
 
