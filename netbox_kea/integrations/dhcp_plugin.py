@@ -254,10 +254,19 @@ def _keep_unmapped(summary: ImportSummary, family: int, kind: Kind, path: str) -
     summary.record(not_written(family, kind, path, Reason.NOT_IN_SCOPE, detail))
 
 
-def _skip_options(summary: ImportSummary, family: int, parent_path: str, planned: PlannedOptions) -> None:
-    """Record each DHCP Option of the object at *parent_path*, which was not imported."""
+def _skip_options(
+    summary: ImportSummary,
+    family: int,
+    parent_path: str,
+    planned: PlannedOptions,
+    taken: SubnetIdTaken | None = None,
+) -> None:
+    """Record each DHCP Option of the object at *parent_path*, which was not imported, with the *taken* ID's entry."""
     for path in planned.paths(parent_path, family):
-        summary.record(not_written(family, Kind.OPTION, path, Reason.PARENT_NOT_IMPORTED))
+        if taken is None:
+            summary.record(not_written(family, Kind.OPTION, path, Reason.PARENT_NOT_IMPORTED))
+        else:
+            summary.record(taken.entry(family, Kind.OPTION, path))
 
 
 class _Count:
@@ -2472,18 +2481,10 @@ def _skip_reservation_options(
     references: OptionReferences,
     taken: SubnetIdTaken | None = None,
 ) -> None:
-    """Record the DHCP Options of an In-Subnet Reservation whose Subnet was not imported.
-
-    A *taken* Subnet ID is also why its Options were not.
-    """
+    """Record the DHCP Options of an In-Subnet Reservation whose Subnet was not imported or whose ID is *taken*."""
     family, key = planned.intent.family, planned.key
     options = planned_options(planned, family, references.definitions.declared)
-    parent_path = reservation_path(key, family)
-    if taken is None:
-        _skip_options(summary, family, parent_path, options)
-        return
-    for path in options.paths(parent_path, family):
-        summary.record(taken.entry(family, Kind.OPTION, path))
+    _skip_options(summary, family, reservation_path(key, family), options, taken)
 
 
 def import_reservation_snapshot(

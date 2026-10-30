@@ -2246,6 +2246,34 @@ class DhcpPluginSubnetIdImportTest(TestCase):
             ],
         )
 
+    def test_with_per_server_subnet_ids_the_options_of_a_reservation_of_a_held_id_are_not_in_scope(self):
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        from netbox_kea.integrations.dhcp_import_report import REASON_OUTCOME, Capability
+        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+
+        dhcp_server, _ = self.adapter.upsert_dhcp_server(self.server, 4)
+        apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
+            name="hand-made",
+            subnet_id=9410,
+            prefix=Prefix.objects.create(prefix=IPNetwork("10.94.10.0/24")),
+            dhcp_server=dhcp_server,
+        )
+        conf, path = self._with_reservation_options(_subnet_id_conf(9410, 13))
+
+        summary = self._import(self.server, conf, PluginCapabilities(frozenset({Capability.SUBNET_ID_PER_SERVER})))
+
+        outcome = REASON_OUTCOME[Reason.NOT_IN_SCOPE]
+        self.assertEqual(
+            self._reservation_entries(summary, path),
+            [
+                (Kind.RESERVATION, path, outcome, Reason.NOT_IN_SCOPE),
+                (Kind.OPTION, f"{path}/option-data[code=6]", outcome, Reason.NOT_IN_SCOPE),
+                (Kind.OPTION, f"{path}/option-data[code=15]", outcome, Reason.NOT_IN_SCOPE),
+            ],
+        )
+
     def test_the_options_of_a_reservation_of_a_subnet_that_was_not_imported_are_not_written(self):
         from netbox_kea.integrations.dhcp_import_report import Capability, Outcome
         from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
