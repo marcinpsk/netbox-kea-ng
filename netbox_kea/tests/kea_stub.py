@@ -170,8 +170,12 @@ _POST_ERRORS = (OSError, UnicodeEncodeError, Urllib3SSLError)
 
 def _refuse_impossible_post_error(command: Any, kind: type[BaseException]) -> None:
     """Fail the test when a stubbed POST of *command* would raise *kind*, which a real POST cannot raise."""
-    # Response.json() raises a JSONDecodeError, never Session.post(): model it as a body that is not JSON.
-    if not issubclass(kind, _POST_ERRORS) or issubclass(kind, requests.JSONDecodeError):
+    # Response.json() raises a JSONDecodeError, never Session.post(); KeaClient raises the plugin's own exceptions.
+    if (
+        not issubclass(kind, _POST_ERRORS)
+        or issubclass(kind, requests.JSONDecodeError)
+        or kind.__module__.split(".")[0] == "netbox_kea"
+    ):
         raise AssertionError(
             f"KeaHttpStub: {command} raises {kind.__name__}, which a real requests POST cannot raise. Raise a "
             "requests.RequestException, or answer a malformed reply with a payload that KeaClient rejects."
@@ -475,7 +479,15 @@ class KeaHttpStub:
                 raise
         if _is_exc(spec):
             _refuse_impossible_post_error(cmd, spec if isinstance(spec, type) else type(spec))
-            raise spec() if isinstance(spec, type) else spec
+            if isinstance(spec, type):
+                try:
+                    spec = spec()
+                except TypeError:
+                    raise AssertionError(
+                        f"KeaHttpStub: {cmd} registers the class {spec.__name__}, which needs arguments. "
+                        "Register an instance."
+                    ) from None
+            raise spec
         if isinstance(spec, requests.Response):
             return spec
         return _http_response(spec if isinstance(spec, list) else [spec], url=url)

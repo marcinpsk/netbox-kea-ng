@@ -16,7 +16,7 @@ import pytest
 import requests
 from urllib3.exceptions import SSLError as Urllib3SSLError
 
-from netbox_kea.kea import KeaCommand, KeaException
+from netbox_kea.kea import KeaCommand, KeaException, KeaRequestEncodingError, KeaTLSFileError
 from netbox_kea.tests.kea_stub import (
     Applied,
     KeaHttpStub,
@@ -233,6 +233,12 @@ def test_a_transport_error_is_raised(error):
         _call(stub)
 
 
+def test_an_exception_class_that_needs_arguments_is_refused():
+    stub = KeaHttpStub({"version-get": UnicodeEncodeError})
+    with pytest.raises(AssertionError, match=r"version-get.*UnicodeEncodeError.*instance"):
+        _call(stub)
+
+
 def test_callable_returning_a_transport_error_is_raised():
     stub = KeaHttpStub({"version-get": lambda body: requests.Timeout("slow")})
     with pytest.raises(requests.Timeout):
@@ -247,6 +253,9 @@ def test_callable_returning_a_transport_error_is_raised():
         (KeaException({"result": 1, "text": "refused", "arguments": None}), "KeaException"),
         # Response.json() raises it, never Session.post(); it is a RequestException.
         (requests.JSONDecodeError("bad JSON", "x", 0), "JSONDecodeError"),
+        # KeaClient.command raises these after a requests error; the plugin defines them.
+        (KeaTLSFileError("missing file"), "KeaTLSFileError"),
+        (KeaRequestEncodingError, "KeaRequestEncodingError"),
     ),
 )
 def test_an_error_a_real_post_cannot_raise_is_refused(error, name):
