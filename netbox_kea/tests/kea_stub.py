@@ -45,6 +45,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from requests.adapters import HTTPAdapter
+from urllib3.exceptions import SSLError as Urllib3SSLError
 
 from netbox_kea import branching, server_configuration
 from netbox_kea.constants import Family
@@ -153,13 +154,27 @@ def client_failure(command: KeaCommand, error: Exception) -> Iterator[None]:
     """
     real_command = KeaClient.command
 
-    def send(client: KeaClient, sent: KeaCommand, *args: Any, **kwargs: Any) -> Any:
-        if sent is command:
+    def send(client: KeaClient, *args: Any, **kwargs: Any) -> Any:
+        if (args[0] if args else kwargs.get("command")) is command:
             raise error
-        return real_command(client, sent, *args, **kwargs)
+        return real_command(client, *args, **kwargs)
 
     with patch.object(KeaClient, "command", autospec=True, side_effect=send):
         yield
+
+
+#: What a real ``Session.post`` raises, and ``KeaClient.command`` handles: every RequestException is an OSError, and
+#: requests also raises a plain OSError (missing TLS file), UnicodeEncodeError (redirect) and a urllib3 SSLError.
+_POST_ERRORS = (OSError, UnicodeEncodeError, Urllib3SSLError)
+
+
+def _refuse_impossible_post_error(command: Any, kind: type[BaseException]) -> None:
+    """Fail the test when a stubbed POST of *command* would raise *kind*, which a real POST cannot raise."""
+    if not issubclass(kind, _POST_ERRORS):
+        raise AssertionError(
+            f"KeaHttpStub: {command} raises {kind.__name__}, which a real requests POST cannot raise. Raise a "
+            "requests.RequestException, or answer a malformed reply with a payload that KeaClient rejects."
+        )
 
 
 def _is_exc(obj: Any) -> bool:
@@ -409,13 +424,13 @@ class KeaHttpStub:
     * a :class:`ResponseQueue` from :func:`queued` — sequential responses, one per
       call (the last repeats), for pagination / partial-failure paths;
     * a callable ``(body) -> payload`` — for argument-dependent responses;
-    * a ``requests.RequestException`` or ``OSError`` instance or class — **raised**
-      when the command is called, or returned by a callable, to simulate a transport
-      error (e.g. ``requests.ConnectionError``) at the HTTP boundary. Any other
-      exception fails the test, because a real POST cannot raise it; a test of an
-      unexpected failure uses :func:`client_failure`. A KeaException-style
-      failure is instead modelled by returning a payload with a non-accepted
-      ``result`` code, and a malformed reply by a payload that the real
+    * an instance or class of an exception that a real POST raises (``_POST_ERRORS``,
+      e.g. ``requests.ConnectionError``) — **raised** when the command is called, or
+      returned or raised by a callable, to simulate a transport error at the HTTP
+      boundary. Any other exception fails the test (a callable may still raise an
+      ``AssertionError``); a test of an unexpected failure uses :func:`client_failure`.
+      A KeaException-style failure is instead modelled by returning a payload with a
+      non-accepted ``result`` code, and a malformed reply by a payload that the real
       ``KeaClient`` rejects.
 
     ``KeaClient`` expects a JSON list (one entry per targeted service); a payload
@@ -450,15 +465,15 @@ class KeaHttpStub:
                 spec = spec.next()
         # Callables/exceptions are resolved outside the lock (they may be slow or raise).
         if callable(spec) and not _is_exc(spec):
-            spec = spec(body)
+            try:
+                spec = spec(body)
+            except AssertionError:
+                raise
+            except Exception as exc:
+                _refuse_impossible_post_error(cmd, type(exc))
+                raise
         if _is_exc(spec):
-            kind = spec if isinstance(spec, type) else type(spec)
-            # requests raises a plain OSError for a missing TLS file; every RequestException is an OSError.
-            if not issubclass(kind, OSError):
-                raise AssertionError(
-                    f"KeaHttpStub: {cmd} raises {kind.__name__}, which a real requests POST cannot raise. Register a "
-                    "requests.RequestException or an OSError, or a malformed reply as a payload that KeaClient rejects."
-                )
+            _refuse_impossible_post_error(cmd, spec if isinstance(spec, type) else type(spec))
             raise spec() if isinstance(spec, type) else spec
         if isinstance(spec, requests.Response):
             return spec
@@ -869,7 +884,7 @@ RUN = Run.RUN
 
 @dataclass(frozen=True)
 class Applied:
-    """A scripted answer of ``SubnetDaemon``: run the command, then answer with *answer* (a payload or a transport error)."""
+    """A scripted ``SubnetDaemon`` answer: run the command, then answer with a payload or a transport error."""
 
     answer: Any
 
