@@ -200,6 +200,14 @@ def runs_for(server: Server, switch: DhcpIntegrationConfig | None = None) -> boo
     return not integration_refusal(server, switch)
 
 
+def scheduled_import_runs_for(server: Server) -> bool:
+    """Return whether the periodic sync job runs the DHCP Import of *server*, whatever the IPAM sync settings."""
+    from ..models import DhcpIntegrationConfig
+
+    switch = DhcpIntegrationConfig.get()
+    return switch.scheduled_import_enabled and runs_for(server, switch)
+
+
 def register_link_cleanup() -> None:
     """Remove mappings in the same database as a deleted supported DHCP target."""
     if not is_available():

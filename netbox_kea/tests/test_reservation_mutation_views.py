@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+from unittest.mock import patch
 from urllib.parse import urlencode
 
 import requests
@@ -26,7 +27,14 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _make_db_server, _ViewTestBase, active_tabs, with_kea_client_config
+from .utils import (
+    _make_db_server,
+    _ViewTestBase,
+    active_tabs,
+    with_dhcp_integration_config,
+    with_kea_client_config,
+    without_dhcp_plugin,
+)
 
 
 def _live_config(version: int, subnet_id: int, cidr: str, identifiers: list[str], pools: list | None = None) -> dict:
@@ -2085,6 +2093,7 @@ class TestMutationCapabilityGate(_ViewTestBase):
         self.assertContains(response, "Reservation mutation capabilities are unavailable.")
 
 
+@without_dhcp_plugin()
 class TestReservationFormFieldHelp(_ViewTestBase):
     """The Reservation form explains identifiers and IPAM sync in field help, not in alert boxes."""
 
@@ -2143,6 +2152,24 @@ class TestReservationFormFieldHelp(_ViewTestBase):
                 self.assertIn("Automatic IPAM sync is disabled for this Server.", help_text.get_text())
                 tip = help_text.select_one("button")["data-bs-title"]
                 self.assertNotIn("The next scheduled sync run records a fixed address.", tip)
+
+    def test_the_sync_help_names_a_scheduled_dhcp_import_that_still_records_reservation_addresses(self):
+        from netbox_kea.integrations import dhcp_plugin
+        from netbox_kea.models import SyncConfig
+
+        note = "The scheduled DHCP Import still records Reservation addresses in IPAM."
+        SyncConfig.objects.filter(pk=1).update(sync_enabled=False)
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        for scheduled, plugin, shown in ((True, True, True), (False, True, False), (True, False, False)):
+            with (
+                self.subTest(scheduled=scheduled, plugin=plugin),
+                with_dhcp_integration_config(scheduled_import_enabled=scheduled),
+                patch.object(dhcp_plugin, "is_available", return_value=plugin, autospec=True),
+            ):
+                help_text = self._add_page(["hw-address"]).select_one("#id_sync_to_netbox_helptext").get_text()
+                self.assertIn("Automatic IPAM sync is disabled for this Server.", help_text)
+                self.assertEqual(note in help_text, shown)
 
 
 def fail_first_ipv6_address_dispatch(events):
