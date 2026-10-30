@@ -166,14 +166,16 @@ def client_failure(command: KeaCommand, error: Exception) -> Iterator[None]:
 #: What a real ``Session.post`` raises, and ``KeaClient.command`` handles: every RequestException is an OSError, and
 #: requests also raises a plain OSError (missing TLS file), UnicodeEncodeError (redirect) and a urllib3 SSLError.
 _POST_ERRORS = (OSError, UnicodeEncodeError, Urllib3SSLError)
+#: ``Response.raise_for_status()`` and ``Response.json()`` raise these after the POST returns: answer with a reply.
+_REPLY_ERRORS = (requests.HTTPError, requests.JSONDecodeError)
 
 
 def _refuse_impossible_post_error(command: Any, kind: type[BaseException]) -> None:
     """Fail the test when a stubbed POST of *command* would raise *kind*, which a real POST cannot raise."""
-    # Response.json() raises a JSONDecodeError, never Session.post(); KeaClient raises the plugin's own exceptions.
+    # KeaClient raises the plugin's own exceptions, never requests.
     if (
         not issubclass(kind, _POST_ERRORS)
-        or issubclass(kind, requests.JSONDecodeError)
+        or issubclass(kind, _REPLY_ERRORS)
         or kind.__module__.split(".")[0] == "netbox_kea"
     ):
         raise AssertionError(
