@@ -180,6 +180,15 @@ def test_a_read_anywhere_in_a_later_statement_is_reported(after):
                 outcome = g(x)
             self.assertTrue(outcome)
         """,
+        # The other unittest.mock patch forms do not swallow an exception either.
+        """
+        for x in y:
+            with self.subTest(x=x):
+                outcome = f(x)
+            with patch.object(module, "g"), mock.patch.dict(env), unittest.mock.patch("module.h"):
+                outcome = g(x)
+            self.assertTrue(outcome)
+        """,
         # The first operand of a short-circuit operator always runs.
         """
         for x in y:
@@ -249,6 +258,7 @@ def test_a_read_anywhere_in_a_later_statement_is_reported(after):
         "earlier-context-manager",
         "rebound-in-later-block",
         "rebound-in-later-patch-block",
+        "rebound-in-later-patch-forms-block",
         "first-operand-walrus",
         "if-test-walrus",
         "if-test-first-operand-walrus",
@@ -332,6 +342,7 @@ def test_a_later_clause_of_the_try_statement_that_is_valid_passes(block):
         "with suppress(ValueError), nullcontext(g(x)) as outcome:\n    pass",
         "with ignore_errors():\n    outcome = g(x)",
         "with ignore_errors(), stub_kea({}):\n    outcome = g(x)",
+        "with errors.patch():\n    outcome = g(x)",
         "x and (outcome := g(x))",
         "if x and (outcome := g(x)):\n    pass",
         "h((outcome := g(x)) if x else None)",
@@ -351,6 +362,7 @@ def test_a_later_clause_of_the_try_statement_that_is_valid_passes(block):
         "suppressed-target",
         "unlisted-manager",
         "unlisted-manager-first",
+        "unlisted-patch-attribute",
         "short-circuit-walrus",
         "if-test-short-circuit-walrus",
         "conditional-walrus",

@@ -11,7 +11,7 @@ name that the block binds (by assignment, ``as``, a ``match`` capture, import or
 Stdlib only, so it runs as a pre-commit hook without NetBox. Limits: it does not follow reads
 after an inner loop, or in a nested ``def`` with its defaults and decorators. An assignment in a branch, loop, ``try`` or
 ``match`` does not count as a rebinding. An assignment in a ``with`` statement counts only when
-``_NON_SUPPRESSING`` names each context manager before it. It reads the loads of one statement
+``_NON_SUPPRESSING`` names the dotted call of each context manager before it. It reads the loads of one statement
 before its stores, and it does not see an assignment expression in a comprehension.
 """
 
@@ -27,8 +27,12 @@ TESTS_ROOT = Path(__file__).resolve().parent
 _DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 _COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 _COMPOUND = (ast.For, ast.AsyncFor, ast.While, ast.Try, getattr(ast, "TryStar", ast.Try), ast.Match)
-# Context managers that never swallow an exception; any other one can skip the assignments after it.
-_NON_SUPPRESSING = {"patch", "stub_kea"}
+# Context managers that never swallow an exception, by the dotted name of the call; any other one can skip the
+# assignments after it.
+_PATCH_FORMS = {"patch", "patch.object", "patch.dict", "patch.multiple"}
+_NON_SUPPRESSING = {"stub_kea"} | {
+    f"{prefix}{form}" for prefix in ("", "mock.", "unittest.mock.") for form in _PATCH_FORMS
+}
 
 
 @dataclass(frozen=True, order=True)
@@ -124,6 +128,19 @@ def _called(item: ast.withitem) -> str | None:
     return None
 
 
+def _called_path(item: ast.withitem) -> str | None:
+    """Return the dotted name that a context manager item calls, such as ``mock.patch.object``, or None."""
+    call = item.context_expr
+    parts: list[str] = []
+    node = call.func if isinstance(call, ast.Call) else None
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    return ".".join([node.id, *reversed(parts)])
+
+
 def _is_subtest(node: ast.stmt) -> TypeGuard[ast.With | ast.AsyncWith]:
     return isinstance(node, (ast.With, ast.AsyncWith)) and any(_called(item) == "subTest" for item in node.items)
 
@@ -140,7 +157,7 @@ def _first_reads(body: list[ast.stmt], watched: set[str], rebound: set[str]) -> 
                 if item.optional_vars is not None:
                     reads |= (_reads(item.optional_vars) & watched) - rebound
                     rebound = rebound | _stores(item.optional_vars)
-                if kept is None and _called(item) not in _NON_SUPPRESSING:
+                if kept is None and _called_path(item) not in _NON_SUPPRESSING:
                     kept = rebound
             inner, assigned = _first_reads(node.body, watched, rebound)
             reads |= inner
