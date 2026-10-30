@@ -468,18 +468,22 @@ class LeasePresenceLookupTest(_ViewTestBase):
                 release.set()
                 super().shutdown(wait=wait)
 
-        def leases(body):
-            subnet_id = body["arguments"]["subnet-id"]
+        real_command = KeaClient.command
+
+        # A real POST cannot raise a TypeError, so the unexpected failure comes from the client.
+        def command(client, *args, **kwargs):
+            subnet_id = kwargs["arguments"]["subnet-id"]
             asked.append(subnet_id)
             if subnet_id < 30:
                 all_workers.wait()
             if subnet_id == 20:
                 raise TypeError("unexpected worker failure")
             release.wait(timeout=10)
-            return {"result": 3}
+            return real_command(client, *args, **kwargs)
 
         with (
-            stub_kea({"lease4-get-by-state": leases}),
+            stub_kea({"lease4-get-by-state": {"result": 3}}),
+            patch.object(KeaClient, "command", autospec=True, side_effect=command),
             patch.object(concurrent.futures, "ThreadPoolExecutor", ReleaseAfterCancel),
             self.assertRaises(TypeError),
         ):

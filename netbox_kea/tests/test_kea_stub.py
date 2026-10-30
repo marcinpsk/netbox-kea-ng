@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 import requests
+from urllib3.exceptions import SSLError as Urllib3SSLError
 
 from netbox_kea.kea import KeaCommand, KeaException
 from netbox_kea.tests.kea_stub import (
@@ -221,6 +222,8 @@ def test_typed_reservation_rejects_a_fixture_without_a_supported_identity(host):
         requests.Timeout("slow"),
         requests.exceptions.SSLError("bad certificate"),
         OSError("Could not find a suitable TLS CA certificate bundle, invalid path: /missing"),
+        UnicodeEncodeError("latin-1", "pass\u20ac", 4, 5, "ordinal not in range(256)"),
+        Urllib3SSLError("decryption failed"),
     ),
 )
 def test_a_transport_error_is_raised(error):
@@ -252,6 +255,30 @@ def test_an_error_a_real_post_cannot_raise_is_refused(error, name):
             _call(stub)
 
 
+def test_a_callable_that_raises_an_error_a_real_post_cannot_raise_is_refused():
+    def respond(body):
+        raise ValueError("bad json")
+
+    for response in (respond, queued(respond)):
+        stub = KeaHttpStub({"version-get": response})
+        with pytest.raises(AssertionError, match=r"version-get.*ValueError"):
+            _call(stub)
+
+
+def test_a_callable_that_raises_a_transport_error_or_an_assertion_is_unchanged():
+    def respond(error):
+        def raise_it(body):
+            raise error
+
+        return raise_it
+
+    for error in (requests.Timeout("slow"), AssertionError("the stub saw a wrong request")):
+        stub = KeaHttpStub({"version-get": respond(error)})
+        with pytest.raises(type(error)) as raised:
+            _call(stub)
+        assert raised.value is error
+
+
 def test_a_subnet_daemon_script_refuses_an_error_a_real_post_cannot_raise():
     daemon = SubnetDaemon(4)
     daemon.script("subnet4-list", RuntimeError("boom"))
@@ -268,8 +295,11 @@ def test_client_failure_raises_for_one_command_and_sends_the_others():
     with stub_kea({"version-get": {"result": 0}}) as stub, client_failure(KeaCommand.CONFIG_GET, TypeError("bug")):
         with pytest.raises(TypeError, match="bug"):
             client.command(KeaCommand.CONFIG_GET, 4)
+        with pytest.raises(TypeError, match="bug"):
+            client.command(command=KeaCommand.CONFIG_GET, target=4)
         assert client.command(KeaCommand.VERSION_GET, 4) == [{"result": 0}]
-    assert stub.commands() == ["version-get"]
+        assert client.command(command=KeaCommand.VERSION_GET, target=4) == [{"result": 0}]
+    assert stub.commands() == ["version-get", "version-get"]
 
 
 def test_concurrent_requests_are_all_recorded():
