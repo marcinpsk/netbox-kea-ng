@@ -28,7 +28,7 @@ _DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 _COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 _COMPOUND = (ast.For, ast.AsyncFor, ast.While, ast.Try, getattr(ast, "TryStar", ast.Try), ast.Match)
 # Context managers that never swallow an exception; any other one can skip the assignments after it.
-_NON_SUPPRESSING = {"stub_kea"}
+_NON_SUPPRESSING = {"patch", "stub_kea"}
 
 
 @dataclass(frozen=True, order=True)

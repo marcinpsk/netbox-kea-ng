@@ -171,6 +171,15 @@ def test_a_read_anywhere_in_a_later_statement_is_reported(after):
                 outcome = g(kea)
             self.assertTrue(outcome)
         """,
+        # patch() does not swallow an exception from its body.
+        """
+        for x in y:
+            with self.subTest(x=x):
+                outcome = f(x)
+            with patch("module.g"):
+                outcome = g(x)
+            self.assertTrue(outcome)
+        """,
         # The first operand of a short-circuit operator always runs.
         """
         for x in y:
@@ -239,6 +248,7 @@ def test_a_read_anywhere_in_a_later_statement_is_reported(after):
         "not-bound",
         "earlier-context-manager",
         "rebound-in-later-block",
+        "rebound-in-later-patch-block",
         "first-operand-walrus",
         "if-test-walrus",
         "if-test-first-operand-walrus",
@@ -321,7 +331,7 @@ def test_a_later_clause_of_the_try_statement_that_is_valid_passes(block):
         "with self.subTest(step=2):\n    outcome = g(x)",
         "with suppress(ValueError), nullcontext(g(x)) as outcome:\n    pass",
         "with ignore_errors():\n    outcome = g(x)",
-        "with patch('module.g'), stub_kea({}):\n    outcome = g(x)",
+        "with ignore_errors(), stub_kea({}):\n    outcome = g(x)",
         "x and (outcome := g(x))",
         "if x and (outcome := g(x)):\n    pass",
         "h((outcome := g(x)) if x else None)",
