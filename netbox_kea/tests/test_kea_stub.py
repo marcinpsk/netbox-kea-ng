@@ -9,6 +9,7 @@ enrichment views POST from cloned clients on worker threads).
 """
 
 import json
+import ssl
 import threading
 from pathlib import Path
 
@@ -224,6 +225,7 @@ def test_typed_reservation_rejects_a_fixture_without_a_supported_identity(host):
         OSError("Could not find a suitable TLS CA certificate bundle, invalid path: /missing"),
         UnicodeEncodeError("latin-1", "pass\u20ac", 4, 5, "ordinal not in range(256)"),
         Urllib3SSLError("decryption failed"),
+        ssl.SSLError("unreadable TLS record"),
     ),
 )
 def test_a_transport_error_is_raised(error):
@@ -255,6 +257,8 @@ def test_callable_returning_a_transport_error_is_raised():
         (requests.JSONDecodeError("bad JSON", "x", 0), "JSONDecodeError"),
         # raise_for_status() raises it after the POST returns; answer with an HTTP error reply instead.
         (requests.HTTPError("401 Unauthorized"), "HTTPError"),
+        # requests wraps a socket error in requests.ConnectionError; KeaClient would read it as a missing TLS file.
+        (ConnectionResetError(104, "reset"), "ConnectionResetError"),
         # KeaClient.command raises these after a requests error; the plugin defines them.
         (KeaTLSFileError("missing file"), "KeaTLSFileError"),
         (KeaRequestEncodingError, "KeaRequestEncodingError"),
