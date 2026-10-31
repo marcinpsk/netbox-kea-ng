@@ -202,7 +202,8 @@ def test_the_lint_job_and_the_pre_push_hook_share_the_gate():
         line.split("run:", 1)[1].strip() for line in workflow.splitlines() if re.search(r"run:.*mypy-gate\.sh", line)
     ]
     hook_entries = [
-        hook["entry"]
+        # A host behind a TLS-intercepting proxy needs --system-certs; the CI runners do not.
+        hook["entry"].replace(" --system-certs", "")
         for repository in hooks["repos"]
         for hook in repository["hooks"]
         if "mypy-gate.sh" in hook.get("entry", "")
