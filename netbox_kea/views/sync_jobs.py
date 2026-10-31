@@ -20,17 +20,9 @@ from netbox.views import generic
 from utilities.views import ViewTab, register_model_view
 
 from ..integrations import dhcp_plugin
-from ..ipam_reconciliation import (
-    LEASE,
-    RESERVATION,
-    SYNC_SOURCES,
-    PoolPhase,
-    SubnetPhase,
-    global_source_enabled,
-    source_sync_enabled,
-)
 from ..jobs import KeaIpamSyncJob
 from ..models import Server, SyncConfig
+from ..sync_plan import LEASE, POOL, RESERVATION, SUBNET, SYNC_SOURCES, global_source_enabled, source_sync_enabled
 from .dhcp_plugin_sync import sync_nav_context
 from .settings_page import section_url, visible_sections
 from .workspace import ServerFamilyMixin, server_family_url
@@ -41,8 +33,8 @@ _JOB_HISTORY_COUNT = 5  # rows shown in the per-server tab mini-table
 _SOURCE_LABELS = {
     LEASE: "Leases",
     RESERVATION: "Reservations",
-    SubnetPhase.source: "Prefixes",
-    PoolPhase.source: "IP Ranges",
+    SUBNET: "Prefixes",
+    POOL: "IP Ranges",
 }
 
 

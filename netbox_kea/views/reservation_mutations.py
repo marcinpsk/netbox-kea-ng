@@ -19,7 +19,7 @@ from ..config_write import ReservationChangeOutcome
 from ..constants import Family, IPAddressValue
 from ..dhcp_options import parse_dhcp_option
 from ..integrations import dhcp_plugin
-from ..ipam_reconciliation import RESERVATION, ClaimResult, claim_permissions, periodic_sync_enabled
+from ..ipam_reconciliation import RESERVATION, ClaimResult, claim_permissions
 from ..models import Server
 from ..published_name import published_name, stored_hostname
 from ..reservations import (
@@ -32,6 +32,7 @@ from ..reservations import (
 )
 from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, VerifiedSubnet
 from ..sync_permissions import sync_gate
+from ..sync_plan import periodic_sync_enabled
 from ._base import (
     _client_settings_refusal,
     _KeaChangeMixin,
