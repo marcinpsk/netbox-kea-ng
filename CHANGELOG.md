@@ -13,6 +13,14 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.10.2 (2026-10-31)
+
+### Bug Fixes
+
+- **deps**: Bump astral-sh/setup-uv
+  ([`a71acae`](https://github.com/marcinpsk/netbox-kea-ng/commit/a71acaebfa807ff190a7d926322bd24a23176687))
+
+
 ## v3.10.1 (2026-10-31)
 
 ### Bug Fixes
