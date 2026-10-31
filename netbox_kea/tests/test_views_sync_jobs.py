@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for SettingsView, SyncJobsView, ServerSyncStatusView, ServerSyncNowView, ServerSyncToggleView."""
 
-import itertools
 import uuid
 from datetime import timedelta
 from unittest.mock import patch
@@ -22,6 +21,7 @@ from netbox_kea.tests.utils import (
     _make_db_server,
     _sync_page_urls,
     with_kea_client_config,
+    with_sync_config,
 )
 
 _MAKE_JOB_NO_DATA = object()  # sentinel: caller did not pass data at all
@@ -518,35 +518,43 @@ class TestServerSyncStatusView(TestCase):
             "Prefixes": "sync_prefixes_enabled",
             "IP Ranges": "sync_ip_ranges_enabled",
         }
+        # (global switch, global type flag, Server type flag) -> (global badge, Server badge); the Server switch never counts.
+        truth_table = {
+            (True, True, True): (True, True),
+            (True, True, False): (True, False),
+            (True, False, True): (False, False),
+            (True, False, False): (False, False),
+            (False, True, True): (False, False),
+            (False, True, False): (False, False),
+            (False, False, True): (False, False),
+            (False, False, False): (False, False),
+        }
         for label, flag in types.items():
-            for global_on, server_on, global_flag, server_flag in itertools.product((True, False), repeat=4):
-                with self.subTest(
-                    label=label,
-                    global_on=global_on,
-                    server_on=server_on,
-                    global_flag=global_flag,
-                    server_flag=server_flag,
-                ):
-                    config = SyncConfig.get()
-                    config.sync_enabled = global_on
-                    for name in types.values():
-                        setattr(config, name, global_flag if name == flag else True)
-                    config.save()
-                    Server.objects.filter(pk=self.server.pk).update(sync_enabled=server_on, **{flag: server_flag})
-                    page = BeautifulSoup(self.client.get(url).content, "html.parser")
-                    rows = {
-                        row: {
-                            badge.get_text(strip=True): "text-bg-success" in badge["class"]
-                            for badge in next(p for p in page.select("p") if row in p.text)
-                            .find_next_sibling("div")
-                            .select(".badge")
+            for (global_on, global_flag, server_flag), expected in truth_table.items():
+                for server_on in (True, False):
+                    with self.subTest(
+                        label=label,
+                        global_on=global_on,
+                        global_flag=global_flag,
+                        server_flag=server_flag,
+                        server_on=server_on,
+                    ):
+                        flags = {name: global_flag if name == flag else True for name in types.values()}
+                        Server.objects.filter(pk=self.server.pk).update(sync_enabled=server_on, **{flag: server_flag})
+                        with with_sync_config(sync_enabled=global_on, **flags):
+                            page = BeautifulSoup(self.client.get(url).content, "html.parser")
+                        rows = {
+                            row: {
+                                badge.get_text(strip=True): "text-bg-success" in badge["class"]
+                                for badge in next(p for p in page.select("p") if row in p.text)
+                                .find_next_sibling("div")
+                                .select(".badge")
+                            }
+                            for row in ("Global sync types", "Server overrides")
                         }
-                        for row in ("Global sync types", "Server overrides")
-                    }
-                    self.assertEqual(list(rows["Global sync types"]), list(types))
-                    self.assertEqual(list(rows["Server overrides"]), list(types))
-                    self.assertEqual(rows["Global sync types"][label], global_on and global_flag)
-                    self.assertEqual(rows["Server overrides"][label], global_on and global_flag and server_flag)
+                        self.assertEqual(list(rows["Global sync types"]), list(types))
+                        self.assertEqual(list(rows["Server overrides"]), list(types))
+                        self.assertEqual((rows["Global sync types"][label], rows["Server overrides"][label]), expected)
 
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)

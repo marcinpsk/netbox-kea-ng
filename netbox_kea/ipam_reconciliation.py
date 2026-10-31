@@ -442,7 +442,7 @@ SYNC_SOURCES: tuple[str, ...] = tuple(_SOURCE_FLAGS)
 
 
 def global_source_enabled(source: str, config: SyncConfig) -> bool:
-    """Return whether the global type flag of *source* (a key of ``_SOURCE_FLAGS``) is on."""
+    """Return whether the global type flag of *source* (one of ``SYNC_SOURCES``) is on."""
     return getattr(config, _SOURCE_FLAGS[source])
 
 
@@ -457,12 +457,12 @@ def server_sync_enabled(server: Server, config: SyncConfig, *, run_now: bool = F
 
 
 def source_sync_enabled(server: Server, source: str, config: SyncConfig) -> bool:
-    """Return whether the global and the Server type flags of *source* (a key of ``_SOURCE_FLAGS``) are both on."""
+    """Return whether the global and the Server type flags of *source* (one of ``SYNC_SOURCES``) are both on."""
     return global_source_enabled(source, config) and getattr(server, _SOURCE_FLAGS[source])
 
 
 def periodic_sync_enabled(server: Server, source: str, config: SyncConfig | None = None) -> bool:
-    """Return whether the periodic sync job syncs *source* (a key of ``_SOURCE_FLAGS``) for *server*."""
+    """Return whether the periodic sync job syncs *source* (one of ``SYNC_SOURCES``) for *server*."""
     config = SyncConfig.get() if config is None else config
     return server_sync_enabled(server, config) and source_sync_enabled(server, source, config)
 
@@ -481,7 +481,7 @@ def _effective_sources(
     job = frozenset(
         (family, source)
         for family in families
-        for source in _SOURCE_FLAGS
+        for source in SYNC_SOURCES
         if periodic_sync_enabled(server, source, config)
     )
     job |= {
