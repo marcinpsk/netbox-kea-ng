@@ -30,6 +30,7 @@ from .kea_stub import (
     _subnet_list,
     complete_lease,
     lease_pages,
+    lease_record,
     queued,
     stub_kea,
 )
@@ -1245,18 +1246,54 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
                 self.assertEqual(server.ipam_initial_observations["job"]["sources"], expected)
                 self.assertEqual(sorted(list(pair) for pair in effective_sources(server)["job"]), expected)
 
-        with self.subTest("Run Now of a Server whose switch is off"):
-            Server.objects.filter(pk=server.pk).update(
-                ipam_initial_observations={},
-                ipam_first_complete_at=None,
-                sync_enabled=False,
-                **dict.fromkeys(flags, True),
-            )
-            with _patch_kea(leases4=[_LEASE4], leases6=[_LEASE6], reservations=[_RESV4]) as kea:
-                KeaIpamSyncJob(_make_job()).run(server_pk=server.pk)
-            server.refresh_from_db()
-            self.assertIn("lease4-get-page", kea.commands())
-            self.assertEqual(server.ipam_initial_observations, {})
+    def test_a_run_now_of_a_switched_off_server_reads_exactly_its_plan_and_writes_no_receipt(self):
+        """Run Now skips the Server switch: every source of the plan links its object, and no other source does."""
+        from netbox_kea.models import IPAMOwnershipLink, Server
+
+        server = self._make_db_server(sync_enabled=False)
+        flags = {
+            "sync_leases_enabled": "lease",
+            "sync_reservations_enabled": "reservation",
+            "sync_prefixes_enabled": "subnet",
+            "sync_ip_ranges_enabled": "pool",
+        }
+        _set_sync_config(sync_enabled=True, **dict.fromkeys(flags, True))
+        subnets = {
+            4: {"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.200-10.0.0.210"}]},
+            6: {"id": 1, "subnet": "2001:db8::/64", "pools": [{"pool": "2001:db8::1000-2001:db8::10ff"}]},
+        }
+
+        def config_get(body: dict) -> dict:
+            version = 6 if (body.get("service") or ["dhcp4"])[0] == "dhcp6" else 4
+            return {
+                "result": 0,
+                "arguments": {f"Dhcp{version}": {f"subnet{version}": [subnets[version]], "shared-networks": []}},
+            }
+
+        delegated = lease_record("2001:db8:100:100::", type="IA_PD", prefix_len=56, subnet_id=1)
+        reservation6 = {"ip-addresses": ["2001:db8::100"], "duid": "00:01:02:03:04:05", "subnet-id": 1}
+        for enabled in itertools.product((True, False), repeat=len(flags)):
+            if not any(enabled):
+                continue
+            sources = {source for source, on in zip(flags.values(), enabled, strict=True) if on}
+            # DHCPv6 delegated-prefix leases own Prefixes when lease and Subnet sync are both on.
+            lease_prefix = {(6, "lease-prefix")} if {"lease", "subnet"} <= sources else set()
+            expected = {(family, source) for family in (4, 6) for source in sources} | lease_prefix
+            with self.subTest(**dict(zip(flags, enabled, strict=True))):
+                for model in (IPAMOwnershipLink, NbIP, Prefix, IPRange):
+                    model.objects.all().delete()
+                Server.objects.filter(pk=server.pk).update(**dict(zip(flags, enabled, strict=True)))
+                with _patch_kea(
+                    leases4=[_LEASE4],
+                    leases6=[_LEASE6, delegated],
+                    reservations=[_RESV4, reservation6],
+                    responses={"config-get": config_get},
+                ):
+                    KeaIpamSyncJob(_make_job()).run(server_pk=server.pk)
+                linked = set(IPAMOwnershipLink.objects.filter(server=server).values_list("family", "source"))
+                self.assertEqual(linked, expected)
+                server.refresh_from_db()
+                self.assertEqual(server.ipam_initial_observations, {})
 
     # ── job metadata (job.data) ────────────────────────────────────────────
 
