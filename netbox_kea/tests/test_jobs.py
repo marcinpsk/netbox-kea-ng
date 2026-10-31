@@ -1196,14 +1196,18 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
                     run_now=run_now,
                 ):
                     type_flags = dict.fromkeys(
-                        ("sync_leases_enabled", "sync_reservations_enabled", "sync_prefixes_enabled"), False
+                        (
+                            "sync_leases_enabled",
+                            "sync_reservations_enabled",
+                            "sync_prefixes_enabled",
+                            "sync_ip_ranges_enabled",
+                        ),
+                        False,
                     )
-                    _set_sync_config(
-                        sync_enabled=global_on, sync_ip_ranges_enabled=False, **{**type_flags, flag: global_flag}
-                    )
+                    _set_sync_config(sync_enabled=global_on, **{**type_flags, flag: global_flag})
                     Server.objects.filter(pk=server.pk).update(sync_enabled=server_on, **{flag: server_flag})
                     server.refresh_from_db()
-                    with _patch_kea(leases4=[_LEASE4], reservations=[_RESV4]) as kea, suppress(JobFailed):
+                    with _patch_kea(leases4=[_LEASE4], reservations=[_RESV4]) as kea:
                         KeaIpamSyncJob(_make_job()).run(**({"server_pk": server.pk} if run_now else {}))
                     expected = global_on and (server_on or run_now) and global_flag and server_flag
                     self.assertEqual(read in kea.commands(), expected)

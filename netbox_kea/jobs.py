@@ -41,6 +41,7 @@ from .ipam_reconciliation import (
     PoolPhase,
     SubnetPhase,
     SyncReport,
+    any_source_enabled,
     complete_job_observation,
     server_sync_enabled,
     source_sync_enabled,
@@ -402,14 +403,8 @@ class KeaIpamSyncJob(JobRunner):
             return False
 
         max_leases = sync_cfg.sync_max_leases_per_server
-        type_flags = (
-            sync_cfg.sync_leases_enabled,
-            sync_cfg.sync_reservations_enabled,
-            sync_cfg.sync_prefixes_enabled,
-            sync_cfg.sync_ip_ranges_enabled,
-        )
 
-        if not any(type_flags):
+        if not any_source_enabled(sync_cfg):
             self.logger.info("All sync type flags are False — nothing to do.")
             return False
 
@@ -425,7 +420,7 @@ class KeaIpamSyncJob(JobRunner):
         total_disagreements = 0
 
         for server in servers:
-            # The add forms read the same rule (periodic_sync_enabled); Run Now (server_pk) skips the Server switch.
+            # The add forms read this rule through periodic_sync_enabled; Run Now (server_pk) skips the Server switch.
             if not server_sync_enabled(server, sync_cfg, run_now=server_pk is not None):
                 self.logger.info(f"Server {server.name}: sync_enabled=False — skipping.")
                 continue

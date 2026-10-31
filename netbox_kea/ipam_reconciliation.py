@@ -431,11 +431,16 @@ SourceScope = frozenset[tuple[Family, str]]
 
 
 _SOURCE_FLAGS = {
-    "lease": "sync_leases_enabled",
-    "reservation": "sync_reservations_enabled",
-    "subnet": "sync_prefixes_enabled",
-    "pool": "sync_ip_ranges_enabled",
+    LEASE: "sync_leases_enabled",
+    RESERVATION: "sync_reservations_enabled",
+    SubnetPhase.source: "sync_prefixes_enabled",
+    PoolPhase.source: "sync_ip_ranges_enabled",
 }
+
+
+def any_source_enabled(config: SyncConfig) -> bool:
+    """Return whether at least one global type flag is on."""
+    return any(getattr(config, flag) for flag in _SOURCE_FLAGS.values())
 
 
 def server_sync_enabled(server: Server, config: SyncConfig, *, run_now: bool = False) -> bool:
