@@ -1245,6 +1245,19 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
                 self.assertEqual(server.ipam_initial_observations["job"]["sources"], expected)
                 self.assertEqual(sorted(list(pair) for pair in effective_sources(server)["job"]), expected)
 
+        with self.subTest("Run Now of a Server whose switch is off"):
+            Server.objects.filter(pk=server.pk).update(
+                ipam_initial_observations={},
+                ipam_first_complete_at=None,
+                sync_enabled=False,
+                **dict.fromkeys(flags, True),
+            )
+            with _patch_kea(leases4=[_LEASE4], leases6=[_LEASE6], reservations=[_RESV4]) as kea:
+                KeaIpamSyncJob(_make_job()).run(server_pk=server.pk)
+            server.refresh_from_db()
+            self.assertIn("lease4-get-page", kea.commands())
+            self.assertEqual(server.ipam_initial_observations, {})
+
     # ── job metadata (job.data) ────────────────────────────────────────────
 
     def test_summary_written_on_global_kill_switch(self):

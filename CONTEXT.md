@@ -259,4 +259,4 @@ Reservations, Subnets and Pools, and on DHCPv6 also delegated-prefix leases when
 both on. A source is in the plan when the global switch, the Server switch, the global type flag and the Server type
 flag are all on. A Run Now of one Server skips the Server switch, but a Run Now of a Server whose switch is off does
 not count as an observation of the Server.
-_Avoid_: effective sources, sync flags
+_Avoid_: sync flags, enabled types

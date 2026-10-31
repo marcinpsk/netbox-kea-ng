@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """The Sync Plan: which Kea sources of each address family one IPAM sync run of a Server reads.
 
-The job, the completion receipts, the add forms and the Sync tab read the switches and type flags only through this
-module.
+The job, the completion receipts, the add forms and the Sync tab take the sync rule from this module. The
+Reservation toggle exception of the stale cleanup (ADR 0006) is an ownership rule and stays in ``reconcile``.
 """
 
 from __future__ import annotations
@@ -76,14 +76,17 @@ class SyncPlan:
         return (family, source) in self.sources
 
 
+def served_families(server: Server) -> tuple[Family, ...]:
+    """Return the address families that *server* serves, in ascending order."""
+    return tuple(cast("Family", family) for family, enabled in ((4, server.dhcp4), (6, server.dhcp6)) if enabled)
+
+
 def sync_plan(server: Server, config: SyncConfig, *, run_now: bool = False) -> SyncPlan:
     """Return the Sync Plan of *server*. A Run Now of the Server skips the Server switch."""
     if not server_sync_enabled(server, config, run_now=run_now):
         return SyncPlan(frozenset())
     sources = [source for source in SYNC_SOURCES if source_sync_enabled(server, source, config)]
-    families: tuple[Family, ...] = tuple(
-        cast("Family", family) for family, enabled in ((4, server.dhcp4), (6, server.dhcp6)) if enabled
-    )
+    families = served_families(server)
     pairs = {(family, source) for family in families for source in sources}
     # Delegated-prefix leases own Prefixes on DHCPv6 with lease and Subnet sync; they have no type flag of their own.
     if 6 in families and LEASE in sources and SUBNET in sources:

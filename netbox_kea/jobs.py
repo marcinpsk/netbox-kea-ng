@@ -36,7 +36,17 @@ from . import branching, event_scope
 from .constants import Family
 from .dhcp_mapping_lifecycle import ensure_boundaries
 from .ipam_reconciliation import SyncReport, complete_job_observation, upgrade_counts
-from .sync_plan import LEASE, LEASE_PREFIX, RESERVATION, SyncPlan, any_source_enabled, server_sync_enabled, sync_plan
+from .sync_plan import (
+    LEASE,
+    LEASE_PREFIX,
+    POOL,
+    RESERVATION,
+    SUBNET,
+    SyncPlan,
+    any_source_enabled,
+    server_sync_enabled,
+    sync_plan,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -107,9 +117,9 @@ def _sync_one_server(server: Server, plan: SyncPlan, max_leases: int) -> SyncRep
             phases.append(LeasePhase(leases, subnet_prefix_lengths=subnet_prefix_map))
         if plan.reads(version, RESERVATION):
             phases.append(ReservationPhase(catalogue=catalogue))
-        if plan.reads(version, SubnetPhase.source):
+        if plan.reads(version, SUBNET):
             phases.append(SubnetPhase(observation))
-        if plan.reads(version, PoolPhase.source):
+        if plan.reads(version, POOL):
             phases.append(PoolPhase(observation))
         if leases is not None and plan.reads(version, LEASE_PREFIX):
             phases.append(LeasePrefixPhase(leases, catalogue))

@@ -53,7 +53,7 @@ from .read_failure import ReadFailure, attempt
 from .reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, ReservationSnapshot
 from .subnet_catalogue import CatalogueUnavailable
 from .sync import normalized_mac, sync_mac_address
-from .sync_plan import LEASE, LEASE_PREFIX, POOL, RESERVATION, SUBNET, SourceScope, sync_plan
+from .sync_plan import LEASE, LEASE_PREFIX, POOL, RESERVATION, SUBNET, SourceScope, served_families, sync_plan
 
 if TYPE_CHECKING:
     from .subnet_catalogue import CatalogueSnapshot, CompleteCatalogueSnapshot
@@ -430,9 +430,7 @@ def effective_sources(server: Server) -> dict[Workflow, SourceScope]:
 def _effective_sources(
     server: Server, config: SyncConfig, switch: DhcpIntegrationConfig | None = None
 ) -> dict[Workflow, SourceScope]:
-    families: tuple[Family, ...] = tuple(
-        cast("Family", family) for family, enabled in ((4, server.dhcp4), (6, server.dhcp6)) if enabled
-    )
+    families = served_families(server)
     imported: SourceScope = frozenset()
     if dhcp_plugin.runs_for(server, switch):
         imported = frozenset(
