@@ -287,9 +287,9 @@ member Subnet keeps its parent. A new member Subnet then belongs to the DHCP Ser
 Each imported Subnet holds Kea's subnet ID. A Subnet that an earlier release imported takes its Kea subnet ID on the
 next run. netbox-plugin-dhcp 0.2.0 keeps Subnet IDs unique across all DHCP Servers, but Kea numbers the Subnets of
 each daemon on its own. So when another DHCP Server already holds the ID, for example the DHCPv4 Subnet 1 of a
-dual-stack Server, the Subnet is unsupported, together with its Pools, delegated-prefix Pools and In-Subnet
-Reservations. The entry has the reason `subnet_id_clash` and names the Subnet that holds the ID. The import never
-gives a Subnet another ID.
+dual-stack Server, the Subnet is unsupported, together with its Pools, delegated-prefix Pools, In-Subnet
+Reservations and the DHCP Options of each. The entry has the reason `subnet_id_clash` and names the Subnet that holds
+the ID. The import never gives a Subnet another ID.
 
 The DHCP plugin also keeps client class and Shared Network names unique across all DHCP Servers. So when another client
 class or Shared Network already holds the name, for example the client class of the same name in the other family,

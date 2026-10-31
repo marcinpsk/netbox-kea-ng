@@ -18,7 +18,8 @@ from .. import config_write, forms, reservation_edit, subnet_catalogue
 from ..config_write import ReservationChangeOutcome
 from ..constants import Family, IPAddressValue
 from ..dhcp_options import parse_dhcp_option
-from ..ipam_reconciliation import RESERVATION, ClaimResult, claim_permissions
+from ..integrations import dhcp_plugin
+from ..ipam_reconciliation import RESERVATION, ClaimResult, claim_permissions, periodic_sync_enabled
 from ..models import Server
 from ..published_name import published_name, stored_hostname
 from ..reservations import (
@@ -347,7 +348,8 @@ class _ReservationMutationView(_KeaChangeMixin, ServerFamilyMixin, generic.Objec
         return self.form_class(
             capabilities=capabilities,
             sync_refusal=sync_gate(self.request.user, claim_permissions(RESERVATION)).reason,
-            automatic_sync=server.sync_enabled and server.sync_reservations_enabled,
+            automatic_sync=periodic_sync_enabled(server, RESERVATION),
+            scheduled_import=dhcp_plugin.scheduled_import_runs_for(server),
             **kwargs,
         )
 

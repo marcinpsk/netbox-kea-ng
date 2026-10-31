@@ -229,12 +229,24 @@ def django_db_setup(request, django_test_environment, django_db_blocker):
         # plugin urlconfs touches the DB, so doing this in pytest_configure raised
         # "Database access not allowed". Runs once per session, before any DB test.
         _prepopulate_url_resolver()
+        _disable_policy_table_autovacuum()
 
     yield
 
     if teardown_at_end:
         with django_db_blocker.unblock():
             teardown_databases(db_cfg, verbosity=verbosity)
+
+
+def _disable_policy_table_autovacuum() -> None:
+    """Stop autovacuum from refusing the NOWAIT policy lock of an IPAM cleanup in the test database only."""
+    from django.db import connection
+
+    from netbox_kea.ipam_reconciliation import POLICY_TABLES
+
+    with connection.cursor() as cursor:
+        for table in POLICY_TABLES:
+            cursor.execute(f"ALTER TABLE {connection.ops.quote_name(table)} SET (autovacuum_enabled = false)")
 
 
 def _drop_plugin_cache_entries() -> None:
@@ -273,6 +285,17 @@ def _plugin_cache_hygiene():
     _drop_plugin_cache_entries()
     yield
     _drop_plugin_cache_entries()
+
+
+@pytest.fixture(autouse=True)
+def _policy_table_autovacuum_after_migrations(request, django_db_blocker):
+    """Disable autovacuum again after a TransactionTestCase, because a migration test recreates the policy tables."""
+    from django.test import TestCase, TransactionTestCase
+
+    yield
+    if isinstance(request.instance, TransactionTestCase) and not isinstance(request.instance, TestCase):
+        with django_db_blocker.unblock():
+            _disable_policy_table_autovacuum()
 
 
 @pytest.fixture(autouse=True)

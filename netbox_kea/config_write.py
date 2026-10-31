@@ -37,8 +37,10 @@ from .kea import (
     subnet_network,
 )
 from .pools import Pool
+from .read_failure import ReadFailure, attempt
 from .reservations import (
     InSubnetReservationScope,
+    MalformedReservation,
     Reservation,
     ReservationChange,
     ReservationConflict,
@@ -648,7 +650,7 @@ def _updated(
         return fresh.updated(change, definitions)
     except (DHCPOptionConflict, DHCPOptionNameChange) as exc:
         raise ReservationConflict(exc.message) from exc
-    except (ValueError, RuntimeError) as exc:
+    except (MalformedReservation, ValueError, RuntimeError) as exc:
         logger.warning("Could not prepare a Reservation update", exc_info=True)
         raise ChangeRejected("not-sent", (_RESERVATION_UPDATE_UNUSABLE,)) from exc
 
@@ -689,10 +691,11 @@ def _verified(
     target = intended if intended is not None else previous
     if target is None:
         raise ValueError("A Reservation change needs the Reservation before or after it.")
-    try:
-        observed = client.reservation_by_identity(family, catalogue, target.scope, target.identity)
-    except (KeaException, OSError, ValueError, RuntimeError):
-        logger.warning("Could not verify an applied Reservation change", exc_info=True)
+    observed = attempt(
+        "The verification read of a Reservation change",
+        lambda: client.reservation_by_identity(family, catalogue, target.scope, target.identity),
+    )
+    if isinstance(observed, ReadFailure):
         return "failed"
     if observed is None or intended is None:
         return "verified" if observed is None and intended is None else "failed"

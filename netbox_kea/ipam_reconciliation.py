@@ -38,7 +38,6 @@ from .ipam_marker import (
     rewrite_marker,
     status_kind,
 )
-from .kea import KeaException
 from .leases import LEASE_VARIANTS, AllocationKind, DHCPv6PrefixLease, Lease, LeaseSnapshot
 from .models import (
     DhcpIntegrationConfig,
@@ -50,6 +49,7 @@ from .models import (
 )
 from .pools import Pool
 from .published_name import lease_published_name, reservation_published_name
+from .read_failure import ReadFailure, attempt
 from .reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, ReservationSnapshot
 from .subnet_catalogue import CatalogueUnavailable
 from .sync import normalized_mac, sync_mac_address
@@ -149,6 +149,8 @@ def _int4(text: str) -> int:
 
 # The first key of the two-key advisory lock form: config_write locks use another class, NetBox's one-key locks none.
 _LOCK_CLASS = _int4("netbox_kea.ipam_reconciliation")
+# The tables whose share lock freezes adoption policy during a final adopted-link cleanup.
+POLICY_TABLES = ("netbox_kea_server", "netbox_kea_syncconfig", "netbox_kea_dhcpintegrationconfig")
 
 
 @dataclass(frozen=True)
@@ -158,7 +160,7 @@ class LeaseObservation:
     snapshot: LeaseSnapshot | None
     cutoff: int
     max_leases: int | None
-    failure: BaseException | None = None
+    failure: ReadFailure | None = None
 
     def __post_init__(self) -> None:
         if (self.snapshot is None) == (self.failure is None):
@@ -168,12 +170,14 @@ class LeaseObservation:
 def read_leases(server: Server, family: Family, max_leases: int | None) -> LeaseObservation:
     """Read the family's Lease Snapshot after taking the cutoff for its lease phases."""
     cutoff = next_confirmation_number()
-    try:
-        client = server.get_client(version=family)
-        snapshot = client.lease_get_all(version=family, max_leases=max_leases, server_id=server.pk)
-    # OSError covers each requests error, KeaTLSFileError included.
-    except (KeaException, OSError, ValueError, RuntimeError) as exc:
-        return LeaseObservation(None, cutoff, max_leases, exc)
+    snapshot = attempt(
+        f"Server {server.name} (v{family}): the lease snapshot",
+        lambda: server.get_client(version=family).lease_get_all(
+            version=family, max_leases=max_leases, server_id=server.pk
+        ),
+    )
+    if isinstance(snapshot, ReadFailure):
+        return LeaseObservation(None, cutoff, max_leases, snapshot)
     return LeaseObservation(snapshot, cutoff, max_leases)
 
 
@@ -394,14 +398,18 @@ class SyncReport:
         """Return whether every phase of the call is complete."""
         return not self.incomplete
 
-    def fail_snapshot(self, source: str, what: str, exc: BaseException) -> None:
-        """Count one snapshot that could not be read, which makes its phase incomplete, and log it."""
+    def fail_snapshot(self, source: str, what: str, failure: BaseException | ReadFailure) -> None:
+        """Count one snapshot that could not be read, which makes its phase incomplete.
+
+        It logs an exception; ``read_failure.attempt`` already logged a failed Kea read.
+        """
         if source in _NETWORK_SOURCES:
             self.prefix_errors += 1
         else:
             self.errors += 1
         self.incomplete.add(source)
-        logger.warning("%s failed: %s", what, exc, exc_info=exc)
+        if isinstance(failure, BaseException):
+            logger.warning("%s failed: %s", what, failure, exc_info=failure)
 
     def fail_row(self, source: str, what: str, exc: BaseException) -> None:
         """Count one failed row, which makes its phase incomplete, and log the first failures."""
@@ -422,6 +430,21 @@ Workflow = Literal["job", "import"]
 SourceScope = frozenset[tuple[Family, str]]
 
 
+_SOURCE_FLAGS = {
+    "lease": "sync_leases_enabled",
+    "reservation": "sync_reservations_enabled",
+    "subnet": "sync_prefixes_enabled",
+    "pool": "sync_ip_ranges_enabled",
+}
+
+
+def periodic_sync_enabled(server: Server, source: str, config: SyncConfig | None = None) -> bool:
+    """Return whether the periodic sync job syncs *source* (a key of ``_SOURCE_FLAGS``) for *server*."""
+    config = SyncConfig.get() if config is None else config
+    flag = _SOURCE_FLAGS[source]
+    return config.sync_enabled and server.sync_enabled and getattr(config, flag) and getattr(server, flag)
+
+
 def effective_sources(server: Server) -> dict[Workflow, SourceScope]:
     """Return current potential owners, shared by workflow completion and the upgrade barrier."""
     return _effective_sources(server, SyncConfig.get())
@@ -433,17 +456,11 @@ def _effective_sources(
     families: tuple[Family, ...] = tuple(
         cast("Family", family) for family, enabled in ((4, server.dhcp4), (6, server.dhcp6)) if enabled
     )
-    sources = {
-        "lease": "sync_leases_enabled",
-        "reservation": "sync_reservations_enabled",
-        "subnet": "sync_prefixes_enabled",
-        "pool": "sync_ip_ranges_enabled",
-    }
     job = frozenset(
         (family, source)
         for family in families
-        for source, flag in sources.items()
-        if config.sync_enabled and server.sync_enabled and getattr(config, flag) and getattr(server, flag)
+        for source in _SOURCE_FLAGS
+        if periodic_sync_enabled(server, source, config)
     )
     job |= {
         (family, LEASE_PREFIX)
@@ -564,9 +581,7 @@ def _cleanup_adoption_waits(link: IPAMOwnershipLink, object_field: str) -> bool:
         return False
     with connection.cursor() as cursor:
         # Table locks also cover new Servers and bulk configuration updates.
-        cursor.execute(
-            "LOCK TABLE netbox_kea_server, netbox_kea_syncconfig, netbox_kea_dhcpintegrationconfig IN SHARE MODE NOWAIT"
-        )
+        cursor.execute(f"LOCK TABLE {', '.join(POLICY_TABLES)} IN SHARE MODE NOWAIT")
     return _adoption_waits(link, object_field, _pending_adoptions())
 
 
@@ -1166,7 +1181,7 @@ def _lease_reports(server: Server, family: Family, phase: LeasePhase, report: Sy
     what = f"Server {server.name} (v{family}): the lease snapshot"
     snapshot = phase.observation.snapshot
     if snapshot is None:
-        report.fail_snapshot(LEASE, what, cast("BaseException", phase.observation.failure))  # set by __post_init__
+        report.fail_snapshot(LEASE, what, cast("ReadFailure", phase.observation.failure))  # set by __post_init__
         return {}
     logger.info("Server %s (v%s): fetched %d leases", server.name, family, len(snapshot.records))
     if snapshot.coverage != "exhaustive":
@@ -1206,21 +1221,14 @@ def _reservation_reports(
     if phase.catalogue is None:
         report.fail_snapshot(RESERVATION, what, CatalogueUnavailable("The Subnet Catalogue is unavailable."))
         return {}
-    try:
-        client = server.get_client(version=family)
-        snapshot = client.reservation_snapshot(family, phase.catalogue)
-    except KeaException as exc:
-        if not exc.unsupported_command:
-            report.fail_snapshot(RESERVATION, what, exc)
-            return {}
-        # Without host_cmds, config-file Reservations can still exist. The phase is not complete.
-        logger.warning(
-            "Server %s (v%s): host_cmds is unavailable; the Reservation phase is skipped", server.name, family
-        )
-        report.incomplete.add(RESERVATION)
-        return {}
-    except (OSError, ValueError, RuntimeError) as exc:
-        report.fail_snapshot(RESERVATION, what, exc)
+    catalogue = phase.catalogue
+    snapshot = attempt(what, lambda: server.get_client(version=family).reservation_snapshot(family, catalogue))
+    if isinstance(snapshot, ReadFailure):
+        if snapshot.kind == "unsupported":
+            # Without host_cmds, config-file Reservations can still exist. The phase is not complete.
+            report.incomplete.add(RESERVATION)
+        else:
+            report.fail_snapshot(RESERVATION, what, snapshot)
         return {}
     report.quarantined_reservations = sum(
         diagnostic.code not in TRAVERSAL_DIAGNOSTIC_CODES for diagnostic in snapshot.diagnostics

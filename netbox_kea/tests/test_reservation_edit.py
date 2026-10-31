@@ -175,17 +175,20 @@ class ReservationEditTests(TestCase):
             for hostname in ("Host", "host.example.net", "Host.Old.Example.org."):
                 raw = _raw(family, hostname=hostname)
                 current, state = self._shown(family, raw=raw)
-                with self.subTest(family=family, hostname=hostname), stub_kea(_responses(family, raw=raw)) as kea:
-                    outcome = reservation_edit.save_edit(
-                        self.server,
-                        family,
-                        20,
-                        _IDENTITY,
-                        state.initial["managed_fingerprint"],
-                        reservation_edit.SubmittedValues(current.addresses, hostname=state.initial["hostname"]),
+                with self.subTest(family=family, hostname=hostname):
+                    with stub_kea(_responses(family, raw=raw)) as kea:
+                        outcome = reservation_edit.save_edit(
+                            self.server,
+                            family,
+                            20,
+                            _IDENTITY,
+                            state.initial["managed_fingerprint"],
+                            reservation_edit.SubmittedValues(current.addresses, hostname=state.initial["hostname"]),
+                        )
+                    self.assertEqual(outcome.application, "applied")
+                    self.assertEqual(
+                        kea.bodies("reservation-update")[0]["arguments"]["reservation"]["hostname"], hostname
                     )
-                self.assertEqual(outcome.application, "applied")
-                self.assertEqual(kea.bodies("reservation-update")[0]["arguments"]["reservation"]["hostname"], hostname)
 
     def test_moving_to_a_pool_keeps_the_entered_published_name(self):
         for family in (4, 6):
@@ -196,16 +199,14 @@ class ReservationEditTests(TestCase):
             values = reservation_edit.SubmittedValues(
                 (ip_address(_ADDRESS[family]),), hostname=state.initial["hostname"]
             )
-            with (
-                self.subTest(family=family),
-                stub_kea(_responses(family, raw=raw, pool_suffix="pool.example.org")) as kea,
-            ):
-                reservation_edit.save_edit(
-                    self.server, family, 20, _IDENTITY, state.initial["managed_fingerprint"], values
+            with self.subTest(family=family):
+                with stub_kea(_responses(family, raw=raw, pool_suffix="pool.example.org")) as kea:
+                    reservation_edit.save_edit(
+                        self.server, family, 20, _IDENTITY, state.initial["managed_fingerprint"], values
+                    )
+                self.assertEqual(
+                    kea.bodies("reservation-update")[0]["arguments"]["reservation"]["hostname"], "host.old.example.org."
                 )
-            self.assertEqual(
-                kea.bodies("reservation-update")[0]["arguments"]["reservation"]["hostname"], "host.old.example.org."
-            )
 
     def test_an_edited_published_name_is_stored_under_its_live_suffix(self):
         for family in (4, 6):
@@ -217,21 +218,19 @@ class ReservationEditTests(TestCase):
                 ("db", "db"),
                 ("", None),
             ):
-                with (
-                    self.subTest(family=family, entered=entered),
-                    stub_kea(_responses(family, raw=_raw(family))) as kea,
-                ):
-                    reservation_edit.save_edit(
-                        self.server,
-                        family,
-                        20,
-                        _IDENTITY,
-                        state.initial["managed_fingerprint"],
-                        reservation_edit.SubmittedValues(current.addresses, hostname=entered),
+                with self.subTest(family=family, entered=entered):
+                    with stub_kea(_responses(family, raw=_raw(family))) as kea:
+                        reservation_edit.save_edit(
+                            self.server,
+                            family,
+                            20,
+                            _IDENTITY,
+                            state.initial["managed_fingerprint"],
+                            reservation_edit.SubmittedValues(current.addresses, hostname=entered),
+                        )
+                    self.assertEqual(
+                        kea.bodies("reservation-update")[0]["arguments"]["reservation"].get("hostname"), stored
                     )
-                self.assertEqual(
-                    kea.bodies("reservation-update")[0]["arguments"]["reservation"].get("hostname"), stored
-                )
 
     def test_addressless_stored_name_is_kept_but_a_changed_name_requires_an_address_first(self):
         for family in (4, 6):
@@ -293,38 +292,37 @@ class ReservationEditTests(TestCase):
                 hostname="host.pool.example.org",
                 option_rows=(reservation_edit.OptionRow("custom", "value"),),
             )
-            with (
-                self.subTest(family=family),
-                stub_kea(_responses(family, raw=_raw(family), pool_suffix="pool.example.org")) as kea,
-            ):
-                outcome = reservation_edit.save_add(self.server, family, _CIDR[family], _IDENTITY, values)
-            self.assertEqual(outcome.application, "applied")
-            sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
-            self.assertEqual(sent["hostname"], "host")
-            self.assertEqual(sent["option-data"], [{"name": "custom", "data": "value"}])
-            self.assertEqual(
-                sent["ip-address"] if family == 4 else sent["ip-addresses"],
-                _ADDRESS[family] if family == 4 else [_ADDRESS[family]],
-            )
-            if family == 6:
-                self.assertEqual(sent["prefixes"], ["2001:db8:1::/80"])
-            (warning,) = outcome.warnings
-            self.assertIsInstance(warning, reservation_edit.PoolOverlap)
-            self.assertEqual(warning.address, ip_address(_ADDRESS[family]))
-            self.assertEqual(
-                warning.pool.range, "198.18.0.10-198.18.0.99" if family == 4 else "2001:db8::10-2001:db8::99"
-            )
+            with self.subTest(family=family):
+                with stub_kea(_responses(family, raw=_raw(family), pool_suffix="pool.example.org")) as kea:
+                    outcome = reservation_edit.save_add(self.server, family, _CIDR[family], _IDENTITY, values)
+                self.assertEqual(outcome.application, "applied")
+                sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
+                self.assertEqual(sent["hostname"], "host")
+                self.assertEqual(sent["option-data"], [{"name": "custom", "data": "value"}])
+                self.assertEqual(
+                    sent["ip-address"] if family == 4 else sent["ip-addresses"],
+                    _ADDRESS[family] if family == 4 else [_ADDRESS[family]],
+                )
+                if family == 6:
+                    self.assertEqual(sent["prefixes"], ["2001:db8:1::/80"])
+                (warning,) = outcome.warnings
+                self.assertIsInstance(warning, reservation_edit.PoolOverlap)
+                self.assertEqual(warning.address, ip_address(_ADDRESS[family]))
+                self.assertEqual(
+                    warning.pool.range, "198.18.0.10-198.18.0.99" if family == 4 else "2001:db8::10-2001:db8::99"
+                )
 
     def test_add_without_configuration_returns_warning_only_for_an_address(self):
         for has_address in (False, True):
             values = reservation_edit.SubmittedValues((ip_address(_ADDRESS[4]),) if has_address else ())
             responses = _responses(raw=_raw(hostname="", address=has_address))
             responses["config-get"] = requests.ConnectionError("unavailable")
-            with self.subTest(has_address=has_address), stub_kea(responses):
-                outcome = reservation_edit.save_add(self.server, 4, _CIDR[4], _IDENTITY, values)
-            self.assertEqual(
-                outcome.warnings, (reservation_edit.PoolCheckUnavailable(_CIDR[4]),) if has_address else ()
-            )
+            with self.subTest(has_address=has_address):
+                with stub_kea(responses):
+                    outcome = reservation_edit.save_add(self.server, 4, _CIDR[4], _IDENTITY, values)
+                self.assertEqual(
+                    outcome.warnings, (reservation_edit.PoolCheckUnavailable(_CIDR[4]),) if has_address else ()
+                )
 
     def test_add_name_without_address_under_a_pool_suffix_is_a_hostname_conflict(self):
         with stub_kea(_responses(pool_suffix="pool.example.org")) as kea:
@@ -375,12 +373,12 @@ class ReservationEditTests(TestCase):
                 ("", None),
             ):
                 values = reservation_edit.SubmittedValues((ip_address(_ADDRESS[family]),), hostname=entered)
-                with (
-                    self.subTest(family=family, entered=entered),
-                    stub_kea(_responses(family, raw=_raw(family))) as kea,
-                ):
-                    reservation_edit.save_add(self.server, family, _CIDR[family], _IDENTITY, values)
-                self.assertEqual(kea.bodies("reservation-add")[0]["arguments"]["reservation"].get("hostname"), expected)
+                with self.subTest(family=family, entered=entered):
+                    with stub_kea(_responses(family, raw=_raw(family))) as kea:
+                        reservation_edit.save_add(self.server, family, _CIDR[family], _IDENTITY, values)
+                    self.assertEqual(
+                        kea.bodies("reservation-add")[0]["arguments"]["reservation"].get("hostname"), expected
+                    )
 
     def test_renamed_and_deleted_option_rows_do_not_reuse_old_metadata(self):
         first = {"name": "custom", "space": "vendor-lab", "data": "aabb", "csv-format": False, "never-send": True}
@@ -393,33 +391,34 @@ class ReservationEditTests(TestCase):
                 reservation_edit.OptionRow("custom", "new"),
             ),
         ):
-            with self.subTest(rows=rows), stub_kea(_responses(raw=raw)) as kea:
-                reservation_edit.save_edit(
-                    self.server,
-                    4,
-                    20,
-                    _IDENTITY,
-                    state.initial["managed_fingerprint"],
-                    reservation_edit.SubmittedValues(
-                        current.addresses, hostname=state.initial["hostname"], option_rows=rows
+            with self.subTest(rows=rows):
+                with stub_kea(_responses(raw=raw)) as kea:
+                    reservation_edit.save_edit(
+                        self.server,
+                        4,
+                        20,
+                        _IDENTITY,
+                        state.initial["managed_fingerprint"],
+                        reservation_edit.SubmittedValues(
+                            current.addresses, hostname=state.initial["hostname"], option_rows=rows
+                        ),
+                    )
+                self.assertEqual(
+                    kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
+                    (
+                        [
+                            {
+                                "name": "renamed",
+                                "space": "vendor-lab",
+                                "data": "aabc",
+                                "csv-format": False,
+                                "never-send": True,
+                            }
+                        ]
+                        if len(rows) == 1
+                        else [{"name": "custom", "data": "new"}]
                     ),
                 )
-            self.assertEqual(
-                kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
-                (
-                    [
-                        {
-                            "name": "renamed",
-                            "space": "vendor-lab",
-                            "data": "aabc",
-                            "csv-format": False,
-                            "never-send": True,
-                        }
-                    ]
-                    if len(rows) == 1
-                    else [{"name": "custom", "data": "new"}]
-                ),
-            )
 
     def test_duplicate_option_names_in_different_spaces_keep_live_order(self):
         options = [
@@ -559,22 +558,23 @@ class ReservationEditTests(TestCase):
                 hostname=state.initial["hostname"],
                 option_rows=(*reversed(rows), reservation_edit.OptionRow("added", "last")),
             )
-            with self.subTest(family=family), stub_kea(_responses(family, raw=raw)) as kea:
-                reservation_edit.save_edit(
-                    self.server, family, 20, _IDENTITY, state.initial["managed_fingerprint"], values
+            with self.subTest(family=family):
+                with stub_kea(_responses(family, raw=raw)) as kea:
+                    reservation_edit.save_edit(
+                        self.server, family, 20, _IDENTITY, state.initial["managed_fingerprint"], values
+                    )
+                self.assertEqual(
+                    kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
+                    [
+                        classed,
+                        duplicate,
+                        {**target, "data": "new"},
+                        {**class_target, "data": "aabc"},
+                        foreign,
+                        duplicate,
+                        {"name": "added", "data": "last"},
+                    ],
                 )
-            self.assertEqual(
-                kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
-                [
-                    classed,
-                    duplicate,
-                    {**target, "data": "new"},
-                    {**class_target, "data": "aabc"},
-                    foreign,
-                    duplicate,
-                    {"name": "added", "data": "last"},
-                ],
-            )
 
     def test_name_code_and_custom_aliases_use_the_same_live_definitions_for_edit_and_verification(self):
         for family, name, code in (
@@ -618,28 +618,29 @@ class ReservationEditTests(TestCase):
                     for option in current.options
                 ),
             )
-            with self.subTest(family=family), stub_kea(responses) as kea:
-                outcome = reservation_edit.save_edit(
-                    self.server, family, 20, _IDENTITY, state.initial["managed_fingerprint"], values
+            with self.subTest(family=family):
+                with stub_kea(responses) as kea:
+                    outcome = reservation_edit.save_edit(
+                        self.server, family, 20, _IDENTITY, state.initial["managed_fingerprint"], values
+                    )
+                self.assertEqual(
+                    kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
+                    [{**option, "data": "new"} for option in live_options],
                 )
-            self.assertEqual(
-                kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
-                [{**option, "data": "new"} for option in live_options],
-            )
-            self.assertEqual(outcome.verification, "verified")
-            self.assertEqual(
-                kea.commands(),
-                [
-                    f"subnet{family}-list",
-                    "config-get",
-                    "reservation-get",
-                    "reservation-update",
-                    "config-get",
-                    "config-test",
-                    "config-write",
-                    "reservation-get",
-                ],
-            )
+                self.assertEqual(outcome.verification, "verified")
+                self.assertEqual(
+                    kea.commands(),
+                    [
+                        f"subnet{family}-list",
+                        "config-get",
+                        "reservation-get",
+                        "reservation-update",
+                        "config-get",
+                        "config-test",
+                        "config-write",
+                        "reservation-get",
+                    ],
+                )
 
     def test_each_changed_or_removed_snapshot_value_names_its_option(self):
         option = {

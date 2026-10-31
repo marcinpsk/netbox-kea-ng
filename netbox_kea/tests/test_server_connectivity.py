@@ -48,9 +48,10 @@ class ServerLocalValidationTest(TestCase):
         )
         with stub_kea({}) as kea:
             for values, field in cases:
-                with self.subTest(field=field, values=values), self.assertRaises(ValidationError) as error:
-                    Server(name="invalid-local", ca_url="https://local.example.invalid", **values).full_clean()
-                self.assertIn(field, error.exception.message_dict)
+                with self.subTest(field=field, values=values):
+                    with self.assertRaises(ValidationError) as error:
+                        Server(name="invalid-local", ca_url="https://local.example.invalid", **values).full_clean()
+                    self.assertIn(field, error.exception.message_dict)
             self.assertEqual(kea.requests, [])
 
 
@@ -121,7 +122,7 @@ class ServerSubmissionConnectivityTest(_ViewTestBase):
             (requests.ConnectionError("private diagnostic"), "Unable to reach"),
             (requests.Timeout("private diagnostic"), "Unable to reach"),
             (requests.exceptions.SSLError("private diagnostic"), "Unable to reach"),
-            (ValueError("private diagnostic"), "Unable to reach"),
+            (OSError("private diagnostic"), "Unable to reach"),
             ({"result": 1, "text": "private diagnostic"}, "Unable to reach"),
             (_raw_http_response(b"private diagnostic"), "An internal error occurred."),
             (_http_response({"result": 0, "text": "private diagnostic"}), "An internal error occurred."),
@@ -142,7 +143,7 @@ class ServerSubmissionConnectivityTest(_ViewTestBase):
     def test_create_with_a_missing_ca_bundle_reports_a_field_error(self):
         payload = self._payload(ca_url="https://127.0.0.1:9/", ca_file_path="/nonexistent/kea-ca.pem")
         # Requests prefers these variables over the session CA bundle.
-        with patch.dict(os.environ), self.assertLogs("netbox_kea.server_connection", "ERROR") as logs:
+        with patch.dict(os.environ), self.assertLogs("netbox_kea.read_failure", "WARNING") as logs:
             os.environ.pop("REQUESTS_CA_BUNDLE", None)
             os.environ.pop("CURL_CA_BUNDLE", None)
             response = self.client.post(reverse("plugins:netbox_kea:server_add"), payload)

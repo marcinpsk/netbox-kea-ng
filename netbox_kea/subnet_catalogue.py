@@ -2,20 +2,19 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-import logging
 from collections import defaultdict
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Protocol, TypeVar
 
-import requests
 from django.utils import timezone
 
 from . import display_cache, server_configuration
 from .constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, IPAddressValue, IPNetworkValue, validate_family
-from .kea import SUBNET_LIST, KeaClient, KeaException, MalformedReply, kea_error_message, subnet_network
+from .kea import SUBNET_LIST, KeaClient, subnet_network
 from .models import Server, require_persisted_server
+from .read_failure import ReadFailure, attempt
 from .server_configuration import (
     Diagnostic,
     Pool,
@@ -25,8 +24,6 @@ from .server_configuration import (
 from .subnet_settings import ReservationFlags
 
 __all__ = ["Diagnostic", "Pool", "SubnetConfiguration"]
-
-logger = logging.getLogger(__name__)
 
 
 class CatalogueUnavailable(RuntimeError):
@@ -361,27 +358,22 @@ def _unavailable_configuration(code: str, message: str) -> _ConfigurationObserva
 
 
 def _read_identity(client: KeaClient, family: Family) -> _IdentityObservation:
-    try:
-        response = client.command(SUBNET_LIST[family], family, check=(0, 3))
-    except KeaException as exc:
-        if exc.unsupported_command:
+    response = attempt(
+        f"The DHCPv{family} Subnet identity read", lambda: client.command(SUBNET_LIST[family], family, check=(0, 3))
+    )
+    if isinstance(response, ReadFailure):
+        if response.kind == "unsupported":
             return _unavailable_identity(
                 "identity-command-unavailable",
                 f"Kea does not provide subnet{family}-list.",
                 subnet_cmds_available=False,
             )
-        logger.warning("Subnet identity read failed for DHCPv%s", family, exc_info=True)
-        return _unavailable_identity(
-            "identity-unavailable", f"Kea subnet identity facts are unavailable. {kea_error_message(exc)}"
-        )
-    except MalformedReply:
-        logger.warning("Subnet identity read failed for DHCPv%s", family, exc_info=True)
-        return _unavailable_identity(
-            "malformed-identity-response", "Kea returned a malformed subnet identity response."
-        )
-    except (requests.RequestException, OSError, ValueError, RuntimeError):
-        logger.warning("Subnet identity read failed for DHCPv%s", family, exc_info=True)
-        return _unavailable_identity("identity-unavailable", "Kea subnet identity facts are unavailable.")
+        if response.kind == "malformed":
+            return _unavailable_identity(
+                "malformed-identity-response", "Kea returned a malformed subnet identity response."
+            )
+        message = " ".join(text for text in ("Kea subnet identity facts are unavailable.", response.reply) if text)
+        return _unavailable_identity("identity-unavailable", message)
 
     if response[0].get("result") == 3:
         return _IdentityObservation(facts=(), diagnostics=(), available=True, complete=True)
@@ -597,11 +589,10 @@ def _observe_once(
 
 
 def _catalogue_client(server: Server, family: Family) -> KeaClient | None:
-    try:
-        return server.get_client(version=family)
-    except ValueError:
-        logger.warning("Could not create a Kea client for the Subnet Catalogue", exc_info=True)
-        return None
+    client = attempt(
+        f"The DHCPv{family} Subnet Catalogue client of Server {server.pk}", lambda: server.get_client(version=family)
+    )
+    return None if isinstance(client, ReadFailure) else client
 
 
 def _observe(

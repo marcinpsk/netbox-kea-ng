@@ -41,9 +41,10 @@ class TestParsePool(SimpleTestCase):
             ("192.168.1.250-192.168.2.9", "Pool 192.168.1.250-192.168.2.9 is outside Subnet 192.168.1.0/24."),
             ("192.168.0.0/23", "Pool 192.168.0.0/23 is outside Subnet 192.168.1.0/24."),
         ):
-            with self.subTest(value=value), self.assertRaises(ValueError) as ctx:
-                pools.parse_pool(value, self.V4)
-            self.assertIn(message, str(ctx.exception))
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError) as ctx:
+                    pools.parse_pool(value, self.V4)
+                self.assertIn(message, str(ctx.exception))
 
     def test_pool_contains_and_overlaps(self):
         pool = pools.parse_pool("192.168.1.10-192.168.1.20", self.V4)

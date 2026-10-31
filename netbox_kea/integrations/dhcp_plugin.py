@@ -200,6 +200,15 @@ def runs_for(server: Server, switch: DhcpIntegrationConfig | None = None) -> boo
     return not integration_refusal(server, switch)
 
 
+def scheduled_import_runs_for(server: Server) -> bool:
+    """Return whether the periodic sync job runs the DHCP Import of *server*, whatever the IPAM sync settings."""
+    from ..models import DhcpIntegrationConfig
+    from .dhcp_import import supported_plugin_installed
+
+    switch = DhcpIntegrationConfig.get()
+    return switch.scheduled_import_enabled and runs_for(server, switch) and supported_plugin_installed()
+
+
 def register_link_cleanup() -> None:
     """Remove mappings in the same database as a deleted supported DHCP target."""
     if not is_available():
@@ -246,10 +255,19 @@ def _keep_unmapped(summary: ImportSummary, family: int, kind: Kind, path: str) -
     summary.record(not_written(family, kind, path, Reason.NOT_IN_SCOPE, detail))
 
 
-def _skip_options(summary: ImportSummary, family: int, parent_path: str, planned: PlannedOptions) -> None:
-    """Record each DHCP Option of the object at *parent_path*, which was not imported."""
+def _skip_options(
+    summary: ImportSummary,
+    family: int,
+    parent_path: str,
+    planned: PlannedOptions,
+    taken: SubnetIdTaken | None = None,
+) -> None:
+    """Record each DHCP Option of the object at *parent_path*, which was not imported, with the *taken* ID's entry."""
     for path in planned.paths(parent_path, family):
-        summary.record(not_written(family, Kind.OPTION, path, Reason.PARENT_NOT_IMPORTED))
+        if taken is None:
+            summary.record(not_written(family, Kind.OPTION, path, Reason.PARENT_NOT_IMPORTED))
+        else:
+            summary.record(taken.entry(family, Kind.OPTION, path))
 
 
 class _Count:
@@ -1679,6 +1697,21 @@ def _report_inherited(summary: ImportSummary, planned: PlannedSubnet, capabiliti
         summary.record(entry)
 
 
+def _subnet_write_failed(
+    summary: ImportSummary,
+    planned: PlannedSubnet,
+    declared: Mapping[OptionDefinitionKey, OptionDefIntent],
+    subnet_ids: SubnetIdSettlement,
+) -> None:
+    """Skip the children of a Subnet that the run did not write, and its Reservations when it has a Kea subnet ID.
+
+    Only a write fails for a Subnet with a Kea subnet ID, so its Reservations must not attach to the stored row.
+    """
+    if planned.key is not None:
+        subnet_ids.failed.add(planned.key)
+    _skip_subnet_children(summary, planned, declared)
+
+
 def _skip_subnet_children(
     summary: ImportSummary,
     planned: PlannedSubnet,
@@ -1687,10 +1720,10 @@ def _skip_subnet_children(
 ) -> None:
     """Record the DHCP Options, Pools and PD Pools of a Subnet that was not imported.
 
-    A *taken* ID is also why its Pools and PD Pools were not.
+    A *taken* ID is also why its Options, Pools and PD Pools were not.
     """
     family, parent_path = planned.intent.family, subnet_path(planned)
-    _skip_options(summary, family, parent_path, planned_options(planned, family, declared))
+    _skip_options(summary, family, parent_path, planned_options(planned, family, declared), taken)
     children = [
         (Kind.POOL, pool_path(parent_path, pool, family), planned_options(pool, family, declared))
         for pool in planned.pools
@@ -1704,7 +1737,7 @@ def _skip_subnet_children(
             summary.record(not_written(family, kind, path, Reason.PARENT_NOT_IMPORTED))
         else:
             summary.record(taken.entry(family, kind, path))
-        _skip_options(summary, family, path, options)
+        _skip_options(summary, family, path, options, taken)
 
 
 def subnet_path(planned: PlannedSubnet) -> str:
@@ -1743,7 +1776,7 @@ class SubnetIdSettlement:
 
     taken: dict[int, SubnetIdTaken] = field(default_factory=dict)
     renumbered: set[int] = field(default_factory=set)
-    # The Subnets that need a move that failed.
+    # The Subnets that need a move that failed, and those whose write failed later in the run.
     failed: set[int] = field(default_factory=set)
 
 
@@ -2443,6 +2476,18 @@ def _record_snapshot_diagnostics(observation: ReservationObservation, family: in
         )
 
 
+def _skip_reservation_options(
+    summary: ImportSummary,
+    planned: Planned[ReservationKey, Reservation],
+    references: OptionReferences,
+    taken: SubnetIdTaken | None = None,
+) -> None:
+    """Record the DHCP Options of an In-Subnet Reservation whose Subnet was not imported or whose ID is *taken*."""
+    family, key = planned.intent.family, planned.key
+    options = planned_options(planned, family, references.definitions.declared)
+    _skip_options(summary, family, reservation_path(key, family), options, taken)
+
+
 def import_reservation_snapshot(
     server,
     dhcp_server,
@@ -2491,6 +2536,7 @@ def import_reservation_snapshot(
             if taken is not None:
                 complete = False
                 summary.record(taken.entry(family, Kind.RESERVATION, reservation_path(key, family)))
+                _skip_reservation_options(summary, planned, references, taken)
                 continue
             if subnet_ids is not None and key.subnet_id in subnet_ids.failed:
                 subnet_obj = None
@@ -2508,6 +2554,7 @@ def import_reservation_snapshot(
                     )
                 )
                 summary.warn(f"reservation for unknown subnet-id {key.subnet_id} skipped")
+                _skip_reservation_options(summary, planned, references)
                 continue
         else:
             subnet_obj = None
@@ -3226,7 +3273,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
             keep,
         )
         if subnet_obj is None:
-            _skip_subnet_children(summary, planned_subnet, declared)
+            _subnet_write_failed(summary, planned_subnet, declared, subnet_ids)
             continue
         if network is None:
             _report_inherited(summary, planned_subnet, capabilities)

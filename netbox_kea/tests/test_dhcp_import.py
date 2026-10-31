@@ -1938,6 +1938,14 @@ class OptionCoverageTest(TestCase):
                 "Dhcp6/option-data[space=vendor-sub,code=1]": spaces,
                 # The first missing capability in the order of the parity ledger: an option code needs a definition.
                 "Dhcp6/option-data[code=1003]": no_definition,
+                # The DHCPv4 run holds the global Subnet ID 10, so the Options of the DHCPv6 Subnet 10 get its clash.
+                "Dhcp6/subnet6[id=10]/option-data[code=23]": Capability.SUBNET_ID_PER_SERVER,
+                "Dhcp6/subnet6[id=10]/pd-pools[prefix=2001:db8:100::/48,delegated-len=56]/option-data[code=23]": (
+                    Capability.SUBNET_ID_PER_SERVER
+                ),
+                "Dhcp6/subnet6[id=10]/pools[pool=2001:db8:1::10-2001:db8:1::ff]/option-data[code=24]": (
+                    Capability.SUBNET_ID_PER_SERVER
+                ),
             },
         }
         for family, paths in expected.items():

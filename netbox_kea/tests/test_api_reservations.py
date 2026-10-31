@@ -267,7 +267,7 @@ class TestReservation4API(_APITestBase):
                 response = self.api_client.get(self._url(), params)
 
                 self.assertEqual(response.status_code, 500)
-                self.assertEqual(response.json()["detail"], "Invalid Kea server configuration.")
+                self.assertEqual(response.json()["detail"], "Server configuration error.")
 
     def test_scoped_address_returns_the_normalized_canonical_record(self):
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")

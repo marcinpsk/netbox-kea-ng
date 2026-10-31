@@ -37,6 +37,7 @@ from .kea_stub import (
     _catalogue_responses_for_subnets,
     _network_absent,
     _network_present,
+    _raw_http_response,
     _refused_connection,
     queued,
     stub_kea,
@@ -826,21 +827,23 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         config = _sn_config(4, "prod-net")
         config["arguments"]["Dhcp4"]["shared-networks"][0]["user-context"] = {"comment": "Old", "owner": "noc"}
         for description, expected in (("New", {"comment": "New", "owner": "noc"}), ("", {"owner": "noc"})):
-            with self.subTest(description=description), _edit_stub(config) as kea:
-                page = self.client.get(self._url())
-                self.assertEqual(page.context["form"].initial["description"], "Old")
-                self.client.post(self._url(), {**_page_data(page), "description": description})
-            self.assertEqual(_written_sn(kea, 4)["user-context"], expected)
+            with self.subTest(description=description):
+                with _edit_stub(config) as kea:
+                    page = self.client.get(self._url())
+                    self.assertEqual(page.context["form"].initial["description"], "Old")
+                    self.client.post(self._url(), {**_page_data(page), "description": description})
+                self.assertEqual(_written_sn(kea, 4)["user-context"], expected)
 
     def test_a_structured_comment_stays_out_of_the_form_until_a_description_replaces_it(self):
         config = _sn_config(4, "prod-net")
         config["arguments"]["Dhcp4"]["shared-networks"][0]["user-context"] = {"comment": ["one", "two"]}
         for description, expected in (("", {"comment": ["one", "two"]}), ("New", {"comment": "New"})):
-            with self.subTest(description=description), _edit_stub(config) as kea:
-                response = self.client.get(self._url())
-                self.assertEqual(response.context["form"].initial["description"], "")
-                self.client.post(self._url(), self._post_data(description=description))
-            self.assertEqual(_written_sn(kea, 4)["user-context"], expected)
+            with self.subTest(description=description):
+                with _edit_stub(config) as kea:
+                    response = self.client.get(self._url())
+                    self.assertEqual(response.context["form"].initial["description"], "")
+                    self.client.post(self._url(), self._post_data(description=description))
+                self.assertEqual(_written_sn(kea, 4)["user-context"], expected)
 
     def test_a_long_comment_does_not_block_an_unrelated_edit(self):
         comment = "x" * 300
@@ -1007,7 +1010,7 @@ class TestSharedNetworkEditAmbiguousWrite(_ViewTestBase):
             for error in (
                 requests.ConnectionError("connection refused"),
                 requests.Timeout("reply lost"),
-                ValueError("bad JSON"),
+                _raw_http_response(b"bad JSON"),
                 [],
                 [{}],
                 [None],

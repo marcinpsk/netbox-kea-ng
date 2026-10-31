@@ -10,7 +10,6 @@ from typing import Any, Generic, Literal, TypeVar
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 from urllib.parse import urlencode as _urlencode
 
-import requests
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError
@@ -34,10 +33,10 @@ from ..ipam_reconciliation import (
     address_ownership,
     claim,
     claim_permissions,
+    periodic_sync_enabled,
     prefix_ownership,
 )
 from ..kea import (
-    KeaException,
     LeaseQueryGuardError,
     LeaseQueryUnknownSubnet,
     lease_query_guard_message,
@@ -68,6 +67,7 @@ from ..leases import (
 )
 from ..models import Server
 from ..published_name import lease_published_name
+from ..read_failure import ReadFailure, attempt
 from ..reservations import (
     GlobalReservationScope,
     HostOnlyReservation,
@@ -98,7 +98,7 @@ from ._base import (
     IPAM_UNREADABLE,
     ConditionalLoginRequiredMixin,
     LazyClient,
-    _client_settings_error,
+    _client_or_refusal,
     _journal_applied,
     _KeaChangeMixin,
     _run_change,
@@ -178,10 +178,11 @@ def _read_created_lease(request: HttpRequest, client: LazyClient, creation: Leas
     contradicts the request.
     """
     address = str(creation.address)
-    try:
-        result = client().lease_get(address_identity(creation.family, address))
-    except (KeaException, requests.RequestException, RuntimeError, ValueError):
-        logger.exception("Kea created lease %s, but the read back failed", address)
+    result = attempt(
+        f"The read back of created Lease {address}",
+        lambda: client().lease_get(address_identity(creation.family, address)),
+    )
+    if isinstance(result, ReadFailure):
         return None
     if not isinstance(result, LeaseFound):
         logger.warning("Kea created lease %s, but the read back did not return it (%s)", address, result.outcome)
@@ -401,10 +402,9 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             return redirect(request.path)
 
         state_filter: LeaseState | None = form.cleaned_data.get("state")
-        try:
-            client = instance.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(instance, exc))
+        client = _client_or_refusal(instance, self.dhcp_version)
+        if isinstance(client, str):
+            messages.error(request, client)
             return redirect(request.path)
         search = LeaseSearch(by, form.cleaned_data["q"], state_filter)
         try:
@@ -450,10 +450,9 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
 
         per_page = 1000
 
-        try:
-            client = instance.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(instance, exc))
+        client = _client_or_refusal(instance, self.dhcp_version)
+        if isinstance(client, str):
+            messages.error(request, client)
             return redirect(request.path)
         loaded = load_snapshot(
             instance,
@@ -819,10 +818,9 @@ class _BaseLeaseEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginReq
         """Render the edit form pre-filled with the current lease values and the shown facts."""
         server = self._get_server(pk)
 
-        try:
-            client = server.get_client(version=self.dhcp_version)
-        except ValueError as exc:
-            messages.error(request, _client_settings_error(server, exc))
+        client = _client_or_refusal(server, self.dhcp_version)
+        if isinstance(client, str):
+            messages.error(request, client)
             return redirect(self._leases_url(server))
         try:
             label, identity = parse_selection(self.dhcp_version, ip_address)
@@ -921,7 +919,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
         return self.form_class(
             data,
             sync_refusal=gate.reason,
-            automatic_sync=server.sync_enabled and server.sync_leases_enabled,
+            automatic_sync=periodic_sync_enabled(server, LEASE),
         )
 
     def _render(self, request: HttpRequest, server: Server, form: forms._LeaseAddForm) -> HttpResponse:
@@ -1054,7 +1052,7 @@ def _unknown_badge_title(reason: UnknownReservationMatch) -> str:
         case UnknownReservationMatch.MALFORMED_REPLY:
             return "Kea returned a Reservation lookup reply that cannot be read."
         case UnknownReservationMatch.INVALID_READ:
-            return "The Server settings are not valid, or Kea returned a Reservation that does not parse or fit the lookup."
+            return "The Kea client settings of the Server are not valid."
         case UnknownReservationMatch.FOREIGN_IDENTIFIER:
             return "No Reservation matched, and this lease carries a client identifier that no Reservation can hold."
         case UnknownReservationMatch.UNKNOWN_SHARED_NETWORK:

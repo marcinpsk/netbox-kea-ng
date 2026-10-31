@@ -1,12 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-import logging
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any, cast
 from urllib.parse import urlencode as _urlencode
 
-import requests
 from django.contrib import messages
 from django.contrib.auth.models import PermissionsMixin
 from django.http import HttpResponse
@@ -27,8 +25,8 @@ from ..dhcp_options import (
     DHCPOptionNameChange,
     parse_dhcp_option,
 )
-from ..kea import KeaException
 from ..models import Server
+from ..read_failure import ReadFailure, attempt
 from ..utilities import OptionalViewTab
 from ._base import (
     ConditionalLoginRequiredMixin,
@@ -41,8 +39,6 @@ from ._base import (
 from .notices import notice, show_notices
 from .subnets import _NO_SUBNET_CIDR, _SUBNETS_TAB, _displayed_subnet
 from .workspace import ServerFamilyMixin
-
-logger = logging.getLogger(__name__)
 
 # One Config tab for both sections and both families; ServerOptionDef4View owns it.
 _CONFIG_TAB = OptionalViewTab(label="Config", weight=1050, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
@@ -373,19 +369,10 @@ class IPAddressKeaReservationsView(ConditionalLoginRequiredMixin, View):
 
 
 def _daemon_online(server: Server, version: Family) -> bool:
-    """Return whether the DHCP daemon of *version* answers ``version-get``. A failed read is logged and is offline."""
-    try:
-        with LazyClient(server, version) as client:
-            daemon_version(client)
-    except (KeaException, requests.RequestException, OSError, RuntimeError, ValueError) as exc:
-        logger.warning(
-            "The DHCPv%s daemon of server %s did not answer the status badge read (%s)",
-            version,
-            server.pk,
-            type(exc).__name__,
-        )
-        return False
-    return True
+    """Return whether the DHCP daemon of *version* answers ``version-get``. A failed read is offline."""
+    with LazyClient(server, version) as client:
+        read = attempt(f"The DHCPv{version} status badge read of Server {server.pk}", lambda: daemon_version(client))
+    return not isinstance(read, ReadFailure)
 
 
 class CombinedServerStatusBadgeView(ConditionalLoginRequiredMixin, View):

@@ -735,7 +735,7 @@ class TestReservation4SyncView(_SyncViewBase):
                 "reservation-get": {"result": 2, "text": "unknown command 'reservation-get'"},
             }
         ):
-            with self.assertLogs("netbox_kea.views.notices", level="INFO"):
+            with self.assertLogs("netbox_kea.read_failure", level="INFO"):
                 response = self.client.post(self._url())
 
         self.assertContains(response, "The required hook library may not be loaded")
@@ -759,11 +759,12 @@ class TestRowSyncReadFailures(_SyncViewBase):
     def test_a_failed_lease_read_shows_the_lease_notice(self):
         url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
         for name, reply, line in READ_FAILURES:
-            with self.subTest(name), stub_kea({**_catalogue_responses(4, 1, "198.18.0.0/24"), "lease4-get": reply}):
-                response = self.client.post(url, {"ip_address": "198.18.0.10"})
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(_row_badge(response), _notice_text("lease_target", line))
-            self.assertFalse(NbIP.objects.exists())
+            with self.subTest(name):
+                with stub_kea({**_catalogue_responses(4, 1, "198.18.0.0/24"), "lease4-get": reply}):
+                    response = self.client.post(url, {"ip_address": "198.18.0.10"})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(_row_badge(response), _notice_text("lease_target", line))
+                self.assertFalse(NbIP.objects.exists())
 
     def test_a_lease_gone_from_kea_is_not_a_read_failure(self):
         url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
@@ -777,21 +778,23 @@ class TestRowSyncReadFailures(_SyncViewBase):
         url = f"{url}?identifier_type=hw-address&identifier=aa%3Abb%3Acc%3A00%3A00%3A02"
         for name, reply, _line in READ_FAILURES:
             responses = {**_catalogue_responses(4, 1, "10.0.0.0/24"), "subnet4-list": reply}
-            with self.subTest(name), stub_kea(responses) as kea:
-                response = self.client.post(url)
-            self.assertNotIn("reservation-get", kea.commands())
-            self.assertEqual(_row_badge(response), " ".join((HEADLINES["catalogue"], SUBNET_LIST_FAILURES[name])))
-            self.assertFalse(NbIP.objects.exists())
+            with self.subTest(name):
+                with stub_kea(responses) as kea:
+                    response = self.client.post(url)
+                self.assertNotIn("reservation-get", kea.commands())
+                self.assertEqual(_row_badge(response), " ".join((HEADLINES["catalogue"], SUBNET_LIST_FAILURES[name])))
+                self.assertFalse(NbIP.objects.exists())
 
     def test_a_failed_reservation_read_shows_the_reservation_notice(self):
         url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
         url = f"{url}?identifier_type=hw-address&identifier=aa%3Abb%3Acc%3A00%3A00%3A02"
         for name, reply, line in READ_FAILURES:
-            with self.subTest(name), stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/24"), "reservation-get": reply}):
-                response = self.client.post(url)
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(_row_badge(response), _notice_text("reservation_target", line))
-            self.assertFalse(NbIP.objects.exists())
+            with self.subTest(name):
+                with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/24"), "reservation-get": reply}):
+                    response = self.client.post(url)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(_row_badge(response), _notice_text("reservation_target", line))
+                self.assertFalse(NbIP.objects.exists())
 
 
 # ─────────────────────────────────────────────────────────────────────────────

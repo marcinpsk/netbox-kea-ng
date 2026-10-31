@@ -58,6 +58,8 @@ dev = [
   "pytest-django>=4.9.0,<5.0.0",
   "pytest-xdist>=3.8.0,<4.0.0",
   "pytest-playwright>=0.6.0,<0.11.0",
+  # The browser suites import it directly. 1.62.0 is the first release with an Ubuntu 26.04 browser build.
+  "playwright>=1.62.0,<2.0.0",
   # The static ffmpeg of tests/docs_media: it encodes the documentation recordings without a system package.
   "imageio-ffmpeg>=0.6.0,<1.0.0",
   # The CommonMark parser of scripts/check_docs_media.py: it reads the README images as GitHub does.
@@ -85,6 +87,10 @@ docs = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+# 0.11.0 is the first uv release with --system-certs.
+required-version = ">=0.11.0"
 
 [tool.hatch.build.targets.sdist]
 include = [

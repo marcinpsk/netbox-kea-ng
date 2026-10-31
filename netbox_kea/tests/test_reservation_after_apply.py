@@ -159,36 +159,37 @@ class ReservationAfterApplyTests(TestCase):
                 def receiver(sender, received=received, **kwargs):
                     received.append((sender, kwargs))
 
-                with self.subTest(family=family, action=action), _receiver(signal, receiver), stub_kea({}) as kea:
-                    facts = reservation_edit.after_apply(
-                        self.server, outcome, self.user, request=request, sync_to_netbox=True
-                    )
-                self.assertEqual((facts.action, facts.journal, facts.signal), (action, "succeeded", "succeeded"))
-                self.assertEqual(kea.commands(), [])
-                self.assertEqual(len(received), 1)
-                sender, payload = received[0]
-                self.assertIsNone(sender)
-                self.assertIs(payload["server"], self.server)
-                self.assertIs(payload["request"], request)
-                self.assertEqual(
-                    (payload["before"], payload["after"], payload["dhcp_version"]),
-                    (outcome.previous, outcome.intended, family),
-                )
-                journal = JournalEntry.objects.filter(assigned_object_id=self.server.pk).latest("created")
-                self.assertEqual(journal.created_by, self.user)
-                self.assertEqual(journal.kind, "info")
-                self.assertEqual(
-                    journal.comments, f"Reservation {action}: hw-address 02:00:00:00:00:20; {_ADDRESS[family]}"
-                )
-                if action == "deleted":
-                    self.assertEqual(facts.claim, reservation_edit.ClaimSkipped("nothing-to-sync"))
-                else:
-                    self.assertIsInstance(facts.claim, ClaimResult)
-                    self.assertTrue(facts.claim.addresses[_ADDRESS[family]].synchronized)
+                with self.subTest(family=family, action=action):
+                    with _receiver(signal, receiver), stub_kea({}) as kea:
+                        facts = reservation_edit.after_apply(
+                            self.server, outcome, self.user, request=request, sync_to_netbox=True
+                        )
+                    self.assertEqual((facts.action, facts.journal, facts.signal), (action, "succeeded", "succeeded"))
+                    self.assertEqual(kea.commands(), [])
+                    self.assertEqual(len(received), 1)
+                    sender, payload = received[0]
+                    self.assertIsNone(sender)
+                    self.assertIs(payload["server"], self.server)
+                    self.assertIs(payload["request"], request)
                     self.assertEqual(
-                        facts.claim.primary.dns_name,
-                        "edited.lab.example.org" if action == "updated" else "host.lab.example.org",
+                        (payload["before"], payload["after"], payload["dhcp_version"]),
+                        (outcome.previous, outcome.intended, family),
                     )
+                    journal = JournalEntry.objects.filter(assigned_object_id=self.server.pk).latest("created")
+                    self.assertEqual(journal.created_by, self.user)
+                    self.assertEqual(journal.kind, "info")
+                    self.assertEqual(
+                        journal.comments, f"Reservation {action}: hw-address 02:00:00:00:00:20; {_ADDRESS[family]}"
+                    )
+                    if action == "deleted":
+                        self.assertEqual(facts.claim, reservation_edit.ClaimSkipped("nothing-to-sync"))
+                    else:
+                        self.assertIsInstance(facts.claim, ClaimResult)
+                        self.assertTrue(facts.claim.addresses[_ADDRESS[family]].synchronized)
+                        self.assertEqual(
+                            facts.claim.primary.dns_name,
+                            "edited.lab.example.org" if action == "updated" else "host.lab.example.org",
+                        )
 
     def test_unknown_application_does_not_read_permissions_or_run_any_side_effect(self):
         outcome = _outcome(self.server, unknown=True)

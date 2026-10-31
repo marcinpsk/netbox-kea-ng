@@ -9,7 +9,6 @@ Reservation badges of Lease rows.
 from __future__ import annotations
 
 import concurrent.futures
-import logging
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -17,14 +16,13 @@ from datetime import datetime, timezone
 from functools import partial
 from typing import Concatenate, ParamSpec, TypeVar
 
-import requests
-
 from . import constants, display_cache, subnet_catalogue
 from .constants import Family, LeaseState
-from .kea import KeaClient, KeaException, LeaseQueryGuardError, close_quietly
+from .kea import KeaClient, LeaseQueryGuardError, close_quietly
 from .lease_reads import LeaseSearch, cached_read
 from .leases import DHCPv6PrefixLease, Lease, LeaseSnapshot
 from .models import DisplayCacheConfig, KeaClientConfig, PinnedSettings, Server
+from .read_failure import ReadFailure, ReadFailureKind, attempt
 from .reservations import (
     CurrentLeaseFacts,
     CurrentLeasePresence,
@@ -44,8 +42,6 @@ from .reservations import (
     tries_global_reservation,
 )
 from .subnet_catalogue import CatalogueSnapshot, VerifiedSubnet
-
-logger = logging.getLogger(__name__)
 
 _MAX_WORKERS = 10
 
@@ -130,29 +126,38 @@ def _observe(
 ) -> CurrentLeaseFacts | UnknownLeasePresence:
     """Return the Current Leases of one Lease search, or why Kea could not show them."""
     try:
-        loaded = cached_read(server, family, search, clients, read_since=read_since).loaded
+        read = attempt(
+            f"The Lease lookup of Server {server.pk}",
+            lambda: cached_read(server, family, search, clients, read_since=read_since),
+        )
     except LeaseQueryGuardError:
         return UnknownLeasePresence.QUERY_GUARD
-    except KeaException as exc:
-        logger.debug("Kea refused the Lease lookup of server %s: result %s", server.pk, exc.response.get("result"))
-        if exc.unsupported_command:
-            return UnknownLeasePresence.LEASE_HOOK_UNAVAILABLE
-        return UnknownLeasePresence.KEA_ERROR
-    except requests.RequestException as exc:
-        logger.debug("The Lease lookup of server %s failed: %s", server.pk, type(exc).__name__)
-        return UnknownLeasePresence.KEA_ERROR
-    # MalformedReply and MalformedLeaseResponse are RuntimeErrors, as are malformed statistics.
-    except RuntimeError as exc:
-        logger.debug("The Lease lookup of server %s failed: %s", server.pk, type(exc).__name__)
-        return UnknownLeasePresence.MALFORMED_REPLY
-    # A ValidationError is a ValueError too: a Snapshot read across a backward clock step finishes before it starts.
-    except ValueError as exc:
-        logger.debug("The Lease lookup of server %s was not valid: %s", server.pk, type(exc).__name__)
-        return UnknownLeasePresence.INVALID_READ
+    if isinstance(read, ReadFailure):
+        return _LEASE_PRESENCE_UNKNOWN[read.kind]
+    loaded = read.loaded
     # Only a Subnet search by CIDR can resolve to a Catalogue, and no Reservation lookup sends one.
     if not isinstance(loaded, LeaseSnapshot):
         raise TypeError(f"The Lease lookup {search.parts!r} resolved to a Catalogue.")
     return current_lease_facts(loaded)
+
+
+#: Why a failed Lease lookup leaves the Current Lease Presence unknown.
+_LEASE_PRESENCE_UNKNOWN: dict[ReadFailureKind, UnknownLeasePresence] = {
+    "unsupported": UnknownLeasePresence.LEASE_HOOK_UNAVAILABLE,
+    "refused": UnknownLeasePresence.KEA_ERROR,
+    "unreachable": UnknownLeasePresence.KEA_ERROR,
+    "malformed": UnknownLeasePresence.MALFORMED_REPLY,
+    "misconfigured": UnknownLeasePresence.INVALID_READ,
+}
+
+#: Why a failed Reservation lookup leaves the Reservation Match unknown.
+_RESERVATION_MATCH_UNKNOWN: dict[ReadFailureKind, UnknownReservationMatch] = {
+    "unsupported": UnknownReservationMatch.RESERVATION_HOOK_UNAVAILABLE,
+    "refused": UnknownReservationMatch.KEA_ERROR,
+    "unreachable": UnknownReservationMatch.KEA_ERROR,
+    "malformed": UnknownReservationMatch.MALFORMED_REPLY,
+    "misconfigured": UnknownReservationMatch.INVALID_READ,
+}
 
 
 def lease_presence(
@@ -236,37 +241,15 @@ class _ReservationLookups:
             if parts in self._failures:
                 raise _FailedLookup(self._failures[parts])
             if parts not in self._found:
-                try:
-                    self._found[parts] = self._cached(clients, parts, lookup, *args, **kwargs)
-                except Exception as exc:
-                    unknown = self._unknown(exc)
-                    if unknown is None:
-                        raise
-                    self._failures[parts] = unknown
-                    raise _FailedLookup(unknown) from exc
+                found = attempt(
+                    f"A Reservation lookup of Server {self._server.pk}",
+                    lambda: self._cached(clients, parts, lookup, *args, **kwargs),
+                )
+                if isinstance(found, ReadFailure):
+                    self._failures[parts] = ReservationMatchUnknown(_RESERVATION_MATCH_UNKNOWN[found.kind])
+                    raise _FailedLookup(self._failures[parts])
+                self._found[parts] = found
             return self._found[parts]
-
-    def _unknown(self, exc: Exception) -> ReservationMatchUnknown | None:
-        """Return why the failure *exc* of a lookup leaves the Reservation Match unknown, or None when it is not known."""
-        if isinstance(exc, KeaException):
-            logger.debug(
-                "Kea refused a Reservation lookup of server %s: result %s", self._server.pk, exc.response.get("result")
-            )
-            if exc.unsupported_command:
-                return ReservationMatchUnknown(UnknownReservationMatch.RESERVATION_HOOK_UNAVAILABLE)
-            return ReservationMatchUnknown(UnknownReservationMatch.KEA_ERROR)
-        if isinstance(exc, requests.RequestException):
-            logger.debug("A Reservation lookup of server %s failed: %s", self._server.pk, type(exc).__name__)
-            return ReservationMatchUnknown(UnknownReservationMatch.KEA_ERROR)
-        # MalformedReply is a RuntimeError, as is a reservation-get reply without arguments.
-        if isinstance(exc, RuntimeError):
-            logger.debug("A Reservation lookup of server %s failed: %s", self._server.pk, type(exc).__name__)
-            return ReservationMatchUnknown(UnknownReservationMatch.MALFORMED_REPLY)
-        # Invalid Server settings and a MalformedReservation are ValueErrors.
-        if isinstance(exc, ValueError):
-            logger.debug("A Reservation lookup of server %s was not valid: %s", self._server.pk, type(exc).__name__)
-            return ReservationMatchUnknown(UnknownReservationMatch.INVALID_READ)
-        return None
 
     def _cached(
         self,

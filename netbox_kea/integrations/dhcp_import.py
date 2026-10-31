@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-import requests
 from django.apps import apps
 from django.db import DatabaseError, connection
 from django.utils import timezone
@@ -27,8 +26,8 @@ from .. import event_scope, kea_paths, server_configuration
 from ..constants import Family
 from ..dhcp_mapping_lifecycle import ImportEventsNotDispatched, MetadataBusy
 from ..ipam_reconciliation import complete_import_observation
-from ..kea import KeaException
 from ..mappers.kea_to_dhcp import ServerConfigIntent, parse_dhcp_config
+from ..read_failure import ReadFailure, attempt
 from ..server_configuration import ServerConfigurationSnapshot
 from . import dhcp_plugin
 from .dhcp_import_report import ImportEntry, Kind, Reason, not_written
@@ -70,16 +69,20 @@ class UnsupportedPluginVersion(Exception):
         super().__init__(self.message)
 
 
+def supported_plugin_installed() -> bool:
+    """Return whether the installed netbox-plugin-dhcp has a valid version of at least :data:`REQUIRED_PLUGIN_VERSION`."""
+    plugin: PluginConfig = apps.get_app_config(dhcp_plugin.PLUGIN_APP_LABEL)
+    try:
+        return Version(plugin.version) >= Version(REQUIRED_PLUGIN_VERSION)
+    except (InvalidVersion, TypeError):
+        return False
+
+
 def require_supported_plugin() -> None:
     """Raise :class:`UnsupportedPluginVersion` when the installed netbox-plugin-dhcp is too old or has no valid version."""
-    plugin: PluginConfig = apps.get_app_config(dhcp_plugin.PLUGIN_APP_LABEL)
-    installed = plugin.version
-    try:
-        supported = Version(installed) >= Version(REQUIRED_PLUGIN_VERSION)
-    except (InvalidVersion, TypeError):
-        supported = False
-    if not supported:
-        raise UnsupportedPluginVersion(str(installed))
+    if not supported_plugin_installed():
+        plugin: PluginConfig = apps.get_app_config(dhcp_plugin.PLUGIN_APP_LABEL)
+        raise UnsupportedPluginVersion(str(plugin.version))
 
 
 def enabled_versions(server: Server) -> list[Family]:
@@ -127,18 +130,21 @@ def _read_reservation_observation(server: Server, version: Family) -> Reservatio
     """Return the Reservation observation of the import, possibly incomplete, or ``None`` after a read failure."""
     from ..ipam_reconciliation import ReservationObservation
     from ..models import next_confirmation_number
-    from ..subnet_catalogue import for_synchronization
+    from ..subnet_catalogue import CatalogueUnavailable, for_synchronization
 
     cutoff = next_confirmation_number()
     try:
-        client = server.get_client(version=version)
         catalogue = for_synchronization(server, version)
-        return ReservationObservation(client.reservation_snapshot(version, catalogue), cutoff, catalogue)
-    except (KeaException, requests.RequestException, RuntimeError, ValueError):
-        logger.warning(
-            "DHCP-plugin sync: Reservation Snapshot failed for %s (v%s)", server.name, version, exc_info=True
-        )
+    except CatalogueUnavailable:
+        logger.warning("DHCP-plugin sync: no complete Subnet Catalogue for %s (v%s)", server.name, version)
         return None
+    snapshot = attempt(
+        f"DHCP-plugin sync: the Reservation Snapshot of {server.name} (v{version})",
+        lambda: server.get_client(version=version).reservation_snapshot(version, catalogue),
+    )
+    if isinstance(snapshot, ReadFailure):
+        return None
+    return ReservationObservation(snapshot, cutoff, catalogue)
 
 
 @dataclass(frozen=True)

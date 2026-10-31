@@ -31,7 +31,8 @@ from netbox_kea.views import dhcp_plugin_sync as dps
 from netbox_kea.views.notices import HEADLINES, Notice
 
 from .kea_stub import READ_FAILURES, _request_version, _sync_responses, stub_kea
-from .utils import _make_db_server, with_dhcp_integration_config, without_dhcp_plugin
+from .test_reservation_mutation_views import _mutation_responses
+from .utils import _make_db_server, _ViewTestBase, with_dhcp_integration_config, without_dhcp_plugin
 
 DHCP_PLUGIN = "netbox_dhcp"
 
@@ -81,7 +82,7 @@ class ReadReservationObservationTest(TestCase):
         responses = _sync_responses({4: {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]}})
         responses["reservation-get-page"] = requests.ConnectionError("read failed")
 
-        with self.assertLogs("netbox_kea.integrations.dhcp_import", level="WARNING"), stub_kea(responses):
+        with self.assertLogs("netbox_kea.read_failure", level="WARNING"), stub_kea(responses):
             snapshot = dhcp_import._read_reservation_observation(self._server(), 4)
 
         self.assertIsNone(snapshot)
@@ -365,29 +366,29 @@ class FetchConfigIntentTest(TestCase):
 
     def test_malformed_config_get_is_logged_and_skipped(self):
         for reply in ([], {"result": 0, "arguments": ["not", "a", "dict"]}, {"result": 0, "arguments": {}}):
-            with (
-                self.subTest(reply=reply),
-                stub_kea({"config-get": reply}),
-                self.assertLogs("netbox_kea.integrations.dhcp_import", level="WARNING") as cm,
-            ):
-                result = dhcp_import._fetch_config_intent(self.server, 4)
-            # A malformed reply is a logged read failure with the configuration Notice, not a silent "no config".
-            self.assertIsInstance(result, Notice)
-            self.assertTrue(result.unavailable)
-            self.assertTrue(any("config-get failed" in line for line in cm.output))
+            with self.subTest(reply=reply):
+                with (
+                    stub_kea({"config-get": reply}),
+                    self.assertLogs("netbox_kea.integrations.dhcp_import", level="WARNING") as cm,
+                ):
+                    result = dhcp_import._fetch_config_intent(self.server, 4)
+                # A malformed reply is a logged read failure with the configuration Notice, not a silent "no config".
+                self.assertIsInstance(result, Notice)
+                self.assertTrue(result.unavailable)
+                self.assertTrue(any("config-get failed" in line for line in cm.output))
 
     def test_the_read_logs_why_a_reply_has_no_configuration(self):
         for reply, reason in (
             ({"result": 0, "arguments": ["not", "a", "dict"]}, "malformed configuration arguments"),
             ({"result": 0, "arguments": {}}, "no Dhcp4 configuration object"),
         ):
-            with (
-                self.subTest(reply=reply),
-                stub_kea({"config-get": reply}),
-                self.assertLogs("netbox_kea.server_configuration", level="WARNING") as cm,
-            ):
-                self.assertIsInstance(dhcp_import._fetch_config_intent(self.server, 4), Notice)
-            self.assertTrue(any(reason in line for line in cm.output), cm.output)
+            with self.subTest(reply=reply):
+                with (
+                    stub_kea({"config-get": reply}),
+                    self.assertLogs("netbox_kea.server_configuration", level="WARNING") as cm,
+                ):
+                    self.assertIsInstance(dhcp_import._fetch_config_intent(self.server, 4), Notice)
+                self.assertTrue(any(reason in line for line in cm.output), cm.output)
 
 
 class FetchConfigCollectionsTest(TestCase):
@@ -452,19 +453,19 @@ class SyncNowErrorHandlingTest(TestCase):
             ("malformed", ["not", "a", "reply"], "Kea returned a malformed configuration response."),
         )
         for name, reply, line in cases:
-            with (
-                self.subTest(name),
-                patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True),
-                stub_kea({"config-get": reply}) as kea,
-            ):
-                self.client.cookies.pop("messages", None)
-                response = self.client.post(self.url)
-            self.assertEqual(response.status_code, 302)
-            self.assertEqual(kea.commands(), ["config-get"])
-            self.assertEqual(
-                [str(message) for message in get_messages(response.wsgi_request)],
-                [f"DHCPv4: {HEADLINES['configuration']}", f"DHCPv4: {line}"],
-            )
+            with self.subTest(name):
+                with (
+                    patch.object(dps.dhcp_plugin, "is_available", return_value=True, autospec=True),
+                    stub_kea({"config-get": reply}) as kea,
+                ):
+                    self.client.cookies.pop("messages", None)
+                    response = self.client.post(self.url)
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(kea.commands(), ["config-get"])
+                self.assertEqual(
+                    [str(message) for message in get_messages(response.wsgi_request)],
+                    [f"DHCPv4: {HEADLINES['configuration']}", f"DHCPv4: {line}"],
+                )
 
     def test_unexpected_exception_is_caught_not_leaked(self):
         # A non-contract error (e.g. a DB error) still hits the fallback: logged,
@@ -888,3 +889,43 @@ class DriftPartialTest(TestCase):
             "Enable 'Sync to DHCP plugin' on this server first.",
             BeautifulSoup(resp.content, "html.parser").select_one(".alert-warning").get_text(),
         )
+
+
+class ScheduledImportSyncHelpTest(_ViewTestBase):
+    """The Reservation sync help names the scheduled DHCP Import only when that import can run for the Server."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def _help_text(self) -> str:
+        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        with stub_kea(_mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])):
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        help_text = BeautifulSoup(response.content, "html.parser").select_one("#id_sync_to_netbox_helptext")
+        assert help_text is not None
+        return help_text.get_text()
+
+    def test_the_sync_help_names_a_scheduled_dhcp_import_that_still_records_reservation_addresses(self):
+        from netbox_kea.models import SyncConfig
+
+        note = "The scheduled DHCP Import still records Reservation addresses in IPAM."
+        current = apps.get_app_config(DHCP_PLUGIN).version
+        SyncConfig.objects.filter(pk=1).update(sync_enabled=False)
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        cases = ((True, True, current, True), (False, True, current, False), (True, False, current, False))
+        cases += ((True, True, "0.1.9", False),)
+        for scheduled, plugin, version, shown in cases:
+            with (
+                self.subTest(scheduled=scheduled, plugin=plugin, version=version),
+                with_dhcp_integration_config(scheduled_import_enabled=scheduled),
+                patch.object(dhcp_plugin, "is_available", return_value=plugin, autospec=True),
+                patch.object(apps.get_app_config(DHCP_PLUGIN), "version", version),
+            ):
+                help_text = self._help_text()
+                self.assertIn("Automatic IPAM sync is disabled for this Server.", help_text)
+                self.assertEqual(note in help_text, shown)

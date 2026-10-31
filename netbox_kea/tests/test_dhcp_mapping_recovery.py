@@ -1261,10 +1261,11 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
     def test_without_dhcp_plugin_restores_the_boundaries_when_it_ends(self):
         from netbox_kea.dhcp_mapping_lifecycle import ensure_boundaries
 
+        branch, link = self._old_branch_mapping("plugin-free")
         self.addCleanup(ensure_boundaries)
         with without_dhcp_plugin():
             pass
-        self.assertEqual(self._unguarded(), [])
+        self._assert_old_branch_read_refused(branch, link)
 
     def test_the_boundary_recheck_sends_no_query(self):
         from netbox_kea.dhcp_mapping_lifecycle import ensure_boundaries

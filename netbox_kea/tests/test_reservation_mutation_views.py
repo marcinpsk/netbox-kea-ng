@@ -26,7 +26,13 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _make_db_server, _ViewTestBase, active_tabs, with_kea_client_config
+from .utils import (
+    _make_db_server,
+    _ViewTestBase,
+    active_tabs,
+    with_kea_client_config,
+    without_dhcp_plugin,
+)
 
 
 def _live_config(version: int, subnet_id: int, cidr: str, identifiers: list[str], pools: list | None = None) -> dict:
@@ -171,7 +177,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
     def test_capability_failure_leaves_the_add_form_visible_but_disables_save(self):
         responses = {
-            "config-get": RuntimeError("configuration read failed"),
+            "config-get": requests.ConnectionError("configuration read failed"),
             "subnet4-list": _subnet_list(4, [{"id": 20, "subnet": "198.18.0.0/24"}]),
         }
         url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
@@ -1297,18 +1303,16 @@ class TestReservationMutationViews(_ViewTestBase):
                         f"options-{index}-original_option": json.dumps(row["original_option"]),
                     }
                 )
-            with (
-                self.subTest(family=family),
-                stub_kea(
+            with self.subTest(family=family):
+                with stub_kea(
                     {**responses, "reservation-get": _res_get(current), "reservation-update": {"result": 0}}
-                ) as kea,
-            ):
-                result = self.client.post(url, data)
-            self.assertEqual(result.status_code, 302)
-            self.assertEqual(
-                kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
-                [duplicate, {"name": name, "data": "new"}, duplicate],
-            )
+                ) as kea:
+                    result = self.client.post(url, data)
+                self.assertEqual(result.status_code, 302)
+                self.assertEqual(
+                    kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
+                    [duplicate, {"name": name, "data": "new"}, duplicate],
+                )
             added = {**current, "option-data": [*current["option-data"], {"name": "concurrent", "data": "added"}]}
             with stub_kea({**responses, "reservation-get": _res_get(added)}) as kea:
                 conflict = self.client.post(url, data)
@@ -1318,14 +1322,12 @@ class TestReservationMutationViews(_ViewTestBase):
             self.assertNotIn("config-test", kea.commands())
             for original in ("not-json", json.dumps({"data": "missing identity"})):
                 malformed = {**data, "options-1-original_option": original}
-                with (
-                    self.subTest(family=family, original=original),
-                    stub_kea({**responses, "reservation-get": _res_get(current)}) as kea,
-                ):
-                    refused = self.client.post(url, malformed)
-                self.assertEqual(refused.status_code, 200)
-                self.assertIn(f"DHCP Option '{name}':", BeautifulSoup(refused.content, "html.parser").get_text())
-                self.assertNotIn("reservation-update", kea.commands())
+                with self.subTest(family=family, original=original):
+                    with stub_kea({**responses, "reservation-get": _res_get(current)}) as kea:
+                        refused = self.client.post(url, malformed)
+                    self.assertEqual(refused.status_code, 200)
+                    self.assertIn(f"DHCP Option '{name}':", BeautifulSoup(refused.content, "html.parser").get_text())
+                    self.assertNotIn("reservation-update", kea.commands())
 
 
 class TestReservationDocumentImport(_ViewTestBase):
@@ -2033,7 +2035,7 @@ class TestMutationCapabilityGate(_ViewTestBase):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         responses.update(
             {
-                "config-get": queued(RuntimeError("capability read failed"), responses["config-get"]),
+                "config-get": queued(requests.ConnectionError("capability read failed"), responses["config-get"]),
                 "reservation-get-page": _res_page([]),
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
             }
@@ -2089,6 +2091,7 @@ class TestMutationCapabilityGate(_ViewTestBase):
         self.assertContains(response, "Reservation mutation capabilities are unavailable.")
 
 
+@without_dhcp_plugin()
 class TestReservationFormFieldHelp(_ViewTestBase):
     """The Reservation form explains identifiers and IPAM sync in field help, not in alert boxes."""
 
@@ -2132,6 +2135,21 @@ class TestReservationFormFieldHelp(_ViewTestBase):
                 tip = help_text.select_one("button")["data-bs-title"]
                 self.assertIn("A Reservation with no address is skipped.", tip)
                 self.assertEqual("The next scheduled sync run records a fixed address." in tip, enabled)
+
+    def test_the_global_sync_settings_turn_the_automatic_ipam_sync_state_off(self):
+        from netbox_kea.models import SyncConfig
+
+        self.server.sync_enabled = True
+        self.server.sync_reservations_enabled = True
+        self.server.save()
+        for global_fields in ({"sync_enabled": False}, {"sync_reservations_enabled": False}):
+            with self.subTest(**global_fields):
+                SyncConfig.objects.filter(pk=1).update(sync_enabled=True, sync_reservations_enabled=True)
+                SyncConfig.objects.filter(pk=1).update(**global_fields)
+                help_text = self._add_page(["hw-address"]).select_one("#id_sync_to_netbox_helptext")
+                self.assertIn("Automatic IPAM sync is disabled for this Server.", help_text.get_text())
+                tip = help_text.select_one("button")["data-bs-title"]
+                self.assertNotIn("The next scheduled sync run records a fixed address.", tip)
 
 
 def fail_first_ipv6_address_dispatch(events):

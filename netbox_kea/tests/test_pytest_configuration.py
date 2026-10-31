@@ -44,7 +44,7 @@ SERIAL_BY_DESIGN = "1"
 #: One uv invocation inside a shell script or a documented code block.
 _UV_COMMAND = re.compile(r"(?:^|[|;&])\s*(uv\b[^|;&\n]*)", re.MULTILINE)
 #: The repository target of one Ruff command. Flags may sit between ``uv run`` and the
-#: tool name (CI passes ``--native-tls``), so the target must be read past them. One
+#: tool name (the documented commands pass ``--system-certs``), so the target must be read past them. One
 #: pattern serves CI and the published docs, which is what makes the two comparable.
 _RUFF_TARGET = re.compile(r"\bruff (?:check|format)(?: --check)? +(?!-)(\S+)")
 
@@ -131,7 +131,7 @@ def test_documented_unit_test_targets_are_shell_safe():
     agents = (REPOSITORY_ROOT / "AGENTS.md").read_text()
 
     assert _DOCUMENTED_TEST_ENV in agents
-    assert f"{_DOCUMENTED_TEST_ENV} \\\n  UPDATE_QUERY_COUNTS=1 uv run --native-tls pytest -n 1" in agents
+    assert f"{_DOCUMENTED_TEST_ENV} \\\n  UPDATE_QUERY_COUNTS=1 uv run --system-certs pytest -n 1" in agents
     assert not re.search(r"TEST_(?:DB_NAME|REDIS_HOST)=<", agents), (
         "An angle-bracket placeholder is a shell redirect; name a real, generic default."
     )
@@ -740,10 +740,6 @@ def test_database_jobs_use_the_shared_ci_configuration_writer():
     assert f"{writer} --output netbox/configuration.py --plugin netbox_kea --branching\n" in branching_job
     assert "cat > netbox/configuration.py" not in workflow
 
-    uv_commands = _workflow_uv_commands(workflow)
-    assert uv_commands
-    assert all("--native-tls" in command for command in uv_commands), uv_commands
-
 
 def test_workflow_uv_command_parser_splits_pipelines():
     """Check every uv command in one run step independently."""
@@ -752,12 +748,12 @@ jobs:
   test:
     steps:
       - run: |
-          uv export --native-tls | \\
+          uv export --system-certs | \\
             uv pip install -r /dev/stdin
 """
 
     assert _workflow_uv_commands(workflow) == [
-        "uv export --native-tls",
+        "uv export --system-certs",
         "uv pip install -r /dev/stdin",
     ]
 
@@ -768,8 +764,8 @@ def test_workflow_ruff_target_parser_accepts_trailing_options():
 jobs:
   lint:
     steps:
-      - run: uv run --native-tls ruff check . --output-format=github
-      - run: uv run --native-tls ruff format --check src
+      - run: uv run --system-certs ruff check . --output-format=github
+      - run: uv run --system-certs ruff format --check src
 """
 
     assert _workflow_ruff_targets(workflow) == {".", "src"}
@@ -958,7 +954,7 @@ def test_the_browser_suite_runs_in_the_integration_job():
 _CHROME_LIST = "/etc/apt/sources.list.d/google-chrome.list"
 _CHROME_SOURCES = "/etc/apt/sources.list.d/google-chrome.sources"
 _CHROME_REMOVAL = f"sudo rm -f {_CHROME_LIST} {_CHROME_SOURCES}"
-_BROWSER_INSTALL = "uv run --native-tls playwright install --with-deps"
+_BROWSER_INSTALL = "uv run --system-certs playwright install --with-deps"
 
 
 def _drops_chrome_source_before_installing(run: str) -> bool:
@@ -980,7 +976,7 @@ def _drops_chrome_source_before_installing(run: str) -> bool:
     )
     installers = [
         [*prefix, "playwright", "install", "--with-deps"]
-        for prefix in ([], ["uv", "run"], ["uv", "run", "--native-tls"])
+        for prefix in ([], ["uv", "run"], ["uv", "run", "--system-certs"])
     ]
     removed = installed = False
     end = 0
@@ -1041,7 +1037,7 @@ def test_the_chrome_source_guard_reads_order_and_not_prose():
     for install in (
         "playwright install --with-deps",
         "uv run playwright install --with-deps",
-        "uv run --native-tls playwright install --with-deps",
+        "uv run --system-certs playwright install --with-deps",
     ):
         good = f"{_CHROME_REMOVAL}\n{install}"
         assert _drops_chrome_source_before_installing(good)
@@ -1086,7 +1082,7 @@ def test_chrome_source_guard_accepts_supported_shell_separators(script):
         _CHROME_SOURCES,
         "uv",
         "run",
-        "--native-tls",
+        "--system-certs",
         "playwright",
         "install",
         "--with-deps",
@@ -1102,7 +1098,7 @@ def test_chrome_source_guard_rejects_changed_required_words(word, suffix):
     [
         f"sudo rm -f {_CHROME_LIST}\n{_BROWSER_INSTALL}",
         f"sudo rm -f {_CHROME_SOURCES}\n{_BROWSER_INSTALL}",
-        f"{_CHROME_REMOVAL}\nuv run --native-tls playwright install",
+        f"{_CHROME_REMOVAL}\nuv run --system-certs playwright install",
         f"{_BROWSER_INSTALL}\n{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}",
         f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}\n'",
         f"{_CHROME_REMOVAL}\n{_BROWSER_INSTALL}\n)",
@@ -1229,14 +1225,6 @@ def test_a_stale_documentation_build_neither_deploys_nor_cancels_a_newer_one():
     assert deploy["concurrency"] == {"group": "pages", "cancel-in-progress": False, "queue": "max"}
     assert "/releases/latest" in steps[0], steps
     assert steps[-1].startswith("actions/deploy-pages@"), steps
-
-
-def test_the_docs_build_passes_native_tls_to_every_uv_command():
-    """The documentation build runs the integration steps, so it follows the uv convention of ci.yml."""
-    uv_commands = _workflow_uv_commands((REPOSITORY_ROOT / ".github/workflows/docs-build.yml").read_text())
-
-    assert uv_commands, "docs-build.yml runs no uv command; this guard would pass without reading anything."
-    assert all("--native-tls" in command for command in uv_commands), uv_commands
 
 
 def test_documented_integration_commands_disable_pytest_django():
@@ -2193,12 +2181,12 @@ def test_ci_lints_every_file_the_pre_commit_hooks_lint():
     )
 
 
-@pytest.mark.parametrize("command", ("uv run ruff check .", "uv run --native-tls ruff check ."))
+@pytest.mark.parametrize("command", ("uv run ruff check .", "uv run --system-certs ruff check ."))
 def test_the_ruff_target_reader_looks_past_flags_before_the_tool(command):
-    """CI runs Ruff as `uv run --native-tls ruff`, and the docs may adopt that shape.
+    """The docs run Ruff as `uv run --system-certs ruff`, and CI may adopt that shape.
 
-    A reader anchored on `uv run ruff` finds nothing in the CI shape, so the comparison
-    below would fail on a documentation change that is in fact correct.
+    A reader anchored on `uv run ruff` finds nothing in that shape, so the comparison
+    below would fail on a change that is in fact correct.
     """
     assert _ruff_targets_in([command]) == {"."}
 

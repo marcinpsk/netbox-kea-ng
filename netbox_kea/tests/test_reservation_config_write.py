@@ -204,12 +204,13 @@ class ReservationAddTests(TestCase):
             ("empty reply", []),
             ("two entries", [_OK, _OK]),
         ):
-            with self.subTest(name), stub_kea(_responses(**{"reservation-add": reply})) as kea:
-                outcome = self._add()
-            self.assertEqual(kea.commands(), [*_SCOPE, "reservation-add", *_PERSIST])
-            self.assertEqual(
-                (outcome.application, outcome.verification, outcome.diagnostics), ("unknown", "not-run", (_LOST,))
-            )
+            with self.subTest(name):
+                with stub_kea(_responses(**{"reservation-add": reply})) as kea:
+                    outcome = self._add()
+                self.assertEqual(kea.commands(), [*_SCOPE, "reservation-add", *_PERSIST])
+                self.assertEqual(
+                    (outcome.application, outcome.verification, outcome.diagnostics), ("unknown", "not-run", (_LOST,))
+                )
 
     def test_verification_accepts_the_option_metadata_that_kea_resolves(self):
         with stub_kea(_responses(**{"reservation-add": _OK, "reservation-get": _res_get(_RAW)})):
@@ -219,9 +220,10 @@ class ReservationAddTests(TestCase):
     def test_verification_fails_when_kea_stored_another_value_or_nothing(self):
         other = {**_RAW, "option-data": [{**_OPTION, "data": "198.18.0.54"}]}
         for name, reply in (("other value", _res_get(other)), ("absent", {"result": 3})):
-            with self.subTest(name), stub_kea(_responses(**{"reservation-add": _OK, "reservation-get": reply})):
-                outcome = self._add(_by_name)
-            self.assertEqual((outcome.application, outcome.verification), ("applied", "failed"))
+            with self.subTest(name):
+                with stub_kea(_responses(**{"reservation-add": _OK, "reservation-get": reply})):
+                    outcome = self._add(_by_name)
+                self.assertEqual((outcome.application, outcome.verification), ("applied", "failed"))
 
     def test_a_failed_persist_step_keeps_the_applied_state(self):
         for name, failure, diagnostic in (
@@ -237,12 +239,13 @@ class ReservationAddTests(TestCase):
             ),
         ):
             responses = _responses(**{"reservation-add": _OK, "reservation-get": _res_get(_RAW), **failure})
-            with self.subTest(name), stub_kea(responses):
-                outcome = self._add()
-            self.assertEqual(
-                (outcome.application, outcome.persistence, outcome.verification, outcome.diagnostics),
-                ("applied", "failed", "verified", (diagnostic,)),
-            )
+            with self.subTest(name):
+                with stub_kea(responses):
+                    outcome = self._add()
+                self.assertEqual(
+                    (outcome.application, outcome.persistence, outcome.verification, outcome.diagnostics),
+                    ("applied", "failed", "verified", (diagnostic,)),
+                )
 
     def test_without_persistence_no_persist_step_is_sent(self):
         self.server.persist_config = False
@@ -364,11 +367,12 @@ class ReservationEditTests(TestCase):
 
     def test_a_failed_read_before_the_change_is_not_sent(self):
         for name, reply in (("transport", requests.ConnectionError("reset")), ("failure", {"result": 1, "text": "x"})):
-            with self.subTest(name), stub_kea(_responses(**{"reservation-get": reply})) as kea:
-                with self.assertRaises(ChangeRejected) as raised:
-                    self._edit(ReservationChange())
-            self.assertEqual(raised.exception.reason, "not-sent")
-            self.assertNotIn("reservation-update", kea.commands())
+            with self.subTest(name):
+                with stub_kea(_responses(**{"reservation-get": reply})) as kea:
+                    with self.assertRaises(ChangeRejected) as raised:
+                        self._edit(ReservationChange())
+                self.assertEqual(raised.exception.reason, "not-sent")
+                self.assertNotIn("reservation-update", kea.commands())
 
     def test_a_record_whose_options_cannot_be_read_is_not_sent(self):
         current = {**_RAW, "option-data": "not a list"}
@@ -418,18 +422,19 @@ class ReservationDeleteTests(TestCase):
     def test_a_delete_sends_the_identity_and_verifies_the_absence(self):
         for name, absent in (("result 3", {"result": 3}), ("result 0", {"result": 0, "text": "Host not found."})):
             responses = _responses(**{"reservation-get": queued(_res_get(_RAW), absent), "reservation-del": _OK})
-            with self.subTest(name), stub_kea(responses) as kea:
-                outcome = self._delete()
-            self.assertEqual(
-                kea.commands(), [*_SCOPE, "reservation-get", "reservation-del", *_PERSIST, "reservation-get"]
-            )
-            self.assertEqual(
-                kea.bodies("reservation-del")[0]["arguments"],
-                {"subnet-id": 20, "identifier-type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"},
-            )
-            self.assertEqual(outcome.previous, _shown())
-            self.assertIsNone(outcome.intended)
-            self.assertEqual((outcome.application, outcome.verification), ("applied", "verified"))
+            with self.subTest(name):
+                with stub_kea(responses) as kea:
+                    outcome = self._delete()
+                self.assertEqual(
+                    kea.commands(), [*_SCOPE, "reservation-get", "reservation-del", *_PERSIST, "reservation-get"]
+                )
+                self.assertEqual(
+                    kea.bodies("reservation-del")[0]["arguments"],
+                    {"subnet-id": 20, "identifier-type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"},
+                )
+                self.assertEqual(outcome.previous, _shown())
+                self.assertIsNone(outcome.intended)
+                self.assertEqual((outcome.application, outcome.verification), ("applied", "verified"))
 
     def test_result_3_changed_nothing_and_runs_no_persist_step(self):
         responses = _responses(**{"reservation-get": _res_get(_RAW), "reservation-del": {"result": 3, "text": "gone"}})

@@ -580,20 +580,20 @@ class TestKeaIpamSyncJobRun(TestCase):
 
     # ── host_cmds hook absent ─────────────────────────────────────────────
 
-    def test_host_cmds_absent_warning_logged(self):
-        """result=2 (unknown command) from reservation-get-page → WARNING about host_cmds.
+    def test_host_cmds_absent_is_logged_as_unsupported(self):
+        """result=2 (unknown command) from reservation-get-page is an ``unsupported`` read, logged at INFO.
 
         The real ``command()`` turns the result-2 code into a ``KeaException``,
-        which the Reservation phase reads as "host_cmds hook not loaded".
+        which ``read_failure.attempt()`` classifies as a missing hook library.
         """
         self._make_db_server()
         with _patch_kea(
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 2, "text": "unknown command"}},
         ):
-            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as cm:
+            with self.assertLogs("netbox_kea.read_failure", level="INFO") as cm:
                 self._run()
-        self.assertTrue(any("host_cmds" in msg for msg in cm.output))
+        self.assertTrue(any("the Reservation snapshot failed (unsupported)" in msg for msg in cm.output), cm.output)
 
     def test_identity_oserror_does_not_stop_the_other_family(self):
         self._make_db_server(dhcp4=True, dhcp6=True)
@@ -652,7 +652,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 2, "text": "unknown command"}},
         ):
-            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING"):
+            with self.assertLogs("netbox_kea.read_failure", level="INFO"):
                 # Must not raise JobFailed: nothing failed, the feature is absent.
                 KeaIpamSyncJob(_make_job()).run()
 
@@ -662,7 +662,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 2, "text": "unknown command"}},
         ):
-            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING"):
+            with self.assertLogs("netbox_kea.read_failure", level="INFO"):
                 job = self._run()
 
         self.assertEqual([entry["errors"] for entry in job.data["summary"]], [0])
@@ -677,7 +677,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 1, "text": "internal error"}},
         ):
-            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as logs:
+            with self.assertLogs("netbox_kea.read_failure", level="WARNING") as logs:
                 self._run()
 
         failures = [
@@ -695,7 +695,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 1, "text": "internal error"}},
         ):
-            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING"):
+            with self.assertLogs("netbox_kea.read_failure", level="WARNING"):
                 job = self._run()
 
         self.assertEqual([entry["errors"] for entry in job.data["summary"]], [1])
@@ -718,7 +718,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 2, "text": "unknown command"}},
         ):
-            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING"):
+            with self.assertLogs("netbox_kea.read_failure", level="INFO"):
                 self._run()
         self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
 
@@ -786,7 +786,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             responses={
                 "reservation-get-page": queued(
                     _res_page(hosts, next_from=len(hosts), next_source=1),
-                    RuntimeError("page fetch failed"),
+                    requests.ConnectionError("page fetch failed"),
                 )
             },
         ):
@@ -890,7 +890,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             leases4=[_LEASE4],
             responses={"reservation-get-page": {"result": 1, "text": "internal error"}},
         ):
-            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as cm:
+            with self.assertLogs("netbox_kea.read_failure", level="WARNING") as cm:
                 self._run_raises()
         self.assertTrue(any("the Reservation snapshot failed" in msg for msg in cm.output))
 
@@ -1000,7 +1000,7 @@ class TestKeaIpamSyncJobRun(TestCase):
 
         with _patch_kea(
             leases4=[_LEASE4],
-            responses={"config-get": RuntimeError("config-get boom")},
+            responses={"config-get": requests.ConnectionError("config-get boom")},
         ):
             with self.assertLogs("netbox_kea.jobs", level="INFO") as cm:
                 self._run()
@@ -1038,9 +1038,9 @@ class TestKeaIpamSyncJobRun(TestCase):
         self._make_db_server()
         with _patch_kea(
             leases4=[_LEASE4],
-            responses={"reservation-get-page": RuntimeError("unexpected")},
+            responses={"reservation-get-page": requests.ConnectionError("unexpected")},
         ):
-            with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as cm:
+            with self.assertLogs("netbox_kea.read_failure", level="WARNING") as cm:
                 self._run_raises()
         self.assertTrue(any("the Reservation snapshot failed" in msg for msg in cm.output))
 

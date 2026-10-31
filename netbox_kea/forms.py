@@ -836,25 +836,31 @@ class _SyncToNetBoxForm(forms.Form):
     sync_now_tip: ClassVar[str]
     scheduled_sync_tip: ClassVar[str]
     sync_note_tip: ClassVar[str] = ""
+    #: What the scheduled DHCP Import records in IPAM while automatic IPAM sync is off, or "" when it records nothing.
+    scheduled_import_note: ClassVar[str] = ""
 
-    def __init__(self, *args, automatic_sync: bool = False, sync_refusal: str = "", **kwargs):
+    def __init__(
+        self, *args, automatic_sync: bool = False, scheduled_import: bool = False, sync_refusal: str = "", **kwargs
+    ):
         super().__init__(*args, **kwargs)
         field = self.fields["sync_to_netbox"]
         if sync_refusal:
             field.widget.attrs["disabled"] = True
-        field.help_text = self._sync_help(sync_refusal, automatic_sync)
+        field.help_text = self._sync_help(sync_refusal, automatic_sync, scheduled_import)
 
-    def _sync_help(self, sync_refusal: str, automatic_sync: bool) -> SafeString:
+    def _sync_help(self, sync_refusal: str, automatic_sync: bool, scheduled_import: bool) -> SafeString:
         """Return the help: the refusal, if any, and whether automatic IPAM sync is on, with the details in a tip."""
         tip = [
             "" if sync_refusal else self.sync_now_tip,
             self.scheduled_sync_tip if automatic_sync else "",
             self.sync_note_tip,
         ]
+        note = self.scheduled_import_note if scheduled_import and not automatic_sync else ""
         return format_html(
-            "{}Automatic IPAM sync is {} for this Server. {}",
+            "{}Automatic IPAM sync is {} for this Server. {}{}",
             format_html("{} ", sync_refusal) if sync_refusal else "",
             "enabled" if automatic_sync else "disabled",
+            format_html("{} ", note) if note else "",
             help_tip(" ".join(sentence for sentence in tip if sentence)),
         )
 
@@ -878,6 +884,7 @@ class _ReservationForm(_SyncToNetBoxForm):
     sync_now_tip = "Select this to create or update the IP address in NetBox IPAM now, with status Reserved."
     scheduled_sync_tip = "The next scheduled sync run records a fixed address."
     sync_note_tip = "A Reservation with no address is skipped."
+    scheduled_import_note = "The scheduled DHCP Import still records Reservation addresses in IPAM."
 
     def __init__(self, *args, capabilities: ReservationCapabilities | None = None, **kwargs):
         """Apply the live identifier capabilities."""

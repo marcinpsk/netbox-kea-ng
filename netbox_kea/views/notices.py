@@ -14,14 +14,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal, TypeVar, overload
 
-import requests
 from django.contrib import messages
 from django.http import HttpRequest
 
-from ..kea import KeaException, kea_error_message
 from ..leases import LeaseAbsent, LeaseDiagnostic, LeaseFound, LeaseLookupFailed, LeaseSnapshot
 from ..models import Server
-from ..reservations import MalformedReservation, ReservationDiagnostic, ReservationSnapshot
+from ..read_failure import ReadFailure, attempt
+from ..reservations import ReservationDiagnostic, ReservationSnapshot
 from ..server_configuration import Diagnostic, ServerConfigurationSnapshot
 from ..subnet_catalogue import CatalogueSnapshot
 from ..utilities import diagnostic_reasons
@@ -129,30 +128,27 @@ def failed_load(snapshot: CatalogueSnapshot | ServerConfigurationSnapshot) -> No
     return Notice(kind, messages.ERROR, snapshot.diagnostics)
 
 
-def _classified(server: Server, kind: RecordKind | TargetKind, read: Callable[[], Read]) -> Read | Notice:
-    """Run *read*, and return an unavailable Notice when Kea refuses it, the transport fails or the reply is malformed.
+def _failure_notice(kind: NoticeKind, failure: ReadFailure) -> Notice:
+    """Return the unavailable Notice of a failed read. A Kea refusal carries Kea's answer."""
+    return Notice(
+        kind,
+        messages.ERROR,
+        unsupported_command=failure.kind == "unsupported",
+        unreachable=failure.kind == "unreachable",
+        reply=failure.reply,
+    )
 
-    A Kea refusal carries Kea's answer. Every other exception still raises.
-    """
-    try:
-        return read()
-    except KeaException as exc:
-        if exc.unsupported_command:
-            logger.info("Server %s does not provide the %s read: its hook library is not loaded", server.pk, kind)
-        else:
-            logger.exception("Kea refused the %s read of server %s", kind, server.pk)
-        return Notice(kind, messages.ERROR, unsupported_command=exc.unsupported_command, reply=kea_error_message(exc))
-    # MalformedReply and MalformedLeaseResponse are RuntimeErrors; MalformedReservation is a ValueError.
-    except (requests.RequestException, RuntimeError, MalformedReservation) as exc:
-        logger.exception("Failed to read %s from server %s", kind, server.pk)
-        return Notice(kind, messages.ERROR, unreachable=isinstance(exc, requests.RequestException))
+
+def _classified(server: Server, kind: RecordKind | TargetKind, read: Callable[[], Read]) -> Read | Notice:
+    """Run *read*, and return an unavailable Notice when it fails (``read_failure.attempt``)."""
+    loaded = attempt(f"The {kind} read of Server {server.pk}", read)
+    return _failure_notice(kind, loaded) if isinstance(loaded, ReadFailure) else loaded
 
 
 def load_snapshot(server: Server, kind: RecordKind, read: Callable[[], Read]) -> Read | Notice:
-    """Run a Reservation or Lease read, and return an unavailable Notice when Kea, the transport or the reply fails.
+    """Run a Reservation or Lease read, and return an unavailable Notice when it fails (``read_failure.attempt``).
 
-    A refused Lease query (``LeaseQueryGuardError``) still raises. A ``ValueError`` still raises, except
-    ``MalformedReservation``, which is a malformed reply.
+    A refused Lease query (``LeaseQueryGuardError``) and a ``ValueError`` still raise.
     """
     return _classified(server, kind, read)
 
@@ -173,7 +169,7 @@ def load_target(server: Server, kind: TargetKind, read: Callable[[], object]) ->
     """Run an exact Lease or Reservation load, and return an unavailable Notice when Kea, the transport or the reply fails.
 
     A Lease that Kea returned but that cannot be read (``LeaseLookupFailed``) is a malformed reply. A ``ValueError``
-    still raises, except ``MalformedReservation``, which is a malformed reply.
+    still raises.
     """
     loaded = _classified(server, kind, read)
     if isinstance(loaded, LeaseLookupFailed):

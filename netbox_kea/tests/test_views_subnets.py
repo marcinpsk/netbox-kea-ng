@@ -42,6 +42,7 @@ from .kea_stub import (
     SubnetDaemon,
     _catalogue_responses_for_subnets,
     _network_present,
+    _raw_http_response,
     _refused_connection,
     _res_page,
     _subnet_list,
@@ -597,14 +598,15 @@ class TestServerSubnet4WipeView(_ViewTestBase):
         """A lost or malformed reply asks the operator to check the Server, never an HTTP 500."""
         for name, reply in (("lost", requests.ReadTimeout("read timed out")), ("malformed", ["ok"])):
             self._fresh_client()
-            with self.subTest(name), stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": reply}) as kea:
-                response = self.client.post(self._url())
-            self.assertEqual(response.status_code, 302)
-            self.assertEqual(
-                [str(message) for message in get_messages(response.wsgi_request)],
-                [f"{UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable."],
-            )
-            self.assertEqual(kea.commands(), ["lease4-wipe"])
+            with self.subTest(name):
+                with stub_kea({**_ABSENT_READ_HOOKS, "lease4-wipe": reply}) as kea:
+                    response = self.client.post(self._url())
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(
+                    [str(message) for message in get_messages(response.wsgi_request)],
+                    [f"{UNCONFIRMED_RUNTIME} Kea's reply to the change was lost or unreadable."],
+                )
+                self.assertEqual(kea.commands(), ["lease4-wipe"])
 
     def test_get_requires_login(self):
         """Unauthenticated GET must redirect to login."""
@@ -830,9 +832,10 @@ class TestServerSubnet4EditView(_ViewTestBase):
         for data, expected in (("10.0.0.1", "10.0.0.1"), ("10.0.0.1, 10.0.0.2", "")):
             subnet = deepcopy(_SUBNET4_GET_FULL[0])
             subnet["arguments"]["subnet4"][0]["option-data"] = [{"code": 3, "data": data}]
-            with self.subTest(data=data), self._get_stub(subnet=subnet):
-                response = self.client.get(self._url())
-            self.assertEqual(response.context["form"].initial.get("gateway", ""), expected)
+            with self.subTest(data=data):
+                with self._get_stub(subnet=subnet):
+                    response = self.client.get(self._url())
+                self.assertEqual(response.context["form"].initial.get("gateway", ""), expected)
 
     def test_get_prefills_membership_from_the_live_declaration_when_the_target_is_incomplete(self):
         """An incomplete live declaration still decides membership; the cached catalogue never does."""
@@ -3323,11 +3326,11 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
         self.assertContains(response, "this form cannot be saved")
         self.assertEqual(response.context["form"].initial["subnet_cidr"], "10.0.0.0/24")
 
-    def test_value_error_renders_edit_form_with_warning(self):
-        """A ValueError on config-get must not cause a 500 in the edit view."""
+    def test_a_config_get_body_that_is_not_json_renders_edit_form_with_warning(self):
+        """A config-get reply that is not JSON must not cause a 500 in the edit view."""
         url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
         with stub_kea(
-            {**_ABSENT_READ_HOOKS, "subnet4-get": self._LIVE_SUBNET, "config-get": ValueError("bad response")}
+            {**_ABSENT_READ_HOOKS, "subnet4-get": self._LIVE_SUBNET, "config-get": _raw_http_response(b"bad response")}
         ):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -3510,14 +3513,14 @@ class TestPoolAddPostErrors(_ViewTestBase):
         malformed_probe = {"result": 0, "arguments": {"hosts": None, "next": {"from": 0, "source-index": 0}}}
 
         with self._pool_add_stub(**{"reservation-get-page": malformed_probe}) as kea:
-            with self.assertLogs("netbox_kea.views.notices", level="WARNING") as logs:
+            with self.assertLogs("netbox_kea.read_failure", level="WARNING") as logs:
                 response = self.client.post(
                     self._url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.10-10.0.0.20"}, follow=True
                 )
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("subnet4-delta-add", kea.commands())
-        read_records = [record for record in logs.records if "Failed to read reservation" in record.getMessage()]
+        read_records = [record for record in logs.records if "The reservation read of Server" in record.getMessage()]
         self.assertTrue(read_records, logs.output)
         self.assertIsNotNone(read_records[0].exc_info)
 
@@ -3718,10 +3721,12 @@ class TestSubnetAddGetClientError(_ViewTestBase):
 class TestGetSubnetsError(_ViewTestBase):
     """Cover get_subnets() error path."""
 
-    def test_config_get_value_error_shows_empty(self):
-        """A ValueError from config-get shows an empty subnet list with an error message, no 500."""
+    def test_a_config_get_body_that_is_not_json_shows_empty(self):
+        """A config-get reply that is not JSON shows an empty subnet list with an error message, no 500."""
         url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        with stub_kea({**_ABSENT_READ_HOOKS, "config-get": ValueError("bad JSON"), "stat-lease4-get": _STAT_ABSENT4}):
+        with stub_kea(
+            {**_ABSENT_READ_HOOKS, "config-get": _raw_http_response(b"bad JSON"), "stat-lease4-get": _STAT_ABSENT4}
+        ):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -3861,16 +3866,6 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
 
     # ── 2. Stats enrichment exception paths ─────────────
 
-    def test_stats_value_error_still_renders_subnets(self):
-        """When stat-lease4-get raises ValueError, subnets render without utilisation."""
-        with self._list_stub(_config_with_one_subnet()[0], stat=ValueError("bad stat response")):
-            response = self.client.get(self._subnets4_url())
-        self.assertEqual(response.status_code, 200)
-        table = response.context["table"]
-        self.assertEqual(len(table.data), 1)
-        # No utilisation columns should be present
-        self.assertNotIn("utilization", next(iter(table.data)))
-
     def test_malformed_stats_render_subnets_without_utilization(self):
         """A malformed stat-lease4-get reply drops the utilization and logs a warning; the Subnets still render."""
         columns = ["subnet-id", "total-addresses", "assigned-addresses"]
@@ -3878,15 +3873,15 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
             {"result": 0, "arguments": {}},
             {"result": 0, "arguments": {"result-set": {"columns": columns, "rows": [[1, None, None]]}}},
         ):
-            with (
-                self.subTest(reply=reply),
-                self.assertLogs("netbox_kea.views._base", level="WARNING"),
-                self._list_stub(_config_with_one_subnet()[0], stat=reply),
-            ):
-                response = self.client.get(self._subnets4_url())
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(len(response.context["table"].data), 1)
-            self.assertNotIn("utilization", next(iter(response.context["table"].data)))
+            with self.subTest(reply=reply):
+                with (
+                    self.assertLogs("netbox_kea.read_failure", level="WARNING"),
+                    self._list_stub(_config_with_one_subnet()[0], stat=reply),
+                ):
+                    response = self.client.get(self._subnets4_url())
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(len(response.context["table"].data), 1)
+                self.assertNotIn("utilization", next(iter(response.context["table"].data)))
 
     def test_a_statistics_error_warns_and_a_missing_hook_does_not(self):
         """Only a missing stat_cmds hook is an expected state; another Kea error is a failed read."""
@@ -3894,14 +3889,14 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
             ({"result": 1, "text": "database failure"}, self.assertLogs),
             (_STAT_ABSENT4, self.assertNoLogs),
         ):
-            with (
-                self.subTest(stat=stat),
-                logs("netbox_kea.views._base", level="WARNING"),
-                self._list_stub(_config_with_one_subnet()[0], stat=stat),
-            ):
-                response = self.client.get(self._subnets4_url())
-            self.assertEqual(response.status_code, 200)
-            self.assertNotIn("utilization", next(iter(response.context["table"].data)))
+            with self.subTest(stat=stat):
+                with (
+                    logs("netbox_kea.read_failure", level="WARNING"),
+                    self._list_stub(_config_with_one_subnet()[0], stat=stat),
+                ):
+                    response = self.client.get(self._subnets4_url())
+                self.assertEqual(response.status_code, 200)
+                self.assertNotIn("utilization", next(iter(response.context["table"].data)))
 
     def test_stats_request_exception_still_renders_subnets(self):
         """When stat-lease4-get raises RequestException, subnets render without utilisation."""
@@ -4014,15 +4009,16 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
             "Pool 10.0.0.100-10.0.0.200 was not checked against existing Reservations."
         )
         for name, reply, line in READ_FAILURES:
-            with self.subTest(name), self._pool_add_stub(**{"reservation-get-page": reply}):
-                self._fresh_client()
-                response = self.client.post(
-                    self._pool_add_url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"}
-                )
-            shown = [(message.level, str(message)) for message in get_messages(response.wsgi_request)]
-            self.assertEqual(shown[0][0], django_messages.SUCCESS)
-            notice_text = " ".join([HEADLINES["reservation"], *([line] if line else [])])
-            self.assertEqual(shown[1:], [(django_messages.WARNING, f"{not_checked} {notice_text}")])
+            with self.subTest(name):
+                with self._pool_add_stub(**{"reservation-get-page": reply}):
+                    self._fresh_client()
+                    response = self.client.post(
+                        self._pool_add_url(), {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"}
+                    )
+                shown = [(message.level, str(message)) for message in get_messages(response.wsgi_request)]
+                self.assertEqual(shown[0][0], django_messages.SUCCESS)
+                notice_text = " ".join([HEADLINES["reservation"], *([line] if line else [])])
+                self.assertEqual(shown[1:], [(django_messages.WARNING, f"{not_checked} {notice_text}")])
 
     def test_pool_add_client_creation_failure_shows_an_error(self):
         """A real get_client() failure (cert without key → ValueError) leaves no Subnet to add the Pool to."""

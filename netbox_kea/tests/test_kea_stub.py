@@ -9,18 +9,23 @@ enrichment views POST from cloned clients on worker threads).
 """
 
 import json
+import ssl
 import threading
 from pathlib import Path
 
 import pytest
 import requests
+from urllib3.exceptions import SSLError as Urllib3SSLError
 
-from netbox_kea.kea import KeaCommand
+from netbox_kea.kea import KeaCommand, KeaException, KeaRequestEncodingError, KeaTLSFileError
 from netbox_kea.tests.kea_stub import (
+    Applied,
     KeaHttpStub,
+    SubnetDaemon,
     _http_response,
     _reservation_family,
     _typed_reservation,
+    client_failure,
     kea_client,
     queued,
     recorded_host,
@@ -210,16 +215,104 @@ def test_typed_reservation_rejects_a_fixture_without_a_supported_identity(host):
         _typed_reservation(host)
 
 
-def test_exception_value_is_raised():
-    stub = KeaHttpStub({"version-get": requests.ConnectionError("down")})
-    with pytest.raises(requests.ConnectionError):
+@pytest.mark.parametrize(
+    "error",
+    (
+        requests.ConnectionError("down"),
+        requests.ConnectionError,
+        requests.Timeout("slow"),
+        requests.exceptions.SSLError("bad certificate"),
+        OSError("Could not find a suitable TLS CA certificate bundle, invalid path: /missing"),
+        Urllib3SSLError("decryption failed"),
+        ssl.SSLError("unreadable TLS record"),
+    ),
+)
+def test_a_transport_error_is_raised(error):
+    stub = KeaHttpStub({"version-get": error})
+    expected = error if isinstance(error, type) else type(error)
+    with pytest.raises(expected):
         _call(stub)
 
 
-def test_callable_returning_exception_is_raised():
-    stub = KeaHttpStub({"version-get": lambda body: ValueError("bad json")})
-    with pytest.raises(ValueError):
+def test_callable_returning_a_transport_error_is_raised():
+    stub = KeaHttpStub({"version-get": lambda body: requests.Timeout("slow")})
+    with pytest.raises(requests.Timeout):
         _call(stub)
+
+
+@pytest.mark.parametrize(
+    ("error", "name"),
+    (
+        (RuntimeError, "RuntimeError"),
+        (ValueError("x"), "ValueError"),
+        (KeaException({"result": 1, "text": "refused", "arguments": None}), "KeaException"),
+        # Response.json() raises it, never Session.post(); it is a RequestException.
+        (requests.JSONDecodeError("bad JSON", "x", 0), "JSONDecodeError"),
+        # raise_for_status() raises it after the POST returns; answer with an HTTP error reply instead.
+        (requests.HTTPError("401 Unauthorized"), "HTTPError"),
+        # requests wraps a socket error in requests.ConnectionError; KeaClient would read it as a missing TLS file.
+        (ConnectionResetError(104, "reset"), "ConnectionResetError"),
+        # requests raises these only for a redirect reply; a test sends that reply through the real Session.
+        (UnicodeEncodeError("latin-1", "pass\u20ac", 4, 5, "ordinal not in range(256)"), "UnicodeEncodeError"),
+        (UnicodeDecodeError("utf-8", b"/caf\xe9", 4, 5, "unexpected end of data"), "UnicodeDecodeError"),
+        # KeaClient.command raises these after a requests error; the plugin defines them.
+        (KeaTLSFileError("missing file"), "KeaTLSFileError"),
+        (KeaRequestEncodingError, "KeaRequestEncodingError"),
+    ),
+)
+def test_an_error_a_real_post_cannot_raise_is_refused(error, name):
+    """A malformed reply is a payload that the real KeaClient rejects, not an exception raised at the boundary."""
+    for response in (error, lambda body: error, queued(error)):
+        stub = KeaHttpStub({"version-get": response})
+        with pytest.raises(AssertionError, match=rf"version-get.*{name}.*requests\.RequestException"):
+            _call(stub)
+
+
+def test_a_callable_that_raises_an_error_a_real_post_cannot_raise_is_refused():
+    def respond(body):
+        raise ValueError("bad json")
+
+    for response in (respond, queued(respond)):
+        stub = KeaHttpStub({"version-get": response})
+        with pytest.raises(AssertionError, match=r"version-get.*ValueError"):
+            _call(stub)
+
+
+def test_a_callable_that_raises_a_transport_error_or_an_assertion_is_unchanged():
+    def respond(error):
+        def raise_it(body):
+            raise error
+
+        return raise_it
+
+    for error in (requests.Timeout("slow"), AssertionError("the stub saw a wrong request")):
+        stub = KeaHttpStub({"version-get": respond(error)})
+        with pytest.raises(type(error)) as raised:
+            _call(stub)
+        assert raised.value is error
+
+
+def test_a_subnet_daemon_script_refuses_an_error_a_real_post_cannot_raise():
+    daemon = SubnetDaemon(4)
+    daemon.script("subnet4-list", RuntimeError("boom"))
+    daemon.script("config-get", Applied(ValueError("bad json")))
+    client = kea_client(url="https://kea.example.invalid/")
+    with stub_kea(daemon.responses()):
+        for command, name in ((KeaCommand.SUBNET4_LIST, "RuntimeError"), (KeaCommand.CONFIG_GET, "ValueError")):
+            with pytest.raises(AssertionError, match=rf"{command.value}.*{name}"):
+                client.command(command, 4)
+
+
+def test_client_failure_raises_for_one_command_and_sends_the_others():
+    client = kea_client(url="https://kea.example.invalid/")
+    with stub_kea({"version-get": {"result": 0}}) as stub, client_failure(KeaCommand.CONFIG_GET, TypeError("bug")):
+        with pytest.raises(TypeError, match="bug"):
+            client.command(KeaCommand.CONFIG_GET, 4)
+        with pytest.raises(TypeError, match="bug"):
+            client.command(command=KeaCommand.CONFIG_GET, target=4)
+        assert client.command(KeaCommand.VERSION_GET, 4) == [{"result": 0}]
+        assert client.command(command=KeaCommand.VERSION_GET, target=4) == [{"result": 0}]
+    assert stub.commands() == ["version-get", "version-get"]
 
 
 def test_concurrent_requests_are_all_recorded():

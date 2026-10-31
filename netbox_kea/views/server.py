@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 import logging
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
-import requests
 from django.http.request import HttpRequest
 from django.shortcuts import redirect
 from django.template.loader import render_to_string
@@ -17,8 +17,9 @@ from .. import forms, server_configuration, tables
 from ..constants import Family
 from ..dhcp_options import DHCPOption, option_name
 from ..filtersets import ServerFilterSet
-from ..kea import DaemonStatus, DaemonVersion, KeaException
+from ..kea import DaemonStatus, DaemonVersion
 from ..models import Server
+from ..read_failure import ReadFailure, attempt
 from ..server_connection import connection_values, validate_connection_change
 from ..utilities import (
     format_duration,
@@ -28,6 +29,11 @@ from .notices import Notice, inline_notices, notice
 from .workspace import ServerFamilyMixin, server_context, with_return_url
 
 logger = logging.getLogger(__name__)
+
+
+def _read_status_rows(client: LazyClient) -> dict[str, Any]:
+    """Return the status rows of the target of *client*, read through the display cache."""
+    return _status_rows(daemon_status(client), daemon_version(client))
 
 
 def _status_rows(status: DaemonStatus, version: DaemonVersion) -> dict[str, Any]:
@@ -217,11 +223,10 @@ class ServerStatusView(generic.ObjectView):
             targets.append(("DHCPv4", 4))
         result: dict[str, dict[str, Any]] = {}
         for name, target in targets:
-            try:
-                with LazyClient(server, target) as client:
-                    result[name] = _status_rows(daemon_status(client), daemon_version(client))
-            except (KeaException, requests.RequestException, ValueError, RuntimeError):  # noqa: PERF203
-                logger.exception("Failed to fetch the %s status of server %s", name, server.pk)
+            with LazyClient(server, target) as client:
+                rows = attempt(f"The {name} status read of Server {server.pk}", partial(_read_status_rows, client))
+            if not isinstance(rows, ReadFailure):
+                result[name] = rows
         return result
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:

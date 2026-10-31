@@ -13,11 +13,12 @@ from __future__ import annotations
 import ipaddress
 import unittest
 from functools import partial
+from unittest.mock import patch
 
 from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
-from django.db import connection, transaction
+from django.db import DatabaseError, connection, transaction
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, tag
 from django.urls import reverse
 from django.utils import timezone
@@ -2211,6 +2212,150 @@ class DhcpPluginSubnetIdImportTest(TestCase):
         self.assertFalse(Subnet.objects.filter(prefix__prefix="10.94.2.0/24").exists())
         self.assertEqual(Subnet.objects.get(pk=holder.pk).subnet_id, 9401)
 
+    @staticmethod
+    def _with_reservation_options(conf: dict) -> tuple[dict, str]:
+        """Give the Reservation of *conf* two DHCP Options, and return *conf* and the Kea path of the Reservation."""
+        subnet = conf["subnet4"][0]
+        reservation = subnet["reservations"][0]
+        reservation["option-data"] = [{"code": 6, "data": "10.94.0.53"}, {"code": 15, "data": "example.org"}]
+        return conf, f"Dhcp4/subnet4[id={subnet['id']}]/reservations[hw-address={reservation['hw-address']}]"
+
+    @staticmethod
+    def _reservation_entries(summary, path: str) -> list:
+        return [
+            (entry.kind, entry.path, entry.outcome, entry.reason)
+            for entry in summary.entries
+            if entry.path.startswith(path)
+        ]
+
+    def test_the_options_of_a_reservation_of_a_taken_subnet_id_have_the_reason_of_the_reservation(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
+        self._import(self.other, _subnet_id_conf(9408, 9))
+        conf, path = self._with_reservation_options(_subnet_id_conf(9408, 10))
+
+        summary = self._import(self.server, conf)
+
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        self.assertEqual(
+            self._reservation_entries(summary, path),
+            [
+                (Kind.RESERVATION, path, Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH),
+                (Kind.OPTION, f"{path}/option-data[code=6]", Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH),
+                (Kind.OPTION, f"{path}/option-data[code=15]", Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH),
+            ],
+        )
+
+    def test_the_options_of_a_taken_subnet_and_of_its_pools_have_the_reason_of_the_subnet(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
+        self._import(self.other, _subnet_id_conf(9411, 14))
+        conf = _subnet_id_conf(9411, 15)
+        subnet = conf["subnet4"][0]
+        subnet["option-data"] = [{"code": 6, "data": "10.94.15.53"}]
+        subnet["pools"][0]["option-data"] = [{"code": 15, "data": "example.org"}]
+        path = "Dhcp4/subnet4[id=9411]"
+
+        entries = self._reservation_entries(self._import(self.server, conf), path)
+
+        pool_option = f"{path}/pools[pool=10.94.15.10-10.94.15.20]/option-data[code=15]"
+        self.assertEqual(
+            [entry for entry in entries if entry[0] == Kind.OPTION],
+            [
+                (Kind.OPTION, f"{path}/option-data[code=6]", Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH),
+                (Kind.OPTION, pool_option, Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH),
+            ],
+        )
+
+    def test_with_per_server_subnet_ids_the_options_of_a_reservation_of_a_held_id_are_not_in_scope(self):
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        from netbox_kea.integrations.dhcp_import_report import REASON_OUTCOME, Capability
+        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+
+        dhcp_server, _ = self.adapter.upsert_dhcp_server(self.server, 4)
+        apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
+            name="hand-made",
+            subnet_id=9410,
+            prefix=Prefix.objects.create(prefix=IPNetwork("10.94.10.0/24")),
+            dhcp_server=dhcp_server,
+        )
+        conf, path = self._with_reservation_options(_subnet_id_conf(9410, 13))
+
+        summary = self._import(self.server, conf, PluginCapabilities(frozenset({Capability.SUBNET_ID_PER_SERVER})))
+
+        outcome = REASON_OUTCOME[Reason.NOT_IN_SCOPE]
+        self.assertEqual(
+            self._reservation_entries(summary, path),
+            [
+                (Kind.RESERVATION, path, outcome, Reason.NOT_IN_SCOPE),
+                (Kind.OPTION, f"{path}/option-data[code=6]", outcome, Reason.NOT_IN_SCOPE),
+                (Kind.OPTION, f"{path}/option-data[code=15]", outcome, Reason.NOT_IN_SCOPE),
+            ],
+        )
+
+    def test_the_options_of_a_reservation_of_a_subnet_that_was_not_imported_are_not_written(self):
+        from django.db.models.signals import pre_save
+
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
+        conf, path = self._with_reservation_options(_subnet_id_conf(9409, 12))
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+
+        def refuse(sender, instance, **kwargs):
+            raise DatabaseError("the Subnet write fails")
+
+        pre_save.connect(refuse, sender=Subnet, weak=False)
+        try:
+            summary = self._import(self.server, conf)
+        finally:
+            pre_save.disconnect(refuse, sender=Subnet)
+
+        self.assertEqual(self._not_written(summary)[0], (Kind.SUBNET, Reason.WRITE_FAILED, None))
+        self.assertEqual(
+            self._reservation_entries(summary, path),
+            [
+                (Kind.RESERVATION, path, Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+                (Kind.OPTION, f"{path}/option-data[code=6]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+                (Kind.OPTION, f"{path}/option-data[code=15]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+            ],
+        )
+
+    def test_a_reservation_of_a_mapped_subnet_whose_update_failed_is_not_written(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
+        first, path = self._with_reservation_options(_subnet_id_conf(9410, 13))
+        self.assertEqual(self._import(self.server, first).errors, 0)
+        HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
+        stored = HostReservation.objects.get(subnet=self._subnet(self.server, 9410))
+        conf, path = self._with_reservation_options(_subnet_id_conf(9410, 13))
+        conf["subnet4"][0]["valid-lifetime"] = 7200
+        conf["subnet4"][0]["reservations"][0]["hostname"] = "changed"
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        real_write = self.adapter._write_child
+
+        def write(row, *args, **kwargs):
+            # The database refuses the update of the mapped Subnet.
+            if isinstance(row, Subnet):
+                raise DatabaseError("the Subnet update failed")
+            return real_write(row, *args, **kwargs)
+
+        with patch.object(self.adapter, "_write_child", autospec=True, side_effect=write):
+            summary = self._import(self.server, conf)
+
+        self.assertEqual(self._not_written(summary)[0], (Kind.SUBNET, Reason.WRITE_FAILED, None))
+        self.assertEqual(
+            self._reservation_entries(summary, path),
+            [
+                (Kind.RESERVATION, path, Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+                (Kind.OPTION, f"{path}/option-data[code=6]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+                (Kind.OPTION, f"{path}/option-data[code=15]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+            ],
+        )
+        stored.refresh_from_db()
+        self.assertNotEqual(stored.hostname, "changed")
+
     def test_the_capability_probe_decides_the_clash(self):
         """With per-server Subnet IDs the import writes the ID. The installed plugin still refuses it in the database."""
         from netbox_kea.integrations.dhcp_import_report import Capability
@@ -3205,7 +3350,12 @@ class DhcpPluginPDPoolImportTest(TestCase):
             [(entry.path, entry.outcome, entry.reason, entry.capability) for entry in clash],
             [
                 (_PD_POOL, Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH, Capability.SUBNET_ID_PER_SERVER),
-                (f"{_PD_POOL}/option-data[code=23]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED, None),
+                (
+                    f"{_PD_POOL}/option-data[code=23]",
+                    Outcome.UNSUPPORTED,
+                    Reason.SUBNET_ID_CLASH,
+                    Capability.SUBNET_ID_PER_SERVER,
+                ),
             ],
         )
 
@@ -4535,7 +4685,13 @@ class SkippedReservationCompletenessTest(TestCase):
         self.server = _make_db_server()
 
     def test_record_for_an_unlinked_subnet_id_reports_the_record_as_skipped(self):
-        from netbox_kea.integrations.dhcp_plugin import ImportSummary, import_reservation_snapshot
+        from netbox_kea.integrations.dhcp_plugin import (
+            ClassReferences,
+            CustomDefinitions,
+            ImportSummary,
+            OptionReferences,
+            import_reservation_snapshot,
+        )
         from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
         from netbox_kea.views.dhcp_plugin_sync import _summary_problems
 
@@ -4549,7 +4705,7 @@ class SkippedReservationCompletenessTest(TestCase):
             self.server,
             None,
             snapshot,
-            None,
+            OptionReferences(CustomDefinitions(self.server, {}, ()), ClassReferences(4, frozenset(), {})),
             summary,
             family=4,
             adoption_servers=(),
