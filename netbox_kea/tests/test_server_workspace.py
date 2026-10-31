@@ -33,11 +33,13 @@ class TestServerWorkspace(_ViewTestBase):
                         )
                     self.assertEqual(response.status_code, 302)
                     self.assertEqual(parse_qs(urlsplit(response.url).query).get("family"), ["6"])
-                    destination = BeautifulSoup(self.client.get(response.url).content, "html.parser")
+                    with stub_kea({}) as landing:
+                        destination = BeautifulSoup(self.client.get(response.url).content, "html.parser")
                     self.assertEqual(
                         destination.select_one('[aria-label="DHCP family"] [aria-current="page"]').text, "DHCPv6"
                     )
                     self.assertEqual(kea.commands(), [f"dhcp-{action}"])
+                    self.assertEqual(landing.commands(), [])
 
     def test_sync_controls_keep_family_from_emitted_form_actions_through_redirects(self):
         from core.models import Job

@@ -1077,10 +1077,12 @@ class TestPersistFailures(TestCase):
 
     def test_a_reply_that_python_cannot_read_is_malformed_and_a_failed_persistence(self) -> None:
         # Python's JSON reader raises a plain ValueError for a long integer, a RecursionError for deep nesting.
-        for name, value in (("long integer", b"1" * 5000), ("deep nesting", b"[" * 100000 + b"0" + b"]" * 100000)):
+        limit = sys.get_int_max_str_digits() if hasattr(sys, "get_int_max_str_digits") else 0
+        long_integer = b"1" * (limit + 1)
+        for name, value in (("long integer", long_integer), ("deep nesting", b"[" * 100000 + b"0" + b"]" * 100000)):
             with self.subTest(name):
-                if name == "long integer" and not hasattr(sys, "get_int_max_str_digits"):
-                    self.skipTest("Python 3.10 has no integer digit limit")
+                if name == "long integer" and not limit:
+                    self.skipTest("The interpreter has no integer digit limit")
                 self._assert_unreadable_reply_fails(
                     _raw_http_response(b'[{"result": 0, "arguments": {"n": ' + value + b"}}]")
                 )
