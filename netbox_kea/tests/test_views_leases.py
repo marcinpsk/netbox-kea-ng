@@ -2891,22 +2891,20 @@ class TestJournalHelperEdgeCases(SimpleTestCase):
 
 
 class TestHTMXExceptionHandler(_ViewTestBase):
-    """An exception during the HTMX lease fetch renders the error partial."""
+    """An exception during the HTMX lease fetch renders the unavailable Lease Notice in the section."""
 
     _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
 
-    def test_htmx_exception_returns_error_partial(self):
-        # A failed lease fetch must render inside the section.
+    def test_htmx_exception_renders_lease_notice(self):
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get": requests.ConnectionError("boom")}):
             response = self.client.get(
                 self._url() + "?q=10.0.0.1&by=ip",
                 HTTP_HX_REQUEST="true",
             )
-        # Never a 500: accepting 500 would let a regression where the read stops being classified pass unnoticed.
-        self.assertEqual(response.status_code, 200)
+        _assert_lease_read_failed(self, response)
 
 
 # ---------------------------------------------------------------------------
