@@ -13,6 +13,20 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.10.3 (2026-10-31)
+
+### Bug Fixes
+
+- **deps-dev**: Bump imageio-ffmpeg from 0.6.0 to 0.7.0
+  ([`3ffb525`](https://github.com/marcinpsk/netbox-kea-ng/commit/3ffb5256b7e6c9bb87b82881d101ca4b96cd8a91))
+
+- **deps-dev**: Bump pytest from 9.1.1 to 9.2.0
+  ([`f7afefb`](https://github.com/marcinpsk/netbox-kea-ng/commit/f7afefbc8803b38a89598f341910d3d054cda5c6))
+
+- **deps-dev**: Bump ruff from 0.17.1 to 0.17.3
+  ([`7fada31`](https://github.com/marcinpsk/netbox-kea-ng/commit/7fada31b2bfd2351ce64e90a708c5faacb51f587))
+
+
 ## v3.10.2 (2026-10-31)
 
 ### Bug Fixes
