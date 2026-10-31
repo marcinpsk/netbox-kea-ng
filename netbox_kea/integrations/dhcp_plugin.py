@@ -254,10 +254,19 @@ def _keep_unmapped(summary: ImportSummary, family: int, kind: Kind, path: str) -
     summary.record(not_written(family, kind, path, Reason.NOT_IN_SCOPE, detail))
 
 
-def _skip_options(summary: ImportSummary, family: int, parent_path: str, planned: PlannedOptions) -> None:
-    """Record each DHCP Option of the object at *parent_path*, which was not imported."""
+def _skip_options(
+    summary: ImportSummary,
+    family: int,
+    parent_path: str,
+    planned: PlannedOptions,
+    taken: SubnetIdTaken | None = None,
+) -> None:
+    """Record each DHCP Option of the object at *parent_path*, which was not imported, with the *taken* ID's entry."""
     for path in planned.paths(parent_path, family):
-        summary.record(not_written(family, Kind.OPTION, path, Reason.PARENT_NOT_IMPORTED))
+        if taken is None:
+            summary.record(not_written(family, Kind.OPTION, path, Reason.PARENT_NOT_IMPORTED))
+        else:
+            summary.record(taken.entry(family, Kind.OPTION, path))
 
 
 class _Count:
@@ -1710,10 +1719,10 @@ def _skip_subnet_children(
 ) -> None:
     """Record the DHCP Options, Pools and PD Pools of a Subnet that was not imported.
 
-    A *taken* ID is also why its Pools and PD Pools were not.
+    A *taken* ID is also why its Options, Pools and PD Pools were not.
     """
     family, parent_path = planned.intent.family, subnet_path(planned)
-    _skip_options(summary, family, parent_path, planned_options(planned, family, declared))
+    _skip_options(summary, family, parent_path, planned_options(planned, family, declared), taken)
     children = [
         (Kind.POOL, pool_path(parent_path, pool, family), planned_options(pool, family, declared))
         for pool in planned.pools
@@ -1727,7 +1736,7 @@ def _skip_subnet_children(
             summary.record(not_written(family, kind, path, Reason.PARENT_NOT_IMPORTED))
         else:
             summary.record(taken.entry(family, kind, path))
-        _skip_options(summary, family, path, options)
+        _skip_options(summary, family, path, options, taken)
 
 
 def subnet_path(planned: PlannedSubnet) -> str:
@@ -2467,12 +2476,15 @@ def _record_snapshot_diagnostics(observation: ReservationObservation, family: in
 
 
 def _skip_reservation_options(
-    summary: ImportSummary, planned: Planned[ReservationKey, Reservation], references: OptionReferences
+    summary: ImportSummary,
+    planned: Planned[ReservationKey, Reservation],
+    references: OptionReferences,
+    taken: SubnetIdTaken | None = None,
 ) -> None:
-    """Record the DHCP Options of an In-Subnet Reservation whose Subnet was not imported."""
+    """Record the DHCP Options of an In-Subnet Reservation whose Subnet was not imported or whose ID is *taken*."""
     family, key = planned.intent.family, planned.key
     options = planned_options(planned, family, references.definitions.declared)
-    _skip_options(summary, family, reservation_path(key, family), options)
+    _skip_options(summary, family, reservation_path(key, family), options, taken)
 
 
 def import_reservation_snapshot(
@@ -2523,7 +2535,7 @@ def import_reservation_snapshot(
             if taken is not None:
                 complete = False
                 summary.record(taken.entry(family, Kind.RESERVATION, reservation_path(key, family)))
-                _skip_reservation_options(summary, planned, references)
+                _skip_reservation_options(summary, planned, references, taken)
                 continue
             if subnet_ids is not None and key.subnet_id in subnet_ids.failed:
                 subnet_obj = None

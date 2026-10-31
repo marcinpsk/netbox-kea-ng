@@ -2228,7 +2228,7 @@ class DhcpPluginSubnetIdImportTest(TestCase):
             if entry.path.startswith(path)
         ]
 
-    def test_the_options_of_a_reservation_of_a_taken_subnet_id_are_not_written(self):
+    def test_the_options_of_a_reservation_of_a_taken_subnet_id_have_the_reason_of_the_reservation(self):
         from netbox_kea.integrations.dhcp_import_report import Outcome
 
         self._import(self.other, _subnet_id_conf(9408, 9))
@@ -2241,8 +2241,57 @@ class DhcpPluginSubnetIdImportTest(TestCase):
             self._reservation_entries(summary, path),
             [
                 (Kind.RESERVATION, path, Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH),
-                (Kind.OPTION, f"{path}/option-data[code=6]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
-                (Kind.OPTION, f"{path}/option-data[code=15]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED),
+                (Kind.OPTION, f"{path}/option-data[code=6]", Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH),
+                (Kind.OPTION, f"{path}/option-data[code=15]", Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH),
+            ],
+        )
+
+    def test_the_options_of_a_taken_subnet_and_of_its_pools_have_the_reason_of_the_subnet(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
+        self._import(self.other, _subnet_id_conf(9411, 14))
+        conf = _subnet_id_conf(9411, 15)
+        subnet = conf["subnet4"][0]
+        subnet["option-data"] = [{"code": 6, "data": "10.94.15.53"}]
+        subnet["pools"][0]["option-data"] = [{"code": 15, "data": "example.org"}]
+        path = "Dhcp4/subnet4[id=9411]"
+
+        entries = self._reservation_entries(self._import(self.server, conf), path)
+
+        pool_option = f"{path}/pools[pool=10.94.15.10-10.94.15.20]/option-data[code=15]"
+        self.assertEqual(
+            [entry for entry in entries if entry[0] == Kind.OPTION],
+            [
+                (Kind.OPTION, f"{path}/option-data[code=6]", Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH),
+                (Kind.OPTION, pool_option, Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH),
+            ],
+        )
+
+    def test_with_per_server_subnet_ids_the_options_of_a_reservation_of_a_held_id_are_not_in_scope(self):
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        from netbox_kea.integrations.dhcp_import_report import REASON_OUTCOME, Capability
+        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+
+        dhcp_server, _ = self.adapter.upsert_dhcp_server(self.server, 4)
+        apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
+            name="hand-made",
+            subnet_id=9410,
+            prefix=Prefix.objects.create(prefix=IPNetwork("10.94.10.0/24")),
+            dhcp_server=dhcp_server,
+        )
+        conf, path = self._with_reservation_options(_subnet_id_conf(9410, 13))
+
+        summary = self._import(self.server, conf, PluginCapabilities(frozenset({Capability.SUBNET_ID_PER_SERVER})))
+
+        outcome = REASON_OUTCOME[Reason.NOT_IN_SCOPE]
+        self.assertEqual(
+            self._reservation_entries(summary, path),
+            [
+                (Kind.RESERVATION, path, outcome, Reason.NOT_IN_SCOPE),
+                (Kind.OPTION, f"{path}/option-data[code=6]", outcome, Reason.NOT_IN_SCOPE),
+                (Kind.OPTION, f"{path}/option-data[code=15]", outcome, Reason.NOT_IN_SCOPE),
             ],
         )
 
@@ -3294,7 +3343,12 @@ class DhcpPluginPDPoolImportTest(TestCase):
             [(entry.path, entry.outcome, entry.reason, entry.capability) for entry in clash],
             [
                 (_PD_POOL, Outcome.UNSUPPORTED, Reason.SUBNET_ID_CLASH, Capability.SUBNET_ID_PER_SERVER),
-                (f"{_PD_POOL}/option-data[code=23]", Outcome.SKIPPED, Reason.PARENT_NOT_IMPORTED, None),
+                (
+                    f"{_PD_POOL}/option-data[code=23]",
+                    Outcome.UNSUPPORTED,
+                    Reason.SUBNET_ID_CLASH,
+                    Capability.SUBNET_ID_PER_SERVER,
+                ),
             ],
         )
 

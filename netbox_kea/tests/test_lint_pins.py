@@ -64,7 +64,7 @@ def _runs_ruff_through_uv(command: list[str]) -> bool:
         return False
     arguments = iter(command[2:])
     executable = next(arguments, None)
-    while executable == "--native-tls":
+    while executable == "--system-certs":
         executable = next(arguments, None)
     return executable == "ruff"
 
@@ -182,7 +182,7 @@ def test_hook_rejects_ruff_outside_the_uv_executable(command):
                 "repo": "local",
                 "hooks": [
                     {"id": "ruff-check", "entry": command, "language": "system"},
-                    {"id": "ruff-format", "entry": "uv run --native-tls ruff format", "language": "system"},
+                    {"id": "ruff-format", "entry": "uv run --system-certs ruff format", "language": "system"},
                 ],
             }
         ]
@@ -195,10 +195,10 @@ def test_hook_rejects_ruff_outside_the_uv_executable(command):
     "command",
     [
         "uv run ruff check .",
-        "uv run --native-tls ruff format --check .",
-        "uv run ruff check . && uv run --native-tls ruff format .",
+        "uv run --system-certs ruff format --check .",
+        "uv run ruff check . && uv run --system-certs ruff format .",
         "uv run ruff check . # check\nuv run ruff format .",
-        "uv run --native-tls \\\nruff check .",
+        "uv run --system-certs \\\nruff check .",
     ],
 )
 def test_workflow_accepts_ruff_as_the_uv_executable(command):
