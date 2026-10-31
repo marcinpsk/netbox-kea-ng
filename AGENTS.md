@@ -228,6 +228,7 @@ URL request
   → sync.py             (the aggregate Reservation Synchronization State and DCIM MAC synchronization)
   → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
   → ipam_marker.py     (the `[kea-sync: <kind>]` description marker: parse, rewrite, legacy text; ADR 0006)
+  → sync_plan.py        (the Sync Plan: the switches and type flags that decide which sources a sync run reads)
   → jobs.py             (KeaIpamSyncJob — periodic background sync)
   → tables.py           (non-model GenericTable renders enriched dicts)
   → template            (django-tables2 + HTMX for pagination)

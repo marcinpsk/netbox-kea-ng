@@ -21,6 +21,7 @@ from netbox_kea.tests.utils import (
     _make_db_server,
     _sync_page_urls,
     with_kea_client_config,
+    with_sync_config,
 )
 
 _MAKE_JOB_NO_DATA = object()  # sentinel: caller did not pass data at all
@@ -508,6 +509,52 @@ class TestServerSyncStatusView(TestCase):
         url = reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk])
         response = self.client.get(url)
         self.assertTrue(response.context["can_change_server"])
+
+    def test_type_badges_follow_the_global_switch_and_both_type_flags_but_not_the_server_switch(self):
+        url = reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk])
+        types = {
+            "Leases": "sync_leases_enabled",
+            "Reservations": "sync_reservations_enabled",
+            "Prefixes": "sync_prefixes_enabled",
+            "IP Ranges": "sync_ip_ranges_enabled",
+        }
+        # (global switch, global type flag, Server type flag) -> (global badge, Server badge); the Server switch never counts.
+        truth_table = {
+            (True, True, True): (True, True),
+            (True, True, False): (True, False),
+            (True, False, True): (False, False),
+            (True, False, False): (False, False),
+            (False, True, True): (False, False),
+            (False, True, False): (False, False),
+            (False, False, True): (False, False),
+            (False, False, False): (False, False),
+        }
+        for label, flag in types.items():
+            for (global_on, global_flag, server_flag), expected in truth_table.items():
+                for server_on in (True, False):
+                    with self.subTest(
+                        label=label,
+                        global_on=global_on,
+                        global_flag=global_flag,
+                        server_flag=server_flag,
+                        server_on=server_on,
+                    ):
+                        flags = {name: global_flag if name == flag else True for name in types.values()}
+                        Server.objects.filter(pk=self.server.pk).update(sync_enabled=server_on, **{flag: server_flag})
+                        with with_sync_config(sync_enabled=global_on, **flags):
+                            page = BeautifulSoup(self.client.get(url).content, "html.parser")
+                        rows = {
+                            row: {
+                                badge.get_text(strip=True): "text-bg-success" in badge["class"]
+                                for badge in next(p for p in page.select("p") if row in p.text)
+                                .find_next_sibling("div")
+                                .select(".badge")
+                            }
+                            for row in ("Global sync types", "Server overrides")
+                        }
+                        self.assertEqual(list(rows["Global sync types"]), list(types))
+                        self.assertEqual(list(rows["Server overrides"]), list(types))
+                        self.assertEqual((rows["Global sync types"][label], rows["Server overrides"][label]), expected)
 
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)

@@ -1645,6 +1645,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
 
         from netbox_kea.jobs import _sync_one_server
         from netbox_kea.models import DhcpIntegrationConfig, SyncConfig
+        from netbox_kea.sync_plan import sync_plan
 
         policy_server = _server("policy-server", sync_enabled=False)
         for index, policy in enumerate(("server", "sync-config", "dhcp-integration"), start=1):
@@ -1657,6 +1658,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
                 owner.refresh_from_db()
                 before = owner.ipam_initial_observations
                 first_complete = owner.ipam_first_complete_at
+                plan = sync_plan(owner, SyncConfig.get())
                 saved = threading.Event()
                 resume_save = threading.Event()
                 sqlstates = []
@@ -1688,7 +1690,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
                 try:
                     self.assertTrue(saved.wait(timeout=30), self.results)
                     with _kea(), connection.execute_wrapper(observe_cleanup):
-                        report = _sync_one_server(owner, True, True, True, True, 0)
+                        report = _sync_one_server(owner, plan, 0)
                 finally:
                     resume_save.set()
                     self._join()
@@ -1703,7 +1705,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
                 self.assertEqual(owner.ipam_first_complete_at, first_complete)
 
                 with _kea():
-                    retry = _sync_one_server(owner, True, True, True, True, 0)
+                    retry = _sync_one_server(owner, plan, 0)
                 self.assertEqual((retry.errors, retry.prefix_errors), (0, 0))
                 self.assertTrue(retry.complete)
                 self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())

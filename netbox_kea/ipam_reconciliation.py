@@ -53,6 +53,7 @@ from .read_failure import ReadFailure, attempt
 from .reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, ReservationSnapshot
 from .subnet_catalogue import CatalogueUnavailable
 from .sync import normalized_mac, sync_mac_address
+from .sync_plan import LEASE, LEASE_PREFIX, POOL, RESERVATION, SUBNET, SourceScope, served_families, sync_plan
 
 if TYPE_CHECKING:
     from .subnet_catalogue import CatalogueSnapshot, CompleteCatalogueSnapshot
@@ -125,9 +126,6 @@ T = TypeVar("T")
 R = TypeVar("R")
 
 # The type check sees a TextChoices member as its (value, label) tuple; at runtime it is the str value.
-LEASE = cast("str", IPAMOwnershipSource.LEASE)
-RESERVATION = cast("str", IPAMOwnershipSource.RESERVATION)
-LEASE_PREFIX = cast("str", IPAMOwnershipSource.LEASE_PREFIX)
 PD_POOL = cast("str", IPAMOwnershipSource.PD_POOL)
 # The sources that own Prefixes and IP Ranges; their failures count as prefix errors.
 _NETWORK_SOURCES = frozenset({"subnet", "pool", "delegated-prefix", LEASE_PREFIX, PD_POOL})
@@ -194,11 +192,6 @@ class LeasePhase:
     source: ClassVar[str] = LEASE
 
 
-def lease_prefixes_enabled(family: Family, leases: bool, prefixes: bool) -> bool:
-    """Return whether delegated-prefix leases own Prefixes: DHCPv6 with lease and Prefix sync, no separate toggle."""
-    return family == 6 and leases and prefixes
-
-
 @dataclass(frozen=True)
 class LeasePrefixPhase:
     """The Current delegated-prefix Leases of the observation that the call's address lease phase also reads.
@@ -247,7 +240,7 @@ class SubnetPhase:
     """The Subnets of one live catalogue observation."""
 
     observation: CatalogueObservation
-    source: ClassVar[str] = "subnet"
+    source: ClassVar[str] = SUBNET
 
 
 @dataclass(frozen=True)
@@ -255,7 +248,7 @@ class PoolPhase:
     """The allocation Pools of one live catalogue observation."""
 
     observation: CatalogueObservation
-    source: ClassVar[str] = "pool"
+    source: ClassVar[str] = POOL
 
 
 @dataclass(frozen=True)
@@ -427,22 +420,6 @@ class SyncReport:
 
 
 Workflow = Literal["job", "import"]
-SourceScope = frozenset[tuple[Family, str]]
-
-
-_SOURCE_FLAGS = {
-    "lease": "sync_leases_enabled",
-    "reservation": "sync_reservations_enabled",
-    "subnet": "sync_prefixes_enabled",
-    "pool": "sync_ip_ranges_enabled",
-}
-
-
-def periodic_sync_enabled(server: Server, source: str, config: SyncConfig | None = None) -> bool:
-    """Return whether the periodic sync job syncs *source* (a key of ``_SOURCE_FLAGS``) for *server*."""
-    config = SyncConfig.get() if config is None else config
-    flag = _SOURCE_FLAGS[source]
-    return config.sync_enabled and server.sync_enabled and getattr(config, flag) and getattr(server, flag)
 
 
 def effective_sources(server: Server) -> dict[Workflow, SourceScope]:
@@ -453,20 +430,7 @@ def effective_sources(server: Server) -> dict[Workflow, SourceScope]:
 def _effective_sources(
     server: Server, config: SyncConfig, switch: DhcpIntegrationConfig | None = None
 ) -> dict[Workflow, SourceScope]:
-    families: tuple[Family, ...] = tuple(
-        cast("Family", family) for family, enabled in ((4, server.dhcp4), (6, server.dhcp6)) if enabled
-    )
-    job = frozenset(
-        (family, source)
-        for family in families
-        for source in _SOURCE_FLAGS
-        if periodic_sync_enabled(server, source, config)
-    )
-    job |= {
-        (family, LEASE_PREFIX)
-        for family in families
-        if lease_prefixes_enabled(family, (family, "lease") in job, (family, "subnet") in job)
-    }
+    families = served_families(server)
     imported: SourceScope = frozenset()
     if dhcp_plugin.runs_for(server, switch):
         imported = frozenset(
@@ -475,7 +439,7 @@ def _effective_sources(
             for source in ("reservation", "subnet", "pool", "delegated-prefix", PD_POOL)
             if source not in ("delegated-prefix", PD_POOL) or family == 6
         )
-    return {"job": job, "import": imported}
+    return {"job": sync_plan(server, config).sources, "import": imported}
 
 
 @dataclass(frozen=True)
