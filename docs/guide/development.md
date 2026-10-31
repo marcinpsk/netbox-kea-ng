@@ -6,6 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # Development
 
+Development needs uv 0.11.0 or later. `pyproject.toml` declares it, so an older uv stops with an error.
+
 ```bash
 # Install dev dependencies
 uv sync
