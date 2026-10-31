@@ -1181,12 +1181,16 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
         from netbox_kea.models import Server
         from netbox_kea.sync_plan import LEASE, RESERVATION, periodic_sync_enabled, sync_plan
 
-        server = self._make_db_server(dhcp6=False)
-        sources = {
-            LEASE: ("sync_leases_enabled", "lease4-get-page"),
-            RESERVATION: ("sync_reservations_enabled", "reservation-get-page"),
-        }
-        for source, (flag, read) in sources.items():
+        server = self._make_db_server()
+
+        def read_families(kea, source: str) -> set[int]:
+            if source == LEASE:
+                return {family for family in (4, 6) if f"lease{family}-get-page" in kea.commands()}
+            services = {(body.get("service") or ["dhcp4"])[0] for body in kea.bodies("reservation-get-page")}
+            return {6 if service == "dhcp6" else 4 for service in services}
+
+        sources = {LEASE: "sync_leases_enabled", RESERVATION: "sync_reservations_enabled"}
+        for source, flag in sources.items():
             for global_on, server_on, global_flag, server_flag, run_now in itertools.product((True, False), repeat=5):
                 with self.subTest(
                     source=source,
@@ -1208,11 +1212,12 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
                     _set_sync_config(sync_enabled=global_on, **{**type_flags, flag: global_flag})
                     Server.objects.filter(pk=server.pk).update(sync_enabled=server_on, **{flag: server_flag})
                     server.refresh_from_db()
-                    with _patch_kea(leases4=[_LEASE4], reservations=[_RESV4]) as kea:
+                    with _patch_kea(leases4=[_LEASE4], leases6=[_LEASE6], reservations=[_RESV4]) as kea:
                         KeaIpamSyncJob(_make_job()).run(**({"server_pk": server.pk} if run_now else {}))
                     expected = global_on and (server_on or run_now) and global_flag and server_flag
-                    self.assertEqual(read in kea.commands(), expected)
-                    self.assertEqual(sync_plan(server, SyncConfig.get(), run_now=run_now).reads(4, source), expected)
+                    self.assertEqual(read_families(kea, source), {4, 6} if expected else set())
+                    plan = sync_plan(server, SyncConfig.get(), run_now=run_now)
+                    self.assertEqual([plan.reads(family, source) for family in (4, 6)], [expected, expected])
                     if not run_now:
                         self.assertEqual(periodic_sync_enabled(server, source), expected)
 
