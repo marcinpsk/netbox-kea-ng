@@ -2296,14 +2296,21 @@ class DhcpPluginSubnetIdImportTest(TestCase):
         )
 
     def test_the_options_of_a_reservation_of_a_subnet_that_was_not_imported_are_not_written(self):
-        from netbox_kea.integrations.dhcp_import_report import Capability, Outcome
-        from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
+        from django.db.models.signals import pre_save
 
-        self._import(self.other, _subnet_id_conf(9409, 11))
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
         conf, path = self._with_reservation_options(_subnet_id_conf(9409, 12))
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
 
-        # With per-server Subnet IDs the import writes the Subnet, and the installed plugin refuses it.
-        summary = self._import(self.server, conf, PluginCapabilities(frozenset({Capability.SUBNET_ID_PER_SERVER})))
+        def refuse(sender, instance, **kwargs):
+            raise DatabaseError("the Subnet write fails")
+
+        pre_save.connect(refuse, sender=Subnet, weak=False)
+        try:
+            summary = self._import(self.server, conf)
+        finally:
+            pre_save.disconnect(refuse, sender=Subnet)
 
         self.assertEqual(self._not_written(summary)[0], (Kind.SUBNET, Reason.WRITE_FAILED, None))
         self.assertEqual(
