@@ -20,6 +20,15 @@ from netbox.views import generic
 from utilities.views import ViewTab, register_model_view
 
 from ..integrations import dhcp_plugin
+from ..ipam_reconciliation import (
+    LEASE,
+    RESERVATION,
+    SYNC_SOURCES,
+    PoolPhase,
+    SubnetPhase,
+    global_source_enabled,
+    source_sync_enabled,
+)
 from ..jobs import KeaIpamSyncJob
 from ..models import Server, SyncConfig
 from .dhcp_plugin_sync import sync_nav_context
@@ -29,6 +38,12 @@ from .workspace import ServerFamilyMixin, server_family_url
 logger = logging.getLogger(__name__)
 
 _JOB_HISTORY_COUNT = 5  # rows shown in the per-server tab mini-table
+_SOURCE_LABELS = {
+    LEASE: "Leases",
+    RESERVATION: "Reservations",
+    SubnetPhase.source: "Prefixes",
+    PoolPhase.source: "IP Ranges",
+}
 
 
 def get_recent_jobs_for_servers(
@@ -184,6 +199,15 @@ class ServerSyncStatusView(ServerFamilyMixin, generic.ObjectView):
 
         jobs_list_url = reverse("core:job_list") + f"?object_type=netbox_kea.server&object_id={instance.pk}"
         sync_cfg = SyncConfig.get()
+        # The badges omit the Server switch: the Controls card shows it on its own.
+        type_badges = [
+            {
+                "label": _SOURCE_LABELS[source],
+                "global_on": sync_cfg.sync_enabled and global_source_enabled(source, sync_cfg),
+                "server_on": sync_cfg.sync_enabled and source_sync_enabled(instance, source, sync_cfg),
+            }
+            for source in SYNC_SOURCES
+        ]
         return {
             "recent_jobs": recent_jobs,
             "latest_job": latest,
@@ -193,6 +217,7 @@ class ServerSyncStatusView(ServerFamilyMixin, generic.ObjectView):
             "sync_toggle_url": server_family_url(request, instance, self, "server_sync_toggle"),
             "sync_now_url": server_family_url(request, instance, self, "server_sync_now"),
             "sync_cfg": sync_cfg,
+            "type_badges": type_badges,
             "sync_settings_url": section_url(request.user, SyncConfig),
             **sync_nav_context(request, instance, self, "ipam", integration_runs=dhcp_plugin.runs_for(instance)),
         }
