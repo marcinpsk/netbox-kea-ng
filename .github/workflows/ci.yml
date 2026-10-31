@@ -80,10 +80,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv export --system-certs --frozen --only-group dev --no-emit-project --format requirements-txt | \
-            uv pip install --system-certs --system -r /dev/stdin
-          uv pip install --system-certs --system -r netbox/requirements.txt
-          uv pip install --system-certs --system -e .
+          uv export --frozen --only-group dev --no-emit-project --format requirements-txt | \
+            uv pip install --system -r /dev/stdin
+          uv pip install --system -r netbox/requirements.txt
+          uv pip install --system -e .
 
       - name: Set up NetBox configuration
         working-directory: netbox/netbox
@@ -147,10 +147,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv export --system-certs --frozen --only-group dev --no-emit-project --format requirements-txt | \
-            uv pip install --system-certs --system -r /dev/stdin
-          uv pip install --system-certs --system -r netbox/requirements.txt
-          uv pip install --system-certs --system -e .
+          uv export --frozen --only-group dev --no-emit-project --format requirements-txt | \
+            uv pip install --system -r /dev/stdin
+          uv pip install --system -r netbox/requirements.txt
+          uv pip install --system -e .
 
       - name: Set up NetBox configuration
         working-directory: netbox/netbox
@@ -185,10 +185,10 @@ jobs:
 
       - name: Install dependencies with the supported DHCP plugin
         run: |
-          uv export --system-certs --frozen --only-group dev --no-emit-project --format requirements-txt | \
-            uv pip install --system-certs --system -r /dev/stdin
-          uv pip install --system-certs --system -r netbox/requirements.txt
-          uv pip install --system-certs --system -e . "netbox-plugin-dhcp==0.2.0"
+          uv export --frozen --only-group dev --no-emit-project --format requirements-txt | \
+            uv pip install --system -r /dev/stdin
+          uv pip install --system -r netbox/requirements.txt
+          uv pip install --system -e . "netbox-plugin-dhcp==0.2.0"
 
       - name: Set up NetBox configuration
         working-directory: netbox/netbox
@@ -243,10 +243,10 @@ jobs:
 
       - name: Install dependencies with netbox-branching and the supported DHCP plugin
         run: |
-          uv export --system-certs --frozen --only-group dev --no-emit-project --format requirements-txt | \
-            uv pip install --system-certs --system -r /dev/stdin
-          uv pip install --system-certs --system -r netbox/requirements.txt
-          uv pip install --system-certs --system -e . \
+          uv export --frozen --only-group dev --no-emit-project --format requirements-txt | \
+            uv pip install --system -r /dev/stdin
+          uv pip install --system -r netbox/requirements.txt
+          uv pip install --system -e . \
             "netbox-plugin-dhcp==0.2.0" "netboxlabs-netbox-branching==${NETBOX_BRANCHING_VERSION}"
 
       - name: Verify native replay without the DHCP plugin
@@ -323,23 +323,23 @@ jobs:
           python-version-file: pyproject.toml
 
       - name: Install dev and docs dependencies
-        run: uv sync --system-certs --group dev --group docs
+        run: uv sync --group dev --group docs
 
       - name: Ruff lint
-        run: uv run --system-certs ruff check .
+        run: uv run ruff check .
 
       - name: Ruff format check
-        run: uv run --system-certs ruff format --check .
+        run: uv run ruff format --check .
 
       - name: Type check (mypy, new errors only)
-        run: uv run --system-certs scripts/mypy-gate.sh
+        run: uv run scripts/mypy-gate.sh
 
       - name: REUSE compliance
-        run: uv run --system-certs reuse lint
+        run: uv run reuse lint
 
       # --strict fails the build on a broken link between the site pages.
       - name: Documentation site
-        run: uv run --system-certs --group docs zensical build --strict
+        run: uv run --group docs zensical build --strict
 
   test:
     strategy:
@@ -388,11 +388,11 @@ jobs:
         # repository is never needed here and its outages must not reach this suite.
         run: |
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
-          uv run --system-certs playwright install --with-deps
+          uv run playwright install --with-deps
 
       - &build-wheel
         name: Run uv build
-        run: uv build --system-certs
+        run: uv build
 
       - name: Run test_setup.sh
         run: ./tests/test_setup.sh
@@ -401,7 +401,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          uv run --system-certs pytest tests/ -p no:django --tracing=retain-on-failure -v
+          uv run pytest tests/ -p no:django --tracing=retain-on-failure -v
 
       - name: Upload Playwright traces
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
@@ -442,7 +442,7 @@ jobs:
         env:
           NETBOX_KEA_REQUIRE_BRANCHING: "1"
         run: |
-          uv run --system-certs pytest tests/ui/test_branching_refusal.py -p no:django --tracing=retain-on-failure -v
+          uv run pytest tests/ui/test_branching_refusal.py -p no:django --tracing=retain-on-failure -v
 
       - name: Upload Playwright traces
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2

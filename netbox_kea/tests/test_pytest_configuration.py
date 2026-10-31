@@ -44,7 +44,7 @@ SERIAL_BY_DESIGN = "1"
 #: One uv invocation inside a shell script or a documented code block.
 _UV_COMMAND = re.compile(r"(?:^|[|;&])\s*(uv\b[^|;&\n]*)", re.MULTILINE)
 #: The repository target of one Ruff command. Flags may sit between ``uv run`` and the
-#: tool name (CI passes ``--system-certs``), so the target must be read past them. One
+#: tool name (the documented commands pass ``--system-certs``), so the target must be read past them. One
 #: pattern serves CI and the published docs, which is what makes the two comparable.
 _RUFF_TARGET = re.compile(r"\bruff (?:check|format)(?: --check)? +(?!-)(\S+)")
 
@@ -2183,10 +2183,10 @@ def test_ci_lints_every_file_the_pre_commit_hooks_lint():
 
 @pytest.mark.parametrize("command", ("uv run ruff check .", "uv run --system-certs ruff check ."))
 def test_the_ruff_target_reader_looks_past_flags_before_the_tool(command):
-    """CI runs Ruff as `uv run --system-certs ruff`, and the docs may adopt that shape.
+    """The docs run Ruff as `uv run --system-certs ruff`, and CI may adopt that shape.
 
-    A reader anchored on `uv run ruff` finds nothing in the CI shape, so the comparison
-    below would fail on a documentation change that is in fact correct.
+    A reader anchored on `uv run ruff` finds nothing in that shape, so the comparison
+    below would fail on a change that is in fact correct.
     """
     assert _ruff_targets_in([command]) == {"."}
 

@@ -9,13 +9,12 @@ ARG WHL_FILE
 ARG EXTRA_REQUIREMENTS=""
 COPY ${WHL_FILE} /opt/netbox/dist/
 # Both branches need the mounted CA: uv reads SSL_CERT_FILE, pip reads PIP_CERT.
-# --native-tls, not --system-certs: the uv of the older NetBox images (0.7 in v4.3) has no --system-certs.
 RUN --mount=type=secret,id=host_ca,required=false \
     if [ -f "/run/secrets/host_ca" ]; then \
         export SSL_CERT_FILE=/run/secrets/host_ca PIP_CERT=/run/secrets/host_ca; \
     fi; \
     if [ -f "/usr/local/bin/uv" ]; then \
-        /usr/local/bin/uv pip install --native-tls --python /opt/netbox/venv/bin/python /opt/netbox/dist/${WHL_FILE} ${EXTRA_REQUIREMENTS}; \
+        /usr/local/bin/uv pip install --python /opt/netbox/venv/bin/python /opt/netbox/dist/${WHL_FILE} ${EXTRA_REQUIREMENTS}; \
     else \
         /opt/netbox/venv/bin/pip install /opt/netbox/dist/${WHL_FILE} ${EXTRA_REQUIREMENTS}; \
     fi
