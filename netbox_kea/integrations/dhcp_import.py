@@ -69,16 +69,20 @@ class UnsupportedPluginVersion(Exception):
         super().__init__(self.message)
 
 
+def supported_plugin_installed() -> bool:
+    """Return whether the installed netbox-plugin-dhcp has a valid version of at least :data:`REQUIRED_PLUGIN_VERSION`."""
+    plugin: PluginConfig = apps.get_app_config(dhcp_plugin.PLUGIN_APP_LABEL)
+    try:
+        return Version(plugin.version) >= Version(REQUIRED_PLUGIN_VERSION)
+    except (InvalidVersion, TypeError):
+        return False
+
+
 def require_supported_plugin() -> None:
     """Raise :class:`UnsupportedPluginVersion` when the installed netbox-plugin-dhcp is too old or has no valid version."""
-    plugin: PluginConfig = apps.get_app_config(dhcp_plugin.PLUGIN_APP_LABEL)
-    installed = plugin.version
-    try:
-        supported = Version(installed) >= Version(REQUIRED_PLUGIN_VERSION)
-    except (InvalidVersion, TypeError):
-        supported = False
-    if not supported:
-        raise UnsupportedPluginVersion(str(installed))
+    if not supported_plugin_installed():
+        plugin: PluginConfig = apps.get_app_config(dhcp_plugin.PLUGIN_APP_LABEL)
+        raise UnsupportedPluginVersion(str(plugin.version))
 
 
 def enabled_versions(server: Server) -> list[Family]:

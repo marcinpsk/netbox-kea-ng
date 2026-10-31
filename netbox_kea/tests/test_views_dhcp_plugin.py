@@ -31,7 +31,8 @@ from netbox_kea.views import dhcp_plugin_sync as dps
 from netbox_kea.views.notices import HEADLINES, Notice
 
 from .kea_stub import READ_FAILURES, _request_version, _sync_responses, stub_kea
-from .utils import _make_db_server, with_dhcp_integration_config, without_dhcp_plugin
+from .test_reservation_mutation_views import _mutation_responses
+from .utils import _make_db_server, _ViewTestBase, with_dhcp_integration_config, without_dhcp_plugin
 
 DHCP_PLUGIN = "netbox_dhcp"
 
@@ -888,3 +889,43 @@ class DriftPartialTest(TestCase):
             "Enable 'Sync to DHCP plugin' on this server first.",
             BeautifulSoup(resp.content, "html.parser").select_one(".alert-warning").get_text(),
         )
+
+
+class ScheduledImportSyncHelpTest(_ViewTestBase):
+    """The Reservation sync help names the scheduled DHCP Import only when that import can run for the Server."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def _help_text(self) -> str:
+        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        with stub_kea(_mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])):
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        help_text = BeautifulSoup(response.content, "html.parser").select_one("#id_sync_to_netbox_helptext")
+        assert help_text is not None
+        return help_text.get_text()
+
+    def test_the_sync_help_names_a_scheduled_dhcp_import_that_still_records_reservation_addresses(self):
+        from netbox_kea.models import SyncConfig
+
+        note = "The scheduled DHCP Import still records Reservation addresses in IPAM."
+        current = apps.get_app_config(DHCP_PLUGIN).version
+        SyncConfig.objects.filter(pk=1).update(sync_enabled=False)
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        cases = ((True, True, current, True), (False, True, current, False), (True, False, current, False))
+        cases += ((True, True, "0.1.9", False),)
+        for scheduled, plugin, version, shown in cases:
+            with (
+                self.subTest(scheduled=scheduled, plugin=plugin, version=version),
+                with_dhcp_integration_config(scheduled_import_enabled=scheduled),
+                patch.object(dhcp_plugin, "is_available", return_value=plugin, autospec=True),
+                patch.object(apps.get_app_config(DHCP_PLUGIN), "version", version),
+            ):
+                help_text = self._help_text()
+                self.assertIn("Automatic IPAM sync is disabled for this Server.", help_text)
+                self.assertEqual(note in help_text, shown)

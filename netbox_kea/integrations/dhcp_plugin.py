@@ -203,9 +203,10 @@ def runs_for(server: Server, switch: DhcpIntegrationConfig | None = None) -> boo
 def scheduled_import_runs_for(server: Server) -> bool:
     """Return whether the periodic sync job runs the DHCP Import of *server*, whatever the IPAM sync settings."""
     from ..models import DhcpIntegrationConfig
+    from .dhcp_import import supported_plugin_installed
 
     switch = DhcpIntegrationConfig.get()
-    return switch.scheduled_import_enabled and runs_for(server, switch)
+    return switch.scheduled_import_enabled and runs_for(server, switch) and supported_plugin_installed()
 
 
 def register_link_cleanup() -> None:
