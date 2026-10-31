@@ -438,11 +438,21 @@ _SOURCE_FLAGS = {
 }
 
 
+def server_sync_enabled(server: Server, config: SyncConfig, *, run_now: bool = False) -> bool:
+    """Return whether the sync job syncs *server*. A Run Now of the Server skips the Server switch."""
+    return config.sync_enabled and (run_now or server.sync_enabled)
+
+
+def source_sync_enabled(server: Server, source: str, config: SyncConfig) -> bool:
+    """Return whether the global and the Server type flags of *source* (a key of ``_SOURCE_FLAGS``) are both on."""
+    flag = _SOURCE_FLAGS[source]
+    return getattr(config, flag) and getattr(server, flag)
+
+
 def periodic_sync_enabled(server: Server, source: str, config: SyncConfig | None = None) -> bool:
     """Return whether the periodic sync job syncs *source* (a key of ``_SOURCE_FLAGS``) for *server*."""
     config = SyncConfig.get() if config is None else config
-    flag = _SOURCE_FLAGS[source]
-    return config.sync_enabled and server.sync_enabled and getattr(config, flag) and getattr(server, flag)
+    return server_sync_enabled(server, config) and source_sync_enabled(server, source, config)
 
 
 def effective_sources(server: Server) -> dict[Workflow, SourceScope]:

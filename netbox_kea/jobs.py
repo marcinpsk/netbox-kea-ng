@@ -35,7 +35,17 @@ if TYPE_CHECKING:
 from . import branching, event_scope
 from .constants import Family
 from .dhcp_mapping_lifecycle import ensure_boundaries
-from .ipam_reconciliation import SyncReport, complete_job_observation, upgrade_counts
+from .ipam_reconciliation import (
+    LEASE,
+    RESERVATION,
+    PoolPhase,
+    SubnetPhase,
+    SyncReport,
+    complete_job_observation,
+    server_sync_enabled,
+    source_sync_enabled,
+    upgrade_counts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -391,13 +401,15 @@ class KeaIpamSyncJob(JobRunner):
             self.logger.info("Global sync kill-switch is active (SyncConfig.sync_enabled=False) — skipping.")
             return False
 
-        sync_leases = sync_cfg.sync_leases_enabled
-        sync_reservations = sync_cfg.sync_reservations_enabled
-        sync_prefixes = sync_cfg.sync_prefixes_enabled
-        sync_ip_ranges = sync_cfg.sync_ip_ranges_enabled
         max_leases = sync_cfg.sync_max_leases_per_server
+        type_flags = (
+            sync_cfg.sync_leases_enabled,
+            sync_cfg.sync_reservations_enabled,
+            sync_cfg.sync_prefixes_enabled,
+            sync_cfg.sync_ip_ranges_enabled,
+        )
 
-        if not any([sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges]):
+        if not any(type_flags):
             self.logger.info("All sync type flags are False — nothing to do.")
             return False
 
@@ -413,17 +425,15 @@ class KeaIpamSyncJob(JobRunner):
         total_disagreements = 0
 
         for server in servers:
-            # In Run Now mode (server_pk provided), honour the explicit selection
-            # and skip the per-server enabled check.
-            if server_pk is None and not server.sync_enabled:
+            # The add forms read the same rule (periodic_sync_enabled); Run Now (server_pk) skips the Server switch.
+            if not server_sync_enabled(server, sync_cfg, run_now=server_pk is not None):
                 self.logger.info(f"Server {server.name}: sync_enabled=False — skipping.")
                 continue
 
-            # Per-server type overrides: AND global flag with server flag.
-            effective_leases = sync_leases and server.sync_leases_enabled
-            effective_reservations = sync_reservations and server.sync_reservations_enabled
-            effective_prefixes = sync_prefixes and server.sync_prefixes_enabled
-            effective_ip_ranges = sync_ip_ranges and server.sync_ip_ranges_enabled
+            effective_leases = source_sync_enabled(server, LEASE, sync_cfg)
+            effective_reservations = source_sync_enabled(server, RESERVATION, sync_cfg)
+            effective_prefixes = source_sync_enabled(server, SubnetPhase.source, sync_cfg)
+            effective_ip_ranges = source_sync_enabled(server, PoolPhase.source, sync_cfg)
 
             self.logger.debug(f"Syncing server: {server.name} (pk={server.pk})")
             started[server.pk] = server.name

@@ -9,6 +9,7 @@ and malformed wire shapes belong to the catalogue and configuration tests.
 from __future__ import annotations
 
 import ipaddress
+import itertools
 import re
 from contextlib import contextmanager, suppress
 from unittest.mock import MagicMock, patch
@@ -1173,6 +1174,41 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
         from ipam.models import IPAddress
 
         self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
+
+    def test_the_job_and_the_add_forms_follow_one_sync_rule(self):
+        """The job reads a source exactly when every switch and type flag allows it; the add forms say the same."""
+        from netbox_kea.ipam_reconciliation import LEASE, RESERVATION, periodic_sync_enabled
+        from netbox_kea.models import Server
+
+        server = self._make_db_server(dhcp6=False)
+        sources = {
+            LEASE: ("sync_leases_enabled", "lease4-get-page"),
+            RESERVATION: ("sync_reservations_enabled", "reservation-get-page"),
+        }
+        for source, (flag, read) in sources.items():
+            for global_on, server_on, global_flag, server_flag, run_now in itertools.product((True, False), repeat=5):
+                with self.subTest(
+                    source=source,
+                    global_on=global_on,
+                    server_on=server_on,
+                    global_flag=global_flag,
+                    server_flag=server_flag,
+                    run_now=run_now,
+                ):
+                    type_flags = dict.fromkeys(
+                        ("sync_leases_enabled", "sync_reservations_enabled", "sync_prefixes_enabled"), False
+                    )
+                    _set_sync_config(
+                        sync_enabled=global_on, sync_ip_ranges_enabled=False, **{**type_flags, flag: global_flag}
+                    )
+                    Server.objects.filter(pk=server.pk).update(sync_enabled=server_on, **{flag: server_flag})
+                    server.refresh_from_db()
+                    with _patch_kea(leases4=[_LEASE4], reservations=[_RESV4]) as kea, suppress(JobFailed):
+                        KeaIpamSyncJob(_make_job()).run(**({"server_pk": server.pk} if run_now else {}))
+                    expected = global_on and (server_on or run_now) and global_flag and server_flag
+                    self.assertEqual(read in kea.commands(), expected)
+                    if not run_now:
+                        self.assertEqual(periodic_sync_enabled(server, source), expected)
 
     # ── job metadata (job.data) ────────────────────────────────────────────
 
