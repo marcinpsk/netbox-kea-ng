@@ -35,17 +35,17 @@ if TYPE_CHECKING:
 from . import branching, event_scope
 from .constants import Family
 from .dhcp_mapping_lifecycle import ensure_boundaries
-from .ipam_reconciliation import (
+from .ipam_reconciliation import SyncReport, complete_job_observation, upgrade_counts
+from .sync_plan import (
     LEASE,
+    LEASE_PREFIX,
+    POOL,
     RESERVATION,
-    PoolPhase,
-    SubnetPhase,
-    SyncReport,
+    SUBNET,
+    SyncPlan,
     any_source_enabled,
-    complete_job_observation,
     server_sync_enabled,
-    source_sync_enabled,
-    upgrade_counts,
+    sync_plan,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,15 +77,8 @@ class _SyncJobRequest(HttpRequest):
     id: UUID
 
 
-def _sync_one_server(
-    server: Server,
-    sync_leases: bool,
-    sync_reservations: bool,
-    sync_prefixes: bool,
-    sync_ip_ranges: bool,
-    max_leases: int,
-) -> SyncReport:
-    """Reconcile every enabled family and publish completion from the whole run."""
+def _sync_one_server(server: Server, plan: SyncPlan, max_leases: int) -> SyncReport:
+    """Reconcile the families of *plan* and publish completion from the whole run."""
     from .ipam_reconciliation import (
         LeasePhase,
         LeasePrefixPhase,
@@ -93,21 +86,15 @@ def _sync_one_server(
         PoolPhase,
         ReservationPhase,
         SubnetPhase,
-        lease_prefixes_enabled,
         read_catalogue,
         read_leases,
         reconcile,
     )
 
     combined = SyncReport()
-    if not any((sync_leases, sync_reservations, sync_prefixes, sync_ip_ranges)):
-        return combined
     reports: dict[Family, SyncReport] = {}
-    versions: tuple[tuple[Family, bool], ...] = ((4, server.dhcp4), (6, server.dhcp6))
-    for version, enabled in versions:
-        if not enabled:
-            continue
-
+    for version in plan.families:
+        sync_leases = plan.reads(version, LEASE)
         observation = read_catalogue(server, version)
         catalogue = observation.catalogue
         if catalogue is None:
@@ -128,13 +115,13 @@ def _sync_one_server(
         leases = read_leases(server, version, max_leases or None) if sync_leases else None
         if leases is not None:
             phases.append(LeasePhase(leases, subnet_prefix_lengths=subnet_prefix_map))
-        if sync_reservations:
+        if plan.reads(version, RESERVATION):
             phases.append(ReservationPhase(catalogue=catalogue))
-        if sync_prefixes:
+        if plan.reads(version, SUBNET):
             phases.append(SubnetPhase(observation))
-        if sync_ip_ranges:
+        if plan.reads(version, POOL):
             phases.append(PoolPhase(observation))
-        if leases is not None and lease_prefixes_enabled(version, sync_leases, sync_prefixes):
+        if leases is not None and plan.reads(version, LEASE_PREFIX):
             phases.append(LeasePrefixPhase(leases, catalogue))
         reports[version] = reconcile(server, version, phases)
         combined.merge(reports[version])
@@ -420,29 +407,19 @@ class KeaIpamSyncJob(JobRunner):
         total_disagreements = 0
 
         for server in servers:
-            # The add forms read this rule through periodic_sync_enabled; Run Now (server_pk) skips the Server switch.
-            if not server_sync_enabled(server, sync_cfg, run_now=server_pk is not None):
+            # Run Now (server_pk) skips the Server switch.
+            run_now = server_pk is not None
+            if not server_sync_enabled(server, sync_cfg, run_now=run_now):
                 self.logger.info(f"Server {server.name}: sync_enabled=False — skipping.")
                 continue
-
-            effective_leases = source_sync_enabled(server, LEASE, sync_cfg)
-            effective_reservations = source_sync_enabled(server, RESERVATION, sync_cfg)
-            effective_prefixes = source_sync_enabled(server, SubnetPhase.source, sync_cfg)
-            effective_ip_ranges = source_sync_enabled(server, PoolPhase.source, sync_cfg)
+            plan = sync_plan(server, sync_cfg, run_now=run_now)
 
             self.logger.debug(f"Syncing server: {server.name} (pk={server.pk})")
             started[server.pk] = server.name
             report = SyncReport()
 
             try:
-                report = _sync_one_server(
-                    server,
-                    effective_leases,
-                    effective_reservations,
-                    effective_prefixes,
-                    effective_ip_ranges,
-                    max_leases,
-                )
+                report = _sync_one_server(server, plan, max_leases)
             except event_scope.EventDispatchError:
                 raise
             except Exception as exc:

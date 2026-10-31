@@ -252,3 +252,11 @@ _Avoid_: Kea-managed IP, synced description
 An owned NetBox object that a complete synchronization of its owner no longer reports. The owner drops its
 ownership. The object is removed or deprecated only when no owner is left.
 _Avoid_: Ghost IP, stale IP, orphan
+
+**Sync Plan**:
+The Kea sources of each address family of one Server that one IPAM synchronization run reads: address leases,
+Reservations, Subnets and Pools, and on DHCPv6 also delegated-prefix leases when lease and Subnet synchronization are
+both on. A source is in the plan when the global switch, the Server switch, the global type flag and the Server type
+flag are all on. A Run Now of one Server skips the Server switch, but a Run Now of a Server whose switch is off does
+not count as an observation of the Server.
+_Avoid_: sync flags, enabled types

@@ -33,7 +33,6 @@ from ..ipam_reconciliation import (
     address_ownership,
     claim,
     claim_permissions,
-    periodic_sync_enabled,
     prefix_ownership,
 )
 from ..kea import (
@@ -87,6 +86,7 @@ from ..reservations import (
 from ..signals import lease_added, leases_deleted
 from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, VerifiedSubnet
 from ..sync_permissions import SyncGate, sync_gate
+from ..sync_plan import periodic_sync_enabled
 from ..utilities import (
     OptionalViewTab,
     diagnostic_reasons,
