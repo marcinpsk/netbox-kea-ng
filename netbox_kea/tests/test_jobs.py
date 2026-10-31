@@ -1214,6 +1214,27 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
                     if not run_now:
                         self.assertEqual(periodic_sync_enabled(server, source), expected)
 
+    def test_a_complete_periodic_run_observes_exactly_the_sources_that_completion_requires(self):
+        """The receipt of a complete run holds the sources it ran; completion requires the same set."""
+        from netbox_kea.ipam_reconciliation import effective_sources
+        from netbox_kea.models import Server
+
+        server = self._make_db_server()
+        flags = ("sync_leases_enabled", "sync_reservations_enabled", "sync_prefixes_enabled", "sync_ip_ranges_enabled")
+        _set_sync_config(sync_enabled=True, **dict.fromkeys(flags, True))
+        for enabled in itertools.product((True, False), repeat=len(flags)):
+            if not any(enabled):
+                continue
+            with self.subTest(**dict(zip(flags, enabled, strict=True))):
+                Server.objects.filter(pk=server.pk).update(
+                    ipam_initial_observations={}, ipam_first_complete_at=None, **dict(zip(flags, enabled, strict=True))
+                )
+                with _patch_kea(leases4=[_LEASE4], leases6=[_LEASE6], reservations=[_RESV4]):
+                    KeaIpamSyncJob(_make_job()).run()
+                server.refresh_from_db()
+                receipt = server.ipam_initial_observations["job"]["sources"]
+                self.assertEqual(receipt, [list(pair) for pair in sorted(effective_sources(server)["job"])])
+
     # ── job metadata (job.data) ────────────────────────────────────────────
 
     def test_summary_written_on_global_kill_switch(self):
