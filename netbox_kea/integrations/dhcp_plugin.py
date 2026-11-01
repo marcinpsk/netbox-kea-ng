@@ -146,6 +146,8 @@ from .dhcp_import_plan import (
     MappingSource,
     OptionDefinitionKey,
     PoolKey,
+    ServerKey,
+    SubnetKey,
     keyed_reservations,
     kind_path,
     mapped_kinds,
@@ -1092,7 +1094,7 @@ def server_values(
     has an unsupported entry instead. The Reservation identifier types are missing when Kea's list is not valid.
     """
     settings = planned.global_settings
-    root = kea_paths.daemon(family)
+    root = planned.key.path(family)
     source = _Source(family, Kind.SERVER, root)
     values = _settings_fields(dhcp_server, settings, SERVER_FIELDS, summary, source)
     values |= _server_id_values(settings.get(kea_paths.SERVER_ID), root, family, capabilities, summary)
@@ -1133,7 +1135,7 @@ def _apply_global_settings(
     except ManagedFieldsMismatch:
         raise
     except Exception as exc:  # noqa: BLE001
-        summary.record(write_failed(family, Kind.SERVER, kea_paths.daemon(family)))
+        summary.record(write_failed(family, Kind.SERVER, ServerKey().path(family)))
         summary.warn(f"DHCPServer settings: {exc}")
         if changed:
             # Children diff against this instance, so it must hold the persisted values.
@@ -1242,7 +1244,7 @@ def upsert_dhcp_server(server, family: int):
     global Options of its family that an earlier import wrote on that adopted row.
     """
     DHCPServer = _model("DHCPServer")
-    source = MappingSource.server()
+    source = ServerKey().source
     created = False
     with event_scope.atomic():
         dhcp_server = mapped_target(server, family, source)
@@ -2455,7 +2457,7 @@ def import_reservation_snapshot(
             if subnet_ids is not None and key.subnet_id in subnet_ids.failed:
                 subnet_obj = None
             else:
-                subnet_obj = mapped_target(server, reservation.family, MappingSource.subnet(key.subnet_id))
+                subnet_obj = mapped_target(server, reservation.family, SubnetKey(key.subnet_id).source)
             if subnet_obj is None:
                 complete = False
                 summary.record(
