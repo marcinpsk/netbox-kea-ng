@@ -54,6 +54,10 @@ A Reservation add, edit or delete is a Configuration Change.
   from a write failure. A refused permission check, an unrequested claim and a Reservation with no address each
   have their own skip reason. Views map these facts to messages. A failure still reports the Reservation as
   applied and shows the after-apply error separately, as ADR 0011 says.
+  _Amended 2026-11-01 (#214): the claim fact is the outcome of a Manual Sync (`manual_sync.sync_reservation`):
+  Refused, Failed, or a run with the claim result and whether NetBox dispatched its events. Only `not-requested`
+  and `not-applied` stay after-apply skip reasons, and a delete requests no claim. A Reservation with no address
+  runs and gives an empty claim result. One presenter maps the outcome to messages._
 - The bulk Reservation import calls the public `reservation_edit.save_import()` for each entry. After each
   applied change returns, `_run_change_loop` invokes `reservation_edit.after_apply()` outside its classification
   callback and before the next entry. An `unknown` entry or a rejected entry stops the import, and the report

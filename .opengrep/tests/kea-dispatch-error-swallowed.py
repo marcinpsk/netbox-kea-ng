@@ -149,7 +149,7 @@ def runtime_error_around_a_reconciliation_reraised(server, phases):
 
 def _run_lease_sync_to_netbox(request, server, leases):
     try:
-        # ok: kea-dispatch-error-swallowed
+        # ruleid: kea-dispatch-error-swallowed
         claim(server, 4, leases, force=False)
     except event_scope.EventDispatchError:
         messages.error(request, "Lease created, but NetBox could not dispatch the events of the sync.")
@@ -252,14 +252,17 @@ def an_untyped_string_is_not_a_committed_event_fact(obj):
         return "failed"
 
 
-def committed_claim_events_reported(server, records):
+def manual_sync_reports_committed_claim_events(server, records):
     try:
         # ok: kea-dispatch-error-swallowed
-        return claim(server, 4, records, force=True)
+        result = claim(server, 4, records, force=True)
+    except ClaimEventsFailed as exc:
+        return Ran(exc.result, events_dispatched=False)
     except event_scope.EventDispatchError:
-        return ClaimFailure("events-failed")
+        raise
     except RuntimeError:
-        return ClaimFailure("failed")
+        return NotRun("failed")
+    return Ran(result)
 
 
 def a_failed_claim_fact_is_not_a_committed_event_fact(server, records):
@@ -267,9 +270,9 @@ def a_failed_claim_fact_is_not_a_committed_event_fact(server, records):
         # ruleid: kea-dispatch-error-swallowed
         return claim(server, 4, records, force=True)
     except event_scope.EventDispatchError:
-        return ClaimFailure("failed")
+        return NotRun("failed")
     except RuntimeError:
-        return ClaimFailure("failed")
+        return NotRun("failed")
 
 
 def a_valid_handler_does_not_hide_another_failed_unit(obj) -> SideEffectStatus:

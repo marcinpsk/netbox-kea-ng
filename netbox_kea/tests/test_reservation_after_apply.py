@@ -18,10 +18,12 @@ from netbox.context_managers import event_tracking
 
 from netbox_kea import config_write, event_scope, reservation_edit
 from netbox_kea.event_scope import _NESTED_TRACKING
-from netbox_kea.ipam_reconciliation import ClaimResult
+from netbox_kea.ipam_reconciliation import RESERVATION, ClaimResult, claim_permissions
+from netbox_kea.manual_sync import NotRun, Ran
 from netbox_kea.reservation_transfer import ReservationImportProposal
 from netbox_kea.reservations import ReservationChange, ReservationIdentity, SetValue, reservation_fingerprint
 from netbox_kea.signals import reservation_created, reservation_deleted, reservation_updated
+from netbox_kea.sync_permissions import sync_gate
 
 from .kea_stub import _catalogue_responses_for_subnets, _res_get, queued, stub_kea
 from .utils import _make_db_server, with_kea_client_config
@@ -126,7 +128,7 @@ class ReservationAfterApplyTests(TestCase):
         with connection.execute_wrapper(permission_read_fails):
             facts = reservation_edit.after_apply(self.server, outcome, user, sync_to_netbox=True)
         self.assertEqual((facts.journal, facts.signal), ("succeeded", "succeeded"))
-        self.assertEqual(facts.claim, reservation_edit.ClaimFailure("failed"))
+        self.assertEqual(facts.claim, NotRun("failed"))
         self.assertTrue(JournalEntry.objects.filter(assigned_object_id=self.server.pk).exists())
         self.assertFalse(IPAddress.objects.exists())
 
@@ -143,7 +145,7 @@ class ReservationAfterApplyTests(TestCase):
             post_save.disconnect(reject, sender=JournalEntry)
         self.assertEqual((facts.journal, facts.signal), ("failed", "succeeded"))
         self.assertFalse(JournalEntry.objects.filter(assigned_object_id=self.server.pk).exists())
-        self.assertTrue(facts.claim.addresses["198.18.0.20"].synchronized)
+        self.assertTrue(facts.claim.result.addresses["198.18.0.20"].synchronized)
 
     def test_create_edit_and_delete_record_the_actual_change_and_preserve_signal_arguments(self):
         for family in (4, 6):
@@ -182,12 +184,12 @@ class ReservationAfterApplyTests(TestCase):
                         journal.comments, f"Reservation {action}: hw-address 02:00:00:00:00:20; {_ADDRESS[family]}"
                     )
                     if action == "deleted":
-                        self.assertEqual(facts.claim, reservation_edit.ClaimSkipped("nothing-to-sync"))
+                        self.assertEqual(facts.claim, "not-requested")
                     else:
-                        self.assertIsInstance(facts.claim, ClaimResult)
-                        self.assertTrue(facts.claim.addresses[_ADDRESS[family]].synchronized)
+                        self.assertIsInstance(facts.claim, Ran)
+                        self.assertTrue(facts.claim.result.addresses[_ADDRESS[family]].synchronized)
                         self.assertEqual(
-                            facts.claim.primary.dns_name,
+                            facts.claim.result.primary.dns_name,
                             "edited.lab.example.org" if action == "updated" else "host.lab.example.org",
                         )
 
@@ -198,9 +200,7 @@ class ReservationAfterApplyTests(TestCase):
             facts = reservation_edit.after_apply(self.server, outcome, object(), sync_to_netbox=True)
         self.assertEqual(
             facts,
-            reservation_edit.AfterApplyFacts(
-                None, "not-applied", "not-applied", reservation_edit.ClaimSkipped("not-applied")
-            ),
+            reservation_edit.AfterApplyFacts(None, "not-applied", "not-applied", "not-applied"),
         )
         self.assertEqual(kea.commands(), [])
         self.assertFalse(JournalEntry.objects.exists())
@@ -208,17 +208,17 @@ class ReservationAfterApplyTests(TestCase):
 
     def test_unrequested_addressless_and_permission_refused_claims_have_distinct_facts(self):
         user = get_user_model().objects.create_user(username="reservation-no-write")
-        for address, requested, actor, reason in (
+        refused = sync_gate(user, claim_permissions(RESERVATION)).reason
+        self.assertIn("Manual Sync needs unconstrained", refused)
+        for address, requested, actor, expected in (
             (True, False, self.user, "not-requested"),
-            (False, True, self.user, "nothing-to-sync"),
-            (True, True, user, "permission"),
+            (False, True, self.user, Ran(ClaimResult())),
+            (True, True, user, NotRun("refused", refused)),
         ):
             outcome = _outcome(self.server, address=address)
             facts = reservation_edit.after_apply(self.server, outcome, actor, sync_to_netbox=requested)
             self.assertEqual((facts.journal, facts.signal), ("succeeded", "succeeded"))
-            self.assertEqual(facts.claim.reason, reason)
-            if reason == "permission":
-                self.assertIn("Manual Sync needs unconstrained", facts.claim.explanation)
+            self.assertEqual(facts.claim, expected)
         self.assertFalse(IPAddress.objects.exists())
 
     def test_applied_with_failed_persistence_or_verification_still_runs_all_requested_work(self):
@@ -228,13 +228,13 @@ class ReservationAfterApplyTests(TestCase):
         )
         facts = reservation_edit.after_apply(self.server, outcome, self.user, sync_to_netbox=True)
         self.assertEqual((facts.journal, facts.signal), ("succeeded", "succeeded"))
-        self.assertTrue(facts.claim.addresses["198.18.0.20"].synchronized)
+        self.assertTrue(facts.claim.result.addresses["198.18.0.20"].synchronized)
         self.server.persist_config = False
         self.server.save()
         outcome = _outcome(self.server)
         self.assertEqual(outcome.persistence, "not-requested")
         facts = reservation_edit.after_apply(self.server, outcome, self.user, sync_to_netbox=True)
-        self.assertTrue(facts.claim.addresses["198.18.0.20"].synchronized)
+        self.assertTrue(facts.claim.result.addresses["198.18.0.20"].synchronized)
 
     def test_a_real_database_journal_failure_leaves_the_signal_and_claim_usable(self):
         outcome = _outcome(self.server)
@@ -251,7 +251,7 @@ class ReservationAfterApplyTests(TestCase):
         self.assertEqual((facts.journal, facts.signal), ("failed", "succeeded"))
         self.assertEqual(observed_journals, [0])
         self.assertFalse(JournalEntry.objects.filter(assigned_object_id=self.server.pk).exists())
-        self.assertTrue(facts.claim.addresses["198.18.0.20"].synchronized)
+        self.assertTrue(facts.claim.result.addresses["198.18.0.20"].synchronized)
 
     def test_a_failed_robust_signal_receiver_does_not_stop_other_receivers_or_the_claim(self):
         outcome = _outcome(self.server)
@@ -267,7 +267,7 @@ class ReservationAfterApplyTests(TestCase):
             facts = reservation_edit.after_apply(self.server, outcome, self.user, sync_to_netbox=True)
         self.assertEqual((facts.journal, facts.signal), ("succeeded", "failed"))
         self.assertEqual(received, [1])
-        self.assertTrue(facts.claim.addresses["198.18.0.20"].synchronized)
+        self.assertTrue(facts.claim.result.addresses["198.18.0.20"].synchronized)
 
     def test_a_claim_validation_failure_is_separate_from_successful_journal_and_signal(self):
         outcome = _outcome(self.server)
@@ -278,7 +278,7 @@ class ReservationAfterApplyTests(TestCase):
         with _receiver(pre_save, reject, sender=IPAddress):
             facts = reservation_edit.after_apply(self.server, outcome, self.user, sync_to_netbox=True)
         self.assertEqual((facts.journal, facts.signal), ("succeeded", "succeeded"))
-        self.assertEqual(facts.claim, reservation_edit.ClaimFailure("failed"))
+        self.assertEqual(facts.claim, NotRun("failed"))
         self.assertTrue(JournalEntry.objects.filter(assigned_object_id=self.server.pk).exists())
         self.assertFalse(IPAddress.objects.exists())
 
@@ -286,9 +286,9 @@ class ReservationAfterApplyTests(TestCase):
         outcome = _outcome(self.server, 6, address=("2001:db8::20", "2001:db8::21"))
         IPAddress.objects.bulk_create([IPAddress(address="2001:db8::20/64"), IPAddress(address="2001:db8::20/64")])
         facts = reservation_edit.after_apply(self.server, outcome, self.user, sync_to_netbox=True)
-        self.assertIsInstance(facts.claim, ClaimResult)
-        self.assertEqual(facts.claim.addresses["2001:db8::20"].outcome, "error")
-        self.assertTrue(facts.claim.addresses["2001:db8::21"].synchronized)
+        self.assertIsInstance(facts.claim, Ran)
+        self.assertEqual(facts.claim.result.addresses["2001:db8::20"].outcome, "error")
+        self.assertTrue(facts.claim.result.addresses["2001:db8::21"].synchronized)
 
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)
@@ -318,7 +318,7 @@ class ReservationAfterApplyEventTests(TransactionTestCase):
         self.assertEqual(observed, [True])
         self.assertTrue(Site.objects.filter(slug="successful-signal-receiver").exists())
         self.assertEqual((facts.journal, facts.signal), ("succeeded", "failed"))
-        self.assertTrue(facts.claim.addresses["198.18.0.20"].synchronized)
+        self.assertTrue(facts.claim.result.addresses["198.18.0.20"].synchronized)
 
     def test_a_committed_journal_with_failed_events_is_reported_as_written(self):
         if not _NESTED_TRACKING:
@@ -336,7 +336,7 @@ class ReservationAfterApplyEventTests(TransactionTestCase):
         self.assertEqual(facts.journal, "events-failed")
         self.assertEqual(facts.signal, "succeeded")
         self.assertTrue(JournalEntry.objects.filter(assigned_object_id=server.pk).exists())
-        self.assertTrue(facts.claim.addresses["198.18.0.20"].synchronized)
+        self.assertTrue(facts.claim.result.addresses["198.18.0.20"].synchronized)
         self.assertTrue(IPAddress.objects.filter(address="198.18.0.20/24").exists())
 
     def test_a_committed_claim_with_failed_events_keeps_the_saved_ip(self):
@@ -353,7 +353,9 @@ class ReservationAfterApplyEventTests(TransactionTestCase):
         ):
             facts = reservation_edit.after_apply(server, outcome, user, request=request, sync_to_netbox=True)
         self.assertEqual((facts.journal, facts.signal), ("succeeded", "succeeded"))
-        self.assertEqual(facts.claim, reservation_edit.ClaimFailure("events-failed"))
+        self.assertIsInstance(facts.claim, Ran)
+        self.assertFalse(facts.claim.events_dispatched)
+        self.assertTrue(facts.claim.result.addresses["198.18.0.20"].synchronized)
         self.assertTrue(IPAddress.objects.filter(address="198.18.0.20/24").exists())
 
     def test_a_delivered_signal_with_failed_receiver_events_is_not_a_receiver_failure(self):
@@ -377,4 +379,4 @@ class ReservationAfterApplyEventTests(TransactionTestCase):
             facts = reservation_edit.after_apply(server, outcome, user, request=request, sync_to_netbox=True)
         self.assertEqual((facts.journal, facts.signal), ("succeeded", "events-failed"))
         self.assertTrue(Site.objects.filter(slug="reservation-signal-site").exists())
-        self.assertTrue(facts.claim.addresses["198.18.0.20"].synchronized)
+        self.assertTrue(facts.claim.result.addresses["198.18.0.20"].synchronized)

@@ -467,7 +467,8 @@ def test_a_lease_that_is_not_current_is_never_synced(
     )
 
     assert response.ok
-    assert "The lease is not current in Kea, so it was not synchronized." in response.text()
+    not_current = f"Lease {RELEASED_ADDRESS4} was not synced to NetBox: Kea does not report it as a current lease."
+    assert not_current in response.text()
     assert not list(nb_api.ipam.ip_addresses.filter(address=RELEASED_ADDRESS4))
 
 

@@ -14,6 +14,7 @@ from . import (
     dhcp_plugin_sync,
     fan_out,
     leases,
+    manual_sync_presenter,
     notices,
     options,
     read_age,
