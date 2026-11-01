@@ -94,6 +94,10 @@ classifies the change. An error in a side effect therefore never reads as a Kea 
 after `applied`, the view still reports the change as applied, logs the error, and shows a separate error that
 names the side effect that failed. After `unknown`, the message says that NetBox recorded nothing. The next
 periodic synchronization brings IPAM up to date.
+_Amended 2026-11-01 (#214): the IPAM synchronization of one Lease or one Reservation is a Manual Sync
+(`manual_sync.py`). It returns a typed outcome, and one presenter gives the same words to every caller. When NetBox
+saves the claim but cannot dispatch its events, the outcome holds the claim result and that fact. A row Sync button
+then returns a 200 row reply with the claim result and a separate error. It does not raise `EventDispatchError`._
 
 ### Loops
 

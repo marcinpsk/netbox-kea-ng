@@ -213,6 +213,7 @@ URL request
       server_scope.py   (Server selection, view permissions, and family availability)
       fan_out.py        (the per-Server read pool of combined Subnets, Shared Networks, Reservations)
       sync_views.py     (per-server IPAM sync UI)
+      manual_sync_presenter.py (the one presentation of a Manual Sync outcome: messages, row replies, notes)
       sync_jobs.py      (jobs tab, periodic sync management)
       settings_page.py  (Settings page: one tab per settings singleton; ADR 0010)
   → reservation_edit.py (Reservation add/edit/import, signed form state, Published Name rules and after-apply facts)
@@ -227,6 +228,7 @@ URL request
                         cached lookups in one worker pool)
   → sync.py             (the aggregate Reservation Synchronization State and DCIM MAC synchronization)
   → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
+  → manual_sync.py      (Manual Sync of one Lease or Reservation: permission verdict, claim, typed outcome; ADR 0011)
   → ipam_marker.py     (the `[kea-sync: <kind>]` description marker: parse, rewrite, legacy text; ADR 0006)
   → sync_plan.py        (the Sync Plan: the switches and type flags that decide which sources a sync run reads)
   → jobs.py             (KeaIpamSyncJob — periodic background sync)
@@ -361,7 +363,9 @@ URL request
   Reservation phase, unless that Server disables Reservation sync. The last link of an IP address follows `stale_ip_cleanup`. A complete Subnet or Pool phase
   drops its own stale links; `Server.sync_deprecate_prefixes_and_ranges` opts in to deprecation, never deletion.
   `read_catalogue` pairs the shared snapshot with a cutoff taken before its request. Per-row actions use
-  `claim`, which never cleans up. Adoption preserves legacy object identities and marks their links.
+  `claim`, which never cleans up. A Lease whose Subnet ID the complete Subnet Catalogue does not hold raises
+  `LeaseSubnetAbsent` (not a `ValueError`; a `ValueError` from `claim` is a caller bug), and the job counts it as a
+  failed row. Adoption preserves legacy object identities and marks their links.
   Complete whole-workflow job and DHCP import receipts protect each adopted object's last link until all
   relevant enabled owners have observed their sources. `Server.ipam_first_complete_at` records the initial
   completion time. Internal scoped receipts protect newly enabled sources after that time.
@@ -506,7 +510,7 @@ snapshot. Reservation option edits use the shared identity and merge in `dhcp_op
 from the same live Catalogue read (ADR 0014). The builders use the live facts and Catalogue that `config_write`
 supplies. A Reservation conflict becomes a form error. An unknown suffix becomes a hostname error.
 A `ValueError` becomes a page error. The view presents the pool-overlap warning facts.
-After an applied outcome, `reservation_edit.after_apply` returns the journal, signal and IPAM claim facts.
+After an applied outcome, `reservation_edit.after_apply` returns the journal, signal and Manual Sync facts.
 The views present those facts separately from the Kea change result.
 A Subnet or a Reservation that is gone, a changed fingerprint and result 3 on `reservation-del` are
 `target-changed`; result 2 is a rejection; any other failure result, result 5, a forward failure or a lost reply is
@@ -792,9 +796,10 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Transactions**: open every transaction with `event_scope.atomic()`, never `transaction.atomic`
   (opengrep `kea-raw-atomic`). At the top level of a tracked request, on a NetBox release whose `event_tracking` nests (`event_scope._nested_tracking`), it is a unit, whose events
   dispatch after its COMMIT or not at all. Put `except event_scope.EventDispatchError: raise` before a broad
-  `except`. The one exception is a side effect after a change that Kea applied: the Lease add view reports failed
-  IPAM event dispatch separately; `reservation_edit.after_apply` returns it as a fact for Reservation views.
-  The request must report the applied change. Read design record #176 (sections 22 and 24) before you change it.
+  `except`. The exceptions are the side effects after a change that Kea applied, which return the failed dispatch
+  as a fact (`reservation_edit.after_apply`), and a Manual Sync: `claim()` raises `ClaimEventsFailed` with the claim
+  result, and `manual_sync` returns both, so the Lease add view, the Reservation views and a row Sync report the
+  saved claim and a separate error. Read design record #176 (sections 22 and 24) before you change it.
 - **Kea option names per family**: DNS is `domain-name-servers` (v4) or `dns-servers` (v6), and NTP is
   `ntp-servers` (v4) or `sntp-servers` (v6). `dhcp_options._FORM_MANAGED_OPTIONS` maps each form field to them.
 - **Forms**: lease search forms inherit `BaseLeasesSarchForm` (the typo is
