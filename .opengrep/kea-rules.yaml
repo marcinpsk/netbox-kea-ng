@@ -1418,3 +1418,45 @@ rules:
       - pattern-not-inside: |
           def path(self, $FAMILY, ...):
               ...
+
+  - id: kea-dhcp-row-write-outside-protocol
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Write an imported DHCP plugin row through dhcp_import_write.write_row() with a RowAdapter of its kind. The
+      protocol finds or adopts the row, writes it, observes its DHCP Import Mapping, reports a failed write in one
+      failure table (a ValidationError gives the messages of the plugin), and skips the planned subtree of an object
+      that it does not write. A writer with its own observe_mapping() or its own "except
+      event_scope.EventDispatchError: raise" and "except ManagedFieldsMismatch: raise" pair repeats that protocol and
+      drifts from it. Only the DHCPServer, the root of a run, writes itself: upsert_dhcp_server() and
+      _apply_global_settings() are exempt by name.
+      Limits: the rule sees netbox_kea/integrations/; a writer that bypasses the protocol without calling
+      observe_mapping() or opening the re-raise pair is not caught, and a call through a module attribute or an
+      aliased import is not seen. A lone "except event_scope.EventDispatchError: raise" (the Subnet ID moves, the
+      delegated Prefix attachment, the stale removal) is not the pair.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/integrations/**"
+        - "kea-dhcp-row-write-outside-protocol.py"
+      exclude:
+        - "netbox_kea/integrations/dhcp_import_write.py"
+        - "**/tests/**"
+    patterns:
+      - pattern-either:
+          - pattern: observe_mapping(...)
+          - pattern: |
+              try:
+                  ...
+              except event_scope.EventDispatchError:
+                  raise
+              except ManagedFieldsMismatch:
+                  raise
+      - pattern-not-inside: |
+          def upsert_dhcp_server(...):
+              ...
+      - pattern-not-inside: |
+          def _apply_global_settings(...):
+              ...
