@@ -224,7 +224,7 @@ def _source_mapping(server, family: int, source: MappingSource):
     """Return the mappings of *source*: at most one row, found through its unique index."""
     from .models import KeaDhcpLink, exact_source
 
-    lookup = exact_source(server, family, source.kind.value, source.kea_subnet_id, source.kea_identity)
+    lookup = exact_source(server, family, **source.columns())
     return KeaDhcpLink.objects.filter(lookup)
 
 

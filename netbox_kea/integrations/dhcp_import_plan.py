@@ -18,7 +18,7 @@ import json
 from collections import Counter
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING, Generic, TypedDict, TypeVar
 
 from .. import kea_paths
 from ..constants import Family, validate_family
@@ -59,6 +59,14 @@ class Planned(Generic[K, T]):
 MAX_KEA_NAME_LENGTH = 255
 
 
+class SourceColumns(TypedDict):
+    """The ``KeaDhcpLink`` identity columns of a mapping source."""
+
+    kind: str
+    kea_subnet_id: int | None
+    kea_identity: str | None
+
+
 @dataclass(frozen=True)
 class MappingSource:
     """The Kea source of a DHCP Import Mapping in one Server and family, in the ``KeaDhcpLink`` identity columns.
@@ -87,7 +95,7 @@ class MappingSource:
         """Return the source of a Shared Network or a client class by its Kea name."""
         return cls(kind, kea_identity=name)
 
-    def columns(self) -> dict[str, object]:
+    def columns(self) -> SourceColumns:
         """Return the ``KeaDhcpLink`` identity columns, for a lookup and for a write."""
         return {"kind": self.kind.value, "kea_subnet_id": self.kea_subnet_id, "kea_identity": self.kea_identity}
 

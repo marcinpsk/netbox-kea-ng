@@ -24,6 +24,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from netbox_kea import server_configuration
+from netbox_kea.constants import MAX_SUBNET_ID
 from netbox_kea.dhcp_options import option_identity, parse_dhcp_option
 from netbox_kea.integrations.dhcp_import_report import Kind, Reason, not_written
 from netbox_kea.ipam_reconciliation import ReservationObservation
@@ -3589,7 +3590,7 @@ class DhcpPluginSubnetWithoutIdTest(TestCase):
         from .test_kea_recordings import _recording
 
         Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
-        ids = {"removed": None, "bool": True, "text": "10", "out of range": 2**32 - 1}
+        ids = {"removed": None, "bool": True, "text": "10", "out of range": MAX_SUBNET_ID + 1}
         for family in (4, 6):
             for label, subnet_id in ids.items():
                 with self.subTest(family=family, id=label), transaction.atomic():

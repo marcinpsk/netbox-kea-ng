@@ -11,7 +11,7 @@ from __future__ import annotations
 from django.test import SimpleTestCase
 
 from netbox_kea import kea_paths
-from netbox_kea.constants import Family
+from netbox_kea.constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family
 from netbox_kea.dhcp_options import DHCPOption, DHCPOptionIdentity, option_identity, parse_dhcp_option
 from netbox_kea.integrations.dhcp_import_ledger import LEDGER, NotImported
 from netbox_kea.integrations.dhcp_import_report import Kind, Outcome
@@ -92,9 +92,16 @@ class TestParseDhcpConfigStructure(SimpleTestCase):
         conf = {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}
         self.assertEqual(parse_dhcp_config(conf, 6).subnets, [])
 
-    def test_a_subnet_without_an_id_that_kea_accepts_is_dropped_with_its_children(self):
+    def test_a_subnet_without_a_valid_kea_subnet_id_is_dropped_with_its_children(self):
         # Kea refuses a Subnet without an integer ID from MIN_SUBNET_ID to MAX_SUBNET_ID.
-        ids = {"missing": None, "bool": True, "numeric text": "5", "text": "abc", "zero": 0, "too large": 2**32 - 1}
+        ids = {
+            "missing": None,
+            "bool": True,
+            "numeric text": "5",
+            "text": "abc",
+            "zero": 0,
+            "too large": MAX_SUBNET_ID + 1,
+        }
         for label, subnet_id in ids.items():
             with self.subTest(label):
                 subnet = {"subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.20"}], "option-data": []}
@@ -108,8 +115,12 @@ class TestParseDhcpConfigStructure(SimpleTestCase):
                 )
 
     def test_the_lowest_and_the_highest_subnet_id_are_kept(self):
-        conf = {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}, {"id": 2**32 - 2, "subnet": "10.0.1.0/24"}]}
-        self.assertEqual([subnet.kea_subnet_id for subnet in parse_dhcp_config(conf, 4).subnets], [1, 2**32 - 2])
+        conf = {
+            "subnet4": [{"id": MIN_SUBNET_ID, "subnet": "10.0.0.0/24"}, {"id": MAX_SUBNET_ID, "subnet": "10.0.1.0/24"}]
+        }
+        self.assertEqual(
+            [subnet.kea_subnet_id for subnet in parse_dhcp_config(conf, 4).subnets], [MIN_SUBNET_ID, MAX_SUBNET_ID]
+        )
 
 
 @without_dhcp_plugin()

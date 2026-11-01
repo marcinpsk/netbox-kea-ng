@@ -443,11 +443,7 @@ def _subnet_id(raw: dict) -> int | None:
 
 
 def _subnet_intent(raw, family: int, shared_network: str | None, path: str, log: _ParseLog) -> SubnetIntent | None:
-    """Normalize the Kea subnet entry at *path*; drop one that is not a dict or has no CIDR or no subnet ID.
-
-    Kea refuses a Subnet without an ID, so ``config-get`` cannot give one. The drop hides its Pools, delegated-prefix
-    Pools and DHCP Options, as for a Subnet without a CIDR.
-    """
+    """Normalize the Kea subnet entry at *path*; drop one that is not a dict or has no CIDR or no subnet ID."""
     if not isinstance(raw, dict):
         log.dropped.append(DroppedEntry(Kind.SUBNET, path, "The entry is not an object."))
         return None
