@@ -802,6 +802,133 @@ class KindObservationTest(SimpleTestCase):
         self.assertEqual(kind_path(4, Kind.OPTION), "Dhcp4/option-data[*]")
 
 
+_LONG_CLASS = f"a:b/{'c' * (MAX_KEA_NAME_LENGTH - 4)}"
+_LONG_NETWORK = f"x:y/{'n' * (MAX_KEA_NAME_LENGTH - 4)}"
+_SHARED_DUID = "01:02:03:04"
+_PD_POOL_10 = "Dhcp6/subnet6[id=10]/pd-pools[prefix=2001:db8:100::/48,delegated-len=56]"
+
+
+def _pinned_keys() -> list[tuple]:
+    """Return (key, family, serialized source, Kea path) for each key kind, with edge values."""
+    from netbox_kea.dhcp_options import DHCPOptionIdentity
+    from netbox_kea.integrations.dhcp_import_plan import OptionKey
+
+    address = ipaddress.ip_address
+    pd_pool = PDPoolKey(10, ipaddress.IPv6Network("2001:db8:100::/48"), 56)
+    in_subnet = InSubnetReservationKey(7, "hw-address", "aa:bb:cc:dd:ee:ff")
+    return [
+        (MappingSource.server(), 4, (Kind.SERVER, None, None), "Dhcp4"),
+        (MappingSource.server(), 6, (Kind.SERVER, None, None), "Dhcp6"),
+        (MappingSource.subnet(4294967294), 6, (Kind.SUBNET, 4294967294, None), "Dhcp6/subnet6[id=4294967294]"),
+        (
+            MappingSource.named(Kind.CLIENT_CLASS, _LONG_CLASS),
+            4,
+            (Kind.CLIENT_CLASS, None, _LONG_CLASS),
+            f"Dhcp4/client-classes[name={_LONG_CLASS}]",
+        ),
+        (
+            MappingSource.named(Kind.SHARED_NETWORK, _LONG_NETWORK),
+            6,
+            (Kind.SHARED_NETWORK, None, _LONG_NETWORK),
+            f"Dhcp6/shared-networks[name={_LONG_NETWORK}]",
+        ),
+        # A range that is one prefix takes the prefix text of config-get in its path, and its range in its source.
+        (
+            PoolKey(10, Pool(address("192.0.2.0"), address("192.0.2.255"))),
+            4,
+            (Kind.POOL, 10, "192.0.2.0-192.0.2.255"),
+            "Dhcp4/subnet4[id=10]/pools[pool=192.0.2.0/24]",
+        ),
+        (
+            PoolKey(10, Pool(address("2001:db8:1::10"), address("2001:db8:1::20"))),
+            6,
+            (Kind.POOL, 10, "2001:db8:1::10-2001:db8:1::20"),
+            "Dhcp6/subnet6[id=10]/pools[pool=2001:db8:1::10-2001:db8:1::20]",
+        ),
+        (pd_pool, 6, (Kind.PD_POOL, 10, "2001:db8:100::/48/56"), _PD_POOL_10),
+        (
+            PDPoolKey(3, ipaddress.IPv6Network("2001:db8:3::/64"), 128),
+            6,
+            (Kind.PD_POOL, 3, "2001:db8:3::/64/128"),
+            "Dhcp6/subnet6[id=3]/pd-pools[prefix=2001:db8:3::/64,delegated-len=128]",
+        ),
+        # One identifier in both families and both Scopes: a Global source does not hold the family.
+        *(
+            (
+                GlobalReservationKey(family, "duid", _SHARED_DUID),
+                family,
+                (Kind.RESERVATION, None, f"duid:{_SHARED_DUID}"),
+                f"Dhcp{family}/reservations[duid={_SHARED_DUID}]",
+            )
+            for family in (4, 6)
+        ),
+        *(
+            (
+                InSubnetReservationKey(7, "duid", _SHARED_DUID),
+                family,
+                (Kind.RESERVATION, 7, f"duid:{_SHARED_DUID}"),
+                f"Dhcp{family}/subnet{family}[id=7]/reservations[duid={_SHARED_DUID}]",
+            )
+            for family in (4, 6)
+        ),
+        (
+            in_subnet,
+            4,
+            (Kind.RESERVATION, 7, "hw-address:aa:bb:cc:dd:ee:ff"),
+            "Dhcp4/subnet4[id=7]/reservations[hw-address=aa:bb:cc:dd:ee:ff]",
+        ),
+        (
+            GlobalReservationKey(4, "flex-id", "'a:b'"),
+            4,
+            (Kind.RESERVATION, None, "flex-id:'a:b'"),
+            "Dhcp4/reservations[flex-id='a:b']",
+        ),
+        (
+            OptionDefinitionKey("dhcp6", 65535),
+            6,
+            (Kind.OPTION_DEFINITION, None, "dhcp6:65535"),
+            "Dhcp6/option-def[code=65535]",
+        ),
+        (
+            OptionDefinitionKey("vendor-x", 1, _LONG_CLASS),
+            4,
+            (Kind.OPTION_DEFINITION, None, f"{_LONG_CLASS}:vendor-x:1"),
+            f"Dhcp4/client-classes[name={_LONG_CLASS}]/option-def[space=vendor-x,code=1]",
+        ),
+        (
+            OptionKey(pd_pool.source, DHCPOptionIdentity("dhcp6", 23, frozenset({_LONG_CLASS}))),
+            6,
+            (Kind.OPTION, 10, f'["pd_pool","2001:db8:100::/48/56","dhcp6",23,["{_LONG_CLASS}"],0]'),
+            f"{_PD_POOL_10}/option-data[code=23,client-classes={_LONG_CLASS}]",
+        ),
+        (
+            OptionKey(in_subnet.source, DHCPOptionIdentity("dhcp4", "x-name", frozenset()), 2),
+            4,
+            (Kind.OPTION, 7, '["reservation","hw-address:aa:bb:cc:dd:ee:ff","dhcp4","x-name",[],2]'),
+            "Dhcp4/subnet4[id=7]/reservations[hw-address=aa:bb:cc:dd:ee:ff]/option-data[name=x-name]",
+        ),
+        (
+            OptionKey(
+                GlobalReservationKey(6, "duid", _SHARED_DUID).source, DHCPOptionIdentity("dhcp6", 23, frozenset())
+            ),
+            6,
+            (Kind.OPTION, None, f'["reservation","duid:{_SHARED_DUID}","dhcp6",23,[],0]'),
+            f"Dhcp6/reservations[duid={_SHARED_DUID}]/option-data[code=23]",
+        ),
+    ]
+
+
+class MappingKeyTest(SimpleTestCase):
+    """Each key kind gives its mapping source and its Kea path. The literals pin the stored identity bytes."""
+
+    def test_each_key_kind_gives_its_pinned_source_and_path(self):
+        for key, family, (kind, subnet_id, identity), path in _pinned_keys():
+            source = key if isinstance(key, MappingSource) else key.source
+            with self.subTest(key=key, family=family):
+                self.assertEqual(source, MappingSource(kind, subnet_id, identity))
+                self.assertEqual(source.path(family), path)
+
+
 class CapabilityProbeTest(TestCase):
     """The probe reads the plugin models and reports each #88 capability present or missing.
 
@@ -1793,6 +1920,53 @@ class PDPoolCoverageTest(TestCase):
             },
         )
         self.assertEqual(self._mapped("pd_pool", 10, "2001:db8:100::/48/56").delegated_length, 56)
+
+
+class CreatedAndRemovedPathTest(TestCase):
+    """A run names an object by the path of its key when it creates it and when it removes it."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def _run(self, server, conf: dict, hosts: list[dict]):
+        with stub_kea(_sync_responses({6: conf}, {6: hosts})):
+            ((_family, summary),) = run_dhcp_plugin_import(server, DhcpImportTrigger.MANUAL)
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        return {
+            (entry.kind, entry.outcome): entry.path
+            for entry in summary.entries
+            if entry.kind in (Kind.PD_POOL, Kind.RESERVATION) and entry.reason is None
+        }
+
+    def test_a_pd_pool_and_a_reservation_have_one_path_when_created_and_when_removed(self):
+        server = _make_db_server(name="created-removed-paths", ca_url="https://kea.example.invalid", dhcp4=False)
+        pd_pool = {"prefix": "2001:db8:900::", "prefix-len": 48, "delegated-len": 64}
+        subnet = {"id": 90, "subnet": "2001:db8:90::/64", "pd-pools": [pd_pool]}
+        host = {"subnet-id": 90, "duid": "00:01:00:01:aa:bb", "ip-addresses": ["2001:db8:90::50"]}
+        created = self._run(server, {"subnet6": [subnet]}, [host])
+        rows = {
+            kind: KeaDhcpLink.objects.get(server=server, family=6, kind=kind.value).sys4_object
+            for kind in (Kind.PD_POOL, Kind.RESERVATION)
+        }
+
+        removed = self._run(server, {"subnet6": [{**subnet, "pd-pools": []}]}, [])
+
+        for kind in (Kind.PD_POOL, Kind.RESERVATION):
+            with self.subTest(kind=kind):
+                self.assertIn((kind, Outcome.CREATED), created)
+                self.assertIn((kind, Outcome.REMOVED), removed)
+                self.assertEqual(removed[kind, Outcome.REMOVED], created[kind, Outcome.CREATED])
+                self.assertFalse(type(rows[kind]).objects.filter(pk=rows[kind].pk).exists())
+        self.assertEqual(
+            created[Kind.PD_POOL, Outcome.CREATED],
+            "Dhcp6/subnet6[id=90]/pd-pools[prefix=2001:db8:900::/48,delegated-len=64]",
+        )
+        self.assertEqual(
+            created[Kind.RESERVATION, Outcome.CREATED], "Dhcp6/subnet6[id=90]/reservations[duid=00:01:00:01:aa:bb]"
+        )
 
 
 def _before_option_mappings(server) -> None:
