@@ -215,15 +215,22 @@ def mapping_identity(mapping) -> tuple:
     return tuple(getattr(mapping, mapping._meta.get_field(name).attname) for name in MAPPING_IDENTITY_FIELDS)
 
 
-def _source_lookup(server, family: int, source: MappingSource) -> dict:
+def _source_columns(server, family: int, source: MappingSource) -> dict:
+    """Return the source columns of the mapping of *source*, for a write."""
     return {"server": server, "family": family, **source.columns()}
+
+
+def _source_mapping(server, family: int, source: MappingSource):
+    """Return the mappings of *source*: at most one row, found through its unique index."""
+    from .models import KeaDhcpLink, exact_source
+
+    lookup = exact_source(server, family, source.kind.value, source.kea_subnet_id, source.kea_identity)
+    return KeaDhcpLink.objects.filter(lookup)
 
 
 def mapped_target(server, family: int, source: MappingSource):
     """Return the target that *source* maps to, or ``None`` when it has no mapping or its target is gone."""
-    from .models import KeaDhcpLink
-
-    mapping = KeaDhcpLink.objects.filter(**_source_lookup(server, family, source)).first()
+    mapping = _source_mapping(server, family, source).first()
     return mapping.sys4_object if mapping is not None else None
 
 
@@ -236,14 +243,13 @@ def observe_mapping(server, family: int, target, source: MappingSource):
 
     from .models import KeaDhcpLink, next_confirmation_number
 
-    lookup = _source_lookup(server, family, source)
     association = {
-        **lookup,
+        **_source_columns(server, family, source),
         "object_type": ContentType.objects.get_for_model(target),
         "object_id": target.pk,
     }
     with metadata_scope():
-        mapping = KeaDhcpLink.objects.filter(**lookup).first()
+        mapping = _source_mapping(server, family, source).first()
         desired = KeaDhcpLink(**association, confirmation=next_confirmation_number())
         if mapping is None:
             desired.save()
@@ -265,22 +271,12 @@ def observe_mapping(server, family: int, target, source: MappingSource):
 
 def options_mapped(server, family: int, source: MappingSource) -> bool:
     """Return whether the import has mapped the DHCP Options of the object of *source*. It must have a mapping."""
-    from .models import KeaDhcpLink
-
-    return (
-        KeaDhcpLink.objects.filter(**_source_lookup(server, family, source))
-        .values_list("options_mapped", flat=True)
-        .get()
-    )
+    return _source_mapping(server, family, source).values_list("options_mapped", flat=True).get()
 
 
 def mark_options_mapped(server, family: int, source: MappingSource) -> None:
     """Record that the import has mapped the DHCP Options of the object of *source*, without a history change."""
-    from .models import KeaDhcpLink
-
-    KeaDhcpLink.objects.filter(**_source_lookup(server, family, source), options_mapped=False).update(
-        options_mapped=True
-    )
+    _source_mapping(server, family, source).filter(options_mapped=False).update(options_mapped=True)
 
 
 class MappingUnavailable(AbortRequest):
@@ -965,7 +961,7 @@ def _require_dependencies(model, payload, restores, deleted):
 
 
 def _validate_mapping_restoration(pk, payload, restores, deleted):
-    from .models import KeaDhcpLink
+    from .models import KeaDhcpLink, exact_source
 
     target = _mapping_target_model(payload["object_type"])
     if target not in target_models() or (
@@ -974,13 +970,13 @@ def _validate_mapping_restoration(pk, payload, restores, deleted):
     ):
         raise AbortRequest("A DHCP mapping target dependency is missing. Nothing changed.")
     lookups = (
-        {name: payload[name] for name in MAPPING_SOURCE_FIELDS},
-        {name: payload[name] for name in ("object_type", "object_id")},
+        exact_source(**{name: payload[name] for name in MAPPING_SOURCE_FIELDS}),
+        models.Q(object_type=payload["object_type"], object_id=payload["object_id"]),
     )
     for lookup in lookups:
         if (
             KeaDhcpLink._base_manager.using("default")
-            .filter(**lookup)
+            .filter(lookup)
             .exclude(pk=pk)
             .exclude(pk__in=deleted.get(KeaDhcpLink, ()))
             .exists()

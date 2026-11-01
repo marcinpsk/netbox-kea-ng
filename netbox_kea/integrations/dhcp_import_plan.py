@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 
 from .. import kea_paths
 from ..constants import Family, validate_family
-from ..dhcp_options import MAX_OPTION_CODE, DHCPOptionIdentity, OptionDefinition, option_identity
+from ..dhcp_options import DHCPOptionIdentity, OptionDefinition, option_identity
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import (
     ClientClassIntent,
@@ -34,7 +34,7 @@ from ..mappers.kea_to_dhcp import (
     SubnetIntent,
 )
 from ..pools import Pool, parse_pool
-from ..reservations import MAX_IDENTITY_LENGTH, IdentifierType, InSubnetReservationScope, Reservation, identity_text
+from ..reservations import IdentifierType, InSubnetReservationScope, Reservation, identity_text
 from .dhcp_import_ledger import KEA_DEFAULTS, MERGED_KEYS
 from .dhcp_import_report import KIND_LABELS, ImportEntry, Kind, counted
 
@@ -55,20 +55,8 @@ class Planned(Generic[K, T]):
     intent: T
 
 
-# The longest text of one address: an IPv6 address with no zero group.
-_MAX_ADDRESS_TEXT = len(str(ipaddress.IPv6Address(2**128 - 1)))
 #: The longest Kea name that the import keys: a DHCP plugin row holds a name of 255 characters.
 MAX_KEA_NAME_LENGTH = 255
-#: The longest ``KeaDhcpLink.kea_identity`` that a :class:`MappingSource` gives, from the identity of each kind.
-#: A DHCP Option holds the identity of its parent and its client classes, so an Option can have no source.
-MAX_MAPPING_IDENTITY_LENGTH = max(
-    MAX_IDENTITY_LENGTH,  # A Reservation: "identifier-type:value".
-    2 * _MAX_ADDRESS_TEXT + len("-"),  # A Pool: "start-end".
-    _MAX_ADDRESS_TEXT + 2 * len("/128"),  # A delegated-prefix Pool: "prefix/length/delegated-length".
-    # An Option Definition: "space:code", or "class:space:code" in a client class.
-    2 * (MAX_KEA_NAME_LENGTH + len(":")) + len(str(MAX_OPTION_CODE)),
-    MAX_KEA_NAME_LENGTH,  # A Shared Network or a client class: its name.
-)
 
 
 @dataclass(frozen=True)
@@ -173,12 +161,12 @@ class OptionKey:
     occurrence: int = 0
 
     @property
-    def source(self) -> MappingSource | None:
-        """Return the DHCP Import Mapping source of the Option, or ``None`` when a mapping cannot hold its identity.
+    def source(self) -> MappingSource:
+        """Return the DHCP Import Mapping source of the Option.
 
         The Option takes the Kea subnet ID of its parent. Its ``kea_identity`` is a JSON list: the kind and the
         ``kea_identity`` of the parent, the space, the code (else the name), the sorted client classes and the
-        occurrence.
+        occurrence. The list has no length limit (ADR 0013).
         """
         identity = json.dumps(
             [
@@ -191,8 +179,6 @@ class OptionKey:
             ],
             separators=(",", ":"),
         )
-        if len(identity) > MAX_MAPPING_IDENTITY_LENGTH:
-            return None
         return MappingSource(Kind.OPTION, kea_subnet_id=self.parent.kea_subnet_id, kea_identity=identity)
 
     @classmethod
@@ -676,9 +662,7 @@ def _reservation_gap(observation: ReservationObservation | None) -> str:
 def _observed_sources(plan: FamilyPlan, options: tuple[PlannedOptions, ...]) -> dict[Kind, frozenset[MappingSource]]:
     """Return the Kea source of each object that the plan reports, by mapped kind. *options* keys its Options."""
     return {
-        Kind.OPTION: frozenset(
-            key.source for each in options for key in each.keys if key is not None and key.source is not None
-        ),
+        Kind.OPTION: frozenset(key.source for each in options for key in each.keys if key is not None),
         Kind.RESERVATION: frozenset(planned.key.source for planned in keyed_reservations(plan.reservations)),
         Kind.POOL: frozenset(
             pool.key.source for subnet in plan.subnets for pool in subnet.pools if pool.key is not None
@@ -706,7 +690,7 @@ def _option_gaps(
     gap of an unread Server Configuration.
     """
     dropped = Counter(entry.parent for entry in plan.dropped if entry.kind == Kind.OPTION)
-    unkeyed = Counter(each.kind for each in options for key in each.keys if key is None or key.source is None)
+    unkeyed = Counter(each.kind for each in options for key in each.keys if key is None)
     found = {}
     for kind in (Kind.SERVER, *(kind for kind in _OPTION_PARENTS if kind in mapped_kinds(plan.family))):
         if kind == Kind.SERVER:

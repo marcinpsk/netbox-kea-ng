@@ -36,7 +36,6 @@ from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
 from netbox_kea.integrations.dhcp_import_ledger import KEA_DEFAULTS, LEDGER, MERGED_KEYS, Mapped, NotImported
 from netbox_kea.integrations.dhcp_import_plan import (
     MAX_KEA_NAME_LENGTH,
-    MAX_MAPPING_IDENTITY_LENGTH,
     REMOVAL_ORDER,
     FamilyPlan,
     GlobalReservationKey,
@@ -196,11 +195,9 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
         self.assertEqual(classes["voip"].option_definitions, ())
         self.assertNotIn(definition.key, [planned.key for planned in plan.option_definitions])
 
-    def test_the_mapping_identity_holds_the_longest_class_level_option_definition(self):
-        source = OptionDefinitionKey("s" * MAX_KEA_NAME_LENGTH, 65535, "c" * MAX_KEA_NAME_LENGTH).source
-
-        self.assertEqual(len(source.kea_identity), MAX_MAPPING_IDENTITY_LENGTH)
-        self.assertEqual(KeaDhcpLink._meta.get_field("kea_identity").max_length, MAX_MAPPING_IDENTITY_LENGTH)
+    def test_the_mapping_identity_has_no_length_limit(self):
+        # An Option identity holds every class name of the Option, so no limit can hold each one.
+        self.assertIsNone(KeaDhcpLink._meta.get_field("kea_identity").max_length)
 
     def test_a_class_level_option_definition_that_is_not_valid_is_dropped_with_its_class_path(self):
         config = {"client-classes": [{"name": "boot", "option-def": [{"name": "no-code", "type": "uint8"}]}]}
@@ -418,8 +415,6 @@ class PDPoolPlanTest(SimpleTestCase):
 
         self.assertEqual(source, MappingSource(Kind.PD_POOL, 1, "2001:db8:100::/48/56"))
         self.assertEqual(source.path(6), _PD_PATH)
-        longest = PDPoolKey(1, ipaddress.IPv6Network(f"{ipaddress.IPv6Address(2**128 - 1)}/128"), 128).source
-        self.assertLessEqual(len(longest.kea_identity), MAX_MAPPING_IDENTITY_LENGTH)
 
     def test_a_pd_pool_entry_that_is_not_valid_is_dropped_with_its_path(self):
         valid = {"prefix": "2001:db8:200::", "prefix-len": 48, "delegated-len": 56}
@@ -782,7 +777,7 @@ class KindObservationTest(SimpleTestCase):
 
         self.assertEqual([source.path(4) for source in observed.sources], [f"{_BOOT}/option-data[code=231]"])
 
-    def test_an_option_whose_identity_a_mapping_cannot_hold_makes_the_options_incomplete(self):
+    def test_an_option_with_a_long_identity_is_observed(self):
         classes = [f"{'c' * (MAX_KEA_NAME_LENGTH - 1)}{n}" for n in range(2)]
         config = {"option-data": [{"code": 3, "data": "192.0.2.1", "client-classes": classes}]}
         intent = parse_dhcp_config(config, 4)
@@ -790,9 +785,9 @@ class KindObservationTest(SimpleTestCase):
 
         observed = observations(plan_family(intent, _complete_observation()))[Kind.OPTION]
 
-        self.assertEqual(
-            (observed.sources, observed.incomplete), (frozenset(), "1 DHCP Option has no mapping identity.")
-        )
+        (source,) = observed.sources
+        self.assertGreater(len(source.kea_identity), 517)
+        self.assertEqual(observed.incomplete, "")
 
     def test_each_parent_gap_makes_the_option_observation_incomplete(self):
         unread = observations(plan_family(_recorded_intent(4), None))[Kind.OPTION]
@@ -2841,30 +2836,38 @@ class OptionMappingTest(TestCase):
         self.assertEqual(self._option_rows(), rows)
         self.assertEqual(set(Option.objects.values_list("pk", flat=True)), options)
 
-    def test_an_option_whose_identity_a_mapping_cannot_hold_is_updated_in_place_on_every_run(self):
+    def test_an_option_with_a_long_identity_is_mapped_updated_through_its_mapping_and_removed(self):
         Option = apps.get_model(DHCP_PLUGIN, "Option")
         names = [f"{letter * 199}x" for letter in "abc"]
         config = _recorded_config(4)
         config["client-classes"] += [{"name": name, "test": "member('KNOWN')"} for name in names]
-        config["option-data"].append({"code": 15, "data": "long.example.org", "client-classes": names})
+        long_option = {"code": 15, "data": "long.example.org", "client-classes": names}
+        config["option-data"].append(long_option)
         path = f"Dhcp4/option-data[code=15,client-classes={'|'.join(names)}]"
-        unmapped = ("dhcpserver", 15, "long.example.org", tuple(names), False)
 
         first = self._run(config)
         rows = self._option_rows()
-        options = set(Option.objects.values_list("pk", flat=True))
+        (link,) = [
+            link
+            for link in KeaDhcpLink.objects.filter(server=self.server, kind=Kind.OPTION.value)
+            if len(link.kea_identity) > 517
+        ]
         again = self._run(config)
-        config["option-data"][-1]["data"] = "longer.example.org"
+        long_option["data"] = "longer.example.org"
         changed = self._run(config)
+        updated = Option.objects.get(pk=link.object_id).data
+        config["option-data"].remove(long_option)
+        dropped = self._run(config)
 
         self.assertEqual(self._changes(first)[(Kind.OPTION, path, Outcome.CREATED, None)], 1)
-        self.assertEqual(rows[unmapped], 1)
+        self.assertEqual(rows[("dhcpserver", 15, "long.example.org", tuple(names), True)], 1)
         self.assertEqual(self._changes(again), {})
         self.assertEqual(self._changes(changed), {(Kind.OPTION, path, Outcome.UPDATED, None): 1})
-        rows[unmapped] -= 1
-        rows[("dhcpserver", 15, "longer.example.org", tuple(names), False)] += 1
-        self.assertEqual(self._option_rows(), +rows)
-        self.assertEqual(set(Option.objects.values_list("pk", flat=True)), options)
+        self.assertEqual(updated, "longer.example.org")
+        # A Complete read removes it, so the Options of the global configuration are not unobserved because of it.
+        self.assertEqual(self._changes(dropped), {(Kind.OPTION, path, Outcome.REMOVED, None): 1})
+        self.assertFalse(Option.objects.filter(pk=link.object_id).exists())
+        self.assertFalse(KeaDhcpLink.objects.filter(pk=link.pk).exists())
 
     def test_a_parent_that_holds_an_option_another_server_maps_is_kept(self):
         other = _make_db_server(name="option-mapping-other", dhcp6=False, sync_dhcp_plugin_enabled=True)

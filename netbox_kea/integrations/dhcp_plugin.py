@@ -732,7 +732,7 @@ def option_values(
 
 @dataclass(frozen=True)
 class _PlannedOption:
-    """A Kea option with an Option Definition that the plugin holds, and its mapping source (``None``: none)."""
+    """A Kea option with an Option Definition that the plugin holds, and its mapping source."""
 
     option: DHCPOption
     path: str
@@ -740,7 +740,7 @@ class _PlannedOption:
     code: int | None
     definition: Any
     classes: frozenset[int]
-    source: MappingSource | None
+    source: MappingSource
     # Why the run does not write the Option (see _data_gap): the run still pairs it.
     skipped: _Skipped | None = None
 
@@ -804,8 +804,7 @@ def _write_option(item: _PlannedOption, row, parent_obj, ct, family: int, refere
                 getattr(obj, name).set(pks)
             if row is not None and (changes or relations):
                 outcome = Outcome.UPDATED
-            if item.source is not None:
-                observe_mapping(references.server, family, obj, item.source)
+            observe_mapping(references.server, family, obj, item.source)
         if outcome is not None:
             summary.record(written(family, Kind.OPTION, item.path, outcome))
     except event_scope.EventDispatchError:
@@ -833,8 +832,7 @@ def upsert_options(
     finds the row through it. Until the mapping of the object records that its Options are mapped, an Option without
     a mapped row adopts an unmapped Option of *parent_obj* (:func:`_paired_rows`). The adoptions are written before the
     Options, and that record waits only for a failed Option Definition write or a defined client class that this run
-    did not import. After that, every unmapped Option is an operator's and stays. An Option without a mapping source
-    pairs with an unmapped Option on every run, so it is updated in place and never removed. The options of a client
+    did not import. After that, every unmapped Option is an operator's and stays. The options of a client
     class also resolve its own Option Definitions. An Option whose definition cannot be resolved, whose class has no
     row, or whose data the plugin refuses, is reported and does not stop the import. An Option whose values did not
     change has no entry.
@@ -869,12 +867,9 @@ def upsert_options(
             planned.append(_PlannedOption(opt, path, space, code, definition, classes, key.source, skipped))
         else:
             pending_dependency |= references.classes.has_pending_import(opt.client_classes)
-    mapped = [mapped_target(server, family, item.source) if item.source is not None else None for item in planned]
+    mapped = [mapped_target(server, family, item.source) for item in planned]
     adopts = not options_mapped(server, family, parent)
-    # An Option without a source pairs on every run; one with a source only while its object adopts.
-    pairing = [
-        item for item, row in zip(planned, mapped, strict=True) if row is None and (item.source is None or adopts)
-    ]
+    pairing = [item for item, row in zip(planned, mapped, strict=True) if row is None and adopts]
     unmapped = []
     if pairing:
         unmapped = list(
@@ -887,7 +882,7 @@ def upsert_options(
     # The adoption decisions hold before any write, so a write that fails leaves the adopted row mapped.
     with event_scope.atomic():
         for item in pairing:
-            if item.source is not None and paired[id(item)] is not None:
+            if paired[id(item)] is not None:
                 observe_mapping(server, family, paired[id(item)], item.source)
         if not pending_dependency:
             mark_options_mapped(server, family, parent)

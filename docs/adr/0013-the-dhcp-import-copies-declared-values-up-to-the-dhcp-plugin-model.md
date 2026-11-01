@@ -60,6 +60,12 @@ Prefix in Kea while the plugin requires one. A reverse direction from the plugin
     client class set. Duplicates of one identity in one object are told apart by their order, so a reorder in Kea
     swaps their mappings.
 
+  Every object that the import writes has a mapping (#208). Kea refuses a Subnet without a subnet ID, so the parse
+  drops such an entry as invalid Kea data, with its Pools, delegated-prefix Pools and DHCP Options. The identity
+  column has no length limit, because the identity of a DHCP Option holds the name of each of its client classes. A
+  PostgreSQL btree index cannot hold text of any length, so the unique constraints of the shapes with an identity
+  index its MD5 digest. A lookup compares the digest, which the index finds, and then the text.
+
   A client class and a Shared Network keep their Kea name. While the plugin requires names to be unique across all
   servers, a second Server's object of the same name fails as unsupported. Subnets, Pools and Reservations have no
   Kea name, so their names are synthesized.

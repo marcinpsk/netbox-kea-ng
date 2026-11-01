@@ -44,6 +44,7 @@ from netbox_kea.models import (
     KeaDhcpLink,
     Server,
     SyncConfig,
+    exact_source,
     next_confirmation_number,
 )
 from netbox_kea.reservations import MAX_IDENTITY_LENGTH
@@ -701,6 +702,40 @@ class TestKeaDhcpLinkIdentity(TestCase):
                 self._link(object_id=object_id, **source.columns()).save()
                 self.assertEqual(KeaDhcpLink.objects.get(object_id=object_id).kea_identity, source.kea_identity)
 
+    def test_each_hashed_source_constraint_refuses_a_duplicate_long_identity(self):
+        # One character more than the varchar column before 0030 held.
+        identity = "o" * 518
+        constraints = {
+            "keadhcplink_unique_in_subnet_source": {"kea_subnet_id": 7, "kea_identity": identity},
+            "keadhcplink_unique_global_source": {"kea_identity": identity},
+        }
+        for object_id, (constraint, columns) in enumerate(constraints.items(), start=1):
+            with self.subTest(constraint):
+                self._link("option", object_id=object_id, **columns).save()
+                with self.assertRaisesRegex(IntegrityError, constraint), transaction.atomic():
+                    self._link("option", object_id=object_id + 100, **columns).save()
+                self.assertEqual(KeaDhcpLink.objects.get(object_id=object_id).kea_identity, identity)
+
+    def test_the_exact_source_lookup_finds_one_mapping_through_the_unique_index_of_its_shape(self):
+        from django.db import connection
+
+        shapes = {
+            "keadhcplink_unique_family_source": ("server", None, None),
+            "keadhcplink_unique_subnet_source": ("subnet", 7, None),
+            "keadhcplink_unique_in_subnet_source": ("option", 7, "o" * 600),
+            "keadhcplink_unique_global_source": ("option", None, "o" * 600),
+        }
+        for object_id, (kind, subnet_id, identity) in enumerate(shapes.values(), start=1):
+            self._link(kind, object_id=object_id, kea_subnet_id=subnet_id, kea_identity=identity).save()
+        with connection.cursor() as cursor:
+            # The table is small, so only a plan without a sequential scan shows that the index fits the query.
+            cursor.execute("SET LOCAL enable_seqscan = off")
+        for index, (kind, subnet_id, identity) in shapes.items():
+            with self.subTest(index):
+                found = KeaDhcpLink.objects.filter(exact_source(self.server, 4, kind, subnet_id, identity))
+                self.assertEqual([(row.kea_subnet_id, row.kea_identity) for row in found], [(subnet_id, identity)])
+                self.assertRegex(found.explain(), rf"Index Scan using {index} on netbox_kea_keadhcplink")
+
 
 class TestChangeLoggedModelsInTheChangeLogApi(TestCase):
     """The change log API serializes each changed object, so a change-logged model needs a REST serializer."""
@@ -1043,7 +1078,8 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         )
         server = _make_db_server(name="all-mapping-kinds")
         object_type = ContentType.objects.get_for_model(Server)
-        max_length = KeaDhcpLink._meta.get_field("kea_identity").max_length
+        # The longest identity that the reverse of 0030 accepts.
+        max_length = 517
         expected_mappings = []
         object_id = 0
         for kind in kinds:
@@ -1151,6 +1187,88 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         with connection.cursor() as cursor:
             cursor.execute("SELECT object_id, kind FROM netbox_kea_keadhcplink WHERE server_id = %s", [server.pk])
             self.assertEqual(cursor.fetchall(), [(1, "subnet")])
+
+    def test_0030_keeps_each_mapping_and_each_changed_constraint_still_refuses_a_duplicate(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        server = _make_db_server(name="unbounded-identities")
+        object_type = ContentType.objects.get_for_model(Server)
+        previous = ("netbox_kea", "0029_dhcp_import_option_mappings")
+        current = self._migrate_to(previous[1])
+        historical = (
+            MigrationExecutor(connection).loader.project_state(previous).apps.get_model("netbox_kea", "KeaDhcpLink")
+        )
+        rows = [
+            (1, "pool", 7, "198.18.0.10-198.18.0.20"),
+            (2, "option", None, "o" * 517),
+            (3, "subnet", 7, None),
+        ]
+        for object_id, kind, subnet_id, identity in rows:
+            historical.objects.create(
+                server_id=server.pk,
+                family=4,
+                kind=kind,
+                kea_subnet_id=subnet_id,
+                kea_identity=identity,
+                object_type_id=object_type.pk,
+                object_id=object_id,
+                confirmation=1,
+            )
+
+        forward = MigrationExecutor(connection)
+        forward.loader.build_graph()
+        forward.migrate(current)
+
+        self.assertCountEqual(
+            KeaDhcpLink.objects.filter(server=server).values_list("object_id", "kind", "kea_subnet_id", "kea_identity"),
+            rows,
+        )
+        for object_id, kind, subnet_id, identity in rows[:2]:
+            with self.subTest(kind), self.assertRaises(IntegrityError), transaction.atomic():
+                KeaDhcpLink.objects.create(
+                    confirmation=next_confirmation_number(),
+                    server=server,
+                    family=4,
+                    kind=kind,
+                    kea_subnet_id=subnet_id,
+                    kea_identity=identity,
+                    object_type=object_type,
+                    object_id=object_id + 100,
+                )
+
+    def test_0030_reversed_refuses_an_identity_that_the_older_column_cannot_hold(self):
+        from django.db import connection
+        from django.db.migrations.exceptions import IrreversibleError
+        from django.db.migrations.executor import MigrationExecutor
+        from django.db.migrations.recorder import MigrationRecorder
+
+        server = _make_db_server(name="long-identity")
+        link = KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
+            server=server,
+            family=4,
+            kind="option",
+            kea_identity="o" * 518,
+            object_type=ContentType.objects.get_for_model(Server),
+            object_id=1,
+        )
+        executor = MigrationExecutor(connection)
+        current = executor.loader.graph.leaf_nodes("netbox_kea")
+
+        def restore_migration_state():
+            restore = MigrationExecutor(connection)
+            restore.loader.build_graph()
+            restore.migrate(current)
+
+        self.addCleanup(restore_migration_state)
+
+        with self.assertRaisesRegex(IrreversibleError, r"longer than 517 characters \(1 in all\)"):
+            executor.migrate([("netbox_kea", "0029_dhcp_import_option_mappings")])
+
+        applied = MigrationRecorder(connection).applied_migrations()
+        self.assertIn(("netbox_kea", "0030_keadhcplink_unbounded_identity"), applied)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).kea_identity, "o" * 518)
 
     def test_0029_gives_an_existing_mapping_a_confirmation_below_every_cutoff(self):
         from django.db import connection
