@@ -92,6 +92,7 @@ if TYPE_CHECKING:
     from ..subnet_catalogue import CatalogueSnapshot
     from .dhcp_import_plan import (
         FamilyPlan,
+        NamedKey,
         PDPoolKey,
         Planned,
         PlannedClientClass,
@@ -99,7 +100,6 @@ if TYPE_CHECKING:
         PlannedServer,
         PlannedSharedNetwork,
         PlannedSubnet,
-        PoolKey,
         ReservationKey,
     )
 
@@ -142,8 +142,10 @@ from .dhcp_import_plan import (
     MAX_KEA_NAME_LENGTH,
     REMOVAL_ORDER,
     InSubnetReservationKey,
+    InvalidPoolKey,
     MappingSource,
     OptionDefinitionKey,
+    PoolKey,
     keyed_reservations,
     kind_path,
     mapped_kinds,
@@ -561,7 +563,7 @@ def _write_option_definition(
     """
     OptionDefinition = _model("OptionDefinition")
     def_intent = definitions.declared[key]
-    path = key.source.path(family)
+    path = key.path(family)
     gap = _code_and_space_gap(key.space, key.code, family, capabilities)
     if gap is not None:
         summary.record(gap.entry(family, Kind.OPTION_DEFINITION, path))
@@ -615,9 +617,9 @@ def _skip_class_definitions(
 ) -> None:
     """Record each custom Option Definition of a client class that was not imported."""
     for planned_definition in planned.option_definitions:
-        reason = _Unresolved(Reason.PARENT_NOT_IMPORTED, _class_not_imported(planned.key))
+        reason = _Unresolved(Reason.PARENT_NOT_IMPORTED, _class_not_imported(planned.key.name))
         definitions.written[planned_definition.key] = reason
-        path = planned_definition.key.source.path(planned.intent.family)
+        path = planned_definition.key.path(planned.intent.family)
         summary.record(reason.entry(planned.intent.family, Kind.OPTION_DEFINITION, path))
 
 
@@ -1290,7 +1292,7 @@ def _client_class_fields(
     """Plan the managed fields of one Client Class. A class whose Kea name is taken keeps its name."""
     intent = planned.intent
     fields = {
-        "name": obj.name if name_taken else planned.key,
+        "name": obj.name if name_taken else planned.key.name,
         "dhcp_server_id": dhcp_server.pk,
         "test": intent.test or "",
         "template_test": intent.template_test or "",
@@ -1332,8 +1334,7 @@ def _record_name_taken(
 def _upsert_named(
     server,
     dhcp_server,
-    kind: Kind,
-    name: str,
+    key: NamedKey,
     family: int,
     options: PlannedOptions,
     summary: ImportSummary,
@@ -1343,15 +1344,14 @@ def _upsert_named(
     adopt: Callable[[], Any],
     skip_children: Callable[[], None],
 ):
-    """Get or create the row of the client class or Shared Network *name* through its mapping, and write it.
+    """Get or create the row of the client class or Shared Network of *key* through its mapping, and write it.
 
     *write(row, name_taken)* writes the row (``None``: a new one) and returns it with its outcome. A row that the
     mapping does not find can be *adopt*-ed. Another row that holds the name stops a new row, and a mapped row keeps
     its name. When no row is written, the DHCP Options and the other children (*skip_children*) are skipped. Return the
     row, or ``None``.
     """
-    source = MappingSource.named(kind, name)
-    path = source.path(family)
+    kind, name, source, path = key.kind, key.name, key.source, key.path(family)
     try:
         with event_scope.atomic():
             obj = mapped_target(server, family, source)
@@ -1396,11 +1396,11 @@ def upsert_client_class(
     """
     ClientClass = _model("ClientClass")
     intent = planned.intent
-    path = kea_paths.client_class(intent.family, planned.key)
+    path = planned.key.path(intent.family)
 
     def adopt():
         # Adopt a row that the released importer created before client classes had a mapping.
-        released = ClientClass.objects.filter(name=_released_client_class_name(server, planned.key))
+        released = ClientClass.objects.filter(name=_released_client_class_name(server, planned.key.name))
         return _unlinked(released).first()
 
     def write(obj, name_taken: bool):
@@ -1413,7 +1413,6 @@ def upsert_client_class(
     obj = _upsert_named(
         server,
         dhcp_server,
-        Kind.CLIENT_CLASS,
         planned.key,
         intent.family,
         planned_options(planned, intent.family, definitions.declared),
@@ -1438,7 +1437,7 @@ def _shared_network_fields(
     """Plan the managed fields of one Shared Network. A Shared Network whose Kea name is taken keeps its name."""
     source = _Source(planned.intent.family, Kind.SHARED_NETWORK, path)
     return {
-        "name": obj.name if name_taken else planned.key,
+        "name": obj.name if name_taken else planned.key.name,
         "dhcp_server_id": dhcp_server.pk,
         **_settings_fields(obj, planned.settings, NETWORK_FIELDS, summary, source),
         **gated_values(obj, planned.settings, GATED_NETWORK_FIELDS, capabilities, summary, source),
@@ -1460,7 +1459,7 @@ def upsert_shared_network(
     prefix the Shared Network is unsupported. Return the row, or ``None`` when it was not written.
     """
     intent = planned.intent
-    path = kea_paths.shared_network(intent.family, planned.key)
+    path = planned.key.path(intent.family)
     options = planned_options(planned, intent.family, references.definitions.declared)
     if not capabilities.has(Capability.SHARED_NETWORK_OPTIONAL_PREFIX):
         detail = "The DHCP plugin needs a Prefix for each Shared Network, and a Kea Shared Network has none."
@@ -1484,7 +1483,6 @@ def upsert_shared_network(
     obj = _upsert_named(
         server,
         dhcp_server,
-        Kind.SHARED_NETWORK,
         planned.key,
         intent.family,
         options,
@@ -1505,13 +1503,13 @@ def _import_shared_networks(server, dhcp_server, plan: FamilyPlan, references: O
     for planned in plan.shared_networks:
         row = upsert_shared_network(server, dhcp_server, planned, references, summary, capabilities)
         if row is not None:
-            rows[planned.key] = row
+            rows[planned.key.name] = row
     return rows
 
 
 def _subnet_name(server, planned: PlannedSubnet) -> str:
     """Build a globally-unique name (NetBoxDHCPModelMixin requires unique ``name``)."""
-    return _synthesized_name(server.name, f" DHCPv{planned.intent.family} subnet {planned.key}")
+    return _synthesized_name(server.name, f" DHCPv{planned.intent.family} subnet {planned.key.subnet_id}")
 
 
 def _pool_name(subnet_obj, pool_intent) -> str:
@@ -1556,9 +1554,9 @@ def upsert_subnet(
     """
     Subnet = _model("Subnet")
     intent = planned.intent
-    path = subnet_path(planned)
+    path = planned.key.path(intent.family)
     source = _Source(intent.family, Kind.SUBNET, path)
-    mapping = MappingSource.subnet(planned.key)
+    mapping = planned.key.source
 
     existing = mapped_target(server, intent.family, mapping)
 
@@ -1577,7 +1575,7 @@ def upsert_subnet(
                 "prefix_id": prefix_obj.pk,
                 **_subnet_parent(existing, dhcp_server, shared_network, keep_membership),
                 # settle_subnet_ids gave a mapped row its Kea subnet ID.
-                "subnet_id": planned.key,
+                "subnet_id": planned.key.subnet_id,
                 **_settings_fields(subnet_obj, planned.settings, NETWORK_FIELDS, summary, source),
                 **gated_values(subnet_obj, planned.settings, GATED_SUBNET_FIELDS, capabilities, summary, source),
                 **_user_context_fields(subnet_obj, intent.user_context, capabilities, summary, source, "Subnet"),
@@ -1653,7 +1651,7 @@ def _no_interface_detail(dhcp_server, name: str) -> str:
 
 def _report_inherited(summary: ImportSummary, planned: PlannedSubnet, capabilities: PluginCapabilities) -> None:
     """Record each value that a Subnet inherits from its Shared Network, which this run did not import."""
-    path = subnet_path(planned)
+    path = planned.key.path(planned.intent.family)
     name = planned.intent.shared_network
     if capabilities.has(Capability.SHARED_NETWORK_OPTIONAL_PREFIX):
         detail = f"Kea applies the value of Shared Network {name}, which was not imported."
@@ -1677,7 +1675,7 @@ def _subnet_write_failed(
     subnet_ids: SubnetIdSettlement,
 ) -> None:
     """Skip the children and the Reservations of a Subnet whose write failed: they must not attach to the stored row."""
-    subnet_ids.failed.add(planned.key)
+    subnet_ids.failed.add(planned.key.subnet_id)
     _skip_subnet_children(summary, planned, declared)
 
 
@@ -1691,15 +1689,13 @@ def _skip_subnet_children(
 
     A *taken* ID is also why its Options, Pools and PD Pools were not.
     """
-    family, parent_path = planned.intent.family, subnet_path(planned)
-    _skip_options(summary, family, parent_path, planned_options(planned, family, declared), taken)
+    family = planned.intent.family
+    _skip_options(summary, family, planned.key.path(family), planned_options(planned, family, declared), taken)
     children = [
-        (Kind.POOL, pool_path(parent_path, pool, family), planned_options(pool, family, declared))
-        for pool in planned.pools
+        (pool.key.kind, pool.key.path(family), planned_options(pool, family, declared)) for pool in planned.pools
     ]
     children += [
-        (Kind.PD_POOL, pd_pool_path(parent_path, pool.key), planned_options(pool, family, declared))
-        for pool in planned.pd_pools
+        (pool.key.kind, pool.key.path(family), planned_options(pool, family, declared)) for pool in planned.pd_pools
     ]
     for kind, path, options in children:
         if taken is None:
@@ -1707,23 +1703,6 @@ def _skip_subnet_children(
         else:
             summary.record(taken.entry(family, kind, path))
         _skip_options(summary, family, path, options, taken)
-
-
-def subnet_path(planned: PlannedSubnet) -> str:
-    """Return the Kea path of a planned Subnet."""
-    return kea_paths.subnet(planned.intent.family, planned.key)
-
-
-def pool_path(parent_path: str, planned: Planned[PoolKey | None, PoolIntent], family: int) -> str:
-    """Return the Kea path of a planned Pool of the Subnet at *parent_path*: the path of its source, if it has one."""
-    if planned.key is None:
-        return kea_paths.pool(parent_path, planned.intent.pool)
-    return planned.key.source.path(family)
-
-
-def pd_pool_path(parent_path: str, key: PDPoolKey) -> str:
-    """Return the Kea path of a planned delegated-prefix Pool of the Subnet at *parent_path*."""
-    return kea_paths.pd_pool(parent_path, str(key.prefix), key.delegated_length)
 
 
 @dataclass(frozen=True)
@@ -1769,9 +1748,8 @@ def _freeing_moves(
 
 
 def _subnet_id_taken(planned: PlannedSubnet, holder, capabilities: PluginCapabilities) -> SubnetIdTaken:
-    claim = (
-        f"Subnet {planned.intent.cidr} needs Subnet ID {planned.key}, which Subnet {holder.name!r} ({holder.prefix})"
-    )
+    subnet_id = planned.key.subnet_id
+    claim = f"Subnet {planned.intent.cidr} needs Subnet ID {subnet_id}, which Subnet {holder.name!r} ({holder.prefix})"
     if capabilities.has(Capability.SUBNET_ID_PER_SERVER):
         return SubnetIdTaken(f"{claim} of this DHCP server holds.", per_server=True)
     detail = f"{claim} holds. The DHCP plugin needs each Subnet ID to be unique across all DHCP servers."
@@ -1818,7 +1796,7 @@ def settle_subnet_ids(
     from ..models import KeaDhcpLink
 
     Subnet = _model("Subnet")
-    planned = {subnet.key: subnet for subnet in plan.subnets}
+    planned = {subnet.key.subnet_id: subnet for subnet in plan.subnets}
     links = KeaDhcpLink.objects.filter(kind=Kind.SUBNET.value, object_type=ContentType.objects.get_for_model(Subnet))
     wants = dict(links.values_list("object_id", "kea_subnet_id"))
     ours = dict(
@@ -1939,7 +1917,8 @@ def _upsert_pool(
     family: int,
     subnet_obj,
     range_obj,
-    planned_pool,
+    key: PoolKey,
+    intent: PoolIntent,
     classes: dict[str, set[int]],
     summary: ImportSummary,
     path: str,
@@ -1947,8 +1926,7 @@ def _upsert_pool(
 ) -> tuple:
     """Get or create one Pool and set its managed fields. Return it with its outcome (``None`` when unchanged)."""
     Pool = _model("Pool")
-    intent = planned_pool.intent
-    source = planned_pool.key.source
+    source = key.source
     pool_obj = mapped_target(server, family, source)
     if pool_obj is None:
         # Adopt a Pool that an import created before Pools had a mapping.
@@ -2000,28 +1978,28 @@ def upsert_pools(
 ) -> None:
     """Get/create DHCP-plugin ``Pool`` rows (and their options) for each planned Pool of *planned*."""
     intent = planned.intent
-    parent_path = subnet_path(planned)
     for planned_pool in planned.pools:
-        pool_intent = planned_pool.intent
-        path = pool_path(parent_path, planned_pool, intent.family)
+        pool_intent, key = planned_pool.intent, planned_pool.key
+        path = key.path(intent.family)
         options = planned_options(planned_pool, intent.family, references.definitions.declared)
         try:
             with event_scope.atomic():
-                pool = planned_pool.key.range if planned_pool.key is not None else None
+                pool = key.range if isinstance(key, PoolKey) else None
                 result = claims.ranges.get(f"{pool.start} - {pool.end}") if pool is not None else None
                 if result is not None and result.outcome == "error":
                     raise RuntimeError("The allocation Pool could not be claimed")
                 range_obj = result.ip_range if result else None
                 if result is not None and result.outcome in {"conflict", "disagreement"}:
                     summary.warn(f"pool {pool_intent.pool}: IPAM ownership {result.outcome}, IP Range left unchanged")
-                if range_obj is not None:
+                if range_obj is not None and isinstance(key, PoolKey):
                     classes = references.classes.relations(pool_intent, path, Kind.POOL, summary)
                     pool_obj, outcome = _upsert_pool(
                         server,
                         intent.family,
                         subnet_obj,
                         range_obj,
-                        planned_pool,
+                        key,
+                        pool_intent,
                         classes,
                         summary,
                         path,
@@ -2037,7 +2015,7 @@ def upsert_pools(
             _skip_options(summary, intent.family, path, options)
             continue
         if range_obj is None:
-            summary.record(_unusable_pool(intent.family, path, planned_pool.key, result))
+            summary.record(_unusable_pool(intent.family, path, key, result))
             summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: unusable range, skipped")
             _skip_options(summary, intent.family, path, options)
             continue
@@ -2116,10 +2094,10 @@ def upsert_pd_pools(
 
     A PD Pool that the DHCP plugin refuses is unsupported with the plugin's reason, and its options are skipped.
     """
-    family, parent_path = planned.intent.family, subnet_path(planned)
+    family = planned.intent.family
     for planned_pd_pool in planned.pd_pools:
         key, intent = planned_pd_pool.key, planned_pd_pool.intent
-        path = pd_pool_path(parent_path, key)
+        path = key.path(family)
         options = planned_options(planned_pd_pool, family, references.definitions.declared)
         try:
             with event_scope.atomic():
@@ -2148,9 +2126,9 @@ def upsert_pd_pools(
         upsert_options(row, options, family, references, summary, path, capabilities)
 
 
-def _unusable_pool(family: int, path: str, key: PoolKey | None, result: RangeClaim | None) -> ImportEntry:
+def _unusable_pool(family: int, path: str, key: PoolKey | InvalidPoolKey, result: RangeClaim | None) -> ImportEntry:
     """Return the entry of a Pool that has no IP Range to attach."""
-    if key is None:
+    if isinstance(key, InvalidPoolKey):
         detail = "The range is not valid or not inside the Subnet."
         return not_written(family, Kind.POOL, path, Reason.INVALID_KEA_DATA, detail)
     if result is None:
@@ -2221,7 +2199,7 @@ def _upsert_reservation(
     HostReservation = _model("HostReservation")
     reservation, key = planned.intent, planned.key
     scope = reservation.scope.subnet.cidr if isinstance(reservation.scope, InSubnetReservationScope) else "global"
-    path = reservation_path(key, reservation.family)
+    path = key.path(reservation.family)
     options = planned_options(planned, reservation.family, references.definitions.declared)
 
     if subnet_obj is not None:
@@ -2314,12 +2292,6 @@ def _upsert_reservation(
         return None
     upsert_options(obj, options, reservation.family, references, summary, path, capabilities)
     return obj, before
-
-
-def reservation_path(key: ReservationKey, family: int) -> str:
-    """Return the Kea path of a keyed Reservation of *family*."""
-    subnet_id = key.subnet_id if isinstance(key, InSubnetReservationKey) else None
-    return kea_paths.reservation(family, subnet_id, key.identifier_type, key.value)
 
 
 def _reservation_boot_values(reservation: Reservation) -> dict:
@@ -2427,7 +2399,7 @@ def _skip_reservation_options(
     """Record the DHCP Options of an In-Subnet Reservation whose Subnet was not imported or whose ID is *taken*."""
     family, key = planned.intent.family, planned.key
     options = planned_options(planned, family, references.definitions.declared)
-    _skip_options(summary, family, reservation_path(key, family), options, taken)
+    _skip_options(summary, family, key.path(family), options, taken)
 
 
 def import_reservation_snapshot(
@@ -2477,7 +2449,7 @@ def import_reservation_snapshot(
             taken = subnet_ids.taken.get(key.subnet_id) if subnet_ids is not None else None
             if taken is not None:
                 complete = False
-                summary.record(taken.entry(family, Kind.RESERVATION, reservation_path(key, family)))
+                summary.record(taken.entry(family, Kind.RESERVATION, key.path(family)))
                 _skip_reservation_options(summary, planned, references, taken)
                 continue
             if subnet_ids is not None and key.subnet_id in subnet_ids.failed:
@@ -2490,7 +2462,7 @@ def import_reservation_snapshot(
                     not_written(
                         family,
                         Kind.RESERVATION,
-                        reservation_path(key, family),
+                        key.path(family),
                         Reason.PARENT_NOT_IMPORTED,
                         f"Subnet {key.subnet_id} was not imported.",
                     )
@@ -2552,7 +2524,7 @@ def import_reservation_snapshot(
     for planned, obj, before in imported:
         if before is None or before != _reservation_state(obj, relations[obj.pk], capabilities):
             outcome = Outcome.CREATED if before is None else Outcome.UPDATED
-            summary.record(written(family, Kind.RESERVATION, reservation_path(planned.key, family), outcome))
+            summary.record(written(family, Kind.RESERVATION, planned.key.path(family), outcome))
     return step
 
 
@@ -2624,7 +2596,7 @@ def _claim_config_networks(server, plan: FamilyPlan):
         except ValueError:
             continue
         subnets.append(SubnetClaim(network))
-        pools.extend(PoolClaim(pool.key.range, network) for pool in planned.pools if pool.key is not None)
+        pools.extend(PoolClaim(pool.key.range, network) for pool in planned.pools if isinstance(pool.key, PoolKey))
     prefixes = [PDPoolClaim(prefix) for prefix in pd_pool_prefixes(plan)]
     return (
         claim(server, plan.family, subnets, force=False),
@@ -3018,7 +2990,7 @@ def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> No
         unjudged: list[_StaleRow] = []
         reasons: list[str] = []
         for row in stale.get(kind, []):
-            gap = observed[kind].gap(row.source)
+            gap = observed[kind].gap(row.source, plan.family)
             if gap:
                 unjudged.append(row)
                 reasons.extend(gap)
@@ -3139,8 +3111,8 @@ def _import_definitions_and_classes(
     for planned_class in plan.client_classes:
         row = upsert_client_class(server, dhcp_server, planned_class, definitions, summary, capabilities)
         if row is not None:
-            rows[planned_class.key] = row
-    defined = frozenset(planned.key for planned in plan.client_classes)
+            rows[planned_class.key.name] = row
+    defined = frozenset(planned.key.name for planned in plan.client_classes)
     classes = ClassReferences(plan.family, defined, {name: row.pk for name, row in rows.items()})
     return OptionReferences(definitions, classes), rows
 
@@ -3153,7 +3125,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     duplicating it.
     """
     summary = ImportSummary()
-    root = kea_paths.daemon(plan.family)
+    root = plan.server.key.path(plan.family)
     invalid = (
         not_written(plan.family, dropped.kind, dropped.path, Reason.INVALID_KEA_DATA, dropped.detail)
         for dropped in plan.dropped
@@ -3172,12 +3144,13 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         server, dhcp_server, plan, adoption_servers, summary, capabilities
     )
     declared = references.definitions.declared
-    planned_classes = {planned.key: planned for planned in plan.client_classes}
+    planned_classes = {planned.key.name: planned for planned in plan.client_classes}
     global_options = planned_options(plan.server, plan.family, declared)
     upsert_options(dhcp_server, global_options, plan.family, references, summary, root, capabilities)
     for name, row in class_rows.items():
-        path = kea_paths.client_class(plan.family, name)
-        class_options = planned_options(planned_classes[name], plan.family, declared)
+        planned_class = planned_classes[name]
+        path = planned_class.key.path(plan.family)
+        class_options = planned_options(planned_class, plan.family, declared)
         upsert_options(row, class_options, plan.family, references, summary, path, capabilities)
     networks = _import_shared_networks(server, dhcp_server, plan, references, summary, capabilities)
 
@@ -3187,17 +3160,18 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     )
     subnet_ids = settle_subnet_ids(server, dhcp_server, plan, capabilities, summary)
     for planned_subnet in plan.subnets:
-        taken = subnet_ids.taken.get(planned_subnet.key)
+        subnet_id, path = planned_subnet.key.subnet_id, planned_subnet.key.path(plan.family)
+        taken = subnet_ids.taken.get(subnet_id)
         if taken is not None:
-            summary.record(taken.entry(plan.family, Kind.SUBNET, subnet_path(planned_subnet)))
-            summary.warn(f"subnet {planned_subnet.intent.cidr} (id={planned_subnet.key}): {taken.detail}")
+            summary.record(taken.entry(plan.family, Kind.SUBNET, path))
+            summary.warn(f"subnet {planned_subnet.intent.cidr} (id={subnet_id}): {taken.detail}")
             _skip_subnet_children(summary, planned_subnet, declared, taken)
             continue
-        if planned_subnet.key in subnet_ids.failed:
-            summary.record(write_failed(plan.family, Kind.SUBNET, subnet_path(planned_subnet)))
+        if subnet_id in subnet_ids.failed:
+            summary.record(write_failed(plan.family, Kind.SUBNET, path))
             _skip_subnet_children(summary, planned_subnet, declared)
             continue
-        renumbered = planned_subnet.key in subnet_ids.renumbered
+        renumbered = subnet_id in subnet_ids.renumbered
         name = planned_subnet.intent.shared_network
         network = networks.get(name)
         # A member of a Shared Network that this run could hold but did not write keeps its stored parent.
@@ -3225,7 +3199,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
             plan.family,
             references,
             summary,
-            subnet_path(planned_subnet),
+            path,
             capabilities,
         )
         upsert_pools(server, subnet_obj, planned_subnet, summary, references, pool_claims, capabilities)
