@@ -204,6 +204,9 @@ def _run_lease_sync_to_netbox(
     *gate* is the manual Sync rule of a lease claim; server-edit access alone is not enough. The sync uses
     ``force=False``, so a NetBox IP address that is not Kea-managed is skipped, not overwritten.
     """
+    if refused := manual_sync.refusal(gate):
+        show_manual_sync(request, manual_sync_lines(refused, f"Lease {address}"))
+        return
     if created is None:
         messages.warning(request, f"Lease {address} was not synced to NetBox: NetBox could not read it back from Kea.")
         return

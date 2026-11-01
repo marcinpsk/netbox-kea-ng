@@ -10,9 +10,10 @@ outcome. ``claim()`` stays the batch primitive of the DHCP Import and of the per
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError
@@ -20,7 +21,6 @@ from django.db import DatabaseError
 from . import event_scope
 from .ipam_reconciliation import ClaimEventsFailed, ClaimResult, LeaseSubnetAbsent, claim
 from .leases import Lease, is_current
-from .reservations import IPv4Reservation, IPv6Reservation
 from .subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable
 
 if TYPE_CHECKING:
@@ -52,37 +52,35 @@ class Ran:
 ManualSyncOutcome = NotRun | Ran
 
 
+def refusal(gate: SyncGate) -> NotRun | None:
+    """Return the ``refused`` outcome when the manual Sync permission rule refuses, else None."""
+    return None if gate.allowed else NotRun("refused", gate.reason)
+
+
 def sync_lease(server: Server, lease: Lease, gate: SyncGate, *, force: bool) -> ManualSyncOutcome:
     """Claim one Lease that the caller read from Kea, when *gate* allows it and the Lease is a Current Lease."""
-    if not gate.allowed:
-        return NotRun("refused", gate.reason)
+    if refused := refusal(gate):
+        return refused
     if not is_current(lease, datetime.now(tz=timezone.utc)):
         return NotRun("not-current")
-    return _claim(server, lease, None, force=force)
+    return _run(server, f"Lease {lease.identity.address}", lambda: claim(server, lease.family, [lease], force))
 
 
 def sync_reservation(
     server: Server, reservation: Reservation, catalogue: CatalogueSnapshot, gate: SyncGate
 ) -> ManualSyncOutcome:
     """Claim one Reservation in the Subnet Catalogue that verified it, when *gate* allows it."""
-    if not gate.allowed:
-        return NotRun("refused", gate.reason)
-    return _claim(server, reservation, catalogue, force=True)
+    if refused := refusal(gate):
+        return refused
+    return _run(
+        server, "a Reservation", lambda: claim(server, reservation.family, [reservation], True, catalogue=catalogue)
+    )
 
 
-def _claim(
-    server: Server, record: Lease | Reservation, catalogue: CatalogueSnapshot | None, *, force: bool
-) -> ManualSyncOutcome:
-    """Claim *record* and map each failure of the claim to its outcome. Only a Reservation takes a *catalogue*."""
-    if isinstance(record, (IPv4Reservation, IPv6Reservation)):
-        what = "a Reservation"
-    else:
-        what = f"Lease {record.identity.address}"
+def _run(server: Server, what: str, run_claim: Callable[[], ClaimResult]) -> ManualSyncOutcome:
+    """Run the claim of *what* and map each failure of the claim to its outcome."""
     try:
-        if isinstance(record, (IPv4Reservation, IPv6Reservation)):
-            result = claim(server, record.family, [record], force, catalogue=cast("CatalogueSnapshot", catalogue))
-        else:
-            result = claim(server, record.family, [record], force)
+        result = run_claim()
     except ClaimEventsFailed as exc:
         logger.exception(
             "Server %s: the Manual Sync of %s committed, but NetBox did not dispatch its events", server.pk, what

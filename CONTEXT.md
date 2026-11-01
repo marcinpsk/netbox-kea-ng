@@ -266,4 +266,4 @@ permission rule), Not Current (the Lease is not a Current Lease), Stale (the rec
 configuration no longer holds), Unavailable (Kea could not be read), or Failed. A Manual Sync that runs gives each
 allocation of the record an outcome: Synchronized, Conflict, Disagreement, Not Applicable, or Error. NetBox can save
 a Manual Sync and fail to dispatch its events.
-_Avoid_: row sync, force sync, claim
+_Avoid_: row sync, force sync

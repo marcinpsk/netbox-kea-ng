@@ -796,10 +796,10 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Transactions**: open every transaction with `event_scope.atomic()`, never `transaction.atomic`
   (opengrep `kea-raw-atomic`). At the top level of a tracked request, on a NetBox release whose `event_tracking` nests (`event_scope._nested_tracking`), it is a unit, whose events
   dispatch after its COMMIT or not at all. Put `except event_scope.EventDispatchError: raise` before a broad
-  `except`. The exceptions are the side effects after a change that Kea applied, which return the failed dispatch
-  as a fact (`reservation_edit.after_apply`), and a Manual Sync: `claim()` raises `ClaimEventsFailed` with the claim
-  result, and `manual_sync` returns both, so the Lease add view, the Reservation views and a row Sync report the
-  saved claim and a separate error. Read design record #176 (sections 22 and 24) before you change it.
+  `except`. There are two exceptions. The side effects after a change that Kea applied return the failed dispatch
+  as a fact (`reservation_edit.after_apply`). A Manual Sync also returns it: `claim()` raises `ClaimEventsFailed`
+  with the claim result, and `manual_sync` returns both. Each caller then reports the saved claim and a separate
+  error. Read design record #176 (sections 22 and 24) before you change it.
 - **Kea option names per family**: DNS is `domain-name-servers` (v4) or `dns-servers` (v6), and NTP is
   `ntp-servers` (v4) or `sntp-servers` (v6). `dhcp_options._FORM_MANAGED_OPTIONS` maps each form field to them.
 - **Forms**: lease search forms inherit `BaseLeasesSarchForm` (the typo is

@@ -97,7 +97,10 @@ periodic synchronization brings IPAM up to date.
 _Amended 2026-11-01 (#214): the IPAM synchronization of one Lease or one Reservation is a Manual Sync
 (`manual_sync.py`). It returns a typed outcome, and one presenter gives the same words to every caller. When NetBox
 saves the claim but cannot dispatch its events, the outcome holds the claim result and that fact. A row Sync button
-then returns a 200 row reply with the claim result and a separate error. It does not raise `EventDispatchError`._
+then returns a 200 row reply with the claim result and a separate error. It does not raise `EventDispatchError`.
+This holds where `event_scope.atomic()` is a unit (a NetBox release whose `event_tracking` nests). On an older
+release the events dispatch at the end of the request, outside the view, so a failed dispatch can still give a
+500 there._
 
 ### Loops
 

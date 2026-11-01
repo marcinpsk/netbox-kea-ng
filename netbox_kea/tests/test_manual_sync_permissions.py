@@ -274,6 +274,19 @@ class TestLeaseAddSync(_PermissionTestBase):
             [str(message) for message in get_messages(response.wsgi_request)],
         )
 
+    def test_a_constrained_user_sees_the_refusal_when_the_read_back_also_fails(self):
+        self._grant_address_writes(user=self.user, constraints=_CONSTRAINT)
+        data = {"ip_address": "10.0.0.200", "subnet_id": "1", "hw_address": "aa:bb:cc:dd:ee:ff", "sync_to_netbox": "on"}
+        responses = {"lease4-add": {"result": 0}, "lease4-get": {"result": 3}, "subnet4-list": self._SUBNETS4}
+        with _lease_stub(responses):
+            response = self.client.post(self._url(), data)
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(IPAddress.objects.exists())
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)],
+            ["Lease for 10.0.0.200 created.", f"Lease 10.0.0.200 was not synced to NetBox. {_reason(_ADDRESS_WRITES)}"],
+        )
+
     def test_an_unconstrained_user_syncs_the_created_lease(self):
         self._grant_address_writes(user=self.user)
         data = {"ip_address": "10.0.0.200", "subnet_id": "1", "hw_address": "aa:bb:cc:dd:ee:ff", "sync_to_netbox": "on"}
