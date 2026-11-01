@@ -1386,3 +1386,35 @@ rules:
       - pattern-not-inside: |
           class PlannedOptions:
               ...
+
+  - id: kea-object-path-outside-key
+    languages: [python]
+    severity: ERROR
+    message: >-
+      The DHCP Import names a planned or mapped object by the path of its key (key.path(family), or
+      MappingSource.path for a stored source). A run names an object by this one path when it creates it and when it
+      removes it; a path that a writer renders again can differ from it. Use the key of the planned object.
+      Limits: the rule sees kea_paths.subnet(), pool(), pd_pool(), reservation(), client_class(), shared_network()
+      and option_definition() in netbox_kea/integrations/, outside a path(self, family) method; an import of a
+      function by name and a call through a helper are not seen. The parse step (mappers/) keeps its literal paths.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/integrations/**"
+        - "kea-object-path-outside-key.py"
+      exclude:
+        - "**/tests/**"
+    patterns:
+      - pattern-either:
+          - pattern: kea_paths.subnet(...)
+          - pattern: kea_paths.pool(...)
+          - pattern: kea_paths.pd_pool(...)
+          - pattern: kea_paths.reservation(...)
+          - pattern: kea_paths.client_class(...)
+          - pattern: kea_paths.shared_network(...)
+          - pattern: kea_paths.option_definition(...)
+      - pattern-not-inside: |
+          def path(self, $FAMILY, ...):
+              ...
