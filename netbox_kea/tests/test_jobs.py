@@ -521,6 +521,20 @@ class TestKeaIpamSyncJobRun(TestCase):
 
         self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.2").exists())
 
+    def test_a_lease_of_a_subnet_absent_from_the_catalogue_is_a_failed_row_and_keeps_its_valid_sibling(self):
+        """The job counts a Stale Lease as one failed row, as before the typed refusal of claim()."""
+        self._make_db_server(dhcp6=False)
+        stale_lease = {**_LEASE4, "ip-address": "10.0.0.3", "subnet-id": 99}
+        good_lease = {**_LEASE4, "ip-address": "10.0.0.2"}
+        job = _make_job()
+        with _patch_kea(leases4=[stale_lease, good_lease]), self.assertRaises(JobFailed):
+            KeaIpamSyncJob(job).run()
+        from ipam.models import IPAddress
+
+        self.assertEqual(job.data["summary"][0]["errors"], 1)
+        self.assertFalse(IPAddress.objects.filter(address__net_host="10.0.0.3").exists())
+        self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.2").exists())
+
     # ── idempotency ────────────────────────────────────────────────────────
 
     def test_second_sync_does_not_create_duplicate(self):
