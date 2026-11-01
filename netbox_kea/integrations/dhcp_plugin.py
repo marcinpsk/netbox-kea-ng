@@ -249,12 +249,11 @@ def write_failed(family: int, kind: Kind, path: str) -> ImportEntry:
 def _skip_options(
     summary: ImportSummary,
     family: int,
-    parent_path: str,
     planned: PlannedOptions,
     taken: SubnetIdTaken | None = None,
 ) -> None:
-    """Record each DHCP Option of the object at *parent_path*, which was not imported, with the *taken* ID's entry."""
-    for path in planned.paths(parent_path, family):
+    """Record each DHCP Option of the *planned* object, which was not imported, with the *taken* ID's entry."""
+    for path in planned.paths(family):
         if taken is None:
             summary.record(not_written(family, Kind.OPTION, path, Reason.PARENT_NOT_IMPORTED))
         else:
@@ -826,12 +825,11 @@ def upsert_options(
     family: int,
     references: OptionReferences,
     summary: ImportSummary,
-    parent_path: str,
     capabilities: PluginCapabilities,
 ) -> None:
     """Upsert DHCP-plugin ``Option`` rows for the options of *planned_set* (:func:`.dhcp_import_plan.planned_options`).
 
-    They are assigned to *parent_obj*, the Kea object at *parent_path*. One Option per Kea option: the same definition
+    They are assigned to *parent_obj*, the row of the object of *planned_set*. One Option per Kea option: the same definition
     with other client classes is another Option. Each Option has a DHCP Import Mapping from its key, and a re-import
     finds the row through it. Until the mapping of the object records that its Options are mapped, an Option without
     a mapped row adopts an unmapped Option of *parent_obj* (:func:`_paired_rows`). The adoptions are written before the
@@ -853,7 +851,7 @@ def upsert_options(
     class_name = planned_set.class_name
     planned: list[_PlannedOption] = []
     pending_dependency = False
-    paths = planned_set.paths(parent_path, family)
+    paths = planned_set.paths(family)
     for opt, key, path in zip(planned_set.options, planned_set.keys, paths, strict=True):
         if key is None:
             raise ValueError("A DHCP Option of an object with a mapping source has a key.")
@@ -1362,7 +1360,7 @@ def _upsert_named(
             name_taken = _name_taken(kind, name, obj, dhcp_server, capabilities)
             if obj is None and name_taken:
                 _record_name_taken(summary, family, kind, path, name, capabilities)
-                _skip_options(summary, family, path, options)
+                _skip_options(summary, family, options)
                 skip_children()
                 return None
             obj, outcome = write(obj, name_taken)
@@ -1374,7 +1372,7 @@ def _upsert_named(
     except Exception as exc:  # noqa: BLE001 (one bad object must not abort the import)
         summary.record(write_failed(family, kind, path))
         summary.warn(f"{KIND_LABELS[kind].lower()} {name}: {exc}")
-        _skip_options(summary, family, path, options)
+        _skip_options(summary, family, options)
         skip_children()
         return None
     if name_taken:
@@ -1467,7 +1465,7 @@ def upsert_shared_network(
         detail = "The DHCP plugin needs a Prefix for each Shared Network, and a Kea Shared Network has none."
         capability = Capability.SHARED_NETWORK_OPTIONAL_PREFIX
         summary.record(unsupported(intent.family, Kind.SHARED_NETWORK, path, capability, detail))
-        _skip_options(summary, intent.family, path, options)
+        _skip_options(summary, intent.family, options)
         return None
 
     def write(obj, name_taken: bool):
@@ -1495,7 +1493,7 @@ def upsert_shared_network(
         skip_children=lambda: None,
     )
     if obj is not None:
-        upsert_options(obj, options, intent.family, references, summary, path, capabilities)
+        upsert_options(obj, options, intent.family, references, summary, capabilities)
     return obj
 
 
@@ -1692,7 +1690,7 @@ def _skip_subnet_children(
     A *taken* ID is also why its Options, Pools and PD Pools were not.
     """
     family = planned.intent.family
-    _skip_options(summary, family, planned.key.path(family), planned_options(planned, family, declared), taken)
+    _skip_options(summary, family, planned_options(planned, family, declared), taken)
     children = [
         (pool.key.kind, pool.key.path(family), planned_options(pool, family, declared)) for pool in planned.pools
     ]
@@ -1704,7 +1702,7 @@ def _skip_subnet_children(
             summary.record(not_written(family, kind, path, Reason.PARENT_NOT_IMPORTED))
         else:
             summary.record(taken.entry(family, kind, path))
-        _skip_options(summary, family, path, options, taken)
+        _skip_options(summary, family, options, taken)
 
 
 @dataclass(frozen=True)
@@ -2014,16 +2012,16 @@ def upsert_pools(
         except Exception as exc:  # noqa: BLE001 — one bad pool must not abort the import
             summary.record(write_failed(intent.family, Kind.POOL, path))
             summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: {exc}")
-            _skip_options(summary, intent.family, path, options)
+            _skip_options(summary, intent.family, options)
             continue
         if range_obj is None:
             summary.record(_unusable_pool(intent.family, path, key, result))
             summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: unusable range, skipped")
-            _skip_options(summary, intent.family, path, options)
+            _skip_options(summary, intent.family, options)
             continue
         if outcome is not None:
             summary.record(written(intent.family, Kind.POOL, path, outcome))
-        upsert_options(pool_obj, options, intent.family, references, summary, path, capabilities)
+        upsert_options(pool_obj, options, intent.family, references, summary, capabilities)
 
 
 def _pd_pool_prefixes(claims: ClaimResult, planned: Planned[PDPoolKey, PDPoolIntent], summary: ImportSummary) -> tuple:
@@ -2116,16 +2114,16 @@ def upsert_pd_pools(
             detail = f"The DHCP plugin refuses the delegated-prefix Pool: {' '.join(exc.messages)}"
             summary.record(not_written(family, Kind.PD_POOL, path, Reason.PLUGIN_GAP, detail))
             summary.warn(f"pd pool {key.prefix} in {planned.intent.cidr}: {detail}")
-            _skip_options(summary, family, path, options)
+            _skip_options(summary, family, options)
             continue
         except Exception as exc:  # noqa: BLE001 — one bad PD Pool must not abort the import
             summary.record(write_failed(family, Kind.PD_POOL, path))
             summary.warn(f"pd pool {key.prefix} in {planned.intent.cidr}: {exc}")
-            _skip_options(summary, family, path, options)
+            _skip_options(summary, family, options)
             continue
         if outcome is not None:
             summary.record(written(family, Kind.PD_POOL, path, outcome))
-        upsert_options(row, options, family, references, summary, path, capabilities)
+        upsert_options(row, options, family, references, summary, capabilities)
 
 
 def _unusable_pool(family: int, path: str, key: PoolKey | InvalidPoolKey, result: RangeClaim | None) -> ImportEntry:
@@ -2290,9 +2288,9 @@ def _upsert_reservation(
         summary.record(write_failed(reservation.family, Kind.RESERVATION, path))
         logger.exception("Could not import reservation %s in %s", reservation.identity.value, scope)
         summary.warn(f"reservation {reservation.identity.value} in {scope} could not be imported. See server logs.")
-        _skip_options(summary, reservation.family, path, options)
+        _skip_options(summary, reservation.family, options)
         return None
-    upsert_options(obj, options, reservation.family, references, summary, path, capabilities)
+    upsert_options(obj, options, reservation.family, references, summary, capabilities)
     return obj, before
 
 
@@ -2399,9 +2397,9 @@ def _skip_reservation_options(
     taken: SubnetIdTaken | None = None,
 ) -> None:
     """Record the DHCP Options of an In-Subnet Reservation whose Subnet was not imported or whose ID is *taken*."""
-    family, key = planned.intent.family, planned.key
+    family = planned.intent.family
     options = planned_options(planned, family, references.definitions.declared)
-    _skip_options(summary, family, key.path(family), options, taken)
+    _skip_options(summary, family, options, taken)
 
 
 def import_reservation_snapshot(
@@ -3148,12 +3146,10 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     declared = references.definitions.declared
     planned_classes = {planned.key.name: planned for planned in plan.client_classes}
     global_options = planned_options(plan.server, plan.family, declared)
-    upsert_options(dhcp_server, global_options, plan.family, references, summary, root, capabilities)
+    upsert_options(dhcp_server, global_options, plan.family, references, summary, capabilities)
     for name, row in class_rows.items():
-        planned_class = planned_classes[name]
-        path = planned_class.key.path(plan.family)
-        class_options = planned_options(planned_class, plan.family, declared)
-        upsert_options(row, class_options, plan.family, references, summary, path, capabilities)
+        class_options = planned_options(planned_classes[name], plan.family, declared)
+        upsert_options(row, class_options, plan.family, references, summary, capabilities)
     networks = _import_shared_networks(server, dhcp_server, plan, references, summary, capabilities)
 
     prefix_claims, pool_claims, pd_pool_claims = _claim_config_networks(server, plan)
@@ -3201,7 +3197,6 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
             plan.family,
             references,
             summary,
-            path,
             capabilities,
         )
         upsert_pools(server, subnet_obj, planned_subnet, summary, references, pool_claims, capabilities)

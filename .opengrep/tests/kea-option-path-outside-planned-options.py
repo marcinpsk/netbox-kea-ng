@@ -20,13 +20,15 @@ def upsert_options(planned_set, family, parent_path):
 
 @dataclass(frozen=True)
 class PlannedOptions:
+    owner: object
     options: tuple
     keys: tuple
 
-    def paths(self, parent_path, family):
+    def paths(self, family):
+        owner_path = self.owner.path(family)
         return tuple(
             # ok: kea-option-path-outside-planned-options
-            key.path(family) if key is not None else kea_paths.option(parent_path, option, family)
+            key.path(family) if key is not None else kea_paths.option(owner_path, option, family)
             for option, key in zip(self.options, self.keys, strict=True)
         )
 

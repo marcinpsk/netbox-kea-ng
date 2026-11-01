@@ -293,27 +293,37 @@ def _known_definitions(
 class PlannedOptions:
     """The DHCP Options that one Kea object assigns, each with its key.
 
-    *kind* is the kind of the object: :attr:`Kind.SERVER` for the global configuration. *parent* is its mapping
-    source. Only a Pool whose range is not valid has none, and then no option has a key.
+    *owner* is the key of the object. Only a Pool whose range is not valid has no mapping source, and then no option
+    has a key.
     """
 
-    kind: Kind
-    parent: MappingSource | None
+    owner: OptionOwnerKey
     options: tuple[DHCPOption, ...]
     keys: tuple[OptionKey | None, ...]
 
     @property
+    def kind(self) -> Kind:
+        """Return the kind of the object: :attr:`Kind.SERVER` for the global configuration."""
+        return self.owner.kind
+
+    @property
+    def parent(self) -> MappingSource | None:
+        """Return the mapping source of the object."""
+        return self.owner.source
+
+    @property
     def class_name(self) -> str | None:
         """Return the name of the client class that assigns the options, whose own definitions they use first."""
-        return self.parent.kea_identity if self.parent is not None and self.kind == Kind.CLIENT_CLASS else None
+        return self.owner.name if isinstance(self.owner, NamedKey) and self.kind == Kind.CLIENT_CLASS else None
 
-    def paths(self, parent_path: str, family: int) -> tuple[str, ...]:
-        """Return the Kea path of each option: the path of its key, else its literal path under *parent_path*.
+    def paths(self, family: int) -> tuple[str, ...]:
+        """Return the Kea path of each option: the path of its key, else its literal path under the object.
 
         A run names a keyed Option by its key also when it removes it, so the key gives the one path of the Option.
         """
+        owner_path = self.owner.path(family)
         return tuple(
-            key.path(family) if key is not None else kea_paths.option(parent_path, option, family)
+            key.path(family) if key is not None else kea_paths.option(owner_path, option, family)
             for option, key in zip(self.options, self.keys, strict=True)
         )
 
@@ -326,7 +336,7 @@ def planned_options(planned, family: int, declared: Mapping[OptionDefinitionKey,
     key = planned.key
     options = planned.global_options if isinstance(planned, PlannedServer) else planned.intent.options
     parent = key.source
-    unkeyed = PlannedOptions(key.kind, parent, options, (None,) * len(options))
+    unkeyed = PlannedOptions(key, options, (None,) * len(options))
     if parent is None:
         return unkeyed
     definitions = _known_definitions(declared, unkeyed.class_name)
@@ -481,6 +491,8 @@ class InSubnetReservationKey(ReservationKey):
 
 
 MappingKey = ServerKey | SubnetKey | NamedKey | PoolKey | PDPoolKey | ReservationKey | OptionDefinitionKey | OptionKey
+#: The key of an object that assigns DHCP Options.
+OptionOwnerKey = ServerKey | SubnetKey | NamedKey | PoolKey | InvalidPoolKey | PDPoolKey | ReservationKey
 
 
 class _KeyDecoder(Protocol):
