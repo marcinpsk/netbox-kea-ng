@@ -660,11 +660,11 @@ rules:
     message: >-
       Add an "except event_scope.EventDispatchError:" clause before the broad handler of this try.
       The unit committed and its events did not dispatch, so the run must fail ("raise"), not report a
-      failed row. After an applied change, return an explicit ClaimFailure("events-failed") fact or
-      "events-failed" from a SideEffectStatus-annotated function (ADR 0012). Lease sync after an applied
-      Runtime Change can still report it with messages.error() (ADR 0011). Limits: the handler order is not
-      checked; a try with finally and handlers around callers of event_scope.atomic other than claim() and
-      reconcile() are not seen.
+      failed row. After an applied change, return "events-failed" from a SideEffectStatus-annotated function
+      (ADR 0012). A Manual Sync catches ClaimEventsFailed, which holds the claim result, before it re-raises
+      every other EventDispatchError (ADR 0011). Limits: the handler order is not checked, the handler of
+      ClaimEventsFailed is not checked; a try with finally and handlers around callers of event_scope.atomic
+      other than claim() and reconcile() are not seen.
     metadata:
       category: correctness
       confidence: HIGH
@@ -850,12 +850,6 @@ rules:
           finally:
               ...
       # A committed-event fact must be explicit. A generic failure or an untyped string still fails.
-      - pattern-not-inside: |
-          try:
-              ...
-          except event_scope.EventDispatchError:
-              ...
-              return ClaimFailure("events-failed")
       - pattern-either:
           - patterns:
               - pattern: $CALL(...)
@@ -870,42 +864,6 @@ rules:
                   except event_scope.EventDispatchError:
                       ...
                       return "events-failed"
-      - pattern-either:
-          - patterns:
-              - pattern: $CALL(...)
-              - pattern-not-inside: |
-                  try:
-                      ...
-                  except event_scope.EventDispatchError:
-                      ...
-                      messages.error(...)
-                      ...
-              - pattern-not-inside: |
-                  try:
-                      ...
-                  except event_scope.EventDispatchError:
-                      ...
-                      messages.error(...)
-                      ...
-                  else:
-                      ...
-              - pattern-not-inside: |
-                  try:
-                      ...
-                  except event_scope.EventDispatchError:
-                      ...
-                      messages.error(...)
-                      ...
-                  finally:
-                      ...
-          # Only Lease sync after an applied Runtime Change reports the failed dispatch with messages.
-          - patterns:
-              - pattern-inside: |
-                  def $FUNC(...):
-                      ...
-              - metavariable-regex:
-                  metavariable: $FUNC
-                  regex: ^(?!_run_lease_sync_to_netbox$)
       - pattern-either:
           - pattern: event_scope.atomic(...)
           # Each claim and reconciliation row is an event_scope unit inside the call.

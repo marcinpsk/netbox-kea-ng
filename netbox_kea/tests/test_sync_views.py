@@ -120,7 +120,7 @@ def _stale_text(subject: str) -> str:
 def _events_text(subject: str) -> str:
     """Return the message of a Manual Sync of *subject* that NetBox saved without dispatching its events."""
     return (
-        f"{subject} was synced to NetBox, but NetBox could not dispatch the events of the sync; see server logs."
+        f"{subject}: NetBox saved the sync but could not dispatch its events; see server logs."
         " Check the addresses before you sync again."
     )
 
@@ -268,7 +268,10 @@ class TestLease4SyncView(_SyncViewBase):
             }
         ):
             response = self.client.post(self._url(), {"ip_address": "198.18.0.10"})
-        self.assertContains(response, "Sync error: see server logs")
+        self.assertEqual(
+            _row_badge(response),
+            "Lease 198.18.0.10 was not synced to NetBox: NetBox could not read the Kea configuration.",
+        )
         self.assertNotContains(response, "private diagnostic")
         self.assertFalse(NbIP.objects.exists())
         self.assertFalse(IPAMOwnershipLink.objects.exists())
@@ -283,7 +286,8 @@ class TestLease4SyncView(_SyncViewBase):
             reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk]),
             {"ip_address": "198.18.0.10"},
         )
-        self.assertContains(response, "Sync error: see server logs")
+        # The claim ran, so the row shows the badge of its failed allocation.
+        self.assertContains(response, '<span class="badge text-bg-danger">Sync error</span>', html=True)
         self.assertEqual(list(NbIP.objects.order_by("pk").values()), before)
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
@@ -611,7 +615,7 @@ class TestLeaseSyncByKind(_SyncViewBase):
         for case, (label, record) in cases.items():
             with self.subTest(case=case):
                 response, kea = self._post(label, record)
-                self.assertContains(response, "not current")
+                self.assertContains(response, "Kea does not report it as a current lease.")
                 self.assertEqual(kea.commands(), ["lease6-get"])
                 self._assert_no_ipam_rows()
 
@@ -629,7 +633,7 @@ class TestLeaseSyncByKind(_SyncViewBase):
                 }
                 with stub_kea(responses):
                     response = self.client.post(url, {"ip_address": "192.0.2.10"})
-                self.assertContains(response, "not current")
+                self.assertContains(response, "Kea does not report it as a current lease.")
                 self._assert_no_ipam_rows()
 
     def test_a_changed_prefix_length_is_not_synchronized(self):
@@ -656,7 +660,10 @@ class TestLeaseSyncByKind(_SyncViewBase):
         with stub_kea(responses):
             response = self.client.post(self._url(), {"ip_address": _PD_LABEL})
 
-        self.assertContains(response, "Sync error: see server logs for details.")
+        self.assertEqual(
+            _row_badge(response),
+            f"Lease {_PD_LABEL} was not synced to NetBox: NetBox could not read the Kea configuration.",
+        )
         self.assertNotContains(response, "private diagnostic")
         self._assert_no_ipam_rows()
 
@@ -756,10 +763,13 @@ class TestReservation4SyncView(_SyncViewBase):
         pre_save.connect(reject, sender=NbIP)
         self.addCleanup(pre_save.disconnect, reject, sender=NbIP)
 
-        with self.assertLogs("netbox_kea.views.sync_views", level="ERROR"):
+        with self.assertLogs("netbox_kea.manual_sync", level="ERROR"):
             response = self.client.post(self._url())
 
-        self.assertContains(response, "Reservation synchronization failed")
+        self.assertEqual(
+            _row_badge(response),
+            "Reservation was not synced to NetBox: NetBox IPAM synchronization failed; see server logs.",
+        )
         self.assertEqual(NbIP.objects.count(), 0)
 
     def test_kea_error_returns_an_actionable_hint(self):
@@ -1442,7 +1452,7 @@ class TestLeaseSyncEventDispatch(TransactionTestCase):
         prefix = Prefix.objects.get(prefix=_PD_LABEL)
         self.assertContains(response, f'href="{prefix.get_absolute_url()}"')
         self.assertEqual(_row_badge(response), _events_text(f"Lease {_PD_LABEL}"))
-        self.assertIn("EventDispatchError", "\n".join(logs.output))
+        self.assertIn("ClaimEventsFailed", "\n".join(logs.output))
 
     def test_a_committed_reservation_claim_whose_events_fail_gives_the_claim_result_and_a_separate_error(self):
         from netbox_kea.event_scope import _NESTED_TRACKING
@@ -1468,7 +1478,7 @@ class TestLeaseSyncEventDispatch(TransactionTestCase):
         self.assertContains(response, "Synchronized 1/1")
         self.assertContains(response, f'href="{ip.get_absolute_url()}"')
         self.assertEqual(_row_badge(response), _events_text("Reservation"))
-        self.assertIn("EventDispatchError", "\n".join(logs.output))
+        self.assertIn("ClaimEventsFailed", "\n".join(logs.output))
 
     def test_an_applied_lease_add_whose_ipam_sync_events_fail_reports_the_lease_and_a_separate_error(self):
         """Kea applied the Lease, so a failed dispatch of the sync events is a side-effect error, not an HTTP 500."""
@@ -1496,7 +1506,7 @@ class TestLeaseSyncEventDispatch(TransactionTestCase):
         with (
             override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_sync_views.fail_ip_address_dispatch"]),
             stub_kea(responses),
-            self.assertLogs("netbox_kea.views.leases", "ERROR") as logs,
+            self.assertLogs("netbox_kea.manual_sync", "ERROR") as logs,
         ):
             response = self.client.post(reverse("plugins:netbox_kea:server_lease4_add", args=[server.pk]), data)
 
@@ -1507,13 +1517,8 @@ class TestLeaseSyncEventDispatch(TransactionTestCase):
             [(message.level, str(message)) for message in get_messages(response.wsgi_request)],
             [
                 (django_messages.SUCCESS, "Lease for 192.0.2.50 created."),
-                (
-                    django_messages.ERROR,
-                    (
-                        "Lease created, and NetBox IPAM sync saved it, but NetBox could not dispatch the events of"
-                        " the sync; see server logs."
-                    ),
-                ),
+                (django_messages.SUCCESS, "Lease 192.0.2.50 synced to NetBox: 192.0.2.50 created."),
+                (django_messages.ERROR, _events_text("Lease 192.0.2.50")),
             ],
         )
-        self.assertIn("EventDispatchError", "\n".join(logs.output))
+        self.assertIn("ClaimEventsFailed", "\n".join(logs.output))

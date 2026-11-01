@@ -270,7 +270,7 @@ class TestLeaseAddSync(_PermissionTestBase):
         self.assertEqual(kea.commands(), ["lease4-add", "lease4-get"])
         self.assertFalse(IPAddress.objects.exists())
         self.assertIn(
-            f"Lease created, but it was not synced to NetBox. {_reason(_ADDRESS_WRITES)}",
+            f"Lease 10.0.0.200 was not synced to NetBox. {_reason(_ADDRESS_WRITES)}",
             [str(message) for message in get_messages(response.wsgi_request)],
         )
 
@@ -393,7 +393,7 @@ class TestReservationAddSync(_PermissionTestBase):
         self.assertEqual(kea.commands().count("reservation-add"), 1)
         self.assertFalse(IPAddress.objects.exists())
         self.assertIn(
-            f"Reservation created, but it was not synced to NetBox. {_reason(_ADDRESS_WRITES)}",
+            f"Reservation was not synced to NetBox. {_reason(_ADDRESS_WRITES)}",
             [str(message) for message in get_messages(response.wsgi_request)],
         )
 

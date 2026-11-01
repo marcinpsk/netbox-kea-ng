@@ -22,6 +22,7 @@ from netbox_kea.ipam_reconciliation import (
     _LOCK_CLASS,
     LeasePhase,
     LeasePrefixPhase,
+    LeaseSubnetAbsent,
     SubnetPhase,
     _int4,
     claim,
@@ -414,9 +415,16 @@ class LivePrefixPhaseContractTest(TestCase):
 
     def test_a_delegated_prefix_claim_refuses_an_unknown_subnet_before_any_write(self):
         server = _server()
-        with stub_kea(_catalogue_responses_for_subnets(6, [SUBNET6])), self.assertRaises(ValueError):
+        with stub_kea(_catalogue_responses_for_subnets(6, [SUBNET6])), self.assertRaises(LeaseSubnetAbsent):
             claim(server, 6, [typed_lease(_pd()), typed_lease(_pd("2001:db8:2:100::", subnet_id=7))], force=False)
         self.assertFalse(Prefix.objects.exists())
+
+    def test_an_address_claim_refuses_an_unknown_subnet_with_a_refusal_that_is_not_a_caller_bug(self):
+        server = _server()
+        with stub_kea(_catalogue_responses_for_subnets(6, [SUBNET6])), self.assertRaises(LeaseSubnetAbsent) as raised:
+            claim(server, 6, [typed_lease(_address()), typed_lease(_address("2001:db8::2", subnet_id=7))], force=False)
+        self.assertNotIsInstance(raised.exception, ValueError)
+        self.assertFalse(NbIP.objects.exists())
 
 
 class LivePrefixConcurrencyTest(ConcurrencyHarness):
