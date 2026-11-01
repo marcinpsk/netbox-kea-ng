@@ -55,6 +55,7 @@ from netbox_kea.integrations.dhcp_import_plan import (
     mapped_kinds,
     observations,
     plan_family,
+    planned_options,
 )
 from netbox_kea.integrations.dhcp_import_report import GAPS, Capability, Kind, Outcome, Reason
 from netbox_kea.integrations.dhcp_plugin_capabilities import CHECKS, PluginCapabilities, probe
@@ -377,6 +378,18 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
         self.assertIsNone(pool.key.source)
         self.assertEqual(pool.key.path(4), "Dhcp4/subnet4[id=1]/pools[pool=198.51.100.1-198.51.100.9]")
         self.assertEqual(pool.intent.pool, "198.51.100.1-198.51.100.9")
+
+    def test_the_options_of_a_pool_without_a_source_take_their_path_from_the_pool_key(self):
+        pool = {"pool": "198.51.100.1-198.51.100.9", "option-data": [{"code": 3, "data": "192.0.2.1"}]}
+        config = {"subnet4": [{"id": 1, "subnet": "192.0.2.0/24", "pools": [pool]}]}
+
+        (planned_pool,) = plan_family(parse_dhcp_config(config, 4), None).subnets[0].pools
+        options = planned_options(planned_pool, 4, {})
+
+        self.assertEqual(options.keys, (None,))
+        self.assertEqual(
+            options.paths(4), ("Dhcp4/subnet4[id=1]/pools[pool=198.51.100.1-198.51.100.9]/option-data[code=3]",)
+        )
 
 
 _PD_PREFIX = ipaddress.IPv6Network("2001:db8:100::/48")

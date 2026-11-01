@@ -203,7 +203,7 @@ need it. No netbox-kea upgrade is necessary.
 | `dhcp4o6_subnet_selection` | DHCPv4-over-DHCPv6 Subnet selection | 12 | `4o6-subnet`, `4o6-interface` and `4o6-interface-id` of a DHCPv4 Subnet |
 | `address_registration` | Address registration | 13 | `allow-address-registration` (DHCPv6) |
 | `stash_agent_options` | Stashed relay agent options | 14 | `stash-agent-options` (DHCPv4) |
-| `kea_option_data` | DHCP Option data in each form that Kea accepts | 17 | A DHCP Option whose data netbox-plugin-dhcp 0.2.0 refuses. The plugin checks each value of the data against the type of the Option Definition by its own rules, and it does not read `csv-format`. So it refuses for example hexadecimal data with `csv-format: false` (except for the binary and string types, and digits that it reads as a value of the type), a boolean `1` or `0`, an integer in hexadecimal (`0x10`), a single-label FQDN, tuple data that is not JSON, and a value with spaces around it, which Kea removes. The import runs the data check of the plugin before it writes the Option. If the data check fails with an error that is not a refusal, the Option is `write_failed`. A write that fails for a different reason, for example a custom validator, is also `write_failed` |
+| `kea_option_data` | DHCP Option data in each form that Kea accepts | 17 | A DHCP Option whose data netbox-plugin-dhcp 0.2.0 refuses. The plugin checks each value of the data against the type of the Option Definition by its own rules, and it does not read `csv-format`. So it refuses for example hexadecimal data with `csv-format: false` (except for the binary and string types, and digits that it reads as a value of the type), a boolean `1` or `0`, an integer in hexadecimal (`0x10`), a single-label FQDN, tuple data that is not JSON, and a value with spaces around it, which Kea removes. The import runs the data check of the plugin before it writes the Option. If the data check fails with an error that is not a refusal, the Option is `write_failed`. A write that fails for a different reason, for example a custom validator, is also `write_failed`, with the message of the validator |
 
 A DHCP Option that needs an unsupported Option Definition is unsupported for the same reason. The DHCP plugin 0.2.0
 keeps the relay as free text, which the import does not write, so a value that you enter there stays.
@@ -239,6 +239,13 @@ A fact that the run did not write has a reason code. The reason gives the outcom
 | `read_failed` | Skipped | Kea could not be read in full |
 | `incomplete_observation` | Skipped | Kea was not observed in full, so removal was suppressed |
 | `removal_blocked` | Skipped | Other rows still depend on it, so it was not removed |
+
+When the DHCP plugin refuses a row as it saves it, for example a Subnet whose name another Subnet holds or a row that a
+custom validator refuses, the `write_failed` entry shows the messages of the plugin. A delegated-prefix Pool that the
+plugin refuses is `plugin_gap` with the same messages. Any other failed write shows "See server logs.", and the server
+log holds the error. When the run does not write an object, the objects inside it, such as the DHCP Options, Pools and
+delegated-prefix Pools of a Subnet, are `parent_not_imported`. The objects inside a Subnet whose Subnet ID another row
+holds take the reason of the Subnet.
 
 ## Declared Values and inheritance
 
