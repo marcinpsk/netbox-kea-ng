@@ -3613,6 +3613,21 @@ class DhcpPluginSubnetWithoutIdTest(TestCase):
                     self.assertFalse(Subnet.objects.filter(prefix__prefix=subnet["subnet"]).exists())
                     transaction.set_rollback(True)
 
+    def test_a_subnet_with_the_highest_kea_subnet_id_gets_a_mapping(self):
+        from netbox_kea.models import KeaDhcpLink
+
+        from .test_kea_recordings import _recording
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        conf = _recording(4)["config-get"]["arguments"]["Dhcp4"]
+        conf["subnet4"][0]["id"] = MAX_SUBNET_ID
+        server = _make_db_server(name="kea-highest-subnet-id", sync_dhcp_plugin_enabled=True)
+
+        self._apply(server, conf, 4)
+
+        link = KeaDhcpLink.objects.get(server=server, kind="subnet", kea_subnet_id=MAX_SUBNET_ID)
+        self.assertEqual(link.sys4_object, Subnet.objects.get(subnet_id=MAX_SUBNET_ID))
+
     def test_an_import_leaves_an_operator_subnet_of_the_same_prefix_and_its_children_alone(self):
         from django.forms.models import model_to_dict
         from ipam.models import IPRange, Prefix

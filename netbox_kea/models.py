@@ -698,7 +698,7 @@ class KeaDhcpLink(ChangeLoggingMixin):
         choices=choices({kind: KIND_LABELS[kind] for kind in MAPPING_KINDS}),
         help_text="The kind of the Kea source object.",
     )
-    kea_subnet_id = models.PositiveIntegerField(
+    kea_subnet_id = models.PositiveBigIntegerField(
         null=True,
         blank=True,
         help_text="Kea subnet-id of the source object or of its Subnet; null for a global source.",
