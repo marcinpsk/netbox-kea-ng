@@ -2043,7 +2043,7 @@ class DhcpPluginMappingImportTest(TestCase):
             apps.get_model(DHCP_PLUGIN, "HostReservation").objects.filter(duid__startswith="01:02:03:9").count(), 2
         )
 
-    def test_a_pool_of_a_subnet_without_a_kea_id_imports_without_a_mapping(self):
+    def test_a_subnet_without_a_kea_id_and_its_pool_are_invalid_kea_data_and_not_imported(self):
         from netbox_kea.models import KeaDhcpLink
 
         Pool = apps.get_model(DHCP_PLUGIN, "Pool")
@@ -2051,8 +2051,12 @@ class DhcpPluginMappingImportTest(TestCase):
 
         summary = self.adapter.import_server_config(self.server, parse_dhcp_config(conf, 4))
 
-        self.assertEqual((summary.errors, summary.subnets_created, summary.pools_created), (0, 1, 1), summary.warnings)
-        self.assertEqual(Pool.objects.filter(subnet__dhcp_server__in=imported_dhcp_servers(self.server)).count(), 1)
+        self.assertEqual((summary.errors, summary.subnets_created, summary.pools_created), (0, 0, 0), summary.warnings)
+        self.assertEqual(
+            [(entry.kind, entry.path, entry.reason) for entry in summary.entries if entry.kind in _ID_LESS_KINDS],
+            [(Kind.SUBNET, "Dhcp4/subnet4[0]", Reason.INVALID_KEA_DATA)],
+        )
+        self.assertFalse(Pool.objects.filter(subnet__dhcp_server__in=imported_dhcp_servers(self.server)).exists())
         self.assertFalse(KeaDhcpLink.objects.filter(server=self.server).exclude(kind="server").exists())
 
     def test_one_class_name_in_both_families_is_unsupported_in_the_second(self):
@@ -2180,16 +2184,15 @@ class DhcpPluginSubnetIdImportTest(TestCase):
             (self._subnet(self.server, 4242).subnet_id, self._subnet(self.server, 77).subnet_id), (4242, 77)
         )
 
-    def test_a_subnet_without_a_kea_subnet_id_imports_again_without_an_error(self):
+    def test_a_subnet_without_a_kea_subnet_id_is_not_imported_on_any_run(self):
         model = partial(apps.get_model, DHCP_PLUGIN)
         conf = {"subnet4": [{"subnet": "10.94.3.0/24", "pools": [{"pool": "10.94.3.10-10.94.3.20"}]}]}
-        self.assertEqual(self._import(self.server, conf).errors, 0)
 
-        summary = self._import(self.server, conf)
-
-        self.assertEqual(summary.errors, 0, summary.warnings)
-        self.assertEqual(model("Subnet").objects.filter(prefix__prefix="10.94.3.0/24").count(), 1)
-        self.assertEqual(model("Pool").objects.filter(subnet__prefix__prefix="10.94.3.0/24").count(), 1)
+        for _run in range(2):
+            summary = self._import(self.server, conf)
+            self.assertEqual(summary.errors, 0, summary.warnings)
+            self.assertEqual(self._not_written(summary), [(Kind.SUBNET, Reason.INVALID_KEA_DATA, None)])
+        self.assertFalse(model("Subnet").objects.filter(prefix__prefix="10.94.3.0/24").exists())
 
     def test_a_subnet_id_that_another_server_holds_is_unsupported_with_its_pools_and_reservations(self):
         from netbox_kea.integrations.dhcp_import_report import Capability
@@ -2964,37 +2967,6 @@ class DhcpPluginManagedFieldTest(TestCase):
         self.assertEqual((option.csv_format, option.send_option), (None, None))
         self.assertIsNone(model("HostReservation").objects.get(hw_address__mac_address="aa:bb:cc:dd:ee:93").hostname)
 
-    def test_a_pool_without_a_mapping_in_a_subnet_without_a_kea_id_is_left_alone(self):
-        from netbox_kea.integrations.dhcp_import_plan import plan_family
-        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
-
-        Pool = apps.get_model(DHCP_PLUGIN, "Pool")
-        conf = {
-            "subnet4": [
-                {"subnet": "10.93.5.0/24", "pools": [{"pool": "10.93.5.10-10.93.5.20", "pool-id": 4, "ddns-ttl": 60}]}
-            ]
-        }
-        self._import(conf)
-        pool = Pool.objects.get(subnet__prefix__prefix="10.93.5.0/24")
-        Pool.objects.filter(pk=pool.pk).update(pool_id=9, ddns_ttl=None)
-        (planned_pool,) = plan_family(parse_dhcp_config(conf, 4), None).subnets[0].pools
-        summary = self.adapter.ImportSummary()
-
-        _row, outcome = self.adapter._upsert_pool(
-            self.server,
-            4,
-            pool.subnet,
-            pool.ip_range,
-            planned_pool,
-            {"client_classes": set(), "evaluate_additional_classes": set()},
-            summary,
-            "Dhcp4/subnet4[subnet=10.93.5.0/24]/pools[pool=10.93.5.10-10.93.5.20]",
-            probe(),
-        )
-
-        self.assertIsNone(outcome)
-        self.assertEqual(Pool.objects.filter(pk=pool.pk).values_list("pool_id", "ddns_ttl").get(), (9, None))
-
     def test_a_write_that_misses_a_managed_field_fails_the_run(self):
         from unittest import mock
 
@@ -3565,10 +3537,11 @@ class DhcpPluginPDPoolImportTest(TestCase):
         self.assertEqual(model_to_dict(self.PDPool.objects.get(pk=hand.pk)), before)
 
 
-_UNMAPPED_SUBNET = "Dhcp6/subnet6[subnet=2001:db8:9::/64]"
+# The kinds of a Subnet and of the objects in it, whose entries an ID-less Subnet could give.
+_ID_LESS_KINDS = (Kind.SUBNET, Kind.POOL, Kind.PD_POOL, Kind.OPTION)
 
 
-def _unmapped_conf() -> dict:
+def _id_less_conf() -> dict:
     """Return a DHCPv6 Subnet without a Kea subnet ID, with a Pool, a PD Pool and one DHCP Option on each."""
     kea_option = [{"code": 23, "data": "2001:db8::54"}]
     return {
@@ -3586,10 +3559,11 @@ def _unmapped_conf() -> dict:
 
 
 @tag("dhcp_plugin")
-class DhcpPluginUnmappedRowTest(TestCase):
-    """A Kea object without a mapping identity that matches an unmapped row leaves that row and its children alone.
+class DhcpPluginSubnetWithoutIdTest(TestCase):
+    """Kea refuses a Subnet without a subnet ID, so the import writes nothing of one (ADR 0013).
 
-    Kea gives no ID to the Subnet, so no Subnet, Pool or PD Pool of it has a DHCP Import Mapping (ADR 0013).
+    A config-get reply cannot hold such a Subnet. The parse drops it as invalid Kea data, with its Pools, its
+    delegated-prefix Pools and their DHCP Options.
     """
 
     @classmethod
@@ -3598,107 +3572,89 @@ class DhcpPluginUnmappedRowTest(TestCase):
             raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
         super().setUpClass()
 
-    def setUp(self):
+    def _apply(self, server, conf: dict, family: int = 6):
+        from netbox_kea.integrations import dhcp_plugin
+        from netbox_kea.integrations.dhcp_import_plan import plan_family
+        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+
+        intent = parse_dhcp_config(conf, family)
+        intent.configuration_complete = True
+        summary = dhcp_plugin.apply_plan(server, plan_family(intent, None), probe())
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        return summary
+
+    def test_a_recorded_subnet_without_a_valid_id_is_invalid_kea_data_and_writes_nothing(self):
+        from netbox_kea.models import KeaDhcpLink
+
+        from .test_kea_recordings import _recording
+
+        Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
+        ids = {"removed": None, "bool": True, "text": "10", "out of range": 2**32 - 1}
+        for family in (4, 6):
+            for label, subnet_id in ids.items():
+                with self.subTest(family=family, id=label), transaction.atomic():
+                    conf = _recording(family)["config-get"]["arguments"][f"Dhcp{family}"]
+                    # Subnet 10 has Pools, DHCP Options on itself and on a Pool, and in DHCPv6 PD Pools.
+                    subnet = conf[f"subnet{family}"][0]
+                    del subnet["id"]
+                    if subnet_id is not None:
+                        subnet["id"] = subnet_id
+                    server = _make_db_server(name=f"kea-id-less-{family}-{label}", sync_dhcp_plugin_enabled=True)
+
+                    summary = self._apply(server, conf, family)
+
+                    self.assertEqual(
+                        [(e.kind, e.path, e.reason) for e in summary.entries if e.reason == Reason.INVALID_KEA_DATA],
+                        [(Kind.SUBNET, f"Dhcp{family}/subnet{family}[0]", Reason.INVALID_KEA_DATA)],
+                    )
+                    self.assertEqual([e for e in summary.entries if "[id=10]" in e.path], [])
+                    self.assertFalse(KeaDhcpLink.objects.filter(server=server, kea_subnet_id=10).exists())
+                    self.assertFalse(Subnet.objects.filter(prefix__prefix=subnet["subnet"]).exists())
+                    transaction.set_rollback(True)
+
+    def test_an_import_leaves_an_operator_subnet_of_the_same_prefix_and_its_children_alone(self):
+        from django.forms.models import model_to_dict
         from ipam.models import IPRange, Prefix
         from netaddr import IPNetwork
 
-        from netbox_kea.integrations import dhcp_plugin
-
-        self.adapter = dhcp_plugin
-        self.server = _make_db_server(name=f"kea-unmapped-{timezone.now().timestamp()}", dhcp4=False)
-        self._apply({"subnet6": []})
-        self.dhcp_server = imported_dhcp_server(self.server, 6)
+        server = _make_db_server(name=f"kea-id-less-{timezone.now().timestamp()}", dhcp4=False)
+        self._apply(server, {"subnet6": []})
         model = partial(apps.get_model, DHCP_PLUGIN)
         # An operator's rows: no marker on the IPAM objects, no mapping on the DHCP plugin rows.
-        self.subnet = model("Subnet").objects.create(
+        subnet = model("Subnet").objects.create(
             name="operator subnet",
-            dhcp_server=self.dhcp_server,
+            dhcp_server=imported_dhcp_server(server, 6),
             prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:9::/64")),
         )
         ip_range = IPRange.objects.create(
             start_address=IPNetwork("2001:db8:9::10/64"), end_address=IPNetwork("2001:db8:9::20/64")
         )
-        self.pool = model("Pool").objects.create(name="operator pool", subnet=self.subnet, ip_range=ip_range)
-        self.pd_pool = model("PDPool").objects.create(
+        pool = model("Pool").objects.create(name="operator pool", subnet=subnet, ip_range=ip_range)
+        pd_pool = model("PDPool").objects.create(
             name="operator pd pool",
-            subnet=self.subnet,
+            subnet=subnet,
             prefix=Prefix.objects.create(prefix=IPNetwork("2001:db8:900::/48")),
             delegated_length=56,
         )
         dns = model("OptionDefinition").objects.get(standard=True, space="dhcp6", code=23)
-        for row in (self.subnet, self.pool, self.pd_pool):
+        for row in (subnet, pool, pd_pool):
             model("Option").objects.create(definition=dns, assigned_object=row, data="2001:db8::53")
-        self.before = self._operator_state()
+        operator_rows = [
+            *model("Subnet").objects.filter(pk=subnet.pk),
+            *model("Pool").objects.filter(subnet=subnet),
+            *model("PDPool").objects.filter(subnet=subnet),
+            *model("Option").objects.all(),
+        ]
+        before = [model_to_dict(row) for row in operator_rows]
 
-    def _apply(self, conf: dict):
-        from netbox_kea.integrations.dhcp_import_plan import plan_family
-        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
+        summary = self._apply(server, _id_less_conf())
 
-        intent = parse_dhcp_config(conf, 6)
-        intent.configuration_complete = True
-        summary = self.adapter.apply_plan(self.server, plan_family(intent, None), probe())
-        self.assertEqual(summary.errors, 0, summary.warnings)
-        return summary
-
-    def _operator_state(self) -> dict:
-        from django.forms.models import model_to_dict
-
-        model = partial(apps.get_model, DHCP_PLUGIN)
-        rows = {
-            "subnets": model("Subnet").objects.filter(dhcp_server=self.dhcp_server),
-            "pools": model("Pool").objects.filter(subnet=self.subnet),
-            "pd pools": model("PDPool").objects.filter(subnet=self.subnet),
-            "options": model("Option").objects.filter(data__startswith="2001:db8::5"),
-        }
-        return {name: [model_to_dict(row) for row in queryset.order_by("pk")] for name, queryset in rows.items()}
-
-    @staticmethod
-    def _written(summary) -> list[str]:
-        return [entry.path for entry in summary.entries if entry.path.startswith(_UNMAPPED_SUBNET) and not entry.reason]
-
-    def test_an_import_leaves_an_unmapped_subnet_and_its_options_pools_and_pd_pools_alone(self):
-        summary = self._apply(_unmapped_conf())
-
-        self.assertEqual(self._operator_state(), self.before)
-        self.assertEqual(self._written(summary), [])
-        reported = {entry.path: entry.reason for entry in summary.entries if entry.path.startswith(_UNMAPPED_SUBNET)}
-        pd_pool = f"{_UNMAPPED_SUBNET}/pd-pools[prefix=2001:db8:900::/48,delegated-len=56]"
-        pool = f"{_UNMAPPED_SUBNET}/pools[pool=2001:db8:9::10-2001:db8:9::20]"
+        self.assertEqual([model_to_dict(type(row).objects.get(pk=row.pk)) for row in operator_rows], before)
+        self.assertEqual(model("Option").objects.count(), 3)
         self.assertEqual(
-            reported,
-            {
-                _UNMAPPED_SUBNET: Reason.NOT_IN_SCOPE,
-                f"{_UNMAPPED_SUBNET}/option-data[code=23]": Reason.PARENT_NOT_IMPORTED,
-                pool: Reason.PARENT_NOT_IMPORTED,
-                f"{pool}/option-data[code=23]": Reason.PARENT_NOT_IMPORTED,
-                pd_pool: Reason.PARENT_NOT_IMPORTED,
-                f"{pd_pool}/option-data[code=23]": Reason.PARENT_NOT_IMPORTED,
-            },
+            [(entry.kind, entry.path, entry.reason) for entry in summary.entries if entry.kind in _ID_LESS_KINDS],
+            [(Kind.SUBNET, "Dhcp6/subnet6[0]", Reason.INVALID_KEA_DATA)],
         )
-
-    def test_the_pool_and_pd_pool_writers_leave_an_unmapped_row_and_its_options_alone(self):
-        from netbox_kea.integrations.dhcp_import_plan import plan_family
-        from netbox_kea.integrations.dhcp_plugin_capabilities import probe
-
-        plan = plan_family(parse_dhcp_config(_unmapped_conf(), 6), None)
-        (planned,) = plan.subnets
-        summary = self.adapter.ImportSummary()
-        capabilities = probe()
-        references, _classes = self.adapter._import_definitions_and_classes(
-            self.server, self.dhcp_server, plan, (self.dhcp_server.pk,), summary, capabilities
-        )
-        _subnets, pool_claims, pd_pool_claims = self.adapter._claim_config_networks(self.server, plan)
-
-        self.adapter.upsert_pools(self.server, self.subnet, planned, summary, references, pool_claims, capabilities)
-        self.adapter.upsert_pd_pools(
-            self.server, self.subnet, planned, summary, references, pd_pool_claims, capabilities
-        )
-
-        self.assertEqual(self._operator_state(), self.before)
-        self.assertEqual(self._written(summary), [])
-        kept = {entry.kind: entry.reason for entry in summary.entries if entry.kind in (Kind.POOL, Kind.PD_POOL)}
-        self.assertEqual(kept, {Kind.POOL: Reason.NOT_IN_SCOPE, Kind.PD_POOL: Reason.NOT_IN_SCOPE})
-        self.assertEqual(summary.count(Kind.OPTION, Reason.PARENT_NOT_IMPORTED), 2)
 
 
 @tag("dhcp_plugin")

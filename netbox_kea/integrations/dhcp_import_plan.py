@@ -106,14 +106,17 @@ class MappingSource:
     def path(self, family: int) -> str:
         """Return the Kea path of the source in *family*."""
         identity = self.kea_identity or ""
-        if self.kind == Kind.SUBNET:
-            return kea_paths.subnet(family, self.kea_subnet_id)
-        if self.kind == Kind.POOL:
-            return kea_paths.pool(kea_paths.subnet(family, self.kea_subnet_id), _kea_pool_text(identity))
-        if self.kind == Kind.PD_POOL:
+        if self.kind in (Kind.SUBNET, Kind.POOL, Kind.PD_POOL):
+            if self.kea_subnet_id is None:
+                raise ValueError(f"A {self.kind.value} source needs its Kea subnet ID.")
+            subnet = kea_paths.subnet(family, self.kea_subnet_id)
+            if self.kind == Kind.SUBNET:
+                return subnet
+            if self.kind == Kind.POOL:
+                return kea_paths.pool(subnet, _kea_pool_text(identity))
             # The delegated length follows the last slash.
             prefix, _, delegated = identity.rpartition("/")
-            return kea_paths.pd_pool(kea_paths.subnet(family, self.kea_subnet_id), prefix, int(delegated))
+            return kea_paths.pd_pool(subnet, prefix, int(delegated))
         if self.kind == Kind.RESERVATION:
             # An identifier type has no colon, so the first colon ends it.
             identifier_type, _, value = identity.partition(":")
@@ -229,10 +232,10 @@ def _known_definitions(
 
 @dataclass(frozen=True)
 class PlannedOptions:
-    """The DHCP Options that one Kea object assigns, each with its key (``None``: no mapping identity).
+    """The DHCP Options that one Kea object assigns, each with its key.
 
     *kind* is the kind of the object: :attr:`Kind.SERVER` for the global configuration. *parent* is its mapping
-    source, ``None`` for an object without one.
+    source. Only a Pool whose range is not valid has none, and then no option has a key.
     """
 
     kind: Kind
@@ -265,8 +268,7 @@ def _option_parent(planned) -> tuple[Kind, MappingSource | None, tuple[DHCPOptio
     if isinstance(planned, PlannedSharedNetwork):
         return Kind.SHARED_NETWORK, MappingSource.named(Kind.SHARED_NETWORK, planned.key), planned.intent.options
     if isinstance(planned, PlannedSubnet):
-        source = MappingSource.subnet(planned.key) if planned.key is not None else None
-        return Kind.SUBNET, source, planned.intent.options
+        return Kind.SUBNET, MappingSource.subnet(planned.key), planned.intent.options
     key = planned.key
     if isinstance(key, PDPoolKey):
         return Kind.PD_POOL, key.source, planned.intent.options
@@ -299,16 +301,14 @@ def planned_options(planned, family: int, declared: Mapping[OptionDefinitionKey,
 
 @dataclass(frozen=True)
 class PoolKey:
-    """A Pool by the Kea subnet ID of its Subnet and its range. A Subnet without an ID gives ``None``."""
+    """A Pool by the Kea subnet ID of its Subnet and its range."""
 
-    subnet_id: int | None
+    subnet_id: int
     range: Pool
 
     @property
-    def source(self) -> MappingSource | None:
-        """Return the DHCP Import Mapping source of the Pool, or ``None`` when its Subnet has no Kea subnet ID."""
-        if self.subnet_id is None:
-            return None
+    def source(self) -> MappingSource:
+        """Return the DHCP Import Mapping source of the Pool."""
         return MappingSource(Kind.POOL, kea_subnet_id=self.subnet_id, kea_identity=self.range.range)
 
 
@@ -316,18 +316,16 @@ class PoolKey:
 class PDPoolKey:
     """A delegated-prefix Pool by the Kea subnet ID of its Subnet, its prefix and its delegated length.
 
-    A Subnet without an ID gives ``None``. Another delegated length is another PD Pool.
+    Another delegated length is another PD Pool.
     """
 
-    subnet_id: int | None
+    subnet_id: int
     prefix: ipaddress.IPv6Network
     delegated_length: int
 
     @property
-    def source(self) -> MappingSource | None:
-        """Return the DHCP Import Mapping source of the PD Pool, or ``None`` when its Subnet has no Kea subnet ID."""
-        if self.subnet_id is None:
-            return None
+    def source(self) -> MappingSource:
+        """Return the DHCP Import Mapping source of the PD Pool."""
         identity = f"{self.prefix}/{self.delegated_length}"
         return MappingSource(Kind.PD_POOL, kea_subnet_id=self.subnet_id, kea_identity=identity)
 
@@ -402,9 +400,9 @@ class PlannedSharedNetwork:
 
 @dataclass(frozen=True)
 class PlannedSubnet:
-    """A Subnet by Kea subnet ID, with its Pools. ``None``: Kea gave no ID, so the Subnet has no mapping identity."""
+    """A Subnet by Kea subnet ID, with its Pools."""
 
-    key: int | None
+    key: int
     intent: SubnetIntent
     # The Declared Values of the Subnet, by Kea key.
     settings: dict
@@ -649,16 +647,9 @@ def _configuration_gaps(plan: FamilyPlan) -> dict[Kind, list[str]]:
         for hidden in entry.hides:
             label = KIND_LABELS[entry.kind]
             gaps[hidden].append(f"A {label} entry that is not valid hides the {KIND_LABELS[hidden]} entries in it.")
-    unkeyed_subnets = sum(subnet.key is None for subnet in plan.subnets)
-    if unkeyed_subnets:
-        gaps[Kind.SUBNET].append(f"{counted(unkeyed_subnets, 'Subnet has', 'Subnets have')} no Kea subnet ID.")
-    unkeyed_pools = sum(pool.key is None or pool.key.source is None for subnet in plan.subnets for pool in subnet.pools)
+    unkeyed_pools = sum(pool.key is None for subnet in plan.subnets for pool in subnet.pools)
     if unkeyed_pools:
         gaps[Kind.POOL].append(f"{counted(unkeyed_pools, 'Pool has', 'Pools have')} no mapping identity.")
-    unkeyed_pd_pools = sum(pd_pool.key.source is None for subnet in plan.subnets for pd_pool in subnet.pd_pools)
-    if unkeyed_pd_pools:
-        pd_pools = counted(unkeyed_pd_pools, "delegated-prefix Pool has", "delegated-prefix Pools have")
-        gaps[Kind.PD_POOL].append(f"{pd_pools} no mapping identity.")
     return gaps
 
 
@@ -690,18 +681,10 @@ def _observed_sources(plan: FamilyPlan, options: tuple[PlannedOptions, ...]) -> 
         ),
         Kind.RESERVATION: frozenset(planned.key.source for planned in keyed_reservations(plan.reservations)),
         Kind.POOL: frozenset(
-            pool.key.source
-            for subnet in plan.subnets
-            for pool in subnet.pools
-            if pool.key is not None and pool.key.source is not None
+            pool.key.source for subnet in plan.subnets for pool in subnet.pools if pool.key is not None
         ),
-        Kind.PD_POOL: frozenset(
-            pd_pool.key.source
-            for subnet in plan.subnets
-            for pd_pool in subnet.pd_pools
-            if pd_pool.key.source is not None
-        ),
-        Kind.SUBNET: frozenset(MappingSource.subnet(subnet.key) for subnet in plan.subnets if subnet.key is not None),
+        Kind.PD_POOL: frozenset(pd_pool.key.source for subnet in plan.subnets for pd_pool in subnet.pd_pools),
+        Kind.SUBNET: frozenset(MappingSource.subnet(subnet.key) for subnet in plan.subnets),
         Kind.SHARED_NETWORK: frozenset(
             MappingSource.named(Kind.SHARED_NETWORK, planned.key) for planned in plan.shared_networks
         ),

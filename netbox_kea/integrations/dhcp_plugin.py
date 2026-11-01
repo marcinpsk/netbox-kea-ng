@@ -33,9 +33,8 @@ v1 scope (import + diff, read-only against Kea):
   Definition and DHCP Option has a DHCP Import Mapping (:class:`netbox_kea.models.KeaDhcpLink`) to its Kea source, and
   a re-import finds the row through it, also after an operator renames the row. The first import after an upgrade
   maps each unmapped row that matches by structure. No release imported delegated-prefix Pools before, so an unmapped PD Pool
-  is an operator's row and stays. A Subnet without a Kea subnet ID, and its Pools and PD Pools, have no
-  mapping identity. The import creates them, but an unmapped row that matches one by structure is not its own: the
-  writer returns no row (:func:`_keep_unmapped`), so the import writes no field, DHCP Option or child of it.
+  is an operator's row and stays. Kea refuses a Subnet without a subnet ID, so the parse drops one as Kea data that is
+  not valid, with its Pools, PD Pools and DHCP Options. Each object that the import writes has a mapping.
 * A plugin Subnet holds Kea's subnet ID (:func:`settle_subnet_ids`). While the plugin keeps Subnet IDs
   unique across all servers, a Subnet whose ID another Server or family holds is reported as unsupported,
   with its Pools, delegated-prefix Pools and In-Subnet Reservations.
@@ -111,7 +110,7 @@ from django.db.models.deletion import Collector, ProtectedError
 from django.db.models.signals import post_delete
 
 from .. import event_scope, kea_paths
-from ..constants import Family, IPNetworkValue
+from ..constants import Family
 from ..dhcp_mapping_lifecycle import (
     coordinated_import,
     mapped_target,
@@ -241,18 +240,6 @@ class ManagedFieldsMismatch(RuntimeError):
 def write_failed(family: int, kind: Kind, path: str) -> ImportEntry:
     """Return the entry of a fact whose write failed. The log holds the error."""
     return not_written(family, kind, path, Reason.WRITE_FAILED, "See server logs.")
-
-
-def _keep_unmapped(summary: ImportSummary, family: int, kind: Kind, path: str) -> None:
-    """Record a Kea object without a mapping identity that matched an unmapped DHCP plugin row by structure.
-
-    The import does not own that row, so its writer returns no row, and the caller writes no child of it (ADR 0013).
-    """
-    detail = (
-        "Its Kea Subnet has no subnet ID, so it has no DHCP Import Mapping. The unmapped row that matches it stays as "
-        "it is, with its DHCP Options and its children."
-    )
-    summary.record(not_written(family, kind, path, Reason.NOT_IN_SCOPE, detail))
 
 
 def _skip_options(
@@ -853,9 +840,10 @@ def upsert_options(
     change has no entry.
     """
     server, parent = references.server, planned_set.parent
+    if parent is None:
+        raise ValueError("Only an object with a mapping source can have imported DHCP Options.")
     if not planned_set.options:
-        if parent is not None:
-            mark_options_mapped(server, family, parent)
+        mark_options_mapped(server, family, parent)
         return
     from django.contrib.contenttypes.models import ContentType
 
@@ -865,6 +853,8 @@ def upsert_options(
     pending_dependency = False
     paths = planned_set.paths(parent_path, family)
     for opt, key, path in zip(planned_set.options, planned_set.keys, paths, strict=True):
+        if key is None:
+            raise ValueError("A DHCP Option of an object with a mapping source has a key.")
         definition = _resolve_option_definition(opt, family, references.definitions, capabilities, class_name)
         if isinstance(definition, _Unresolved):
             pending_dependency |= definition.reason == Reason.PARENT_NOT_IMPORTED
@@ -875,13 +865,12 @@ def upsert_options(
         if classes is not None:
             space = opt.space or kea_paths.default_space(family)
             code = definition.code if definition is not None else opt.code
-            source = key.source if key is not None else None
             skipped = _data_gap(opt, definition, capabilities, family, path)
-            planned.append(_PlannedOption(opt, path, space, code, definition, classes, source, skipped))
+            planned.append(_PlannedOption(opt, path, space, code, definition, classes, key.source, skipped))
         else:
             pending_dependency |= references.classes.has_pending_import(opt.client_classes)
     mapped = [mapped_target(server, family, item.source) if item.source is not None else None for item in planned]
-    adopts = parent is not None and not options_mapped(server, family, parent)
+    adopts = not options_mapped(server, family, parent)
     # An Option without a source pairs on every run; one with a source only while its object adopts.
     pairing = [
         item for item, row in zip(planned, mapped, strict=True) if row is None and (item.source is None or adopts)
@@ -900,7 +889,7 @@ def upsert_options(
         for item in pairing:
             if item.source is not None and paired[id(item)] is not None:
                 observe_mapping(server, family, paired[id(item)], item.source)
-        if parent is not None and not pending_dependency:
+        if not pending_dependency:
             mark_options_mapped(server, family, parent)
     for item, row in zip(planned, mapped, strict=True):
         if item.skipped is not None:
@@ -1525,12 +1514,9 @@ def _import_shared_networks(server, dhcp_server, plan: FamilyPlan, references: O
     return rows
 
 
-def _subnet_name(server, planned: PlannedSubnet, network: IPNetworkValue) -> str:
+def _subnet_name(server, planned: PlannedSubnet) -> str:
     """Build a globally-unique name (NetBoxDHCPModelMixin requires unique ``name``)."""
-    family = planned.intent.family
-    if planned.key is not None:
-        return _synthesized_name(server.name, f" DHCPv{family} subnet {planned.key}")
-    return _synthesized_name(server.name, f" DHCPv{family} {network}")
+    return _synthesized_name(server.name, f" DHCPv{planned.intent.family} subnet {planned.key}")
 
 
 def _pool_name(subnet_obj, pool_intent) -> str:
@@ -1571,15 +1557,15 @@ def upsert_subnet(
     *renumbered* tells that :func:`settle_subnet_ids` gave the mapped row its Kea subnet ID in this run. A member of
     the imported *shared_network* belongs to it. With *keep_membership*, a stored Subnet keeps its parent. Else the
     Subnet belongs to *dhcp_server*: the DHCP plugin holds one of the two. Returns the ``netbox_dhcp.Subnet``
-    instance, or ``None`` on error or for an unmapped row that it keeps.
+    instance, or ``None`` on error.
     """
     Subnet = _model("Subnet")
     intent = planned.intent
     path = subnet_path(planned)
     source = _Source(intent.family, Kind.SUBNET, path)
-    mapping = MappingSource.subnet(planned.key) if planned.key is not None else None
+    mapping = MappingSource.subnet(planned.key)
 
-    existing = mapped_target(server, intent.family, mapping) if mapping is not None else None
+    existing = mapped_target(server, intent.family, mapping)
 
     try:
         with event_scope.atomic():
@@ -1591,19 +1577,12 @@ def upsert_subnet(
             prefix_obj = result.prefix
             if result.outcome in {"conflict", "disagreement"}:
                 summary.warn(f"subnet {network}: IPAM ownership {result.outcome}, Prefix left unchanged")
-            if (
-                mapping is None
-                and _unlinked(Subnet.objects.filter(_served_by(dhcp_server), prefix=prefix_obj)).exists()
-            ):
-                # A Subnet without a Kea subnet ID has no mapping identity. An unmapped Subnet stays as it is.
-                _keep_unmapped(summary, intent.family, Kind.SUBNET, path)
-                return None
-            subnet_obj = existing if existing is not None else Subnet(name=_subnet_name(server, planned, network))
+            subnet_obj = existing if existing is not None else Subnet(name=_subnet_name(server, planned))
             fields = {
                 "prefix_id": prefix_obj.pk,
                 **_subnet_parent(existing, dhcp_server, shared_network, keep_membership),
-                # settle_subnet_ids gave a mapped row its Kea subnet ID. Without one, the plugin numbers a new Subnet.
-                "subnet_id": planned.key if planned.key is not None else subnet_obj.subnet_id,
+                # settle_subnet_ids gave a mapped row its Kea subnet ID.
+                "subnet_id": planned.key,
                 **_settings_fields(subnet_obj, planned.settings, NETWORK_FIELDS, summary, source),
                 **gated_values(subnet_obj, planned.settings, GATED_SUBNET_FIELDS, capabilities, summary, source),
                 **_user_context_fields(subnet_obj, intent.user_context, capabilities, summary, source, "Subnet"),
@@ -1613,8 +1592,7 @@ def upsert_subnet(
                 dhcp_server, planned.settings.get(kea_paths.INTERFACE), path, Kind.SUBNET, intent.family, summary
             )
             outcome = _write_child(subnet_obj, existing is None, fields, wanted, capabilities)
-            if mapping is not None:
-                observe_mapping(server, intent.family, subnet_obj, mapping)
+            observe_mapping(server, intent.family, subnet_obj, mapping)
     except event_scope.EventDispatchError:
         raise
     except ManagedFieldsMismatch:
@@ -1703,12 +1681,8 @@ def _subnet_write_failed(
     declared: Mapping[OptionDefinitionKey, OptionDefIntent],
     subnet_ids: SubnetIdSettlement,
 ) -> None:
-    """Skip the children of a Subnet that the run did not write, and its Reservations when it has a Kea subnet ID.
-
-    Only a write fails for a Subnet with a Kea subnet ID, so its Reservations must not attach to the stored row.
-    """
-    if planned.key is not None:
-        subnet_ids.failed.add(planned.key)
+    """Skip the children and the Reservations of a Subnet whose write failed: they must not attach to the stored row."""
+    subnet_ids.failed.add(planned.key)
     _skip_subnet_children(summary, planned, declared)
 
 
@@ -1742,13 +1716,14 @@ def _skip_subnet_children(
 
 def subnet_path(planned: PlannedSubnet) -> str:
     """Return the Kea path of a planned Subnet."""
-    return kea_paths.subnet(planned.intent.family, planned.key, planned.intent.cidr)
+    return kea_paths.subnet(planned.intent.family, planned.key)
 
 
 def pool_path(parent_path: str, planned: Planned[PoolKey | None, PoolIntent], family: int) -> str:
     """Return the Kea path of a planned Pool of the Subnet at *parent_path*: the path of its source, if it has one."""
-    source = planned.key.source if planned.key is not None else None
-    return source.path(family) if source is not None else kea_paths.pool(parent_path, planned.intent.pool)
+    if planned.key is None:
+        return kea_paths.pool(parent_path, planned.intent.pool)
+    return planned.key.source.path(family)
 
 
 def pd_pool_path(parent_path: str, key: PDPoolKey) -> str:
@@ -1848,7 +1823,7 @@ def settle_subnet_ids(
     from ..models import KeaDhcpLink
 
     Subnet = _model("Subnet")
-    planned = {subnet.key: subnet for subnet in plan.subnets if subnet.key is not None}
+    planned = {subnet.key: subnet for subnet in plan.subnets}
     links = KeaDhcpLink.objects.filter(kind=Kind.SUBNET.value, object_type=ContentType.objects.get_for_model(Subnet))
     wants = dict(links.values_list("object_id", "kea_subnet_id"))
     ours = dict(
@@ -1975,25 +1950,14 @@ def _upsert_pool(
     path: str,
     capabilities: PluginCapabilities,
 ) -> tuple:
-    """Get or create one Pool and set its managed fields. Return it with its outcome (``None`` when unchanged).
-
-    The row is ``None`` for an unmapped Pool that it keeps (:func:`_keep_unmapped`).
-    """
+    """Get or create one Pool and set its managed fields. Return it with its outcome (``None`` when unchanged)."""
     Pool = _model("Pool")
     intent = planned_pool.intent
     source = planned_pool.key.source
-    same_range = Pool.objects.filter(subnet=subnet_obj, ip_range=range_obj)
-    if source is None:
-        if same_range.exists():
-            # A Subnet without a Kea subnet ID gives its Pools no mapping identity. An unmapped Pool stays as it is.
-            _keep_unmapped(summary, family, Kind.POOL, path)
-            return None, None
-        pool_obj = None
-    else:
-        pool_obj = mapped_target(server, family, source)
-        if pool_obj is None:
-            # Adopt a Pool that an import created before Pools had a mapping.
-            pool_obj = _unlinked(same_range).first()
+    pool_obj = mapped_target(server, family, source)
+    if pool_obj is None:
+        # Adopt a Pool that an import created before Pools had a mapping.
+        pool_obj = _unlinked(Pool.objects.filter(subnet=subnet_obj, ip_range=range_obj)).first()
     created = pool_obj is None
     if pool_obj is None:
         pool_obj = Pool(name=_pool_name(subnet_obj, intent))
@@ -2006,8 +1970,7 @@ def _upsert_pool(
         **_user_context_fields(pool_obj, intent.user_context, capabilities, summary, values, "Pool"),
     }
     outcome = _write_child(pool_obj, created, fields, classes, capabilities)
-    if source is not None:
-        observe_mapping(server, family, pool_obj, source)
+    observe_mapping(server, family, pool_obj, source)
     return pool_obj, outcome
 
 
@@ -2083,9 +2046,6 @@ def upsert_pools(
             summary.warn(f"pool {pool_intent.pool} in {intent.cidr}: unusable range, skipped")
             _skip_options(summary, intent.family, path, options)
             continue
-        if pool_obj is None:
-            _skip_options(summary, intent.family, path, options)
-            continue
         if outcome is not None:
             summary.record(written(intent.family, Kind.POOL, path, outcome))
         upsert_options(pool_obj, options, intent.family, references, summary, path, capabilities)
@@ -2123,23 +2083,14 @@ def _upsert_pd_pool(
 ) -> tuple:
     """Get or create one PD Pool and set its managed fields. Return it with its outcome (``None`` when unchanged).
 
-    It adopts no unmapped row: no release imported PD Pools before, so such a row is an operator's. The row is
-    ``None`` for an unmapped PD Pool that it keeps (:func:`_keep_unmapped`). The DHCP plugin checks the row when it
-    saves it, so a PD Pool that the plugin cannot hold raises ``ValidationError``.
+    It adopts no unmapped row: no release imported PD Pools before, so such a row is an operator's. The DHCP plugin
+    checks the row when it saves it, so a PD Pool that the plugin cannot hold raises ``ValidationError``.
     """
     PDPool = _model("PDPool")
     key, intent = planned.key, planned.intent
     prefix_obj, excluded_obj = prefixes
     source = key.source
-    if source is None:
-        same = PDPool.objects.filter(subnet=subnet_obj, prefix=prefix_obj, delegated_length=key.delegated_length)
-        if same.exists():
-            # A Subnet without a Kea subnet ID gives its PD Pools no mapping identity. An unmapped one stays as it is.
-            _keep_unmapped(summary, family, Kind.PD_POOL, path)
-            return None, None
-        row = None
-    else:
-        row = mapped_target(server, family, source)
+    row = mapped_target(server, family, source)
     created = row is None
     if row is None:
         row = PDPool(name=_pd_pool_name(subnet_obj, key))
@@ -2153,8 +2104,7 @@ def _upsert_pd_pool(
         **_user_context_fields(row, intent.user_context, capabilities, summary, values, "delegated-prefix Pool"),
     }
     outcome = _write_child(row, created, fields, classes, capabilities)
-    if source is not None:
-        observe_mapping(server, family, row, source)
+    observe_mapping(server, family, row, source)
     return row, outcome
 
 
@@ -2196,9 +2146,6 @@ def upsert_pd_pools(
         except Exception as exc:  # noqa: BLE001 — one bad PD Pool must not abort the import
             summary.record(write_failed(family, Kind.PD_POOL, path))
             summary.warn(f"pd pool {key.prefix} in {planned.intent.cidr}: {exc}")
-            _skip_options(summary, family, path, options)
-            continue
-        if row is None:
             _skip_options(summary, family, path, options)
             continue
         if outcome is not None:
@@ -3245,7 +3192,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     )
     subnet_ids = settle_subnet_ids(server, dhcp_server, plan, capabilities, summary)
     for planned_subnet in plan.subnets:
-        taken = subnet_ids.taken.get(planned_subnet.key) if planned_subnet.key is not None else None
+        taken = subnet_ids.taken.get(planned_subnet.key)
         if taken is not None:
             summary.record(taken.entry(plan.family, Kind.SUBNET, subnet_path(planned_subnet)))
             summary.warn(f"subnet {planned_subnet.intent.cidr} (id={planned_subnet.key}): {taken.detail}")
