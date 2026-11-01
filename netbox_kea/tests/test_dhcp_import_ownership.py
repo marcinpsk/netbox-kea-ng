@@ -23,6 +23,7 @@ from netaddr import IPNetwork
 
 from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.integrations.dhcp_import_report import Kind, Outcome, Reason
+from netbox_kea.integrations.dhcp_import_write import WriteScope
 from netbox_kea.integrations.dhcp_plugin_capabilities import probe
 from netbox_kea.ipam_reconciliation import (
     DelegatedPrefixPhase,
@@ -588,11 +589,10 @@ class ImportOwnershipTest(TestCase):
         observation = _reservation_snapshot(conf, 6, [{**self.identity, "subnet-id": 9}])
         summary = dhcp_plugin.ImportSummary()
         references = dhcp_plugin.OptionReferences(
-            dhcp_plugin.CustomDefinitions(self.server, {}, ()), dhcp_plugin.ClassReferences(6, frozenset(), {})
+            dhcp_plugin.CustomDefinitions({}, ()), dhcp_plugin.ClassReferences(6, frozenset(), {})
         )
-        step = dhcp_plugin.import_reservation_snapshot(
-            self.server, None, observation, references, summary, family=6, adoption_servers=(), capabilities=probe()
-        )
+        scope = WriteScope(self.server, 6, summary, probe())
+        step = dhcp_plugin.import_reservation_snapshot(scope, None, observation, references, adoption_servers=())
         dhcp_plugin.reconcile_delegated_prefixes(self.server, 6, step, set(), summary)
         self.assertEqual(summary.reservations_skipped, 1)
         self.assertIn("delegated-prefix", summary.ownership.incomplete)
@@ -1017,7 +1017,9 @@ class ImportOwnershipTest(TestCase):
 
         self.assertEqual((summary.errors, summary.subnets_created, summary.pools_created), (0, 1, 0))
         self.assertFalse(IPRange.objects.exists())
-        self.assertTrue(any("unusable range, skipped" in warning for warning in summary.warnings))
+        path = "Dhcp6/subnet6[id=1]/pools[pool=2001:db8:1::/64]"
+        detail = "The range is larger than a NetBox IP Range can hold."
+        self.assertIn(f"{path}: {detail}", summary.warnings)
         (entry,) = [entry for entry in summary.entries if entry.kind == Kind.POOL]
         self.assertEqual(
             (entry.path, entry.outcome, entry.reason),

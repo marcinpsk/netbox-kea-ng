@@ -9,7 +9,6 @@
 constants.py::<module>	2
 integrations/dhcp_plugin.py::_find_reservation	4
 integrations/dhcp_plugin.py::_send_option	2
-integrations/dhcp_plugin.py::_upsert_reservation	1
 mappers/kea_to_dhcp.py::<module>	43
 mappers/kea_to_dhcp.py::_client_class_intent	4
 mappers/kea_to_dhcp.py::_pools	1
