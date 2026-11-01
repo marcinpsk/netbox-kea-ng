@@ -121,7 +121,7 @@ class RowAdapter(Protocol):
 
     scope: WriteScope
     key: RowKey
-    #: The reason of a ValidationError of the write: a plugin gap when the plugin refuses a fact that Kea accepts.
+    #: The reason of a ValidationError of the write: ``PLUGIN_GAP`` when the refusal shows a fact that the plugin cannot hold.
     refused_reason: Reason = Reason.WRITE_FAILED
     #: The caller records the created or updated entry, after it writes more of the row (:class:`LateOutcome`).
     late_outcome: bool = False
@@ -165,8 +165,11 @@ class RowAdapter(Protocol):
         return ()
 
     def state(self, row) -> RowState:
-        """Return the state of the stored *row* before the write, for a late outcome (:func:`row_state`)."""
-        return row_state(row, self.scope.capabilities)
+        """Return the state of the stored *row* before the write (:func:`row_state`), for a late outcome only.
+
+        An adapter with a late outcome gives it; the run asks no other adapter for it.
+        """
+        raise TypeError(f"{type(self).__name__} gives no state before the write, so it cannot have a late outcome.")
 
 
 def write_row(adapter: RowAdapter) -> Any:
@@ -277,15 +280,15 @@ def _write_child(
     """
     capabilities = adapter.scope.capabilities
     fields = adapter.fields(row)
-    relations = _relation_changes(row, adapter.relations(row), current)
+    relations = relation_changes(row, adapter.relations(row), current)
     changes: dict = {}
     if created:
         _create_row(row, fields, capabilities)
     elif changes := {
-        **_managed_changes(row, fields, capabilities),
+        **managed_changes(row, fields, capabilities),
         **{name: value for name, value in extra.items() if getattr(row, name) != value},
     }:
-        _save_changes(row, changes)
+        save_changes(row, changes)
     elif relations or adapter.late_outcome:
         row.snapshot()
     for name, pks in relations.items():
@@ -295,24 +298,14 @@ def _write_child(
     return Outcome.UPDATED if changes or relations else None
 
 
-def row_state(row, capabilities: PluginCapabilities, relations: Mapping[str, frozenset[int]] | None = None) -> RowState:
-    """Return the state of a DHCP plugin *row*: its name, its managed values and its managed relations.
-
-    *relations* gives the related rows of each managed relation that a caller read already, for example for many rows
-    at once; without it, each relation is read here.
-    """
+def row_state(row, capabilities: PluginCapabilities, relations: Mapping[str, frozenset[int]]) -> RowState:
+    """Return the state of a DHCP plugin *row*: its name, its managed values and the *relations* that its caller read."""
     managed = managed_fields(type(row).__name__, capabilities)
     scalars = tuple(getattr(row, row._meta.get_field(field.name).attname) for field in managed if not field.relation)
-    if relations is None:
-        relations = {
-            field.name: frozenset(getattr(row, field.name).values_list("pk", flat=True))
-            for field in managed
-            if field.relation
-        }
     return RowState(row.name, scalars, relations)
 
 
-def _managed_changes(obj, desired: dict, capabilities: PluginCapabilities) -> dict:
+def managed_changes(obj, desired: dict, capabilities: PluginCapabilities) -> dict:
     """Return the managed fields of obj whose value differs from desired.
 
     *desired* must name each scalar managed field of the model that the installed plugin has, by field name or by
@@ -331,12 +324,12 @@ def _managed_changes(obj, desired: dict, capabilities: PluginCapabilities) -> di
 
 def _create_row(obj, desired: dict, capabilities: PluginCapabilities) -> None:
     """Set the managed fields of the new row *obj* to *desired* and save it."""
-    for name, value in _managed_changes(obj, desired, capabilities).items():
+    for name, value in managed_changes(obj, desired, capabilities).items():
         setattr(obj, name, value)
     obj.save()
 
 
-def _save_changes(obj, changes: dict) -> None:
+def save_changes(obj, changes: dict) -> None:
     """Write *changes* to the loaded row *obj* after its change-log snapshot."""
     obj.snapshot()
     for name, value in changes.items():
@@ -344,7 +337,7 @@ def _save_changes(obj, changes: dict) -> None:
     obj.save()
 
 
-def _relation_changes(
+def relation_changes(
     obj, desired: dict[str, set[int]], current: Mapping[str, frozenset[int]] | None = None
 ) -> dict[str, set[int]]:
     """Return the many-to-many relations of *obj* whose rows differ from *desired*. A new row has no rows yet.

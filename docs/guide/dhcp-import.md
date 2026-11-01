@@ -243,9 +243,9 @@ A fact that the run did not write has a reason code. The reason gives the outcom
 When the DHCP plugin refuses a row as it saves it, for example a Subnet whose name another Subnet holds or a row that a
 custom validator refuses, the `write_failed` entry shows the messages of the plugin. A delegated-prefix Pool that the
 plugin refuses is `plugin_gap` with the same messages. Any other failed write shows "See server logs.", and the server
-log holds the error. Each object in the planned subtree of an object that the run did not write, such as the DHCP
-Options, Pools and delegated-prefix Pools of a Subnet, is `parent_not_imported`. The objects of a Subnet whose Subnet ID
-another row holds take the reason of the Subnet.
+log holds the error. When the run does not write an object, the objects inside it, such as the DHCP Options, Pools and
+delegated-prefix Pools of a Subnet, are `parent_not_imported`. The objects inside a Subnet whose Subnet ID another row
+holds take the reason of the Subnet.
 
 ## Declared Values and inheritance
 

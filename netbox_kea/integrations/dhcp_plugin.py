@@ -173,11 +173,11 @@ from .dhcp_import_write import (
     RowAdapter,
     RowState,
     WriteScope,
-    _managed_changes,
-    _relation_changes,
-    _save_changes,
     adopt_options,
+    managed_changes,
+    relation_changes,
     row_state,
+    save_changes,
     write_row,
 )
 from .dhcp_plugin_capabilities import PLUGIN_APP_LABEL, PluginCapabilities, probe
@@ -604,7 +604,8 @@ def _declared_key(opt: DHCPOption, space: str, owner: str | None, definitions: C
 def _without_its_definition(definition: NotWritten) -> NotWritten:
     """Return why the run does not write an Option whose declared definition it did not write.
 
-    The Option keeps a gap of the plugin; for any other reason its parent, the definition, was not imported.
+    The Option keeps a fact that the plugin cannot hold; for any other reason its parent, the definition, was not
+    imported.
     """
     detail = f"Its Option Definition is not imported. {definition.detail}".rstrip()
     if definition.reason == Reason.PLUGIN_GAP:
@@ -1027,11 +1028,11 @@ def _apply_global_settings(
     desired.setdefault("host_reservation_identifiers", dhcp_server.host_reservation_identifiers)
     changed: dict = {}
     try:
-        changed = _managed_changes(dhcp_server, desired, capabilities)
+        changed = managed_changes(dhcp_server, desired, capabilities)
         if not changed:
             return False
         with event_scope.atomic():
-            _save_changes(dhcp_server, changed)
+            save_changes(dhcp_server, changed)
     except event_scope.EventDispatchError:
         raise
     except ManagedFieldsMismatch:
@@ -1087,7 +1088,7 @@ def _link_interfaces(dhcp_server, entries: tuple[str, ...] | None, summary: Impo
     if "*" in entries:
         # The DHCP plugin cannot hold "every interface", so the links that an operator made stay.
         return False
-    relations = _relation_changes(dhcp_server, wanted)
+    relations = relation_changes(dhcp_server, wanted)
     if not relations:
         return False
     dhcp_server.snapshot()
@@ -2101,7 +2102,8 @@ class _ReservationAdapter(RowAdapter):
         # An empty address list clears the previous IPv6 relations.
         relations = {"ipv6_addresses": {address.pk for address in self._addresses[1]}, "client_classes": classes}
         for relation, networks in _reported_prefixes(self.reservation).items():
-            current = self._stored.get(relation, {})
+            # state() read the relations of a stored row; a new row has none.
+            current = self._stored[relation] if row.pk is not None else {}
             relations[relation] = {
                 pk for pk, prefix in current.items() if ipaddress.ip_network(str(prefix)) in networks
             }

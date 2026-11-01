@@ -1432,8 +1432,10 @@ rules:
       _apply_global_settings() are exempt by name.
       Limits: the rule sees netbox_kea/integrations/; a writer that bypasses the protocol without calling
       observe_mapping() or opening the re-raise pair is not caught, and a call through a module attribute or an
-      aliased import is not seen. A lone "except event_scope.EventDispatchError: raise" (the Subnet ID moves, the
-      delegated Prefix attachment, the stale removal) is not the pair.
+      aliased import is not seen. The pair matches in this handler order only: EventDispatchError, then
+      ManagedFieldsMismatch. The exemptions go by function name, so another function of the same name is exempt too. A
+      lone "except event_scope.EventDispatchError: raise" (the Subnet ID moves, the delegated Prefix attachment, the
+      stale removal) is not the pair.
     metadata:
       category: correctness
       confidence: HIGH
