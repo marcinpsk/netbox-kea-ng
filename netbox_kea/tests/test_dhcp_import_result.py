@@ -155,7 +155,7 @@ class StoredResultTest(_ImportRunTestCase):
         self.assertEqual(_entries(latest), _SECOND_RUN)
 
     def test_a_subnet_without_a_cidr_is_an_entry_and_makes_the_reservation_read_incomplete(self):
-        config = {4: {"subnet4": [{"id": 21}, {"subnet": "203.0.113.0/24"}]}}
+        config = {4: {"subnet4": [{"id": 21}, {"id": 22, "subnet": "203.0.113.0/24"}]}}
         url = reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk])
 
         with stub_kea(_sync_responses(config)):
@@ -165,7 +165,7 @@ class StoredResultTest(_ImportRunTestCase):
             _entries(DhcpImportRun.objects.get(server=self.server)),
             {
                 ("subnet", "not_imported", "invalid_kea_data", "Dhcp4/subnet4[id=21]"),
-                ("subnet", "created", "", "Dhcp4/subnet4[subnet=203.0.113.0/24]"),
+                ("subnet", "created", "", "Dhcp4/subnet4[id=22]"),
                 ("server", "created", "", "Dhcp4"),
                 ("server", "unsupported", "plugin_gap", "Dhcp4"),
                 ("reservation", "skipped", "read_failed", "Dhcp4/reservations"),
@@ -414,7 +414,6 @@ class EntryVocabularyTest(SimpleTestCase):
         objects = (
             root,
             subnet,
-            kea_paths.subnet(4, None, "198.18.0.0/24"),
             kea_paths.subnet_entry(root, 4, 0),
             kea_paths.shared_network(4, "office"),
             kea_paths.shared_network_entry(4, 0),
@@ -479,11 +478,10 @@ class EntryVocabularyTest(SimpleTestCase):
                 self.assertEqual(summary.count(counter.kind, match), 1)
 
     def test_kea_paths(self):
-        subnet = kea_paths.subnet(6, 20, "2001:db8::/64")
+        subnet = kea_paths.subnet(6, 20)
         self.assertEqual(
             [
                 subnet,
-                kea_paths.subnet(4, None, "192.0.2.0/24"),
                 kea_paths.option(subnet, _option(code=23), 6),
                 kea_paths.option(subnet, _option(name="vendor-opt", space="vendor-x"), 6),
                 kea_paths.option_definition(4, "dhcp4", 224),
@@ -493,7 +491,6 @@ class EntryVocabularyTest(SimpleTestCase):
             ],
             [
                 "Dhcp6/subnet6[id=20]",
-                "Dhcp4/subnet4[subnet=192.0.2.0/24]",
                 "Dhcp6/subnet6[id=20]/option-data[code=23]",
                 "Dhcp6/subnet6[id=20]/option-data[space=vendor-x,name=vendor-opt]",
                 "Dhcp4/option-def[code=224]",

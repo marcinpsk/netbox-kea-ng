@@ -105,26 +105,20 @@ def test_the_mapping_kind_lists_name_every_kind_of_mapping_kinds():
     assert missing == {path: [] for path, *_ in passages}
 
 
-def test_context_qualifies_mapping_ownership_for_a_subnet_without_an_id_and_a_long_option_identity():
-    """Objects created without a Kea subnet ID, and an Option whose identity a mapping cannot hold, have no mapping."""
+def test_context_gives_every_object_that_an_import_writes_a_mapping():
+    """Kea refuses a Subnet without an ID and a mapping has no length limit, so the term names no exception (#208)."""
     context = (REPOSITORY_ROOT / "CONTEXT.md").read_text()
     mapping = " ".join(context.split("**DHCP Import Mapping**:\n", 1)[1].split("\n_Avoid_:", 1)[0].split())
 
-    assert (
-        "The exception is a Kea Subnet without a subnet ID: it, its Pools, its delegated-prefix Pools and each DHCP "
-        "Option of these objects have no mapping." in mapping
-    )
-    assert "A DHCP Option whose identity is longer than a mapping holds has no mapping either." in mapping
-    assert "Apart from these exceptions, a DHCP Option without a mapping" in mapping
+    assert "Each object that a DHCP Import writes has one" in mapping
+    assert "exception" not in mapping
+    assert "A DHCP Option without a mapping, for example one that an operator adds, is not the import's." in mapping
 
 
-def test_the_dhcp_import_guide_names_every_option_that_takes_an_unmapped_option():
-    """The upgrade and an Option that a mapping cannot hold both take an Option without a mapping."""
+def test_the_dhcp_import_guide_names_only_the_upgrade_as_taking_an_unmapped_option():
+    """Every imported DHCP Option has a mapping, so only the upgrade takes an Option without one."""
     guide = " ".join((REPOSITORY_ROOT / "docs/guide/dhcp-import.md").read_text().split())
 
-    assert "The one exception is the upgrade." not in guide
-    assert (
-        "A Kea option without a mapped Option gets a new DHCP Option. There are two exceptions: the upgrade, and a "
-        "DHCP Option that has no mapping (see below)." in guide
-    )
-    assert "On every run, such an Option takes an Option without a mapping of the same object" in guide
+    assert "A Kea option without a mapped Option gets a new DHCP Option. Only the upgrade is an exception." in guide
+    assert "Kea refuses a Subnet without a subnet ID, so the import reports such a Subnet entry as invalid" in guide
+    assert "On every run, such an Option takes an Option without a mapping" not in guide

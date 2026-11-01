@@ -27,7 +27,7 @@ import logging
 from dataclasses import dataclass, field
 
 from .. import kea_paths
-from ..constants import Family, validate_family
+from ..constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, validate_family
 from ..dhcp_options import DHCPOption, parse_dhcp_option, parse_option_definition
 from ..integrations import dhcp_import_ledger
 from ..integrations.dhcp_import_fields import GATED_SUBNET_FIELDS
@@ -162,7 +162,7 @@ class PDPoolIntent:
 class SubnetIntent:
     """A Kea subnet, with its parent shared-network (if any) and children."""
 
-    kea_subnet_id: int | None
+    kea_subnet_id: int
     cidr: str
     family: int
     shared_network: str | None
@@ -435,16 +435,15 @@ def _class_list(raw: dict, key: str, kind: Kind, path: str, log: _ParseLog) -> t
 
 
 def _subnet_id(raw: dict) -> int | None:
-    if isinstance(raw.get("id"), bool):
+    """Return the Kea subnet ID of a Subnet entry, or ``None`` when it is not one that Kea's parser accepts."""
+    sid = raw.get("id")
+    if isinstance(sid, bool) or not isinstance(sid, int) or not MIN_SUBNET_ID <= sid <= MAX_SUBNET_ID:
         return None
-    try:
-        return int(raw["id"])
-    except (KeyError, TypeError, ValueError):
-        return None
+    return sid
 
 
 def _subnet_intent(raw, family: int, shared_network: str | None, path: str, log: _ParseLog) -> SubnetIntent | None:
-    """Normalize the Kea subnet entry at *path*; drop one that is not a dict or has no CIDR."""
+    """Normalize the Kea subnet entry at *path*; drop one that is not a dict or has no CIDR or no subnet ID."""
     if not isinstance(raw, dict):
         log.dropped.append(DroppedEntry(Kind.SUBNET, path, "The entry is not an object."))
         return None
@@ -455,7 +454,10 @@ def _subnet_intent(raw, family: int, shared_network: str | None, path: str, log:
             path = kea_paths.subnet(family, sid)
         log.dropped.append(DroppedEntry(Kind.SUBNET, path, "The Subnet has no CIDR."))
         return None
-    subnet_path = kea_paths.subnet(family, sid, cidr)
+    if sid is None:
+        log.dropped.append(DroppedEntry(Kind.SUBNET, path, "The Subnet has no subnet ID."))
+        return None
+    subnet_path = kea_paths.subnet(family, sid)
     log.leave_out(kea_paths.subnet_collection(family), Kind.SUBNET, subnet_path, raw)
     return SubnetIntent(
         kea_subnet_id=sid,
@@ -524,7 +526,7 @@ def parse_dhcp_config(conf: dict, version: int) -> ServerConfigIntent:
 
     Standalone subnets (under ``subnetN``) carry ``shared_network=None``; subnets
     nested in a ``shared-networks`` entry carry that network's name.  Malformed
-    entries (non-dicts, subnets without a CIDR) are dropped into ``dropped`` rather than raising,
+    entries (non-dicts, subnets without a CIDR or a subnet ID) are dropped into ``dropped`` rather than raising,
     so a partially-malformed live config still imports what it can.
     Malformed subnet, shared-network, and client-class containers raise RuntimeError.
     """

@@ -3,8 +3,9 @@
 """The plan step of the DHCP Import: the keyed DHCP plugin objects that one family of a Kea read intends.
 
 The plan is pure. It reads no database, no DHCP plugin and no Kea, so a test can build it from recorded Kea
-replies. Each planned object carries its key, and :class:`MappingSource` gives the DHCP Import Mapping identity of
-a key: the columns of ``KeaDhcpLink`` that the apply step reads and writes. The plan keeps the Reservation
+replies. Each planned object carries its key. A key gives its :class:`MappingSource`, the DHCP Import Mapping
+identity in the columns of ``KeaDhcpLink`` that the apply step reads and writes, and its Kea path. :data:`KEY_KINDS`
+gives the key class that decodes a source of each kind. The plan keeps the Reservation
 observation, and :func:`keyed_reservations` keys its records. :func:`observations` gives the Kea sources that the
 read reports for each mapped kind, and whether the read is Complete for that kind: the removal of Stale DHCP Import
 Objects and the drift view both use it. The apply step in :mod:`netbox_kea.integrations.dhcp_plugin` turns the parsed
@@ -15,14 +16,15 @@ from __future__ import annotations
 
 import ipaddress
 import json
+from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Generic, Protocol, TypedDict, TypeVar, cast, get_args
 
 from .. import kea_paths
 from ..constants import Family, validate_family
-from ..dhcp_options import MAX_OPTION_CODE, DHCPOptionIdentity, OptionDefinition, option_identity
+from ..dhcp_options import DHCPOptionIdentity, OptionDefinition, option_identity
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import (
     ClientClassIntent,
@@ -34,7 +36,7 @@ from ..mappers.kea_to_dhcp import (
     SubnetIntent,
 )
 from ..pools import Pool, parse_pool
-from ..reservations import MAX_IDENTITY_LENGTH, IdentifierType, InSubnetReservationScope, Reservation, identity_text
+from ..reservations import IdentifierType, InSubnetReservationScope, Reservation, identity_text
 from .dhcp_import_ledger import KEA_DEFAULTS, MERGED_KEYS
 from .dhcp_import_report import KIND_LABELS, ImportEntry, Kind, counted
 
@@ -55,20 +57,16 @@ class Planned(Generic[K, T]):
     intent: T
 
 
-# The longest text of one address: an IPv6 address with no zero group.
-_MAX_ADDRESS_TEXT = len(str(ipaddress.IPv6Address(2**128 - 1)))
 #: The longest Kea name that the import keys: a DHCP plugin row holds a name of 255 characters.
 MAX_KEA_NAME_LENGTH = 255
-#: The longest ``KeaDhcpLink.kea_identity`` that a :class:`MappingSource` gives, from the identity of each kind.
-#: A DHCP Option holds the identity of its parent and its client classes, so an Option can have no source.
-MAX_MAPPING_IDENTITY_LENGTH = max(
-    MAX_IDENTITY_LENGTH,  # A Reservation: "identifier-type:value".
-    2 * _MAX_ADDRESS_TEXT + len("-"),  # A Pool: "start-end".
-    _MAX_ADDRESS_TEXT + 2 * len("/128"),  # A delegated-prefix Pool: "prefix/length/delegated-length".
-    # An Option Definition: "space:code", or "class:space:code" in a client class.
-    2 * (MAX_KEA_NAME_LENGTH + len(":")) + len(str(MAX_OPTION_CODE)),
-    MAX_KEA_NAME_LENGTH,  # A Shared Network or a client class: its name.
-)
+
+
+class SourceColumns(TypedDict):
+    """The ``KeaDhcpLink`` identity columns of a mapping source."""
+
+    kind: str
+    kea_subnet_id: int | None
+    kea_identity: str | None
 
 
 @dataclass(frozen=True)
@@ -99,46 +97,100 @@ class MappingSource:
         """Return the source of a Shared Network or a client class by its Kea name."""
         return cls(kind, kea_identity=name)
 
-    def columns(self) -> dict[str, object]:
+    def columns(self) -> SourceColumns:
         """Return the ``KeaDhcpLink`` identity columns, for a lookup and for a write."""
         return {"kind": self.kind.value, "kea_subnet_id": self.kea_subnet_id, "kea_identity": self.kea_identity}
 
     def path(self, family: int) -> str:
-        """Return the Kea path of the source in *family*."""
-        identity = self.kea_identity or ""
-        if self.kind == Kind.SUBNET:
-            return kea_paths.subnet(family, self.kea_subnet_id)
-        if self.kind == Kind.POOL:
-            return kea_paths.pool(kea_paths.subnet(family, self.kea_subnet_id), _kea_pool_text(identity))
-        if self.kind == Kind.PD_POOL:
-            # The delegated length follows the last slash.
-            prefix, _, delegated = identity.rpartition("/")
-            return kea_paths.pd_pool(kea_paths.subnet(family, self.kea_subnet_id), prefix, int(delegated))
-        if self.kind == Kind.RESERVATION:
-            # An identifier type has no colon, so the first colon ends it.
-            identifier_type, _, value = identity.partition(":")
-            return kea_paths.reservation(family, self.kea_subnet_id, identifier_type, value)
-        if self.kind == Kind.OPTION_DEFINITION:
-            # A space name has no colon, so the last two colons end the class name and the space.
-            rest, _, code = identity.rpartition(":")
-            class_name, separator, space = rest.rpartition(":")
-            return kea_paths.option_definition(family, space, int(code), class_name if separator else None)
-        if self.kind == Kind.OPTION:
-            return OptionKey.from_source(self).path(family)
-        if self.kind == Kind.CLIENT_CLASS:
-            return kea_paths.client_class(family, identity)
-        if self.kind == Kind.SHARED_NETWORK:
-            return kea_paths.shared_network(family, identity)
-        if self.kind == Kind.SERVER:
-            return kea_paths.daemon(family)
-        raise ValueError(f"A {self.kind.value} source has no Kea path.")
+        """Return the Kea path of the source in *family*: the path of the key that the source holds."""
+        return KEY_KINDS[self.kind].from_source(self, family).path(family)
 
 
-def _kea_pool_text(identity: str) -> str:
-    """Return the text that Kea's config-get gives the Pool range *identity*: its prefix when the range is one."""
-    start, _, end = identity.partition("-")
-    networks = list(ipaddress.summarize_address_range(ipaddress.ip_address(start), ipaddress.ip_address(end)))
-    return str(networks[0]) if len(networks) == 1 else identity
+def _subnet_id(source: MappingSource) -> int:
+    """Return the Kea subnet ID of *source*, which its kind needs."""
+    if source.kea_subnet_id is None:
+        raise ValueError(f"A {source.kind.value} source needs its Kea subnet ID.")
+    return source.kea_subnet_id
+
+
+def _identity(source: MappingSource) -> str:
+    """Return the identity of *source*, which its kind needs."""
+    if source.kea_identity is None:
+        raise ValueError(f"A {source.kind.value} source needs its identity.")
+    return source.kea_identity
+
+
+@dataclass(frozen=True)
+class ServerKey:
+    """The global configuration of one family: the Server and the family identify it."""
+
+    kind: ClassVar[Kind] = Kind.SERVER
+
+    @property
+    def source(self) -> MappingSource:
+        """Return the DHCP Import Mapping source of the global configuration."""
+        return MappingSource.server()
+
+    @classmethod
+    def from_source(cls, source: MappingSource, family: int) -> ServerKey:
+        """Return the key that the global configuration *source* holds."""
+        return cls()
+
+    def path(self, family: int) -> str:
+        """Return the Kea path of the daemon of *family*."""
+        return kea_paths.daemon(family)
+
+
+@dataclass(frozen=True)
+class SubnetKey:
+    """A Subnet by its Kea subnet ID."""
+
+    subnet_id: int
+    kind: ClassVar[Kind] = Kind.SUBNET
+
+    @property
+    def source(self) -> MappingSource:
+        """Return the DHCP Import Mapping source of the Subnet."""
+        return MappingSource.subnet(self.subnet_id)
+
+    @classmethod
+    def from_source(cls, source: MappingSource, family: int) -> SubnetKey:
+        """Return the key that the Subnet *source* holds."""
+        return cls(_subnet_id(source))
+
+    def path(self, family: int) -> str:
+        """Return the Kea path of the Subnet in *family*."""
+        return kea_paths.subnet(family, self.subnet_id)
+
+
+@dataclass(frozen=True)
+class NamedKey:
+    """A client class or a Shared Network by its Kea name."""
+
+    kind: Kind
+    name: str
+
+    def __post_init__(self) -> None:
+        """Refuse a kind that Kea does not identify by name."""
+        if self.kind not in _NAMED_PATHS:
+            raise ValueError(f"A {self.kind.value} has no Kea name.")
+
+    @property
+    def source(self) -> MappingSource:
+        """Return the DHCP Import Mapping source of the named object."""
+        return MappingSource.named(self.kind, self.name)
+
+    @classmethod
+    def from_source(cls, source: MappingSource, family: int) -> NamedKey:
+        """Return the key that the client class or Shared Network *source* holds."""
+        return cls(source.kind, _identity(source))
+
+    def path(self, family: int) -> str:
+        """Return the Kea path of the named object in *family*."""
+        return _NAMED_PATHS[self.kind](family, self.name)
+
+
+_NAMED_PATHS = {Kind.CLIENT_CLASS: kea_paths.client_class, Kind.SHARED_NETWORK: kea_paths.shared_network}
 
 
 @dataclass(frozen=True)
@@ -148,6 +200,7 @@ class OptionDefinitionKey:
     space: str
     code: int
     client_class: str | None = None
+    kind: ClassVar[Kind] = Kind.OPTION_DEFINITION
 
     @property
     def source(self) -> MappingSource:
@@ -156,6 +209,18 @@ class OptionDefinitionKey:
         if self.client_class is not None:
             identity = f"{self.client_class}:{identity}"
         return MappingSource(Kind.OPTION_DEFINITION, kea_identity=identity)
+
+    @classmethod
+    def from_source(cls, source: MappingSource, family: int) -> OptionDefinitionKey:
+        """Return the key that the Option Definition *source* holds."""
+        # A space name has no colon, so the last two colons end the class name and the space.
+        rest, _, code = _identity(source).rpartition(":")
+        class_name, separator, space = rest.rpartition(":")
+        return cls(space, int(code), class_name if separator else None)
+
+    def path(self, family: int) -> str:
+        """Return the Kea path of the definition in *family*."""
+        return kea_paths.option_definition(family, self.space, self.code, self.client_class)
 
 
 @dataclass(frozen=True)
@@ -168,14 +233,15 @@ class OptionKey:
     parent: MappingSource
     identity: DHCPOptionIdentity
     occurrence: int = 0
+    kind: ClassVar[Kind] = Kind.OPTION
 
     @property
-    def source(self) -> MappingSource | None:
-        """Return the DHCP Import Mapping source of the Option, or ``None`` when a mapping cannot hold its identity.
+    def source(self) -> MappingSource:
+        """Return the DHCP Import Mapping source of the Option.
 
         The Option takes the Kea subnet ID of its parent. Its ``kea_identity`` is a JSON list: the kind and the
         ``kea_identity`` of the parent, the space, the code (else the name), the sorted client classes and the
-        occurrence.
+        occurrence. The list has no length limit (ADR 0013).
         """
         identity = json.dumps(
             [
@@ -188,16 +254,12 @@ class OptionKey:
             ],
             separators=(",", ":"),
         )
-        if len(identity) > MAX_MAPPING_IDENTITY_LENGTH:
-            return None
         return MappingSource(Kind.OPTION, kea_subnet_id=self.parent.kea_subnet_id, kea_identity=identity)
 
     @classmethod
-    def from_source(cls, source: MappingSource) -> OptionKey:
+    def from_source(cls, source: MappingSource, family: int) -> OptionKey:
         """Return the key that the Option *source* holds."""
-        if source.kea_identity is None:
-            raise ValueError("A DHCP Option source needs its identity.")
-        kind, parent_identity, space, code_or_name, classes, occurrence = json.loads(source.kea_identity)
+        kind, parent_identity, space, code_or_name, classes, occurrence = json.loads(_identity(source))
         parent = MappingSource(Kind(kind), source.kea_subnet_id, parent_identity)
         return cls(parent, DHCPOptionIdentity(space, code_or_name, frozenset(classes)), occurrence)
 
@@ -229,53 +291,41 @@ def _known_definitions(
 
 @dataclass(frozen=True)
 class PlannedOptions:
-    """The DHCP Options that one Kea object assigns, each with its key (``None``: no mapping identity).
+    """The DHCP Options that one Kea object assigns, each with its key.
 
-    *kind* is the kind of the object: :attr:`Kind.SERVER` for the global configuration. *parent* is its mapping
-    source, ``None`` for an object without one.
+    *owner* is the key of the object. Only a Pool whose range is not valid has no mapping source, and then no option
+    has a key.
     """
 
-    kind: Kind
-    parent: MappingSource | None
+    owner: OptionOwnerKey
     options: tuple[DHCPOption, ...]
     keys: tuple[OptionKey | None, ...]
 
     @property
+    def kind(self) -> Kind:
+        """Return the kind of the object: :attr:`Kind.SERVER` for the global configuration."""
+        return self.owner.kind
+
+    @property
+    def parent(self) -> MappingSource | None:
+        """Return the mapping source of the object."""
+        return self.owner.source
+
+    @property
     def class_name(self) -> str | None:
         """Return the name of the client class that assigns the options, whose own definitions they use first."""
-        return self.parent.kea_identity if self.parent is not None and self.kind == Kind.CLIENT_CLASS else None
+        return self.owner.name if isinstance(self.owner, NamedKey) and self.kind == Kind.CLIENT_CLASS else None
 
-    def paths(self, parent_path: str, family: int) -> tuple[str, ...]:
-        """Return the Kea path of each option: the path of its key, else its literal path under *parent_path*.
+    def paths(self, family: int) -> tuple[str, ...]:
+        """Return the Kea path of each option: the path of its key, else its literal path under the object.
 
         A run names a keyed Option by its key also when it removes it, so the key gives the one path of the Option.
         """
+        owner_path = self.owner.path(family)
         return tuple(
-            key.path(family) if key is not None else kea_paths.option(parent_path, option, family)
+            key.path(family) if key is not None else kea_paths.option(owner_path, option, family)
             for option, key in zip(self.options, self.keys, strict=True)
         )
-
-
-def _option_parent(planned) -> tuple[Kind, MappingSource | None, tuple[DHCPOption, ...]]:
-    """Return the kind, the mapping source and the options of a planned object that assigns DHCP Options."""
-    if isinstance(planned, PlannedServer):
-        return Kind.SERVER, MappingSource.server(), planned.global_options
-    if isinstance(planned, PlannedClientClass):
-        return Kind.CLIENT_CLASS, MappingSource.named(Kind.CLIENT_CLASS, planned.key), planned.intent.options
-    if isinstance(planned, PlannedSharedNetwork):
-        return Kind.SHARED_NETWORK, MappingSource.named(Kind.SHARED_NETWORK, planned.key), planned.intent.options
-    if isinstance(planned, PlannedSubnet):
-        source = MappingSource.subnet(planned.key) if planned.key is not None else None
-        return Kind.SUBNET, source, planned.intent.options
-    key = planned.key
-    if isinstance(key, PDPoolKey):
-        return Kind.PD_POOL, key.source, planned.intent.options
-    if isinstance(key, GlobalReservationKey | InSubnetReservationKey):
-        return Kind.RESERVATION, key.source, planned.intent.options
-    if key is None or isinstance(key, PoolKey):
-        # A Pool whose range is not valid has no key.
-        return Kind.POOL, key.source if key is not None else None, planned.intent.options
-    raise TypeError(f"{type(planned).__name__} assigns no DHCP Options.")
 
 
 def planned_options(planned, family: int, declared: Mapping[OptionDefinitionKey, OptionDefIntent]) -> PlannedOptions:
@@ -283,8 +333,10 @@ def planned_options(planned, family: int, declared: Mapping[OptionDefinitionKey,
 
     The plan and the apply both take the options of an object from here, so their sources cannot drift.
     """
-    kind, parent, options = _option_parent(planned)
-    unkeyed = PlannedOptions(kind, parent, options, (None,) * len(options))
+    key = planned.key
+    options = planned.global_options if isinstance(planned, PlannedServer) else planned.intent.options
+    parent = key.source
+    unkeyed = PlannedOptions(key, options, (None,) * len(options))
     if parent is None:
         return unkeyed
     definitions = _known_definitions(declared, unkeyed.class_name)
@@ -299,41 +351,109 @@ def planned_options(planned, family: int, declared: Mapping[OptionDefinitionKey,
 
 @dataclass(frozen=True)
 class PoolKey:
-    """A Pool by the Kea subnet ID of its Subnet and its range. A Subnet without an ID gives ``None``."""
+    """A Pool by the Kea subnet ID of its Subnet and its range."""
 
-    subnet_id: int | None
+    subnet_id: int
     range: Pool
+    kind: ClassVar[Kind] = Kind.POOL
 
     @property
-    def source(self) -> MappingSource | None:
-        """Return the DHCP Import Mapping source of the Pool, or ``None`` when its Subnet has no Kea subnet ID."""
-        if self.subnet_id is None:
-            return None
+    def source(self) -> MappingSource:
+        """Return the DHCP Import Mapping source of the Pool."""
         return MappingSource(Kind.POOL, kea_subnet_id=self.subnet_id, kea_identity=self.range.range)
+
+    @classmethod
+    def from_source(cls, source: MappingSource, family: int) -> PoolKey:
+        """Return the key that the Pool *source* holds: its range is ``start-end``."""
+        start, _, end = _identity(source).partition("-")
+        return cls(_subnet_id(source), Pool(ipaddress.ip_address(start), ipaddress.ip_address(end)))
+
+    def path(self, family: int) -> str:
+        """Return the Kea path of the Pool in *family*, by the text that Kea's config-get gives its range."""
+        start, end = self.range.start, self.range.end
+        networks = list(ipaddress.summarize_address_range(start, end))
+        text = str(networks[0]) if len(networks) == 1 else self.range.range
+        return kea_paths.pool(kea_paths.subnet(family, self.subnet_id), text)
+
+
+@dataclass(frozen=True)
+class InvalidPoolKey:
+    """A Pool whose Kea text is not a range inside its Subnet. It has a Kea path but no mapping source.
+
+    The run never writes it, and its Pool and DHCP Option observations stay Incomplete.
+    """
+
+    subnet_id: int
+    text: str
+    kind: ClassVar[Kind] = Kind.POOL
+    source: ClassVar[None] = None
+
+    def path(self, family: int) -> str:
+        """Return the Kea path of the Pool in *family*, by its Kea text."""
+        return kea_paths.pool(kea_paths.subnet(family, self.subnet_id), self.text)
 
 
 @dataclass(frozen=True)
 class PDPoolKey:
     """A delegated-prefix Pool by the Kea subnet ID of its Subnet, its prefix and its delegated length.
 
-    A Subnet without an ID gives ``None``. Another delegated length is another PD Pool.
+    Another delegated length is another PD Pool.
     """
 
-    subnet_id: int | None
+    subnet_id: int
     prefix: ipaddress.IPv6Network
     delegated_length: int
+    kind: ClassVar[Kind] = Kind.PD_POOL
 
     @property
-    def source(self) -> MappingSource | None:
-        """Return the DHCP Import Mapping source of the PD Pool, or ``None`` when its Subnet has no Kea subnet ID."""
-        if self.subnet_id is None:
-            return None
+    def source(self) -> MappingSource:
+        """Return the DHCP Import Mapping source of the PD Pool."""
         identity = f"{self.prefix}/{self.delegated_length}"
         return MappingSource(Kind.PD_POOL, kea_subnet_id=self.subnet_id, kea_identity=identity)
 
+    @classmethod
+    def from_source(cls, source: MappingSource, family: int) -> PDPoolKey:
+        """Return the key that the PD Pool *source* holds."""
+        # The delegated length follows the last slash.
+        prefix, _, delegated = _identity(source).rpartition("/")
+        return cls(_subnet_id(source), ipaddress.IPv6Network(prefix), int(delegated))
+
+    def path(self, family: int) -> str:
+        """Return the Kea path of the PD Pool in *family*."""
+        return kea_paths.pd_pool(kea_paths.subnet(family, self.subnet_id), str(self.prefix), self.delegated_length)
+
+
+class ReservationKey(ABC):
+    """A Reservation by its Reservation Identity, in its Scope: Global or In-Subnet."""
+
+    kind: ClassVar[Kind] = Kind.RESERVATION
+    identifier_type: IdentifierType
+    value: str
+
+    @property
+    @abstractmethod
+    def source(self) -> MappingSource:
+        """Return the DHCP Import Mapping source of the Reservation."""
+
+    @abstractmethod
+    def path(self, family: int) -> str:
+        """Return the Kea path of the Reservation in *family*."""
+
+    @classmethod
+    def from_source(cls, source: MappingSource, family: int) -> ReservationKey:
+        """Return the key that the Reservation *source* holds. A source without a Kea subnet ID is Global."""
+        # An identifier type has no colon, so the first colon ends it.
+        identifier_type, _, value = _identity(source).partition(":")
+        if identifier_type not in get_args(IdentifierType):
+            raise ValueError(f"A Reservation source has no Kea identifier type: {identifier_type!r}.")
+        kea_type = cast("IdentifierType", identifier_type)
+        if source.kea_subnet_id is None:
+            return GlobalReservationKey(validate_family(family), kea_type, value)
+        return InSubnetReservationKey(source.kea_subnet_id, kea_type, value)
+
 
 @dataclass(frozen=True)
-class GlobalReservationKey:
+class GlobalReservationKey(ReservationKey):
     """A Global Reservation by family and Kea identifier."""
 
     family: Family
@@ -345,9 +465,13 @@ class GlobalReservationKey:
         """Return the DHCP Import Mapping source of the Reservation. The family is a column of the mapping."""
         return MappingSource(Kind.RESERVATION, kea_identity=identity_text(self.identifier_type, self.value))
 
+    def path(self, family: int) -> str:
+        """Return the Kea path of the Reservation in *family*."""
+        return kea_paths.reservation(family, None, self.identifier_type, self.value)
+
 
 @dataclass(frozen=True)
-class InSubnetReservationKey:
+class InSubnetReservationKey(ReservationKey):
     """An In-Subnet Reservation by the Kea subnet ID of its Subnet and its Kea identifier."""
 
     subnet_id: int
@@ -361,8 +485,32 @@ class InSubnetReservationKey:
             Kind.RESERVATION, kea_subnet_id=self.subnet_id, kea_identity=identity_text(self.identifier_type, self.value)
         )
 
+    def path(self, family: int) -> str:
+        """Return the Kea path of the Reservation in *family*."""
+        return kea_paths.reservation(family, self.subnet_id, self.identifier_type, self.value)
 
-ReservationKey = GlobalReservationKey | InSubnetReservationKey
+
+MappingKey = ServerKey | SubnetKey | NamedKey | PoolKey | PDPoolKey | ReservationKey | OptionDefinitionKey | OptionKey
+#: The key of an object that assigns DHCP Options.
+OptionOwnerKey = ServerKey | SubnetKey | NamedKey | PoolKey | InvalidPoolKey | PDPoolKey | ReservationKey
+
+
+class _KeyDecoder(Protocol):
+    def from_source(self, source: MappingSource, family: int) -> MappingKey: ...
+
+
+#: The key class that decodes a mapping source of each kind: one entry for each kind of ``models.MAPPING_KINDS``.
+KEY_KINDS: dict[Kind, _KeyDecoder] = {
+    Kind.SERVER: ServerKey,
+    Kind.SHARED_NETWORK: NamedKey,
+    Kind.SUBNET: SubnetKey,
+    Kind.POOL: PoolKey,
+    Kind.PD_POOL: PDPoolKey,
+    Kind.RESERVATION: ReservationKey,
+    Kind.CLIENT_CLASS: NamedKey,
+    Kind.OPTION_DEFINITION: OptionDefinitionKey,
+    Kind.OPTION: OptionKey,
+}
 
 
 @dataclass(frozen=True)
@@ -376,13 +524,14 @@ class PlannedServer:
     user_context: dict | None
     # None: the interface list is not valid.
     interfaces: tuple[str, ...] | None
+    key: ServerKey = ServerKey()
 
 
 @dataclass(frozen=True)
 class PlannedClientClass:
     """A client class by its Kea name."""
 
-    key: str
+    key: NamedKey
     intent: ClientClassIntent
     # The Declared Values of the class, by Kea key.
     settings: dict
@@ -394,7 +543,7 @@ class PlannedClientClass:
 class PlannedSharedNetwork:
     """A Shared Network by its Kea name."""
 
-    key: str
+    key: NamedKey
     intent: SharedNetworkIntent
     # The Declared Values of the Shared Network, by Kea key. Its parent is the global configuration.
     settings: dict
@@ -402,16 +551,16 @@ class PlannedSharedNetwork:
 
 @dataclass(frozen=True)
 class PlannedSubnet:
-    """A Subnet by Kea subnet ID, with its Pools. ``None``: Kea gave no ID, so the Subnet has no mapping identity."""
+    """A Subnet by Kea subnet ID, with its Pools."""
 
-    key: int | None
+    key: SubnetKey
     intent: SubnetIntent
     # The Declared Values of the Subnet, by Kea key.
     settings: dict
     # The Declared Values of its Shared Network that the Subnet does not declare: Kea applies them to the Subnet.
     inherited: dict
-    # A Pool key is None when its text is not a range inside the Subnet; the apply skips that Pool.
-    pools: tuple[Planned[PoolKey | None, PoolIntent], ...]
+    # A Pool whose text is not a range inside the Subnet has an InvalidPoolKey; the apply skips that Pool.
+    pools: tuple[Planned[PoolKey | InvalidPoolKey, PoolIntent], ...]
     pd_pools: tuple[Planned[PDPoolKey, PDPoolIntent], ...] = ()
 
 
@@ -474,11 +623,11 @@ def _option_definitions(
     return tuple(Planned(key, definition) for key, definition in index.items())
 
 
-def _pool_key(subnet: SubnetIntent, pool: PoolIntent) -> PoolKey | None:
+def _pool_key(subnet: SubnetIntent, pool: PoolIntent) -> PoolKey | InvalidPoolKey:
     try:
         return PoolKey(subnet.kea_subnet_id, parse_pool(pool.pool, subnet_network(subnet.cidr, subnet.family)))
     except ValueError:
-        return None
+        return InvalidPoolKey(subnet.kea_subnet_id, pool.pool)
 
 
 def declared_values(family: Family, table: str, settings: dict, parent: dict) -> dict:
@@ -500,14 +649,15 @@ def declared_values(family: Family, table: str, settings: dict, parent: dict) ->
 def _planned_client_class(intent: ClientClassIntent, family: Family) -> PlannedClientClass:
     # Kea merges no value into a client class, so the class has no parent values.
     settings = declared_values(family, kea_paths.CLIENT_CLASSES, intent.settings, {})
-    return PlannedClientClass(intent.name, intent, settings, _option_definitions(intent.option_defs, intent.name))
+    key = NamedKey(Kind.CLIENT_CLASS, intent.name)
+    return PlannedClientClass(key, intent, settings, _option_definitions(intent.option_defs, intent.name))
 
 
 def _planned_shared_networks(config: ServerConfigIntent, family: Family) -> tuple[PlannedSharedNetwork, ...]:
     """Plan each Shared Network with its Declared Values against the global configuration."""
     return tuple(
         PlannedSharedNetwork(
-            intent.name,
+            NamedKey(Kind.SHARED_NETWORK, intent.name),
             intent,
             declared_values(family, kea_paths.SHARED_NETWORKS, intent.settings, config.global_settings),
         )
@@ -519,7 +669,7 @@ def _planned_subnets(
     config: ServerConfigIntent, family: Family, networks: tuple[PlannedSharedNetwork, ...]
 ) -> tuple[PlannedSubnet, ...]:
     """Plan each Subnet with its Declared Values. Its parent is its Shared Network, else the global configuration."""
-    by_name = {network.key: network for network in networks}
+    by_name = {network.key.name: network for network in networks}
     planned = []
     for subnet in config.subnets:
         network = by_name[subnet.shared_network] if subnet.shared_network is not None else None
@@ -533,7 +683,7 @@ def _planned_subnets(
             Planned(PDPoolKey(subnet.kea_subnet_id, pd_pool.prefix, pd_pool.delegated_length), pd_pool)
             for pd_pool in subnet.pd_pools
         )
-        planned.append(PlannedSubnet(subnet.kea_subnet_id, subnet, settings, inherited, pools, pd_pools))
+        planned.append(PlannedSubnet(SubnetKey(subnet.kea_subnet_id), subnet, settings, inherited, pools, pd_pools))
     return tuple(planned)
 
 
@@ -618,14 +768,14 @@ class KindObservation:
         """Return whether the read reported every Kea source of the kind."""
         return not self.incomplete
 
-    def gap(self, source: MappingSource) -> tuple[str, ...]:
-        """Return why the read cannot judge the mapped row of *source*: () when a missing source makes it stale.
+    def gap(self, source: MappingSource, family: int) -> tuple[str, ...]:
+        """Return why the read of *family* cannot judge the mapped row of *source*: () when a missing source makes it stale.
 
         A DHCP Option is judged by its own gaps and by the observation of the kind of its parent.
         """
         if self.option_gaps is None:
             return (self.incomplete,) if self.incomplete else ()
-        return self.option_gaps[OptionKey.from_source(source).parent.kind]
+        return self.option_gaps[OptionKey.from_source(source, family).parent.kind]
 
 
 def _configuration_gaps(plan: FamilyPlan) -> dict[Kind, list[str]]:
@@ -649,16 +799,9 @@ def _configuration_gaps(plan: FamilyPlan) -> dict[Kind, list[str]]:
         for hidden in entry.hides:
             label = KIND_LABELS[entry.kind]
             gaps[hidden].append(f"A {label} entry that is not valid hides the {KIND_LABELS[hidden]} entries in it.")
-    unkeyed_subnets = sum(subnet.key is None for subnet in plan.subnets)
-    if unkeyed_subnets:
-        gaps[Kind.SUBNET].append(f"{counted(unkeyed_subnets, 'Subnet has', 'Subnets have')} no Kea subnet ID.")
-    unkeyed_pools = sum(pool.key is None or pool.key.source is None for subnet in plan.subnets for pool in subnet.pools)
+    unkeyed_pools = sum(pool.key.source is None for subnet in plan.subnets for pool in subnet.pools)
     if unkeyed_pools:
         gaps[Kind.POOL].append(f"{counted(unkeyed_pools, 'Pool has', 'Pools have')} no mapping identity.")
-    unkeyed_pd_pools = sum(pd_pool.key.source is None for subnet in plan.subnets for pd_pool in subnet.pd_pools)
-    if unkeyed_pd_pools:
-        pd_pools = counted(unkeyed_pd_pools, "delegated-prefix Pool has", "delegated-prefix Pools have")
-        gaps[Kind.PD_POOL].append(f"{pd_pools} no mapping identity.")
     return gaps
 
 
@@ -684,30 +827,15 @@ def _reservation_gap(observation: ReservationObservation | None) -> str:
 
 def _observed_sources(plan: FamilyPlan, options: tuple[PlannedOptions, ...]) -> dict[Kind, frozenset[MappingSource]]:
     """Return the Kea source of each object that the plan reports, by mapped kind. *options* keys its Options."""
+    pools = (pool.key.source for subnet in plan.subnets for pool in subnet.pools)
     return {
-        Kind.OPTION: frozenset(
-            key.source for each in options for key in each.keys if key is not None and key.source is not None
-        ),
+        Kind.OPTION: frozenset(key.source for each in options for key in each.keys if key is not None),
         Kind.RESERVATION: frozenset(planned.key.source for planned in keyed_reservations(plan.reservations)),
-        Kind.POOL: frozenset(
-            pool.key.source
-            for subnet in plan.subnets
-            for pool in subnet.pools
-            if pool.key is not None and pool.key.source is not None
-        ),
-        Kind.PD_POOL: frozenset(
-            pd_pool.key.source
-            for subnet in plan.subnets
-            for pd_pool in subnet.pd_pools
-            if pd_pool.key.source is not None
-        ),
-        Kind.SUBNET: frozenset(MappingSource.subnet(subnet.key) for subnet in plan.subnets if subnet.key is not None),
-        Kind.SHARED_NETWORK: frozenset(
-            MappingSource.named(Kind.SHARED_NETWORK, planned.key) for planned in plan.shared_networks
-        ),
-        Kind.CLIENT_CLASS: frozenset(
-            MappingSource.named(Kind.CLIENT_CLASS, planned.key) for planned in plan.client_classes
-        ),
+        Kind.POOL: frozenset(source for source in pools if source is not None),
+        Kind.PD_POOL: frozenset(pd_pool.key.source for subnet in plan.subnets for pd_pool in subnet.pd_pools),
+        Kind.SUBNET: frozenset(subnet.key.source for subnet in plan.subnets),
+        Kind.SHARED_NETWORK: frozenset(planned.key.source for planned in plan.shared_networks),
+        Kind.CLIENT_CLASS: frozenset(planned.key.source for planned in plan.client_classes),
         Kind.OPTION_DEFINITION: frozenset(planned.key.source for planned in plan.every_option_definition),
     }
 
@@ -723,7 +851,7 @@ def _option_gaps(
     gap of an unread Server Configuration.
     """
     dropped = Counter(entry.parent for entry in plan.dropped if entry.kind == Kind.OPTION)
-    unkeyed = Counter(each.kind for each in options for key in each.keys if key is None or key.source is None)
+    unkeyed = Counter(each.kind for each in options for key in each.keys if key is None)
     found = {}
     for kind in (Kind.SERVER, *(kind for kind in _OPTION_PARENTS if kind in mapped_kinds(plan.family))):
         if kind == Kind.SERVER:

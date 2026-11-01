@@ -14,6 +14,8 @@ from django.contrib.contenttypes.fields import GenericForeignKey
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import connection, models
+from django.db.models.functions import MD5
+from django.db.models.lookups import Exact
 from django.urls import reverse
 from django.utils.crypto import salted_hmac
 from netbox.constants import CENSOR_TOKEN, CENSOR_TOKEN_CHANGED
@@ -22,7 +24,6 @@ from netbox.models.features import ChangeLoggingMixin, JobsMixin
 
 from . import branching
 from .constants import STALE_CLEANUP_MODES, Family
-from .integrations.dhcp_import_plan import MAX_MAPPING_IDENTITY_LENGTH
 from .integrations.dhcp_import_report import (
     CAPABILITY_LABELS,
     KIND_LABELS,
@@ -637,6 +638,21 @@ _SUBNET_SOURCE = models.Q(kea_subnet_id__isnull=False, kea_identity__isnull=True
 _IN_SUBNET_SOURCE = models.Q(kea_subnet_id__isnull=False, kea_identity__isnull=False)
 _GLOBAL_SOURCE = models.Q(kea_subnet_id__isnull=True, kea_identity__isnull=False)
 
+
+def exact_source(server, family: int, kind: str, kea_subnet_id: int | None, kea_identity: str | None) -> models.Q:
+    """Return the filter of the one DHCP Import Mapping of a source, in the shape that its unique index holds.
+
+    An identity compares by its digest, which the index holds, and by its text, so a digest collision cannot match.
+    """
+    columns = models.Q(server=server, family=family, kind=kind)
+    subnet = models.Q(kea_subnet_id=kea_subnet_id)
+    if kea_identity is None:
+        return columns & (_FAMILY_SOURCE if kea_subnet_id is None else _SUBNET_SOURCE & subnet)
+    digest = Exact(MD5("kea_identity"), MD5(models.Value(kea_identity)))
+    shape = _GLOBAL_SOURCE if kea_subnet_id is None else _IN_SUBNET_SOURCE & subnet
+    return columns & shape & models.Q(digest, kea_identity=kea_identity)
+
+
 #: Each DHCP Import Mapping kind: the netbox_dhcp model it points at, and the identity columns it sets.
 MAPPING_KINDS: dict[Kind, tuple[str, models.Q]] = {
     # The global configuration of one family: one DHCPServer per Server and family.
@@ -682,15 +698,14 @@ class KeaDhcpLink(ChangeLoggingMixin):
         choices=choices({kind: KIND_LABELS[kind] for kind in MAPPING_KINDS}),
         help_text="The kind of the Kea source object.",
     )
-    kea_subnet_id = models.PositiveIntegerField(
+    kea_subnet_id = models.PositiveBigIntegerField(
         null=True,
         blank=True,
         help_text="Kea subnet-id of the source object or of its Subnet; null for a global source.",
     )
     # NULL is a distinct state here, not "empty": it means a Subnet or family source, and keadhcplink_kind_identity
     # refuses "" for every kind. Do not collapse it to a blank default.
-    kea_identity = models.CharField(  # noqa: DJ001
-        max_length=MAX_MAPPING_IDENTITY_LENGTH,
+    kea_identity = models.TextField(  # noqa: DJ001
         null=True,
         blank=True,
         help_text="Identity of the source object in its Subnet or globally; null for a Subnet or family source.",
@@ -732,13 +747,21 @@ class KeaDhcpLink(ChangeLoggingMixin):
                 name="keadhcplink_unique_subnet_source",
                 condition=_SUBNET_SOURCE,
             ),
+            # A btree cannot index unbounded text, so these two index the digest of the identity (ADR 0013).
             models.UniqueConstraint(
-                fields=["server", "family", "kind", "kea_subnet_id", "kea_identity"],
+                models.F("server"),
+                models.F("family"),
+                models.F("kind"),
+                models.F("kea_subnet_id"),
+                MD5("kea_identity"),
                 name="keadhcplink_unique_in_subnet_source",
                 condition=_IN_SUBNET_SOURCE,
             ),
             models.UniqueConstraint(
-                fields=["server", "family", "kind", "kea_identity"],
+                models.F("server"),
+                models.F("family"),
+                models.F("kind"),
+                MD5("kea_identity"),
                 name="keadhcplink_unique_global_source",
                 condition=_GLOBAL_SOURCE,
             ),

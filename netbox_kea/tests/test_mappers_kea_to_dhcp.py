@@ -11,7 +11,7 @@ from __future__ import annotations
 from django.test import SimpleTestCase
 
 from netbox_kea import kea_paths
-from netbox_kea.constants import Family
+from netbox_kea.constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family
 from netbox_kea.dhcp_options import DHCPOption, DHCPOptionIdentity, option_identity, parse_dhcp_option
 from netbox_kea.integrations.dhcp_import_ledger import LEDGER, NotImported
 from netbox_kea.integrations.dhcp_import_report import Kind, Outcome
@@ -92,13 +92,35 @@ class TestParseDhcpConfigStructure(SimpleTestCase):
         conf = {"subnet4": [{"id": 1, "subnet": "10.0.0.0/24"}]}
         self.assertEqual(parse_dhcp_config(conf, 6).subnets, [])
 
-    def test_string_subnet_id_is_coerced_to_int(self):
-        conf = {"subnet4": [{"id": "5", "subnet": "10.0.0.0/24"}]}
-        self.assertEqual(parse_dhcp_config(conf, 4).subnets[0].kea_subnet_id, 5)
+    def test_a_subnet_without_a_valid_kea_subnet_id_is_dropped_with_its_children(self):
+        # Kea refuses a Subnet without an integer ID from MIN_SUBNET_ID to MAX_SUBNET_ID.
+        ids = {
+            "missing": None,
+            "bool": True,
+            "numeric text": "5",
+            "text": "abc",
+            "zero": 0,
+            "too large": MAX_SUBNET_ID + 1,
+        }
+        for label, subnet_id in ids.items():
+            with self.subTest(label):
+                subnet = {"subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.20"}], "option-data": []}
+                if subnet_id is not None:
+                    subnet["id"] = subnet_id
+                result = parse_dhcp_config({"subnet4": [subnet]}, 4)
+                self.assertEqual(result.subnets, [])
+                self.assertEqual(
+                    [(entry.kind, entry.path, entry.detail) for entry in result.dropped],
+                    [(Kind.SUBNET, "Dhcp4/subnet4[0]", "The Subnet has no subnet ID.")],
+                )
 
-    def test_unparseable_subnet_id_becomes_none(self):
-        conf = {"subnet4": [{"id": "abc", "subnet": "10.0.0.0/24"}]}
-        self.assertIsNone(parse_dhcp_config(conf, 4).subnets[0].kea_subnet_id)
+    def test_the_lowest_and_the_highest_subnet_id_are_kept(self):
+        conf = {
+            "subnet4": [{"id": MIN_SUBNET_ID, "subnet": "10.0.0.0/24"}, {"id": MAX_SUBNET_ID, "subnet": "10.0.1.0/24"}]
+        }
+        self.assertEqual(
+            [subnet.kea_subnet_id for subnet in parse_dhcp_config(conf, 4).subnets], [MIN_SUBNET_ID, MAX_SUBNET_ID]
+        )
 
 
 @without_dhcp_plugin()
@@ -111,7 +133,7 @@ class TestKeyedValuesThatAreNotText(SimpleTestCase):
             "client-classes": [{"name": ["bad"]}],
             "shared-networks": [{"name": {"bad": 1}}],
             "subnet4": [
-                {"id": True, "subnet": "10.0.0.0/24", "pools": [{"pool": ["10.0.0.10", "10.0.0.20"]}]},
+                {"id": 1, "subnet": "10.0.0.0/24", "pools": [{"pool": ["10.0.0.10", "10.0.0.20"]}]},
                 {"id": 2, "subnet": ["10.0.1.0/24"]},
             ],
         }
@@ -119,7 +141,7 @@ class TestKeyedValuesThatAreNotText(SimpleTestCase):
         result = parse_dhcp_config(conf, 4)
 
         self.assertEqual((result.client_classes, result.shared_networks, result.option_defs), ([], [], ()))
-        self.assertEqual([(subnet.kea_subnet_id, subnet.pools) for subnet in result.subnets], [(None, ())])
+        self.assertEqual([(subnet.kea_subnet_id, subnet.pools) for subnet in result.subnets], [(1, ())])
         self.assertEqual(
             {entry.kind for entry in result.dropped},
             {Kind.OPTION_DEFINITION, Kind.CLIENT_CLASS, Kind.SHARED_NETWORK, Kind.POOL, Kind.SUBNET},
@@ -441,7 +463,7 @@ class TestParseDhcpConfigSettings(SimpleTestCase):
             "shared-networks": [{"name": "n", f"subnet{family}": [], **_left_out(family, "shared-networks")}],
         }
         root = kea_paths.daemon(family)
-        subnet_path = kea_paths.subnet(family, 1, subnet)
+        subnet_path = kea_paths.subnet(family, 1)
         objects = {
             f"Dhcp{family}": (Kind.SERVER, root),
             "interfaces-config": (Kind.SERVER, kea_paths.setting(root, kea_paths.INTERFACES_CONFIG)),
