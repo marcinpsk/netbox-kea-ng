@@ -41,7 +41,7 @@ from netbox_kea.integrations.dhcp_import_plan import (
 from netbox_kea.integrations.dhcp_import_report import Capability, Kind, Outcome, Reason
 from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities, probe
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
-from netbox_kea.models import MAPPING_KINDS, KeaDhcpLink
+from netbox_kea.models import MAPPING_KINDS, KeaDhcpLink, next_confirmation_number
 from netbox_kea.pools import Pool
 
 from .test_integration_dhcp_plugin import _reservation_snapshot
@@ -91,7 +91,8 @@ class RefuseOptionDataValidator(CustomValidator):
 class _Fixture:
     """The Server of one table row and the apply of one Kea configuration of its family."""
 
-    def __init__(self, family: Family, capabilities: PluginCapabilities) -> None:
+    def __init__(self, test: TestCase, family: Family, capabilities: PluginCapabilities) -> None:
+        self.test = test
         self.family = family
         self.capabilities = capabilities
         self.server = _make_db_server(
@@ -105,8 +106,16 @@ class _Fixture:
         plan = plan_family(intent, _reservation_snapshot(config, self.family))
         return dhcp_plugin.apply_plan(server or self.server, plan, self.capabilities)
 
+    def apply_cleanly(self, config: dict, server=None) -> None:
+        """Apply *config* as a state before the run under test: it must not fail."""
+        summary = self.apply(config, server)
+        self.test.assertEqual(summary.errors, 0, summary.warnings)
+
+    def link(self, key):
+        return KeaDhcpLink.objects.filter(server=self.server, family=self.family, **key.source.columns()).first()
+
     def mapped(self, key) -> Any:
-        link = KeaDhcpLink.objects.filter(server=self.server, family=self.family, **key.source.columns()).first()
+        link = self.link(key)
         return link.sys4_object if link is not None else None
 
     def dhcp_server(self):
@@ -135,6 +144,8 @@ class _Row:
     # The capabilities of the run, from the probe of the installed plugin.
     capabilities: Callable[[PluginCapabilities], PluginCapabilities] = lambda found: found
     related: tuple[str, ...] = ()
+    # Other facts that the run must leave: a label, a read of the fixture and the summary, and the expected value.
+    facts: tuple[tuple[str, Callable[[_Fixture, Any], Any], Any], ...] = ()
 
     @property
     def kind(self) -> Kind:
@@ -177,8 +188,7 @@ def _keep_mapped(
     """
 
     def before(fixture: _Fixture, config: dict):
-        summary = fixture.apply(first if first is not None else config)
-        assert summary.errors == 0, summary.warnings
+        fixture.apply_cleanly(first if first is not None else config)
         row = fixture.mapped(key)
         if change is not None:
             change(row)
@@ -249,8 +259,43 @@ _STATE: dict[Kind, Callable[[Any], dict]] = {
         "code": row.definition.code,
         "data": row.data,
         "client_classes": _names(row.client_classes),
+        # One Option on its parent: a run that updates it writes no second row.
+        "options_of_parent": type(row)
+        .objects.filter(assigned_object_type=row.assigned_object_type, assigned_object_id=row.assigned_object_id)
+        .count(),
     },
 }
+
+
+def _option_data(key, code: int) -> Callable[[_Fixture, Any], Any]:
+    """Return a read of the data of each Option of *code* that the mapped row of *key* holds."""
+
+    def read(fixture: _Fixture, summary) -> list[str]:
+        from django.contrib.contenttypes.models import ContentType
+
+        row = fixture.mapped(key)
+        options = _model("Option").objects.filter(
+            assigned_object_type=ContentType.objects.get_for_model(row),
+            assigned_object_id=row.pk,
+            definition__code=code,
+        )
+        return list(options.values_list("data", flat=True))
+
+    return read
+
+
+def _holder(model_name: str, name: str) -> Callable[[_Fixture, Any], Any]:
+    """Return a read of the DHCP server of each row of *model_name* that holds *name*."""
+
+    def read(fixture: _Fixture, summary) -> list[str]:
+        return [row.dhcp_server.name for row in _model(model_name).objects.filter(name=name)]
+
+    return read
+
+
+def _errors(fixture: _Fixture, summary) -> int:
+    return summary.errors
+
 
 _LAB = {"name": "lab", "test": "member('KNOWN')"}
 
@@ -273,7 +318,7 @@ def _operator_definition(**fields) -> Callable[[_Fixture, dict], Any]:
     """Return a state before the run: the imported DHCP server, with an unmapped definition of *fields*."""
 
     def before(fixture: _Fixture, config: dict):
-        fixture.apply({"subnet4": []})
+        fixture.apply_cleanly({"subnet4": []})
         values = {"standard": False, "space": "dhcp4", "type": "uint8", "dhcp_server": fixture.dhcp_server(), **fields}
         return _model("OptionDefinition").objects.create(**values)
 
@@ -408,14 +453,14 @@ _CLASS_NAME_TAKEN = (
 )
 
 
-def _client_class(test: str = "member('KNOWN')") -> dict:
+def _client_class(test: str = "member('KNOWN')", data: str = "5") -> dict:
     return {
         "client-classes": [
             {
                 "name": "lab",
                 "test": test,
                 "option-def": [{"name": "lab-code", "code": 231, "type": "uint8", "space": "dhcp4"}],
-                "option-data": [{"code": 231, "data": "5"}],
+                "option-data": [{"code": 231, "data": data}],
             }
         ],
         "subnet4": [],
@@ -428,7 +473,7 @@ def _other_class(fixture: _Fixture, config: dict) -> None:
 
 def _released_class(fixture: _Fixture, config: dict):
     """Return the class that the released importer wrote before client classes had a mapping."""
-    fixture.apply({"subnet4": []})
+    fixture.apply_cleanly({"subnet4": []})
     name = dhcp_plugin._released_client_class_name(fixture.server, "lab")
     return _model("ClientClass").objects.create(name=name, dhcp_server=fixture.dhcp_server(), test="old")
 
@@ -494,11 +539,20 @@ _CLASS_ROWS = (
     _Row(
         "name conflict on an existing row",
         _CLASS_KEY,
-        _client_class("member('UNKNOWN')"),
-        ((Kind.CLIENT_CLASS, f"{_CLASS}/name", *_CLASS_NAME_TAKEN), _updated(Kind.CLIENT_CLASS, _CLASS)),
+        _client_class("member('UNKNOWN')", data="6"),
+        (
+            (Kind.CLIENT_CLASS, f"{_CLASS}/name", *_CLASS_NAME_TAKEN),
+            _updated(Kind.CLIENT_CLASS, _CLASS),
+            # The run still writes the children of the row.
+            _updated(Kind.OPTION, _CLASS_OPTION),
+        ),
         # The mapped row keeps its name and takes every other field.
         {"name": "lab-renamed", "test": "member('UNKNOWN')", "row": "kept"},
         before=_renamed_class_and_its_name_taken,
+        facts=(
+            ("the Option of the class takes Kea's data", _option_data(_CLASS_KEY, 231), ["6"]),
+            ("the other row keeps the name and its DHCP server", _holder("ClientClass", "lab"), ["other dhcp server"]),
+        ),
     ),
     _Row(
         "write failure",
@@ -530,12 +584,12 @@ _NETWORK_NAME_TAKEN = (
 )
 
 
-def _shared_network(lifetime: int = 3600) -> dict:
+def _shared_network(lifetime: int = 3600, data: str = "192.0.2.53") -> dict:
     network = {
         "name": "office",
         "valid-lifetime": lifetime,
         "client-classes": ["lab"],
-        "option-data": [{"code": 6, "data": "192.0.2.53"}],
+        "option-data": [{"code": 6, "data": data}],
         "subnet4": [],
     }
     return {"client-classes": [_LAB], "shared-networks": [network], "subnet4": []}
@@ -592,10 +646,23 @@ _NETWORK_ROWS = (
     _Row(
         "name conflict on an existing row",
         _NETWORK_KEY,
-        _shared_network(7200),
-        ((Kind.SHARED_NETWORK, f"{_NETWORK}/name", *_NETWORK_NAME_TAKEN), _updated(Kind.SHARED_NETWORK, _NETWORK)),
+        _shared_network(7200, data="192.0.2.54"),
+        (
+            (Kind.SHARED_NETWORK, f"{_NETWORK}/name", *_NETWORK_NAME_TAKEN),
+            _updated(Kind.SHARED_NETWORK, _NETWORK),
+            # The run still writes the children of the row.
+            _updated(Kind.OPTION, _NETWORK_OPTION),
+        ),
         {**_NETWORK_STATE, "name": "office-renamed", "valid_lifetime": 7200, "row": "kept"},
         before=_renamed_network_and_its_name_taken,
+        facts=(
+            ("the Option of the Shared Network takes Kea's data", _option_data(_NETWORK_KEY, 6), ["192.0.2.54"]),
+            (
+                "the other row keeps the name and its DHCP server",
+                _holder("SharedNetwork", "office"),
+                ["other dhcp server"],
+            ),
+        ),
     ),
     _Row(
         "write failure",
@@ -632,9 +699,9 @@ _SUBNET_OPTION = f"{_SUBNET}/option-data[code=6]"
 _SUBNET_POOL = f"{_SUBNET}/pools[pool=192.0.2.10-192.0.2.20]"
 _SUBNET_POOL_OPTION = f"{_SUBNET_POOL}/option-data[code=3]"
 _SUBNET_RESERVATION = f"{_SUBNET}/reservations[hw-address={_MAC}]"
-_SUBNET_RESERVATION_OPTION = f"{_SUBNET_RESERVATION}/option-data[code=15]"
+# The Reservation of Subnet 10 assigns two DHCP Options.
+_RESERVATION_OPTIONS = tuple(f"{_SUBNET_RESERVATION}/option-data[code={code}]" for code in (6, 15))
 _SUBNET_KEY = SubnetKey(10)
-_SUBNET_CHILDREN = (_SUBNET_OPTION, _SUBNET_POOL, _SUBNET_POOL_OPTION)
 
 
 def _subnet(lifetime: int = 3600, *, reservations: bool = True, **extra) -> dict:
@@ -661,7 +728,7 @@ def _subnet(lifetime: int = 3600, *, reservations: bool = True, **extra) -> dict
                 "ip-address": "192.0.2.30",
                 "hostname": "host-a",
                 "client-classes": ["lab"],
-                "option-data": [{"code": 15, "data": "host.example.org"}],
+                "option-data": [{"code": 6, "data": "192.0.2.53"}, {"code": 15, "data": "host.example.org"}],
             }
         ]
     return {"client-classes": [_LAB], "subnet4": [subnet]}
@@ -674,14 +741,13 @@ def _subtree(entry: tuple, *, reservation: tuple) -> tuple[_Entry, ...]:
         (Kind.POOL, _SUBNET_POOL, *entry),
         (Kind.OPTION, _SUBNET_POOL_OPTION, *entry),
         (Kind.RESERVATION, _SUBNET_RESERVATION, *reservation),
-        (Kind.OPTION, _SUBNET_RESERVATION_OPTION, *entry),
+        *((Kind.OPTION, path, *entry) for path in _RESERVATION_OPTIONS),
     )
 
 
 def _other_server_holds_subnet_10(fixture: _Fixture, config: dict) -> None:
     other = _make_db_server(name="other", ca_url="https://other.example.invalid", dhcp6=False)
-    summary = fixture.apply({"subnet4": [{"id": 10, "subnet": "203.0.113.0/24"}]}, server=other)
-    assert summary.errors == 0, summary.warnings
+    fixture.apply_cleanly({"subnet4": [{"id": 10, "subnet": "203.0.113.0/24"}]}, server=other)
 
 
 def _operator_subnet_holds_the_name(fixture: _Fixture, config: dict) -> None:
@@ -757,6 +823,7 @@ _SUBNET_ROWS = (
         ((Kind.SUBNET, _SUBNET, *_TAKEN), *_subtree(_TAKEN, reservation=_TAKEN)),
         None,
         before=_other_server_holds_subnet_10,
+        facts=(("a taken Subnet ID is no write failure", _errors, 0),),
     ),
     _Row(
         "write failure",
@@ -913,7 +980,7 @@ _PD_POOL_ROWS = (
         refuse="PDPool",
     ),
     _Row(
-        "plugin ValidationError: a gap of the plugin",
+        "plugin ValidationError: the plugin cannot hold it",
         PDPoolKey(60, ipaddress.IPv6Network("2001:db8:100::/48"), 40),
         # Kea delegates /40 from a /48 prefix; the DHCP plugin refuses a delegated length shorter than the prefix.
         _pd_pool(delegated_length=40),
@@ -963,7 +1030,10 @@ _RESERVATION_ROWS = (
         "create",
         _RESERVATION_KEY,
         _reservation(),
-        (_created(Kind.RESERVATION, _SUBNET_RESERVATION), _created(Kind.OPTION, _SUBNET_RESERVATION_OPTION)),
+        (
+            _created(Kind.RESERVATION, _SUBNET_RESERVATION),
+            *(_created(Kind.OPTION, path) for path in _RESERVATION_OPTIONS),
+        ),
         {**_RESERVATION_STATE, "row": "new"},
     ),
     _Row(
@@ -994,7 +1064,10 @@ _RESERVATION_ROWS = (
         "write failure",
         _RESERVATION_KEY,
         _reservation(),
-        ((Kind.RESERVATION, _SUBNET_RESERVATION, *_FAILED), (Kind.OPTION, _SUBNET_RESERVATION_OPTION, *_SKIPPED)),
+        (
+            (Kind.RESERVATION, _SUBNET_RESERVATION, *_FAILED),
+            *((Kind.OPTION, path, *_SKIPPED) for path in _RESERVATION_OPTIONS),
+        ),
         None,
         refuse="HostReservation",
     ),
@@ -1004,7 +1077,7 @@ _RESERVATION_ROWS = (
 
 _OPTION = f"{_SUBNET}/option-data[code=6,client-classes=lab]"
 _OPTION_KEY = OptionKey(MappingSource.subnet(10), DHCPOptionIdentity("dhcp4", 6, frozenset({"lab"})))
-_OPTION_STATE = {"parent": "subnet", "code": 6, "data": "192.0.2.53", "client_classes": ["lab"]}
+_OPTION_STATE = {"parent": "subnet", "code": 6, "data": "192.0.2.53", "client_classes": ["lab"], "options_of_parent": 1}
 
 
 def _option(data: str = "192.0.2.53") -> dict:
@@ -1084,9 +1157,10 @@ class RowWriteTableTest(TestCase):
 
     def _assert_row(self, row: _Row, found: PluginCapabilities) -> None:
         model = _model(MAPPING_KINDS[row.kind][0])
-        fixture = _Fixture(6 if row.kind == Kind.PD_POOL else 4, row.capabilities(found))
+        fixture = _Fixture(self, 6 if row.kind == Kind.PD_POOL else 4, row.capabilities(found))
         kept = row.before(fixture, row.config) if row.before is not None else None
         rows_before = model.objects.count()
+        confirmed_before = next_confirmation_number()
         with _refusing(row.refuse) as refused, override_settings(CUSTOM_VALIDATORS=row.validators or {}):
             summary = fixture.apply(row.config)
 
@@ -1111,6 +1185,12 @@ class RowWriteTableTest(TestCase):
             self.assertIsNotNone(mapped)
             state = {**_STATE[row.kind](mapped), "row": "kept" if kept is not None and kept.pk == mapped.pk else "new"}
             self.assertEqual(state, row.state)
+            # The run adds a row only when it creates one.
+            self.assertEqual(model.objects.count() - rows_before, 1 if row.state["row"] == "new" else 0)
+            # The run confirmed the mapping with a number of its own.
+            self.assertGreater(fixture.link(row.key).confirmation, confirmed_before)
+        for label, read, expected in row.facts:
+            self.assertEqual(read(fixture, summary), expected, label)
         if row.refuse is not None:
             # The receiver ran: the run tried to write the row.
             self.assertTrue(refused)
