@@ -228,7 +228,7 @@ def family_drift(server: Server, family: Family, user) -> FamilyDrift:
         observation, rows = observed[kind], mapped[kind]
         missing = dict.fromkeys(observation.sources - rows.keys())
         unobserved = {source: row for source, row in rows.items() if source not in observation.sources}
-        stale = {source: row for source, row in unobserved.items() if not observation.gap(source)}
+        stale = {source: row for source, row in unobserved.items() if not observation.gap(source, family)}
         unseen = {source: row for source, row in unobserved.items() if source not in stale}
         drift.kinds.append(
             KindDrift(

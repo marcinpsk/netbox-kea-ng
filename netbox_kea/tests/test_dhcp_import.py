@@ -35,15 +35,20 @@ from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
 from netbox_kea.integrations.dhcp_import_ledger import KEA_DEFAULTS, LEDGER, MERGED_KEYS, Mapped, NotImported
 from netbox_kea.integrations.dhcp_import_plan import (
+    KEY_KINDS,
     MAX_KEA_NAME_LENGTH,
     REMOVAL_ORDER,
     FamilyPlan,
     GlobalReservationKey,
     InSubnetReservationKey,
+    InvalidPoolKey,
     MappingSource,
+    NamedKey,
     OptionDefinitionKey,
     PDPoolKey,
     PoolKey,
+    ServerKey,
+    SubnetKey,
     declared_values,
     keyed_reservations,
     kind_path,
@@ -148,7 +153,10 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
 
         self.assertIsInstance(plan, FamilyPlan)
         self.assertEqual((plan.family, plan.configuration_complete), (4, True))
-        self.assertEqual([planned.key for planned in plan.client_classes], ["voip", "printers", "boot", "per-client"])
+        self.assertEqual(
+            [planned.key for planned in plan.client_classes],
+            [NamedKey(Kind.CLIENT_CLASS, name) for name in ("voip", "printers", "boot", "per-client")],
+        )
         self.assertEqual(
             [planned.key for planned in plan.option_definitions],
             [
@@ -159,7 +167,7 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
                 OptionDefinitionKey("vendor-sub", 1),
             ],
         )
-        self.assertEqual([subnet.key for subnet in plan.subnets], [10, 20, 21])
+        self.assertEqual([subnet.key for subnet in plan.subnets], [SubnetKey(10), SubnetKey(20), SubnetKey(21)])
         address = ipaddress.IPv4Address
         self.assertEqual(
             [[pool.key for pool in subnet.pools] for subnet in plan.subnets],
@@ -186,7 +194,7 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
     def test_a_class_level_option_definition_is_planned_with_its_class(self):
         plan = plan_family(_recorded_intent(4), None)
 
-        classes = {planned.key: planned for planned in plan.client_classes}
+        classes = {planned.key.name: planned for planned in plan.client_classes}
         (definition,) = classes["boot"].option_definitions
         self.assertEqual(definition.key, OptionDefinitionKey("dhcp4", 231, "boot"))
         self.assertEqual(definition.intent.user_context, {"comment": "Class definition"})
@@ -213,7 +221,7 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
     def test_the_dhcpv6_plan_keys_subnets_and_pools_and_plans_no_reservation_without_a_read(self):
         plan = plan_family(_recorded_intent(6), None)
 
-        self.assertEqual([subnet.key for subnet in plan.subnets], [10, 20, 21])
+        self.assertEqual([subnet.key for subnet in plan.subnets], [SubnetKey(10), SubnetKey(20), SubnetKey(21)])
         address = ipaddress.IPv6Address
         self.assertEqual(
             [pool.key for pool in plan.subnets[2].pools],
@@ -238,7 +246,7 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
             }
             plan = plan_family(_recorded_intent(family), None)
             with self.subTest(family=family):
-                self.assertEqual({subnet.key: subnet.settings for subnet in plan.subnets}, declared)
+                self.assertEqual({subnet.key.subnet_id: subnet.settings for subnet in plan.subnets}, declared)
                 self.assertEqual(declared[20], {})
                 self.assertEqual((declared[10]["valid-lifetime"], declared[10]["allocator"]), (3600, "random"))
 
@@ -250,9 +258,9 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
             }
             plan = plan_family(_recorded_intent(family), None)
             with self.subTest(family=family):
-                self.assertEqual({network.key: network.settings for network in plan.shared_networks}, declared)
+                self.assertEqual({network.key.name: network.settings for network in plan.shared_networks}, declared)
                 self.assertEqual(
-                    {network.key: network.intent.client_classes for network in plan.shared_networks},
+                    {network.key.name: network.intent.client_classes for network in plan.shared_networks},
                     {"office": (), "empty-network": ("voip",)},
                 )
 
@@ -262,7 +270,7 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
             office = {"reservations-global": True, "relay": {"ip-addresses": relay}, "interface": "eth0"}
             with self.subTest(family=family):
                 self.assertEqual(
-                    {subnet.key: subnet.inherited for subnet in plan.subnets},
+                    {subnet.key.subnet_id: subnet.inherited for subnet in plan.subnets},
                     {10: {}, 20: {**office, "ddns-qualifying-suffix": "office.example.net"}, 21: office},
                 )
 
@@ -274,7 +282,7 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
                 for obj in _recording_configuration(family)["client-classes"]
             }
             plan = plan_family(_recorded_intent(family), None)
-            settings[family] = {planned.key: planned.settings for planned in plan.client_classes}
+            settings[family] = {planned.key.name: planned.settings for planned in plan.client_classes}
             with self.subTest(family=family):
                 self.assertEqual(settings[family], declared)
         # Kea returns its own default boot fields on a class that declares none, not the global values.
@@ -312,7 +320,7 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
         plan = plan_family(parse_dhcp_config(config, 6), None)
 
         self.assertEqual(
-            {subnet.key: subnet.settings for subnet in plan.subnets},
+            {subnet.key.subnet_id: subnet.settings for subnet in plan.subnets},
             {
                 1: {},
                 2: {"rapid-commit": True},
@@ -323,7 +331,7 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
             },
         )
         self.assertEqual(
-            {subnet.key: subnet.inherited for subnet in plan.subnets},
+            {subnet.key.subnet_id: subnet.inherited for subnet in plan.subnets},
             {1: {}, 2: {}, 3: {}, 4: {}, 5: {"rapid-commit": True}, 6: {}},
         )
 
@@ -345,9 +353,11 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
 
         plan = plan_family(parse_dhcp_config(config, 4), None)
 
-        self.assertEqual({subnet.key: subnet.settings for subnet in plan.subnets}, {1: {}, 2: {"valid-lifetime": 4000}})
         self.assertEqual(
-            {subnet.key: subnet.inherited for subnet in plan.subnets}, {1: {"valid-lifetime": 9000}, 2: {}}
+            {subnet.key.subnet_id: subnet.settings for subnet in plan.subnets}, {1: {}, 2: {"valid-lifetime": 4000}}
+        )
+        self.assertEqual(
+            {subnet.key.subnet_id: subnet.inherited for subnet in plan.subnets}, {1: {"valid-lifetime": 9000}, 2: {}}
         )
 
     def test_a_subnet_that_only_inherited_a_changed_global_value_declares_nothing(self):
@@ -357,13 +367,15 @@ class PlanFromRecordedRepliesTest(SimpleTestCase):
 
         self.assertEqual(plan.subnets[0].settings, {})
 
-    def test_a_pool_outside_its_subnet_has_no_key(self):
+    def test_a_pool_outside_its_subnet_has_a_path_and_no_mapping_source(self):
         config = {"subnet4": [{"id": 1, "subnet": "192.0.2.0/24", "pools": [{"pool": "198.51.100.1-198.51.100.9"}]}]}
 
         plan = plan_family(parse_dhcp_config(config, 4), None)
 
         (pool,) = plan.subnets[0].pools
-        self.assertIsNone(pool.key)
+        self.assertEqual(pool.key, InvalidPoolKey(1, "198.51.100.1-198.51.100.9"))
+        self.assertIsNone(pool.key.source)
+        self.assertEqual(pool.key.path(4), "Dhcp4/subnet4[id=1]/pools[pool=198.51.100.1-198.51.100.9]")
         self.assertEqual(pool.intent.pool, "198.51.100.1-198.51.100.9")
 
 
@@ -381,7 +393,7 @@ class PDPoolPlanTest(SimpleTestCase):
     def test_the_recorded_pd_pools_are_planned_with_their_declared_values(self):
         plan = plan_family(_recorded_intent(6), None)
 
-        pd_pools = {subnet.key: subnet.pd_pools for subnet in plan.subnets}
+        pd_pools = {subnet.key.subnet_id: subnet.pd_pools for subnet in plan.subnets}
         first, second = pd_pools[10]
         self.assertEqual(first.key, PDPoolKey(10, _PD_PREFIX, 56))
         intent = first.intent
@@ -722,7 +734,7 @@ class KindObservationTest(SimpleTestCase):
         for key, (source, path) in sources.items():
             with self.subTest(key=key):
                 self.assertEqual(key.source, source)
-                self.assertEqual(OptionKey.from_source(source), key)
+                self.assertEqual(OptionKey.from_source(source, 4), key)
                 self.assertEqual(source.path(4), path)
 
     def test_a_complete_read_observes_the_options_of_every_parent(self):
@@ -756,7 +768,7 @@ class KindObservationTest(SimpleTestCase):
         observed = observations(plan_family(intent, _complete_observation()))[Kind.OPTION]
 
         self.assertEqual(
-            Counter(OptionKey.from_source(source).occurrence for source in observed.sources), Counter({0: 1, 1: 1})
+            Counter(OptionKey.from_source(source, 4).occurrence for source in observed.sources), Counter({0: 1, 1: 1})
         )
         self.assertEqual(observed.incomplete, "")
 
@@ -800,6 +812,155 @@ class KindObservationTest(SimpleTestCase):
             "The Server Configuration was not read in full.",
         )
         self.assertEqual(kind_path(4, Kind.OPTION), "Dhcp4/option-data[*]")
+
+
+_LONG_CLASS = f"a:b/{'c' * (MAX_KEA_NAME_LENGTH - 4)}"
+_LONG_NETWORK = f"x:y/{'n' * (MAX_KEA_NAME_LENGTH - 4)}"
+_SHARED_DUID = "01:02:03:04"
+_PD_POOL_10 = "Dhcp6/subnet6[id=10]/pd-pools[prefix=2001:db8:100::/48,delegated-len=56]"
+
+
+def _pinned_keys() -> list[tuple]:
+    """Return (key, family, serialized source, Kea path) for each key kind, with edge values."""
+    from netbox_kea.dhcp_options import DHCPOptionIdentity
+    from netbox_kea.integrations.dhcp_import_plan import OptionKey
+
+    address = ipaddress.ip_address
+    pd_pool = PDPoolKey(10, ipaddress.IPv6Network("2001:db8:100::/48"), 56)
+    in_subnet = InSubnetReservationKey(7, "hw-address", "aa:bb:cc:dd:ee:ff")
+    return [
+        (ServerKey(), 4, (Kind.SERVER, None, None), "Dhcp4"),
+        (ServerKey(), 6, (Kind.SERVER, None, None), "Dhcp6"),
+        (SubnetKey(4294967294), 6, (Kind.SUBNET, 4294967294, None), "Dhcp6/subnet6[id=4294967294]"),
+        (
+            NamedKey(Kind.CLIENT_CLASS, _LONG_CLASS),
+            4,
+            (Kind.CLIENT_CLASS, None, _LONG_CLASS),
+            f"Dhcp4/client-classes[name={_LONG_CLASS}]",
+        ),
+        (
+            NamedKey(Kind.SHARED_NETWORK, _LONG_NETWORK),
+            6,
+            (Kind.SHARED_NETWORK, None, _LONG_NETWORK),
+            f"Dhcp6/shared-networks[name={_LONG_NETWORK}]",
+        ),
+        # A range that is one prefix takes the prefix text of config-get in its path, and its range in its source.
+        (
+            PoolKey(10, Pool(address("192.0.2.0"), address("192.0.2.255"))),
+            4,
+            (Kind.POOL, 10, "192.0.2.0-192.0.2.255"),
+            "Dhcp4/subnet4[id=10]/pools[pool=192.0.2.0/24]",
+        ),
+        (
+            PoolKey(10, Pool(address("2001:db8:1::10"), address("2001:db8:1::20"))),
+            6,
+            (Kind.POOL, 10, "2001:db8:1::10-2001:db8:1::20"),
+            "Dhcp6/subnet6[id=10]/pools[pool=2001:db8:1::10-2001:db8:1::20]",
+        ),
+        (pd_pool, 6, (Kind.PD_POOL, 10, "2001:db8:100::/48/56"), _PD_POOL_10),
+        (
+            PDPoolKey(3, ipaddress.IPv6Network("2001:db8:3::/64"), 128),
+            6,
+            (Kind.PD_POOL, 3, "2001:db8:3::/64/128"),
+            "Dhcp6/subnet6[id=3]/pd-pools[prefix=2001:db8:3::/64,delegated-len=128]",
+        ),
+        # One identifier in both families and both Scopes: a Global source does not hold the family.
+        *(
+            (
+                GlobalReservationKey(family, "duid", _SHARED_DUID),
+                family,
+                (Kind.RESERVATION, None, f"duid:{_SHARED_DUID}"),
+                f"Dhcp{family}/reservations[duid={_SHARED_DUID}]",
+            )
+            for family in (4, 6)
+        ),
+        *(
+            (
+                InSubnetReservationKey(7, "duid", _SHARED_DUID),
+                family,
+                (Kind.RESERVATION, 7, f"duid:{_SHARED_DUID}"),
+                f"Dhcp{family}/subnet{family}[id=7]/reservations[duid={_SHARED_DUID}]",
+            )
+            for family in (4, 6)
+        ),
+        (
+            in_subnet,
+            4,
+            (Kind.RESERVATION, 7, "hw-address:aa:bb:cc:dd:ee:ff"),
+            "Dhcp4/subnet4[id=7]/reservations[hw-address=aa:bb:cc:dd:ee:ff]",
+        ),
+        (
+            GlobalReservationKey(4, "flex-id", "'a:b'"),
+            4,
+            (Kind.RESERVATION, None, "flex-id:'a:b'"),
+            "Dhcp4/reservations[flex-id='a:b']",
+        ),
+        (
+            OptionDefinitionKey("dhcp6", 65535),
+            6,
+            (Kind.OPTION_DEFINITION, None, "dhcp6:65535"),
+            "Dhcp6/option-def[code=65535]",
+        ),
+        (
+            OptionDefinitionKey("vendor-x", 1, _LONG_CLASS),
+            4,
+            (Kind.OPTION_DEFINITION, None, f"{_LONG_CLASS}:vendor-x:1"),
+            f"Dhcp4/client-classes[name={_LONG_CLASS}]/option-def[space=vendor-x,code=1]",
+        ),
+        (
+            OptionKey(pd_pool.source, DHCPOptionIdentity("dhcp6", 23, frozenset({_LONG_CLASS}))),
+            6,
+            (Kind.OPTION, 10, f'["pd_pool","2001:db8:100::/48/56","dhcp6",23,["{_LONG_CLASS}"],0]'),
+            f"{_PD_POOL_10}/option-data[code=23,client-classes={_LONG_CLASS}]",
+        ),
+        (
+            OptionKey(in_subnet.source, DHCPOptionIdentity("dhcp4", "x-name", frozenset()), 2),
+            4,
+            (Kind.OPTION, 7, '["reservation","hw-address:aa:bb:cc:dd:ee:ff","dhcp4","x-name",[],2]'),
+            "Dhcp4/subnet4[id=7]/reservations[hw-address=aa:bb:cc:dd:ee:ff]/option-data[name=x-name]",
+        ),
+        (
+            OptionKey(
+                GlobalReservationKey(6, "duid", _SHARED_DUID).source, DHCPOptionIdentity("dhcp6", 23, frozenset())
+            ),
+            6,
+            (Kind.OPTION, None, f'["reservation","duid:{_SHARED_DUID}","dhcp6",23,[],0]'),
+            f"Dhcp6/reservations[duid={_SHARED_DUID}]/option-data[code=23]",
+        ),
+    ]
+
+
+class MappingKeyTest(SimpleTestCase):
+    """Each key kind gives its mapping source and its Kea path. The literals pin the stored identity bytes."""
+
+    def test_each_key_kind_gives_its_pinned_source_and_path(self):
+        for key, family, (kind, subnet_id, identity), path in _pinned_keys():
+            with self.subTest(key=key, family=family):
+                self.assertEqual(key.source, MappingSource(kind, subnet_id, identity))
+                self.assertEqual(key.path(family), path)
+                self.assertEqual(key.source.path(family), path)
+
+    def test_each_key_kind_decodes_its_own_source(self):
+        for key, family, *_ in _pinned_keys():
+            with self.subTest(key=key, family=family):
+                self.assertEqual(type(key).from_source(key.source, family), key)
+                self.assertEqual(KEY_KINDS[key.source.kind].from_source(key.source, family), key)
+
+    def test_the_decode_table_has_an_entry_for_every_mapped_kind(self):
+        from netbox_kea.models import MAPPING_KINDS
+
+        self.assertEqual(set(KEY_KINDS), set(MAPPING_KINDS))
+        self.assertEqual({key.source.kind for key, *_ in _pinned_keys()}, set(MAPPING_KINDS))
+
+    def test_a_pool_without_a_valid_range_has_a_path_and_no_source(self):
+        key = InvalidPoolKey(4294967294, "198.51.100.1 - 198.51.100.9")
+
+        self.assertIsNone(key.source)
+        self.assertEqual(key.path(6), "Dhcp6/subnet6[id=4294967294]/pools[pool=198.51.100.1 - 198.51.100.9]")
+
+    def test_a_named_key_refuses_a_kind_that_kea_does_not_name(self):
+        with self.assertRaisesRegex(ValueError, "no Kea name"):
+            NamedKey(Kind.SUBNET, "office")
 
 
 class CapabilityProbeTest(TestCase):
@@ -1793,6 +1954,54 @@ class PDPoolCoverageTest(TestCase):
             },
         )
         self.assertEqual(self._mapped("pd_pool", 10, "2001:db8:100::/48/56").delegated_length, 56)
+
+
+class CreatedAndRemovedPathTest(TestCase):
+    """A run names an object by the path of its key when it creates it and when it removes it."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not apps.is_installed(DHCP_PLUGIN):
+            raise unittest.SkipTest(f"{DHCP_PLUGIN} not installed")
+        super().setUpClass()
+
+    def _run(self, server, conf: dict, hosts: list[dict]):
+        with stub_kea(_sync_responses({6: conf}, {6: hosts})):
+            ((_family, summary),) = run_dhcp_plugin_import(server, cast("DhcpImportTrigger", DhcpImportTrigger.MANUAL))
+        assert isinstance(summary, dhcp_plugin.ImportSummary), summary
+        self.assertEqual(summary.errors, 0, summary.warnings)
+        return {
+            (entry.kind, entry.outcome): entry.path
+            for entry in summary.entries
+            if entry.kind in (Kind.PD_POOL, Kind.RESERVATION) and entry.reason is None
+        }
+
+    def test_a_pd_pool_and_a_reservation_have_one_path_when_created_and_when_removed(self):
+        server = _make_db_server(name="created-removed-paths", ca_url="https://kea.example.invalid", dhcp4=False)
+        pd_pool = {"prefix": "2001:db8:900::", "prefix-len": 48, "delegated-len": 64}
+        subnet = {"id": 90, "subnet": "2001:db8:90::/64", "pd-pools": [pd_pool]}
+        host = {"subnet-id": 90, "duid": "00:01:00:01:aa:bb", "ip-addresses": ["2001:db8:90::50"]}
+        created = self._run(server, {"subnet6": [subnet]}, [host])
+        rows = {
+            kind: KeaDhcpLink.objects.get(server=server, family=6, kind=kind.value).sys4_object
+            for kind in (Kind.PD_POOL, Kind.RESERVATION)
+        }
+
+        removed = self._run(server, {"subnet6": [{**subnet, "pd-pools": []}]}, [])
+
+        for kind in (Kind.PD_POOL, Kind.RESERVATION):
+            with self.subTest(kind=kind):
+                self.assertIn((kind, Outcome.CREATED), created)
+                self.assertIn((kind, Outcome.REMOVED), removed)
+                self.assertEqual(removed[kind, Outcome.REMOVED], created[kind, Outcome.CREATED])
+                self.assertFalse(type(rows[kind]).objects.filter(pk=rows[kind].pk).exists())
+        self.assertEqual(
+            created[Kind.PD_POOL, Outcome.CREATED],
+            "Dhcp6/subnet6[id=90]/pd-pools[prefix=2001:db8:900::/48,delegated-len=64]",
+        )
+        self.assertEqual(
+            created[Kind.RESERVATION, Outcome.CREATED], "Dhcp6/subnet6[id=90]/reservations[duid=00:01:00:01:aa:bb]"
+        )
 
 
 def _before_option_mappings(server) -> None:
