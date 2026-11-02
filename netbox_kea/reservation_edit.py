@@ -29,7 +29,8 @@ from .dhcp_options import (
     option_data,
     parse_dhcp_options,
 )
-from .ipam_reconciliation import RESERVATION, ClaimResult, claim, claim_permissions
+from .ipam_reconciliation import RESERVATION, claim_permissions
+from .manual_sync import ManualSyncOutcome, NotRun, sync_reservation
 from .pools import Pool, addresses_in_pools
 from .published_name import published_name, stored_hostname
 from .reservation_transfer import ReservationImportProposal, resolve_import_proposal
@@ -50,7 +51,7 @@ from .reservations import (
 )
 from .signals import reservation_created, reservation_deleted, reservation_updated
 from .subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, SubnetIdentity, VerifiedSubnet
-from .sync_permissions import sync_gate
+from .sync_permissions import SyncGate, sync_gate
 
 if TYPE_CHECKING:
     from .models import Server
@@ -553,29 +554,18 @@ ReservationAction = Literal["created", "updated", "deleted"]
 SideEffectStatus = Literal["succeeded", "failed", "events-failed", "not-applied"]
 
 
-@dataclass(frozen=True)
-class ClaimSkipped:
-    """The reason an after-apply operation did not request an IPAM claim."""
-
-    reason: Literal["not-applied", "not-requested", "nothing-to-sync", "permission"]
-    explanation: str = ""
-
-
-@dataclass(frozen=True)
-class ClaimFailure:
-    """A failed claim, or failed event dispatch after the claim committed."""
-
-    reason: Literal["failed", "events-failed"]
+#: Why an after-apply operation ran no Manual Sync: Kea did not apply the change, or no claim was requested.
+AfterApplySkip = Literal["not-applied", "not-requested"]
 
 
 @dataclass(frozen=True)
 class AfterApplyFacts:
-    """The independent journal, signal and IPAM claim facts after one Reservation change."""
+    """The independent journal, signal and Manual Sync facts after one Reservation change."""
 
     action: ReservationAction | None
     journal: SideEffectStatus
     signal: SideEffectStatus
-    claim: ClaimResult | ClaimSkipped | ClaimFailure
+    claim: ManualSyncOutcome | AfterApplySkip
 
 
 def _pool_warning_facts(
@@ -703,6 +693,7 @@ class ImportContext:
     sync_to_netbox: bool = False
     _server_id: int = field(init=False, repr=False)
     _user_id: int = field(init=False, repr=False)
+    _gate: SyncGate | None = field(init=False, repr=False, default=None)
 
     def __post_init__(self) -> None:
         if self.server.pk is None or self.user.pk is None:
@@ -711,6 +702,7 @@ class ImportContext:
             gate = sync_gate(self.user, claim_permissions(RESERVATION))
             if not gate.allowed:
                 raise ImportSyncRefused(gate.reason)
+            object.__setattr__(self, "_gate", gate)
         object.__setattr__(self, "_server_id", self.server.pk)
         object.__setattr__(self, "_user_id", self.user.pk)
 
@@ -718,6 +710,13 @@ class ImportContext:
         """Refuse reuse of a permission decision for another Server or operator."""
         if server.pk != self._server_id or user.pk != self._user_id:
             raise ValueError("The import permission decision belongs to another Server or user.")
+
+    @property
+    def gate(self) -> SyncGate:
+        """Return the manual Sync rule verdict that the import checked before its first entry."""
+        if self._gate is None:
+            raise ValueError("An import that requests no claim has no manual Sync verdict.")
+        return self._gate
 
 
 def prepare_import(server: Server, user: Any, *, sync_to_netbox: bool = False) -> ImportContext:
@@ -727,25 +726,20 @@ def prepare_import(server: Server, user: Any, *, sync_to_netbox: bool = False) -
 
 def _claim_after_apply(
     server: Server, outcome: ReservationChangeOutcome, user: Any, requested: bool, context: ImportContext | None
-) -> ClaimResult | ClaimSkipped | ClaimFailure:
-    if not requested:
-        return ClaimSkipped("not-requested")
+) -> ManualSyncOutcome | AfterApplySkip:
     reservation = outcome.intended
-    if reservation is None or not reservation.addresses:
-        return ClaimSkipped("nothing-to-sync")
-    try:
-        if context is None:
+    # A delete leaves no Reservation to claim.
+    if not requested or reservation is None:
+        return "not-requested"
+    if context is not None:
+        gate = context.gate
+    else:
+        try:
             gate = sync_gate(user, claim_permissions(RESERVATION))
-            if not gate.allowed:
-                logger.warning("User %r requested a Reservation IPAM sync that the manual Sync rule refuses", user)
-                return ClaimSkipped("permission", gate.reason)
-        return claim(server, reservation.family, [reservation], force=True, catalogue=outcome.catalogue)
-    except event_scope.EventDispatchError:
-        logger.exception("The events of the NetBox IPAM sync of a Reservation could not be dispatched")
-        return ClaimFailure("events-failed")
-    except (DatabaseError, ValidationError, ValueError, RuntimeError):
-        logger.exception("Could not synchronize an applied Reservation change to NetBox IPAM")
-        return ClaimFailure("failed")
+        except DatabaseError:
+            logger.exception("Could not read the manual Sync permissions of an applied Reservation change")
+            return NotRun("failed")
+    return sync_reservation(server, reservation, outcome.catalogue, gate)
 
 
 def after_apply(
@@ -759,7 +753,7 @@ def after_apply(
 ) -> AfterApplyFacts:
     """Run independent side effects only after Kea applied the change, outside its classification."""
     if outcome.application != "applied":
-        return AfterApplyFacts(None, "not-applied", "not-applied", ClaimSkipped("not-applied"))
+        return AfterApplyFacts(None, "not-applied", "not-applied", "not-applied")
     if import_context is not None:
         import_context.check_target(server, user)
         sync_to_netbox = import_context.sync_to_netbox

@@ -258,3 +258,12 @@ both on. A source is in the plan when the global switch, the Server switch, the 
 flag are all on. A Run Now of one Server skips the Server switch, but a Run Now of a Server whose switch is off does
 not count as an observation of the Server.
 _Avoid_: sync flags, enabled types
+
+**Manual Sync**:
+A claim of one Lease or one Reservation in the sync VRF of its Server that an operator requests: with a row Sync
+button, or with a Lease or Reservation change. A Manual Sync that does not run is Refused (the manual Sync
+permission rule), Not Current (the Lease is not a Current Lease), Stale (the record names a Subnet that Kea's
+configuration no longer holds), Unavailable (Kea could not be read), or Failed. A Manual Sync that runs gives each
+allocation of the record an outcome: Synchronized, Conflict, Disagreement, Not Applicable, or Error. NetBox can save
+a Manual Sync and fail to dispatch its events.
+_Avoid_: row sync, force sync

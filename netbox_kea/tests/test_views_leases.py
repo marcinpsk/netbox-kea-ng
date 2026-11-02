@@ -1188,7 +1188,7 @@ class TestDelegatedPrefixSyncBadges(_ViewTestBase):
 
         # A 200 reply, because htmx swaps no 4xx or 5xx reply into the cell.
         self.assertContains(refused, '<span class="badge text-bg-danger')
-        self.assertContains(refused, "The lease is not current in Kea")
+        self.assertContains(refused, "Kea does not report it as a current lease.")
         self.assertFalse(Prefix.objects.exists())
 
     def test_the_prefix_lookup_is_one_query_for_every_row(self):
@@ -2378,7 +2378,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
                         messages,
                         [
                             f"Lease for {address} created.",
-                            "Lease created but NetBox IPAM sync failed; see server logs.",
+                            f"Lease {address} was not synced to NetBox: NetBox could not read it back from Kea.",
                         ],
                     )
                     self.assertFalse(NbIP.objects.exists())
@@ -2415,7 +2415,10 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
             response = self.client.post(self._url(version=4), self._post4(sync=True))
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("lease4-add"), 1)
-        self.assertTrue(any("sync failed" in str(message) for message in get_messages(response.wsgi_request)))
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)][-1],
+            "Lease 10.0.0.200 was not synced to NetBox: NetBox could not read the Kea configuration.",
+        )
         self.assertFalse(NbIP.objects.exists())
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
@@ -2459,7 +2462,11 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
                 response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
             self.assertEqual(response.status_code, 200)
             self.assertEqual(kea.commands().count("lease4-add"), 1)
-            self.assertTrue(any("sync failed" in str(message) for message in response.context["messages"]))
+            self.assertEqual(
+                [str(message) for message in response.context["messages"]][-1],
+                "Lease 10.0.0.200 was not synced to NetBox for 10.0.0.200: NetBox IPAM synchronization failed;"
+                " see server logs.",
+            )
             self.assertFalse(NbIP.objects.exists())
         finally:
             with connection.cursor() as cursor:
@@ -2501,7 +2508,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         msgs = [m.message for m in response.context["messages"]]
         self.assertTrue(
-            any("skipped" in m.lower() and "not kea-managed" in m.lower() for m in msgs),
+            any("not synced" in m.lower() and "not kea-managed" in m.lower() for m in msgs),
             f"Expected a foreign-IP skip warning, got: {msgs}",
         )
         # Foreign IP left exactly as the operator set it.

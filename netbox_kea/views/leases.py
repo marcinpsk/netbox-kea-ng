@@ -5,13 +5,12 @@ import uuid
 from abc import ABCMeta
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Generic, Literal, TypeVar
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 from urllib.parse import urlencode as _urlencode
 
 from django.contrib import messages
-from django.core.exceptions import ValidationError
 from django.db import DatabaseError
 from django.http import HttpResponse, HttpResponseForbidden
 from django.http.request import HttpRequest, QueryDict
@@ -24,14 +23,13 @@ from typing_extensions import assert_never
 from utilities.paginator import EnhancedPaginator, get_paginate_count
 from utilities.views import GetReturnURLMixin, register_model_view
 
-from .. import event_scope, forms, runtime_change, subnet_catalogue, tables
+from .. import forms, manual_sync, runtime_change, subnet_catalogue, tables
 from ..constants import Family, LeaseState
 from ..ipam_reconciliation import (
     LEASE,
     LEASE_PREFIX,
     Ownership,
     address_ownership,
-    claim,
     claim_permissions,
     prefix_ownership,
 )
@@ -60,7 +58,6 @@ from ..leases import (
     address_identity,
     creation_mismatches,
     fact_words,
-    is_current,
     parse_selection,
     shown_lease,
 )
@@ -84,7 +81,7 @@ from ..reservations import (
     lease_identities,
 )
 from ..signals import lease_added, leases_deleted
-from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, VerifiedSubnet
+from ..subnet_catalogue import CatalogueSnapshot, VerifiedSubnet
 from ..sync_permissions import SyncGate, sync_gate
 from ..sync_plan import periodic_sync_enabled
 from ..utilities import (
@@ -108,6 +105,7 @@ from ._base import (
     _strip_empty_params,
     sync_title,
 )
+from .manual_sync_presenter import manual_sync_lines, show_manual_sync
 from .notices import Notice, load_snapshot, load_target, notice, show_notices
 from .read_age import read_age_context, refresh_requested
 from .reservations import empty_text
@@ -201,52 +199,19 @@ def _read_created_lease(request: HttpRequest, client: LazyClient, creation: Leas
 def _run_lease_sync_to_netbox(
     request: HttpRequest, server: Server, address: str, created: Lease | None, gate: SyncGate
 ) -> None:
-    """Sync a just-created lease to NetBox IPAM from its fresh read back, when *gate* allows it.
+    """Run the Manual Sync of a just-created lease from its fresh read back, and queue its messages.
 
-    *gate* is the manual Sync rule of a lease claim; server-edit access alone is not enough. Only a Current Lease
-    is claimed, also when the form supplied a Subnet. The sync uses ``force=False``, so a
-    foreign (non-Kea-managed) NetBox IP is skipped rather than overwritten; that skip is
-    reported as a warning instead of a misleading "synced" message. Queues a
-    success/warning message; never raises.
+    *gate* is the manual Sync rule of a lease claim; server-edit access alone is not enough. The sync uses
+    ``force=False``, so a NetBox IP address that is not Kea-managed is skipped, not overwritten.
     """
-    if not gate.allowed:
-        messages.warning(request, f"Lease created, but it was not synced to NetBox. {gate.reason}")
+    if refused := manual_sync.refusal(gate):
+        show_manual_sync(request, manual_sync_lines(refused, f"Lease {address}"))
         return
     if created is None:
-        messages.warning(request, "Lease created but NetBox IPAM sync failed; see server logs.")
+        messages.warning(request, f"Lease {address} was not synced to NetBox: NetBox could not read it back from Kea.")
         return
-    if not is_current(created, datetime.now(tz=timezone.utc)):
-        messages.warning(
-            request, "Lease created, but it was not synced to NetBox: Kea did not report it as a current lease."
-        )
-        return
-    try:
-        result = claim(server, created.family, [created], force=False)
-        outcome = next(iter(result.addresses.values())).outcome
-        if outcome == "error":
-            messages.error(request, "Lease created but NetBox IPAM sync failed; see server logs.")
-        elif outcome == "disagreement":
-            messages.warning(request, f"Lease created, but NetBox IPAM owners disagree about {address}.")
-        elif outcome == "conflict":
-            messages.warning(
-                request,
-                f"Lease created, but NetBox IPAM sync was skipped: {address} already exists and is not Kea-managed,"
-                " or its note leaves no room for the new sync marker.",
-            )
-        else:
-            nb_action = outcome if outcome in {"created", "updated"} else "already up to date"
-            messages.success(request, f"IPAddress {address} {nb_action} in NetBox.")
-    except event_scope.EventDispatchError:
-        # The sync committed after Kea applied the Lease, so the failed dispatch must not end the request.
-        logger.exception("The events of the NetBox IPAM sync of lease %s could not be dispatched", address)
-        messages.error(
-            request,
-            "Lease created, and NetBox IPAM sync saved it, but NetBox could not dispatch the events of the sync;"
-            " see server logs.",
-        )
-    except (CatalogueUnavailable, RuntimeError, OSError, ValueError, DatabaseError, ValidationError):
-        logger.exception("Failed to sync lease %s to NetBox", address)
-        messages.error(request, "Lease created but NetBox IPAM sync failed; see server logs.")
+    outcome = manual_sync.sync_lease(server, created, gate, force=False)
+    show_manual_sync(request, manual_sync_lines(outcome, f"Lease {address}"))
 
 
 def _lease_journal_comments(

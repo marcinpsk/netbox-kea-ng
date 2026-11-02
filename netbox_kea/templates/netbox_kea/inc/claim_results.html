@@ -37,3 +37,6 @@
     {% endif %}
   </span>
 {% endfor %}
+{% for message in notes %}
+  {% include "netbox_kea/inc/row_action_error.html" %}
+{% endfor %}
