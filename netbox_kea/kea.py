@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, TypedDict, cast
+from typing import Any, Literal, NamedTuple, Protocol, TypedDict, cast
 
 import requests
 from requests.models import HTTPBasicAuth
@@ -25,8 +25,6 @@ from .decimal_text import parse_decimal
 from .dhcp_options import (
     DHCPOptionEdit,
     OptionDefinition,
-    address_list_data,
-    form_managed_options,
     merge_option_edit,
     parse_dhcp_options,
     parse_option_definition,
@@ -76,10 +74,6 @@ from .reservations import (
     apply_reservation_change,
     reservation_identifier_types,
 )
-from .subnet_settings import setting_key
-
-if TYPE_CHECKING:
-    from .managed_fields import SubnetFields
 
 logger = logging.getLogger(__name__)
 
@@ -1317,29 +1311,14 @@ class KeaClient:
         }
         return self._config_mutation_command(KeaCommand.RESERVATION_DEL, family, arguments, (0, 3))["result"] == 0
 
-    def subnet_add(self, version: Family, subnet_id: int, cidr: str, fields: "SubnetFields") -> None:
-        """Send one ``subnet{v}-add`` for the Subnet *cidr* with *subnet_id*. It does not persist.
+    def subnet_add(self, version: Family, subnet: dict[str, Any]) -> None:
+        """Send one ``subnet{v}-add`` of the new Subnet entry *subnet*. It does not persist.
 
         Raises:
             KeaException: If Kea returns a failure result.
             MalformedReply: If the reply is malformed.
 
         """
-        subnet: dict[str, Any] = {"subnet": cidr, "id": subnet_id}
-        if fields.pools:
-            subnet["pools"] = [{"pool": pool} for pool in fields.pools]
-        managed = form_managed_options(version)
-        option_data: list[dict[str, str]] = []
-        if fields.gateway and version == 4:
-            option_data.append({"name": managed["gateway"].name, "data": fields.gateway})
-        if fields.dns_servers:
-            option_data.append({"name": managed["dns_servers"].name, "data": address_list_data(fields.dns_servers)})
-        if fields.ntp_servers:
-            option_data.append({"name": managed["ntp_servers"].name, "data": address_list_data(fields.ntp_servers)})
-        if option_data:
-            subnet["option-data"] = option_data
-        if fields.ddns_qualifying_suffix:
-            subnet[setting_key("ddns_qualifying_suffix")] = fields.ddns_qualifying_suffix
         self._config_mutation_command(SUBNET_ADD[version], version, {f"subnet{version}": [subnet]})
 
     def subnet_del(self, version: Family, subnet_id: int) -> None:

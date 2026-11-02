@@ -196,11 +196,19 @@ def write_subnet(entry: dict[str, Any], family: Family, edit: SubnetEdit) -> Non
     else:
         entry.pop(suffix_key, None)
     live_pools = _pools_by_range(entry, family)
-    entry["pools"] = [{**live_pools.get(pool, {}), "pool": pool} for pool in fields.pools]
+    if fields.pools or "pools" in entry:
+        entry["pools"] = [{**live_pools.get(pool, {}), "pool": pool} for pool in fields.pools]
     for field in _LIFETIMES:
         value = getattr(edit, field)
         if value is not None:
             entry[setting_key(field)] = value
+
+
+def new_subnet(family: Family, subnet_id: int, cidr: str, fields: SubnetFields) -> dict[str, Any]:
+    """Return the entry of a new Subnet *cidr* with *subnet_id* and the fields of the add form."""
+    entry: dict[str, Any] = {"subnet": cidr, "id": subnet_id}
+    write_subnet(entry, family, SubnetEdit(fields, None, None, None, None, None))
+    return entry
 
 
 def write_shared_network(entry: dict[str, Any], family: Family, edit: SharedNetworkEdit) -> None:
@@ -236,9 +244,11 @@ def _write_options(entry: dict[str, Any], family: Family, fields: dict[str, str]
     options = entry.get("option-data", [])
     try:
         option_edit = form_option_edit(parse_dhcp_options(options), family, fields)
-        entry["option-data"] = merge_option_edit(option_edit, options, family)
+        merged = merge_option_edit(option_edit, options, family)
     except ValueError as exc:
         raise MalformedConfiguration(str(exc)) from exc
+    if merged or "option-data" in entry:
+        entry["option-data"] = merged
 
 
 def _write_description(network: dict[str, Any], description: str) -> None:

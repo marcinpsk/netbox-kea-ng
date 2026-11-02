@@ -53,7 +53,6 @@ from netbox_kea.leases import (
     MalformedLeaseResponse,
     _creation_arguments,
 )
-from netbox_kea.managed_fields import SubnetFields
 from netbox_kea.subnet_catalogue import SubnetIdentity
 from netbox_kea.tests.kea_stub import (
     LeaseDaemon,
@@ -481,41 +480,34 @@ def _side_effects(*responses):
 # TestSubnetAdd
 # ---------------------------------------------------------------------------
 
-_NO_FIELDS = SubnetFields(pools=(), gateway="", dns_servers=(), ntp_servers=(), ddns_qualifying_suffix="")
+_NEW_SUBNET = {"subnet": "10.99.0.0/24", "id": 10, "pools": [{"pool": "10.99.0.10-10.99.0.20"}]}
 
 
 class TestSubnetAdd(TestCase):
-    """KeaClient.subnet_add sends one subnet{v}-add and does not persist. config_write covers the payload."""
+    """KeaClient.subnet_add sends one subnet{v}-add of the entry and does not persist.
+
+    ``test_managed_fields`` covers the entry of the add form, and ``test_views_subnets`` pins it end to end.
+    """
 
     def setUp(self):
         self.client = kea_client(url="http://kea:8000")
 
     def test_sends_one_command_without_a_persist_step(self):
         with stub_kea({"subnet4-add": {"result": 0, "text": "IPv4 subnet added"}}) as kea:
-            self.client.subnet_add(4, 10, "10.99.0.0/24", _NO_FIELDS)
+            self.client.subnet_add(4, dict(_NEW_SUBNET))
         self.assertEqual(kea.commands(), ["subnet4-add"])
-        self.assertEqual(kea.bodies("subnet4-add")[0]["arguments"], {"subnet4": [{"subnet": "10.99.0.0/24", "id": 10}]})
-
-    def test_a_dhcpv6_subnet_carries_no_gateway(self):
-        fields = SubnetFields(
-            pools=(), gateway="2001:db8::1", dns_servers=(), ntp_servers=(), ddns_qualifying_suffix=""
-        )
-        with stub_kea({"subnet6-add": {"result": 0, "text": "IPv6 subnet added"}}) as kea:
-            self.client.subnet_add(6, 20, "2001:db8:99::/48", fields)
-        self.assertEqual(
-            kea.bodies("subnet6-add")[0]["arguments"], {"subnet6": [{"subnet": "2001:db8:99::/48", "id": 20}]}
-        )
+        self.assertEqual(kea.bodies("subnet4-add")[0]["arguments"], {"subnet4": [_NEW_SUBNET]})
 
     def test_a_failure_result_raises_kea_exception(self):
         rejection = {"result": 1, "text": "ID of the new IPv4 subnet '10' is already in use"}
         with stub_kea({"subnet4-add": rejection}) as kea, self.assertRaises(KeaException):
-            self.client.subnet_add(4, 10, "10.99.0.0/24", _NO_FIELDS)
+            self.client.subnet_add(4, dict(_NEW_SUBNET))
         self.assertEqual(kea.commands(), ["subnet4-add"])
 
     def test_a_malformed_reply_raises_malformed_reply(self):
         ok = {"result": 0, "text": "IPv4 subnet added"}
         with stub_kea({"subnet4-add": [ok, ok]}), self.assertRaises(MalformedReply):
-            self.client.subnet_add(4, 10, "10.99.0.0/24", _NO_FIELDS)
+            self.client.subnet_add(4, dict(_NEW_SUBNET))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

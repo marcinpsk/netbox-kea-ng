@@ -222,7 +222,9 @@ def _create_subnet(
         return mutate(
             client,
             family,
-            lambda: client.subnet_add(family, identity.subnet_id, identity.cidr, fields),
+            lambda: client.subnet_add(
+                family, managed_fields.new_subnet(family, identity.subnet_id, identity.cidr, fields)
+            ),
             on_failure=absent,
         )
 

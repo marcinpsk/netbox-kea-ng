@@ -22,6 +22,7 @@ from netbox_kea.managed_fields import (
     SharedNetworkEdit,
     SubnetEdit,
     SubnetFields,
+    new_subnet,
     shown_shared_network,
     shown_subnet,
     write_shared_network,
@@ -247,6 +248,17 @@ class SubnetWriterTests(SimpleTestCase):
             live = {"id": 42, "subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.20"}, entry]}
             with self.subTest(label), self.assertRaises(MalformedConfiguration):
                 _written(live, pools=("10.0.0.10-10.0.0.20",))
+
+
+class NewSubnetTests(SimpleTestCase):
+    """``new_subnet`` writes the fields of the add form on a new Subnet entry. A field without a value adds no key."""
+
+    def test_a_subnet_without_fields_holds_only_its_cidr_and_id(self):
+        self.assertEqual(new_subnet(4, 10, "10.99.0.0/24", _NO_FIELDS), {"subnet": "10.99.0.0/24", "id": 10})
+
+    def test_a_dhcpv6_subnet_carries_no_gateway(self):
+        fields = replace(_NO_FIELDS, gateway="2001:db8::1")
+        self.assertEqual(new_subnet(6, 20, "2001:db8:99::/48", fields), {"subnet": "2001:db8:99::/48", "id": 20})
 
 
 # A Subnet with every managed field set, and with keys that no form manages.
