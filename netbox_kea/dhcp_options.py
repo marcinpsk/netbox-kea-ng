@@ -324,6 +324,7 @@ class DHCPOption:
             "name": self.name or "",
             "data": self.data,
             "always_send": bool(self.always_send),
+            "client_classes": class_text(self.client_classes),
             "original_option": original,
         }
 
@@ -617,6 +618,106 @@ def form_option_edit(options: Sequence[DHCPOption], family: int, fields: Mapping
         elif seen.csv_format is False or not _same_addresses(data, seen.data):
             changes.append(DHCPOptionChange(seen, replace(seen, data=data, csv_format=None)))
     return DHCPOptionEdit(tuple(options), tuple(changes))
+
+
+def class_text(classes: Sequence[str]) -> str:
+    """Return the text of a client class field: the names, separated by commas."""
+    return ", ".join(classes)
+
+
+def class_names(text: str) -> tuple[str, ...]:
+    """Return the names of a client class field, without the empty ones."""
+    return tuple(name for name in (part.strip() for part in text.split(",")) if name)
+
+
+class ClassTextRefused(ValueError):
+    """The text of a client class field cannot set the client classes safely."""
+
+    def __init__(self, message: str) -> None:
+        """Keep the public refusal message, which names the owner of the classes."""
+        super().__init__(message)
+        self.message = message
+
+
+def _shows_exactly(name: str) -> bool:
+    """Return whether the text of a class field shows *name* exactly, and a browser sends it back unchanged."""
+    return bool(name) and name == name.strip() and not any(char in name for char in ",\r\n")
+
+
+def client_class_change(live: tuple[str, ...], text: str, owner: str) -> tuple[str, ...]:
+    """Return the client classes that the text of a class field sets: the live ones while it is the shown text.
+
+    Raises:
+        ClassTextRefused: If the text changes and cannot show a live name exactly, or names a class twice.
+
+    """
+    if text == class_text(live):
+        return live
+    if not all(_shows_exactly(name) for name in live):
+        raise ClassTextRefused(
+            f"A client class name of {owner} has a comma, a line break or surrounding spaces, so this field cannot "
+            "change the classes without changing that name. Change them in Kea."
+        )
+    names = class_names(text)
+    if len(set(names)) != len(names):
+        raise ClassTextRefused(f"Enter each client class name of {owner} once.")
+    return names
+
+
+@dataclass(frozen=True)
+class OptionRow:
+    """The submitted values and the shown DHCP Option of one row of a DHCP Option form."""
+
+    name: str
+    data: str
+    always_send: bool = False
+    delete: bool = False
+    original_option: DHCPOption | None = None
+    #: The text of the client class field, as the browser sent it.
+    client_classes: str = ""
+
+
+def posted_snapshot(rows: Sequence[OptionRow]) -> tuple[DHCPOption, ...]:
+    """Return the shown DHCP Options that the rows post back, in row order, deleted rows included."""
+    return tuple(row.original_option for row in rows if row.original_option is not None)
+
+
+def _row_classes(live: tuple[str, ...], row: OptionRow, owner: str) -> tuple[str, ...]:
+    try:
+        return client_class_change(live, row.client_classes, owner)
+    except ClassTextRefused as exc:
+        raise DHCPOptionConflict(exc.message) from exc
+
+
+def option_row_edit(rows: Sequence[OptionRow], snapshot: Sequence[DHCPOption]) -> DHCPOptionEdit:
+    """Translate the rows of a DHCP Option form into one edit, without using row positions to identify an option.
+
+    Raises:
+        DHCPOptionConflict: If the class field of a row cannot set the client classes of its option.
+        ValueError: If a new row that is not deleted has no name. The option form refuses such a row.
+
+    """
+    changes: list[DHCPOptionChange] = []
+    for row in rows:
+        seen = row.original_option
+        intended: DHCPOption | None
+        if row.delete:
+            intended = None
+        elif seen is None:
+            if not row.name:
+                raise ValueError("A new DHCP Option row has no name.")
+            classes = _row_classes((), row, f"DHCP Option '{row.name}'")
+            intended = DHCPOption(
+                None, row.name, None, row.data, None, True if row.always_send else None, None, classes
+            )
+        else:
+            classes = _row_classes(seen.client_classes, row, f"DHCP Option '{row.name or seen.name or seen.code}'")
+            intended = replace(seen, name=row.name or None, data=row.data, client_classes=classes)
+            if bool(seen.always_send) != row.always_send:
+                intended = replace(intended, always_send=row.always_send)
+        if seen != intended:
+            changes.append(DHCPOptionChange(seen, intended))
+    return DHCPOptionEdit(tuple(snapshot), tuple(changes))
 
 
 def _same_addresses(data: str, old_data: str) -> bool:

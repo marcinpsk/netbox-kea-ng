@@ -219,6 +219,7 @@ class TestSubnetOptionsView(_ViewTestBase):
                     "name": "",
                     "data": "opaque",
                     "always_send": True,
+                    "client_classes": "",
                     "original_option": {"code": 222, "data": "opaque", "always-send": True},
                 }
             ],

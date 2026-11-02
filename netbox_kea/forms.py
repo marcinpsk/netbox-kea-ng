@@ -24,7 +24,7 @@ from . import constants
 from .config_write import SUBNET_LIST_UNCONFIRMED, subnet_changed
 from .constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, IPNetworkValue
 from .decimal_text import parse_decimal
-from .dhcp_options import InvalidAddress, address_list, parse_dhcp_option
+from .dhcp_options import InvalidAddress, OptionRow, address_list, class_text, parse_dhcp_option
 from .kea import subnet_network
 from .leases import (
     DHCPv4LeaseRequest,
@@ -1777,6 +1777,32 @@ class ReservationOptionsForm(ConfigurationOptionsForm):
 
 
 ReservationOptionsFormSet = forms.formset_factory(ReservationOptionsForm, extra=1, can_delete=True)
+
+
+def option_rows(formset: forms.BaseFormSet) -> tuple[OptionRow, ...]:
+    """Return the typed rows of a valid DHCP Option formset. An unbound formset has no rows."""
+    if not formset.is_bound:
+        return ()
+    rows = []
+    # A deleted row skips validation, so its cleaned data can lack a field.
+    for row in formset.cleaned_data:
+        if not row:
+            continue
+        original = row.get("original_option")
+        seen = None if original is None else parse_dhcp_option(original)
+        # A form without a class field keeps the shown classes.
+        shown_classes = "" if seen is None else class_text(seen.client_classes)
+        rows.append(
+            OptionRow(
+                name=row.get("name", ""),
+                data=row.get("data", ""),
+                always_send=bool(row.get("always_send")),
+                delete=bool(row.get("DELETE")),
+                original_option=seen,
+                client_classes=row.get("client_classes", shown_classes),
+            )
+        )
+    return tuple(rows)
 
 
 def _clean_mac(value: str) -> str:

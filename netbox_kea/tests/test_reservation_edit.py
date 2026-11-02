@@ -11,7 +11,14 @@ from django.test import TestCase
 
 from netbox_kea import config_write, reservation_edit, subnet_catalogue
 from netbox_kea.change_outcome import ChangeRejected
-from netbox_kea.dhcp_options import DHCPOptionChange, DHCPOptionEdit, parse_dhcp_option
+from netbox_kea.dhcp_options import (
+    DHCPOptionChange,
+    DHCPOptionEdit,
+    OptionRow,
+    class_names,
+    class_text,
+    parse_dhcp_option,
+)
 from netbox_kea.reservations import (
     InSubnetReservationScope,
     ReservationChange,
@@ -290,7 +297,7 @@ class ReservationEditTests(TestCase):
                 (ip_address(_ADDRESS[family]),),
                 prefixes,
                 hostname="host.pool.example.org",
-                option_rows=(reservation_edit.OptionRow("custom", "value"),),
+                option_rows=(OptionRow("custom", "value"),),
             )
             with self.subTest(family=family):
                 with stub_kea(_responses(family, raw=_raw(family), pool_suffix="pool.example.org")) as kea:
@@ -350,8 +357,8 @@ class ReservationEditTests(TestCase):
             current.addresses,
             hostname=state.initial["hostname"],
             option_rows=(
-                reservation_edit.OptionRow("custom", "other", True, original_option=current.options[1]),
-                reservation_edit.OptionRow("", "aabc", original_option=current.options[0], client_classes="lab"),
+                OptionRow("custom", "other", True, original_option=current.options[1]),
+                OptionRow("", "aabc", original_option=current.options[0], client_classes="lab"),
             ),
         )
         with stub_kea(_responses(raw=raw)) as kea:
@@ -385,10 +392,10 @@ class ReservationEditTests(TestCase):
         raw = {**_raw(), "option-data": [first]}
         current, state = self._shown(raw=raw)
         for rows in (
-            (reservation_edit.OptionRow("renamed", "aabc", original_option=current.options[0]),),
+            (OptionRow("renamed", "aabc", original_option=current.options[0]),),
             (
-                reservation_edit.OptionRow("custom", "aabb", delete=True, original_option=current.options[0]),
-                reservation_edit.OptionRow("custom", "new"),
+                OptionRow("custom", "aabb", delete=True, original_option=current.options[0]),
+                OptionRow("custom", "new"),
             ),
         ):
             with self.subTest(rows=rows):
@@ -438,8 +445,8 @@ class ReservationEditTests(TestCase):
                     current.addresses,
                     hostname=state.initial["hostname"],
                     option_rows=(
-                        reservation_edit.OptionRow("custom", "two", original_option=current.options[1]),
-                        reservation_edit.OptionRow("custom", "one", original_option=current.options[0]),
+                        OptionRow("custom", "two", original_option=current.options[1]),
+                        OptionRow("custom", "one", original_option=current.options[0]),
                     ),
                 ),
             )
@@ -452,7 +459,7 @@ class ReservationEditTests(TestCase):
         values = reservation_edit.SubmittedValues(
             current.addresses,
             hostname=state.initial["hostname"],
-            option_rows=(reservation_edit.OptionRow("routers", "198.18.0.2", original_option=current.options[0]),),
+            option_rows=(OptionRow("routers", "198.18.0.2", original_option=current.options[0]),),
         )
         with stub_kea(_responses(raw=live)) as kea:
             with self.assertRaisesRegex(ReservationConflict, "ntp-servers"):
@@ -466,7 +473,7 @@ class ReservationEditTests(TestCase):
             current.addresses,
             hostname=state.initial["hostname"],
             option_rows=(
-                reservation_edit.OptionRow(
+                OptionRow(
                     "routers", "198.18.0.2", original_option=parse_dhcp_option({"name": "routers", "data": "not-shown"})
                 ),
             ),
@@ -494,7 +501,7 @@ class ReservationEditTests(TestCase):
     def test_incomplete_option_definitions_refuse_changed_options_but_keep_other_edits(self):
         raw = {**_raw(hostname=""), "option-data": [{"name": "custom", "data": "old"}]}
         current, state = self._shown(raw=raw)
-        rows = (reservation_edit.OptionRow("custom", "new", original_option=current.options[0]),)
+        rows = (OptionRow("custom", "new", original_option=current.options[0]),)
         malformed = _responses(raw=raw)["config-get"]
         malformed["arguments"]["Dhcp4"]["option-def"] = [{"name": "custom", "code": "invalid"}]
         for configuration in (malformed, requests.ConnectionError("offline")):
@@ -542,12 +549,12 @@ class ReservationEditTests(TestCase):
             raw = {**_raw(family), "option-data": options}
             current, state = self._shown(family, raw=raw)
             rows = [
-                reservation_edit.OptionRow(
+                OptionRow(
                     option.name or "",
                     option.data,
                     bool(option.always_send),
                     original_option=option,
-                    client_classes=reservation_edit.class_text(option.client_classes),
+                    client_classes=class_text(option.client_classes),
                 )
                 for option in current.options
             ]
@@ -556,7 +563,7 @@ class ReservationEditTests(TestCase):
             values = reservation_edit.SubmittedValues(
                 current.addresses,
                 hostname=state.initial["hostname"],
-                option_rows=(*reversed(rows), reservation_edit.OptionRow("added", "last")),
+                option_rows=(*reversed(rows), OptionRow("added", "last")),
             )
             with self.subTest(family=family):
                 with stub_kea(_responses(family, raw=raw)) as kea:
@@ -609,11 +616,11 @@ class ReservationEditTests(TestCase):
                 current.addresses,
                 hostname=state.initial["hostname"],
                 option_rows=tuple(
-                    reservation_edit.OptionRow(
+                    OptionRow(
                         option.name,
                         "new",
                         original_option=option,
-                        client_classes=reservation_edit.class_text(option.client_classes),
+                        client_classes=class_text(option.client_classes),
                     )
                     for option in current.options
                 ),
@@ -655,7 +662,7 @@ class ReservationEditTests(TestCase):
         values = reservation_edit.SubmittedValues(
             current.addresses,
             hostname=state.initial["hostname"],
-            option_rows=(reservation_edit.OptionRow("routers", "198.18.0.2", original_option=current.options[0]),),
+            option_rows=(OptionRow("routers", "198.18.0.2", original_option=current.options[0]),),
         )
         for changed in (
             None,
@@ -681,7 +688,7 @@ class ReservationEditTests(TestCase):
             raw = {**_raw(), "option-data": options}
             current, state = self._shown(raw=raw)
             rows = tuple(
-                reservation_edit.OptionRow(
+                OptionRow(
                     name if index == 0 else option.name, "new" if index == 0 else option.data, original_option=option
                 )
                 for index, option in enumerate(current.options)
@@ -754,7 +761,7 @@ class WidenedReservationEditTests(TestCase):
             current.addresses,
             current.delegated_prefixes,
             current.hostname,
-            client_classes=reservation_edit.class_text(current.client_classes),
+            client_classes=class_text(current.client_classes),
             next_server=current.next_server,
             server_hostname=current.server_hostname,
             boot_file_name=current.boot_file_name,
@@ -943,13 +950,13 @@ class WidenedReservationEditTests(TestCase):
         current, _state = self._shown(4, raw)
         (option,) = current.options
         for classes, expected in (("lab, voip", ["lab", "voip"]), ("", None)):
-            row = reservation_edit.OptionRow(option.name, option.data, original_option=option, client_classes=classes)
+            row = OptionRow(option.name, option.data, original_option=option, client_classes=classes)
             with self.subTest(classes=classes):
                 _outcome, kea = self._save_edit(4, raw, self._values(current, option_rows=(row,)))
                 (sent,) = kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"]
                 self.assertEqual(sent.get("client-classes"), expected)
-        added = reservation_edit.OptionRow("domain-name", "voip.example.org", client_classes="voip")
-        kept = reservation_edit.OptionRow(option.name, option.data, original_option=option, client_classes="lab")
+        added = OptionRow("domain-name", "voip.example.org", client_classes="voip")
+        kept = OptionRow(option.name, option.data, original_option=option, client_classes="lab")
         _outcome, kea = self._save_edit(4, raw, self._values(current, option_rows=(kept, added)))
         self.assertEqual(
             kea.bodies("reservation-update")[0]["arguments"]["reservation"]["option-data"],
@@ -957,7 +964,7 @@ class WidenedReservationEditTests(TestCase):
         )
 
     def test_a_class_field_drops_empty_names_and_keeps_repeated_ones_for_the_check(self):
-        self.assertEqual(reservation_edit.class_names(" voip, ,printers, voip "), ("voip", "printers", "voip"))
+        self.assertEqual(class_names(" voip, ,printers, voip "), ("voip", "printers", "voip"))
 
     def test_a_changed_class_field_refuses_a_repeated_name(self):
         raw = {**_raw(), "client-classes": ["voip"]}
@@ -981,7 +988,7 @@ class WidenedReservationEditTests(TestCase):
         for live, entered in ((["a,b"], "a,b, new"), (["x,y", "x"], "x,y")):
             raw = {**_raw(), "client-classes": live, "option-data": [option]}
             current, state = self._shown(4, raw)
-            row = reservation_edit.OptionRow(
+            row = OptionRow(
                 option["name"],
                 option["data"],
                 original_option=current.options[0],
@@ -1012,9 +1019,7 @@ class WidenedReservationEditTests(TestCase):
         for live, entered in ((["x", ","], "x"), (["a\nb"], "ab")):
             raw = {**_raw(), "client-classes": live, "option-data": [option]}
             current, state = self._shown(4, raw)
-            row = reservation_edit.OptionRow(
-                option["name"], option["data"], original_option=current.options[0], client_classes=" c "
-            )
+            row = OptionRow(option["name"], option["data"], original_option=current.options[0], client_classes=" c ")
             for field, change in (
                 ("client_classes", {"client_classes": entered, "option_rows": (row,)}),
                 (None, {"option_rows": (replace(row, client_classes="c"),)}),
@@ -1040,7 +1045,7 @@ class WidenedReservationEditTests(TestCase):
         self.assertEqual(state.initial["client_classes"], "x,y, x")
         self.assertEqual(state.options_initial[0]["client_classes"], "a,b,  c ")
         shown_option = current.options[0]
-        row = reservation_edit.OptionRow(
+        row = OptionRow(
             shown_option.name,
             "changed.example.org",
             original_option=shown_option,
@@ -1061,9 +1066,7 @@ class WidenedReservationEditTests(TestCase):
         raw = {**_raw(), "option-data": [option]}
         current, _state = self._shown(4, raw)
         live = {**raw, "option-data": [{**option, "client-classes": ["voip"]}]}
-        row = reservation_edit.OptionRow(
-            "domain-name", "changed.example.org", original_option=current.options[0], client_classes="lab"
-        )
+        row = OptionRow("domain-name", "changed.example.org", original_option=current.options[0], client_classes="lab")
         with self.assertRaisesRegex(ReservationConflict, "domain-name"):
             self._save_edit(4, raw, self._values(current, option_rows=(row,)), live=live)
 
