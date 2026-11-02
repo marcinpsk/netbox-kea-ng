@@ -49,21 +49,20 @@ def write_journal(server: Server, user: Any, comments: str) -> SideEffectStatus:
 
 def send_signal(signal: Signal, name: str, **values: Any) -> SideEffectStatus:
     """Send *signal*, called *name* in the logs, to every receiver, and classify the receiver errors."""
-    try:
-        responses = signal.send_robust(sender=None, **values)
-    except event_scope.EventDispatchError:
-        logger.exception("The %s signal committed but its events could not be dispatched", name)
-        return "events-failed"
-    except (DatabaseError, ValidationError, ValueError, RuntimeError):
-        logger.exception("Could not send the %s signal", name)
-        return "failed"
     # send_robust() returns the error of each receiver instead of raising it.
+    responses = signal.send_robust(sender=None, **values)
     errors = [response for _receiver, response in responses if isinstance(response, Exception)]
     for error in errors:
         logger.error("A receiver of the %s signal failed", name, exc_info=error)
-    if any(isinstance(error, event_scope.EventDispatchError) for error in errors):
-        return "events-failed"
-    return "failed" if errors else "succeeded"
+    statuses: list[SideEffectStatus] = [
+        "events-failed" if isinstance(error, event_scope.EventDispatchError) else "failed" for error in errors
+    ]
+    return _worst(statuses)
+
+
+def _worst(statuses: list[SideEffectStatus]) -> SideEffectStatus:
+    """Return the status to show for several outcomes of one step: a failed dispatch first, then a failure."""
+    return next((status for status in ("events-failed", "failed") if status in statuses), "succeeded")
 
 
 LeaseAction = Literal["added", "deleted"]
@@ -103,7 +102,7 @@ class LeasesDeleted:
     leases: tuple[Lease, ...]
 
 
-def _journal_comments(
+def _lease_journal_comments(
     action: LeaseAction,
     ip_addresses: list[str],
     hw_address: str = "",
@@ -153,7 +152,7 @@ def lease_after_apply(
     """Write the journal entry, send the Lease signal and run the requested Manual Sync of an applied change."""
     if isinstance(change, LeaseAdded):
         creation = change.creation
-        comments = _journal_comments(
+        comments = _lease_journal_comments(
             "added",
             [str(creation.address)],
             hw_address=creation.hw_address if isinstance(creation, DHCPv4LeaseRequest) else "",
@@ -166,7 +165,7 @@ def lease_after_apply(
     if not change.leases:
         raise ValueError("An applied Lease delete needs the deleted Leases.")
     labels = [shown_lease(lease).label for lease in change.leases]
-    journal = write_journal(server, user, _journal_comments("deleted", labels))
+    journal = write_journal(server, user, _lease_journal_comments("deleted", labels))
     signal = send_signal(
         leases_deleted,
         LEASE_SIGNAL_NAMES["deleted"],
@@ -198,10 +197,6 @@ class LeaseImportAfterApply:
         if not self._created:
             return None
         journal = write_journal(
-            self.server, self.user, _journal_comments("added", [str(item.address) for item in self._created])
+            self.server, self.user, _lease_journal_comments("added", [str(item.address) for item in self._created])
         )
-        # As for the receivers of one signal: a failed dispatch shows first.
-        signal: SideEffectStatus = next(
-            (status for status in ("events-failed", "failed") if status in self._signals), "succeeded"
-        )
-        return LeaseAfterApplyFacts("added", journal, signal)
+        return LeaseAfterApplyFacts("added", journal, _worst(self._signals))

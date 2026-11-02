@@ -51,7 +51,7 @@ from netbox_kea.lease_reads import LeaseSearch
 from netbox_kea.models import Server
 from netbox_kea.signals import lease_added
 from netbox_kea.utilities import parse_lease_csv
-from netbox_kea.views._base import _run_change_loop
+from netbox_kea.views._base import ChangeLoop, _run_change_loop
 from netbox_kea.views.leases import fetch
 from netbox_kea.views.notices import HEADLINES, Notice, NoticeKind
 
@@ -2739,11 +2739,12 @@ class TestBulkLeaseImportView(_ViewTestBase):
         classified: list[bool] = []
 
         def receive(sender, creation, **kwargs):
-            # The frame of the running change loop holds the rows that it classified as applied.
+            # The frame of the running change loop holds the ChangeLoop with the rows that it classified as applied.
             frame = sys._getframe()
             while frame.f_code is not _run_change_loop.__code__:
                 frame = frame.f_back
-            classified.append(any(row[1] is creation for row, _outcome in frame.f_locals["loop"].applied))
+            (loop,) = [value for value in frame.f_locals.values() if isinstance(value, ChangeLoop)]
+            classified.append(any(row[1] is creation for row, _outcome in loop.applied))
 
         lease_added.connect(receive)
         self.addCleanup(lease_added.disconnect, receive)
@@ -2927,9 +2928,9 @@ class TestJournalHelperEdgeCases(SimpleTestCase):
 
     def test_lease_journal_multiple_ips(self):
         """A list of IP addresses uses the 'N lease(s)' form."""
-        from netbox_kea.after_apply import _journal_comments
+        from netbox_kea.after_apply import _lease_journal_comments
 
-        comments = _journal_comments(
+        comments = _lease_journal_comments(
             "deleted", ["10.0.0.1", "10.0.0.2"], hw_address="aa:bb:cc:dd:ee:ff", hostname="host1"
         )
         self.assertEqual(
