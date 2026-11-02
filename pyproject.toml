@@ -184,6 +184,11 @@ ignore = [
   # En dash in numeric ranges ("1-1440") and the multiplication sign are intended.
   "RUF001",
   "RUF002",
+  # PEP 695 type parameters and type statements: opengrep 1.30 cannot parse them and skips
+  # the code around them, so the custom ruleset would miss its findings there.
+  "UP040",
+  "UP046",
+  "UP047",
 ]
 
 [tool.ruff.lint.mccabe]

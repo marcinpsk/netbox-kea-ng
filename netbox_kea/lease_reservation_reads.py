@@ -12,7 +12,7 @@ import concurrent.futures
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from typing import Concatenate, ParamSpec, TypeVar
 
@@ -262,7 +262,7 @@ class _ReservationLookups:
         """Read the display cache entry of *parts*; a miss builds the client of the calling thread and asks Kea."""
 
         def read() -> _ReservationLookup:
-            started = datetime.now(tz=timezone.utc)
+            started = datetime.now(tz=UTC)
             return _ReservationLookup(lookup(clients(), *args, **kwargs), self._catalogue.settled, started)
 
         return display_cache.cached(

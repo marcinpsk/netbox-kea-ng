@@ -11,7 +11,7 @@ import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any
+from typing import Any, assert_never
 from urllib.parse import urlencode
 
 from django.core.exceptions import BadRequest
@@ -20,7 +20,6 @@ from django.http import HttpRequest, HttpResponse
 from django.urls import NoReverseMatch, reverse
 from django.utils import timezone
 from netbox.views import generic
-from typing_extensions import assert_never
 from utilities.views import register_model_view
 
 from .. import constants, display_cache, forms, server_configuration, tables

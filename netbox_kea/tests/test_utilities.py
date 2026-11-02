@@ -4,7 +4,7 @@
 """Unit tests for netbox_kea.utilities — pure helper functions."""
 
 import ipaddress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
@@ -49,7 +49,7 @@ class TestFormatDuration(TestCase):
         self.assertEqual(format_duration(59 * 3600 + 59 * 60 + 59), "59:59:59")
 
 
-_NOW = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+_NOW = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
 _NOW_TS = int(_NOW.timestamp())
 
 
@@ -98,8 +98,8 @@ class TestLeaseRows(TestCase):
     def test_timestamps_are_utc_aware(self):
         """A naive value is rendered verbatim by the table columns, so both derived times must be aware UTC."""
         row = _row(cltt=1, valid_lft=3600)
-        self.assertEqual(row["cltt"], datetime(1970, 1, 1, 0, 0, 1, tzinfo=timezone.utc))
-        self.assertEqual(row["expires_at"], datetime(1970, 1, 1, 1, 0, 1, tzinfo=timezone.utc))
+        self.assertEqual(row["cltt"], datetime(1970, 1, 1, 0, 0, 1, tzinfo=UTC))
+        self.assertEqual(row["expires_at"], datetime(1970, 1, 1, 1, 0, 1, tzinfo=UTC))
 
     def test_an_infinite_lifetime_has_no_expiration(self):
         row = _row(valid_lft=0xFFFFFFFF)

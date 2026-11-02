@@ -3,7 +3,7 @@
 import ast
 import itertools
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from fnmatch import fnmatch
 from ipaddress import ip_address, ip_network
 from pathlib import Path
@@ -83,7 +83,7 @@ def _catalogue(family: Family, subnet_id: int, cidr: str) -> CatalogueSnapshot:
     return IdentityOnlyCatalogueSnapshot(
         server_id=1,
         family=family,
-        observed_at=datetime.now(timezone.utc),
+        observed_at=datetime.now(UTC),
         subnets=(subnet,),
         configured_subnets=(),
         diagnostics=(),
@@ -323,11 +323,11 @@ class TestReservationPage(SimpleTestCase):
         self.assertEqual([diagnostic.code for diagnostic in snapshot.diagnostics], ["unverified-scope"])
 
     def test_a_page_records_the_aware_time_at_which_its_read_started(self):
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
         with stub_kea({"reservation-get-page": _res_page([])}):
             snapshot = self.kea.reservation_page(4, _catalogue(4, 20, "198.18.0.0/24"))
 
-        self.assertTrue(before <= snapshot.read_started <= datetime.now(timezone.utc))
+        self.assertTrue(before <= snapshot.read_started <= datetime.now(UTC))
 
     def test_a_snapshot_refuses_a_naive_read_time(self):
         with self.assertRaisesMessage(ValueError, "aware read time"):
@@ -1278,7 +1278,7 @@ class TestRawRecordBoundary(SimpleTestCase):
         for source in sorted((_REPOSITORY_ROOT / "netbox_kea").rglob("*.py")):
             relative = source.relative_to(_REPOSITORY_ROOT).as_posix()
             # fnmatch, not Path.full_match: that arrived in 3.13 and this package
-            # supports 3.10. fnmatch's "*" spans "/", which is what these globs want.
+            # supports 3.12. fnmatch's "*" spans "/", which is what these globs want.
             if any(fnmatch(relative, pattern) for pattern in allowed):
                 continue
             offenders.extend(

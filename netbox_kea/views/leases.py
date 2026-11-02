@@ -6,7 +6,7 @@ from abc import ABCMeta
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Generic, Literal, TypeVar, assert_never
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 from urllib.parse import urlencode as _urlencode
 
@@ -19,7 +19,6 @@ from django.urls import reverse
 from django.views import View
 from netbox.tables import BaseTable
 from netbox.views import generic
-from typing_extensions import assert_never
 from utilities.paginator import EnhancedPaginator, get_paginate_count
 from utilities.views import GetReturnURLMixin, register_model_view
 

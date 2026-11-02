@@ -11,7 +11,7 @@ from __future__ import annotations
 import copy
 import ipaddress
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, get_args
 
@@ -57,7 +57,7 @@ def _recorded(family: int) -> dict[str, Any]:
 
 
 # Ten minutes after Kea added the recorded leases, so each finite one is still in its lifetime.
-_AT = datetime.fromtimestamp(_recorded(4)["lease4-get-all"]["arguments"]["leases"][0]["cltt"] + 600, tz=timezone.utc)
+_AT = datetime.fromtimestamp(_recorded(4)["lease4-get-all"]["arguments"]["leases"][0]["cltt"] + 600, tz=UTC)
 
 
 def _raw_leases(family: int) -> list[dict[str, Any]]:
@@ -495,7 +495,7 @@ def test_nested_extensions_stay_out_of_the_lease_and_its_projection():
 
 
 def _iso(timestamp: int) -> str:
-    return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(timestamp, tz=UTC).isoformat()
 
 
 def test_the_public_projection_names_kind_coverage_facts_and_expiration():
@@ -571,7 +571,7 @@ def test_a_creation_request_refuses_missing_or_invalid_facts(values):
 
 
 def _at(lease: leases.Lease, seconds: float) -> datetime:
-    return datetime.fromtimestamp(lease.cltt + lease.valid_lifetime + seconds, tz=timezone.utc)
+    return datetime.fromtimestamp(lease.cltt + lease.valid_lifetime + seconds, tz=UTC)
 
 
 def test_a_finite_lease_expires_only_after_its_last_second():
@@ -584,7 +584,7 @@ def test_a_finite_lease_expires_only_after_its_last_second():
 def test_an_infinite_lifetime_never_expires():
     lease = _parsed(4, "192.0.2.11")
     assert lease.expires_at is None
-    assert is_current(lease, datetime(9999, 12, 31, tzinfo=timezone.utc))
+    assert is_current(lease, datetime(9999, 12, 31, tzinfo=UTC))
 
 
 def test_registered_applies_to_unexpired_addresses_only():

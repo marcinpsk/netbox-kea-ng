@@ -10,7 +10,7 @@ import json
 import unittest
 from collections import Counter
 from dataclasses import fields
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import cast, get_args
 from unittest.mock import patch
 
@@ -122,7 +122,7 @@ def _observation() -> ReservationObservation:
             addresses=(),
         ),
     )
-    observed = datetime(2026, 10, 19, tzinfo=timezone.utc)
+    observed = datetime(2026, 10, 19, tzinfo=UTC)
     catalogue = IncompleteCatalogueSnapshot(
         server_id=1,
         family=4,
