@@ -389,7 +389,7 @@ class FormManagedOption:
         return _STANDARD_CODES[self.family][self.name]
 
 
-# The form reader and the kea.py writer both use this table, so the two cannot disagree.
+# The form reader and the managed_fields writers both use this table, so the two cannot disagree.
 _FORM_MANAGED_OPTIONS: dict[int, tuple[FormManagedOption, ...]] = {
     4: (
         FormManagedOption("gateway", "routers", 4),
