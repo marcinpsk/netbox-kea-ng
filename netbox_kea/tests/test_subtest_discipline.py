@@ -3,7 +3,6 @@
 """Controls for the guard that keeps subTest assertions inside the subTest block."""
 
 import re
-import sys
 import textwrap
 
 import pytest
@@ -347,10 +346,7 @@ def test_a_later_clause_of_the_try_statement_that_is_valid_passes(block):
         "if x and (outcome := g(x)):\n    pass",
         "h((outcome := g(x)) if x else None)",
         "if 0 > 1 < (outcome := g(x)):\n    pass",
-        pytest.param(
-            "try:\n    pass\nexcept* ValueError:\n    outcome = 0",
-            marks=pytest.mark.skipif(sys.version_info < (3, 11), reason="except* needs Python 3.11"),
-        ),
+        "try:\n    pass\nexcept* ValueError:\n    outcome = 0",
     ],
     ids=[
         "nested-def",

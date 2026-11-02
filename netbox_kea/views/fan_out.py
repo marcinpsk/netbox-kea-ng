@@ -42,7 +42,7 @@ def fan_out(servers: Sequence[Server], kind: SnapshotKind, fetch: Callable[[Serv
     for server, future in futures:
         try:
             read.results.append((server, future.result()))
-        except ValueError:  # noqa: PERF203
+        except ValueError:
             logger.exception("Failed to query server %s", server.name)
             read.notices.errors.append((server.name, HEADLINES[kind]))
     return read

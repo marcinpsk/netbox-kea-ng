@@ -7,7 +7,7 @@ import csv
 import json
 import re
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import quote_plus, urlencode, urljoin
 
@@ -902,7 +902,7 @@ def test_dhcp_lease_all_columns(
             search()
 
         def check():
-            cltt = datetime.fromtimestamp(lease["cltt"], timezone.utc)
+            cltt = datetime.fromtimestamp(lease["cltt"], UTC)
             expect(page.locator("table.object-list > tbody > tr > td")).to_have_text(
                 [
                     re.compile(".*"),  # select
@@ -939,7 +939,7 @@ def test_dhcp_lease_all_columns(
             search()
 
         def check():
-            cltt = datetime.fromtimestamp(lease["cltt"], timezone.utc)
+            cltt = datetime.fromtimestamp(lease["cltt"], UTC)
             expect(page.locator("table.object-list > tbody > tr > td")).to_have_text(
                 [
                     "",  # select

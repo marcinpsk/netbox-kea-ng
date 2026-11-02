@@ -969,7 +969,7 @@ def _parse_definitions(entries: Any, family: Family, diagnostics: list[Diagnosti
     for index, entry in enumerate(entries):
         try:
             definitions.append(parse_option_definition(entry, family))
-        except ValueError:  # noqa: PERF203
+        except ValueError:
             diagnostics.append(
                 Diagnostic(
                     "invalid-option-definition",

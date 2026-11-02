@@ -6,7 +6,7 @@ from abc import ABCMeta
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Generic, Literal, TypeVar, assert_never
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 from urllib.parse import urlencode as _urlencode
 
@@ -19,7 +19,6 @@ from django.urls import reverse
 from django.views import View
 from netbox.tables import BaseTable
 from netbox.views import generic
-from typing_extensions import assert_never
 from utilities.paginator import EnhancedPaginator, get_paginate_count
 from utilities.views import GetReturnURLMixin, register_model_view
 
@@ -93,6 +92,7 @@ from ._base import (
     IPAM_UNREADABLE,
     ConditionalLoginRequiredMixin,
     LazyClient,
+    NetBoxRequest,
     _client_or_refusal,
     _KeaChangeMixin,
     _run_change,
@@ -229,7 +229,7 @@ class PresentedLeases:
 
 
 def present(
-    request: HttpRequest,
+    request: NetBoxRequest,
     server: Server,
     snapshot: LeaseSnapshot,
     table_class: type[T],
@@ -324,7 +324,7 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             )
         return ctx
 
-    def get_export(self, request: HttpRequest, **kwargs) -> HttpResponse:
+    def get_export(self, request: NetBoxRequest, **kwargs) -> HttpResponse:
         """Stream all matching leases as a CSV download."""
         instance = self.get_object(**kwargs)
         form = self._make_search_form(instance, request.GET)
@@ -453,7 +453,7 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             form = self.form(initial={"by": by}, subnet_choices=form.subnet_choices)
         return render(request, "netbox_kea/inc/lease_search_value.html", {"form": form})
 
-    def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
+    def get(self, request: NetBoxRequest, **kwargs) -> HttpResponse:
         """Dispatch to export, HTMX partial, or full page render as appropriate."""
         instance: Server = self.get_object(**kwargs)
 

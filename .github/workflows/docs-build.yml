@@ -37,7 +37,7 @@ jobs:
         with:
           enable-cache: true
 
-      # The black-box test client, as in the integration job of ci.yml. Zensical needs Python 3.11 or later.
+      # The black-box test client, as in the integration job of ci.yml.
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:

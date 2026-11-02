@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
 from django import forms
 from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
+from django.forms.renderers import BaseRenderer
 from django.utils.html import format_html
 from django.utils.safestring import SafeString
 from ipam.models import VRF
@@ -314,9 +315,11 @@ class VeryHiddenInput(forms.HiddenInput):
     input_type = "hidden"
     template_name = ""
 
-    def render(self, name: str, value: Any, attrs: Any, renderer: Any) -> str:
+    def render(
+        self, name: str, value: Any, attrs: dict[str, Any] | None = None, renderer: BaseRenderer | None = None
+    ) -> SafeString:
         """Return an empty string, suppressing all HTML output."""
-        return ""
+        return SafeString("")
 
 
 class ServerFilterForm(NetBoxModelFilterSetForm):
@@ -544,6 +547,9 @@ class BaseLeasesSarchForm(forms.Form):
     # Visual order: Search value, State, Attribute selector.
     field_order = ["q", "state", "by"]
 
+    class Meta:
+        ip_version: Family
+
     def __init__(
         self,
         *args,
@@ -588,10 +594,11 @@ class BaseLeasesSarchForm(forms.Form):
             return subnet_id_options(subnet_choices)
         return []
 
-    def clean(self) -> dict[str, Any] | None:
+    def clean(self) -> dict[str, Any]:
         """Validate and normalise search fields according to the selected search type."""
         ip_version = self.Meta.ip_version
-        cleaned_data = super().clean()
+        super().clean()
+        cleaned_data = self.cleaned_data
         q = cleaned_data.get("q") or ""
         by = cleaned_data.get("by")
 

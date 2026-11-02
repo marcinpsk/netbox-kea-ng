@@ -376,7 +376,7 @@ jobs:
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           # Pin the test-driver Python to the 3.14 line (tracks the latest 3.14.x patch —
-          # minor-line, not an exact patch). Without this, reading requires-python (">=3.10")
+          # minor-line, not an exact patch). Without this, reading requires-python (">=3.12")
           # lets setup-python float to whatever release is newest. This only runs the
           # black-box test client (playwright/API); NetBox runs in its container on its own
           # bundled Python, so it is not tied to any matrix leg.

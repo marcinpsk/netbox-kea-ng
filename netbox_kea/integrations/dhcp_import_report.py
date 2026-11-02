@@ -12,10 +12,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class Kind(str, Enum):
+class Kind(StrEnum):
     """The kind of Kea object that an entry describes."""
 
     SERVER = "server"
@@ -29,7 +29,7 @@ class Kind(str, Enum):
     OPTION = "option"
 
 
-class Outcome(str, Enum):
+class Outcome(StrEnum):
     """What a run did with one Kea fact."""
 
     CREATED = "created"
@@ -40,7 +40,7 @@ class Outcome(str, Enum):
     NOT_IMPORTED = "not_imported"
 
 
-class Reason(str, Enum):
+class Reason(StrEnum):
     """Why a run did not write one Kea fact."""
 
     PLUGIN_GAP = "plugin_gap"
@@ -94,7 +94,7 @@ REASON_LABELS: dict[Reason, str] = {
 }
 
 
-class Capability(str, Enum):
+class Capability(StrEnum):
     """A DHCP Plugin Capability that the write of a Kea fact needs, named after its #88 gap."""
 
     SHARED_NETWORK_OPTIONAL_PREFIX = "shared_network_optional_prefix"

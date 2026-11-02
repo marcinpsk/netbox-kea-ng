@@ -71,7 +71,7 @@ def _delete_created_servers(api: pynetbox.api, created_server_ids: set[int]) -> 
             server = api.plugins.kea.servers.get(server_id)
             if server is not None and server.delete() is not True:
                 raise RuntimeError("the NetBox API did not confirm deletion")
-        except Exception as exc:  # noqa: BLE001,PERF203 - cleanup must continue after each failure
+        except Exception as exc:  # noqa: BLE001 - cleanup must continue after each failure
             warnings.warn(f"Could not delete test Server {server_id}: {exc}", RuntimeWarning, stacklevel=2)
 
 
