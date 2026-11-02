@@ -374,7 +374,7 @@ class EntryVocabularyTest(SimpleTestCase):
         self.assertEqual(set(REASON_OUTCOME), set(Reason))
 
     def test_only_an_unsupported_entry_names_a_capability(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as caught:
             ImportEntry(
                 4,
                 Kind.SUBNET,
@@ -384,11 +384,18 @@ class EntryVocabularyTest(SimpleTestCase):
                 "",
                 Capability.USER_CONTEXT,
             )
+        self.assertEqual(str(caught.exception), "Only an unsupported entry names a capability, not not_in_scope")
 
     def test_an_entry_refuses_an_outcome_that_disagrees_with_its_reason(self):
-        for outcome, reason in ((Outcome.CREATED, Reason.WRITE_FAILED), (Outcome.SKIPPED, None)):
-            with self.subTest(outcome=outcome), self.assertRaises(ValueError):
-                ImportEntry(4, Kind.SUBNET, "Dhcp4/subnet4[id=1]", outcome, reason)
+        """The message names the outcome and the reason by their stored values."""
+        for outcome, reason, message in (
+            (Outcome.CREATED, Reason.WRITE_FAILED, "Outcome created does not match reason write_failed"),
+            (Outcome.SKIPPED, None, "Outcome skipped does not match reason None"),
+        ):
+            with self.subTest(outcome=outcome):
+                with self.assertRaises(ValueError) as caught:
+                    ImportEntry(4, Kind.SUBNET, "Dhcp4/subnet4[id=1]", outcome, reason)
+                self.assertEqual(str(caught.exception), message)
 
     def test_setting_paths_are_distinct_from_object_paths(self):
         from netbox_kea.dhcp_options import option_identity

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from django.contrib import messages
@@ -124,7 +124,7 @@ def _summary_text(version: int, summary) -> str:
 _SHOWN_OBJECTS = 50
 
 
-class DriftState(str, Enum):
+class DriftState(StrEnum):
     """How one object of the drift card stands between live Kea and its DHCP Import Mapping."""
 
     # Kea has the object, and no mapping names it.
