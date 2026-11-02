@@ -1255,6 +1255,9 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         )
         executor = MigrationExecutor(connection)
         current = executor.loader.graph.leaf_nodes("netbox_kea")
+        after_0029 = [
+            key for key in executor.loader.graph.forwards_plan(current[0]) if key[0] == "netbox_kea" and key[1] > "0029"
+        ]
 
         def restore_migration_state():
             restore = MigrationExecutor(connection)
@@ -1266,8 +1269,15 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         with self.assertRaisesRegex(IrreversibleError, r"longer than 517 characters \(1 in all\)"):
             executor.migrate([("netbox_kea", "0029_dhcp_import_option_mappings")])
 
+        # The refusal comes before every later migration reverses, so nothing changed.
         applied = MigrationRecorder(connection).applied_migrations()
-        self.assertIn(("netbox_kea", "0030_keadhcplink_unbounded_identity"), applied)
+        self.assertEqual([key for key in after_0029 if key not in applied], [])
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name = 'netbox_kea_keadhcplink' AND column_name = 'kea_subnet_id'"
+            )
+            self.assertEqual(cursor.fetchone(), ("bigint",))
         self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).kea_identity, "o" * 518)
 
     def test_0029_gives_an_existing_mapping_a_confirmation_below_every_cutoff(self):
