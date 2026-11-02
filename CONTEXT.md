@@ -70,14 +70,12 @@ _Avoid_: Override, explicit setting
 **DHCP Import Mapping**:
 An association between a Kea source object and its imported NetBox DHCP object. Each object that a DHCP Import writes
 has one: the global configuration of one address family, a Shared Network, a Subnet, a Pool, a delegated-prefix Pool, a
-Reservation, a client class, a custom Option Definition, and a DHCP Option. The exception is a Kea Subnet without a
-subnet ID: it, its Pools, its delegated-prefix Pools and each DHCP Option of these objects have no mapping. A DHCP
-Option whose identity is longer than a mapping holds has no mapping either. The source identity includes the Server,
+Reservation, a client class, a custom Option Definition, and a DHCP Option. The source identity includes the Server,
 address family, and the Kea identity of the object: a Shared Network name, a Kea subnet
 ID, a Pool within its Subnet, a delegated-prefix Pool's prefix and delegated length within its Subnet, a Reservation
 Identity, a client class name, an Option Definition's space and code (with the name of its client class, for a
 definition that a client class declares), or a DHCP Option's identity within the source of the object that assigns it.
-Apart from these exceptions, a DHCP Option without a mapping, for example one that an operator adds, is not the import's.
+A DHCP Option without a mapping, for example one that an operator adds, is not the import's.
 _Avoid_: DHCP Link, ownership link
 
 **Aggregate Prefix**:
@@ -252,3 +250,20 @@ _Avoid_: Kea-managed IP, synced description
 An owned NetBox object that a complete synchronization of its owner no longer reports. The owner drops its
 ownership. The object is removed or deprecated only when no owner is left.
 _Avoid_: Ghost IP, stale IP, orphan
+
+**Sync Plan**:
+The Kea sources of each address family of one Server that one IPAM synchronization run reads: address leases,
+Reservations, Subnets and Pools, and on DHCPv6 also delegated-prefix leases when lease and Subnet synchronization are
+both on. A source is in the plan when the global switch, the Server switch, the global type flag and the Server type
+flag are all on. A Run Now of one Server skips the Server switch, but a Run Now of a Server whose switch is off does
+not count as an observation of the Server.
+_Avoid_: sync flags, enabled types
+
+**Manual Sync**:
+A claim of one Lease or one Reservation in the sync VRF of its Server that an operator requests: with a row Sync
+button, or with a Lease or Reservation change. A Manual Sync that does not run is Refused (the manual Sync
+permission rule), Not Current (the Lease is not a Current Lease), Stale (the record names a Subnet that Kea's
+configuration no longer holds), Unavailable (Kea could not be read), or Failed. A Manual Sync that runs gives each
+allocation of the record an outcome: Synchronized, Conflict, Disagreement, Not Applicable, or Error. NetBox can save
+a Manual Sync and fail to dispatch its events.
+_Avoid_: row sync, force sync

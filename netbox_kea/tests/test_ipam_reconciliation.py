@@ -1498,6 +1498,7 @@ class ConcurrencyHarness(TransactionTestCase):
 def _import_reservations(server: Server, observation: ReservationObservation, summary: ImportSummary) -> None:
     """Run the Reservation step, then the delegated-prefix cleanup of a DHCPv6 import, in one transaction."""
     from netbox_kea import event_scope
+    from netbox_kea.integrations.dhcp_import_write import WriteScope
     from netbox_kea.integrations.dhcp_plugin import (
         ClassReferences,
         CustomDefinitions,
@@ -1507,18 +1508,10 @@ def _import_reservations(server: Server, observation: ReservationObservation, su
     )
     from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
-    references = OptionReferences(CustomDefinitions(server, {}, ()), ClassReferences(6, frozenset(), {}))
+    references = OptionReferences(CustomDefinitions({}, ()), ClassReferences(6, frozenset(), {}))
+    scope = WriteScope(server, 6, summary, PluginCapabilities(frozenset()))
     with event_scope.atomic():
-        step = import_reservation_snapshot(
-            server,
-            None,
-            observation,
-            references,
-            summary,
-            family=6,
-            adoption_servers=(),
-            capabilities=PluginCapabilities(frozenset()),
-        )
+        step = import_reservation_snapshot(scope, None, observation, references, adoption_servers=())
         assert step is not None
         reconcile_delegated_prefixes(server, 6, step, set(), summary)
 
@@ -1645,6 +1638,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
 
         from netbox_kea.jobs import _sync_one_server
         from netbox_kea.models import DhcpIntegrationConfig, SyncConfig
+        from netbox_kea.sync_plan import sync_plan
 
         policy_server = _server("policy-server", sync_enabled=False)
         for index, policy in enumerate(("server", "sync-config", "dhcp-integration"), start=1):
@@ -1657,6 +1651,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
                 owner.refresh_from_db()
                 before = owner.ipam_initial_observations
                 first_complete = owner.ipam_first_complete_at
+                plan = sync_plan(owner, SyncConfig.get())
                 saved = threading.Event()
                 resume_save = threading.Event()
                 sqlstates = []
@@ -1688,7 +1683,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
                 try:
                     self.assertTrue(saved.wait(timeout=30), self.results)
                     with _kea(), connection.execute_wrapper(observe_cleanup):
-                        report = _sync_one_server(owner, True, True, True, True, 0)
+                        report = _sync_one_server(owner, plan, 0)
                 finally:
                     resume_save.set()
                     self._join()
@@ -1703,7 +1698,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
                 self.assertEqual(owner.ipam_first_complete_at, first_complete)
 
                 with _kea():
-                    retry = _sync_one_server(owner, True, True, True, True, 0)
+                    retry = _sync_one_server(owner, plan, 0)
                 self.assertEqual((retry.errors, retry.prefix_errors), (0, 0))
                 self.assertTrue(retry.complete)
                 self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())

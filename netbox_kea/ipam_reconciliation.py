@@ -53,6 +53,7 @@ from .read_failure import ReadFailure, attempt
 from .reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, ReservationSnapshot
 from .subnet_catalogue import CatalogueUnavailable
 from .sync import normalized_mac, sync_mac_address
+from .sync_plan import LEASE, LEASE_PREFIX, POOL, RESERVATION, SUBNET, SourceScope, served_families, sync_plan
 
 if TYPE_CHECKING:
     from .subnet_catalogue import CatalogueSnapshot, CompleteCatalogueSnapshot
@@ -125,9 +126,6 @@ T = TypeVar("T")
 R = TypeVar("R")
 
 # The type check sees a TextChoices member as its (value, label) tuple; at runtime it is the str value.
-LEASE = cast("str", IPAMOwnershipSource.LEASE)
-RESERVATION = cast("str", IPAMOwnershipSource.RESERVATION)
-LEASE_PREFIX = cast("str", IPAMOwnershipSource.LEASE_PREFIX)
 PD_POOL = cast("str", IPAMOwnershipSource.PD_POOL)
 # The sources that own Prefixes and IP Ranges; their failures count as prefix errors.
 _NETWORK_SOURCES = frozenset({"subnet", "pool", "delegated-prefix", LEASE_PREFIX, PD_POOL})
@@ -194,11 +192,6 @@ class LeasePhase:
     source: ClassVar[str] = LEASE
 
 
-def lease_prefixes_enabled(family: Family, leases: bool, prefixes: bool) -> bool:
-    """Return whether delegated-prefix leases own Prefixes: DHCPv6 with lease and Prefix sync, no separate toggle."""
-    return family == 6 and leases and prefixes
-
-
 @dataclass(frozen=True)
 class LeasePrefixPhase:
     """The Current delegated-prefix Leases of the observation that the call's address lease phase also reads.
@@ -247,7 +240,7 @@ class SubnetPhase:
     """The Subnets of one live catalogue observation."""
 
     observation: CatalogueObservation
-    source: ClassVar[str] = "subnet"
+    source: ClassVar[str] = SUBNET
 
 
 @dataclass(frozen=True)
@@ -255,7 +248,7 @@ class PoolPhase:
     """The allocation Pools of one live catalogue observation."""
 
     observation: CatalogueObservation
-    source: ClassVar[str] = "pool"
+    source: ClassVar[str] = POOL
 
 
 @dataclass(frozen=True)
@@ -427,22 +420,6 @@ class SyncReport:
 
 
 Workflow = Literal["job", "import"]
-SourceScope = frozenset[tuple[Family, str]]
-
-
-_SOURCE_FLAGS = {
-    "lease": "sync_leases_enabled",
-    "reservation": "sync_reservations_enabled",
-    "subnet": "sync_prefixes_enabled",
-    "pool": "sync_ip_ranges_enabled",
-}
-
-
-def periodic_sync_enabled(server: Server, source: str, config: SyncConfig | None = None) -> bool:
-    """Return whether the periodic sync job syncs *source* (a key of ``_SOURCE_FLAGS``) for *server*."""
-    config = SyncConfig.get() if config is None else config
-    flag = _SOURCE_FLAGS[source]
-    return config.sync_enabled and server.sync_enabled and getattr(config, flag) and getattr(server, flag)
 
 
 def effective_sources(server: Server) -> dict[Workflow, SourceScope]:
@@ -453,20 +430,7 @@ def effective_sources(server: Server) -> dict[Workflow, SourceScope]:
 def _effective_sources(
     server: Server, config: SyncConfig, switch: DhcpIntegrationConfig | None = None
 ) -> dict[Workflow, SourceScope]:
-    families: tuple[Family, ...] = tuple(
-        cast("Family", family) for family, enabled in ((4, server.dhcp4), (6, server.dhcp6)) if enabled
-    )
-    job = frozenset(
-        (family, source)
-        for family in families
-        for source in _SOURCE_FLAGS
-        if periodic_sync_enabled(server, source, config)
-    )
-    job |= {
-        (family, LEASE_PREFIX)
-        for family in families
-        if lease_prefixes_enabled(family, (family, "lease") in job, (family, "subnet") in job)
-    }
+    families = served_families(server)
     imported: SourceScope = frozenset()
     if dhcp_plugin.runs_for(server, switch):
         imported = frozenset(
@@ -475,7 +439,7 @@ def _effective_sources(
             for source in ("reservation", "subnet", "pool", "delegated-prefix", PD_POOL)
             if source not in ("delegated-prefix", PD_POOL) or family == 6
         )
-    return {"job": job, "import": imported}
+    return {"job": sync_plan(server, config).sources, "import": imported}
 
 
 @dataclass(frozen=True)
@@ -642,6 +606,10 @@ class _RowRefused(Exception):
     """The row does not identify one object, so the run cannot decide it: two rows, or an address that moved."""
 
 
+class LeaseSubnetAbsent(Exception):
+    """A Lease names a Subnet ID that the complete Subnet Catalogue does not hold, so the Lease is stale."""
+
+
 @dataclass(frozen=True)
 class AddressClaim:
     """The outcome and locked-row snapshot for one canonical address."""
@@ -731,6 +699,17 @@ class ClaimResult:
     def primary(self) -> IPAddress | None:
         """Return the first successfully synchronized row for the aggregate badge."""
         return next((result.ip for result in self.addresses.values() if result.synchronized), None)
+
+
+class ClaimEventsFailed(event_scope.EventDispatchError):
+    """A claim row committed, but NetBox could not dispatch its events, so the claim stopped after that row.
+
+    ``result`` holds the outcome of each row that ran, the committed row included.
+    """
+
+    def __init__(self, result: ClaimResult) -> None:
+        super().__init__("NetBox could not dispatch the events of a committed claim row")
+        self.result = result
 
 
 # The Synchronization State terms of CONTEXT.md; "hidden" is the Unknown of an object the user may not view.
@@ -867,6 +846,13 @@ def claim(
     Subnet Catalogue; a delegated prefix is claimed as a Prefix. Reservations carry their verified Subnet mask, and
     *catalogue*, the catalogue that verified them, gives their published names; only a Reservation claim takes it.
     Network records carry their own canonical network and Pool bounds.
+
+    Raises:
+        LeaseSubnetAbsent: If a Lease names a Subnet ID that the live complete Subnet Catalogue does not hold.
+        CatalogueUnavailable: If a Lease claim cannot read a complete Subnet Catalogue.
+        ClaimEventsFailed: If NetBox could not dispatch the events of a committed row.
+        ValueError: If the call is not valid: a caller bug.
+
     """
     if family not in (4, 6) or isinstance(family, bool):
         raise ValueError("The address family must be 4 or 6")
@@ -928,16 +914,50 @@ def claim(
             return AddressClaim(row.address, "not-applicable", ip)
         return AddressClaim(row.address, outcome, ip, resolved_macs)
 
-    report = SyncReport()
-    for row, result in _each_row(reports.values(), report, source, apply, lambda row: row.address):
-        outcomes[row.address] = result
-    return ClaimResult(addresses=outcomes, conflicts=conflicts)
+    result = ClaimResult(addresses=outcomes, conflicts=conflicts)
+
+    def store(row: _Report, claimed: AddressClaim) -> None:
+        outcomes[row.address] = claimed
+
+    _claim_rows(reports.values(), SyncReport(), source, apply, lambda row: row.address, store, result)
+    return result
+
+
+def _claim_rows(
+    rows: Iterable[T],
+    report: SyncReport,
+    source: str,
+    work: Callable[[T], R],
+    name: Callable[[T], str],
+    store: Callable[[T, R], None],
+    result: ClaimResult,
+) -> None:
+    """Run each row of a claim through ``_each_row`` and store its outcome in *result*.
+
+    Raises:
+        ClaimEventsFailed: When NetBox could not dispatch the events of a committed row. *result* holds that row.
+
+    """
+    ran: list[tuple[T, R]] = []
+
+    def tracked(row: T) -> R:
+        outcome = work(row)
+        ran.append((row, outcome))
+        return outcome
+
+    try:
+        for row, outcome in _each_row(rows, report, source, tracked, name):
+            store(row, outcome)
+    except event_scope.EventDispatchError as exc:
+        # Only a row unit that committed raises it, so the last row that ran is in the database.
+        store(*ran[-1])
+        raise ClaimEventsFailed(result) from exc.__cause__
 
 
 def _lease_prefix_report(lease: DHCPv6PrefixLease, subnet_ids: Collection[int]) -> _NetworkReport:
     """Return the Prefix report of a delegated-prefix lease, whose Subnet ID must be in the catalogue's *subnet_ids*."""
     if lease.subnet_id not in subnet_ids:
-        raise ValueError("The lease Subnet ID is absent from the Subnet Catalogue")
+        raise LeaseSubnetAbsent("The lease Subnet ID is absent from the Subnet Catalogue")
     return _NetworkReport(str(lease.prefix), lease.prefix_length)
 
 
@@ -1042,7 +1062,7 @@ def _lease_report(
     address = lease.identity.address
     if subnet_prefix_lengths is not None:
         if lease.subnet_id not in subnet_prefix_lengths:
-            raise ValueError("The lease Subnet ID is absent from the Subnet Catalogue")
+            raise LeaseSubnetAbsent("The lease Subnet ID is absent from the Subnet Catalogue")
         prefix_length = subnet_prefix_lengths[lease.subnet_id]
     else:
         prefix = (
@@ -1203,7 +1223,7 @@ def _lease_reports(server: Server, family: Family, phase: LeasePhase, report: Sy
             continue
         try:
             row = _lease_report(server, family, lease, phase.subnet_prefix_lengths)
-        except (ValueError, RuntimeError) as exc:
+        except (LeaseSubnetAbsent, RuntimeError) as exc:
             report.fail_row(LEASE, f"lease {lease.identity.address}", exc)
             continue
         _add_report(reports, row)
@@ -1995,11 +2015,13 @@ def _claim_network_reports(
         outcome = _claim_network(server, family, source, row, force=force)
         return _network_result(server, source, row, outcome)
 
-    for row, outcome in _each_row(reports.values(), report, source, apply, lambda row: row.address):
+    def store(row: _NetworkReport, outcome: PrefixClaim | RangeClaim) -> None:
         if isinstance(outcome, PrefixClaim):
             result.prefixes[row.address] = outcome
         else:
             result.ranges[row.address] = outcome
+
+    _claim_rows(reports.values(), report, source, apply, lambda row: row.address, store, result)
     return result
 
 
@@ -2059,7 +2081,7 @@ def _run_lease_prefix_phase(server: Server, family: Family, phase: LeasePrefixPh
             continue
         try:
             reports[str(lease.prefix)] = _lease_prefix_report(lease, subnet_ids)
-        except ValueError as exc:
+        except LeaseSubnetAbsent as exc:
             report.fail_row(LEASE_PREFIX, f"delegated prefix {lease.prefix} of Server {server.name}", exc)
     results = _claim_network_reports(server, family, LEASE_PREFIX, reports, report=report)
     replaced: list[str] = []

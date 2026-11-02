@@ -28,6 +28,7 @@ import io
 import ipaddress
 import json
 import re
+import sys
 import time
 from contextlib import contextmanager
 from unittest.mock import patch
@@ -50,6 +51,7 @@ from netbox_kea.lease_reads import LeaseSearch
 from netbox_kea.models import Server
 from netbox_kea.signals import lease_added
 from netbox_kea.utilities import parse_lease_csv
+from netbox_kea.views._base import ChangeLoop, _run_change_loop
 from netbox_kea.views.leases import fetch
 from netbox_kea.views.notices import HEADLINES, Notice, NoticeKind
 
@@ -1188,7 +1190,7 @@ class TestDelegatedPrefixSyncBadges(_ViewTestBase):
 
         # A 200 reply, because htmx swaps no 4xx or 5xx reply into the cell.
         self.assertContains(refused, '<span class="badge text-bg-danger')
-        self.assertContains(refused, "The lease is not current in Kea")
+        self.assertContains(refused, "Kea does not report it as a current lease.")
         self.assertFalse(Prefix.objects.exists())
 
     def test_the_prefix_lookup_is_one_query_for_every_row(self):
@@ -2378,7 +2380,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
                         messages,
                         [
                             f"Lease for {address} created.",
-                            "Lease created but NetBox IPAM sync failed; see server logs.",
+                            f"Lease {address} was not synced to NetBox: NetBox could not read it back from Kea.",
                         ],
                     )
                     self.assertFalse(NbIP.objects.exists())
@@ -2415,7 +2417,10 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
             response = self.client.post(self._url(version=4), self._post4(sync=True))
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("lease4-add"), 1)
-        self.assertTrue(any("sync failed" in str(message) for message in get_messages(response.wsgi_request)))
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)][-1],
+            "Lease 10.0.0.200 was not synced to NetBox: NetBox could not read the Kea configuration.",
+        )
         self.assertFalse(NbIP.objects.exists())
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
@@ -2459,11 +2464,34 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
                 response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
             self.assertEqual(response.status_code, 200)
             self.assertEqual(kea.commands().count("lease4-add"), 1)
-            self.assertTrue(any("sync failed" in str(message) for message in response.context["messages"]))
+            self.assertEqual(
+                [str(message) for message in response.context["messages"]][-1],
+                "Lease 10.0.0.200 was not synced to NetBox for 10.0.0.200: NetBox IPAM synchronization failed;"
+                " see server logs.",
+            )
             self.assertFalse(NbIP.objects.exists())
         finally:
             with connection.cursor() as cursor:
                 cursor.execute("ALTER TABLE ipam_ipaddress DROP CONSTRAINT reject_claim")
+
+    def test_post_lease4_add_keeps_kea_success_when_an_ip_address_receiver_raises_value_error(self):
+        from django.db.models.signals import post_save
+
+        def reject(**_kwargs):
+            raise ValueError("a receiver refused the IP address")
+
+        post_save.connect(reject, sender=NbIP, dispatch_uid="lease-add-value-error")
+        self.addCleanup(post_save.disconnect, sender=NbIP, dispatch_uid="lease-add-value-error")
+        responses = {**LeaseDaemon(4).responses(), "lease4-get": self._readback(), "subnet4-list": self._SUBNETS4}
+        with _lease_stub(responses) as kea:
+            response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands().count("lease4-add"), 1)
+        self.assertEqual(
+            [str(message) for message in response.context["messages"]][-1],
+            "Lease 10.0.0.200 was not synced to NetBox: NetBox IPAM synchronization failed; see server logs.",
+        )
+        self.assertFalse(NbIP.objects.exists())
 
     def test_post_lease4_add_sync_skipped_without_ipam_permission(self):
         """Server-change permission alone cannot write IPAM."""
@@ -2501,7 +2529,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         msgs = [m.message for m in response.context["messages"]]
         self.assertTrue(
-            any("skipped" in m.lower() and "not kea-managed" in m.lower() for m in msgs),
+            any("not synced" in m.lower() and "not kea-managed" in m.lower() for m in msgs),
             f"Expected a foreign-IP skip warning, got: {msgs}",
         )
         # Foreign IP left exactly as the operator set it.
@@ -2596,7 +2624,7 @@ class TestBulkLeaseImportView(_ViewTestBase):
         with (
             _lease_stub({"lease4-add": {"result": 0}}),
             patch("extras.models.JournalEntry.objects.create", autospec=True, side_effect=OperationalError("db gone")),
-            self.assertLogs("netbox_kea.views", level="ERROR"),
+            self.assertLogs("netbox_kea.after_apply", level="ERROR"),
         ):
             response = self.client.post(self._url(version=4), self._post(version=4))
         self.assertEqual(response.status_code, 200)
@@ -2724,6 +2752,50 @@ class TestBulkLeaseImportView(_ViewTestBase):
 
         self.assertEqual(_import_counts(response)["created"], 2)
         self.assertEqual(sent_before_signal, [1, 2])
+
+    def test_each_lease_added_goes_out_after_the_loop_classified_its_row(self) -> None:
+        """ADR 0011: the signal runs outside the call that classifies the change, in the after-applied hook."""
+        classified: list[bool] = []
+
+        def receive(sender, creation, **kwargs):
+            # The frame of the running change loop holds the ChangeLoop with the rows that it classified as applied.
+            frame = sys._getframe()
+            while frame.f_code is not _run_change_loop.__code__:
+                frame = frame.f_back
+            (loop,) = [value for value in frame.f_locals.values() if isinstance(value, ChangeLoop)]
+            classified.append(any(row[1] is creation for row, _outcome in loop.applied))
+
+        lease_added.connect(receive)
+        self.addCleanup(lease_added.disconnect, receive)
+        csv_bytes = self._csv4(
+            rows=["10.0.0.10,aa:bb:cc:dd:ee:01,1,3600,h1\n", "10.0.0.11,aa:bb:cc:dd:ee:02,1,3600,h2\n"]
+        )
+        with _lease_stub(LeaseDaemon(4).responses()):
+            response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
+
+        self.assertEqual(_import_counts(response)["created"], 2)
+        self.assertEqual(classified, [True, True])
+
+    def test_failing_receivers_show_one_error_and_keep_every_row_and_the_journal(self) -> None:
+        def fail(sender, **kwargs):
+            raise RuntimeError("receiver bug")
+
+        lease_added.connect(fail)
+        self.addCleanup(lease_added.disconnect, fail)
+        csv_bytes = self._csv4(
+            rows=["10.0.0.10,aa:bb:cc:dd:ee:01,1,3600,h1\n", "10.0.0.11,aa:bb:cc:dd:ee:02,1,3600,h2\n"]
+        )
+        with _lease_stub(LeaseDaemon(4).responses()) as kea, self.assertLogs("netbox_kea.after_apply", "ERROR"):
+            response = self.client.post(self._url(version=4), self._post(version=4, csv_bytes=csv_bytes))
+
+        self.assertEqual(kea.commands(), ["lease4-add", "lease4-add"])
+        self.assertEqual(_import_counts(response)["created"], 2)
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)],
+            ["Kea applied the change, but a receiver of the lease_added signal failed; see server logs."],
+        )
+        journal = JournalEntry.objects.get(assigned_object_id=self.server.pk)
+        self.assertEqual(journal.comments, "2 lease(s) added: 10.0.0.10, 10.0.0.11")
 
     def test_an_empty_kea_reply_creates_no_row_and_sends_no_signal(self) -> None:
         received: list[dict] = []
@@ -2866,7 +2938,7 @@ class TestLeaseJournalEntries(_ViewTestBase):
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# _lease_journal_comments
+# The journal text of a Lease change
 # ---------------------------------------------------------------------------
 
 
@@ -2875,7 +2947,7 @@ class TestJournalHelperEdgeCases(SimpleTestCase):
 
     def test_lease_journal_multiple_ips(self):
         """A list of IP addresses uses the 'N lease(s)' form."""
-        from netbox_kea.views.leases import _lease_journal_comments
+        from netbox_kea.after_apply import _lease_journal_comments
 
         comments = _lease_journal_comments(
             "deleted", ["10.0.0.1", "10.0.0.2"], hw_address="aa:bb:cc:dd:ee:ff", hostname="host1"

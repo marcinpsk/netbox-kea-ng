@@ -660,11 +660,11 @@ rules:
     message: >-
       Add an "except event_scope.EventDispatchError:" clause before the broad handler of this try.
       The unit committed and its events did not dispatch, so the run must fail ("raise"), not report a
-      failed row. After an applied change, return an explicit ClaimFailure("events-failed") fact or
-      "events-failed" from a SideEffectStatus-annotated function (ADR 0012). Lease sync after an applied
-      Runtime Change can still report it with messages.error() (ADR 0011). Limits: the handler order is not
-      checked; a try with finally and handlers around callers of event_scope.atomic other than claim() and
-      reconcile() are not seen.
+      failed row. After an applied change, return "events-failed" from a SideEffectStatus-annotated function
+      (ADR 0012). A Manual Sync catches ClaimEventsFailed, which holds the claim result, before it re-raises
+      every other EventDispatchError (ADR 0011). Limits: the handler order is not checked, the handler of
+      ClaimEventsFailed is not checked; a try with finally and handlers around callers of event_scope.atomic
+      other than claim() and reconcile() are not seen.
     metadata:
       category: correctness
       confidence: HIGH
@@ -850,12 +850,6 @@ rules:
           finally:
               ...
       # A committed-event fact must be explicit. A generic failure or an untyped string still fails.
-      - pattern-not-inside: |
-          try:
-              ...
-          except event_scope.EventDispatchError:
-              ...
-              return ClaimFailure("events-failed")
       - pattern-either:
           - patterns:
               - pattern: $CALL(...)
@@ -870,42 +864,6 @@ rules:
                   except event_scope.EventDispatchError:
                       ...
                       return "events-failed"
-      - pattern-either:
-          - patterns:
-              - pattern: $CALL(...)
-              - pattern-not-inside: |
-                  try:
-                      ...
-                  except event_scope.EventDispatchError:
-                      ...
-                      messages.error(...)
-                      ...
-              - pattern-not-inside: |
-                  try:
-                      ...
-                  except event_scope.EventDispatchError:
-                      ...
-                      messages.error(...)
-                      ...
-                  else:
-                      ...
-              - pattern-not-inside: |
-                  try:
-                      ...
-                  except event_scope.EventDispatchError:
-                      ...
-                      messages.error(...)
-                      ...
-                  finally:
-                      ...
-          # Only Lease sync after an applied Runtime Change reports the failed dispatch with messages.
-          - patterns:
-              - pattern-inside: |
-                  def $FUNC(...):
-                      ...
-              - metavariable-regex:
-                  metavariable: $FUNC
-                  regex: ^(?!_run_lease_sync_to_netbox$)
       - pattern-either:
           - pattern: event_scope.atomic(...)
           # Each claim and reconciliation row is an event_scope unit inside the call.
@@ -1385,4 +1343,80 @@ rules:
       - pattern: kea_paths.option(...)
       - pattern-not-inside: |
           class PlannedOptions:
+              ...
+
+  - id: kea-object-path-outside-key
+    languages: [python]
+    severity: ERROR
+    message: >-
+      The DHCP Import names a planned or mapped object by the path of its key (key.path(family), or
+      MappingSource.path for a stored source). A run names an object by this one path when it creates it and when it
+      removes it; a path that a writer renders again can differ from it. Use the key of the planned object.
+      Limits: the rule sees kea_paths.subnet(), pool(), pd_pool(), reservation(), client_class(), shared_network()
+      and option_definition() in netbox_kea/integrations/, outside a path(self, family) method; an import of a
+      function by name and a call through a helper are not seen. The parse step (mappers/) keeps its literal paths.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/integrations/**"
+        - "kea-object-path-outside-key.py"
+      exclude:
+        - "**/tests/**"
+    patterns:
+      - pattern-either:
+          - pattern: kea_paths.subnet(...)
+          - pattern: kea_paths.pool(...)
+          - pattern: kea_paths.pd_pool(...)
+          - pattern: kea_paths.reservation(...)
+          - pattern: kea_paths.client_class(...)
+          - pattern: kea_paths.shared_network(...)
+          - pattern: kea_paths.option_definition(...)
+      - pattern-not-inside: |
+          def path(self, $FAMILY, ...):
+              ...
+
+  - id: kea-dhcp-row-write-outside-protocol
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Write an imported DHCP plugin row through dhcp_import_write.write_row() with a RowAdapter of its kind. The
+      protocol finds or adopts the row, writes it, observes its DHCP Import Mapping, reports a failed write in one
+      failure table (a ValidationError gives the messages of the plugin), and skips the planned subtree of an object
+      that it does not write. A writer with its own observe_mapping() or its own "except
+      event_scope.EventDispatchError: raise" and "except ManagedFieldsMismatch: raise" pair repeats that protocol and
+      drifts from it. Only the DHCPServer, the root of a run, writes itself: upsert_dhcp_server() and
+      _apply_global_settings() are exempt by name.
+      Limits: the rule sees netbox_kea/integrations/; a writer that bypasses the protocol without calling
+      observe_mapping() or opening the re-raise pair is not caught, and a call through a module attribute or an
+      aliased import is not seen. The pair matches in this handler order only: EventDispatchError, then
+      ManagedFieldsMismatch. The exemptions go by function name, so another function of the same name is exempt too. A
+      lone "except event_scope.EventDispatchError: raise" (the Subnet ID moves, the delegated Prefix attachment, the
+      stale removal) is not the pair.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/integrations/**"
+        - "kea-dhcp-row-write-outside-protocol.py"
+      exclude:
+        - "netbox_kea/integrations/dhcp_import_write.py"
+        - "**/tests/**"
+    patterns:
+      - pattern-either:
+          - pattern: observe_mapping(...)
+          - pattern: |
+              try:
+                  ...
+              except event_scope.EventDispatchError:
+                  raise
+              except ManagedFieldsMismatch:
+                  raise
+      - pattern-not-inside: |
+          def upsert_dhcp_server(...):
+              ...
+      - pattern-not-inside: |
+          def _apply_global_settings(...):
               ...

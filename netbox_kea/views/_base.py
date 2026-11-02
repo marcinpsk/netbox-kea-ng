@@ -10,17 +10,14 @@ from urllib.parse import urlencode as _urlencode
 
 from django.contrib import messages
 from django.contrib.auth.models import PermissionsMixin
-from django.core.exceptions import ValidationError
-from django.db import DatabaseError
-from django.dispatch import Signal
 from django.http import Http404, HttpResponse, HttpResponseForbidden
 from django.http.request import HttpRequest
 from django.urls import Resolver404, get_script_prefix, resolve, reverse
 from django.utils.http import url_has_allowed_host_and_scheme
-from extras.models import JournalEntry
 from netbox.tables import BaseTable
 
 from .. import display_cache
+from ..after_apply import SideEffectStatus
 from ..change_outcome import ChangeRejected, RejectionReason
 from ..config_write import ConfigChangeOutcome, ReservationChangeOutcome
 from ..constants import Family
@@ -279,26 +276,28 @@ def _persistence_failure(outcome: ConfigChangeOutcome | RuntimeChangeOutcome) ->
     return None
 
 
-def _journal_applied(request: HttpRequest, server: Server, comments: str) -> None:
-    """Write the journal entry of an applied change. A failure shows a separate error and keeps the change."""
-    try:
-        JournalEntry.objects.create(assigned_object=server, created_by=request.user, kind="info", comments=comments)
-    except (DatabaseError, ValidationError):
-        logger.exception("Could not write the journal entry of an applied change to Server %s", server.pk)
+def _show_journal_and_signal(
+    request: HttpRequest, journal: SideEffectStatus, signal: SideEffectStatus, *, noun: str, signal_name: str
+) -> None:
+    """Present the journal and signal facts of an applied change: *noun* names the signal, such as "Lease"."""
+    if journal == "failed":
         messages.error(
             request, "Kea applied the change, but NetBox could not write the journal entry; see server logs."
         )
-
-
-def _signal_applied(request: HttpRequest, signal: Signal, name: str, **kwargs: Any) -> None:
-    """Send *signal* after an applied change. A receiver that fails shows a separate error."""
-    # send_robust() returns the error of each receiver instead of raising it.
-    responses = signal.send_robust(sender=None, request=request, **kwargs)
-    errors = [response for _receiver, response in responses if isinstance(response, Exception)]
-    for error in errors:
-        logger.error("A receiver of the %s signal failed", name, exc_info=error)
-    if errors:
-        messages.error(request, f"Kea applied the change, but a receiver of the {name} signal failed; see server logs.")
+    if journal == "events-failed":
+        messages.error(
+            request,
+            "Kea applied the change, and the journal entry was saved, but NetBox could not dispatch its events; see server logs.",
+        )
+    if signal == "events-failed":
+        messages.error(
+            request,
+            f"Kea applied the change, and the {noun} signal was sent, but NetBox could not dispatch its events; see server logs.",
+        )
+    if signal == "failed":
+        messages.error(
+            request, f"Kea applied the change, but a receiver of the {signal_name} signal failed; see server logs."
+        )
 
 
 def _about(subject: str, text: str) -> str:

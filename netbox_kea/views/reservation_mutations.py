@@ -19,7 +19,7 @@ from ..config_write import ReservationChangeOutcome
 from ..constants import Family, IPAddressValue
 from ..dhcp_options import parse_dhcp_option
 from ..integrations import dhcp_plugin
-from ..ipam_reconciliation import RESERVATION, ClaimResult, claim_permissions, periodic_sync_enabled
+from ..ipam_reconciliation import RESERVATION, claim_permissions
 from ..models import Server
 from ..published_name import published_name, stored_hostname
 from ..reservations import (
@@ -32,12 +32,15 @@ from ..reservations import (
 )
 from ..subnet_catalogue import CatalogueSnapshot, CatalogueUnavailable, VerifiedSubnet
 from ..sync_permissions import sync_gate
+from ..sync_plan import periodic_sync_enabled
 from ._base import (
     _client_settings_refusal,
     _KeaChangeMixin,
     _run_change,
     _safe_return_url,
+    _show_journal_and_signal,
 )
+from .manual_sync_presenter import manual_sync_lines, show_manual_sync
 from .notices import Notice, failed_load, load_target, notice, show_notices
 from .reservations import (
     RESERVATIONS_TAB,
@@ -50,11 +53,6 @@ from .workspace import ServerFamilyMixin
 logger = logging.getLogger(__name__)
 
 RESERVATION_VERIFICATION_FAILED = "Kea applied the change, but NetBox Kea could not verify the final Reservation."
-
-RESERVATION_CLAIM_EVENTS_FAILED = (
-    "NetBox IPAM sync saved changes, but could not dispatch their events. "
-    "Synchronization may be incomplete; check the addresses before retrying."
-)
 
 
 def _warn_pool_facts(
@@ -219,47 +217,11 @@ def show_reservation_side_effects(
     request: HttpRequest, facts: reservation_edit.AfterApplyFacts, *, show_claim: bool = True
 ) -> None:
     """Present the independent journal, signal and IPAM claim facts of an applied Reservation change."""
-    if facts.journal == "failed":
-        messages.error(
-            request, "Kea applied the change, but NetBox could not write the journal entry; see server logs."
-        )
-    if facts.journal == "events-failed":
-        messages.error(
-            request,
-            "Kea applied the change, and the journal entry was saved, but NetBox could not dispatch its events; see server logs.",
-        )
-    if facts.signal == "events-failed":
-        messages.error(
-            request,
-            "Kea applied the change, and the Reservation signal was sent, but NetBox could not dispatch its events; see server logs.",
-        )
-    if facts.signal == "failed":
-        messages.error(
-            request,
-            f"Kea applied the change, but a receiver of the reservation_{facts.action} signal failed; see server logs.",
-        )
-    if not show_claim:
-        return
-    claim = facts.claim
-    if isinstance(claim, reservation_edit.ClaimSkipped):
-        if claim.reason == "nothing-to-sync":
-            messages.info(
-                request, f"Reservation {facts.action}. Nothing to sync to NetBox because it reserves no IP address."
-            )
-        elif claim.reason == "permission":
-            messages.warning(
-                request, f"Reservation {facts.action}, but it was not synced to NetBox. {claim.explanation}"
-            )
-    elif isinstance(claim, reservation_edit.ClaimFailure):
-        if claim.reason == "events-failed":
-            messages.error(
-                request,
-                f"Reservation {facts.action}. {RESERVATION_CLAIM_EVENTS_FAILED}",
-            )
-        else:
-            messages.error(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
-    elif isinstance(claim, ClaimResult) and any(not address.synchronized for address in claim.addresses.values()):
-        messages.warning(request, "The Reservation changed, but NetBox IPAM synchronization failed.")
+    _show_journal_and_signal(
+        request, facts.journal, facts.signal, noun="Reservation", signal_name=f"reservation_{facts.action}"
+    )
+    if show_claim and not isinstance(facts.claim, str):
+        show_manual_sync(request, manual_sync_lines(facts.claim, "Reservation"))
 
 
 def _show_applied_details(request: HttpRequest, outcome: ReservationChangeOutcome) -> None:

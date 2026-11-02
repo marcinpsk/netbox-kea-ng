@@ -18,6 +18,7 @@ from users.models import ObjectPermission
 
 from netbox_kea import reservation_edit
 from netbox_kea.ipam_reconciliation import RESERVATION, ClaimResult, claim_permissions
+from netbox_kea.manual_sync import Ran
 from netbox_kea.reservation_transfer import (
     ReservationImportProposal,
     export_reservation_document,
@@ -116,8 +117,8 @@ class ReservationImportTests(TestCase):
                 for number in (20, 21):
                     outcome = reservation_edit.save_import(self.server, _proposal(number=number))
                     facts = reservation_edit.after_apply(self.server, outcome, self.user, import_context=context)
-                    self.assertIsInstance(facts.claim, ClaimResult)
-                    self.assertTrue(facts.claim.addresses[f"198.18.0.{number}"].synchronized)
+                    self.assertIsInstance(facts.claim, Ran)
+                    self.assertTrue(facts.claim.result.addresses[f"198.18.0.{number}"].synchronized)
         self.assertEqual(len(permission_reads), 1)
         self.assertEqual(kea.commands().count("reservation-add"), 2)
         self.assertEqual(IPAddress.objects.count(), 2)
@@ -151,7 +152,7 @@ class ReservationImportTests(TestCase):
                 facts = reservation_edit.after_apply(self.server, outcome, self.user, import_context=context)
         finally:
             pre_save.disconnect(trap, sender=IPAddress)
-        self.assertEqual(facts.claim, reservation_edit.ClaimSkipped("not-requested"))
+        self.assertEqual(facts.claim, "not-requested")
         self.assertEqual((reads, attempts), ([], []))
         self.assertEqual((facts.journal, facts.signal), ("succeeded", "succeeded"))
 
@@ -176,10 +177,10 @@ class ReservationImportTests(TestCase):
                 self.server, _proposal(6, number=21, addresses=("2001:db8::20", "2001:db8::21"))
             )
         empty = reservation_edit.after_apply(self.server, addressless, user, import_context=context)
-        self.assertEqual(empty.claim, reservation_edit.ClaimSkipped("nothing-to-sync"))
+        self.assertEqual(empty.claim, Ran(ClaimResult()))
         facts = reservation_edit.after_apply(self.server, multiple, user, import_context=context)
-        self.assertEqual(set(facts.claim.addresses), {"2001:db8::20", "2001:db8::21"})
-        self.assertTrue(all(row.synchronized for row in facts.claim.addresses.values()))
+        self.assertEqual(set(facts.claim.result.addresses), {"2001:db8::20", "2001:db8::21"})
+        self.assertTrue(all(row.synchronized for row in facts.claim.result.addresses.values()))
 
     def test_a_partial_claim_keeps_each_address_result_and_does_not_block_a_later_entry(self):
         user = get_user_model().objects.create_superuser(username="import-partial")
@@ -190,10 +191,10 @@ class ReservationImportTests(TestCase):
             partial = reservation_edit.after_apply(self.server, first, user, import_context=context)
             later = reservation_edit.save_import(self.server, _proposal(6, number=22))
             continued = reservation_edit.after_apply(self.server, later, user, import_context=context)
-        self.assertIsInstance(partial.claim, ClaimResult)
-        self.assertEqual(partial.claim.addresses["2001:db8::20"].outcome, "error")
-        self.assertTrue(partial.claim.addresses["2001:db8::21"].synchronized)
-        self.assertTrue(continued.claim.addresses["2001:db8::22"].synchronized)
+        self.assertIsInstance(partial.claim, Ran)
+        self.assertEqual(partial.claim.result.addresses["2001:db8::20"].outcome, "error")
+        self.assertTrue(partial.claim.result.addresses["2001:db8::21"].synchronized)
+        self.assertTrue(continued.claim.result.addresses["2001:db8::22"].synchronized)
 
     def test_unknown_application_runs_no_side_effects_even_with_checked_context(self):
         user = get_user_model().objects.create_superuser(username="import-unknown")
@@ -211,7 +212,7 @@ class ReservationImportTests(TestCase):
                 facts = reservation_edit.after_apply(self.server, outcome, user, import_context=context)
         finally:
             reservation_created.disconnect(receiver)
-        self.assertEqual(facts.claim, reservation_edit.ClaimSkipped("not-applied"))
+        self.assertEqual(facts.claim, "not-applied")
         self.assertEqual(received, [])
         self.assertFalse(JournalEntry.objects.exists())
 
