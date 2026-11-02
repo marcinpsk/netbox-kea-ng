@@ -307,7 +307,7 @@ URL request
   `server_configuration` (kind `configuration`) and `subnet_catalogue` (kind `catalogue`), each Reservation page
   of the Server tab and the combined page (kind `reservations`, in `views/reservations.fetch()`), each Lease Snapshot
   of the Leases tab and of the Lease badges of Reservation rows (kind `leases`, in `lease_reads.cached_read()`), each
-  Reservation lookup of a Lease row (kind `reservation_lookups`, in `lease_reservation_reads._ReservationLookups`), Subnet
+  Reservation lookup of a Lease row (kind `reservation_lookups`, in `lease_reservation_reads._KeaReservationLookup`), Subnet
   utilization (kind `utilization`, in `views/_base._enrich_subnet_statistics()`) and the `status-get` and
   `version-get` reads of the Overview and the combined status badge (kind `status`, in `views/_base.daemon_status()`
   and `daemon_version()`). It stores only a value whose `settled` property is true (the `Cacheable` protocol). A
@@ -785,14 +785,14 @@ resort, reserved for true external boundaries you cannot run locally.
   `FakeLeaseModelMeta` provide `app_label`/`model_name` so `GetReturnURLMixin`
   resolves in delete views.
 - **Lease badge enrichment**: `_enrich_leases_with_badges()` gets one typed Reservation
-  Match per row from `lease_reservation_reads.reservation_matches()`. The lookups try the
-  Reservation Scopes that the reservation flags of the Lease's Subnet enable first, then the
-  disabled ones. The In-Subnet scope looks up the address or delegated prefix of the Lease,
-  then each carried identity; the Global scope looks up each identity. When
-  `reservations.tries_global_reservation()` is true (an In-Subnet Reservation that can give
-  no allocation of the Lease kind, for example under `reservations-out-of-pool`), the Global
-  Reservation is read too. One call reads each lookup once. `reservations.reservation_match()`
-  is the rule, and the view maps each outcome to its badge, links and Sync with `match` and
+  Match per row from `lease_reservation_reads.reservation_matches()`. `reservations.reservation_match()`
+  holds the lookup walk and the rule, and reads each Reservation through the `ReservationLookup` port
+  (`find(scope, key)`). The walk tries the Reservation Scopes that the reservation flags of the Lease's
+  Subnet enable first, then the disabled ones. The In-Subnet scope looks up the address or delegated
+  prefix of the Lease, then each carried identity; the Global scope looks up each identity. When Kea can
+  go on past an In-Subnet Reservation that gives no allocation of the Lease kind (for example under
+  `reservations-out-of-pool`), the walk looks up the Global Reservation too. The Kea adapter of the port
+  reads each lookup once per call. The view maps each outcome to its badge, links and Sync with `match` and
   `assert_never`. The NetBox IP column shows the Lease Synchronization State of each Current Lease from one
   ownership read per page: `ipam_reconciliation.address_ownership()` (source `lease`) and `prefix_ownership()`
   (source `lease-prefix`), limited to the objects that the user may view.
