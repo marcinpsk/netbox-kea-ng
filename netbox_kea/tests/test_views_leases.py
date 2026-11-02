@@ -2474,6 +2474,25 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
             with connection.cursor() as cursor:
                 cursor.execute("ALTER TABLE ipam_ipaddress DROP CONSTRAINT reject_claim")
 
+    def test_post_lease4_add_keeps_kea_success_when_an_ip_address_receiver_raises_value_error(self):
+        from django.db.models.signals import post_save
+
+        def reject(**_kwargs):
+            raise ValueError("a receiver refused the IP address")
+
+        post_save.connect(reject, sender=NbIP, dispatch_uid="lease-add-value-error")
+        self.addCleanup(post_save.disconnect, sender=NbIP, dispatch_uid="lease-add-value-error")
+        responses = {**LeaseDaemon(4).responses(), "lease4-get": self._readback(), "subnet4-list": self._SUBNETS4}
+        with _lease_stub(responses) as kea:
+            response = self.client.post(self._url(version=4), self._post4(sync=True), follow=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands().count("lease4-add"), 1)
+        self.assertEqual(
+            [str(message) for message in response.context["messages"]][-1],
+            "Lease 10.0.0.200 was not synced to NetBox: NetBox IPAM synchronization failed; see server logs.",
+        )
+        self.assertFalse(NbIP.objects.exists())
+
     def test_post_lease4_add_sync_skipped_without_ipam_permission(self):
         """Server-change permission alone cannot write IPAM."""
         from django.contrib.auth import get_user_model

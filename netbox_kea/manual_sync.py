@@ -94,7 +94,8 @@ def _run(server: Server, what: str, run_claim: Callable[[], ClaimResult]) -> Man
     except CatalogueUnavailable:
         logger.warning("Server %s: the Manual Sync of %s could not read a complete Subnet Catalogue", server.pk, what)
         return NotRun("unavailable")
-    except (DatabaseError, ValidationError, RuntimeError):
+    # ValueError: a receiver of an IPAM save signal can raise it after Kea applied the change (ADR 0011).
+    except (DatabaseError, ValidationError, ValueError, RuntimeError):
         logger.exception("Server %s: the Manual Sync of %s failed", server.pk, what)
         return NotRun("failed")
     return Ran(result)
