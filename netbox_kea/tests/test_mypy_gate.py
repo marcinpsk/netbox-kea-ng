@@ -16,16 +16,11 @@ import re
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 import pytest
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # Python 3.10 needs the dev group's explicit TOML reader.
-    import tomli as tomllib
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 BASELINE = REPOSITORY_ROOT / "mypy-baseline.txt"
@@ -134,13 +129,6 @@ def test_the_dev_group_declares_the_stub_packages_the_gate_needs(package):
     requirements = _dev_group_requirements(REPOSITORY_ROOT / "pyproject.toml")
     assert requirements, "The dev dependency group is empty; this guard would read nothing."
     assert _declares_package(requirements, package), f"{package} is no longer in the dev dependency group."
-
-
-def test_the_dev_group_declares_the_python_310_toml_reader():
-    """Python 3.10 needs an explicit TOML reader to run this guard module."""
-    requirements = _dev_group_requirements(REPOSITORY_ROOT / "pyproject.toml")
-    assert requirements, "The dev dependency group is empty; this guard would read nothing."
-    assert _declares_package(requirements, "tomli"), "tomli is no longer in the dev dependency group."
 
 
 def test_the_stub_package_check_reads_only_the_dev_group(tmp_path):

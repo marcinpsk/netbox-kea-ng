@@ -15,6 +15,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import tomllib
 import warnings
 from ipaddress import ip_address
 from pathlib import Path
@@ -24,11 +25,6 @@ import requests
 import tree_sitter_bash
 import yaml
 from tree_sitter import Language, Parser
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # Python 3.10 needs the dev group's explicit TOML reader.
-    import tomli as tomllib
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 #: The Playwright suite. It must stay inside the path the integration job runs.
@@ -3287,9 +3283,9 @@ def test_the_relative_import_guard_clears_an_import_no_standalone_load_runs(sour
 
 #: Standard-library modules added after the oldest Python this package supports, and the
 #: version that added each one. An import of one of these belongs under a
-#: ``sys.version_info`` branch whose other arm names the backport the dev group ships.
-#: Add an entry when the tree reaches for a newer module; raising the floor retires it.
-_STDLIB_ADDED_IN = {"tomllib": (3, 11)}
+#: ``sys.version_info`` branch whose other arm names a backport. An entry at or below the
+#: floor has no effect; the guard tests below use ``tomllib`` against an explicit 3.10 floor.
+_STDLIB_ADDED_IN = {"tomllib": (3, 11), "annotationlib": (3, 14), "compression": (3, 14)}
 
 
 def _declared_python_floor() -> tuple[int, int]:
@@ -3388,9 +3384,9 @@ def _unguarded_new_stdlib_imports(tree: ast.Module, floor: tuple[int, int]) -> l
 
 
 def test_no_module_imports_a_standard_library_module_the_floor_lacks():
-    """`requires-python` promises 3.10, and the dev group ships tomli to keep that promise.
+    """`requires-python` promises 3.12.
 
-    A bare ``import tomllib`` runs here, where CI uses a newer interpreter, and raises
+    A bare ``import annotationlib`` runs here, where CI uses a newer interpreter, and raises
     ModuleNotFoundError on the oldest interpreter the package claims to support.
     """
     floor = _declared_python_floor()
@@ -3463,7 +3459,7 @@ def test_the_floor_import_guard_clears_an_import_the_floor_skips(source):
 
 def test_the_floor_guard_reads_the_declared_floor():
     """A guard that read no floor would accept anything."""
-    assert _declared_python_floor() >= (3, 10)
+    assert _declared_python_floor() >= (3, 12)
 
 
 #: The one coverage configuration; CI runs pytest from the NetBox checkout, where coverage.py cannot find it.
