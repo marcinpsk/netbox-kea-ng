@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """The Current Lease Presence of Reservations and the Reservation Match of Leases.
 
-They are read through the real KeaClient and the display cache. The cases of the Reservation Match walk and rule
-are in ``test_reservation_match``.
+They are read through the real KeaClient and the display cache. The cases of the rules are in
+``test_reservation_match`` and ``test_current_lease_presence``.
 """
 
 from __future__ import annotations
@@ -46,7 +46,6 @@ from .kea_stub import (
     _subnet_stats,
     _typed_reservation,
     client_failure,
-    complete_lease,
     lease_record,
     lease_reply,
     stub_kea,
@@ -94,22 +93,6 @@ class LeasePresenceTest(_ViewTestBase):
         self.assertEqual(presences, (LeasePresent(ipaddress.ip_address("198.18.0.20")),))
         self.assertEqual(kea.bodies("lease4-get-by-state")[0]["arguments"], {"subnet-id": 20, "state": 0})
 
-    def test_a_current_lease_of_the_reserved_identity_is_present_without_an_address(self):
-        reservation = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff"}
-        lease = _lease4("198.18.0.77", hw_address="AA-BB-CC-DD-EE-FF")
-
-        presences, _kea = self._presence([reservation], {"lease4-get-by-state": _leases_per_subnet({20: [lease]})})
-
-        self.assertEqual(presences, (LeasePresent(None),))
-
-    def test_a_multi_address_reservation_reports_the_address_that_holds_the_lease(self):
-        reservation = {"subnet-id": 30, "duid": "00:01:02:03", "ip-addresses": ["2001:db8::20", "2001:db8::21"]}
-        lease = complete_lease({"subnet-id": 30, "duid": "00:01:02:04", "ip-address": "2001:db8::21", "state": 0})
-
-        presences, _kea = self._presence([reservation], {"lease6-get-all": _leases_per_subnet({30: [lease]})}, family=6)
-
-        self.assertEqual(presences, (LeasePresent(ipaddress.ip_address("2001:db8::21")),))
-
     def test_a_registered_dhcpv6_lease_is_present(self):
         reservation = {"subnet-id": 10, "duid": "00:01:02:03:04:05", "ip-addresses": ["2001:db8:1::11"]}
         registered = lease_record("2001:db8:1::11", state=4)
@@ -133,29 +116,6 @@ class LeasePresenceTest(_ViewTestBase):
                     [_RESERVED], {"lease4-get-by-state": _leases_per_subnet({20: [lease]})}
                 )
                 self.assertEqual(presences, (expected,))
-
-    def test_a_complete_empty_subnet_is_absent_also_for_an_identity_that_no_lease_carries(self):
-        for identifier_type in ("hw-address", "flex-id", "circuit-id"):
-            with self.subTest(identifier_type=identifier_type):
-                reservation = {"subnet-id": 20, identifier_type: "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
-                presences, _kea = self._presence([reservation], {"lease4-get-by-state": _leases_per_subnet({20: []})})
-                self.assertEqual(presences, (LeaseAbsent(),))
-
-    def test_an_identity_that_no_lease_carries_still_matches_by_address(self):
-        reservation = {"subnet-id": 20, "flex-id": "port-7", "ip-address": "198.18.0.20"}
-
-        presences, _kea = self._presence(
-            [reservation], {"lease4-get-by-state": _leases_per_subnet({20: [_lease4("198.18.0.20")]})}
-        )
-
-        self.assertEqual(presences, (LeasePresent(ipaddress.ip_address("198.18.0.20")),))
-
-    def test_the_same_identity_in_another_subnet_is_absent(self):
-        lease = _lease4("198.18.1.20", subnet_id=21, hw_address="aa:bb:cc:dd:ee:ff")
-
-        presences, _kea = self._presence([_RESERVED], {"lease4-get-by-state": _leases_per_subnet({21: [lease]})})
-
-        self.assertEqual(presences, (LeaseAbsent(),))
 
     @with_display_cache_config(leases_ttl=0)
     def test_a_template_style_key_in_a_kea_record_is_not_an_identity(self):
@@ -296,27 +256,6 @@ class LeasePresenceTest(_ViewTestBase):
         )
 
         self.assertEqual(presences, (_unknown(UnknownLeasePresence.KEA_ERROR), LeaseAbsent()))
-
-    def test_an_identity_that_kea_cannot_search_is_unknown(self):
-        cases = (
-            (4, {"subnet-id": 0, "flex-id": "port-7"}),
-            (6, {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-addresses": ["2001:db8::20"]}),
-            (4, {"subnet-id": 20, "duid": "00:01:02:03"}),
-            (4, {"subnet-id": 20, "circuit-id": "port-7"}),
-            (4, {"subnet-id": 20, "flex-id": "port-7"}),
-            # A delegated prefix makes the fixture a DHCPv6 Reservation without an address.
-            (6, {"subnet-id": 30, "flex-id": "port-7", "prefixes": ["2001:db8:100::/56"]}),
-        )
-        for family, reservation in cases:
-            with self.subTest(family=family, reservation=reservation):
-                presences, kea = self._presence(
-                    [reservation],
-                    {"lease4-get-by-state": _leases_per_subnet({}), "lease6-get-all": _leases_per_subnet({})},
-                    family=family,
-                )
-                self.assertEqual(presences, (_unknown(UnknownLeasePresence.UNSEARCHABLE_IDENTIFIER),))
-                if reservation["subnet-id"] == 0:
-                    self.assertEqual(kea.commands(), [], "a Global identity that Kea cannot search reads nothing")
 
     def test_an_unknown_lease_command_makes_every_reservation_unknown(self):
         """A missing lease hook hides every relationship; any other Kea error hides only its own."""

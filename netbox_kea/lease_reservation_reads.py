@@ -3,7 +3,8 @@
 """The lookups that relate Leases and Reservations: display cache reads in a worker pool (ADR 0002, ADR 0009).
 
 The Current Lease lookups give the Lease badges of Reservation rows, and the Reservation lookups give the
-Reservation badges of Lease rows.
+Reservation badges of Lease rows. ``reservations`` decides which lookups a row needs; this module holds the Kea
+adapters of its ``CurrentLeases`` and ``ReservationLookup`` ports.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from functools import partial
 from typing import Generic, TypeVar
 
 from . import constants, display_cache, subnet_catalogue
-from .constants import Family, LeaseState
+from .constants import Family
 from .kea import KeaClient, LeaseQueryGuardError, close_quietly
 from .lease_reads import LeaseSearch, cached_read
 from .leases import Lease, LeaseSnapshot
@@ -28,6 +29,7 @@ from .reservations import (
     CurrentLeaseFacts,
     CurrentLeasePresence,
     InSubnetReservationScope,
+    LeaseObservation,
     LeasePresenceUnknown,
     Reservation,
     ReservationIdentity,
@@ -35,6 +37,7 @@ from .reservations import (
     ReservationMatch,
     ReservationMatchUnknown,
     ReservationScope,
+    SubnetLeases,
     UnknownLeasePresence,
     UnknownReservationMatch,
     current_lease_facts,
@@ -49,6 +52,14 @@ T = TypeVar("T")
 R = TypeVar("R")
 K = TypeVar("K", bound=Hashable)
 V = TypeVar("V")
+
+
+class _FailedLeaseLookup(Exception):
+    """A Lease lookup failed, so the Current Lease Presence is Unknown for *reason*."""
+
+    def __init__(self, reason: UnknownLeasePresence) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class _FailedReservationLookup(Exception):
@@ -132,38 +143,6 @@ class _OncePerCall(Generic[K, V]):
             return self._results[key]
 
 
-def _search(reservation: Reservation) -> LeaseSearch | None:
-    """Return the Lease search that observes the client of *reservation*, or ``None`` when Kea has none."""
-    family = reservation.family
-    if isinstance(reservation.scope, InSubnetReservationScope):
-        # DHCPv6 registered leases are current too, and only an unfiltered Subnet query returns them.
-        state: LeaseState | None = "assigned" if family == 4 else None
-        return LeaseSearch(constants.BY_SUBNET_ID, reservation.scope.subnet.subnet_id, state)
-    # A Global Reservation has no Subnet, so only a Subnet-free identity query can answer it.
-    selector = constants.LEASE_SELECTOR_BY_IDENTIFIER[family].get(reservation.identity.identifier_type)
-    return None if selector is None else LeaseSearch(selector, reservation.identity.value)
-
-
-def _observe(
-    server: Server, family: Family, read_since: datetime, clients: WorkerClients, search: LeaseSearch
-) -> CurrentLeaseFacts | UnknownLeasePresence:
-    """Return the Current Leases of one Lease search, or why Kea could not show them."""
-    try:
-        read = attempt(
-            f"The Lease lookup of Server {server.pk}",
-            lambda: cached_read(server, family, search, clients, read_since=read_since),
-        )
-    except LeaseQueryGuardError:
-        return UnknownLeasePresence.QUERY_GUARD
-    if isinstance(read, ReadFailure):
-        return _LEASE_PRESENCE_UNKNOWN[read.kind]
-    loaded = read.loaded
-    # Only a Subnet search by CIDR can resolve to a Catalogue, and no Reservation lookup sends one.
-    if not isinstance(loaded, LeaseSnapshot):
-        raise TypeError(f"The Lease lookup {search.parts!r} resolved to a Catalogue.")
-    return current_lease_facts(loaded)
-
-
 #: Why a failed Lease lookup leaves the Current Lease Presence unknown.
 _LEASE_PRESENCE_UNKNOWN: dict[ReadFailureKind, UnknownLeasePresence] = {
     "unsupported": UnknownLeasePresence.LEASE_HOOK_UNAVAILABLE,
@@ -183,14 +162,73 @@ _RESERVATION_MATCH_UNKNOWN: dict[ReadFailureKind, UnknownReservationMatch] = {
 }
 
 
+class _KeaCurrentLeases:
+    """The ``CurrentLeases`` of one ``lease_presence()`` call: Kea's Lease queries through the display cache."""
+
+    def __init__(self, server: Server, family: Family, read_since: datetime, clients: WorkerClients) -> None:
+        self._server = server
+        self._family = family
+        self._read_since = read_since
+        self._clients = clients
+        self._lookups: _OncePerCall[LeaseSearch, CurrentLeaseFacts | UnknownLeasePresence] = _OncePerCall(
+            f"The Lease lookup of Server {server.pk}"
+        )
+
+    def current_leases(self, observation: LeaseObservation) -> CurrentLeaseFacts:
+        """Return the Current Leases of *observation*, from the display cache entry of its Lease search or from Kea.
+
+        Raises:
+            _FailedLeaseLookup: If the Lease search failed, in this row or in an earlier one.
+            ValueError: If Kea has no Lease query for the identity of *observation*.
+            TypeError: If the search resolves to a Catalogue, which only a Subnet search by CIDR can do.
+
+        """
+        search = self._search(observation)
+        facts = self._lookups.get(search, partial(self._read, search))
+        if isinstance(facts, ReadFailure):
+            raise _FailedLeaseLookup(_LEASE_PRESENCE_UNKNOWN[facts.kind])
+        if isinstance(facts, UnknownLeasePresence):
+            raise _FailedLeaseLookup(facts)
+        return facts
+
+    def _search(self, observation: LeaseObservation) -> LeaseSearch:
+        """Return the Lease search of *observation*."""
+        if isinstance(observation, SubnetLeases):
+            return LeaseSearch(constants.BY_SUBNET_ID, observation.subnet.subnet_id, observation.state)
+        identity = observation.identity
+        selector = constants.LEASE_SELECTOR_BY_IDENTIFIER[self._family].get(identity.identifier_type)
+        if selector is None:
+            raise ValueError(f"Kea has no DHCPv{self._family} Lease query for a {identity.identifier_type}.")
+        return LeaseSearch(selector, identity.value)
+
+    def _read(self, search: LeaseSearch) -> CurrentLeaseFacts | UnknownLeasePresence:
+        """Return the Current Leases of *search*, or ``QUERY_GUARD`` when the Lease query guard refuses it."""
+        try:
+            read = cached_read(self._server, self._family, search, self._clients, read_since=self._read_since)
+        except LeaseQueryGuardError:
+            return UnknownLeasePresence.QUERY_GUARD
+        loaded = read.loaded
+        # Only a Subnet search by CIDR can resolve to a Catalogue, and no observation sends one.
+        if not isinstance(loaded, LeaseSnapshot):
+            raise TypeError(f"The Lease lookup {search.parts!r} resolved to a Catalogue.")
+        return current_lease_facts(loaded)
+
+    def presence(self, reservation: Reservation) -> CurrentLeasePresence:
+        """Return the Current Lease Presence of *reservation*, or why Kea could not show it."""
+        try:
+            return current_lease_presence(reservation, self)
+        except _FailedLeaseLookup as failed:
+            return LeasePresenceUnknown(failed.reason)
+
+
 def lease_presence(
     server: Server, family: Family, reservations: Sequence[Reservation], *, read_since: datetime
 ) -> tuple[CurrentLeasePresence, ...]:
     """Return the Current Lease Presence of each of *reservations*, in their order.
 
-    Each distinct Lease search is one display cache entry. An entry read before *read_since*, the read time of the
-    Reservation table, is read again, so a Refresh also reads each lookup live. When Kea does not know a Lease
-    command, every Reservation is Unknown.
+    Each distinct Lease search is one display cache entry, read once per call. An entry read before *read_since*,
+    the read time of the Reservation table, is read again, so a Refresh also reads each lookup live. When Kea does
+    not know a Lease command, every Reservation is Unknown.
 
     Raises:
         ValueError: If a Reservation is not of *family*.
@@ -199,22 +237,13 @@ def lease_presence(
     """
     if any(reservation.family != family for reservation in reservations):
         raise ValueError(f"Every Reservation of a DHCPv{family} lookup must be a DHCPv{family} Reservation.")
-    searches = [_search(reservation) for reservation in reservations]
-    lookups = list(dict.fromkeys(search for search in searches if search is not None))
     clients = WorkerClients(server, family)
-    observed = dict(
-        zip(lookups, _pooled(clients, partial(_observe, server, family, read_since, clients), lookups), strict=True)
-    )
-    if UnknownLeasePresence.LEASE_HOOK_UNAVAILABLE in observed.values():
-        return tuple(LeasePresenceUnknown(UnknownLeasePresence.LEASE_HOOK_UNAVAILABLE) for _ in reservations)
-    presences: list[CurrentLeasePresence] = []
-    for reservation, search in zip(reservations, searches, strict=True):
-        facts = UnknownLeasePresence.UNSEARCHABLE_IDENTIFIER if search is None else observed[search]
-        if isinstance(facts, UnknownLeasePresence):
-            presences.append(LeasePresenceUnknown(facts))
-        else:
-            presences.append(current_lease_presence(reservation, facts))
-    return tuple(presences)
+    leases = _KeaCurrentLeases(server, family, read_since, clients)
+    presences = tuple(_pooled(clients, leases.presence, reservations))
+    hook_unavailable = LeasePresenceUnknown(UnknownLeasePresence.LEASE_HOOK_UNAVAILABLE)
+    if hook_unavailable in presences:
+        return tuple(hook_unavailable for _ in reservations)
+    return presences
 
 
 @dataclass(frozen=True)
@@ -272,13 +301,12 @@ class _KeaReservationLookup:
             return parts, lambda client: client.reservation_by_identity(family, catalogue, scope, key)
         if not isinstance(scope, InSubnetReservationScope):
             raise ValueError("A Reservation lookup by allocation needs an In-Subnet Scope.")
-        in_subnet = scope
         if isinstance(key, ipaddress.IPv6Network):
-            parts = ("prefix", in_subnet.subnet.subnet_id, str(key))
-            return parts, lambda client: client.reservation_by_prefix(catalogue, in_subnet, key)
+            parts = ("prefix", scope.subnet.subnet_id, str(key))
+            return parts, lambda client: client.reservation_by_prefix(catalogue, scope, key)
         address = str(key)
-        parts = ("address", in_subnet.subnet.subnet_id, address)
-        return parts, lambda client: client.reservation_by_address(family, catalogue, in_subnet, address)
+        parts = ("address", scope.subnet.subnet_id, address)
+        return parts, lambda client: client.reservation_by_address(family, catalogue, scope, address)
 
     def _cached(
         self, parts: display_cache.QueryParts, lookup: Callable[[KeaClient], Reservation | None]

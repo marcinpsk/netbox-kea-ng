@@ -226,7 +226,7 @@ URL request
   → display_cache.py    (the display cache: keys, generations, TTLs, admission; ADR 0009)
   → lease_reads.py      (the cached Lease Snapshot reads of the Leases tab and of the Lease badges; ADR 0009)
   → lease_reservation_reads.py (Current Lease Presence of Reservation rows and Reservation Match of Lease rows:
-                        cached lookups in one worker pool)
+                        the cached Kea adapters of the two reservations.py ports, in one worker pool)
   → sync.py             (the aggregate Reservation Synchronization State and DCIM MAC synchronization)
   → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
   → manual_sync.py      (Manual Sync of one Lease or Reservation: permission verdict, claim, typed outcome; ADR 0011)
