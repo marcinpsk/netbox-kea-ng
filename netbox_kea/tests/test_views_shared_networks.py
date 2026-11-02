@@ -893,21 +893,20 @@ _NOT_SENT_CHANGED = (
 class TestSharedNetworkEditWritesOnlyChangedFields(_ViewTestBase):
     """A Shared Network save writes only the fields that the operator changed. Each other field keeps its live text."""
 
-    # The form shows the interface without the outer space, and the DHCPv6 relay address in its canonical form.
-    # A DHCPv4 address has one text form only.
+    # Kea refuses an interface that the system does not have, and returns each relay address in its canonical form.
     _LIVE: dict = {
         4: {
             "name": "prod-net",
             "subnet4": [],
-            "interface": " eth0",
+            "interface": "eth0",
             "relay": {"ip-addresses": ["192.0.2.1"]},
             "option-data": [],
         },
         6: {
             "name": "prod-net",
             "subnet6": [],
-            "interface": " eth0",
-            "relay": {"ip-addresses": ["2001:DB8:0::1"]},
+            "interface": "eth0",
+            "relay": {"ip-addresses": ["2001:db8::1"]},
             "option-data": [],
         },
     }

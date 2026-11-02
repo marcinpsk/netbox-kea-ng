@@ -1271,12 +1271,13 @@ _CONFIG6_NO_NETWORKS = [
 class TestSubnetEditWritesOnlyChangedFields(_ViewTestBase):
     """A Subnet save writes only the fields that the operator changed. Each other field keeps its exact live text."""
 
-    # The form shows these values without the outer spaces, and the Pools in their canonical form.
+    # Kea keeps the suffix verbatim and returns an aligned Pool as a prefix. The form shows the stripped suffix and the
+    # Pool range.
     _LIVE: dict[Family, dict] = {
         4: {
             "id": 42,
             "subnet": "10.0.0.0/24",
-            "pools": [{"pool": "10.0.0.10 - 10.0.0.20", "client-class": "lab"}],
+            "pools": [{"pool": "10.0.0.16/28", "client-class": "lab"}],
             "option-data": [{"name": "routers", "data": " 10.0.0.1"}],
             "ddns-qualifying-suffix": " example.com ",
             "valid-lifetime": 3600,
@@ -1284,7 +1285,7 @@ class TestSubnetEditWritesOnlyChangedFields(_ViewTestBase):
         6: {
             "id": 42,
             "subnet": "2001:db8::/64",
-            "pools": [{"pool": "2001:DB8::100 - 2001:db8::1ff", "client-class": "lab"}],
+            "pools": [{"pool": "2001:db8::100/120", "client-class": "lab"}],
             "option-data": [{"name": "dns-servers", "data": "2001:DB8::53"}],
             "ddns-qualifying-suffix": " example.com ",
             "valid-lifetime": 3600,
@@ -1312,11 +1313,12 @@ class TestSubnetEditWritesOnlyChangedFields(_ViewTestBase):
                 self.assertEqual(self._save(version, valid_lft="7200"), {**self._LIVE[version], "valid-lifetime": 7200})
 
     def test_a_kept_pool_keeps_its_live_entry_when_another_pool_is_added(self):
-        added = {4: "10.0.0.30-10.0.0.40", 6: "2001:db8::300-2001:db8::3ff"}
+        shown = {4: "10.0.0.16-10.0.0.31", 6: "2001:db8::100-2001:db8::1ff"}
+        added = {4: "10.0.0.40-10.0.0.50", 6: "2001:db8::300-2001:db8::3ff"}
         for version in (4, 6):
             (kept,) = self._LIVE[version]["pools"]
             with self.subTest(version=version):
-                sent = self._save(version, pools=f"{kept['pool']}\n{added[version]}")
+                sent = self._save(version, pools=f"{shown[version]}\n{added[version]}")
                 self.assertEqual(sent["pools"], [kept, {"pool": added[version]}])
 
     def test_a_live_change_after_the_page_was_shown_is_still_refused(self):

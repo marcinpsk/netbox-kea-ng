@@ -114,12 +114,12 @@ class SubnetWriterTests(SimpleTestCase):
         live = {
             "id": 42,
             "subnet": "10.0.0.0/24",
-            "pools": [{"pool": "10.0.0.50 - 10.0.0.99", "client-class": "lab"}, {"pool": "10.0.0.100-10.0.0.110"}],
+            "pools": [{"pool": "10.0.0.48/28", "client-class": "lab"}, {"pool": "10.0.0.100-10.0.0.110"}],
         }
-        written = _written(live, pools=("10.0.0.50-10.0.0.99", "10.0.0.120-10.0.0.130"))
+        written = _written(live, pools=("10.0.0.48-10.0.0.63", "10.0.0.120-10.0.0.130"))
         self.assertEqual(
             written["pools"],
-            [{"pool": "10.0.0.50 - 10.0.0.99", "client-class": "lab"}, {"pool": "10.0.0.120-10.0.0.130"}],
+            [{"pool": "10.0.0.48/28", "client-class": "lab"}, {"pool": "10.0.0.120-10.0.0.130"}],
         )
 
     def test_a_lifetime_or_timer_is_set_with_the_subnet_parameter_name_and_none_keeps_it(self):
@@ -259,7 +259,7 @@ class SubnetWriterTests(SimpleTestCase):
         live = {
             "id": 42,
             "subnet": "10.0.0.0/24",
-            "pools": [{"pool": "10.0.0.10 - 10.0.0.20"}],
+            "pools": [{"pool": "10.0.0.16/28"}],
             "option-data": [{"name": "routers", "data": " 10.0.0.1"}, {"code": 6, "data": "192.0.2.53 ,192.0.2.54"}],
             "ddns-qualifying-suffix": " example.org. ",
             "valid-lifetime": 3600,
