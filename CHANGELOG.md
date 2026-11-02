@@ -13,6 +13,118 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.10.4 (2026-11-02)
+
+### Bug Fixes
+
+- **dhcp-import**: Drop a Kea Subnet without a subnet ID as invalid Kea data
+  ([`bfe5634`](https://github.com/marcinpsk/netbox-kea-ng/commit/bfe56347607c12c4679ba723efbeb34f51492b9c))
+
+- **dhcp-import**: Let a DHCP Import Mapping hold every Kea subnet ID
+  ([`1fbde2c`](https://github.com/marcinpsk/netbox-kea-ng/commit/1fbde2c2d7130589a6e26325a8c3e221e3e2adc5))
+
+- **dhcp-import**: Map a DHCP Option whatever the length of its identity
+  ([`c18f300`](https://github.com/marcinpsk/netbox-kea-ng/commit/c18f30048cd78195eed5f7c754b43b26f02841b3))
+
+- **migrations**: Refuse a reverse of 0031 while a subnet ID is too wide for 0030
+  ([`ef510b5`](https://github.com/marcinpsk/netbox-kea-ng/commit/ef510b52b3e7bea9c3e35e7588c185c7e34bfb99))
+
+- **migrations**: Refuse a reverse of 0031 while an identity is too long for 0029
+  ([`c14e4aa`](https://github.com/marcinpsk/netbox-kea-ng/commit/c14e4aac4faccd3fbb513c77ba857355ce1d924d))
+
+- **sync**: Report a ValueError of a Manual Sync as a failed sync
+  ([`2727546`](https://github.com/marcinpsk/netbox-kea-ng/commit/2727546f1110d597e30870740921d75b42256455))
+
+- **sync**: Show the permission refusal before a failed Lease read-back
+  ([`ee8c3fc`](https://github.com/marcinpsk/netbox-kea-ng/commit/ee8c3fc2d485b12757796d1184b39a8dfc4a2984))
+
+### Continuous Integration
+
+- **opengrep**: Refuse a DHCP Import object path rendered outside its key
+  ([`e2d364b`](https://github.com/marcinpsk/netbox-kea-ng/commit/e2d364b2b978baddde2ae98e0b387b9c634ba208))
+
+- **opengrep**: Refuse a DHCP Import row write outside write_row
+  ([`55df40e`](https://github.com/marcinpsk/netbox-kea-ng/commit/55df40e16b65f0ea1b6d36c59dd0524b7d2b02fa))
+
+### Documentation
+
+- **leases**: Record the shared after-apply steps and the Lease facts
+  ([`f5d0c8d`](https://github.com/marcinpsk/netbox-kea-ng/commit/f5d0c8daa370654d3edd95d201b9b4c3bb3ae0b8))
+
+- **sync**: Record the Manual Sync term and amend ADR 0011 and ADR 0012
+  ([`a59a1b2`](https://github.com/marcinpsk/netbox-kea-ng/commit/a59a1b2bbe1812e57e0b7d677005b412fd9a5774))
+
+### Refactoring
+
+- **dhcp-import**: Look up a mapping from its source columns and name the subnet ID bounds in tests
+  ([`c82835e`](https://github.com/marcinpsk/netbox-kea-ng/commit/c82835e538e85cc31e8bdc2c5f30e415de624715))
+
+- **dhcp-import**: Name the shared row write helpers and fail fast on a missing state
+  ([`e4f2881`](https://github.com/marcinpsk/netbox-kea-ng/commit/e4f2881b55022ddf8f9616932f44fa71d937eddd))
+
+- **dhcp-import**: One key per planned object owns its source, decode and Kea path
+  ([`01c33dc`](https://github.com/marcinpsk/netbox-kea-ng/commit/01c33dcde5abee2b258cc8f8dd84f07a4bcf98c4))
+
+- **dhcp-import**: One row write protocol for every imported DHCP plugin row
+  ([`59c2647`](https://github.com/marcinpsk/netbox-kea-ng/commit/59c2647872317e8ab4e9124827e50d8850b862ec))
+
+- **dhcp-import**: Take the parent path of planned Options from the parent key
+  ([`6118785`](https://github.com/marcinpsk/netbox-kea-ng/commit/61187857c2a9c6563cb86767f747a9190d488ed1))
+
+- **dhcp-import**: Take the server and parent Subnet sources from their keys
+  ([`3ba228a`](https://github.com/marcinpsk/netbox-kea-ng/commit/3ba228a8deb5271e0bc8ed6d9f0280a95915ce7a))
+
+- **jobs**: Derive the job's no-source check from the shared source map
+  ([`622af0b`](https://github.com/marcinpsk/netbox-kea-ng/commit/622af0bf6923d52c2992ac7e374cbade5aa0e3fa))
+
+- **jobs**: Take the per-Server sync decision from the shared rule
+  ([`48fae61`](https://github.com/marcinpsk/netbox-kea-ng/commit/48fae61791e0cea5f1eb129aebfd46b84efd3a74))
+
+- **leases**: Rank side-effect statuses in one place and drop dead signal handlers
+  ([`4e08249`](https://github.com/marcinpsk/netbox-kea-ng/commit/4e082497040bf20e891200b112518771d74ed020))
+
+- **leases**: Return typed Lease after-apply facts from shared steps
+  ([`fa8451e`](https://github.com/marcinpsk/netbox-kea-ng/commit/fa8451ece2c99a1ad8593cb1e7397c71dcc95b43))
+
+- **sync**: Build the sync job's sources from one Sync Plan
+  ([`a65374c`](https://github.com/marcinpsk/netbox-kea-ng/commit/a65374c94f3f6dbbeb0c26df06ebb83759afa8fb))
+
+- **sync**: One Manual Sync of one Lease or Reservation, with a typed outcome
+  ([`75162d1`](https://github.com/marcinpsk/netbox-kea-ng/commit/75162d18a455852aae00dc66d4f1821bbe19a877))
+
+- **sync**: Share the served families and pin the Run Now receipt rule
+  ([`e89621a`](https://github.com/marcinpsk/netbox-kea-ng/commit/e89621aa44ad86b8bbfc47a8ce4310cb87274ced))
+
+- **views**: Drive the Sync tab type badges from the shared sync rule
+  ([`500862b`](https://github.com/marcinpsk/netbox-kea-ng/commit/500862b45eeaede6f1b27c687db121fb47d69c3f))
+
+### Testing
+
+- Check that a complete sync run records exactly the sources that completion requires
+  ([`9b97acc`](https://github.com/marcinpsk/netbox-kea-ng/commit/9b97accd16649cd486fd568c13ad3a31893f10bb))
+
+- Check that a Run Now of a switched-off Server reads exactly its plan
+  ([`de5f1c1`](https://github.com/marcinpsk/netbox-kea-ng/commit/de5f1c181a6330b5ff648ff23b2466b9f2ab3144))
+
+- Check the Sync tab badges against an explicit truth table
+  ([`03fe0c4`](https://github.com/marcinpsk/netbox-kea-ng/commit/03fe0c4198227c06c6d50edfd12284d7849a4d07))
+
+- Cover the DHCPv6 reads in the sync switch matrix
+  ([`04a37d2`](https://github.com/marcinpsk/netbox-kea-ng/commit/04a37d2092dd6a38c934f395e1b91b8486f9ea9d))
+
+- Pin the source and path of each DHCP Import key kind
+  ([`0100d6b`](https://github.com/marcinpsk/netbox-kea-ng/commit/0100d6bec4644e49937adefccd0f25b41281a5ce))
+
+- **dhcp-import**: One table of the row write of every imported kind through apply_plan
+  ([`41eba3d`](https://github.com/marcinpsk/netbox-kea-ng/commit/41eba3d8b5a62c7287061ee18eece1a2892babbf))
+
+- **dhcp-import**: Restore the assertions of the replaced tests in the row write table
+  ([`162d2c4`](https://github.com/marcinpsk/netbox-kea-ng/commit/162d2c496f24c85f834bfae76dc2987801b8a598))
+
+- **sync**: A Stale Lease and failed claim events give 200 row replies
+  ([`2f83afe`](https://github.com/marcinpsk/netbox-kea-ng/commit/2f83afec356850ad8e4406e4a8b541ff3355e096))
+
+
 ## v3.10.3 (2026-10-31)
 
 ### Bug Fixes
