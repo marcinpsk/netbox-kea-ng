@@ -33,6 +33,7 @@ from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
 from django.urls import reverse
 
+from ..constants import Family
 from ..dhcp_options import ShownOption
 from ..views.notices import HEADLINES
 from ..views.subnets import _NO_SUBNET_CIDR
@@ -1748,6 +1749,105 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, INVALID_SERVER_SETTINGS)
         self.assertEqual(kea.commands(), [])
+
+
+# The form values of a Subnet add with every optional field set, and the subnet{v}-add entry they send.
+_ADD_EVERY_FIELD: dict[Family, tuple[dict, dict]] = {
+    4: (
+        {
+            "subnet": "10.2.0.0/24",
+            "subnet_id": "40",
+            "pools": "10.2.0.10 - 10.2.0.20\n10.2.0.96/28",
+            "gateway": "10.2.0.1",
+            "dns_servers": "192.0.2.54, 192.0.2.53",
+            "ntp_servers": "192.0.2.123",
+            "ddns_qualifying_suffix": "example.org.",
+        },
+        {
+            "subnet": "10.2.0.0/24",
+            "id": 40,
+            "pools": [{"pool": "10.2.0.10-10.2.0.20"}, {"pool": "10.2.0.96-10.2.0.111"}],
+            "option-data": [
+                {"name": "routers", "data": "10.2.0.1"},
+                {"name": "domain-name-servers", "data": "192.0.2.54, 192.0.2.53"},
+                {"name": "ntp-servers", "data": "192.0.2.123"},
+            ],
+            "ddns-qualifying-suffix": "example.org.",
+        },
+    ),
+    6: (
+        {
+            "subnet": "2001:db8:2::/64",
+            "subnet_id": "40",
+            "pools": "2001:db8:2::100-2001:db8:2::1ff",
+            "gateway": "",
+            "dns_servers": "2001:db8::53",
+            "ntp_servers": "2001:db8::123, 2001:db8::124",
+            "ddns_qualifying_suffix": "v6.example.org.",
+        },
+        {
+            "subnet": "2001:db8:2::/64",
+            "id": 40,
+            "pools": [{"pool": "2001:db8:2::100-2001:db8:2::1ff"}],
+            "option-data": [
+                {"name": "dns-servers", "data": "2001:db8::53"},
+                {"name": "sntp-servers", "data": "2001:db8::123, 2001:db8::124"},
+            ],
+            "ddns-qualifying-suffix": "v6.example.org.",
+        },
+    ),
+}
+# The Kea key of each optional form field in the subnet{v}-add entry. The Subnet ID always goes to Kea.
+_ADD_FIELD_KEYS = {
+    "pools": ("pools",),
+    "gateway": ("option-data", "routers"),
+    "dns_servers": ("option-data", "domain-name-servers", "dns-servers"),
+    "ntp_servers": ("option-data", "ntp-servers", "sntp-servers"),
+    "ddns_qualifying_suffix": ("ddns-qualifying-suffix",),
+}
+
+
+class TestSubnetAddPayload(_ViewTestBase):
+    """The exact subnet{v}-add entry that the Subnet add form sends, with each optional field set and unset."""
+
+    def _sent(self, version: Family, data: dict) -> dict:
+        """POST the add form of *version* with *data*, and return the one Subnet entry that subnet{v}-add sent."""
+        url = reverse(f"plugins:netbox_kea:server_subnet{version}_add", args=[self.server.pk])
+        daemon = SubnetDaemon(version)
+        post = {**_SUBNET_ADD_POST, "ddns_qualifying_suffix": "", **data}
+        with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
+            response = self.client.post(url, post)
+        self.assertEqual(response.status_code, 302)
+        ((entry,),) = [body["arguments"][f"subnet{version}"] for body in kea.bodies(f"subnet{version}-add")]
+        return entry
+
+    def test_every_optional_field_set(self):
+        for version, (data, expected) in _ADD_EVERY_FIELD.items():
+            with self.subTest(version=version):
+                self.assertEqual(self._sent(version, data), expected)
+
+    def test_every_optional_field_unset(self):
+        for version, (data, expected) in _ADD_EVERY_FIELD.items():
+            unset = {**dict.fromkeys(_ADD_FIELD_KEYS, ""), "subnet": data["subnet"], "subnet_id": ""}
+            with self.subTest(version=version):
+                self.assertEqual(self._sent(version, unset), {"subnet": expected["subnet"], "id": 1})
+
+    def test_each_optional_field_alone(self):
+        for version, (data, expected) in _ADD_EVERY_FIELD.items():
+            for field, keys in _ADD_FIELD_KEYS.items():
+                if not data[field]:
+                    continue
+                alone = {
+                    **dict.fromkeys(_ADD_FIELD_KEYS, ""),
+                    "subnet": data["subnet"],
+                    "subnet_id": "40",
+                    field: data[field],
+                }
+                kept = {key: value for key, value in expected.items() if key in ("subnet", "id") or key == keys[0]}
+                if keys[0] == "option-data":
+                    kept["option-data"] = [option for option in expected["option-data"] if option["name"] in keys[1:]]
+                with self.subTest(version=version, field=field):
+                    self.assertEqual(self._sent(version, alone), kept)
 
 
 _ADDED = "Subnet 4 (10.2.0.0/24) added."
