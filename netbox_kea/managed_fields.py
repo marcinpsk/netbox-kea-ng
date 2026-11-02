@@ -1,0 +1,288 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+"""The fields that the Subnet and Shared Network forms manage, read from the parsed facts and written to Kea entries.
+
+The reader gives the values that an edit form shows. It takes the typed facts that ``server_configuration`` parses,
+so that module stays the only parser of the configuration (ADR 0003). The writers set the fields on a raw Kea entry
+and keep every other key. The DHCP Options of these fields go through the option codec of ``dhcp_options``.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from .constants import Family
+from .dhcp_options import (
+    AmbiguousFormOption,
+    InvalidAddress,
+    address_list,
+    address_list_data,
+    form_option_edit,
+    form_option_fields,
+    merge_option_edit,
+    parse_dhcp_options,
+)
+from .kea import MalformedConfiguration, subnet_network
+from .pools import parse_pool
+from .subnet_settings import setting_key
+
+if TYPE_CHECKING:
+    from .server_configuration import SharedNetwork, SubnetConfiguration
+
+logger = logging.getLogger(__name__)
+
+_LIFETIMES = ("valid_lifetime", "min_valid_lifetime", "max_valid_lifetime", "renew_timer", "rebind_timer")
+
+
+@dataclass(frozen=True)
+class SharedNetworkEdit:
+    """The Shared Network fields that the edit form manages. An empty value removes the field.
+
+    The values that the form showed have the same type, so that an operation can compare them with the live values.
+    """
+
+    description: str
+    interface: str
+    relay_addresses: tuple[str, ...]
+    dns_servers: tuple[str, ...]
+    ntp_servers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SubnetFields:
+    """The Subnet fields that the add form and the edit form both set.
+
+    An empty value leaves the field out of a new Subnet. It removes the field from an edited Subnet, except a DHCP
+    Option value that the edit form cannot show.
+    """
+
+    pools: tuple[str, ...]
+    gateway: str
+    dns_servers: tuple[str, ...]
+    ntp_servers: tuple[str, ...]
+    ddns_qualifying_suffix: str
+
+
+@dataclass(frozen=True)
+class SubnetEdit:
+    """The Subnet fields that the edit form manages: the *fields* of both forms, the lifetimes and the timers.
+
+    A lifetime or a timer of None keeps the live value. The values that the form showed have the same type, and there
+    None is a value that Kea does not set.
+    """
+
+    fields: SubnetFields
+    valid_lifetime: int | None
+    min_valid_lifetime: int | None
+    max_valid_lifetime: int | None
+    renew_timer: int | None
+    rebind_timer: int | None
+
+    def written_by(self, edit: SubnetEdit) -> SubnetEdit:
+        """Return these values with None for each lifetime and timer that *edit* keeps, because it cannot change them."""
+
+        def written(value: int | None, new: int | None) -> int | None:
+            return None if new is None else value
+
+        return SubnetEdit(
+            fields=self.fields,
+            valid_lifetime=written(self.valid_lifetime, edit.valid_lifetime),
+            min_valid_lifetime=written(self.min_valid_lifetime, edit.min_valid_lifetime),
+            max_valid_lifetime=written(self.max_valid_lifetime, edit.max_valid_lifetime),
+            renew_timer=written(self.renew_timer, edit.renew_timer),
+            rebind_timer=written(self.rebind_timer, edit.rebind_timer),
+        )
+
+
+def shared_network_description(network: dict[str, Any]) -> str | None:
+    """Return the Shared Network description, which Kea keeps as ``user-context.comment``.
+
+    Kea rejects a ``description`` key on a Shared Network, and stores a config-file
+    ``comment`` in ``user-context``. A comment that is not a string has no description.
+
+    Raises:
+        ValueError: If ``user-context`` is not an object.
+
+    """
+    context = network.get("user-context")
+    if context is None:
+        return None
+    if not isinstance(context, dict):
+        raise ValueError("A Shared Network user-context must be an object.")
+    comment = context.get("comment")
+    return comment if isinstance(comment, str) else None
+
+
+def description_as_shown(text: str) -> str:
+    """Return *text* as a text input shows it and Django cleans it: without line breaks and outer spaces."""
+    return text.replace("\r", "").replace("\n", "").strip()
+
+
+def shown_subnet(configuration: SubnetConfiguration, family: Family) -> SubnetEdit | None:
+    """Return the values that the Subnet edit form shows for *configuration*.
+
+    Return None when a DHCP Option that the form shows holds a value that is not an address list, or when more than
+    one entry fits a form field.
+    """
+    settings = configuration.settings
+    try:
+        options = form_option_fields(configuration.options, family)
+        gateway = address_list(options.get("gateway", ""))
+        fields = SubnetFields(
+            pools=tuple(pool.range for pool in configuration.pools),
+            gateway=gateway[0] if gateway else "",
+            dns_servers=address_list(options.get("dns_servers", "")),
+            ntp_servers=address_list(options.get("ntp_servers", "")),
+            ddns_qualifying_suffix=(settings.ddns_qualifying_suffix or "").strip(),
+        )
+    except (InvalidAddress, AmbiguousFormOption):
+        logger.warning(
+            "A DHCP Option of a Subnet has a value or an entry that the edit form cannot show", exc_info=True
+        )
+        return None
+    return SubnetEdit(
+        fields=fields,
+        valid_lifetime=settings.valid_lifetime,
+        min_valid_lifetime=settings.min_valid_lifetime,
+        max_valid_lifetime=settings.max_valid_lifetime,
+        renew_timer=settings.renew_timer,
+        rebind_timer=settings.rebind_timer,
+    )
+
+
+def shown_shared_network(network: SharedNetwork, family: Family) -> SharedNetworkEdit | None:
+    """Return the values that the Shared Network edit form shows for *network*.
+
+    Return None when a DHCP Option that the form shows holds a value that is not an address list, or when more than
+    one entry fits a form field.
+    """
+    try:
+        options = form_option_fields(network.options, family)
+        return SharedNetworkEdit(
+            description=description_as_shown(network.description or ""),
+            interface=(network.interface or "").strip(),
+            relay_addresses=tuple(str(address) for address in network.relay_addresses),
+            dns_servers=address_list(options.get("dns_servers", "")),
+            ntp_servers=address_list(options.get("ntp_servers", "")),
+        )
+    except (InvalidAddress, AmbiguousFormOption):
+        logger.warning(
+            "A DHCP Option of Shared Network %r has a value or an entry that the edit form cannot show",
+            network.name,
+            exc_info=True,
+        )
+        return None
+
+
+def write_subnet(entry: dict[str, Any], family: Family, edit: SubnetEdit) -> None:
+    """Set the fields of *edit* on the raw Subnet *entry*, and keep every other key.
+
+    Raises:
+        MalformedConfiguration: If the Subnet has a value that the edit cannot keep or replace safely.
+
+    """
+    fields = edit.fields
+    option_fields = {}
+    if family == 4:
+        option_fields["gateway"] = fields.gateway
+    option_fields["dns_servers"] = address_list_data(fields.dns_servers)
+    option_fields["ntp_servers"] = address_list_data(fields.ntp_servers)
+    _write_options(entry, family, option_fields)
+    suffix_key = setting_key("ddns_qualifying_suffix")
+    if fields.ddns_qualifying_suffix:
+        entry[suffix_key] = fields.ddns_qualifying_suffix
+    else:
+        entry.pop(suffix_key, None)
+    live_pools = _pools_by_range(entry, family)
+    entry["pools"] = [{**live_pools.get(pool, {}), "pool": pool} for pool in fields.pools]
+    for field in _LIFETIMES:
+        value = getattr(edit, field)
+        if value is not None:
+            entry[setting_key(field)] = value
+
+
+def write_shared_network(entry: dict[str, Any], family: Family, edit: SharedNetworkEdit) -> None:
+    """Set the fields of *edit* on the raw Shared Network *entry*, and keep every other key.
+
+    Raises:
+        MalformedConfiguration: If the Shared Network has a value that the edit cannot keep or replace safely.
+
+    """
+    _write_description(entry, edit.description)
+    if edit.interface:
+        entry["interface"] = edit.interface
+    else:
+        entry.pop("interface", None)
+    if edit.relay_addresses:
+        entry["relay"] = {"ip-addresses": list(edit.relay_addresses)}
+    else:
+        entry.pop("relay", None)
+    _write_options(
+        entry,
+        family,
+        {"dns_servers": address_list_data(edit.dns_servers), "ntp_servers": address_list_data(edit.ntp_servers)},
+    )
+
+
+def _write_options(entry: dict[str, Any], family: Family, fields: dict[str, str]) -> None:
+    """Merge the option data of the form *fields* into the ``option-data`` of *entry*.
+
+    Raises:
+        MalformedConfiguration: If ``option-data`` is not a valid DHCP Option list, or more than one entry fits a field.
+
+    """
+    options = entry.get("option-data", [])
+    try:
+        option_edit = form_option_edit(parse_dhcp_options(options), family, fields)
+        entry["option-data"] = merge_option_edit(option_edit, options, family)
+    except ValueError as exc:
+        raise MalformedConfiguration(str(exc)) from exc
+
+
+def _write_description(network: dict[str, Any], description: str) -> None:
+    """Write *description* as ``user-context.comment`` and keep every other user-context key.
+
+    An empty *description* keeps a comment the form cannot show, the same as a binary option.
+    A *description* equal to the comment as a text input shows it keeps the comment unchanged.
+    """
+    try:
+        existing = shared_network_description(network)
+    except ValueError as exc:
+        raise MalformedConfiguration(str(exc)) from exc
+    if existing is not None and description == description_as_shown(existing):
+        return
+    context = dict(network.get("user-context") or {})
+    if description:
+        context["comment"] = description
+    elif isinstance(context.get("comment"), str):
+        del context["comment"]
+    if context:
+        network["user-context"] = context
+    else:
+        network.pop("user-context", None)
+
+
+def _pools_by_range(entry: dict[str, Any], family: Family) -> dict[str, dict[str, Any]]:
+    """Return each live Pool entry of the Subnet *entry* by its range, so that a kept Pool keeps its Pool-level keys.
+
+    Raises:
+        MalformedConfiguration: If the Subnet has no valid CIDR, or a live Pool entry is not an object or has no range
+            in the Subnet.
+
+    """
+    subnet_id = entry.get("id")
+    try:
+        network = subnet_network(entry.get("subnet"), family)
+    except ValueError as exc:
+        raise MalformedConfiguration(f"Subnet {subnet_id} has no valid CIDR.") from exc
+    by_range: dict[str, dict[str, Any]] = {}
+    for pool in entry.get("pools", []):
+        if not isinstance(pool, dict):
+            raise MalformedConfiguration(f"Subnet {subnet_id} has a Pool entry that is not an object.")
+        try:
+            by_range[parse_pool(pool.get("pool"), network).range] = pool
+        except ValueError as exc:
+            raise MalformedConfiguration(f"Subnet {subnet_id} has a malformed Pool {pool.get('pool')!r}.") from exc
+    return by_range

@@ -32,14 +32,8 @@ from netbox_kea.dhcp_options import (
     parse_dhcp_option,
     parse_dhcp_options,
 )
-from netbox_kea.kea import (
-    CandidateTargetMissing,
-    MalformedConfiguration,
-    SharedNetworkEdit,
-    SubnetDefinition,
-    SubnetEdit,
-    SubnetFields,
-)
+from netbox_kea.kea import CandidateTargetMissing, MalformedConfiguration
+from netbox_kea.managed_fields import SharedNetworkEdit, SubnetEdit, SubnetFields
 from netbox_kea.pools import parse_pool
 from netbox_kea.reservations import InSubnetReservationScope, IPv4Reservation, ReservationIdentity
 from netbox_kea.subnet_catalogue import CatalogueUnavailable, SharedNetworkMembership, SubnetIdentityConflict
@@ -1526,7 +1520,7 @@ class SubnetEditTests(TestCase):
         for version in _FAMILIES:
             with (
                 self.subTest(version=version),
-                patch.object(SubnetDefinition, "edited", autospec=True, side_effect=malformed),
+                patch("netbox_kea.managed_fields.write_subnet", autospec=True, side_effect=malformed),
             ):
                 rejection, kea = self._rejection(self._daemon(version, "office"), "lab")
                 self.assertEqual(rejection.reason, "not-sent")

@@ -11,7 +11,7 @@ from django.views import View
 from netbox.views import generic
 from utilities.views import register_model_view
 
-from .. import config_write, forms, server_configuration, tables
+from .. import config_write, forms, managed_fields, server_configuration, tables
 from ..constants import Family
 from ..models import Server
 from ._base import (
@@ -239,7 +239,8 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ServerFamilyMixin, Condit
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
         configuration = server_configuration.for_verification(server, self.dhcp_version)
         show_notices(request, notice(configuration))
-        shown = server_configuration.shown_shared_network(configuration, network_name)
+        network = server_configuration.editable_shared_network(configuration, network_name)
+        shown = None if network is None else managed_fields.shown_shared_network(network, self.dhcp_version)
         if shown is None:
             messages.error(request, f"Shared network '{network_name}' not found or could not be retrieved.")
             return redirect(_safe_return_url(request, self._success_url(server)))

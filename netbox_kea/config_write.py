@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from django.db import DatabaseError, OperationalError, connection
 
-from . import event_scope, server_configuration
+from . import event_scope, managed_fields, server_configuration
 from .change_outcome import Application, ChangeRejected, before_change, build_client, mutate, read_before
 from .constants import Family, IPNetworkValue, Persistence
 from .dhcp_options import DHCPOptionConflict, DHCPOptionEdit, DHCPOptionNameChange, OptionDefinition
@@ -30,12 +30,10 @@ from .kea import (
     KeaException,
     MalformedConfiguration,
     PoolAction,
-    SharedNetworkEdit,
-    SubnetEdit,
-    SubnetFields,
     kea_error_message,
     subnet_network,
 )
+from .managed_fields import SharedNetworkEdit, SubnetEdit, SubnetFields
 from .pools import Pool
 from .read_failure import ReadFailure, attempt
 from .reservations import (
@@ -298,14 +296,16 @@ def edit_subnet(
         definition = read_before(lambda: client.subnet_definition(family, subnet_id))
         if definition.network != subnet.network:
             raise ChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
-        live = server_configuration.shown_subnet_definition(definition)
+        configuration = server_configuration.definition_configuration(definition)
+        live = None if configuration is None else managed_fields.shown_subnet(configuration, family)
         if live is None:
             raise ChangeRejected("not-sent", (f"Subnet {subnet_id} ({cidr}) {_UNSHOWABLE}",))
         # A value that changed after the page showed it would go back to the old value with the update.
         if live.written_by(edit) != shown.written_by(edit):
             raise ChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
+        edited = definition.raw_entry()
         try:
-            edited = definition.edited(edit)
+            managed_fields.write_subnet(edited, family, edit)
         except MalformedConfiguration as exc:
             logger.warning("The Subnet that Kea returned cannot be edited", exc_info=True)
             raise ChangeRejected("not-sent", ("Kea returned a configuration that NetBox cannot edit safely.",)) from exc
@@ -760,11 +760,12 @@ def edit_shared_network(
     """
 
     def change(candidate: CandidateConfiguration) -> None:
-        live = server_configuration.shown_shared_network(
+        network = server_configuration.editable_shared_network(
             server_configuration.candidate_snapshot(server, candidate), name
         )
+        live = None if network is None else managed_fields.shown_shared_network(network, family)
         # The edit refuses a missing Shared Network first. The operation never sends a rejected candidate.
-        candidate.edit_shared_network(name, edit)
+        managed_fields.write_shared_network(candidate.shared_network(name), family, edit)
         if live is None:
             raise ChangeRejected("not-sent", (f"Shared Network '{name}' {_UNSHOWABLE}",))
         if live != shown:

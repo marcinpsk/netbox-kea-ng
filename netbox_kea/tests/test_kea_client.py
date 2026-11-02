@@ -6,13 +6,11 @@
 These tests mock all HTTP calls and require no running services.
 """
 
-import dataclasses
 import io
 import ipaddress
 import json
 import os
 import sys
-from dataclasses import replace
 from pathlib import Path
 from typing import get_args, get_origin, get_type_hints
 from unittest import TestCase
@@ -35,10 +33,7 @@ from netbox_kea.kea import (
     LeaseQueryNotMeasurable,
     LeaseQueryPreflightUnavailable,
     LeaseQueryTooBroad,
-    MalformedConfiguration,
     MalformedReply,
-    SubnetEdit,
-    SubnetFields,
     SubnetUtilization,
     check_response,
     kea_error_message,
@@ -58,6 +53,7 @@ from netbox_kea.leases import (
     MalformedLeaseResponse,
     _creation_arguments,
 )
+from netbox_kea.managed_fields import SubnetFields
 from netbox_kea.subnet_catalogue import SubnetIdentity
 from netbox_kea.tests.kea_stub import (
     LeaseDaemon,
@@ -1643,24 +1639,6 @@ class TestSubnetGet(TestCase):
 # subnet_definition and subnet_update
 # ---------------------------------------------------------------------------
 
-# Every managed field empty: a form-managed DHCP Option is removed, and every lifetime keeps its live value.
-_BLANK = SubnetEdit(
-    fields=_NO_FIELDS,
-    valid_lifetime=None,
-    min_valid_lifetime=None,
-    max_valid_lifetime=None,
-    renew_timer=None,
-    rebind_timer=None,
-)
-_FORM_FIELDS = frozenset(field.name for field in dataclasses.fields(SubnetFields))
-
-
-def _edit(**values) -> SubnetEdit:
-    """Return the blank edit with *values*, given by the name of a form field, a lifetime or a timer."""
-    fields = {name: value for name, value in values.items() if name in _FORM_FIELDS}
-    lifetimes = {name: value for name, value in values.items() if name not in _FORM_FIELDS}
-    return replace(_BLANK, fields=replace(_BLANK.fields, **fields), **lifetimes)
-
 
 def _subnet_get_reply(version: int, subnet) -> dict:
     return {"result": 0, "arguments": {f"subnet{version}": [subnet]}}
@@ -1706,195 +1684,31 @@ class TestSubnetDefinition(TestCase):
 
 
 class TestSubnetUpdate(TestCase):
-    """KeaClient.subnet_update sends the Subnet that it read with the form fields, and does not persist."""
+    """KeaClient.subnet_update sends the Subnet that it read without the read-only metadata, and does not persist.
+
+    ``test_managed_fields`` covers the fields that an edit writes onto the Subnet.
+    """
 
     def setUp(self):
         self.client = kea_client(url="http://kea:8000")
 
-    def _sent(self, live: dict, version: int = 4, **fields) -> dict:
-        """Return the Subnet that subnet{v}-update sends for *live* and the form *fields*."""
-        responses = {
-            f"subnet{version}-get": _subnet_get_reply(version, live),
-            f"subnet{version}-update": {"result": 0, "text": f"IPv{version} subnet updated"},
-        }
-        with stub_kea(responses) as kea:
-            definition = self.client.subnet_definition(version, live["id"])
-            self.client.subnet_update(definition.family, definition.edited(_edit(**fields)))
-        self.assertEqual(kea.commands(), [f"subnet{version}-get", f"subnet{version}-update"])
-        (body,) = kea.bodies(f"subnet{version}-update")
-        self.assertEqual(body["service"], [f"dhcp{version}"])
-        (subnet,) = body["arguments"][f"subnet{version}"]
-        return subnet
-
-    def _options(self, existing: list, version: int = 4, **fields) -> list:
-        subnet = "10.0.0.0/24" if version == 4 else "2001:db8::/48"
-        return self._sent({"id": 42, "subnet": subnet, "option-data": existing}, version, **fields)["option-data"]
-
-    def test_the_update_keeps_every_field_that_the_form_does_not_manage(self):
-        live = {
-            "id": 42,
-            "subnet": "10.0.0.0/24",
-            "relay": {"ip-addresses": ["10.0.0.254"]},
-            "allocator": "random",
-            "client-class": "premium",
-            "pools": [{"pool": "10.0.0.50-10.0.0.99", "option-data": []}],
-            "option-data": [{"name": "routers", "data": "10.0.0.1"}, {"name": "domain-name", "data": "example.org"}],
-            "valid-lifetime": 7200,
-            "ddns-qualifying-suffix": "old.example.org.",
-            "metadata": {"server-tags": ["all"]},
-        }
-        sent = self._sent(live, pools=("10.0.0.100-10.0.0.110",), gateway="10.0.0.2", ddns_qualifying_suffix="")
-        self.assertEqual(
-            sent,
-            {
-                "id": 42,
-                "subnet": "10.0.0.0/24",
-                "relay": {"ip-addresses": ["10.0.0.254"]},
-                "allocator": "random",
-                "client-class": "premium",
-                "pools": [{"pool": "10.0.0.100-10.0.0.110"}],
-                "option-data": [
-                    {"name": "routers", "data": "10.0.0.2"},
-                    {"name": "domain-name", "data": "example.org"},
-                ],
-                "valid-lifetime": 7200,
-            },
-        )
-
-    def test_a_lifetime_or_timer_is_set_with_the_subnet_parameter_name_and_none_keeps_it(self):
-        live = {
-            "id": 42,
-            "subnet": "10.0.0.0/24",
-            "valid-lifetime": 3600,
-            "min-valid-lifetime": 1800,
-            "max-valid-lifetime": 7200,
-            "renew-timer": 900,
-            "rebind-timer": 1500,
-        }
-        kept = self._sent(live)
-        self.assertEqual({key: kept[key] for key in live}, live)
-        values = {
-            "valid_lifetime": 4000,
-            "min_valid_lifetime": 2000,
-            "max_valid_lifetime": 8000,
-            "renew_timer": 600,
-            "rebind_timer": 900,
-        }
-        sent = self._sent(live, **values)
-        self.assertEqual(
-            {key: sent[key] for key in live},
-            {
-                "id": 42,
-                "subnet": "10.0.0.0/24",
-                "valid-lifetime": 4000,
-                "min-valid-lifetime": 2000,
-                "max-valid-lifetime": 8000,
-                "renew-timer": 600,
-                "rebind-timer": 900,
-            },
-        )
-        # Kea refuses the lease field valid-lft in a Subnet as a spurious parameter.
-        self.assertFalse({"valid-lft", "min-valid-lft", "max-valid-lft"} & set(sent))
-
-    def test_a_ddns_suffix_is_set_or_removed(self):
-        live = {"id": 42, "subnet": "10.0.0.0/24", "ddns-qualifying-suffix": "old.example.org."}
-        self.assertEqual(
-            self._sent(live, ddns_qualifying_suffix="new.example.org.")["ddns-qualifying-suffix"], "new.example.org."
-        )
-        self.assertNotIn("ddns-qualifying-suffix", self._sent(live))
-
-    def test_the_update_sends_the_cidr_text_that_kea_declares(self):
-        live = {"id": 7, "subnet": "2001:0DB8:0000:0000::5/64"}
-        self.assertEqual(self._sent(live, version=6)["subnet"], "2001:0DB8:0000:0000::5/64")
-
-    def test_the_values_that_the_form_showed_keep_the_options_and_empty_fields_remove_them(self):
-        existing = [
-            {"code": 3, "data": "198.18.0.1", "never-send": True},
-            {"code": 6, "data": "198.18.0.53", "never-send": True},
-            {"code": 42, "data": "198.18.0.123", "never-send": True},
-        ]
-        shown = {"gateway": "198.18.0.1", "dns_servers": ("198.18.0.53",), "ntp_servers": ("198.18.0.123",)}
-        self.assertEqual(self._options(existing, **shown), existing)
-        self.assertEqual(self._options(existing), [])
-
-    def test_code_only_and_suppression_options_round_trip(self):
-        """A DNS option written by code is replaced, not duplicated; a never-send entry survives an empty field."""
-        existing = [
-            {"code": 6, "data": "10.0.0.53", "always-send": True},
-            {"code": 42, "never-send": True},
-            {"name": "domain-name-servers", "space": "vendor-4491", "data": "10.0.0.99"},
-        ]
-        self.assertEqual(
-            self._options(existing, dns_servers=("10.0.0.53",)),
-            [
-                {"code": 6, "data": "10.0.0.53", "always-send": True},
-                {"code": 42, "never-send": True},
-                {"name": "domain-name-servers", "space": "vendor-4491", "data": "10.0.0.99"},
-            ],
-        )
-
-    def test_other_family_option_names_remain_unmanaged(self):
-        existing = [{"name": "dns-servers", "data": "192.0.2.53"}, {"name": "sntp-servers", "data": "192.0.2.123"}]
-        self.assertEqual(
-            self._options(existing, dns_servers=("198.18.0.53",)),
-            [*existing, {"name": "domain-name-servers", "data": "198.18.0.53"}],
-        )
-
-    def test_equivalent_csv_preserves_encoding_flags(self):
-        for data in ("198.18.0.53,198.18.0.54", "198.18.0.53, 198.18.0.54"):
-            with self.subTest(data=data):
-                existing = [{"code": 6, "data": data, "csv-format": True, "never-send": True}]
-                self.assertEqual(self._options(existing, dns_servers=("198.18.0.53", "198.18.0.54")), existing)
-
-    def test_class_tagged_entries_are_not_managed_by_the_form(self):
-        """Kea allows one entry per class tag; the form edits only the untagged default."""
-        tagged = [
-            {"code": 6, "data": "10.0.1.53", "client-classes": ["class-a"]},
-            {"code": 6, "data": "10.0.2.53", "client-classes": ["class-b"]},
-            {"name": "domain-name-servers", "data": "10.0.0.53"},
-        ]
-        self.assertEqual(
-            self._options(tagged, dns_servers=("10.0.0.54",)),
-            [*tagged[:2], {"name": "domain-name-servers", "data": "10.0.0.54"}],
-        )
-
-    def test_an_empty_field_keeps_a_value_that_the_form_cannot_show(self):
-        """The form cannot show binary data or a router list, so an empty field must not delete them."""
-        for existing in (
-            [{"code": 6, "data": "0A000035", "csv-format": False}],
-            [{"code": 3, "data": "10.0.0.1, 10.0.0.2"}],
-        ):
-            with self.subTest(existing=existing):
-                self.assertEqual(self._options(existing), existing)
-
-    def test_a_changed_value_drops_the_old_encoding_flag(self):
-        """Form text is CSV, so csv-format false no longer describes the new value."""
-        existing = [{"code": 6, "data": "0A000035", "csv-format": False}]
-        self.assertEqual(self._options(existing, dns_servers=("10.0.0.53",)), [{"code": 6, "data": "10.0.0.53"}])
-
-    def test_a_dhcpv6_subnet_replaces_its_dns_option_and_keeps_the_others(self):
-        existing = [
-            {"name": "dns-servers", "data": "2001:db8::53"},
-            {"name": "domain-search", "data": "example.com"},
-        ]
-        self.assertEqual(
-            self._options(existing, version=6, dns_servers=("2001:db8::54",)),
-            [{"name": "dns-servers", "data": "2001:db8::54"}, {"name": "domain-search", "data": "example.com"}],
-        )
-
-    def test_a_live_pool_entry_that_the_edit_cannot_keep_raises_and_sends_no_update(self):
-        """The update replaces the Pool list, so a skipped live entry would be deleted from Kea."""
-        for label, entry in (
-            ("not an object", "10.0.0.50-10.0.0.99"),
-            ("no range", {"pool": "not a pool"}),
-            ("outside the Subnet", {"pool": "10.0.1.50-10.0.1.99"}),
-        ):
-            live = {"id": 42, "subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.20"}, entry]}
-            with self.subTest(label), stub_kea({"subnet4-get": _subnet_get_reply(4, live)}) as kea:
-                definition = self.client.subnet_definition(4, 42)
-                with self.assertRaises(MalformedConfiguration):
-                    definition.edited(_edit(pools=("10.0.0.10-10.0.0.20",)))
-                self.assertEqual(kea.commands(), ["subnet4-get"])
+    def test_the_update_sends_the_subnet_without_the_read_only_metadata(self):
+        live = {"id": 42, "subnet": "10.0.0.0/24", "allocator": "random", "metadata": {"server-tags": ["all"]}}
+        for version, subnet in ((4, "10.0.0.0/24"), (6, "2001:db8::/48")):
+            responses = {
+                f"subnet{version}-get": _subnet_get_reply(version, {**live, "subnet": subnet}),
+                f"subnet{version}-update": {"result": 0, "text": f"IPv{version} subnet updated"},
+            }
+            with self.subTest(version=version), stub_kea(responses) as kea:
+                definition = self.client.subnet_definition(version, 42)
+                self.client.subnet_update(definition.family, definition.raw_entry())
+                self.assertEqual(kea.commands(), [f"subnet{version}-get", f"subnet{version}-update"])
+                (body,) = kea.bodies(f"subnet{version}-update")
+                self.assertEqual(body["service"], [f"dhcp{version}"])
+                self.assertEqual(
+                    body["arguments"],
+                    {f"subnet{version}": [{"id": 42, "subnet": subnet, "allocator": "random"}]},
+                )
 
 
 class TestKeaClientContextManager(TestCase):

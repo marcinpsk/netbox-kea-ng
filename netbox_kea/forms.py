@@ -25,7 +25,7 @@ from .config_write import SUBNET_LIST_UNCONFIRMED, subnet_changed
 from .constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, IPNetworkValue
 from .decimal_text import parse_decimal
 from .dhcp_options import InvalidAddress, address_list, parse_dhcp_option
-from .kea import SharedNetworkEdit, SubnetEdit, SubnetFields, description_as_shown, subnet_network
+from .kea import subnet_network
 from .leases import (
     DHCPv4LeaseRequest,
     DHCPv6LeaseRequest,
@@ -34,6 +34,7 @@ from .leases import (
     lease_edit,
     request_errors,
 )
+from .managed_fields import SharedNetworkEdit, SubnetEdit, SubnetFields, description_as_shown
 from .models import Server
 from .pools import Pool, parse_pool
 from .reservation_transfer import MAX_DOCUMENT_BYTES as MAX_TRANSFER_DOCUMENT_BYTES

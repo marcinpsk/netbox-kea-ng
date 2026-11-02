@@ -863,7 +863,7 @@ class TestSubnetEditForm(SimpleTestCase):
                 self.assertEqual(form.non_field_errors(), [unconfirmed])
 
     def test_shown_cleans_each_hidden_copy_the_same_way_as_its_field(self):
-        from netbox_kea.kea import SubnetEdit, SubnetFields
+        from netbox_kea.managed_fields import SubnetEdit, SubnetFields
 
         values = {
             "pools": " 10.0.0.16/28 \r\n\r\n10.0.0.100 - 10.0.0.110",
@@ -1499,7 +1499,7 @@ class TestSharedNetworkEditForm(SimpleTestCase):
         self.assertEqual(form.cleaned_data["relay_addresses"], [])
 
     def test_to_edit_applies_one_strip_rule_to_every_address_list(self):
-        from netbox_kea.kea import SharedNetworkEdit
+        from netbox_kea.managed_fields import SharedNetworkEdit
 
         form = self._form(
             description=" Office ",
@@ -1582,7 +1582,7 @@ class TestSharedNetworkEditForm(SimpleTestCase):
         self.assertEqual(form.cleaned_data["relay_addresses"], ["10.0.0.1", "2001:db8::1"])
 
     def test_shown_cleans_each_hidden_copy_the_same_way_as_its_field(self):
-        from netbox_kea.kea import SharedNetworkEdit
+        from netbox_kea.managed_fields import SharedNetworkEdit
 
         values = {
             "description": " Office\r\nFloor 2 ",
