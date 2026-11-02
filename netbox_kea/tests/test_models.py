@@ -1280,6 +1280,41 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
             self.assertEqual(cursor.fetchone(), ("bigint",))
         self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).kea_identity, "o" * 518)
 
+    def test_0031_reversed_refuses_a_subnet_id_that_the_older_column_cannot_hold(self):
+        from django.db import connection
+        from django.db.migrations.exceptions import IrreversibleError
+        from django.db.migrations.executor import MigrationExecutor
+        from django.db.migrations.recorder import MigrationRecorder
+
+        from netbox_kea.constants import MAX_SUBNET_ID
+
+        server = _make_db_server(name="wide-subnet-id")
+        link = KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
+            server=server,
+            family=4,
+            kind="subnet",
+            kea_subnet_id=MAX_SUBNET_ID,
+            object_type=ContentType.objects.get_for_model(Server),
+            object_id=1,
+        )
+        executor = MigrationExecutor(connection)
+        current = executor.loader.graph.leaf_nodes("netbox_kea")
+
+        def restore_migration_state():
+            restore = MigrationExecutor(connection)
+            restore.loader.build_graph()
+            restore.migrate(current)
+
+        self.addCleanup(restore_migration_state)
+
+        with self.assertRaisesRegex(IrreversibleError, r"subnet ID greater than 2147483647 \(1 in all\)"):
+            executor.migrate([("netbox_kea", "0030_keadhcplink_unbounded_identity")])
+
+        applied = MigrationRecorder(connection).applied_migrations()
+        self.assertIn(("netbox_kea", "0031_keadhcplink_wide_subnet_id"), applied)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=link.pk).kea_subnet_id, MAX_SUBNET_ID)
+
     def test_0029_gives_an_existing_mapping_a_confirmation_below_every_cutoff(self):
         from django.db import connection
         from django.db.migrations.executor import MigrationExecutor
