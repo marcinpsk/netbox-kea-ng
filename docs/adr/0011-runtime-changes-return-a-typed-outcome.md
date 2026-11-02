@@ -101,6 +101,13 @@ then returns a 200 row reply with the claim result and a separate error. It does
 This holds where `event_scope.atomic()` is a unit (a NetBox release whose `event_tracking` nests). On an older
 release the events dispatch at the end of the request, outside the view, so a failed dispatch can still give a
 500 there._
+_Amended 2026-11-02 (#215): a Lease change returns typed after-apply facts, as a Reservation change does
+([ADR 0012](0012-reservation-writes-are-configuration-changes.md)). `after_apply.lease_after_apply()` gives the
+journal status, the signal status and, for a Lease add, the Manual Sync outcome or the reason it did not run. The
+journal entry commits in its own `event_scope.atomic()` unit, so a failed event dispatch is `events-failed`, not a
+failed write, and the Lease stays reported as applied. One presenter maps the facts to messages. The bulk Lease
+import sends `lease_added` from the `after_applied` hook of the change loop, after the loop classified the row and
+before the next row goes to Kea. It writes one journal entry for the batch._
 
 ### Loops
 

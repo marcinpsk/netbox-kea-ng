@@ -221,6 +221,7 @@ URL request
   → change_outcome.py   (ChangeRejected and the Application classifier that every change shares; ADR 0011)
   → read_failure.py     (attempt() and ReadFailure: the one classifier of a failed Kea read; ADR 0015)
   → runtime_change.py   (Runtime Changes: Lease add/edit/delete/wipe, DHCP enable/disable; ADR 0011)
+  → after_apply.py      (the journal and signal steps after an applied change, and the Lease after-apply facts)
   → kea.py              (HTTP POST to each daemon's / control socket)
   → display_cache.py    (the display cache: keys, generations, TTLs, admission; ADR 0009)
   → lease_reads.py      (the cached Lease Snapshot reads of the Leases tab and of the Lease badges; ADR 0009)
@@ -510,7 +511,8 @@ snapshot. Reservation option edits use the shared identity and merge in `dhcp_op
 from the same live Catalogue read (ADR 0014). The builders use the live facts and Catalogue that `config_write`
 supplies. A Reservation conflict becomes a form error. An unknown suffix becomes a hostname error.
 A `ValueError` becomes a page error. The view presents the pool-overlap warning facts.
-After an applied outcome, `reservation_edit.after_apply` returns the journal, signal and Manual Sync facts.
+After an applied outcome, `reservation_edit.after_apply` returns the journal, signal and Manual Sync facts, through
+the shared steps of `after_apply.py`.
 The views present those facts separately from the Kea change result.
 A Subnet or a Reservation that is gone, a changed fingerprint and result 3 on `reservation-del` are
 `target-changed`; result 2 is a rejection; any other failure result, result 5, a forward failure or a lost reply is
@@ -543,9 +545,14 @@ send. A fresh read that does not match the shown Lease,
 a Lease that is gone before the send, result 3 on `lease{v}-del` and result 4 on `lease{v}-update` are
 `target-changed`. A view runs one change through `_run_change` and a loop of changes (multi-Lease delete, Lease CSV
 import) through `_run_change_loop`, which stops at the first `unknown` row. The journal entry, the signals and the
-IPAM synchronization run in the view only after `applied`; a failure there shows a separate error. `_journal_applied`
-and `_signal_applied` in `views/_base.py` write the journal entry and send a signal for Lease changes;
-`send_robust()` returns a receiver error, so `_signal_applied` reads its responses. The OpenGrep rule
+IPAM synchronization run only after `applied`, outside the call that classifies the change; a failure there shows a
+separate error. `after_apply.py` holds the shared steps: `write_journal` writes the journal entry in an
+`event_scope.atomic()` unit, `send_signal` sends a robust signal and reads the receiver errors, and each returns a
+`SideEffectStatus` (`events-failed` when the entry or a receiver committed but its events did not dispatch).
+`lease_after_apply()` returns `LeaseAfterApplyFacts` for a Lease add (with its Manual Sync outcome) and a multi-Lease
+delete, and `show_lease_side_effects` in `views/leases.py` presents them. The bulk Lease import sends `lease_added`
+from the `after_applied` hook of `_run_change_loop` (`LeaseImportAfterApply`) and writes one journal entry for the
+batch. The OpenGrep rule
 `kea-runtime-write-outside-runtime-change` refuses a call to a `KeaClient` runtime write primitive outside
 `runtime_change`.
 
@@ -797,7 +804,7 @@ resort, reserved for true external boundaries you cannot run locally.
   (opengrep `kea-raw-atomic`). At the top level of a tracked request, on a NetBox release whose `event_tracking` nests (`event_scope._nested_tracking`), it is a unit, whose events
   dispatch after its COMMIT or not at all. Put `except event_scope.EventDispatchError: raise` before a broad
   `except`. There are two exceptions. The side effects after a change that Kea applied return the failed dispatch
-  as a fact (`reservation_edit.after_apply`). A Manual Sync also returns it: `claim()` raises `ClaimEventsFailed`
+  as a fact (`after_apply.py`). A Manual Sync also returns it: `claim()` raises `ClaimEventsFailed`
   with the claim result, and `manual_sync` returns both. Each caller then reports the saved claim and a separate
   error. Read design record #176 (sections 22 and 24) before you change it.
 - **Kea option names per family**: DNS is `domain-name-servers` (v4) or `dns-servers` (v6), and NTP is
