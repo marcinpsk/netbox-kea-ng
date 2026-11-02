@@ -1284,7 +1284,7 @@ class TestSubnetEditWritesOnlyChangedFields(_ViewTestBase):
         6: {
             "id": 42,
             "subnet": "2001:db8::/64",
-            "pools": [{"pool": "2001:DB8::100 - 2001:db8::1ff"}],
+            "pools": [{"pool": "2001:DB8::100 - 2001:db8::1ff", "client-class": "lab"}],
             "option-data": [{"name": "dns-servers", "data": "2001:DB8::53"}],
             "ddns-qualifying-suffix": " example.com ",
             "valid-lifetime": 3600,
@@ -1310,6 +1310,14 @@ class TestSubnetEditWritesOnlyChangedFields(_ViewTestBase):
         for version in (4, 6):
             with self.subTest(version=version):
                 self.assertEqual(self._save(version, valid_lft="7200"), {**self._LIVE[version], "valid-lifetime": 7200})
+
+    def test_a_kept_pool_keeps_its_live_entry_when_another_pool_is_added(self):
+        added = {4: "10.0.0.30-10.0.0.40", 6: "2001:db8::300-2001:db8::3ff"}
+        for version in (4, 6):
+            (kept,) = self._LIVE[version]["pools"]
+            with self.subTest(version=version):
+                sent = self._save(version, pools=f"{kept['pool']}\n{added[version]}")
+                self.assertEqual(sent["pools"], [kept, {"pool": added[version]}])
 
     def test_a_live_change_after_the_page_was_shown_is_still_refused(self):
         for version in (4, 6):

@@ -582,8 +582,9 @@ and send nothing while a live value differs. `managed_fields.py` holds the edit 
 fields. Its reader maps the parsed facts of `server_configuration` to the shown values, for the GET and for the check
 under the lock (`shown_subnet`, `shown_shared_network`). Its writers (`write_subnet`, `write_shared_network`) change
 on the raw Kea entry only the fields whose edited value differs from the shown value. The check proves that the shown
-values are live, so a field that the operator did not change keeps its exact live text, and a kept relay object keeps
-its other keys. The Subnet add writes a new entry through `write_subnet`, with nothing shown (`new_subnet`).
+values are live, so a field that the operator did not change keeps its exact live text. A kept Pool of a changed Pool
+list keeps its live entry. The Subnet add writes a new entry through `write_subnet`, with nothing shown
+(`new_subnet`).
 `_ShownValuesForm` builds each hidden `shown_` field as a copy of its visible field, so a value that Kea writes in
 another text form is not a change.
 

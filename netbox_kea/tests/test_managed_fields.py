@@ -110,7 +110,7 @@ class SubnetWriterTests(SimpleTestCase):
             },
         )
 
-    def test_a_kept_pool_keeps_its_pool_level_keys(self):
+    def test_a_kept_pool_keeps_its_live_entry(self):
         live = {
             "id": 42,
             "subnet": "10.0.0.0/24",
@@ -119,7 +119,7 @@ class SubnetWriterTests(SimpleTestCase):
         written = _written(live, pools=("10.0.0.50-10.0.0.99", "10.0.0.120-10.0.0.130"))
         self.assertEqual(
             written["pools"],
-            [{"pool": "10.0.0.50-10.0.0.99", "client-class": "lab"}, {"pool": "10.0.0.120-10.0.0.130"}],
+            [{"pool": "10.0.0.50 - 10.0.0.99", "client-class": "lab"}, {"pool": "10.0.0.120-10.0.0.130"}],
         )
 
     def test_a_lifetime_or_timer_is_set_with_the_subnet_parameter_name_and_none_keeps_it(self):
@@ -424,7 +424,6 @@ class SharedNetworkWriterTests(SimpleTestCase):
             ("user-context not an object", {"name": "office", "user-context": "text"}),
             ("option-data not a list", {"name": "office", "option-data": None}),
             ("two entries for one form field", {"name": "office", "option-data": [{"code": 6}, {"code": 6}]}),
-            ("relay not an object", {"name": "office", "relay": "192.0.2.9"}),
         ):
             with self.subTest(label), self.assertRaises(MalformedConfiguration):
                 write_shared_network(live, 4, edit, shown=self._SHOWN)

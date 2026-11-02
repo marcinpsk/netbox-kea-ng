@@ -1518,6 +1518,7 @@ class SubnetEditTests(TestCase):
     def test_an_update_that_netbox_cannot_build_sends_no_step(self):
         malformed = MalformedConfiguration("More than one DHCP Option entry fits the gateway field.")
         for version in _FAMILIES:
+            # mock-ok: unreachable defensive guard. A live Subnet that the writer refuses also fails the shown check.
             with (
                 self.subTest(version=version),
                 patch("netbox_kea.managed_fields.write_subnet", autospec=True, side_effect=malformed),
@@ -2220,7 +2221,7 @@ class SubnetEditPoolTests(TestCase):
                 self.assertEqual(sent["pools"], live["pools"])
             with self.subTest(version=version, change="add"):
                 sent = self._sent(version, live, (text, _OTHER_POOL[version]), (text,))
-                self.assertEqual(sent["pools"], [{"pool": text, **_POOL_KEYS}, {"pool": _OTHER_POOL[version]}])
+                self.assertEqual(sent["pools"], [*live["pools"], {"pool": _OTHER_POOL[version]}])
 
     def test_a_live_pool_entry_that_does_not_parse_is_not_sent(self):
         """The form cannot show such a Subnet, so a save from any page would drop the Pool."""

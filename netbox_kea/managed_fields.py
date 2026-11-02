@@ -9,6 +9,7 @@ and keep every other key. The DHCP Options of these fields go through the option
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -19,6 +20,7 @@ from .dhcp_options import (
     InvalidAddress,
     address_list,
     address_list_data,
+    form_managed_options,
     form_option_edit,
     form_option_fields,
     merge_option_edit,
@@ -187,13 +189,12 @@ def write_subnet(entry: dict[str, Any], family: Family, edit: SubnetEdit, *, sho
 
     """
     fields, before = edit.fields, shown.fields
-    names = ("dns_servers", "ntp_servers") if family == 6 else ("gateway", "dns_servers", "ntp_servers")
-    _write_options(entry, family, _option_fields(fields, names), _option_fields(before, names))
+    _write_options(entry, family, _option_fields(fields, family), _option_fields(before, family))
     if fields.ddns_qualifying_suffix != before.ddns_qualifying_suffix:
         _write_text(entry, setting_key("ddns_qualifying_suffix"), fields.ddns_qualifying_suffix)
     if fields.pools != before.pools:
         live_pools = _pools_by_range(entry, family)
-        entry["pools"] = [{**live_pools.get(pool, {}), "pool": pool} for pool in fields.pools]
+        entry["pools"] = [live_pools.get(pool, {"pool": pool}) for pool in fields.pools]
     for field in _LIFETIMES:
         value = getattr(edit, field)
         if value is not None and value != getattr(shown, field):
@@ -217,13 +218,14 @@ def write_shared_network(
     """Set each field of *edit* that differs from *shown* on the raw Shared Network *entry*, and keep every other key.
 
     *shown* holds the values that the form showed for *entry*. A field that the operator did not change keeps its
-    exact live text, and a kept relay object keeps its other keys.
+    exact live text.
 
     Raises:
         MalformedConfiguration: If the Shared Network has a value that the edit cannot keep or replace safely.
 
     """
     try:
+        # Refuse a malformed user-context also when the description did not change.
         shared_network_description(entry)
     except ValueError as exc:
         raise MalformedConfiguration(str(exc)) from exc
@@ -232,9 +234,11 @@ def write_shared_network(
     if edit.interface != shown.interface:
         _write_text(entry, "interface", edit.interface)
     if edit.relay_addresses != shown.relay_addresses:
-        _write_relay(entry, edit.relay_addresses)
-    names = ("dns_servers", "ntp_servers")
-    _write_options(entry, family, _option_fields(edit, names), _option_fields(shown, names))
+        if edit.relay_addresses:
+            entry["relay"] = {"ip-addresses": list(edit.relay_addresses)}
+        else:
+            entry.pop("relay", None)
+    _write_options(entry, family, _option_fields(edit, family), _option_fields(shown, family))
 
 
 def _write_text(entry: dict[str, Any], key: str, value: str) -> None:
@@ -245,9 +249,13 @@ def _write_text(entry: dict[str, Any], key: str, value: str) -> None:
         entry.pop(key, None)
 
 
-def _option_fields(values: SubnetFields | SharedNetworkEdit, names: tuple[str, ...]) -> dict[str, str]:
-    """Return the option data of each form field in *names*, keyed by form field."""
-    data = {name: getattr(values, name) for name in names}
+def _option_fields(values: SubnetFields | SharedNetworkEdit, family: Family) -> dict[str, str]:
+    """Return the option data of each form-managed DHCP Option field of *family* that *values* has, by form field.
+
+    A Shared Network has no gateway field.
+    """
+    names = {field.name for field in dataclasses.fields(values)}
+    data = {name: getattr(values, name) for name in form_managed_options(family) if name in names}
     return {name: value if isinstance(value, str) else address_list_data(value) for name, value in data.items()}
 
 
@@ -263,6 +271,7 @@ def _write_options(entry: dict[str, Any], family: Family, edited: dict[str, str]
     changed = {field: data for field, data in edited.items() if data != shown[field]}
     try:
         live = parse_dhcp_options(options)
+        # Refuse a list that the form cannot read also when no field changed.
         form_option_fields(live, family)
         if changed:
             entry["option-data"] = merge_option_edit(form_option_edit(live, family, changed), options, family)
@@ -280,24 +289,8 @@ def _write_description(network: dict[str, Any], description: str) -> None:
         network.pop("user-context", None)
 
 
-def _write_relay(network: dict[str, Any], addresses: tuple[str, ...]) -> None:
-    """Write *addresses* as the relay addresses, and keep every other key of the relay object.
-
-    Raises:
-        MalformedConfiguration: If the live relay is not an object.
-
-    """
-    relay = network.get("relay", {})
-    if not isinstance(relay, dict):
-        raise MalformedConfiguration("A Shared Network relay must be an object.")
-    if addresses:
-        network["relay"] = {**relay, "ip-addresses": list(addresses)}
-    else:
-        network.pop("relay", None)
-
-
 def _pools_by_range(entry: dict[str, Any], family: Family) -> dict[str, dict[str, Any]]:
-    """Return each live Pool entry of the Subnet *entry* by its range, so that a kept Pool keeps its Pool-level keys.
+    """Return each live Pool entry of the Subnet *entry* by its range, so that a kept Pool keeps its live entry.
 
     Raises:
         MalformedConfiguration: If the Subnet has no valid CIDR, or a live Pool entry is not an object or has no range

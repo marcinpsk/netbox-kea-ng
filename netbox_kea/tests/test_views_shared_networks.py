@@ -891,25 +891,23 @@ _NOT_SENT_CHANGED = (
 
 
 class TestSharedNetworkEditWritesOnlyChangedFields(_ViewTestBase):
-    """A Shared Network save writes only the fields that the operator changed.
+    """A Shared Network save writes only the fields that the operator changed. Each other field keeps its live text."""
 
-    Each other field keeps its exact live text, and a kept relay object keeps its other keys.
-    """
-
-    # The form shows the interface without the outer space, and each relay address in its canonical form.
+    # The form shows the interface without the outer space, and the DHCPv6 relay address in its canonical form.
+    # A DHCPv4 address has one text form only.
     _LIVE: dict = {
         4: {
             "name": "prod-net",
             "subnet4": [],
             "interface": " eth0",
-            "relay": {"ip-addresses": ["192.0.2.1"], "user-context": {"site": "hq"}},
+            "relay": {"ip-addresses": ["192.0.2.1"]},
             "option-data": [],
         },
         6: {
             "name": "prod-net",
             "subnet6": [],
             "interface": " eth0",
-            "relay": {"ip-addresses": ["2001:DB8::1"], "user-context": {"site": "hq"}},
+            "relay": {"ip-addresses": ["2001:DB8:0::1"]},
             "option-data": [],
         },
     }
@@ -964,7 +962,7 @@ class TestSharedNetworkEditWritesOnlyChangedFields(_ViewTestBase):
                     {
                         **self._LIVE[version],
                         "interface": "eth1",
-                        "relay": {"ip-addresses": [relay[version]], "user-context": {"site": "hq"}},
+                        "relay": {"ip-addresses": [relay[version]]},
                     },
                 )
 
