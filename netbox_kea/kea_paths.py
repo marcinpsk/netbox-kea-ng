@@ -72,10 +72,9 @@ def subnet_collection(family: int) -> str:
     return f"subnet{family}"
 
 
-def subnet(family: int, subnet_id: int | None, cidr: str | None = None) -> str:
-    """Return the path of a Subnet by its Kea subnet ID, or by its CIDR when Kea gave no ID."""
-    identity = f"id={subnet_id}" if subnet_id is not None else f"subnet={cidr}"
-    return f"{daemon(family)}/{_step(subnet_collection(family), identity)}"
+def subnet(family: int, subnet_id: int) -> str:
+    """Return the path of a Subnet by its Kea subnet ID."""
+    return f"{daemon(family)}/{_step(subnet_collection(family), f'id={subnet_id}')}"
 
 
 def subnet_entry(parent: str, family: int, index: int) -> str:

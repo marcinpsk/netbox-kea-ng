@@ -12,27 +12,36 @@ from html.parser import HTMLParser
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from django.contrib import messages as django_messages
+from django.contrib.auth import get_user_model
 from django.contrib.messages import get_messages
 from django.db import DatabaseError
 from django.db.models.signals import pre_save
+from django.test import TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils.html import escape
 from extras.models import JournalEntry
 
 from netbox_kea import signals
+from netbox_kea.event_scope import _NESTED_TRACKING
 from netbox_kea.leases import DHCPv4LeaseRequest, DHCPv6PrefixLease
 
 from .kea_stub import LeaseDaemon, _catalogue_responses_for_subnets, lease_record, shown_token, stub_kea
-from .utils import UNCONFIRMED_RUNTIME, _ViewTestBase, with_display_cache_config
+from .utils import UNCONFIRMED_RUNTIME, _make_db_server, _ViewTestBase, with_display_cache_config
 
 _SUBNETS = {4: [{"id": 10, "subnet": "192.0.2.0/24"}], 6: [{"id": 10, "subnet": "2001:db8:1::/64"}]}
 _PREFIX = "2001:db8:100:600::"
 _CONTEXT = {"site": {"rack": "r1", "slots": [1, 2]}}
+_FAIL_JOURNAL_DISPATCH = "netbox_kea.tests.test_reservation_after_apply.fail_journal_dispatch"
+_JOURNAL_EVENTS_FAILED = "Kea applied the change, and the journal entry was saved, but NetBox could not dispatch its events; see server logs."
 
 
 def _address4(**changes) -> dict:
     facts = {"subnet_id": 10, "hostname": "host40.example.org", "hw_address": "aa:bb:cc:00:00:40", **changes}
     return lease_record("192.0.2.40", **facts)
+
+
+def _address4_other() -> dict:
+    return lease_record("192.0.2.41", subnet_id=10, hostname="host41.example.org", hw_address="aa:bb:cc:00:00:41")
 
 
 def _prefix(**changes) -> dict:
@@ -425,7 +434,7 @@ class LeaseAddTest(_ViewTestBase):
         signals.lease_added.connect(fail)
         self.addCleanup(signals.lease_added.disconnect, fail)
         daemon = LeaseDaemon(4)
-        with stub_kea(daemon.responses()), self.assertLogs("netbox_kea.views", "ERROR") as logs:
+        with stub_kea(daemon.responses()), self.assertLogs("netbox_kea.after_apply", "ERROR") as logs:
             response = self.client.post(self._url(), {"ip_address": "192.0.2.50", "hw_address": "aa:bb:cc:00:00:50"})
 
         self.assertEqual(response.status_code, 302)
@@ -473,6 +482,38 @@ class LeaseAddTest(_ViewTestBase):
             ],
         )
         self.assertEqual(len(received.calls), 1)
+
+    def test_a_failing_signal_receiver_after_an_applied_delete_is_a_separate_error(self):
+        """One leases_deleted signal goes out for the batch, and a receiver error keeps the delete applied."""
+
+        def fail(sender, **kwargs):
+            raise RuntimeError("receiver bug")
+
+        signals.leases_deleted.connect(fail)
+        self.addCleanup(signals.leases_deleted.disconnect, fail)
+        received = _Received(self, signals.leases_deleted)
+        daemon = LeaseDaemon(4, _address4(), _address4_other())
+        tokens = [shown_token(_address4()), shown_token(_address4_other())]
+        url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        with stub_kea(daemon.responses()), self.assertLogs("netbox_kea.after_apply", "ERROR") as logs:
+            response = self.client.post(url, {"pk": tokens, "_confirm": "1"})
+
+        self.assertEqual(daemon.leases, {})
+        self.assertEqual(
+            [(message.level, str(message)) for message in get_messages(response.wsgi_request)],
+            [
+                (django_messages.SUCCESS, "Deleted 2 DHCPv4 lease(s): 192.0.2.40, 192.0.2.41."),
+                (
+                    django_messages.ERROR,
+                    "Kea applied the change, but a receiver of the leases_deleted signal failed; see server logs.",
+                ),
+            ],
+        )
+        self.assertIn("leases_deleted", logs.output[0])
+        (call,) = received.calls
+        self.assertEqual(len(call["leases"]), 2)
+        (journal,) = JournalEntry.objects.filter(assigned_object_id=self.server.pk)
+        self.assertEqual(journal.comments, "2 lease(s) deleted: 192.0.2.40, 192.0.2.41")
 
     def test_a_mixed_case_hostname_that_kea_stores_in_lowercase_is_an_observation(self):
         received = _Received(self, signals.lease_added)
@@ -585,7 +626,7 @@ class LeaseAddTest(_ViewTestBase):
         self.assertEqual(kea.commands().count("lease4-get"), 1)
         self.assertFalse(IPAddress.objects.filter(address__net_host="192.0.2.50").exists())
         self.assertIn(
-            "Lease created, but it was not synced to NetBox: Kea did not report it as a current lease.",
+            "Lease 192.0.2.50 was not synced to NetBox: Kea does not report it as a current lease.",
             _messages(response),
         )
 
@@ -662,3 +703,58 @@ class LeaseReserveTest(_ViewTestBase):
                 self.assertNotIn("Reserved</a>", cell)
                 self.assertNotIn('text-bg-success">Reserved</span>', cell)
                 self.assertNotIn("+ Reserve", cell)
+
+
+class LeaseAfterApplyEventsTest(TransactionTestCase):
+    """The journal entry commits in its own event unit, which needs a request outside a test transaction."""
+
+    def setUp(self):
+        if not _NESTED_TRACKING:
+            self.skipTest("Before NetBox 4.6.9 nested event units are unavailable")
+        self.client.force_login(get_user_model().objects.create_superuser(username="lease-after-apply-events"))
+        self.server = _make_db_server()
+
+    def test_a_creation_whose_journal_events_fail_is_still_reported_as_created(self):
+        """The journal entry commits in its own unit, so a failed event dispatch is a separate fact (ADR 0012)."""
+        received = _Received(self, signals.lease_added)
+        daemon = LeaseDaemon(4)
+        with (
+            override_settings(EVENTS_PIPELINE=[_FAIL_JOURNAL_DISPATCH]),
+            stub_kea(daemon.responses()),
+        ):
+            response = self.client.post(
+                reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk]),
+                {"ip_address": "192.0.2.50", "hw_address": "aa:bb:cc:00:00:50"},
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIsNotNone(daemon.lease("192.0.2.50"))
+        self.assertEqual(
+            [(message.level, str(message)) for message in get_messages(response.wsgi_request)],
+            [
+                (django_messages.SUCCESS, "Lease for 192.0.2.50 created."),
+                (django_messages.ERROR, _JOURNAL_EVENTS_FAILED),
+            ],
+        )
+        self.assertTrue(JournalEntry.objects.filter(assigned_object_id=self.server.pk).exists())
+        self.assertEqual(len(received.calls), 1)
+
+    def test_a_delete_whose_journal_events_fail_is_still_reported_as_deleted(self):
+        received = _Received(self, signals.leases_deleted)
+        daemon = LeaseDaemon(4, _address4())
+        url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        with (
+            override_settings(EVENTS_PIPELINE=[_FAIL_JOURNAL_DISPATCH]),
+            stub_kea(daemon.responses()),
+        ):
+            response = self.client.post(url, {"pk": [shown_token(_address4())], "_confirm": "1"})
+
+        self.assertEqual(daemon.leases, {})
+        self.assertEqual(
+            [(message.level, str(message)) for message in get_messages(response.wsgi_request)],
+            [
+                (django_messages.SUCCESS, "Deleted 1 DHCPv4 lease(s): 192.0.2.40."),
+                (django_messages.ERROR, _JOURNAL_EVENTS_FAILED),
+            ],
+        )
+        self.assertEqual(len(received.calls), 1)

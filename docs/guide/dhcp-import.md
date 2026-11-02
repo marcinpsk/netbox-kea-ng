@@ -124,9 +124,8 @@ Kea owns the managed fields of a mapped object. Each run sets every managed fiel
 that Kea does not declare, so the DHCP plugin inherits its value. The next run overwrites a hand edit of a managed
 field. The import does not change the other fields, such as tags, comments, description, status, weight, cluster and
 the device or virtual machine. It also does not change an object without a mapping, such as a Pool or Reservation that
-you add, or its DHCP Options. A Kea Subnet without a subnet ID has no mapping, and neither have its Pools and
-delegated-prefix Pools. The import creates them, but a later run that finds a row without a mapping in their place
-leaves that row, its DHCP Options and its Pools as they are, and reports the Kea object as not imported.
+you add, or its DHCP Options. Kea refuses a Subnet without a subnet ID, so the import reports such a Subnet entry as
+invalid Kea data. It does not import the Subnet, its Pools, its delegated-prefix Pools or their DHCP Options.
 
 The mapping of a DHCP Option holds the Kea source of its object and the identity of the option in that object: the
 option space, the code and the set of client classes. A Kea object can assign one identity more than once. Each one
@@ -135,9 +134,8 @@ creates a new DHCP Option and removes the old one. When the definition of an opt
 `option-def` to a client class, the Option keeps its row and binds to the new definition.
 
 A DHCP Option that you add to an imported object has no mapping. The run does not change it and does not remove it.
-A Kea option without a mapped Option gets a new DHCP Option. There are two exceptions: the upgrade, and a DHCP
-Option that has no mapping (see below). Each imported object takes the Options without a mapping once: on the first
-run that reaches it after the upgrade. Then a Kea option
+A Kea option without a mapped Option gets a new DHCP Option. Only the upgrade is an exception. Each imported object
+takes the Options without a mapping once: on the first run that reaches it after the upgrade. Then a Kea option
 without a mapped Option takes an Option without a mapping of the same object. It takes one with the same space, code
 and client classes first. Then it takes one with the same space and code, for example one that an earlier release
 wrote without classes. The run maps each Option that it takes before it writes it, so a write that fails keeps the
@@ -151,10 +149,8 @@ A branch revert keeps the fact that the Options of an object are mapped, as main
 has removed the change log entry of the merge, the revert restores that fact from the branch, so the restored object can
 take Options without a mapping again.
 
-A mapping keeps 517 characters. A DHCP Option whose identity is longer has no mapping, and neither has a DHCP Option
-of an object without a mapping. On every run, such an Option takes an Option without a mapping of the same object, as
-the upgrade does. So the run updates it in place and makes no duplicate. The run never removes it. While the read has
-such an Option, it removes no DHCP Option of an object of the same kind.
+A mapping has no length limit. So a DHCP Option with many long client class names also has a mapping, and a run
+updates and removes it as any other DHCP Option.
 
 When you rename an object, the mapping stays and the import keeps your name. A client class and a Shared
 Network are the exceptions: they keep their Kea name, because Kea refers to them by name. The first run after an
@@ -207,7 +203,7 @@ need it. No netbox-kea upgrade is necessary.
 | `dhcp4o6_subnet_selection` | DHCPv4-over-DHCPv6 Subnet selection | 12 | `4o6-subnet`, `4o6-interface` and `4o6-interface-id` of a DHCPv4 Subnet |
 | `address_registration` | Address registration | 13 | `allow-address-registration` (DHCPv6) |
 | `stash_agent_options` | Stashed relay agent options | 14 | `stash-agent-options` (DHCPv4) |
-| `kea_option_data` | DHCP Option data in each form that Kea accepts | 17 | A DHCP Option whose data netbox-plugin-dhcp 0.2.0 refuses. The plugin checks each value of the data against the type of the Option Definition by its own rules, and it does not read `csv-format`. So it refuses for example hexadecimal data with `csv-format: false` (except for the binary and string types, and digits that it reads as a value of the type), a boolean `1` or `0`, an integer in hexadecimal (`0x10`), a single-label FQDN, tuple data that is not JSON, and a value with spaces around it, which Kea removes. The import runs the data check of the plugin before it writes the Option. If the data check fails with an error that is not a refusal, the Option is `write_failed`. A write that fails for a different reason, for example a custom validator, is also `write_failed` |
+| `kea_option_data` | DHCP Option data in each form that Kea accepts | 17 | A DHCP Option whose data netbox-plugin-dhcp 0.2.0 refuses. The plugin checks each value of the data against the type of the Option Definition by its own rules, and it does not read `csv-format`. So it refuses for example hexadecimal data with `csv-format: false` (except for the binary and string types, and digits that it reads as a value of the type), a boolean `1` or `0`, an integer in hexadecimal (`0x10`), a single-label FQDN, tuple data that is not JSON, and a value with spaces around it, which Kea removes. The import runs the data check of the plugin before it writes the Option. If the data check fails with an error that is not a refusal, the Option is `write_failed`. A write that fails for a different reason, for example a custom validator, is also `write_failed`, with the message of the validator |
 
 A DHCP Option that needs an unsupported Option Definition is unsupported for the same reason. The DHCP plugin 0.2.0
 keeps the relay as free text, which the import does not write, so a value that you enter there stays.
@@ -243,6 +239,13 @@ A fact that the run did not write has a reason code. The reason gives the outcom
 | `read_failed` | Skipped | Kea could not be read in full |
 | `incomplete_observation` | Skipped | Kea was not observed in full, so removal was suppressed |
 | `removal_blocked` | Skipped | Other rows still depend on it, so it was not removed |
+
+When the DHCP plugin refuses a row as it saves it, for example a Subnet whose name another Subnet holds or a row that a
+custom validator refuses, the `write_failed` entry shows the messages of the plugin. A delegated-prefix Pool that the
+plugin refuses is `plugin_gap` with the same messages. Any other failed write shows "See server logs.", and the server
+log holds the error. When the run does not write an object, the objects inside it, such as the DHCP Options, Pools and
+delegated-prefix Pools of a Subnet, are `parent_not_imported`. The objects inside a Subnet whose Subnet ID another row
+holds take the reason of the Subnet.
 
 ## Declared Values and inheritance
 

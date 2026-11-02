@@ -649,7 +649,7 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("reservation-add"), 1)
         self.assertIn(
-            "The Reservation changed, but NetBox IPAM synchronization failed.",
+            "Reservation was not synced to NetBox: NetBox IPAM synchronization failed; see server logs.",
             [str(message) for message in get_messages(response.wsgi_request)],
         )
 
@@ -688,7 +688,8 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands().count("reservation-add"), 1)
         self.assertIn(
-            "The Reservation changed, but NetBox IPAM synchronization failed.",
+            "Reservation was not synced to NetBox for 198.18.0.20: NetBox IPAM synchronization failed;"
+            " see server logs.",
             [str(message) for message in get_messages(response.wsgi_request)],
         )
 
@@ -1479,7 +1480,10 @@ class TestReservationDocumentImport(_ViewTestBase):
                 },
             )
         rows = _import_rows(response)["created"][1]
-        self.assertEqual(rows[0][2], "NetBox IPAM synchronization failed for: 2001:db8::20.")
+        self.assertEqual(
+            rows[0][2],
+            "Reservation was not synced to NetBox for 2001:db8::20: NetBox IPAM synchronization failed; see server logs.",
+        )
         self.assertTrue(IPAddress.objects.filter(address="2001:db8::21/64").exists())
 
     def test_import_sync_option_claims_each_created_reservation(self):
@@ -2237,11 +2241,13 @@ class TestReservationSideEffectAfterApplied(TransactionTestCase):
             ).exists()
         )
         rows = _import_rows(response)["created"][1]
+        # The claim stops after the row whose events failed, so the second address never ran.
         self.assertEqual(
             rows[0][2],
             (
-                "NetBox IPAM sync saved changes, but could not dispatch their events. "
-                "Synchronization may be incomplete; check the addresses before retrying."
+                "Reservation was not synced to NetBox for 2001:db8::21: NetBox IPAM synchronization failed;"
+                " see server logs. Reservation: NetBox saved the sync but could not dispatch its events;"
+                " see server logs. Check the addresses before you sync again."
             ),
         )
         self.assertEqual(rows[1][2], "")
@@ -2286,8 +2292,8 @@ class TestReservationSideEffectAfterApplied(TransactionTestCase):
             self.assertEqual(
                 row[2],
                 (
-                    "NetBox IPAM sync saved changes, but could not dispatch their events. "
-                    "Synchronization may be incomplete; check the addresses before retrying."
+                    "Reservation: NetBox saved the sync but could not dispatch its events; see server logs."
+                    " Check the addresses before you sync again."
                 ),
             )
         self.assertNotContains(response, "NetBox IPAM synchronization failed")
@@ -2317,7 +2323,7 @@ class TestReservationSideEffectAfterApplied(TransactionTestCase):
                 EVENTS_PIPELINE=["netbox_kea.tests.test_reservation_mutation_views.fail_first_ipv6_address_dispatch"]
             ),
             stub_kea(responses) as kea,
-            self.assertLogs("netbox_kea.reservation_edit", "ERROR") as logs,
+            self.assertLogs("netbox_kea.manual_sync", "ERROR") as logs,
         ):
             response = self.client.post(
                 reverse("plugins:netbox_kea:server_reservation6_add", args=[server.pk]),
@@ -2341,14 +2347,14 @@ class TestReservationSideEffectAfterApplied(TransactionTestCase):
             (
                 messages.ERROR,
                 (
-                    "Reservation created. NetBox IPAM sync saved changes, but could not dispatch their events. "
-                    "Synchronization may be incomplete; check the addresses before retrying."
+                    "Reservation: NetBox saved the sync but could not dispatch its events; see server logs."
+                    " Check the addresses before you sync again."
                 ),
             ),
             shown,
         )
         self.assertFalse(any("could not be created" in text for _level, text in shown), shown)
-        self.assertIn("EventDispatchError", "\n".join(logs.output))
+        self.assertIn("ClaimEventsFailed", "\n".join(logs.output))
 
     def test_an_applied_add_with_failed_journal_events_reports_that_the_journal_was_saved(self):
         from django.contrib.auth import get_user_model
