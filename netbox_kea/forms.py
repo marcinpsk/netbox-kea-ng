@@ -1780,7 +1780,7 @@ def option_rows(formset: forms.BaseFormSet) -> tuple[OptionRow, ...]:
                 always_send=bool(row.get("always_send")),
                 delete=bool(row.get("DELETE")),
                 original_option=seen,
-                client_classes=row["client_classes"],
+                client_classes=row.get("client_classes", ""),
             )
         )
     return tuple(rows)

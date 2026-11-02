@@ -1360,6 +1360,25 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
                     ],
                 )
 
+    def test_a_deleted_row_with_an_invalid_class_field_is_deleted(self):
+        options = [
+            {"code": 6, "data": "198.18.0.53", "client-classes": ["lab"]},
+            {"name": "routers", "data": "198.18.0.1"},
+        ]
+        for scope in ("server", "subnet"):
+            with self.subTest(scope=scope):
+                with _persist_stub(self._config(scope, options)):
+                    data = self._submitted(self.client.get(self._url(scope)))
+                # Django drops a field with a NUL character from cleaned_data and ignores the error of a deleted row.
+                data.update({"form-0-DELETE": "on", "form-0-client_classes": "lab\x00"})
+                with _persist_stub(self._config(scope, options)) as kea:
+                    post = self.client.post(self._url(scope), data)
+                self.assertEqual(post.status_code, 302)
+                written = _written_config(kea)["Dhcp4"]
+                if scope == "subnet":
+                    written = written["subnet4"][0]
+                self.assertEqual(written["option-data"], [{"name": "routers", "data": "198.18.0.1"}])
+
     def test_a_class_field_that_cannot_keep_a_live_name_or_repeats_one_is_refused_on_the_form(self):
         options = [
             {"code": 6, "data": "198.18.0.53", "client-classes": ["a,b"]},
