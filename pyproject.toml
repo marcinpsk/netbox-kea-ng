@@ -34,7 +34,6 @@ dependencies = [
   "pyyaml>=6.0,<7.0",
   "beautifulsoup4>=4.12,<5",
   "pydantic>=2.0,<3.0",
-  "typing-extensions>=4.1",
 ]
 
 [project.urls]
@@ -184,7 +183,7 @@ ignore = [
   # En dash in numeric ranges ("1-1440") and the multiplication sign are intended.
   "RUF001",
   "RUF002",
-  # PEP 695 type parameters and type statements: opengrep 1.30 cannot parse them and skips
+  # PEP 695 type parameters and type statements: opengrep (1.30.2 to 1.33.1) cannot parse them and skips
   # the code around them, so the custom ruleset would miss its findings there.
   "UP040",
   "UP046",
