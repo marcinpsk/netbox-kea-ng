@@ -13,6 +13,32 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.11.0 (2026-11-02)
+
+### Bug Fixes
+
+- **types**: Fix the mypy findings of the 3.12 target and shrink the baseline
+  ([`a95b5eb`](https://github.com/marcinpsk/netbox-kea-ng/commit/a95b5eb8444fcc0e086b43a90db78c95b71ee3a7))
+
+### Chores
+
+- **deps**: Remove the unused typing-extensions dependency
+  ([`1fe603f`](https://github.com/marcinpsk/netbox-kea-ng/commit/1fe603f4ddbcedf6958a1dd33c8bba4eb635ba8b))
+
+### Features
+
+- Support Python 3.12 to 3.14
+  ([`3f93e90`](https://github.com/marcinpsk/netbox-kea-ng/commit/3f93e90e5bdcdf902c71b8d27235c6413d0448a4))
+
+### Refactoring
+
+- Apply the ruff rules of the Python 3.12 target
+  ([`fe59720`](https://github.com/marcinpsk/netbox-kea-ng/commit/fe59720318d218d0cb74a9d2e2dca30f378061e6))
+
+- Use StrEnum for the DHCP Import vocabulary
+  ([`a986f4a`](https://github.com/marcinpsk/netbox-kea-ng/commit/a986f4af510d71d14572c2e27b56e96ae41b502f))
+
+
 ## v3.10.4 (2026-11-02)
 
 ### Bug Fixes
