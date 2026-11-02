@@ -380,7 +380,7 @@ class _ReservationAddView(_ReservationMutationView):
             request,
             server,
             form,
-            forms.ReservationOptionsFormSet(prefix="options"),
+            forms.DHCPOptionRowFormSet(prefix="options"),
             capabilities,
             subnet_cmds_available=snapshot.subnet_cmds_available,
         )
@@ -476,7 +476,7 @@ class _ReservationEditView(_ReservationMutationView):
             request,
             server,
             form,
-            forms.ReservationOptionsFormSet(initial=state.options_initial, prefix="options"),
+            forms.DHCPOptionRowFormSet(initial=state.options_initial, prefix="options"),
             capabilities,
             user_context=reservation.user_context,
         )

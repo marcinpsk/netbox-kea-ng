@@ -20,49 +20,13 @@
           This replaces <strong>all</strong> server-level <code>option-data</code> for
           DHCPv{{ dhcp_version }} using
           <code>config-get</code> → <code>config-test</code> → <code>config-set</code> → <code>config-write</code>.
-          Per-subnet options are not affected. Select Delete to remove an option.
+          Per-subnet options are not affected. Select Delete to remove an option. Enter the client classes that receive an option, separated by commas.
           Reload this form if the live option list changes.
         </p>
 
         <form method="post" id="options-form">
           {% csrf_token %}
-          {{ formset.management_form }}
-
-          {% if formset.non_form_errors %}
-            <div class="alert alert-danger">
-              {% for error in formset.non_form_errors %}
-                <div>{{ error }}</div>
-              {% endfor %}
-            </div>
-          {% endif %}
-
-          <table class="table table-sm">
-            <thead>
-              <tr>
-                <th>Option Name</th>
-                <th>Value</th>
-                <th>Always Send</th>
-                <th>Delete</th>
-              </tr>
-            </thead>
-            <tbody id="formset-rows">
-              {% for form in formset %}
-                <tr class="formset-row">
-                  <td>
-                    {{ form.original_option }}
-                    {{ form.name }}
-                    {% for err in form.name.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
-                  </td>
-                  <td>
-                    {{ form.data }}
-                    {% for err in form.data.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
-                  </td>
-                  <td class="text-center">{{ form.always_send }}</td>
-                  <td class="text-center">{{ form.DELETE }}</td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
+          {% include "netbox_kea/inc/dhcp_option_rows.html" %}
 
           <div class="mt-2 mb-3">
             <button type="button" class="btn btn-sm btn-outline-secondary" id="add-row">

@@ -113,7 +113,7 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
             messages.error(request, "Could not load subnet configuration from Kea. The form cannot be displayed.")
             return redirect(return_url)
         initial = [opt.form_initial() for opt in subnet.configuration.options]
-        formset = forms.SubnetOptionsFormSet(initial=initial)
+        formset = forms.DHCPOptionRowFormSet(initial=initial)
         form = forms.SubnetConfirmForm(initial={"subnet_cidr": subnet.declared_cidr}, family=self.dhcp_version)
         return self._render(request, server, subnet_id, subnet.declared_cidr, formset, form, return_url)
 
@@ -151,7 +151,7 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
         return_url = _safe_return_url(
             request, reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
         )
-        formset = forms.SubnetOptionsFormSet(request.POST)
+        formset = forms.DHCPOptionRowFormSet(request.POST)
         form = forms.SubnetConfirmForm(request.POST, family=self.dhcp_version)
         if not form.is_valid():
             messages.error(request, _NO_SUBNET_CIDR)
@@ -213,7 +213,7 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
             messages.error(request, "Could not load server options from Kea. The form cannot be displayed.")
             return redirect(reverse("plugins:netbox_kea:server", args=[pk]))
         initial = [opt.form_initial() for opt in existing]
-        formset = forms.SubnetOptionsFormSet(initial=initial)
+        formset = forms.DHCPOptionRowFormSet(initial=initial)
         return render(
             request,
             "netbox_kea/server_dhcp_options_edit.html",
@@ -232,7 +232,7 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
             pk=pk,
         )
         return_url = reverse("plugins:netbox_kea:server", args=[pk])
-        formset = forms.SubnetOptionsFormSet(request.POST)
+        formset = forms.DHCPOptionRowFormSet(request.POST)
         if not formset.is_valid():
             return render(
                 request,

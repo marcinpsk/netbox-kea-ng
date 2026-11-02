@@ -1323,6 +1323,66 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
                 expected[1]["data"] = "198.18.0.56"
                 self.assertEqual(written["option-data"], expected)
 
+    def test_the_class_field_sets_and_clears_the_client_classes_of_an_option(self):
+        options = [
+            {"code": 6, "data": "198.18.0.53", "client-classes": ["lab"]},
+            {"name": "routers", "data": "198.18.0.1"},
+        ]
+        for scope in ("server", "subnet"):
+            with self.subTest(scope=scope):
+                with _persist_stub(self._config(scope, options)):
+                    page = self.client.get(self._url(scope))
+                self.assertContains(page, "<th>Client Classes</th>", html=True)
+                self.assertEqual(page.context["formset"].forms[0]["client_classes"].value(), "lab")
+                data = self._submitted(page)
+                data.update(
+                    {
+                        "form-TOTAL_FORMS": "3",
+                        "form-0-client_classes": "",
+                        "form-1-client_classes": "lab, voip",
+                        "form-2-name": "domain-name",
+                        "form-2-data": "example.org",
+                        "form-2-client_classes": "voip",
+                    }
+                )
+                with _persist_stub(self._config(scope, options)) as kea:
+                    post = self.client.post(self._url(scope), data)
+                self.assertEqual(post.status_code, 302)
+                written = _written_config(kea)["Dhcp4"]
+                if scope == "subnet":
+                    written = written["subnet4"][0]
+                self.assertEqual(
+                    written["option-data"],
+                    [
+                        {"code": 6, "data": "198.18.0.53"},
+                        {"name": "routers", "data": "198.18.0.1", "client-classes": ["lab", "voip"]},
+                        {"name": "domain-name", "data": "example.org", "client-classes": ["voip"]},
+                    ],
+                )
+
+    def test_a_class_field_that_cannot_keep_a_live_name_or_repeats_one_is_refused_on_the_form(self):
+        options = [
+            {"code": 6, "data": "198.18.0.53", "client-classes": ["a,b"]},
+            {"name": "routers", "data": "198.18.0.1"},
+        ]
+        refusals = (
+            (0, "a,b, new", "A client class name of DHCP Option &#x27;6&#x27; has a comma"),
+            (1, "voip, voip", "Enter each client class name of DHCP Option &#x27;routers&#x27; once."),
+        )
+        for scope in ("server", "subnet"):
+            for row, text, message in refusals:
+                with self.subTest(scope=scope, text=text):
+                    with _persist_stub(self._config(scope, options)):
+                        data = self._submitted(self.client.get(self._url(scope)))
+                    data[f"form-{row}-client_classes"] = text
+                    with _persist_stub(self._config(scope, options)) as kea:
+                        post = self.client.post(self._url(scope), data)
+                    self.assertEqual(post.status_code, 200)
+                    self.assertTrue(post.context["formset"].is_bound)
+                    self.assertIn(message, str(post.context["formset"].non_form_errors()))
+                    self.assertNotIn("config-test", kea.commands())
+                    self.assertNotIn("config-set", kea.commands())
+
     def test_every_managed_value_change_keeps_the_bound_form_and_names_the_option(self):
         seen = [
             {"name": "routers", "data": "198.18.0.1", "always-send": False, "never-send": False, "csv-format": True},
