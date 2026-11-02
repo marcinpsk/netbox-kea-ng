@@ -273,12 +273,12 @@ class ClaimOwnershipTest(TestCase):
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
     def test_unknown_subnet_refuses_the_complete_claim_even_when_force_is_set(self):
-        from netbox_kea.ipam_reconciliation import claim
+        from netbox_kea.ipam_reconciliation import LeaseSubnetAbsent, claim
         from netbox_kea.models import IPAMOwnershipLink
 
         for subnets in ([], [{"id": 1, "subnet": "198.18.0.0/24"}]):
             with self.subTest(subnets=subnets), stub_kea(_catalogue_responses_for_subnets(4, subnets)):
-                with self.assertRaisesMessage(ValueError, "Subnet ID"):
+                with self.assertRaisesMessage(LeaseSubnetAbsent, "Subnet ID"):
                     claim(self.server, 4, [self.lease, _typed(**{"subnet-id": 2})], force=True)
             self.assertFalse(IPAddress.objects.exists())
             self.assertFalse(IPAMOwnershipLink.objects.exists())

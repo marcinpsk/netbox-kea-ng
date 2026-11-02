@@ -1118,6 +1118,78 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertEqual([entry.path for entry in again.entries if entry.outcome.value == "created"], [])
         self.assertEqual(set(links().values_list("pk", flat=True)), set(mappings))
 
+    def test_a_squash_replay_then_a_reimport_finds_every_dhcpv6_row_through_its_mapping(self):
+        from netbox_dhcp.models import ClientClass, HostReservation, OptionDefinition, Subnet
+
+        # netbox-plugin-dhcp 0.2.0 keeps Subnet IDs unique across all DHCP servers.
+        subnet_id = next(n for n in count(60) if not Subnet.objects.filter(subnet_id=n).exists())
+        option = [{"code": 222, "data": "7"}]
+        conf = {
+            "option-def": [{"name": "site-code", "code": 222, "type": "uint8", "space": "dhcp6"}],
+            "client-classes": [{"name": "voip", "option-data": option}],
+            "subnet6": [
+                {
+                    "id": subnet_id,
+                    "subnet": "2001:db8:60::/64",
+                    "option-data": option,
+                    "pools": [{"pool": "2001:db8:60::/120", "option-data": option}],
+                    "pd-pools": [
+                        {"prefix": "2001:db8:6000::", "prefix-len": 48, "delegated-len": 56, "option-data": option}
+                    ],
+                }
+            ],
+        }
+        hosts = [
+            {"subnet-id": subnet_id, "duid": "00:01:00:01:60:60", "ip-addresses": ["2001:db8:60::50"]},
+            {"subnet-id": 0, "duid": "00:01:00:01:60:61"},
+        ]
+        server = _make_db_server(name="mapping-every-v6-kind", ca_url="https://kea.example.invalid", dhcp4=False)
+        intent, observation = parse_dhcp_config(conf, 6), _reservation_snapshot(conf, 6, hosts)
+        with event_tracking(_change_request(self.user)):
+            summary = import_server_config(server, intent, observation)
+        self.assertEqual(summary.errors, 0, summary.warnings)
+
+        def found():
+            return {
+                (link.kind, link.kea_subnet_id, link.kea_identity): (link.pk, type(link.sys4_object), link.object_id)
+                for link in KeaDhcpLink.objects.filter(server=server, family=6)
+            }
+
+        mapped = found()
+        self.assertEqual(
+            sorted({kind for kind, _, _ in mapped}),
+            ["client_class", "option", "option_definition", "pd_pool", "pool", "reservation", "server", "subnet"],
+        )
+        self.assertEqual(sum(kind == "option" for kind, _, _ in mapped), 4)
+        dhcp_server = KeaDhcpLink.objects.get(server=server, family=6, kind="server").sys4_object
+        branch = _provisioned_branch(self, "mapping-every-v6-kind")
+        branch.merge_strategy = "squash"
+        branch.save(provision=False)
+        # The Subnet takes its Pools, its In-Subnet Reservation and their Options; the DHCPServer goes last.
+        for target in (
+            Subnet.objects.get(dhcp_server=dhcp_server),
+            HostReservation.objects.get(dhcp_server=dhcp_server, subnet__isnull=True),
+            ClientClass.objects.get(dhcp_server=dhcp_server),
+            OptionDefinition.objects.get(standard=False, dhcp_server=dhcp_server),
+            dhcp_server,
+        ):
+            self._delete(branch, target)
+        branch.merge(user=self.user)
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertEqual(found(), {})
+        branch.revert(user=self.user)
+        self.assertEqual(found(), mapped)
+
+        with event_tracking(_change_request(self.user)):
+            again = import_server_config(server, intent, _reservation_snapshot(conf, 6, hosts))
+
+        self.assertEqual(again.errors, 0, again.warnings)
+        self.assertEqual(
+            [(entry.kind, entry.path) for entry in again.entries if entry.outcome.value in ("created", "removed")], []
+        )
+        self.assertEqual(found(), mapped)
+
     def test_squash_restores_global_reservations(self):
         for family in (4, 6):
             for queryset in (False, True):

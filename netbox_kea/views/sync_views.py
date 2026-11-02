@@ -5,11 +5,9 @@ import ipaddress
 import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Literal, cast
 
 from django.contrib import messages
-from django.core.exceptions import ValidationError
 from django.db import DatabaseError
 from django.http import Http404, HttpResponse, HttpResponseForbidden, HttpResponseRedirect
 from django.http.request import HttpRequest
@@ -18,8 +16,8 @@ from django.urls import reverse
 from django.views import View
 
 from .. import (
-    event_scope,
     forms,
+    manual_sync,
     reservation_edit,
     runtime_change,
     server_configuration,
@@ -37,7 +35,6 @@ from ..ipam_reconciliation import (
 from ..leases import (
     LeaseAbsent,
     LeaseRequest,
-    is_current,
     parse_selection,
     shown_lease,
 )
@@ -70,9 +67,9 @@ from ._base import (
     _signal_applied,
 )
 from .leases import _LEASES_TAB, _lease_journal_comments, lease_sync_gates
+from .manual_sync_presenter import manual_sync_lines
 from .notices import Notice, failed_load, load_target
 from .reservation_mutations import (
-    RESERVATION_CLAIM_EVENTS_FAILED,
     RESERVATION_VERIFICATION_FAILED,
     live_reservation_target,
     reservation_identity_from_request,
@@ -89,6 +86,21 @@ def _row_error(request: HttpRequest, message: str) -> HttpResponse:
     """Return *message* as the error badge that replaces the row button which posted *request*."""
     # A 200 reply: htmx swaps no error reply, and NetBox's DEBUG htmx script replaces the page with a 4xx/5xx one.
     return render(request, "netbox_kea/inc/row_action_error.html", {"message": message})
+
+
+def _manual_sync_reply(
+    request: HttpRequest, outcome: manual_sync.ManualSyncOutcome, subject: str, record: dict[str, Any] | None = None
+) -> HttpResponse:
+    """Return the row reply of a Manual Sync: its error badge, or its allocation badges and each other line."""
+    lines = manual_sync_lines(outcome, subject)
+    if isinstance(outcome, manual_sync.NotRun):
+        return _row_error(request, " ".join(line.text for line in lines))
+    notes = [line.text for line in lines if not line.allocation]
+    return render(
+        request,
+        "netbox_kea/inc/claim_results.html",
+        {"claim_result": outcome.result, "record": record, "notes": notes},
+    )
 
 
 class _BaseSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
@@ -134,30 +146,8 @@ class _BaseSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
         # The label holds the kind and the prefix length, so a changed allocation does not match.
         if shown_lease(lease).label != label:
             return _row_error(request, "The lease changed in Kea. Reload the lease list.")
-        if not is_current(lease, datetime.now(tz=timezone.utc)):
-            return _row_error(request, "The lease is not current in Kea, so it was not synchronized.")
-        try:
-            from ..ipam_reconciliation import claim
-
-            result = claim(server, self.dhcp_version, [lease], force=True)
-            outcome: str
-            if identity.kind == "delegated-prefix":
-                outcome = next(iter(result.prefixes.values())).outcome
-            else:
-                outcome = next(iter(result.addresses.values())).outcome
-            if outcome == "error":
-                return _row_error(request, "Sync error: see server logs for details.")
-        except event_scope.EventDispatchError:
-            raise
-        except (RuntimeError, ValueError, ValidationError, DatabaseError):
-            logger.exception("Sync error for lease %s", label)
-            return _row_error(request, "Sync error: see server logs for details.")
-
-        return render(
-            request,
-            "netbox_kea/inc/claim_results.html",
-            {"claim_result": result},
-        )
+        outcome = manual_sync.sync_lease(server, lease, gate, force=True)
+        return _manual_sync_reply(request, outcome, f"Lease {label}")
 
 
 class ServerLease4SyncView(_BaseSyncView):
@@ -203,15 +193,9 @@ class _BaseReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin,
         if isinstance(loaded, Notice):
             return _row_error(request, loaded.text)
         reservation, catalogue = loaded
-        try:
-            from ..ipam_reconciliation import claim
-
-            result = claim(server, self.dhcp_version, [reservation], force=True, catalogue=catalogue)
-        except event_scope.EventDispatchError:
-            raise
-        except (DatabaseError, RuntimeError, ValidationError, ValueError):
-            logger.exception("Could not synchronize a DHCPv%s Reservation", self.dhcp_version)
-            return _row_error(request, "Reservation synchronization failed. See server logs.")
+        outcome = manual_sync.sync_reservation(server, reservation, catalogue, gate)
+        if isinstance(outcome, manual_sync.NotRun):
+            return _manual_sync_reply(request, outcome, "Reservation")
         # The badge reads the links as the page does, so a reload shows the same state.
         addresses = [str(address) for address in reservation.addresses]
         try:
@@ -219,14 +203,8 @@ class _BaseReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin,
         except DatabaseError:
             logger.exception("Could not read NetBox IPAM state after a DHCPv%s Reservation Sync", self.dhcp_version)
             ownership = None
-        return render(
-            request,
-            "netbox_kea/inc/claim_results.html",
-            {
-                "claim_result": result,
-                "record": {**reservation_badge(reservation, ownership), "sync_url": None},
-            },
-        )
+        record = {**reservation_badge(reservation, ownership), "sync_url": None}
+        return _manual_sync_reply(request, outcome, "Reservation", record)
 
 
 class ServerReservation4SyncView(_BaseReservationSyncView):
@@ -595,7 +573,7 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
 
 
 def _created_note(outcome: reservation_edit.AddOutcome, facts: reservation_edit.AfterApplyFacts) -> str:
-    """Name persistence, verification, pool-check and claim failures for this created entry."""
+    """Name persistence, verification, pool-check and Manual Sync problems for this created entry."""
     notes = [
         _persistence_failure(outcome),
         RESERVATION_VERIFICATION_FAILED if outcome.verification == "failed" else None,
@@ -605,22 +583,8 @@ def _created_note(outcome: reservation_edit.AddOutcome, facts: reservation_edit.
         for warning in outcome.warnings
         if isinstance(warning, reservation_edit.PoolCheckUnavailable)
     )
-    claim = facts.claim
-    if isinstance(claim, reservation_edit.ClaimFailure):
-        notes.append(
-            RESERVATION_CLAIM_EVENTS_FAILED
-            if claim.reason == "events-failed"
-            else "NetBox IPAM synchronization failed; see server logs."
-        )
-    elif isinstance(claim, reservation_edit.ClaimSkipped):
-        if claim.reason == "nothing-to-sync":
-            notes.append("Nothing to sync to NetBox because this Reservation reserves no IP address.")
-        elif claim.reason == "permission":
-            notes.append(claim.explanation)
-    else:
-        failed = [address for address, row in claim.addresses.items() if not row.synchronized]
-        if failed:
-            notes.append(f"NetBox IPAM synchronization failed for: {', '.join(failed)}.")
+    if not isinstance(facts.claim, str):
+        notes.extend(line.text for line in manual_sync_lines(facts.claim, "Reservation") if line.level != "success")
     return " ".join(note for note in notes if note)
 
 

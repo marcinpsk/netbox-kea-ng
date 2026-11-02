@@ -585,7 +585,7 @@ class LeaseAddTest(_ViewTestBase):
         self.assertEqual(kea.commands().count("lease4-get"), 1)
         self.assertFalse(IPAddress.objects.filter(address__net_host="192.0.2.50").exists())
         self.assertIn(
-            "Lease created, but it was not synced to NetBox: Kea did not report it as a current lease.",
+            "Lease 192.0.2.50 was not synced to NetBox: Kea does not report it as a current lease.",
             _messages(response),
         )
 

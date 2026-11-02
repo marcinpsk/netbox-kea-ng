@@ -213,6 +213,7 @@ URL request
       server_scope.py   (Server selection, view permissions, and family availability)
       fan_out.py        (the per-Server read pool of combined Subnets, Shared Networks, Reservations)
       sync_views.py     (per-server IPAM sync UI)
+      manual_sync_presenter.py (the one presentation of a Manual Sync outcome: messages, row replies, notes)
       sync_jobs.py      (jobs tab, periodic sync management)
       settings_page.py  (Settings page: one tab per settings singleton; ADR 0010)
   → reservation_edit.py (Reservation add/edit/import, signed form state, Published Name rules and after-apply facts)
@@ -227,6 +228,7 @@ URL request
                         cached lookups in one worker pool)
   → sync.py             (the aggregate Reservation Synchronization State and DCIM MAC synchronization)
   → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
+  → manual_sync.py      (Manual Sync of one Lease or Reservation: permission verdict, claim, typed outcome; ADR 0011)
   → ipam_marker.py     (the `[kea-sync: <kind>]` description marker: parse, rewrite, legacy text; ADR 0006)
   → sync_plan.py        (the Sync Plan: the switches and type flags that decide which sources a sync run reads)
   → jobs.py             (KeaIpamSyncJob — periodic background sync)
@@ -361,7 +363,9 @@ URL request
   Reservation phase, unless that Server disables Reservation sync. The last link of an IP address follows `stale_ip_cleanup`. A complete Subnet or Pool phase
   drops its own stale links; `Server.sync_deprecate_prefixes_and_ranges` opts in to deprecation, never deletion.
   `read_catalogue` pairs the shared snapshot with a cutoff taken before its request. Per-row actions use
-  `claim`, which never cleans up. Adoption preserves legacy object identities and marks their links.
+  `claim`, which never cleans up. A Lease whose Subnet ID the complete Subnet Catalogue does not hold raises
+  `LeaseSubnetAbsent` (not a `ValueError`; a `ValueError` from `claim` is a caller bug), and the job counts it as a
+  failed row. Adoption preserves legacy object identities and marks their links.
   Complete whole-workflow job and DHCP import receipts protect each adopted object's last link until all
   relevant enabled owners have observed their sources. `Server.ipam_first_complete_at` records the initial
   completion time. Internal scoped receipts protect newly enabled sources after that time.
@@ -382,8 +386,14 @@ URL request
 - **DHCP Import** (`integrations/`): `dhcp_import.run_dhcp_plugin_import(server, trigger)` reads Kea for every
   enabled family, plans each family (`dhcp_import_plan.py`) and applies each plan (`dhcp_plugin.apply_plan`). Each
   DHCP Server, Shared Network, Subnet, Pool, delegated-prefix Pool, Reservation, client class, custom Option
-  Definition and DHCP Option that the apply writes has a DHCP Import Mapping (`KeaDhcpLink`: a kind of `MAPPING_KINDS` and the source columns of `dhcp_import_plan.MappingSource`). The source of a DHCP Option is an `OptionKey`: the source of its parent plus its ADR 0014 identity. `planned_options` keys the options of a planned object for both the plan and the apply. `PlannedOptions.paths` names each of them, by its key when it has one, also in a removal (OpenGrep `kea-option-path-outside-planned-options`). `KindObservation.gap` judges a stale Option by the gaps of its parent's kind: the observation of that kind, and the `option-data` entries of that kind that the parse dropped (`DroppedEntry.parent`). `KeaDhcpLink.options_mapped` records on the mapping of a parent that its Options are mapped; until then, its Options adopt unmapped rows. It only goes from False to True while the mapping keeps its target (`observe_mapping` resets it on a relink): a branch revert keeps the True that main recorded (`_mapped_options_at_deletion`). `mapped_target` and `observe_mapping` in `dhcp_mapping_lifecycle.py` read and
-  write it through that source; an unmapped row that matches by structure is adopted once. Each Kea
+  Definition and DHCP Option that the apply writes has a DHCP Import Mapping (`KeaDhcpLink`: a kind of `MAPPING_KINDS` and the source columns of `dhcp_import_plan.MappingSource`). Each planned object carries one key (`ServerKey`, `SubnetKey`, `NamedKey`, `PoolKey`, `PDPoolKey`, the two Reservation keys, `OptionDefinitionKey`, `OptionKey`), which gives its `source` and its `path(family)`; its `from_source(source, family)` decodes a stored source, and `MappingSource.path` decodes through `KEY_KINDS`. Only these key classes parse an identity. A Pool whose range is not valid has an `InvalidPoolKey`: a path and no source. The source of a DHCP Option is an `OptionKey`: the source of its parent plus its ADR 0014 identity. `planned_options` keys the options of a planned object for both the plan and the apply. `PlannedOptions.paths` names each of them, by its key when it has one, also in a removal (OpenGrep `kea-option-path-outside-planned-options`). `KindObservation.gap` judges a stale Option by the gaps of its parent's kind: the observation of that kind, and the `option-data` entries of that kind that the parse dropped (`DroppedEntry.parent`). `KeaDhcpLink.options_mapped` records on the mapping of a parent that its Options are mapped; until then, its Options adopt unmapped rows. It only goes from False to True while the mapping keeps its target (`observe_mapping` resets it on a relink): a branch revert keeps the True that main recorded (`_mapped_options_at_deletion`). `mapped_target` and `observe_mapping` in `dhcp_mapping_lifecycle.py` read and
+  write it through that source; an unmapped row that matches by structure is adopted once. Every imported row but the
+  DHCPServer is written by `dhcp_import_write.write_row` with a `RowAdapter` of its kind (in `dhcp_plugin.py`): one atomic
+  block finds or adopts the row, writes it and observes its mapping, a `ValidationError` gives the plugin's messages, and an
+  object that is not written skips its planned subtree. `adopt_options` maps the adopted Options of one parent before
+  any Option write. The OpenGrep rule `kea-dhcp-row-write-outside-protocol` refuses `observe_mapping()` and the
+  `EventDispatchError` / `ManagedFieldsMismatch` re-raise pair elsewhere in `integrations/`, except `upsert_dhcp_server`
+  and `_apply_global_settings`. Each Kea
   fact of a run is an `ImportEntry` (`dhcp_import_report.py`): a kind, a Kea path from `kea_paths.py`, an outcome and,
   for a fact that was not written, a reason from a closed set. The reason gives the outcome (`REASON_OUTCOME`).
   `ImportSummary` counts only its entries, and an unchanged row has no entry. `store_run` stores a `DhcpImportRun`
@@ -500,7 +510,7 @@ snapshot. Reservation option edits use the shared identity and merge in `dhcp_op
 from the same live Catalogue read (ADR 0014). The builders use the live facts and Catalogue that `config_write`
 supplies. A Reservation conflict becomes a form error. An unknown suffix becomes a hostname error.
 A `ValueError` becomes a page error. The view presents the pool-overlap warning facts.
-After an applied outcome, `reservation_edit.after_apply` returns the journal, signal and IPAM claim facts.
+After an applied outcome, `reservation_edit.after_apply` returns the journal, signal and Manual Sync facts.
 The views present those facts separately from the Kea change result.
 A Subnet or a Reservation that is gone, a changed fingerprint and result 3 on `reservation-del` are
 `target-changed`; result 2 is a rejection; any other failure result, result 5, a forward failure or a lost reply is
@@ -786,9 +796,10 @@ resort, reserved for true external boundaries you cannot run locally.
 - **Transactions**: open every transaction with `event_scope.atomic()`, never `transaction.atomic`
   (opengrep `kea-raw-atomic`). At the top level of a tracked request, on a NetBox release whose `event_tracking` nests (`event_scope._nested_tracking`), it is a unit, whose events
   dispatch after its COMMIT or not at all. Put `except event_scope.EventDispatchError: raise` before a broad
-  `except`. The one exception is a side effect after a change that Kea applied: the Lease add view reports failed
-  IPAM event dispatch separately; `reservation_edit.after_apply` returns it as a fact for Reservation views.
-  The request must report the applied change. Read design record #176 (sections 22 and 24) before you change it.
+  `except`. There are two exceptions. The side effects after a change that Kea applied return the failed dispatch
+  as a fact (`reservation_edit.after_apply`). A Manual Sync also returns it: `claim()` raises `ClaimEventsFailed`
+  with the claim result, and `manual_sync` returns both. Each caller then reports the saved claim and a separate
+  error. Read design record #176 (sections 22 and 24) before you change it.
 - **Kea option names per family**: DNS is `domain-name-servers` (v4) or `dns-servers` (v6), and NTP is
   `ntp-servers` (v4) or `sntp-servers` (v6). `dhcp_options._FORM_MANAGED_OPTIONS` maps each form field to them.
 - **Forms**: lease search forms inherit `BaseLeasesSarchForm` (the typo is

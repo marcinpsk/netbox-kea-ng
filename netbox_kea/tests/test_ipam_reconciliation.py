@@ -1498,6 +1498,7 @@ class ConcurrencyHarness(TransactionTestCase):
 def _import_reservations(server: Server, observation: ReservationObservation, summary: ImportSummary) -> None:
     """Run the Reservation step, then the delegated-prefix cleanup of a DHCPv6 import, in one transaction."""
     from netbox_kea import event_scope
+    from netbox_kea.integrations.dhcp_import_write import WriteScope
     from netbox_kea.integrations.dhcp_plugin import (
         ClassReferences,
         CustomDefinitions,
@@ -1507,18 +1508,10 @@ def _import_reservations(server: Server, observation: ReservationObservation, su
     )
     from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
-    references = OptionReferences(CustomDefinitions(server, {}, ()), ClassReferences(6, frozenset(), {}))
+    references = OptionReferences(CustomDefinitions({}, ()), ClassReferences(6, frozenset(), {}))
+    scope = WriteScope(server, 6, summary, PluginCapabilities(frozenset()))
     with event_scope.atomic():
-        step = import_reservation_snapshot(
-            server,
-            None,
-            observation,
-            references,
-            summary,
-            family=6,
-            adoption_servers=(),
-            capabilities=PluginCapabilities(frozenset()),
-        )
+        step = import_reservation_snapshot(scope, None, observation, references, adoption_servers=())
         assert step is not None
         reconcile_delegated_prefixes(server, 6, step, set(), summary)
 

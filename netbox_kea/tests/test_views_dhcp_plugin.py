@@ -26,7 +26,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from netbox_kea.integrations import dhcp_import, dhcp_plugin
-from netbox_kea.models import DhcpIntegrationConfig, Server
+from netbox_kea.models import DhcpImportTrigger, DhcpIntegrationConfig, KeaDhcpLink, Server
 from netbox_kea.views import dhcp_plugin_sync as dps
 from netbox_kea.views.notices import HEADLINES, Notice
 
@@ -713,6 +713,42 @@ class DriftPartialTest(TestCase):
         self.assertIn(("stale", "option", path), self._objects(page))
         legend = " ".join(page.select_one(".drift-legend").get_text().split())
         self.assertIn("A DHCP Option is not seen only when the read of its own entries or of its object", legend)
+
+    def test_a_pool_without_a_valid_range_keeps_the_mapped_pools_and_their_options_and_the_card_reports_them(self):
+        self._import()
+        mapped = {
+            kind: KeaDhcpLink.objects.get(server=self.server, family=4, kind=kind).object_id
+            for kind in ("pool", "option")
+        }
+        config = deepcopy(_DRIFT_CONF)
+        # The Pool is outside its Subnet, so it has no mapping source; its Option has none either. The Subnet
+        # Catalogue also refuses the Pool, so the Reservation observation is Incomplete too.
+        config[4]["subnet4"][0]["pools"] = [
+            {"pool": "198.51.100.1-198.51.100.9", "option-data": [{"code": 251, "data": "1"}]}
+        ]
+
+        with stub_kea(_sync_responses(config, _DRIFT_HOSTS)):
+            ((_family, summary),) = dhcp_import.run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+        page = self._drift(_sync_responses(config, _DRIFT_HOSTS))
+
+        Pool, Option = (apps.get_model(DHCP_PLUGIN, model) for model in ("Pool", "Option"))
+        self.assertTrue(Pool.objects.filter(pk=mapped["pool"]).exists())
+        self.assertTrue(Option.objects.filter(pk=mapped["option"]).exists())
+        self.assertEqual([entry for entry in summary.entries if entry.outcome.value == "removed"], [])
+        kept = {
+            (entry.kind.value, entry.path)
+            for entry in summary.entries
+            if entry.reason is not None
+            and entry.reason.value == "incomplete_observation"
+            and entry.kind.value != "reservation"
+        }
+        self.assertEqual(kept, {("pool", "Dhcp4/subnet4[*]/pools[*]"), ("option", "Dhcp4/option-data[*]")})
+        invalid = f"{_SUBNET_51}/pools[pool=198.51.100.1-198.51.100.9]"
+        self.assertIn(("pool", invalid), {(entry.kind.value, entry.path) for entry in summary.entries})
+        self.assertEqual(
+            {row for row in self._objects(page) if row[1] in ("pool", "option")},
+            {("unseen", kind, path) for kind, path in _MAPPED if kind in ("pool", "option")},
+        )
 
     def test_a_client_class_whose_name_is_not_text_makes_client_classes_incomplete(self):
         self._import()
