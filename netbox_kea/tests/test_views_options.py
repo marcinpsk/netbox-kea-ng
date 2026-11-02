@@ -1562,6 +1562,28 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
                     written = written["subnet4"][0]
                 self.assertEqual(written["option-data"], [{"code": 3, "name": "routers", "data": "198.18.0.1"}])
 
+    def test_a_name_and_a_class_change_in_one_save_are_judged_apart(self):
+        options = [{"code": 3, "data": "198.18.0.1"}]
+        for scope in ("server", "subnet"):
+            for name, saved in (("routers", True), ("domain-name-servers", False)):
+                with self.subTest(scope=scope, name=name), _persist_stub(self._config(scope, options)) as kea:
+                    data = self._submitted(self.client.get(self._url(scope)))
+                    data.update({"form-0-name": name, "form-0-client_classes": "lab"})
+                    post = self.client.post(self._url(scope), data)
+                    if not saved:
+                        self.assertEqual(post.status_code, 200)
+                        self.assertIn("cannot be renamed", str(post.context["formset"].non_form_errors()))
+                        self.assertNotIn("config-set", kea.commands())
+                        continue
+                    self.assertEqual(post.status_code, 302)
+                    written = _written_config(kea)["Dhcp4"]
+                    if scope == "subnet":
+                        written = written["subnet4"][0]
+                    self.assertEqual(
+                        written["option-data"],
+                        [{"code": 3, "name": "routers", "data": "198.18.0.1", "client-classes": ["lab"]}],
+                    )
+
     def test_an_unknown_name_only_option_can_be_renamed(self):
         options = [{"name": "custom-before", "data": "opaque", "user-context": {"owner": "lab"}}]
         for scope in ("server", "subnet"):

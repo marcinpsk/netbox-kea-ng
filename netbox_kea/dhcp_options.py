@@ -848,7 +848,8 @@ def merge_option_edit(
             and intended.name != seen.name
             and intended.name
         ):
-            named = replace(intended, code=None)
+            # A class change is no rename: judge the name with the seen classes.
+            named = replace(intended, code=None, client_classes=seen.client_classes)
             if option_identity(named, family, definitions) != identity:
                 raise DHCPOptionNameChange(
                     f"DHCP Option '{_option_label(seen, family)}' cannot be renamed. Delete it and add a new option instead."
