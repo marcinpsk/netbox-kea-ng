@@ -233,33 +233,33 @@ class IdentityLeases:
     identity: ReservationIdentity
 
 
-#: The Leases that can show whether the client of a Reservation holds a Current Lease.
-LeaseObservation = SubnetLeases | IdentityLeases
+#: The Kea Lease query whose Leases can show whether the client of a Reservation holds a Current Lease.
+LeaseQuery = SubnetLeases | IdentityLeases
 
 
 class CurrentLeases(Protocol):
-    """The Current Leases of a Lease observation, as Kea's Lease queries show them."""
+    """The Current Leases that one Lease query finds in Kea."""
 
-    def current_leases(self, observation: LeaseObservation) -> CurrentLeaseFacts:
-        """Return the Current Leases of *observation*. A failed read raises the exception of the implementation."""
+    def current_leases(self, query: LeaseQuery) -> CurrentLeaseFacts:
+        """Return the Current Leases that *query* finds. A failed read raises the exception of the implementation."""
         ...
 
 
 def current_lease_presence(reservation: Reservation, leases: CurrentLeases) -> CurrentLeasePresence:
     """Return whether the client of *reservation* holds one of the Current Leases that *leases* shows.
 
-    An In-Subnet Reservation observes the Leases of its Subnet, so a reserved address matches too. A Global
-    Reservation observes the Leases of its identity in any Subnet, so only the identity matches. Kea has no Lease
+    An In-Subnet Reservation queries the Leases of its Subnet, so a reserved address matches too. A Global
+    Reservation queries the Leases of its identity in any Subnet, so only the identity matches. Kea has no Lease
     query for some identifier types, so a Global Reservation of one is Unknown without a read. A failed read raises.
     """
-    observation = _lease_observation(reservation)
-    if observation is None:
+    query = _lease_query(reservation)
+    if query is None:
         return LeasePresenceUnknown(UnknownLeasePresence.UNSEARCHABLE_IDENTIFIER)
-    return _presence(reservation, leases.current_leases(observation))
+    return _presence(reservation, leases.current_leases(query))
 
 
-def _lease_observation(reservation: Reservation) -> LeaseObservation | None:
-    """Return the Leases that show the client of *reservation*, or ``None`` when Kea has no query for them."""
+def _lease_query(reservation: Reservation) -> LeaseQuery | None:
+    """Return the Lease query that shows the client of *reservation*, or ``None`` when Kea has none."""
     if isinstance(reservation.scope, InSubnetReservationScope):
         # DHCPv6 registered leases are current too, and only an unfiltered Subnet query returns them.
         return SubnetLeases(reservation.scope.subnet, "assigned" if reservation.family == 4 else None)

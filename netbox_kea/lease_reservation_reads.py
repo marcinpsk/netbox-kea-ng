@@ -29,8 +29,8 @@ from .reservations import (
     CurrentLeaseFacts,
     CurrentLeasePresence,
     InSubnetReservationScope,
-    LeaseObservation,
     LeasePresenceUnknown,
+    LeaseQuery,
     Reservation,
     ReservationIdentity,
     ReservationKey,
@@ -174,16 +174,16 @@ class _KeaCurrentLeases:
             f"The Lease lookup of Server {server.pk}"
         )
 
-    def current_leases(self, observation: LeaseObservation) -> CurrentLeaseFacts:
-        """Return the Current Leases of *observation*, from the display cache entry of its Lease search or from Kea.
+    def current_leases(self, query: LeaseQuery) -> CurrentLeaseFacts:
+        """Return the Current Leases that *query* finds, from the display cache entry of its Lease search or from Kea.
 
         Raises:
             _FailedLeaseLookup: If the Lease search failed, in this row or in an earlier one.
-            ValueError: If Kea has no Lease query for the identity of *observation*.
+            ValueError: If Kea has no Lease query for the identity of *query*.
             TypeError: If the search resolves to a Catalogue, which only a Subnet search by CIDR can do.
 
         """
-        search = self._search(observation)
+        search = self._search(query)
         facts = self._lookups.get(search, partial(self._read, search))
         if isinstance(facts, ReadFailure):
             raise _FailedLeaseLookup(_LEASE_PRESENCE_UNKNOWN[facts.kind])
@@ -191,11 +191,11 @@ class _KeaCurrentLeases:
             raise _FailedLeaseLookup(facts)
         return facts
 
-    def _search(self, observation: LeaseObservation) -> LeaseSearch:
-        """Return the Lease search of *observation*."""
-        if isinstance(observation, SubnetLeases):
-            return LeaseSearch(constants.BY_SUBNET_ID, observation.subnet.subnet_id, observation.state)
-        identity = observation.identity
+    def _search(self, query: LeaseQuery) -> LeaseSearch:
+        """Return the Lease search that sends *query* to Kea."""
+        if isinstance(query, SubnetLeases):
+            return LeaseSearch(constants.BY_SUBNET_ID, query.subnet.subnet_id, query.state)
+        identity = query.identity
         selector = constants.LEASE_SELECTOR_BY_IDENTIFIER[self._family].get(identity.identifier_type)
         if selector is None:
             raise ValueError(f"Kea has no DHCPv{self._family} Lease query for a {identity.identifier_type}.")
@@ -208,7 +208,7 @@ class _KeaCurrentLeases:
         except LeaseQueryGuardError:
             return UnknownLeasePresence.QUERY_GUARD
         loaded = read.loaded
-        # Only a Subnet search by CIDR can resolve to a Catalogue, and no observation sends one.
+        # Only a Subnet search by CIDR can resolve to a Catalogue, and no Lease query of a Reservation sends one.
         if not isinstance(loaded, LeaseSnapshot):
             raise TypeError(f"The Lease lookup {search.parts!r} resolved to a Catalogue.")
         return current_lease_facts(loaded)
@@ -247,7 +247,7 @@ def lease_presence(
 
 
 @dataclass(frozen=True)
-class _ReservationLookup:
+class _ReservationLookupEntry:
     """One display cache entry: the Reservation that one lookup of a Lease row found, or ``None`` for none."""
 
     reservation: Reservation | None
@@ -313,9 +313,9 @@ class _KeaReservationLookup:
     ) -> Reservation | None:
         """Read the display cache entry of *parts*; a miss builds the client of the calling thread and asks Kea."""
 
-        def read() -> _ReservationLookup:
+        def read() -> _ReservationLookupEntry:
             started = datetime.now(tz=UTC)
-            return _ReservationLookup(lookup(self._clients()), self._catalogue.settled, started)
+            return _ReservationLookupEntry(lookup(self._clients()), self._catalogue.settled, started)
 
         return display_cache.cached(
             self._server,

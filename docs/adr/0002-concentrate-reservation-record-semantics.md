@@ -19,7 +19,7 @@ marcinpsk/netbox-kea-ng#102 builds it, and marcinpsk/netbox-kea-ng#100 and #104 
 
 _Amended 2026-11-02 (marcinpsk/netbox-kea-ng#220): `reservations.py` also holds the lookup walk of the Reservation
 Match and the choice of the Leases that show the Current Lease Presence. They read Kea through two ports,
-`ReservationLookup.find(scope, key)` and `CurrentLeases.current_leases(observation)`, and
+`ReservationLookup.find(scope, key)` and `CurrentLeases.current_leases(query)`, and
 `lease_reservation_reads.py` holds the cached Kea adapters of both._
 
 ## Context

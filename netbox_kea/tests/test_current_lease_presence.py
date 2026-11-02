@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""The Current Lease Presence of a Reservation: the Leases it observes and the rule, with in-memory Current Leases."""
+"""The Current Lease Presence of a Reservation: the Lease query it sends and the rule, with in-memory Current Leases."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ from netbox_kea.reservations import (
     IdentityLeases,
     InSubnetReservationScope,
     LeaseAbsent,
-    LeaseObservation,
     LeasePresenceUnknown,
     LeasePresent,
+    LeaseQuery,
     Reservation,
     ReservationIdentity,
     SubnetLeases,
@@ -32,15 +32,15 @@ _MAC = ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:ff")
 
 
 class FakeCurrentLeases:
-    """A ``CurrentLeases`` that returns the facts that a test gives for each observation, and records each one."""
+    """A ``CurrentLeases`` that returns the facts that a test gives for each query, and records each one."""
 
-    def __init__(self, facts: Mapping[LeaseObservation, CurrentLeaseFacts]) -> None:
+    def __init__(self, facts: Mapping[LeaseQuery, CurrentLeaseFacts]) -> None:
         self._facts = dict(facts)
-        self.calls: list[LeaseObservation] = []
+        self.calls: list[LeaseQuery] = []
 
-    def current_leases(self, observation: LeaseObservation) -> CurrentLeaseFacts:
-        self.calls.append(observation)
-        return self._facts[observation]
+    def current_leases(self, query: LeaseQuery) -> CurrentLeaseFacts:
+        self.calls.append(query)
+        return self._facts[query]
 
 
 class _ReadFailed(Exception):
@@ -50,8 +50,8 @@ class _ReadFailed(Exception):
 class FailingCurrentLeases:
     """A ``CurrentLeases`` whose every read fails."""
 
-    def current_leases(self, observation: LeaseObservation) -> CurrentLeaseFacts:
-        raise _ReadFailed(observation)
+    def current_leases(self, query: LeaseQuery) -> CurrentLeaseFacts:
+        raise _ReadFailed(query)
 
 
 def _facts(
@@ -63,26 +63,26 @@ def _facts(
 
 
 def _subnet_leases(reservation: Reservation) -> SubnetLeases:
-    """Return the Leases of the Subnet of an In-Subnet *reservation*, in the state that its family observes."""
+    """Return the Leases of the Subnet of an In-Subnet *reservation*, in the state that its family queries."""
     assert isinstance(reservation.scope, InSubnetReservationScope)
     return SubnetLeases(reservation.scope.subnet, "assigned" if reservation.family == 4 else None)
 
 
 def _presence(raw: dict, facts: CurrentLeaseFacts) -> LeasePresenceUnknown | LeasePresent | LeaseAbsent:
-    """Return the presence of the Reservation *raw* when the Leases that it observes are *facts*."""
+    """Return the presence of the Reservation *raw* when its Lease query finds *facts*."""
     reservation = _typed_reservation(raw)
     if isinstance(reservation.scope, InSubnetReservationScope):
-        observation: LeaseObservation = _subnet_leases(reservation)
+        query: LeaseQuery = _subnet_leases(reservation)
     else:
-        observation = IdentityLeases(reservation.identity)
-    return current_lease_presence(reservation, FakeCurrentLeases({observation: facts}))
+        query = IdentityLeases(reservation.identity)
+    return current_lease_presence(reservation, FakeCurrentLeases({query: facts}))
 
 
 class CurrentLeasePresenceTest(SimpleTestCase):
-    """One Current Lease Presence per Reservation, from the Current Leases of the Leases that it observes."""
+    """One Current Lease Presence per Reservation, from the Current Leases that its Lease query finds."""
 
-    def test_each_reservation_observes_the_leases_that_can_show_its_client(self):
-        """DHCPv4 observes assigned Leases only; a registered DHCPv6 Lease is current, so DHCPv6 observes each state."""
+    def test_each_reservation_queries_the_leases_that_can_show_its_client(self):
+        """DHCPv4 queries assigned Leases only; a registered DHCPv6 Lease is current, so DHCPv6 queries each state."""
         subnet4 = SubnetIdentity(20, ipaddress.ip_network("198.18.0.0/24"))
         subnet6 = SubnetIdentity(30, ipaddress.ip_network("2001:db8::/64"))
         duid = ReservationIdentity("duid", "00:01:02:03")
@@ -94,11 +94,11 @@ class CurrentLeasePresenceTest(SimpleTestCase):
             ({"subnet-id": 0, "client-id": client_id.value}, IdentityLeases(client_id)),
             ({"subnet-id": 0, "duid": duid.value, "ip-addresses": ["2001:db8::20"]}, IdentityLeases(duid)),
         )
-        for raw, observation in cases:
+        for raw, query in cases:
             with self.subTest(reservation=raw):
-                leases = FakeCurrentLeases({observation: _facts()})
+                leases = FakeCurrentLeases({query: _facts()})
                 self.assertEqual(current_lease_presence(_typed_reservation(raw), leases), LeaseAbsent())
-                self.assertEqual(leases.calls, [observation])
+                self.assertEqual(leases.calls, [query])
 
     def test_a_current_lease_of_the_reserved_identity_is_present_without_an_address(self):
         reservation = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff"}
