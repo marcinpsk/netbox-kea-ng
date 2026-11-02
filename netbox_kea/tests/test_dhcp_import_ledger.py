@@ -330,8 +330,9 @@ class LedgerEntriesTest(SimpleTestCase):
                 self.assertEqual(gated, {"user-context": (Capability.USER_CONTEXT,)})
 
     def test_a_not_imported_entry_refuses_a_reason_that_is_not_for_a_key(self):
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ValueError) as caught:
             NotImported(Reason.WRITE_FAILED)
+        self.assertEqual(str(caught.exception), "write_failed is not a reason to leave a Kea key out of the import")
 
     def test_a_deprecated_key_names_its_replacement_in_the_same_object(self):
         for family, table, key, entry in self._entries():

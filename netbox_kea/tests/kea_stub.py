@@ -31,7 +31,7 @@ from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from functools import cache
 from pathlib import Path
@@ -699,7 +699,7 @@ def _self_signed_certificate() -> tuple[str, str]:
     """Return the certificate and key file of a self-signed certificate for 127.0.0.1."""
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
     certificate = (
         x509.CertificateBuilder()
         .subject_name(name)

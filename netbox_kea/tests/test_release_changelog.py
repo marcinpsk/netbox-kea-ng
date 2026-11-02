@@ -15,15 +15,10 @@ Nothing in the release job can fail on this, so the guard has to live here.
 
 from __future__ import annotations
 
-import sys
+import tomllib
 from pathlib import Path
 
 import pytest
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # Python 3.10 needs the dev group's explicit TOML reader.
-    import tomli as tomllib
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT = REPOSITORY_ROOT / "pyproject.toml"

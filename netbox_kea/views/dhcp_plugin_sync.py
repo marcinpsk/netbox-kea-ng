@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from dataclasses import dataclass, field, replace
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from django.contrib import messages
@@ -124,7 +124,7 @@ def _summary_text(version: int, summary) -> str:
 _SHOWN_OBJECTS = 50
 
 
-class DriftState(str, Enum):
+class DriftState(StrEnum):
     """How one object of the drift card stands between live Kea and its DHCP Import Mapping."""
 
     # Kea has the object, and no mapping names it.
@@ -332,8 +332,7 @@ def _viewable_assigned(options: list, user) -> dict[int, Any]:
     found = {}
     for type_id, selected in pks.items():
         model = ContentType.objects.get_for_id(type_id).model_class()
-        for row in model.objects.restrict(user, "view").filter(pk__in=selected):
-            found[type_id, row.pk] = row
+        found.update({(type_id, pk): row for pk, row in _restricted(model, selected, user).items()})
     return {option.pk: found.get((option.assigned_object_type_id, option.assigned_object_id)) for option in options}
 
 

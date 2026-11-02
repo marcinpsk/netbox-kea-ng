@@ -104,7 +104,7 @@ The real-model import tests skip when `netbox_dhcp` is not installed ([integrati
 4. Runs migrations against an isolated test database.
 5. Runs the real-model DHCP-plugin tests and the normal unit suite.
 
-This must remain a separate optional leg. An unconditional dependency would remove this project's Python 3.10 and 3.11 support and would conflict with its NetBox 4.3 compatibility leg. The upstream plugin is Beta, so the CI dependency should use an exact version. Installing the plugin in the baseline unit job can also change global NetBox query behavior, so it should not silently replace the query-count environment.
+This must remain a separate optional leg. An unconditional dependency would conflict with this project's NetBox 4.3 compatibility leg. The upstream plugin is Beta, so the CI dependency should use an exact version. Installing the plugin in the baseline unit job can also change global NetBox query behavior, so it should not silently replace the query-count environment.
 
 The integration should stay lazy and target only `netbox-plugin-dhcp==0.1.10`. It should not add compatibility branches for older DHCP-plugin releases. The normal NetBox 4.3 leg must continue without `netbox_dhcp`, so this optional integration does not reduce the core plugin's NetBox support window.
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
 from django.core.exceptions import ValidationError
@@ -61,7 +61,7 @@ def sync_lease(server: Server, lease: Lease, gate: SyncGate, *, force: bool) -> 
     """Claim one Lease that the caller read from Kea, when *gate* allows it and the Lease is a Current Lease."""
     if refused := refusal(gate):
         return refused
-    if not is_current(lease, datetime.now(tz=timezone.utc)):
+    if not is_current(lease, datetime.now(tz=UTC)):
         return NotRun("not-current")
     return _run(server, f"Lease {lease.identity.address}", lambda: claim(server, lease.family, [lease], force))
 

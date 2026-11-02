@@ -11,7 +11,7 @@ import logging
 import ssl
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Literal, NamedTuple, Protocol, TypedDict, cast
 
@@ -589,7 +589,7 @@ def _lease_snapshot(
 
 
 def _now() -> datetime:
-    return datetime.now(tz=timezone.utc)
+    return datetime.now(tz=UTC)
 
 
 def subnet_network(value: Any, family: int) -> IPNetworkValue:

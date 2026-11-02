@@ -9,9 +9,7 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
-
-from typing_extensions import assert_never
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, assert_never, cast
 
 from .constants import Family, IPAddressValue
 from .dhcp_options import (

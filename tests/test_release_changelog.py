@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
-import sys
-from datetime import datetime, timezone
+import tomllib
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -19,11 +19,6 @@ from semantic_release.commit_parser import ParseError
 from semantic_release.commit_parser.conventional import ConventionalCommitParser
 from semantic_release.hvcs.github import Github
 from semantic_release.version import Version
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,7 +45,7 @@ def _render_changelog(tmp_path, config, messages, *, unreleased=False, native=Fa
         else {
             version: {
                 "version": version,
-                "tagged_date": datetime(2026, 10, 2, tzinfo=timezone.utc),
+                "tagged_date": datetime(2026, 10, 2, tzinfo=UTC),
                 "elements": elements,
             },
         },

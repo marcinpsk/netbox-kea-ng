@@ -14,7 +14,7 @@ import math
 from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, NamedTuple, TypeAlias, get_args
 
 from pydantic import (
@@ -54,7 +54,7 @@ from .identifiers import normalize_hex
 from .malformed import MalformedKeaReply
 
 # The last second that an aware datetime can hold.
-_MAX_TIMESTAMP = int(datetime.max.replace(microsecond=0, tzinfo=timezone.utc).timestamp())
+_MAX_TIMESTAMP = int(datetime.max.replace(microsecond=0, tzinfo=UTC).timestamp())
 #: The query selector of a read that covers every Lease of one family.
 ALL_LEASES = "all"
 # The selectors of KeaClient.lease_search for each family, and ALL_LEASES for page traversal.
@@ -247,14 +247,14 @@ class _Lease(_Value):
     @property
     def last_transaction(self) -> datetime:
         """Return the aware time of the last client transaction."""
-        return datetime.fromtimestamp(self.cltt, tz=timezone.utc)
+        return datetime.fromtimestamp(self.cltt, tz=UTC)
 
     @property
     def expires_at(self) -> datetime | None:
         """Return the aware end of the valid lifetime, or ``None`` for an infinite lifetime."""
         if self.infinite:
             return None
-        return datetime.fromtimestamp(self.cltt + self.valid_lifetime, tz=timezone.utc)
+        return datetime.fromtimestamp(self.cltt + self.valid_lifetime, tz=UTC)
 
     @model_validator(mode="after")
     def _representable_expiration(self) -> _Lease:

@@ -246,9 +246,9 @@ reservations:
         """`json.loads` can raise a bare ValueError, not only JSONDecodeError.
 
         The real trigger is an integer literal past the interpreter's digit limit, which
-        is not portable: the limit arrived in 3.11, the floor here is 3.10, and it is
-        configurable through PYTHONINTMAXSTRDIGITS. The raised type is the contract, so
-        the test drives that directly, as the RecursionError case above does.
+        is not portable: the limit is configurable through PYTHONINTMAXSTRDIGITS. The raised
+        type is the contract, so the test drives that directly, as the RecursionError case
+        above does.
 
         The import view handles only ReservationTransferError, so the bare ValueError
         left it an unhandled 500 instead of a form error.

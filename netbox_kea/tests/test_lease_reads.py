@@ -13,7 +13,7 @@ import io
 import json
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlencode
@@ -422,7 +422,7 @@ class LeaseExportTest(_ViewTestBase):
             {key: expired[key] for key in ("state", "current", "valid_lifetime", "infinite")},
             {"state": "assigned", "current": "false", "valid_lifetime": "3600", "infinite": "false"},
         )
-        self.assertEqual(expired["expires_at"], datetime.fromtimestamp(now - 3600, tz=timezone.utc).isoformat())
+        self.assertEqual(expired["expires_at"], datetime.fromtimestamp(now - 3600, tz=UTC).isoformat())
         self.assertEqual(
             {key: infinite[key] for key in ("current", "valid_lifetime", "infinite", "expires_at")},
             {"current": "true", "valid_lifetime": "4294967295", "infinite": "true", "expires_at": ""},

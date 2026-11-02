@@ -6,11 +6,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, assert_never
 
 from django.contrib import messages
 from django.http import HttpRequest
-from typing_extensions import assert_never
 
 from ..ipam_reconciliation import AddressClaim, PrefixClaim
 from ..manual_sync import ManualSyncOutcome, NotRun, NotRunReason, Ran

@@ -230,7 +230,7 @@ class _Scanner(ast.NodeVisitor):
 
     visit_For = visit_AsyncFor = visit_While = _loop
 
-    def _try(self, node: ast.Try) -> None:
+    def _try(self, node: ast.Try | ast.TryStar) -> None:
         if self.after is None:
             self.generic_visit(node)
             return

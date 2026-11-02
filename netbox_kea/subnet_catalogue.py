@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Set
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
@@ -797,7 +798,7 @@ def _reconcile(
     )
 
 
-def _is_quarantined(identity: SubnetIdentity, ids: set[int], networks: set[IPNetworkValue]) -> bool:
+def _is_quarantined(identity: SubnetIdentity, ids: Set[int], networks: Set[IPNetworkValue]) -> bool:
     return identity.subnet_id in ids or identity.network in networks
 
 
