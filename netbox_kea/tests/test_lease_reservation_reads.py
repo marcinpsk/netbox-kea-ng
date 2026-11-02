@@ -20,8 +20,8 @@ from unittest.mock import patch
 import requests
 from django.utils import timezone
 
+from netbox_kea import display_cache, subnet_catalogue
 from netbox_kea import kea as kea_module
-from netbox_kea import subnet_catalogue
 from netbox_kea.constants import Family
 from netbox_kea.kea import KeaClient, KeaCommand
 from netbox_kea.lease_reservation_reads import lease_presence, reservation_matches
@@ -220,6 +220,15 @@ class LeasePresenceTest(_ViewTestBase):
         )
 
         self.assertEqual(presences, (_unknown(UnknownLeasePresence.MALFORMED_REPLY),))
+
+    def test_invalid_server_settings_send_nothing_and_leave_each_reservation_unknown(self):
+        save_key_without_certificate(self.server)
+        self.server.refresh_from_db()
+
+        presences, kea = self._presence([_RESERVED, {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:01"}], {})
+
+        self.assertEqual(presences, (_unknown(UnknownLeasePresence.INVALID_READ),) * 2)
+        self.assertEqual(kea.commands(), [])
 
     def test_a_read_across_a_backward_clock_step_is_not_a_failure(self):
         """The Snapshot of a read whose wall clock stepped back finishes when it starts."""
@@ -593,6 +602,19 @@ class ReservationMatchTest(_ViewTestBase):
 
         # The Catalogue read fails first, so no Subnet is verified.
         self.assertEqual(matches, (_match_unknown(UnknownReservationMatch.UNVERIFIED_SUBNET),))
+        self.assertEqual(kea.commands(), [])
+
+    def test_a_lookup_client_that_the_settings_cannot_build_leaves_each_lease_unknown(self):
+        """The Catalogue is a display cache entry, so only the client of a lookup fails to build, and nothing is sent."""
+        with stub_kea(_catalogue_responses_for_subnets(4, _SUBNETS[4], global_settings=_GLOBAL_RESERVATIONS)):
+            catalogue = subnet_catalogue.display(self.server, 4)
+        save_key_without_certificate(self.server)
+        self.server.refresh_from_db()
+        with with_display_cache_config(configuration_ttl=300):
+            display_cache.cached(self.server, 4, "catalogue", lambda: catalogue)
+            matches, kea = self._matches([_address_lease()], _NOT_FOUND)
+
+        self.assertEqual(matches, (_match_unknown(UnknownReservationMatch.INVALID_READ),))
         self.assertEqual(kea.commands(), [])
 
     def test_an_unknown_reservation_command_makes_every_lease_unknown(self):
