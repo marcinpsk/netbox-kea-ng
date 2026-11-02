@@ -38,6 +38,7 @@ from ._base import (
     _KeaChangeMixin,
     _run_change,
     _safe_return_url,
+    _show_journal_and_signal,
 )
 from .manual_sync_presenter import manual_sync_lines, show_manual_sync
 from .notices import Notice, failed_load, load_target, notice, show_notices
@@ -216,25 +217,9 @@ def show_reservation_side_effects(
     request: HttpRequest, facts: reservation_edit.AfterApplyFacts, *, show_claim: bool = True
 ) -> None:
     """Present the independent journal, signal and IPAM claim facts of an applied Reservation change."""
-    if facts.journal == "failed":
-        messages.error(
-            request, "Kea applied the change, but NetBox could not write the journal entry; see server logs."
-        )
-    if facts.journal == "events-failed":
-        messages.error(
-            request,
-            "Kea applied the change, and the journal entry was saved, but NetBox could not dispatch its events; see server logs.",
-        )
-    if facts.signal == "events-failed":
-        messages.error(
-            request,
-            "Kea applied the change, and the Reservation signal was sent, but NetBox could not dispatch its events; see server logs.",
-        )
-    if facts.signal == "failed":
-        messages.error(
-            request,
-            f"Kea applied the change, but a receiver of the reservation_{facts.action} signal failed; see server logs.",
-        )
+    _show_journal_and_signal(
+        request, facts.journal, facts.signal, noun="Reservation", signal_name=f"reservation_{facts.action}"
+    )
     if show_claim and not isinstance(facts.claim, str):
         show_manual_sync(request, manual_sync_lines(facts.claim, "Reservation"))
 

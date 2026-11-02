@@ -23,7 +23,8 @@ from typing_extensions import assert_never
 from utilities.paginator import EnhancedPaginator, get_paginate_count
 from utilities.views import GetReturnURLMixin, register_model_view
 
-from .. import forms, manual_sync, runtime_change, subnet_catalogue, tables
+from .. import forms, runtime_change, subnet_catalogue, tables
+from ..after_apply import LEASE_SIGNAL_NAMES, LeaseAdded, LeaseAfterApplyFacts, LeasesDeleted, lease_after_apply
 from ..constants import Family, LeaseState
 from ..ipam_reconciliation import (
     LEASE,
@@ -44,9 +45,7 @@ from ..leases import (
     AllocationKind,
     DHCPv4AddressLease,
     DHCPv4Binding,
-    DHCPv4LeaseRequest,
     DHCPv6Binding,
-    DHCPv6LeaseRequest,
     DHCPv6PrefixLease,
     Lease,
     LeaseAbsent,
@@ -80,7 +79,6 @@ from ..reservations import (
     Unreserved,
     lease_identities,
 )
-from ..signals import lease_added, leases_deleted
 from ..subnet_catalogue import CatalogueSnapshot, VerifiedSubnet
 from ..sync_permissions import SyncGate, sync_gate
 from ..sync_plan import periodic_sync_enabled
@@ -96,12 +94,11 @@ from ._base import (
     ConditionalLoginRequiredMixin,
     LazyClient,
     _client_or_refusal,
-    _journal_applied,
     _KeaChangeMixin,
     _run_change,
     _run_change_loop,
     _safe_return_url,
-    _signal_applied,
+    _show_journal_and_signal,
     _strip_empty_params,
     sync_title,
 )
@@ -196,44 +193,18 @@ def _read_created_lease(request: HttpRequest, client: LazyClient, creation: Leas
     return result.lease
 
 
-def _run_lease_sync_to_netbox(
-    request: HttpRequest, server: Server, address: str, created: Lease | None, gate: SyncGate
-) -> None:
-    """Run the Manual Sync of a just-created lease from its fresh read back, and queue its messages.
+def show_lease_side_effects(request: HttpRequest, facts: LeaseAfterApplyFacts, *, subject: str = "Lease") -> None:
+    """Present the independent journal, signal and Manual Sync facts of applied Lease changes.
 
-    *gate* is the manual Sync rule of a lease claim; server-edit access alone is not enough. The sync uses
-    ``force=False``, so a NetBox IP address that is not Kea-managed is skipped, not overwritten.
+    *subject*, such as "Lease 192.0.2.10", starts each Manual Sync line.
     """
-    if refused := manual_sync.refusal(gate):
-        show_manual_sync(request, manual_sync_lines(refused, f"Lease {address}"))
-        return
-    if created is None:
-        messages.warning(request, f"Lease {address} was not synced to NetBox: NetBox could not read it back from Kea.")
-        return
-    outcome = manual_sync.sync_lease(server, created, gate, force=False)
-    show_manual_sync(request, manual_sync_lines(outcome, f"Lease {address}"))
-
-
-def _lease_journal_comments(
-    action: str,
-    ip_addresses: list[str],
-    hw_address: str = "",
-    hostname: str = "",
-    duid: str = "",
-) -> str:
-    """Return the journal text of a Lease change: the *action* ("added" or "deleted"), the addresses and the facts."""
-    ip_list = ", ".join(ip_addresses)
-    if len(ip_addresses) == 1:
-        parts = [f"Lease {action}: {ip_list}"]
-    else:
-        parts = [f"{len(ip_addresses)} lease(s) {action}: {ip_list}"]
-    if hw_address:
-        parts.append(f"hw-address: {hw_address}")
-    if duid:
-        parts.append(f"duid: {duid}")
-    if hostname:
-        parts.append(f"hostname: {hostname}")
-    return "; ".join(parts)
+    _show_journal_and_signal(
+        request, facts.journal, facts.signal, noun="Lease", signal_name=LEASE_SIGNAL_NAMES[facts.action]
+    )
+    if facts.sync == "not-read-back":
+        messages.warning(request, f"{subject} was not synced to NetBox: NetBox could not read it back from Kea.")
+    elif facts.sync != "not-requested":
+        show_manual_sync(request, manual_sync_lines(facts.sync, subject))
 
 
 def _incomplete_export_message(snapshot: LeaseSnapshot) -> str:
@@ -672,15 +643,10 @@ class BaseServerLeasesDeleteView(ServerFamilyMixin, GetReturnURLMixin, generic.O
         if deleted:
             labels = [shown_lease(lease).label for lease in deleted]
             messages.success(request, f"Deleted {len(deleted)} DHCPv{self.dhcp_version} lease(s): {', '.join(labels)}.")
-            _journal_applied(request, instance, _lease_journal_comments("deleted", labels))
-            _signal_applied(
-                request,
-                leases_deleted,
-                "leases_deleted",
-                server=instance,
-                leases=tuple(deleted),
-                dhcp_version=self.dhcp_version,
+            facts = lease_after_apply(
+                instance, request.user, LeasesDeleted(self.dhcp_version, tuple(deleted)), request=request
             )
+            show_lease_side_effects(request, facts)
         if loop.unknown is not None:
             shown, message = loop.unknown
             message.show(request, f"Lease {shown.label}")
@@ -931,29 +897,12 @@ class _BaseLeaseAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     def _after_creation(
         self, request: HttpRequest, server: Server, creation: LeaseRequest, gate: SyncGate, *, sync: bool
     ) -> None:
-        """Run the side effects of an applied creation: the display read, the journal, the signal and the sync."""
-        address = str(creation.address)
+        """Read the created Lease for display, then run and present the after-apply side effects."""
         with LazyClient(server, self.dhcp_version) as client:
             created = _read_created_lease(request, client, creation)
-        comments = _lease_journal_comments(
-            "added",
-            [address],
-            hw_address=creation.hw_address if isinstance(creation, DHCPv4LeaseRequest) else "",
-            hostname=creation.hostname or "",
-            duid=creation.duid if isinstance(creation, DHCPv6LeaseRequest) else "",
-        )
-        _journal_applied(request, server, comments)
-        _signal_applied(
-            request,
-            lease_added,
-            "lease_added",
-            server=server,
-            creation=creation,
-            lease=created,
-            dhcp_version=self.dhcp_version,
-        )
-        if sync:
-            _run_lease_sync_to_netbox(request, server, address, created, gate)
+        change = LeaseAdded(creation, created, gate if sync else None)
+        facts = lease_after_apply(server, request.user, change, request=request)
+        show_lease_side_effects(request, facts, subject=f"Lease {creation.address}")
 
 
 @register_model_view(Server, "lease4_add", path="leases4/add")

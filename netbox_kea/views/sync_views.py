@@ -23,6 +23,7 @@ from .. import (
     server_configuration,
     subnet_catalogue,
 )
+from ..after_apply import LeaseImportAfterApply
 from ..constants import Family
 from ..ipam_reconciliation import (
     RESERVATION,
@@ -34,7 +35,6 @@ from ..ipam_reconciliation import (
 )
 from ..leases import (
     LeaseAbsent,
-    LeaseRequest,
     parse_selection,
     shown_lease,
 )
@@ -46,7 +46,6 @@ from ..reservation_transfer import (
     parse_reservation_document,
 )
 from ..reservations import ReservationCapabilities
-from ..signals import lease_added
 from ..subnet_catalogue import CatalogueUnavailable, for_synchronization
 from ..sync_permissions import sync_gate
 from ..utilities import (
@@ -60,13 +59,11 @@ from ._base import (
     RowT,
     _client_or_refusal,
     _client_settings_refusal,
-    _journal_applied,
     _KeaChangeMixin,
     _persistence_failure,
     _run_change_loop,
-    _signal_applied,
 )
-from .leases import _LEASES_TAB, _lease_journal_comments, lease_sync_gates
+from .leases import _LEASES_TAB, lease_sync_gates, show_lease_side_effects
 from .manual_sync_presenter import manual_sync_lines
 from .notices import Notice, failed_load, load_target
 from .reservation_mutations import (
@@ -669,29 +666,14 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLo
             form.add_error("csv_file", "CSV parsing failed. Check the file format and column headers.")
             return self._render(request, instance, form, None)
 
-        def signal_added(
-            creation: LeaseRequest, outcome: runtime_change.RuntimeChangeOutcome
-        ) -> runtime_change.RuntimeChangeOutcome:
-            # Signal each applied row before the next row goes to Kea, so a later failure loses no signal.
-            if outcome.application == "applied":
-                # A bulk import reads nothing back, so no observed Lease goes with the confirmed request.
-                _signal_applied(
-                    request,
-                    lease_added,
-                    "lease_added",
-                    server=instance,
-                    creation=creation,
-                    lease=None,
-                    dhcp_version=self.dhcp_version,
-                )
-            return outcome
-
+        effects = LeaseImportAfterApply(instance, request.user, request)
         loop = _run_change_loop(
-            rows, lambda row: signal_added(row[1], runtime_change.add_lease(instance, self.dhcp_version, row[1]))
+            rows,
+            lambda row: runtime_change.add_lease(instance, self.dhcp_version, row[1]),
+            after_applied=lambda row, _outcome: effects.row_applied(row[1]),
         )
-        created = [str(creation.address) for (_line, creation), _outcome in loop.applied]
-        if created:
-            _journal_applied(request, instance, _lease_journal_comments("added", created))
+        if facts := effects.finish():
+            show_lease_side_effects(request, facts)
         result = _import_report(loop, len(rows), _LEASE_ROWS, lambda row: (str(row[0]), str(row[1].address)))
         return self._render(request, instance, self.form_class(), result)
 

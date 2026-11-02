@@ -11,11 +11,10 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from django.core import signing
-from django.core.exceptions import ValidationError
 from django.db import DatabaseError
-from extras.models import JournalEntry
 
-from . import config_write, event_scope
+from . import config_write
+from .after_apply import SideEffectStatus, send_signal, write_journal
 from .config_write import ReservationChangeOutcome
 from .constants import Family, IPAddressValue
 from .dhcp_options import (
@@ -551,7 +550,6 @@ def save_add(
 
 
 ReservationAction = Literal["created", "updated", "deleted"]
-SideEffectStatus = Literal["succeeded", "failed", "events-failed", "not-applied"]
 
 
 #: Why an after-apply operation ran no Manual Sync: Kea did not apply the change, or no claim was requested.
@@ -627,53 +625,13 @@ def pool_overlap_summary(outcomes: tuple[AddOutcome, ...], *, limit: int = 5) ->
     return PoolOverlapSummary(identities[:limit], max(0, len(identities) - limit))
 
 
-def _journal_after_apply(
-    server: Server, user: Any, action: ReservationAction, reservation: Reservation
-) -> SideEffectStatus:
+def _journal_comments(action: ReservationAction, reservation: Reservation) -> str:
     addresses = ", ".join(str(address) for address in reservation.addresses) or "no address"
     identity = reservation.identity
-    try:
-        with event_scope.atomic():
-            JournalEntry.objects.create(
-                assigned_object=server,
-                created_by=user,
-                kind="info",
-                comments=f"Reservation {action}: {identity.identifier_type} {identity.value}; {addresses}",
-            )
-    except event_scope.EventDispatchError:
-        logger.exception("The journal entry committed but its events could not be dispatched")
-        return "events-failed"
-    except (DatabaseError, ValidationError, RuntimeError):
-        logger.exception("Could not write the journal entry of an applied change to Server %s", server.pk)
-        return "failed"
-    return "succeeded"
+    return f"Reservation {action}: {identity.identifier_type} {identity.value}; {addresses}"
 
 
-def _signal_after_apply(
-    server: Server, outcome: ReservationChangeOutcome, action: ReservationAction, reservation: Reservation, request: Any
-) -> SideEffectStatus:
-    signal = {"created": reservation_created, "updated": reservation_updated, "deleted": reservation_deleted}[action]
-    try:
-        responses = signal.send_robust(
-            sender=None,
-            server=server,
-            before=outcome.previous,
-            after=outcome.intended,
-            dhcp_version=reservation.family,
-            request=request,
-        )
-    except event_scope.EventDispatchError:
-        logger.exception("The Reservation signal committed but its events could not be dispatched")
-        return "events-failed"
-    except (DatabaseError, ValidationError, ValueError, RuntimeError):
-        logger.exception("Could not send the Reservation %s signal", action)
-        return "failed"
-    errors = [response for _receiver, response in responses if isinstance(response, Exception)]
-    for error in errors:
-        logger.error("A receiver of the reservation_%s signal failed", action, exc_info=error)
-    if any(isinstance(error, event_scope.EventDispatchError) for error in errors):
-        return "events-failed"
-    return "failed" if errors else "succeeded"
+_SIGNALS = {"created": reservation_created, "updated": reservation_updated, "deleted": reservation_deleted}
 
 
 class ImportSyncRefused(ValueError):
@@ -763,8 +721,16 @@ def after_apply(
     action: ReservationAction = (
         "deleted" if outcome.intended is None else "created" if outcome.previous is None else "updated"
     )
-    journal = _journal_after_apply(server, user, action, reservation)
-    signal = _signal_after_apply(server, outcome, action, reservation, request)
+    journal = write_journal(server, user, _journal_comments(action, reservation))
+    signal = send_signal(
+        _SIGNALS[action],
+        f"reservation_{action}",
+        server=server,
+        before=outcome.previous,
+        after=outcome.intended,
+        dhcp_version=reservation.family,
+        request=request,
+    )
     return AfterApplyFacts(
         action, journal, signal, _claim_after_apply(server, outcome, user, sync_to_netbox, import_context)
     )

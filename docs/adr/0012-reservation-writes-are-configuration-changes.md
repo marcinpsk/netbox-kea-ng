@@ -58,6 +58,9 @@ A Reservation add, edit or delete is a Configuration Change.
   Refused, Failed, or a run with the claim result and whether NetBox dispatched its events. Only `not-requested`
   and `not-applied` stay after-apply skip reasons, and a delete requests no claim. A Reservation with no address
   runs and gives an empty claim result. One presenter maps the outcome to messages._
+  _Amended 2026-11-02 (#215): the journal and signal steps are shared with Lease changes. `after_apply.py` holds
+  them and their `SideEffectStatus`; `reservation_edit.after_apply()` calls them and keeps its own facts type and
+  `ImportContext`._
 - The bulk Reservation import calls the public `reservation_edit.save_import()` for each entry. After each
   applied change returns, `_run_change_loop` invokes `reservation_edit.after_apply()` outside its classification
   callback and before the next entry. An `unknown` entry or a rejected entry stops the import, and the report
