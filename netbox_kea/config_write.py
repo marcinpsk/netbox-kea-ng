@@ -307,7 +307,7 @@ def edit_subnet(
             raise ChangeRejected("not-sent", (subnet_changed(subnet_id, cidr),))
         edited = definition.raw_entry()
         try:
-            managed_fields.write_subnet(edited, family, edit)
+            managed_fields.write_subnet(edited, family, edit, shown=shown)
         except MalformedConfiguration as exc:
             logger.warning("The Subnet that Kea returned cannot be edited", exc_info=True)
             raise ChangeRejected("not-sent", ("Kea returned a configuration that NetBox cannot edit safely.",)) from exc
@@ -767,7 +767,7 @@ def edit_shared_network(
         )
         live = None if network is None else managed_fields.shown_shared_network(network, family)
         # The edit refuses a missing Shared Network first. The operation never sends a rejected candidate.
-        managed_fields.write_shared_network(candidate.shared_network(name), family, edit)
+        managed_fields.write_shared_network(candidate.shared_network(name), family, edit, shown=shown)
         if live is None:
             raise ChangeRejected("not-sent", (f"Shared Network '{name}' {_UNSHOWABLE}",))
         if live != shown:

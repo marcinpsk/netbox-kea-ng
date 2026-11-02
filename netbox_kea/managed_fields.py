@@ -176,102 +176,124 @@ def shown_shared_network(network: SharedNetwork, family: Family) -> SharedNetwor
         return None
 
 
-def write_subnet(entry: dict[str, Any], family: Family, edit: SubnetEdit) -> None:
-    """Set the fields of *edit* on the raw Subnet *entry*, and keep every other key.
+def write_subnet(entry: dict[str, Any], family: Family, edit: SubnetEdit, *, shown: SubnetEdit) -> None:
+    """Set each field of *edit* that differs from *shown* on the raw Subnet *entry*, and keep every other key.
+
+    *shown* holds the values that the form showed for *entry*. A field that the operator did not change keeps its
+    exact live text. A lifetime or a timer of None keeps the live value.
 
     Raises:
         MalformedConfiguration: If the Subnet has a value that the edit cannot keep or replace safely.
 
     """
-    fields = edit.fields
-    option_fields = {}
-    if family == 4:
-        option_fields["gateway"] = fields.gateway
-    option_fields["dns_servers"] = address_list_data(fields.dns_servers)
-    option_fields["ntp_servers"] = address_list_data(fields.ntp_servers)
-    _write_options(entry, family, option_fields)
-    suffix_key = setting_key("ddns_qualifying_suffix")
-    if fields.ddns_qualifying_suffix:
-        entry[suffix_key] = fields.ddns_qualifying_suffix
-    else:
-        entry.pop(suffix_key, None)
-    live_pools = _pools_by_range(entry, family)
-    if fields.pools or "pools" in entry:
+    fields, before = edit.fields, shown.fields
+    names = ("dns_servers", "ntp_servers") if family == 6 else ("gateway", "dns_servers", "ntp_servers")
+    _write_options(entry, family, _option_fields(fields, names), _option_fields(before, names))
+    if fields.ddns_qualifying_suffix != before.ddns_qualifying_suffix:
+        _write_text(entry, setting_key("ddns_qualifying_suffix"), fields.ddns_qualifying_suffix)
+    if fields.pools != before.pools:
+        live_pools = _pools_by_range(entry, family)
         entry["pools"] = [{**live_pools.get(pool, {}), "pool": pool} for pool in fields.pools]
     for field in _LIFETIMES:
         value = getattr(edit, field)
-        if value is not None:
+        if value is not None and value != getattr(shown, field):
             entry[setting_key(field)] = value
+
+
+# The values that the form shows for a new Subnet: no field is set.
+_NEW_SUBNET_SHOWN = SubnetEdit(SubnetFields((), "", (), (), ""), None, None, None, None, None)
 
 
 def new_subnet(family: Family, subnet_id: int, cidr: str, fields: SubnetFields) -> dict[str, Any]:
     """Return the entry of a new Subnet *cidr* with *subnet_id* and the fields of the add form."""
     entry: dict[str, Any] = {"subnet": cidr, "id": subnet_id}
-    write_subnet(entry, family, SubnetEdit(fields, None, None, None, None, None))
+    write_subnet(entry, family, SubnetEdit(fields, None, None, None, None, None), shown=_NEW_SUBNET_SHOWN)
     return entry
 
 
-def write_shared_network(entry: dict[str, Any], family: Family, edit: SharedNetworkEdit) -> None:
-    """Set the fields of *edit* on the raw Shared Network *entry*, and keep every other key.
+def write_shared_network(
+    entry: dict[str, Any], family: Family, edit: SharedNetworkEdit, *, shown: SharedNetworkEdit
+) -> None:
+    """Set each field of *edit* that differs from *shown* on the raw Shared Network *entry*, and keep every other key.
+
+    *shown* holds the values that the form showed for *entry*. A field that the operator did not change keeps its
+    exact live text, and a kept relay object keeps its other keys.
 
     Raises:
         MalformedConfiguration: If the Shared Network has a value that the edit cannot keep or replace safely.
 
     """
-    _write_description(entry, edit.description)
-    if edit.interface:
-        entry["interface"] = edit.interface
-    else:
-        entry.pop("interface", None)
-    if edit.relay_addresses:
-        entry["relay"] = {"ip-addresses": list(edit.relay_addresses)}
-    else:
-        entry.pop("relay", None)
-    _write_options(
-        entry,
-        family,
-        {"dns_servers": address_list_data(edit.dns_servers), "ntp_servers": address_list_data(edit.ntp_servers)},
-    )
+    try:
+        shared_network_description(entry)
+    except ValueError as exc:
+        raise MalformedConfiguration(str(exc)) from exc
+    if edit.description != shown.description:
+        _write_description(entry, edit.description)
+    if edit.interface != shown.interface:
+        _write_text(entry, "interface", edit.interface)
+    if edit.relay_addresses != shown.relay_addresses:
+        _write_relay(entry, edit.relay_addresses)
+    names = ("dns_servers", "ntp_servers")
+    _write_options(entry, family, _option_fields(edit, names), _option_fields(shown, names))
 
 
-def _write_options(entry: dict[str, Any], family: Family, fields: dict[str, str]) -> None:
-    """Merge the option data of the form *fields* into the ``option-data`` of *entry*.
+def _write_text(entry: dict[str, Any], key: str, value: str) -> None:
+    """Set *key* to *value*. An empty *value* removes the key."""
+    if value:
+        entry[key] = value
+    else:
+        entry.pop(key, None)
+
+
+def _option_fields(values: SubnetFields | SharedNetworkEdit, names: tuple[str, ...]) -> dict[str, str]:
+    """Return the option data of each form field in *names*, keyed by form field."""
+    data = {name: getattr(values, name) for name in names}
+    return {name: value if isinstance(value, str) else address_list_data(value) for name, value in data.items()}
+
+
+def _write_options(entry: dict[str, Any], family: Family, edited: dict[str, str], shown: dict[str, str]) -> None:
+    """Merge each form field whose *edited* data differs from its *shown* data into ``option-data``.
 
     Raises:
-        MalformedConfiguration: If ``option-data`` is not a valid DHCP Option list, or more than one entry fits a field.
+        MalformedConfiguration: If ``option-data`` is not a valid DHCP Option list, or more than one entry fits a
+            form field, also when no field changed.
 
     """
     options = entry.get("option-data", [])
+    changed = {field: data for field, data in edited.items() if data != shown[field]}
     try:
-        option_edit = form_option_edit(parse_dhcp_options(options), family, fields)
-        merged = merge_option_edit(option_edit, options, family)
+        live = parse_dhcp_options(options)
+        form_option_fields(live, family)
+        if changed:
+            entry["option-data"] = merge_option_edit(form_option_edit(live, family, changed), options, family)
     except ValueError as exc:
         raise MalformedConfiguration(str(exc)) from exc
-    if merged or "option-data" in entry:
-        entry["option-data"] = merged
 
 
 def _write_description(network: dict[str, Any], description: str) -> None:
-    """Write *description* as ``user-context.comment`` and keep every other user-context key.
-
-    An empty *description* keeps a comment the form cannot show, the same as a binary option.
-    A *description* equal to the comment as a text input shows it keeps the comment unchanged.
-    """
-    try:
-        existing = shared_network_description(network)
-    except ValueError as exc:
-        raise MalformedConfiguration(str(exc)) from exc
-    if existing is not None and description == description_as_shown(existing):
-        return
+    """Write *description* as ``user-context.comment``, and keep every other user-context key."""
     context = dict(network.get("user-context") or {})
-    if description:
-        context["comment"] = description
-    elif isinstance(context.get("comment"), str):
-        del context["comment"]
+    _write_text(context, "comment", description)
     if context:
         network["user-context"] = context
     else:
         network.pop("user-context", None)
+
+
+def _write_relay(network: dict[str, Any], addresses: tuple[str, ...]) -> None:
+    """Write *addresses* as the relay addresses, and keep every other key of the relay object.
+
+    Raises:
+        MalformedConfiguration: If the live relay is not an object.
+
+    """
+    relay = network.get("relay", {})
+    if not isinstance(relay, dict):
+        raise MalformedConfiguration("A Shared Network relay must be an object.")
+    if addresses:
+        network["relay"] = {**relay, "ip-addresses": list(addresses)}
+    else:
+        network.pop("relay", None)
 
 
 def _pools_by_range(entry: dict[str, Any], family: Family) -> dict[str, dict[str, Any]]:

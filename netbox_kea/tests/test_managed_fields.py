@@ -53,19 +53,24 @@ def _edit(**values) -> SubnetEdit:
 
 
 def _written(live: dict, version: Family = 4, **fields) -> dict:
-    """Return a copy of the Subnet *live* that ``write_subnet`` edited with the form *fields*."""
+    """Return a copy of the Subnet *live* that ``write_subnet`` edited with the form *fields*.
+
+    The form showed the values that the reader gives for *live*.
+    """
     entry = copy.deepcopy(live)
-    write_subnet(entry, version, _edit(**fields))
+    write_subnet(entry, version, _edit(**fields), shown=_shown_subnet(live, version))
     return entry
 
 
-def _shown_subnet(entry: dict, version: Family) -> SubnetEdit | None:
+def _shown_subnet(entry: dict, version: Family) -> SubnetEdit:
     """Return the values that the edit form shows for the raw Subnet *entry*, through the real parser."""
     network = ipaddress.ip_network(entry["subnet"], strict=False)
     definition = SubnetDefinition(version, entry["id"], network, json.dumps(entry, sort_keys=True))
     configuration = server_configuration.definition_configuration(definition)
-    assert configuration is not None, "the parser refused the written Subnet"
-    return shown_subnet(configuration, version)
+    assert configuration is not None, "the parser refused the Subnet"
+    shown = shown_subnet(configuration, version)
+    assert shown is not None, "the edit form cannot show the Subnet"
+    return shown
 
 
 class SubnetWriterTests(SimpleTestCase):
@@ -246,8 +251,35 @@ class SubnetWriterTests(SimpleTestCase):
             ("outside the Subnet", {"pool": "10.0.1.50-10.0.1.99"}),
         ):
             live = {"id": 42, "subnet": "10.0.0.0/24", "pools": [{"pool": "10.0.0.10-10.0.0.20"}, entry]}
+            # The reader cannot show this Subnet, so the shown values are given.
             with self.subTest(label), self.assertRaises(MalformedConfiguration):
-                _written(live, pools=("10.0.0.10-10.0.0.20",))
+                write_subnet(live, 4, _edit(pools=("10.0.0.10-10.0.0.20",)), shown=_BLANK)
+
+    def test_an_unchanged_field_keeps_its_live_text_and_a_changed_field_is_written(self):
+        live = {
+            "id": 42,
+            "subnet": "10.0.0.0/24",
+            "pools": [{"pool": "10.0.0.10 - 10.0.0.20"}],
+            "option-data": [{"name": "routers", "data": " 10.0.0.1"}, {"code": 6, "data": "192.0.2.53 ,192.0.2.54"}],
+            "ddns-qualifying-suffix": " example.org. ",
+            "valid-lifetime": 3600,
+        }
+        shown = _shown_subnet(live, 4)
+        unchanged = copy.deepcopy(live)
+        write_subnet(unchanged, 4, replace(shown, valid_lifetime=None), shown=shown)
+        self.assertEqual(unchanged, live)
+        changed = copy.deepcopy(live)
+        fields = replace(shown.fields, pools=("10.0.0.30-10.0.0.40",), ddns_qualifying_suffix="new.example.org.")
+        write_subnet(changed, 4, replace(shown, fields=fields, valid_lifetime=7200), shown=shown)
+        self.assertEqual(
+            changed,
+            {
+                **live,
+                "pools": [{"pool": "10.0.0.30-10.0.0.40"}],
+                "ddns-qualifying-suffix": "new.example.org.",
+                "valid-lifetime": 7200,
+            },
+        )
 
 
 class NewSubnetTests(SimpleTestCase):
@@ -328,7 +360,7 @@ class SubnetRoundTripTests(SimpleTestCase):
             ):
                 with self.subTest(version=version, edit=label):
                     entry = copy.deepcopy(live)
-                    write_subnet(entry, version, edit)
+                    write_subnet(entry, version, edit, shown=_shown_subnet(live, version))
                     self.assertEqual(_shown_subnet(entry, version), edit)
 
 
@@ -376,5 +408,23 @@ class SharedNetworkRoundTripTests(TestCase):
                 with self.subTest(version=version, edit=label):
                     daemon = {"shared-networks": [copy.deepcopy(_LIVE_NETWORK[version])]}
                     candidate = CandidateConfiguration(version, {f"Dhcp{version}": daemon})
-                    write_shared_network(candidate.shared_network("office"), version, edit)
+                    shown = self._shown(candidate)
+                    write_shared_network(candidate.shared_network("office"), version, edit, shown=shown)
                     self.assertEqual(self._shown(candidate), edit)
+
+
+class SharedNetworkWriterTests(SimpleTestCase):
+    """``write_shared_network`` refuses a live entry that it cannot keep or replace safely."""
+
+    _SHOWN = SharedNetworkEdit("", "", (), (), ())
+
+    def test_a_live_entry_that_the_writer_cannot_keep_raises(self):
+        edit = SharedNetworkEdit("", "", ("192.0.2.1",), (), ())
+        for label, live in (
+            ("user-context not an object", {"name": "office", "user-context": "text"}),
+            ("option-data not a list", {"name": "office", "option-data": None}),
+            ("two entries for one form field", {"name": "office", "option-data": [{"code": 6}, {"code": 6}]}),
+            ("relay not an object", {"name": "office", "relay": "192.0.2.9"}),
+        ):
+            with self.subTest(label), self.assertRaises(MalformedConfiguration):
+                write_shared_network(live, 4, edit, shown=self._SHOWN)

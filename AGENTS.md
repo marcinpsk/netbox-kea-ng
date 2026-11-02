@@ -578,10 +578,12 @@ from the `ServerConfigurationSnapshot` that the operation's own scope read (`Mut
 When that read cannot show the Shared Network, the operation sends `network{v}-get` as before.
 
 Subnet edit and Shared Network edit also take the values that the page showed (`shown`, the type of the edit),
-and send nothing while a live value differs, because a save writes back every field that the form shows.
-`managed_fields.py` holds the edit types and both directions of these fields. Its reader maps the parsed facts of
-`server_configuration` to the shown values, for the GET and for the check under the lock (`shown_subnet`,
-`shown_shared_network`). Its writers set the fields on a raw Kea entry (`write_subnet`, `write_shared_network`).
+and send nothing while a live value differs. `managed_fields.py` holds the edit types and both directions of these
+fields. Its reader maps the parsed facts of `server_configuration` to the shown values, for the GET and for the check
+under the lock (`shown_subnet`, `shown_shared_network`). Its writers (`write_subnet`, `write_shared_network`) change
+on the raw Kea entry only the fields whose edited value differs from the shown value. The check proves that the shown
+values are live, so a field that the operator did not change keeps its exact live text, and a kept relay object keeps
+its other keys. The Subnet add writes a new entry through `write_subnet`, with nothing shown (`new_subnet`).
 `_ShownValuesForm` builds each hidden `shown_` field as a copy of its visible field, so a value that Kea writes in
 another text form is not a change.
 

@@ -2213,9 +2213,14 @@ class SubnetEditPoolTests(TestCase):
     def test_a_live_prefix_pool_matches_the_same_range_in_the_form(self):
         for version in _FAMILIES:
             prefix, text = _PREFIX_POOL[version]
-            with self.subTest(version=version):
-                sent = self._sent(version, self._live(version, [{"pool": prefix, **_POOL_KEYS}]), (text,), (text,))
-                self.assertEqual(sent["pools"], [{"pool": text, **_POOL_KEYS}])
+            live = self._live(version, [{"pool": prefix, **_POOL_KEYS}])
+            with self.subTest(version=version, change="none"):
+                # An unchanged Pool list keeps the text that Kea holds.
+                sent = self._sent(version, live, (text,), (text,))
+                self.assertEqual(sent["pools"], live["pools"])
+            with self.subTest(version=version, change="add"):
+                sent = self._sent(version, live, (text, _OTHER_POOL[version]), (text,))
+                self.assertEqual(sent["pools"], [{"pool": text, **_POOL_KEYS}, {"pool": _OTHER_POOL[version]}])
 
     def test_a_live_pool_entry_that_does_not_parse_is_not_sent(self):
         """The form cannot show such a Subnet, so a save from any page would drop the Pool."""
