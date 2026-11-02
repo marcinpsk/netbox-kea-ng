@@ -332,8 +332,7 @@ def _viewable_assigned(options: list, user) -> dict[int, Any]:
     found = {}
     for type_id, selected in pks.items():
         model = ContentType.objects.get_for_id(type_id).model_class()
-        for row in model.objects.restrict(user, "view").filter(pk__in=selected):
-            found[type_id, row.pk] = row
+        found.update({(type_id, pk): row for pk, row in _restricted(model, selected, user).items()})
     return {option.pk: found.get((option.assigned_object_type_id, option.assigned_object_id)) for option in options}
 
 

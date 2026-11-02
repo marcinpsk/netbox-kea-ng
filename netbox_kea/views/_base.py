@@ -9,11 +9,12 @@ from urllib.parse import parse_qsl, unquote, urlparse, urlsplit
 from urllib.parse import urlencode as _urlencode
 
 from django.contrib import messages
-from django.contrib.auth.models import PermissionsMixin
+from django.contrib.auth.models import AbstractUser, AnonymousUser, PermissionsMixin
 from django.http import Http404, HttpResponse, HttpResponseForbidden
 from django.http.request import HttpRequest
 from django.urls import Resolver404, get_script_prefix, resolve, reverse
 from django.utils.http import url_has_allowed_host_and_scheme
+from django_htmx.middleware import HtmxDetails
 from netbox.tables import BaseTable
 
 from .. import display_cache
@@ -44,6 +45,14 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseTable)
 OutcomeT = TypeVar("OutcomeT", bound=ConfigChangeOutcome | RuntimeChangeOutcome)
 RowT = TypeVar("RowT")
+
+
+class NetBoxRequest(HttpRequest):
+    """The request of a NetBox view: NetBox's user model has permissions, and django-htmx adds ``htmx``."""
+
+    user: AbstractUser | AnonymousUser
+    htmx: HtmxDetails
+
 
 # Allowed characters in a pool range/CIDR string (digits, dots, colons, letters a-f, slash, hyphen).
 # Protects the <path:pool> URL parameter from injection before it reaches the Kea API.
