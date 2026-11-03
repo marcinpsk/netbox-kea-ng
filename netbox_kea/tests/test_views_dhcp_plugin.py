@@ -827,6 +827,35 @@ class DriftPartialTest(TestCase):
         # In step, missing, stale, kept, not seen.
         self.assertEqual(self._counts(page)["client_class"], (0, 0, 0, 1, 0))
 
+    def test_a_kept_class_that_kea_also_drops_from_a_mapped_class_list_is_removed_by_the_next_import(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
+        config = deepcopy(_DRIFT_CONF)
+        config[4]["subnet4"][0]["client-classes"] = ["voip"]
+        with stub_kea(_sync_responses(config, _DRIFT_HOSTS)):
+            dhcp_import.run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+        voip = KeaDhcpLink.objects.get(server=self.server, family=4, kind="client_class").object_id
+        # Kea drops the class and the class list of the Subnet together.
+        config[4]["client-classes"] = []
+        del config[4]["subnet4"][0]["client-classes"]
+        responses = _sync_responses(config, _DRIFT_HOSTS)
+
+        page = self._drift(responses)
+        with stub_kea(responses):
+            ((_family, summary),) = dhcp_import.run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+
+        path = "Dhcp4/client-classes[name=voip]"
+        self.assertIn(("kept", "client_class", path), self._objects(page))
+        self.assertEqual(
+            self._reasons(page)["client_class", path], "It is kept while a class list of 1 Subnet names it."
+        )
+        # The run updates the Subnet first, so the class has no use left when the run judges it.
+        self.assertIn(
+            ("client_class", path, Outcome.REMOVED),
+            {(entry.kind.value, entry.path, entry.outcome) for entry in summary.entries},
+        )
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "ClientClass").objects.filter(pk=voip).exists())
+
     def test_a_client_class_whose_name_is_not_text_makes_client_classes_incomplete(self):
         self._import()
         config = {4: {**_DRIFT_CONF[4], "client-classes": [{"name": ["bad"]}]}}
