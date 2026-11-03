@@ -17,7 +17,7 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django_htmx.middleware import HtmxDetails
 from netbox.tables import BaseTable
 
-from .. import display_cache
+from .. import display_cache, forms
 from ..after_apply import SideEffectStatus
 from ..change_outcome import ChangeRejected, RejectionReason
 from ..config_write import ConfigChangeOutcome, ReservationChangeOutcome
@@ -340,6 +340,22 @@ def _catalogue_subnet_row(
     if subnet.shared_network is not None:
         row["shared_network"] = subnet.shared_network.name
     return row
+
+
+def _filter_subnets(rows: list[dict[str, Any]], search_form: forms.SubnetSearchForm) -> list[dict[str, Any]]:
+    """Return the Subnet rows that match a valid search; an invalid search filters nothing.
+
+    Kea has no Subnet search, so the filter runs on the rows of the Subnet Catalogue.
+    """
+    if not search_form.is_valid():
+        return rows
+    subnet_id = search_form.cleaned_data.get("subnet_id")
+    if subnet_id is not None:
+        rows = [row for row in rows if row.get("id") == subnet_id]
+    text = (search_form.cleaned_data.get("q") or "").lower()
+    if text:
+        rows = [row for row in rows if text in row.get("subnet", "").lower()]
+    return rows
 
 
 def _shared_network_row(

@@ -50,6 +50,8 @@ the Server selection and compatible filters. Selecting one Server opens its own 
 
 The sections are Overview, Leases, Subnets, Reservations, Configuration, and Sync. Shared Networks
 is a subsection of Subnets. Leases and Configuration choose a Server for the selected family.
+Subnets has the same search for one Server and for the Server Scope: a part of the CIDR, a Subnet ID or both.
+Its CSV export contains only the Subnets that match the search.
 Sync shows the latest recorded results for each Server in the scope. A sync run covers all enabled
 families on its Server. Unknown counts remain unknown.
 

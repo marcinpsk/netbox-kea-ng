@@ -18,7 +18,13 @@ from ..reservation_transfer import export_reservation_document
 from ..subnet_catalogue import CatalogueSnapshot
 from ..sync_run_result import latest
 from ..utilities import export_table
-from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
+from ._base import (
+    ConditionalLoginRequiredMixin,
+    _catalogue_subnet_row,
+    _enrich_subnet_statistics,
+    _filter_subnets,
+    _shared_network_row,
+)
 from .fan_out import fan_out
 from .notices import Notice, ServerNotices, notice
 from .read_age import read_age_context, refresh_requested
@@ -280,26 +286,6 @@ class CombinedSync6View(_CombinedSyncView):
     dhcp_version = 6
 
 
-def _filter_subnets(subnets: list[dict[str, Any]], q: str, subnet_id: int | None) -> list[dict[str, Any]]:
-    """Filter a list of subnet dicts by free-text CIDR query and/or exact subnet ID.
-
-    Filtering is done in-memory because subnets are fetched via config-get (no server-side search).
-
-    Args:
-        subnets: List of subnet dicts (keys: id, subnet, server_name, ...).
-        q: Free-text query; matched case-insensitively against the ``subnet`` CIDR string.
-        subnet_id: If non-None, only subnets with this exact ``id`` are returned.
-
-    """
-    result = subnets
-    if subnet_id is not None:
-        result = [s for s in result if s.get("id") == subnet_id]
-    if q:
-        q_lower = q.lower()
-        result = [s for s in result if q_lower in s.get("subnet", "").lower()]
-    return result
-
-
 def _fetch_subnets_from_server(
     server: "Server",
     version: Family,
@@ -362,12 +348,7 @@ class _CombinedSubnetsView(_CombinedViewMixin):
         table_cls = tables.GlobalSubnetTable4 if self.dhcp_version == 4 else tables.GlobalSubnetTable6
 
         search_form = forms.SubnetSearchForm(request.GET or None)
-        if search_form.is_valid():
-            all_subnets = _filter_subnets(
-                all_subnets,
-                q=search_form.cleaned_data.get("q", ""),
-                subnet_id=search_form.cleaned_data.get("subnet_id"),
-            )
+        all_subnets = _filter_subnets(all_subnets, search_form)
 
         table = table_cls(all_subnets, user=request.user)
         table.configure(request)

@@ -38,6 +38,7 @@ from ._base import (
     _catalogue_subnet_row,
     _client_or_refusal,
     _enrich_subnet_statistics,
+    _filter_subnets,
     _KeaChangeMixin,
     _run_change,
     _safe_return_url,
@@ -103,7 +104,8 @@ class BaseServerDHCPSubnetsView(ServerFamilyMixin, generic.ObjectChildrenView):
         # We can't use the original get() since it calls get_table_configs which requires a NetBox model.
         snapshot = subnet_catalogue.display(instance, self.dhcp_version)
         subnet_notice = notice(snapshot)
-        child_objects = self._catalogue_rows(request, instance, snapshot)
+        search_form = forms.SubnetSearchForm(request.GET or None)
+        child_objects = _filter_subnets(self._catalogue_rows(request, instance, snapshot), search_form)
 
         table_data = self.prep_table_data(request, child_objects, instance)
         table = self.get_table(table_data, request, False)
@@ -139,6 +141,7 @@ class BaseServerDHCPSubnetsView(ServerFamilyMixin, generic.ObjectChildrenView):
                 "table": table,
                 "table_config": f"{table.name}_config",
                 "return_url": request.get_full_path(),
+                "search_form": search_form,
                 **subnets_nav_context(instance.pk, "subnets", self.dhcp_version),
             },
         )

@@ -2,6 +2,7 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% extends "generic/object_children.html" %}
+{% load kea_workspace %}
 
 {% block head %}
   {{ block.super }}
@@ -22,6 +23,40 @@
 {% include "netbox_kea/inc/subnets_nav.html" %}
 {% include "netbox_kea/includes/persist_config_warning.html" %}
 <div id="subnet-notice"></div>
+<div class="card mb-3">
+  <div class="card-header">
+    <strong><i class="mdi mdi-magnify"></i> Search Subnets</strong>
+  </div>
+  <div class="card-body">
+    <form method="get" class="row g-2 align-items-end">
+      {% workspace_return_field %}
+      <div class="col-auto flex-grow-1">
+        <label for="id_q" class="form-label">{{ search_form.q.label }}</label>
+        {{ search_form.q }}
+        {% if search_form.q.errors %}
+        <div class="text-danger small">{{ search_form.q.errors }}</div>
+        {% endif %}
+      </div>
+      <div class="col-12 col-md-4">
+        <label for="id_subnet_id" class="form-label">{{ search_form.subnet_id.label }}</label>
+        {{ search_form.subnet_id }}
+        {% if search_form.subnet_id.errors %}
+        <div class="text-danger small">{{ search_form.subnet_id.errors }}</div>
+        {% endif %}
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-primary btn-sm">
+          <i class="mdi mdi-magnify"></i> Filter
+        </button>
+        {% if request.GET.q or request.GET.subnet_id %}
+        <a href="{% workspace_url request.path %}" class="btn btn-outline-secondary btn-sm">
+          <i class="mdi mdi-close"></i> Clear
+        </a>
+        {% endif %}
+      </div>
+    </form>
+  </div>
+</div>
 {{ block.super }}
 <div class="d-flex justify-content-end gap-2 mt-3">
   {% if object.dhcp4 and '4' in request.resolver_match.url_name %}
@@ -38,8 +73,9 @@
       <i class="mdi mdi-download"></i> Export
     </button>
     <ul class="dropdown-menu dropdown-menu-end">
-      <li><a class="dropdown-item" href="?export=table">Current View</a></li>
-      <li><a class="dropdown-item" href="?export">All Data (CSV)</a></li>
+      {# The export follows the search. #}
+      <li><a class="dropdown-item" href="?{% if request.GET %}{{ request.GET.urlencode }}&{% endif %}export=table">Current View</a></li>
+      <li><a class="dropdown-item" href="?{% if request.GET %}{{ request.GET.urlencode }}&{% endif %}export">All Data (CSV)</a></li>
     </ul>
   </div>
 </div>
