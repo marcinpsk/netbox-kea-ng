@@ -88,7 +88,7 @@
                 <td><code>{{ obj.path }}</code></td>
                 <td>
                   <span class="badge text-bg-{{ obj.badge.1 }}">{{ obj.badge.0 }}</span>
-                  {% if obj.reason %}<div class="small text-muted drift-reason">{{ obj.reason }}</div>{% endif %}
+                  {% if obj.reason %}<div class="small text-muted mt-1 drift-reason">{{ obj.reason }}</div>{% endif %}
                 </td>
                 <td>{% if obj.target %}<a href="{{ obj.target.get_absolute_url }}">{{ obj.name }}</a>{% else %}{{ obj.target|placeholder }}{% endif %}{% if obj.assigned %} on {{ obj.assigned|linkify }}{% endif %}</td>
               </tr>
