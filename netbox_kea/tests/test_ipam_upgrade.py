@@ -17,9 +17,10 @@ from rest_framework.test import APIClient
 
 from netbox_kea.ipam_reconciliation import POLICY_TABLES, claim, effective_sources, upgrade_counts
 from netbox_kea.models import IPAMOwnershipLink, Server
+from netbox_kea.sync_run_result import SyncCounts
 from netbox_kea.tests.kea_stub import typed_lease
 from netbox_kea.tests.test_ipam_reconciliation import _kea, _lease, _reconcile, _run_job, _server
-from netbox_kea.tests.utils import with_dhcp_integration_config, with_sync_config
+from netbox_kea.tests.utils import run_counts, with_dhcp_integration_config, with_sync_config
 
 
 class UpgradeAdoptionTest(TestCase):
@@ -202,7 +203,7 @@ class UpgradeAdoptionTest(TestCase):
         self.assertEqual(upgrade_counts().waiting, 1)
         with self.assertLogs("netbox.jobs", level="INFO") as logs:
             summary = _run_job(other, [])
-        self.assertEqual(summary["waiting"], 0)
+        self.assertEqual(summary.waiting, 0)
         totals = [message for message in logs.output if "Kea IPAM sync complete" in message]
         self.assertEqual(len(totals), 1)
         self.assertIn("waiting=1", totals[0])
@@ -261,12 +262,11 @@ class UpgradeAdoptionTest(TestCase):
     def test_complete_empty_job_records_completion_and_preserves_preupgrade_stale_row(self):
         server = _server("first")
         stale = IPAddress.objects.create(address="10.0.0.50/24", description="[kea-sync: lease]")
-        summary = _run_job(server, [])
+        _run_job(server, [])
         server.refresh_from_db()
         self.assertIsNotNone(server.ipam_first_complete_at)
         self.assertTrue(IPAddress.objects.filter(pk=stale.pk).exists())
         self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=stale).exists())
-        self.assertNotIn("unowned", summary)
 
     def test_global_adoption_keeps_primary_key_and_blank_description_refuses_claim(self):
         server = _server("first")
@@ -436,7 +436,7 @@ class UpgradeAdoptionTest(TestCase):
                 suppress(JobFailed),
             ):
                 KeaIpamSyncJob(job).run(server_pk=server.pk)
-            self.assertGreater(job.data["summary"][0]["errors"], 0)
+            self.assertGreater(run_counts(job)[0].errors, 0)
             self.assertTrue(
                 IPAMOwnershipLink.objects.filter(
                     server=server, ip_address__address__net_host=successful_address
@@ -577,7 +577,7 @@ class DhcpIntegrationSwitchAdoptionTest(TestCase):
             raise unittest.SkipTest("netbox_dhcp not installed")
         super().setUpClass()
 
-    def _clean_up_an_adopted_address(self) -> tuple[Server, IPAddress, dict]:
+    def _clean_up_an_adopted_address(self) -> tuple[Server, IPAddress, SyncCounts]:
         """Adopt a legacy address for a Server that opts in to the DHCP plugin, then run a job that no longer sees it."""
         owner = _server("dhcp-owner", sync_dhcp_plugin_enabled=True)
         _run_job(owner, [])
@@ -590,7 +590,7 @@ class DhcpIntegrationSwitchAdoptionTest(TestCase):
         owner, legacy, summary = self._clean_up_an_adopted_address()
 
         self.assertEqual(effective_sources(owner)["import"], {(4, "reservation"), (4, "subnet"), (4, "pool")})
-        self.assertEqual(summary["waiting"], 1)
+        self.assertEqual(summary.waiting, 1)
         self.assertTrue(IPAddress.objects.filter(pk=legacy.pk).exists())
 
     @with_dhcp_integration_config(enabled=False)
@@ -598,7 +598,7 @@ class DhcpIntegrationSwitchAdoptionTest(TestCase):
         owner, legacy, summary = self._clean_up_an_adopted_address()
 
         self.assertEqual(effective_sources(owner)["import"], frozenset())
-        self.assertEqual(summary["waiting"], 0)
+        self.assertEqual(summary.waiting, 0)
         self.assertFalse(IPAddress.objects.filter(pk=legacy.pk).exists())
 
     def test_one_policy_snapshot_reads_the_switch_once_for_every_opted_in_server(self):

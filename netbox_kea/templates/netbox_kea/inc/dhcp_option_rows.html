@@ -1,0 +1,30 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{# The rows of a DHCPOptionRowFormSet, which every DHCP Option editor shows. #}
+{{ formset.management_form }}
+{% if formset.non_form_errors %}
+  <div class="alert alert-danger">
+    {% for error in formset.non_form_errors %}<div>{{ error }}</div>{% endfor %}
+  </div>
+{% endif %}
+<table class="table table-sm align-middle">
+  <thead>
+    <tr><th>Option Name</th><th>Value</th><th>Client Classes</th><th>Always Send</th><th>Delete</th></tr>
+  </thead>
+  <tbody id="formset-rows">
+    {% for row in formset %}
+      <tr class="formset-row">
+        <td>
+          {{ row.original_option }}{{ row.name }}
+          {% for err in row.name.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}
+          {% for err in row.original_option.errors %}<div class="text-danger small">DHCP Option '{{ row.name.value|default:"shown option" }}': {{ err }}</div>{% endfor %}
+          {% for err in row.non_field_errors %}<div class="text-danger small">DHCP Option '{{ row.name.value|default:"shown option" }}': {{ err }}</div>{% endfor %}
+        </td>
+        <td>{{ row.data }}{% for err in row.data.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}</td>
+        <td>{{ row.client_classes }}{% for err in row.client_classes.errors %}<div class="text-danger small">{{ err }}</div>{% endfor %}</td>
+        <td class="text-center">{{ row.always_send }}</td>
+        <td class="text-center">{{ row.DELETE }}</td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>

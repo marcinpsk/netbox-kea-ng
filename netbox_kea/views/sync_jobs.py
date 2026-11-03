@@ -5,13 +5,10 @@
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import PermissionDenied
-from django.db.models import Q
 from django.http import HttpResponseForbidden, HttpResponseRedirect
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
@@ -23,6 +20,7 @@ from ..integrations import dhcp_plugin
 from ..jobs import KeaIpamSyncJob
 from ..models import Server, SyncConfig
 from ..sync_plan import LEASE, POOL, RESERVATION, SUBNET, SYNC_SOURCES, global_source_enabled, source_sync_enabled
+from ..sync_run_result import jobs_of, latest, read
 from .dhcp_plugin_sync import sync_nav_context
 from .settings_page import section_url, visible_sections
 from .workspace import ServerFamilyMixin, server_family_url
@@ -38,119 +36,6 @@ _SOURCE_LABELS = {
 }
 
 
-def get_recent_jobs_for_servers(
-    pks: list[int],
-    *,
-    name: str = "Kea IPAM Sync",
-    limit: int = 1,
-) -> dict[int, list]:
-    """Return ``{server_pk: [jobs newest-first, up to *limit*]}`` for each pk.
-
-    Queries both object-bound jobs (from ``KeaIpamSyncJob.enqueue``) and
-    unbound periodic jobs (``object_id=NULL``, from ``@system_job`` runs).
-    Unbound jobs are attributed to individual servers via ``job.data["summary"]``.
-    Servers with no matching job map to an empty list.
-
-    Args:
-        pks: Server primary keys to look up.
-        name: Job name filter — defaults to ``"Kea IPAM Sync"``.
-        limit: Maximum number of jobs to return per server.
-
-    """
-    from core.models import Job
-
-    ct = ContentType.objects.get_for_model(Server)
-
-    # 1. Object-bound jobs (manual "Run Now") — one indexed query per server with SQL LIMIT.
-    bound_by_pk: dict[int, list] = {pk: [] for pk in pks}
-    for pk in pks:
-        bound_by_pk[pk] = list(
-            Job.objects.filter(object_type=ct, object_id=pk, name=name)
-            .order_by("-created")
-            .only("pk", "object_id", "created", "status", "data")[:limit]
-        )
-
-    # 2. Unbound periodic jobs — always scanned independently so that a recent
-    #    periodic run is not hidden by older manual (bound) runs filling the slot.
-    #    Heuristic window: scan far enough back to cover periodic runs for all servers.
-    unbound_by_pk: dict[int, list] = {pk: [] for pk in pks}
-    needs_unbound = set(pks)
-    scan_window = limit * 10 * max(1, len(pks))
-    unbound_qs = (
-        Job.objects.filter(object_id__isnull=True, name=name)
-        .order_by("-created")
-        .only("pk", "object_id", "created", "status", "data")
-    )[:scan_window]
-    for job in unbound_qs:
-        if not needs_unbound:
-            break
-        if not isinstance(job.data, dict):
-            continue
-        summary = job.data.get("summary")
-        if not isinstance(summary, list):
-            continue
-        for entry in summary:
-            if not isinstance(entry, dict):
-                continue
-            server_pk = entry.get("pk")
-            if server_pk in needs_unbound and job.pk not in {j.pk for j in unbound_by_pk[server_pk]}:
-                unbound_by_pk[server_pk].append(job)
-                if len(unbound_by_pk[server_pk]) >= limit:
-                    needs_unbound.discard(server_pk)
-
-    if needs_unbound:
-        logger.warning(
-            "get_recent_jobs_for_servers: scan_window=%d exhausted; periodic jobs may be missing for server pks: %s",
-            scan_window,
-            sorted(needs_unbound),
-        )
-
-    # 3. Merge both sources, deduplicate, sort newest-first, keep top *limit*.
-    result: dict[int, list] = {}
-    for pk in pks:
-        merged = bound_by_pk[pk] + unbound_by_pk[pk]
-        seen: set[int] = set()
-        deduped = []
-        for job in merged:
-            if job.pk not in seen:
-                seen.add(job.pk)
-                deduped.append(job)
-        deduped.sort(key=lambda j: j.created, reverse=True)
-        result[pk] = deduped[:limit]
-
-    return result
-
-
-def get_all_jobs_for_server(pk: int, *, name: str = "Kea IPAM Sync"):
-    """Return a queryset of every Kea sync Job attributed to *pk*.
-
-    Includes both object-bound jobs (manual "Run Now") and unbound periodic
-    jobs whose ``data["summary"]`` references this server. Sorted newest-first.
-
-    Periodic jobs have ``object_id=NULL`` so the standard ObjectJobsView
-    misses them; this helper bridges the gap. Periodic-job lookup uses
-    PostgreSQL JSONField containment so it stays cheap even with thousands
-    of historical runs.
-    """
-    from core.models import Job
-
-    ct = ContentType.objects.get_for_model(Server)
-    bound_q = Q(object_type=ct, object_id=pk, name=name)
-    # JSONField `contains` on a list matches any element containing the given dict.
-    unbound_q = Q(object_id__isnull=True, name=name, data__summary__contains=[{"pk": pk}])
-    return Job.objects.filter(bound_q | unbound_q).order_by("-created")
-
-
-def _get_latest_jobs(servers: list[Server]) -> defaultdict:
-    """Return a defaultdict mapping server.pk to the most recent Job (or None).
-
-    Thin wrapper around :func:`get_recent_jobs_for_servers` with ``limit=1``.
-    """
-    pks = [s.pk for s in servers]
-    jobs_by_pk = get_recent_jobs_for_servers(pks, limit=1)
-    return defaultdict(lambda: None, {pk: jobs[0] for pk, jobs in jobs_by_pk.items() if jobs})
-
-
 class SyncJobsView(LoginRequiredMixin, View):
     """Plugin-level Sync Jobs page: the cross-server job table, with a link to the Settings page."""
 
@@ -160,13 +45,11 @@ class SyncJobsView(LoginRequiredMixin, View):
         """Render the sync jobs overview page with the server table."""
         servers = list(Server.objects.restrict(request.user, "view").order_by("name"))
         allowed_server_pks = set(Server.objects.restrict(request.user, "change").values_list("pk", flat=True))
-        latest_jobs = _get_latest_jobs(servers)
         return render(
             request,
             self.template_name,
             {
-                "servers": servers,
-                "latest_jobs": latest_jobs,
+                "rows": [(server, *latest(server.pk)) for server in servers],
                 "allowed_server_pks": allowed_server_pks,
                 "can_view_settings": bool(visible_sections(request.user)),
             },
@@ -185,9 +68,8 @@ class ServerSyncStatusView(ServerFamilyMixin, generic.ObjectView):
 
     def get_extra_context(self, request, instance):
         """Return recent sync jobs and status context for the template."""
-        jobs_by_pk = get_recent_jobs_for_servers([instance.pk], limit=_JOB_HISTORY_COUNT)
-        recent_jobs = jobs_by_pk[instance.pk]
-        latest = recent_jobs[0] if recent_jobs else None
+        recent_jobs = list(jobs_of(instance.pk)[:_JOB_HISTORY_COUNT])
+        latest_job = recent_jobs[0] if recent_jobs else None
 
         jobs_list_url = reverse("core:job_list") + f"?object_type=netbox_kea.server&object_id={instance.pk}"
         sync_cfg = SyncConfig.get()
@@ -202,7 +84,8 @@ class ServerSyncStatusView(ServerFamilyMixin, generic.ObjectView):
         ]
         return {
             "recent_jobs": recent_jobs,
-            "latest_job": latest,
+            "latest_job": latest_job,
+            "latest_result": read(latest_job).get(instance.pk) if latest_job is not None else None,
             "jobs_list_url": jobs_list_url,
             "can_change_server": Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists(),
             "server_edit_url": server_family_url(request, instance, self, "server_edit"),
@@ -291,15 +174,15 @@ class ServerJobsView(View):
 
     The default :class:`netbox.views.generic.ObjectJobsView` only shows jobs
     whose ``object_id`` matches the server. Periodic ``KeaIpamSyncJob`` runs
-    are stored unbound (``object_id=NULL``) and reference servers only via
-    their ``data["summary"]`` payload, so they are invisible there. This
-    subclass merges both sources, matching core's ``ObjectJobsView`` shape
+    are stored unbound (``object_id=NULL``) and name their Servers only in
+    their Sync Run Results, so they are invisible there. This subclass lists
+    ``sync_run_result.jobs_of()``, matching core's ``ObjectJobsView`` shape
     so the existing ``core/object_jobs.html`` template works unchanged.
     """
 
     tab = ViewTab(
         label="Jobs",
-        badge=lambda obj: get_all_jobs_for_server(obj.pk).count(),
+        badge=lambda obj: jobs_of(obj.pk).count(),
         permission="core.view_job",
         weight=11000,
     )
@@ -311,7 +194,7 @@ class ServerJobsView(View):
         from core.tables import JobTable
 
         obj = get_object_or_404(model.objects.restrict(request.user, "view"), **kwargs)
-        jobs = get_all_jobs_for_server(obj.pk)
+        jobs = jobs_of(obj.pk)
         table = JobTable(data=jobs, orderable=False)
         table.configure(request)
 

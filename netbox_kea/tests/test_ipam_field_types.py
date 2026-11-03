@@ -92,8 +92,8 @@ class IPAMFieldTypesTest(TestCase):
             second = run_job(server)
         prefix.refresh_from_db()
         self.assertEqual(prefix.description, "[kea-sync: subnet]")
-        self.assertEqual((first["errors"], first["prefix_errors"]), (0, 0))
-        self.assertEqual((second["created"], second["updated"], second["errors"]), (0, 0, 0))
+        self.assertEqual((first.errors, first.prefix_errors), (0, 0))
+        self.assertEqual((second.created, second.updated, second.errors), (0, 0, 0))
         self.assertEqual(len([entry for entry in seen if entry[0] == "Prefix"]), 1)
 
     def test_an_unhandled_server_error_names_its_exception_and_writes_its_traceback(self):

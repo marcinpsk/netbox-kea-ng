@@ -259,6 +259,11 @@ flag are all on. A Run Now of one Server skips the Server switch, but a Run Now 
 not count as an observation of the Server.
 _Avoid_: sync flags, enabled types
 
+**Sync Run Result**:
+The recorded result of one Server in one IPAM synchronization run: Synced (with its counts), Skipped, Interrupted, or
+Unknown.
+_Avoid_: job summary, summary entry
+
 **Manual Sync**:
 A claim of one Lease or one Reservation in the sync VRF of its Server that an operator requests: with a row Sync
 button, or with a Lease or Reservation change. A Manual Sync that does not run is Refused (the manual Sync

@@ -24,7 +24,7 @@ from . import constants
 from .config_write import SUBNET_LIST_UNCONFIRMED, subnet_changed
 from .constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, IPNetworkValue
 from .decimal_text import parse_decimal
-from .dhcp_options import InvalidAddress, address_list, parse_dhcp_option
+from .dhcp_options import InvalidAddress, OptionRow, address_list, parse_dhcp_option
 from .kea import subnet_network
 from .leases import (
     DHCPv4LeaseRequest,
@@ -1710,11 +1710,12 @@ class Lease6BulkImportForm(_BaseBulkLeaseImportForm):
     """
 
 
-class SubnetOptionsForm(forms.Form):
-    """A single subnet option-data row (name/data/always_send)."""
+class DHCPOptionRowForm(forms.Form):
+    """One row of a DHCP Option editor, with the identity and the value of the option that the operator saw."""
 
     name = forms.CharField(
         max_length=128,
+        required=False,
         help_text="Kea option name (e.g. routers, domain-name-servers). Pick a standard option or type any name.",
         # `list` links the input to the <datalist id="kea-option-names"> rendered
         # by the {% kea_option_datalist %} tag — an editable combobox: standard
@@ -1723,25 +1724,19 @@ class SubnetOptionsForm(forms.Form):
     )
     data = forms.CharField(
         max_length=512,
+        required=False,
+        strip=False,
         help_text="Option value (e.g. 10.0.0.1 or 8.8.8.8, 8.8.4.4).",
     )
     always_send = forms.BooleanField(
         required=False,
         help_text="Send option even when not requested by the client.",
     )
-
-
-class ConfigurationOptionsForm(SubnetOptionsForm):
-    """Edit a configuration option while retaining its original identity and the value that the operator saw."""
-
+    client_classes = _client_classes_field(
+        "Comma-separated client classes that receive this option."
+        " A class name with a comma, a line break or surrounding spaces can only change in Kea."
+    )
     original_option = forms.JSONField(required=False, widget=forms.HiddenInput)
-
-    def __init__(self, *args, **kwargs):
-        """Allow code-only rows and suppression entries to omit displayed values."""
-        super().__init__(*args, **kwargs)
-        self.fields["name"].required = False
-        self.fields["data"].required = False
-        cast(forms.CharField, self.fields["data"]).strip = False
 
     def clean_original_option(self):
         """Validate the original identity with the shared DHCP Option parser."""
@@ -1754,7 +1749,7 @@ class ConfigurationOptionsForm(SubnetOptionsForm):
         return identity
 
     def clean(self):
-        """Require an option name for a new row or an existing name-only row."""
+        """Require an option name for a new row or an existing name-only row, and data for a new row."""
         data = super().clean()
         identity = data.get("original_option")
         if not data.get("name") and (not isinstance(identity, dict) or identity.get("code") is None):
@@ -1764,19 +1759,31 @@ class ConfigurationOptionsForm(SubnetOptionsForm):
         return data
 
 
-SubnetOptionsFormSet = forms.formset_factory(ConfigurationOptionsForm, extra=1, can_delete=True)
+DHCPOptionRowFormSet = forms.formset_factory(DHCPOptionRowForm, extra=1, can_delete=True)
 
 
-class ReservationOptionsForm(ConfigurationOptionsForm):
-    """One Reservation option row with its complete shown DHCP Option and its client classes."""
-
-    client_classes = _client_classes_field(
-        "Comma-separated client classes that receive this option."
-        " A class name with a comma, a line break or surrounding spaces can only change in Kea."
-    )
-
-
-ReservationOptionsFormSet = forms.formset_factory(ReservationOptionsForm, extra=1, can_delete=True)
+def option_rows(formset: forms.BaseFormSet) -> tuple[OptionRow, ...]:
+    """Return the typed rows of a valid DHCP Option formset. An unbound formset has no rows."""
+    if not formset.is_bound:
+        return ()
+    rows = []
+    # A deleted row skips validation, so its cleaned data can lack a field.
+    for row in formset.cleaned_data:
+        if not row:
+            continue
+        original = row.get("original_option")
+        seen = None if original is None else parse_dhcp_option(original)
+        rows.append(
+            OptionRow(
+                name=row.get("name", ""),
+                data=row.get("data", ""),
+                always_send=bool(row.get("always_send")),
+                delete=bool(row.get("DELETE")),
+                original_option=seen,
+                client_classes=row.get("client_classes", ""),
+            )
+        )
+    return tuple(rows)
 
 
 def _clean_mac(value: str) -> str:

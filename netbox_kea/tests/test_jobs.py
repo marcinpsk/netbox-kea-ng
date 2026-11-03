@@ -34,7 +34,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import with_sync_config
+from .utils import run_counts, run_results, with_sync_config
 
 _LEASE4 = {
     "ip-address": "10.0.0.1",
@@ -201,7 +201,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         Prefix.objects.create(prefix="10.0.0.0/24")
         with _patch_kea(leases4=[_LEASE4], responses=_catalogue_responses_for_subnets(4, [])):
             job = self._run()
-        self.assertEqual(job.data["summary"][0]["errors"], 1)
+        self.assertEqual(run_counts(job)[0].errors, 1)
         self.assertFalse(IPAddress.objects.exists())
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
@@ -210,8 +210,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         unowned = NbIP.objects.create(address="198.18.0.90/32", status="dhcp", description="[kea-sync: lease]")
         with _patch_kea():
             job = self._run()
-        self.assertNotIn("unowned", job.data["summary"][0])
-        self.assertEqual(job.data["summary"][0]["waiting"], 0)
+        self.assertEqual(run_counts(job)[0].waiting, 0)
         self.assertTrue(NbIP.objects.filter(pk=unowned.pk).exists())
 
     def test_upgrade_summary_keeps_server_scope_and_scans_unowned_rows_once(self):
@@ -233,8 +232,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             job = self._run()
         scans = [query["sql"] for query in queries if '"netbox_kea_ipamownershiplink"."id" IS NULL' in query["sql"]]
         self.assertEqual(len(scans), 3, "The three IPAM tables must be scanned only once per job")
-        self.assertEqual([entry["waiting"] for entry in job.data["summary"]], [1, 0])
-        self.assertEqual([entry for entry in job.data["summary"] if "unowned" in entry], [])
+        self.assertEqual([counts.waiting for counts in run_counts(job)], [1, 0])
         per_server = [message for message in logs.output if ": created=" in message]
         self.assertEqual(len(per_server), 2)
         self.assertEqual([message for message in per_server if "unowned=" in message], [])
@@ -255,7 +253,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             self.assertLogs("netbox.jobs", level="INFO") as logs,
         ):
             job = self._run()
-        self.assertEqual([entry["conflicts"] for entry in job.data["summary"]], [1, 1])
+        self.assertEqual([counts.conflicts for counts in run_counts(job)], [1, 1])
         totals = [message for message in logs.output if "Kea IPAM sync complete" in message]
         self.assertEqual(len(totals), 1)
         self.assertIn("conflicts=2", totals[0])
@@ -270,7 +268,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             job = self._run()
         self.assertEqual(kea.commands(), [])
         self.assertTrue(NbIP.objects.filter(pk=row.pk).exists())
-        self.assertEqual(job.data["summary"], [])
+        self.assertEqual(run_results(job), [])
         totals = [message for message in logs.output if "Kea IPAM sync complete" in message]
         self.assertEqual(len(totals), 1)
         self.assertIn("servers=0", totals[0])
@@ -334,8 +332,8 @@ class TestKeaIpamSyncJobRun(TestCase):
                 job = _make_job()
                 with _patch_kea(leases4=[lease, valid_lease]), self.assertRaises(JobFailed):
                     KeaIpamSyncJob(job).run()
-                self.assertEqual(job.data["summary"][0]["errors"], 1)
-                self.assertEqual(job.data["summary"][0]["conflicts"], 0)
+                self.assertEqual(run_counts(job)[0].errors, 1)
+                self.assertEqual(run_counts(job)[0].conflicts, 0)
                 foreign.refresh_from_db()
                 self.assertEqual(str(foreign.address), "198.18.0.20/32")
                 self.assertEqual(foreign.status, "active")
@@ -424,9 +422,9 @@ class TestKeaIpamSyncJobRun(TestCase):
         self.assertEqual(existing.dns_name, "updated.example.invalid")
         self.assertEqual(existing.status, "reserved")
         self.assertEqual(NbIP.objects.count(), 1)
-        self.assertEqual(job.data["summary"][0]["created"], 0)
-        self.assertEqual(job.data["summary"][0]["updated"], 1)
-        self.assertEqual(job.data["summary"][0]["errors"], 0)
+        self.assertEqual(run_counts(job)[0].created, 0)
+        self.assertEqual(run_counts(job)[0].updated, 1)
+        self.assertEqual(run_counts(job)[0].errors, 0)
 
     def test_ipv6_prefix_only_reservation_is_skipped(self):
         self._make_db_server(dhcp4=False, dhcp6=True, sync_prefixes_enabled=False, sync_ip_ranges_enabled=False)
@@ -435,9 +433,9 @@ class TestKeaIpamSyncJobRun(TestCase):
             job = _make_job()
             KeaIpamSyncJob(job).run()
         self.assertFalse(NbIP.objects.exists())
-        self.assertEqual(job.data["summary"][0]["created"], 0)
-        self.assertEqual(job.data["summary"][0]["errors"], 0)
-        self.assertEqual(job.data["summary"][0]["skipped"], 1)
+        self.assertEqual(run_counts(job)[0].created, 0)
+        self.assertEqual(run_counts(job)[0].errors, 0)
+        self.assertEqual(run_counts(job)[0].skipped, 1)
 
     def test_both_lease_and_reservation_synced(self):
         """Both lease and reservation IPs are persisted in the same run."""
@@ -531,7 +529,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             KeaIpamSyncJob(job).run()
         from ipam.models import IPAddress
 
-        self.assertEqual(job.data["summary"][0]["errors"], 1)
+        self.assertEqual(run_counts(job)[0].errors, 1)
         self.assertFalse(IPAddress.objects.filter(address__net_host="10.0.0.3").exists())
         self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.2").exists())
 
@@ -634,14 +632,14 @@ class TestKeaIpamSyncJobRun(TestCase):
 
         self.assertTrue(NbIP.objects.filter(address__net_host="10.0.0.100").exists())
         self.assertTrue(NbIP.objects.filter(address__net_host="2001:db8::1").exists())
-        self.assertEqual(job.data["summary"][0]["errors"], 1)
+        self.assertEqual(run_counts(job)[0].errors, 1)
 
     def test_a_reservation_snapshot_oserror_does_not_stop_the_lease_phase_or_the_other_family(self):
         job = self._run_with_snapshot_oserror("reservation-get-page")
 
         self.assertTrue(NbIP.objects.filter(address__net_host="10.0.0.1").exists())
         self.assertTrue(NbIP.objects.filter(address__net_host="2001:db8::1").exists())
-        self.assertEqual(job.data["summary"][0]["errors"], 2)
+        self.assertEqual(run_counts(job)[0].errors, 2)
 
     def test_catalogue_failure_is_not_reported_as_missing_host_cmds(self):
         self._make_db_server(dhcp6=False)
@@ -652,7 +650,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             with self.assertLogs("netbox_kea.jobs", level="WARNING") as cm:
                 job = self._run()
 
-        self.assertEqual([entry["errors"] for entry in job.data["summary"]], [1])
+        self.assertEqual([counts.errors for counts in run_counts(job)], [1])
         self.assertTrue(any("Subnet Catalogue unavailable" in message for message in cm.output))
         self.assertFalse(any("host_cmds" in message for message in cm.output))
         self.assertNotIn("reservation-get-page", kea.commands())
@@ -681,7 +679,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             with self.assertLogs("netbox_kea.read_failure", level="INFO"):
                 job = self._run()
 
-        self.assertEqual([entry["errors"] for entry in job.data["summary"]], [0])
+        self.assertEqual([counts.errors for counts in run_counts(job)], [0])
 
     def test_a_failed_reservation_read_records_its_traceback(self):
         """The job continues past the failure, so the traceback is the only record of it.
@@ -714,7 +712,7 @@ class TestKeaIpamSyncJobRun(TestCase):
             with self.assertLogs("netbox_kea.read_failure", level="WARNING"):
                 job = self._run()
 
-        self.assertEqual([entry["errors"] for entry in job.data["summary"]], [1])
+        self.assertEqual([counts.errors for counts in run_counts(job)], [1])
 
     @with_sync_config(stale_ip_cleanup="remove")
     def test_cleanup_skipped_when_host_cmds_absent(self):
@@ -931,11 +929,11 @@ class TestKeaIpamSyncJobRun(TestCase):
         with _patch_kea(leases4=[_LEASE4]):
             mock_job = _make_job()
             KeaIpamSyncJob(mock_job).run()
-        self.assertIn("summary", mock_job.data)
-        entry = mock_job.data["summary"][0]
-        self.assertEqual(entry["name"], "kea-prod")
-        self.assertEqual(entry["created"], 1)
-        self.assertEqual(entry["errors"], 0)
+        (result,) = run_results(mock_job)
+        self.assertEqual(result.server_name, "kea-prod")
+        entry = run_counts(mock_job)[0]
+        self.assertEqual(entry.created, 1)
+        self.assertEqual(entry.errors, 0)
         mock_job.save.assert_called_once_with(update_fields=["data"])
 
     def test_foreign_ip_skipped_and_counted_in_summary(self):
@@ -961,8 +959,9 @@ class TestKeaIpamSyncJobRun(TestCase):
         self.assertEqual(ip.description, "Router loopback")
 
         # Conflict surfaced in the per-server summary.
-        entry = next(e for e in mock_job.data["summary"] if e["name"] == "kea-conflict")
-        self.assertEqual(entry["conflicts"], 1)
+        entry = next(r.counts for r in run_results(mock_job) if r.server_name == "kea-conflict")
+        assert entry is not None
+        self.assertEqual(entry.conflicts, 1)
 
     def test_same_foreign_ip_in_both_phases_counts_once(self):
         """One foreign IP seen by both the lease and reservation phase is ONE conflict.
@@ -982,9 +981,10 @@ class TestKeaIpamSyncJobRun(TestCase):
             with suppress(JobFailed):
                 KeaIpamSyncJob(mock_job).run()
 
-        entry = next(e for e in mock_job.data["summary"] if e["name"] == "kea-dupe")
-        self.assertEqual(entry["conflicts"], 1)
-        self.assertEqual(entry["conflict_sample"], ["10.0.0.100"])
+        entry = next(r.counts for r in run_results(mock_job) if r.server_name == "kea-dupe")
+        assert entry is not None
+        self.assertEqual(entry.conflicts, 1)
+        self.assertEqual(entry.conflict_sample, ("10.0.0.100",))
 
     def test_address_less_reservation_reported_as_skipped_not_failed(self):
         """An identifier-only reservation must not fail the nightly job (#110).
@@ -999,9 +999,10 @@ class TestKeaIpamSyncJobRun(TestCase):
             mock_job = _make_job()
             KeaIpamSyncJob(mock_job).run()  # must NOT raise JobFailed
 
-        entry = next(e for e in mock_job.data["summary"] if e["name"] == "kea-skip")
-        self.assertEqual(entry["errors"], 0)
-        self.assertEqual(entry["skipped"], 1)
+        entry = next(r.counts for r in run_results(mock_job) if r.server_name == "kea-skip")
+        assert entry is not None
+        self.assertEqual(entry.errors, 0)
+        self.assertEqual(entry.skipped, 1)
 
     def test_config_get_failure_falls_back_to_prefix_match_and_logs(self):
         """When config-get fails, leases still sync (NetBox-prefix fallback) and it's logged.
@@ -1321,8 +1322,7 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
         _set_sync_config(interval_minutes=5, sync_enabled=False)
         mock_job = _make_job()
         KeaIpamSyncJob(mock_job).run()
-        self.assertIn("summary", mock_job.data)
-        self.assertEqual(mock_job.data["summary"], [])
+        self.assertEqual(run_results(mock_job), [])
         mock_job.save.assert_called_once_with(update_fields=["data"])
 
     def test_job_data_summary_written_when_data_is_none(self):
@@ -1338,7 +1338,7 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
         mock_job.data = None
         KeaIpamSyncJob(mock_job).run()
         self.assertIsInstance(mock_job.data, dict)
-        self.assertIn("summary", mock_job.data)
+        self.assertEqual(run_results(mock_job), [])
         mock_job.save.assert_called_once_with(update_fields=["data"])
 
 
@@ -1410,9 +1410,9 @@ class TestJobSaveFailure(TestCase):
         job.save.side_effect = RuntimeError("job persistence unavailable")
         with self.assertLogs("netbox_kea.jobs", level="ERROR") as logs:
             KeaIpamSyncJob(job).run()
-        self.assertEqual(job.data["summary"], [])
+        self.assertEqual(run_results(job), [])
         job.save.assert_called_once_with(update_fields=["data"])
-        self.assertTrue(any("Failed to persist sync job summary data" in message for message in logs.output))
+        self.assertTrue(any("Failed to save the Sync Run Results of the job" in message for message in logs.output))
 
 
 @with_sync_config(stale_ip_cleanup="none")
@@ -1438,8 +1438,8 @@ class TestSubnetCatalogueJob(TestCase):
             KeaIpamSyncJob(job).run()
         self.assertFalse(Prefix.objects.exists())
         self.assertFalse(IPRange.objects.exists())
-        self.assertEqual(job.data["summary"][0]["prefix_errors"], 1)
-        self.assertEqual(job.data["summary"][0]["errors"], 0)
+        self.assertEqual(run_counts(job)[0].prefix_errors, 1)
+        self.assertEqual(run_counts(job)[0].errors, 0)
 
     def _run(self, responses, *, failed=False):
         job = self.job = _make_job()
@@ -1449,7 +1449,7 @@ class TestSubnetCatalogueJob(TestCase):
                     KeaIpamSyncJob(job).run()
             else:
                 KeaIpamSyncJob(job).run()
-        return job.data["summary"], kea
+        return run_counts(job), kea
 
     def _responses(self, pools=()):
         return _catalogue_responses_for_subnets(
@@ -1467,25 +1467,25 @@ class TestSubnetCatalogueJob(TestCase):
                 Prefix.objects.all().delete()
                 summary, _ = self._run(_catalogue_responses_for_subnets(4, subnets, **invalid))
                 self.assertTrue(Prefix.objects.filter(prefix="198.18.0.0/24").exists())
-                self.assertEqual(summary[0]["prefix_errors"], 0)
+                self.assertEqual(summary[0].prefix_errors, 0)
 
     def test_prefix_created_updated_and_unchanged_counts(self):
         responses = self._responses()
         summary, _ = self._run(responses)
         prefix = Prefix.objects.get(prefix="198.18.0.0/24")
         self.assertEqual(prefix.status, "active")
-        self.assertEqual(summary[0]["created"], 1)
-        self.assertEqual(summary[0]["updated"], 0)
+        self.assertEqual(summary[0].created, 1)
+        self.assertEqual(summary[0].updated, 0)
         prefix.description = "Synced from Kea DHCP subnet operator note"
         prefix.save()
         summary, _ = self._run(responses)
         prefix.refresh_from_db()
         self.assertEqual(prefix.description, "[kea-sync: subnet] operator note")
-        self.assertEqual(summary[0]["created"], 0)
-        self.assertEqual(summary[0]["updated"], 1)
+        self.assertEqual(summary[0].created, 0)
+        self.assertEqual(summary[0].updated, 1)
         summary, _ = self._run(responses)
-        self.assertEqual(summary[0]["created"], 0)
-        self.assertEqual(summary[0]["updated"], 0)
+        self.assertEqual(summary[0].created, 0)
+        self.assertEqual(summary[0].updated, 0)
         self.assertEqual(Prefix.objects.count(), 1)
 
     def test_pools_create_update_and_keep_ranges(self):
@@ -1496,7 +1496,7 @@ class TestSubnetCatalogueJob(TestCase):
             [(str(r.start_address), str(r.end_address)) for r in ranges],
             [("198.18.0.10/24", "198.18.0.20/24"), ("198.18.0.128/24", "198.18.0.255/24")],
         )
-        self.assertEqual(summary[0]["created"], 3)
+        self.assertEqual(summary[0].created, 3)
         ranges[0].description = "Synced from Kea DHCP pool operator note"
         ranges[0].save()
         ranges[1].description = "Operator pool note"
@@ -1506,8 +1506,8 @@ class TestSubnetCatalogueJob(TestCase):
         ranges[1].refresh_from_db()
         self.assertEqual(ranges[0].description, "[kea-sync: pool] operator note")
         self.assertEqual(ranges[1].description, "Operator pool note")
-        self.assertEqual(summary[0]["updated"], 1)
-        self.assertEqual(summary[0]["created"], 0)
+        self.assertEqual(summary[0].updated, 1)
+        self.assertEqual(summary[0].created, 0)
         self.assertEqual(IPRange.objects.count(), 2)
 
     def test_existing_cidr_pool_keeps_one_range_and_operator_description(self):
@@ -1525,9 +1525,9 @@ class TestSubnetCatalogueJob(TestCase):
         self.assertEqual(existing.description, "Operator pool note")
         self.assertEqual(str(existing.start_address), "198.18.0.128/25")
         self.assertEqual(str(existing.end_address), "198.18.0.255/25")
-        self.assertEqual(summary[0]["created"], 1)
-        self.assertEqual(summary[0]["updated"], 0)
-        self.assertEqual(summary[0]["prefix_errors"], 0)
+        self.assertEqual(summary[0].created, 1)
+        self.assertEqual(summary[0].updated, 0)
+        self.assertEqual(summary[0].prefix_errors, 0)
 
     def test_large_ipv6_pool_is_skipped_without_error(self):
         self.server.dhcp4 = False
@@ -1539,15 +1539,15 @@ class TestSubnetCatalogueJob(TestCase):
         summary, _ = self._run(responses)
         self.assertTrue(Prefix.objects.filter(prefix="2001:db8::/64").exists())
         self.assertFalse(IPRange.objects.exists())
-        self.assertEqual(summary[0]["created"], 1)
-        self.assertEqual(summary[0]["prefix_errors"], 0)
+        self.assertEqual(summary[0].created, 1)
+        self.assertEqual(summary[0].prefix_errors, 0)
 
     def test_invalid_pool_fails_catalogue_without_partial_writes(self):
         summary, _ = self._run(self._responses(("198.18.0.10-198.18.0.20", "invalid-pool")), failed=True)
         self.assertFalse(Prefix.objects.exists())
         self.assertFalse(IPRange.objects.exists())
-        self.assertEqual(summary[0]["prefix_errors"], 1)
-        self.assertEqual(summary[0]["errors"], 0)
+        self.assertEqual(summary[0].prefix_errors, 1)
+        self.assertEqual(summary[0].errors, 0)
 
     def test_per_server_prefix_range_toggles(self):
         for prefixes, ranges in ((True, True), (True, False), (False, True), (False, False)):
@@ -1560,8 +1560,8 @@ class TestSubnetCatalogueJob(TestCase):
                 summary, kea = self._run(self._responses(("198.18.0.10-198.18.0.20",)))
                 self.assertEqual(Prefix.objects.count(), int(prefixes))
                 self.assertEqual(IPRange.objects.count(), int(ranges))
-                self.assertEqual(summary[0]["created"], int(prefixes) + int(ranges))
-                self.assertEqual(summary[0]["prefix_errors"], 0)
+                self.assertEqual(summary[0].created, int(prefixes) + int(ranges))
+                self.assertEqual(summary[0].prefix_errors, 0)
                 if not prefixes and not ranges:
                     self.assertEqual(kea.commands(), [])
 
@@ -1601,9 +1601,9 @@ class TestSubnetCatalogueJob(TestCase):
         with self.assertLogs("netbox_kea.jobs", level="INFO") as logs:
             summary, _ = self._run(responses, failed=True)
         self.assertEqual(str(NbIP.objects.get().address), "198.18.0.10/25")
-        self.assertEqual(summary[0]["created"], 1)
-        self.assertEqual(summary[0]["prefix_errors"], 1)
-        self.assertEqual(summary[0]["errors"], 0)
+        self.assertEqual(summary[0].created, 1)
+        self.assertEqual(summary[0].prefix_errors, 1)
+        self.assertEqual(summary[0].errors, 0)
         self.assertEqual(Prefix.objects.count(), 1)
         self.assertFalse(IPRange.objects.exists())
         self.assertTrue(any("Subnet Catalogue unavailable" in message for message in logs.output))
@@ -1630,8 +1630,8 @@ class TestSubnetCatalogueJob(TestCase):
                 self.assertTrue(
                     IPRange.objects.filter(start_address=f"{pool.split('-')[0]}/{cidr.split('/')[1]}").exists()
                 )
-                self.assertEqual(summary[0]["created"], 2)
-                self.assertEqual(summary[0]["prefix_errors"], 0)
+                self.assertEqual(summary[0].created, 2)
+                self.assertEqual(summary[0].prefix_errors, 0)
 
     def test_multiple_subnets_sync_all_prefixes_and_pools(self):
         standalone_subnets = [
@@ -1669,9 +1669,9 @@ class TestSubnetCatalogueJob(TestCase):
                 ("198.18.0.100/28", "198.18.0.110/28"),
             ],
         )
-        self.assertEqual(summary[0]["created"], 6)
-        self.assertEqual(summary[0]["errors"], 0)
-        self.assertEqual(summary[0]["prefix_errors"], 0)
+        self.assertEqual(summary[0].created, 6)
+        self.assertEqual(summary[0].errors, 0)
+        self.assertEqual(summary[0].prefix_errors, 0)
 
     def test_multiple_subnet_ids_supply_each_lease_mask(self):
         self.config.sync_leases_enabled = True
@@ -1702,9 +1702,9 @@ class TestSubnetCatalogueJob(TestCase):
             ["198.18.0.10/26", "198.18.0.70/27", "198.18.0.100/28"],
         )
         self.assertFalse(Prefix.objects.exists())
-        self.assertEqual(summary[0]["created"], 3)
-        self.assertEqual(summary[0]["errors"], 0)
-        self.assertEqual(summary[0]["prefix_errors"], 0)
+        self.assertEqual(summary[0].created, 3)
+        self.assertEqual(summary[0].errors, 0)
+        self.assertEqual(summary[0].prefix_errors, 0)
 
     def test_all_phases_share_one_catalogue_per_family(self):
         self.server.dhcp6 = True
@@ -1744,9 +1744,9 @@ class TestSubnetCatalogueJob(TestCase):
         self.assertEqual(len(kea.bodies("config-get")), 2)
         self.assertEqual(len(kea.bodies("subnet4-list")), 1)
         self.assertEqual(len(kea.bodies("subnet6-list")), 1)
-        self.assertEqual(summary[0]["created"], 6)
-        self.assertEqual(summary[0]["errors"], 0)
-        self.assertEqual(summary[0]["prefix_errors"], 0)
+        self.assertEqual(summary[0].created, 6)
+        self.assertEqual(summary[0].errors, 0)
+        self.assertEqual(summary[0].prefix_errors, 0)
         for cidr, lease, reservation in families.values():
             mask = cidr.split("/")[1]
             self.assertEqual(str(NbIP.objects.get(address__net_host=lease).address), f"{lease}/{mask}")
@@ -1759,9 +1759,9 @@ class TestSubnetCatalogueJob(TestCase):
         summary, _ = self._run(self._responses(("198.18.0.10-198.18.0.20",)), failed=True)
         self.assertEqual(Prefix.objects.count(), 2)
         self.assertEqual(IPRange.objects.count(), 1)
-        self.assertEqual(summary[0]["created"], 1)
-        self.assertEqual(summary[0]["prefix_errors"], 1)
-        self.assertEqual(summary[0]["errors"], 0)
+        self.assertEqual(summary[0].created, 1)
+        self.assertEqual(summary[0].prefix_errors, 1)
+        self.assertEqual(summary[0].errors, 0)
         self._assert_duplicate_logged("subnet 198.18.0.0/24", "/ipam/prefixes/?prefix=198.18.0.0%2F24&vrf_id=null")
 
     def test_duplicate_range_counts_error_and_keeps_prefix(self):
@@ -1774,9 +1774,9 @@ class TestSubnetCatalogueJob(TestCase):
         summary, _ = self._run(self._responses(("198.18.0.10-198.18.0.20",)), failed=True)
         self.assertEqual(Prefix.objects.count(), 1)
         self.assertEqual(IPRange.objects.count(), 2)
-        self.assertEqual(summary[0]["created"], 1)
-        self.assertEqual(summary[0]["prefix_errors"], 1)
-        self.assertEqual(summary[0]["errors"], 0)
+        self.assertEqual(summary[0].created, 1)
+        self.assertEqual(summary[0].prefix_errors, 1)
+        self.assertEqual(summary[0].errors, 0)
         self._assert_duplicate_logged(
             "pool 198.18.0.10 - 198.18.0.20",
             "/ipam/ip-ranges/?start_address=198.18.0.10&end_address=198.18.0.20&vrf_id=null",
@@ -1799,9 +1799,9 @@ class TestSubnetCatalogueJob(TestCase):
             [(str(r.start_address), str(r.end_address)) for r in IPRange.objects.all()],
             [("198.18.0.100/24", "198.18.0.110/24")],
         )
-        self.assertEqual(summary[0]["created"], 2)
-        self.assertEqual(summary[0]["prefix_errors"], 1)
-        self.assertEqual(summary[0]["errors"], 0)
+        self.assertEqual(summary[0].created, 2)
+        self.assertEqual(summary[0].prefix_errors, 1)
+        self.assertEqual(summary[0].errors, 0)
         self.assertTrue(any("198.18.0.10 - 198.18.0.20 failed" in line for line in logs.output), logs.output)
 
     def _assert_duplicate_logged(self, kea_object, list_url):
@@ -1820,6 +1820,6 @@ class TestSubnetCatalogueJob(TestCase):
         summary, kea = self._run(_catalogue_responses_for_subnets(4, []))
         self.assertFalse(Prefix.objects.exists())
         self.assertFalse(IPRange.objects.exists())
-        self.assertEqual(summary[0]["created"], 0)
-        self.assertEqual(summary[0]["prefix_errors"], 0)
+        self.assertEqual(summary[0].created, 0)
+        self.assertEqual(summary[0].prefix_errors, 0)
         self.assertEqual(kea.commands().count("config-get"), 1)
