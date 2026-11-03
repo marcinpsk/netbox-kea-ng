@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """The Subnet and Shared Network lists show the same rows and controls on the Server tab and the combined page."""
 
+import csv
+import io
 from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
@@ -170,3 +172,62 @@ class TestCombinedChangePermissionRead(_ViewTestBase):
                 two = self._query_count(route)
                 _make_db_server(name=f"third-kea-{route}")
                 self.assertEqual(self._query_count(route), two)
+
+
+_SUBNET_COLUMNS = ["ID", "Subnet", "Pool(s)", "Utilization", "Options", "Shared Network"]
+_NETWORK_COLUMNS = ["Name", "Description", "Subnets", "Subnet CIDRs"]
+
+
+class TestListExports(_ViewTestBase):
+    """Every Subnet and Shared Network list offers Current View (the selected columns) and All Data."""
+
+    # Route, whether it takes the Server pk, table name, selected columns, and one exported row of them.
+    _LISTS = (
+        ("server_subnets4", True, "SubnetTable", ["subnet"], ["192.0.2.0/24"]),
+        ("combined_subnets4", False, "GlobalSubnetTable4", ["server", "subnet"], ["test-kea", "192.0.2.0/24"]),
+        ("server_shared_networks4", True, "SharedNetworkTable", ["name"], ["clients"]),
+        ("combined_shared_networks4", False, "GlobalSharedNetworkTable", ["server", "name"], ["test-kea", "clients"]),
+    )
+    _HEADERS = {
+        "subnet": "Subnet",
+        "name": "Name",
+        "server": "Server",
+    }
+    _EVERY = {
+        "server_subnets4": _SUBNET_COLUMNS,
+        "combined_subnets4": ["Server", *_SUBNET_COLUMNS],
+        "server_shared_networks4": _NETWORK_COLUMNS,
+        "combined_shared_networks4": ["Server", *_NETWORK_COLUMNS],
+    }
+
+    def _url(self, route: str, server_pk: bool) -> str:
+        return reverse(f"plugins:netbox_kea:{route}", args=[self.server.pk] if server_pk else [])
+
+    def _csv(self, url: str, export: str) -> list[list[str]]:
+        with stub_kea(_responses()):
+            response = self.client.get(url, {"export": export})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/csv", response["Content-Type"])
+        return list(csv.reader(io.StringIO(response.content.decode())))
+
+    def test_current_view_writes_the_selected_columns_and_all_data_every_column(self):
+        for route, server_pk, table, columns, row in self._LISTS:
+            with self.subTest(route=route):
+                self.user.config.set(f"tables.{table}.columns", columns, commit=True)
+                url = self._url(route, server_pk)
+                header, *rows = self._csv(url, "table")
+                self.assertEqual(header, [self._HEADERS[column] for column in columns])
+                self.assertIn(row, rows)
+                # All Data writes every column, with the selected columns first.
+                self.assertCountEqual(self._csv(url, "")[0], self._EVERY[route])
+
+    def test_each_list_links_both_exports_with_its_query(self):
+        for route, server_pk, *_rest in self._LISTS:
+            with self.subTest(route=route), stub_kea(_responses()):
+                response = self.client.get(self._url(route, server_pk), {"per_page": "25"})
+                page = BeautifulSoup(response.content, "html.parser")
+                links = {
+                    link.get_text(strip=True): link["href"] for link in page.select("a.dropdown-item[href*='export']")
+                }
+                expected = {"Current View": "?per_page=25&export=table", "All Data (CSV)": "?per_page=25&export"}
+                self.assertEqual(links, expected)

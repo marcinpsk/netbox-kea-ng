@@ -283,7 +283,11 @@ class _CombinedSubnetsView(_CombinedViewMixin):
         table.configure(request)
 
         if "export" in request.GET:
-            return export_table(table, filename=f"kea-dhcpv{self.dhcp_version}-subnets.csv")
+            return export_table(
+                table,
+                filename=f"kea-dhcpv{self.dhcp_version}-subnets.csv",
+                use_selected_columns=request.GET["export"] == "table",
+            )
 
         ctx.update(
             {
@@ -337,7 +341,11 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
         table.configure(request)
 
         if "export" in request.GET:
-            return export_table(table, filename=f"kea-dhcpv{self.dhcp_version}-shared-networks.csv")
+            return export_table(
+                table,
+                filename=f"kea-dhcpv{self.dhcp_version}-shared-networks.csv",
+                use_selected_columns=request.GET["export"] == "table",
+            )
 
         ctx.update(
             {

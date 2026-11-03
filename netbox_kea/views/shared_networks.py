@@ -14,6 +14,7 @@ from utilities.views import register_model_view
 from .. import config_write, forms, managed_fields, server_configuration, tables
 from ..constants import Family
 from ..models import Server
+from ..utilities import export_table
 from ._base import (
     ConditionalLoginRequiredMixin,
     _KeaChangeMixin,
@@ -43,7 +44,7 @@ class BaseServerSharedNetworksView(ServerFamilyMixin, generic.ObjectChildrenView
     dhcp_version: Family
 
     def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
-        """Render the Shared Network table."""
+        """Render the Shared Network table, or export it."""
         instance = self.get_object(**kwargs)
         presented = present_shared_networks(
             instance,
@@ -53,6 +54,13 @@ class BaseServerSharedNetworksView(ServerFamilyMixin, generic.ObjectChildrenView
         )
         table_data = self.prep_table_data(request, presented.rows, instance)
         table = self.get_table(table_data, request, False)
+
+        if "export" in request.GET:
+            return export_table(
+                table,
+                filename=f"kea-dhcpv{self.dhcp_version}-shared-networks.csv",
+                use_selected_columns=request.GET["export"] == "table",
+            )
 
         show_notices(request, presented.notice)
         return render(
