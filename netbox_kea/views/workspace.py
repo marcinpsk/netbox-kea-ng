@@ -162,12 +162,14 @@ def view_section(view: Any) -> WorkspaceSection:
 
 
 def workspace_filters(query: QueryDict, section: WorkspaceSection) -> QueryDict:
-    """Keep the last value of each filter field of *section*, as a Django form reads it."""
+    """Keep the filter fields of *section*: every sort value, and the last value of a search field."""
     fields = section.filter_fields
     result = QueryDict(mutable=True)
     for key in query:
         if key in fields:
-            result.setlist(key, query.getlist(key)[-1:])
+            values = query.getlist(key)
+            # NetBox sorts a table by each sort value; a Django form reads the last value of a field.
+            result.setlist(key, values if key in TABLE_FIELDS else values[-1:])
     return result
 
 

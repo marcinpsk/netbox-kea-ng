@@ -129,7 +129,10 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
         combined_subsections = [entry for entry in subsections(parent) if entry.combined_route]
         return {
             "server_scope": self.server_scope,
-            "server_selector_fields": [(SELECTION_FIELD, "1"), *filters.items()],
+            "server_selector_fields": [
+                (SELECTION_FIELD, "1"),
+                *((key, value) for key, values in filters.lists() for value in values),
+            ],
             "server_scope_warnings": server_scope_warnings,
             "workspace_title": f"{scope_label} · {parent.label} · DHCPv{family}",
             "workspace_scope_label": scope_label,
