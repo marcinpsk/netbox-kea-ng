@@ -16,6 +16,7 @@ from ..constants import Family
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
 from ..subnet_catalogue import CatalogueSnapshot
+from ..sync_run_result import latest
 from ..utilities import export_table
 from ._base import ConditionalLoginRequiredMixin, _catalogue_subnet_row, _enrich_subnet_statistics, _shared_network_row
 from .fan_out import fan_out
@@ -26,7 +27,6 @@ from .reservations import empty_text as reservation_empty_text
 from .reservations import fetch as fetch_reservations
 from .reservations import present as present_reservations
 from .server_scope import SELECTION_FIELD, ServerScope, resolve
-from .sync_jobs import get_all_jobs_for_server
 from .workspace import SECTIONS, server_section_url, with_return_url
 
 _LEASE_SEARCH_FIELDS = ("q", "by", "state")
@@ -257,24 +257,12 @@ class _CombinedSyncView(_CombinedViewMixin):
     dhcp_version: Family = 4
 
     def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
-        """Show each Server's latest job and its own summary, including unknown results."""
+        """Show the latest job of each Server and the Sync Run Result of the Server in it."""
         ctx = self._combined_context(request)
-        servers = self.server_scope.query_servers
         rows = []
-        for server in servers:
-            job = get_all_jobs_for_server(server.pk).first()
-            summaries = job.data.get("summary", []) if job and isinstance(job.data, dict) else []
-            summary = (
-                next((item for item in summaries if isinstance(item, dict) and item.get("pk") == server.pk), None)
-                if isinstance(summaries, list)
-                else None
-            )
-            counts = {
-                key: summary.get(key) if summary else None
-                for key in ("created", "updated", "errors", "prefix_errors", "conflicts")
-            }
+        for server in self.server_scope.query_servers:
             url = with_return_url(server_section_url(server, "sync", self.dhcp_version), request.get_full_path())
-            rows.append((server, job, counts, url))
+            rows.append((server, *latest(server.pk), url))
         ctx["sync_results"] = rows
         return render(request, "netbox_kea/combined_sync.html", ctx)
 

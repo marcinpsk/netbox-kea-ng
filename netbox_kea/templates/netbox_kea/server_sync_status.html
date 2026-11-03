@@ -27,31 +27,29 @@
                 {% endif %}
               </p>
               <p class="small text-muted mb-1">{{ latest_job.completed }}</p>
-              {% if latest_job.data.summary %}
-                {% for entry in latest_job.data.summary %}
-                  {% if entry.pk == object.pk and entry.ipam_skipped %}
-                    <hr>
-                    <p class="small text-muted mb-0">The job skipped the IPAM sync of this Server.</p>
-                  {% elif entry.pk == object.pk and "created" not in entry %}
-                    <hr>
-                    <p class="small text-muted mb-0">The job stopped before the IPAM sync of this Server finished.</p>
-                  {% elif entry.pk == object.pk %}
-                    <hr>
-                    <div class="d-flex flex-wrap gap-3 small">
-                      <span>✅ Created: <strong>{{ entry.created }}</strong></span>
-                      <span>✏️ Updated: <strong>{{ entry.updated }}</strong></span>
-                      {% if entry.errors > 0 %}
-                        <span class="text-danger">❌ Errors: <strong>{{ entry.errors }}</strong></span>
-                      {% else %}
-                        <span>✔ Errors: <strong>0</strong></span>
-                      {% endif %}
-                      {% if entry.conflicts %}
-                        <span class="text-warning" title="Foreign NetBox IPs skipped to avoid overwriting them">⚠ Conflicts: <strong>{{ entry.conflicts }}</strong></span>
-                      {% endif %}
-                    </div>
-                  {% endif %}
-                {% endfor %}
-              {% endif %}
+              {% with counts=latest_result.counts %}
+                {% if counts %}
+                  <hr>
+                  <div class="d-flex flex-wrap gap-3 small">
+                    <span>✅ Created: <strong>{{ counts.created }}</strong></span>
+                    <span>✏️ Updated: <strong>{{ counts.updated }}</strong></span>
+                    {% if counts.errors > 0 %}
+                      <span class="text-danger">❌ Errors: <strong>{{ counts.errors }}</strong></span>
+                    {% else %}
+                      <span>✔ Errors: <strong>0</strong></span>
+                    {% endif %}
+                    {% if counts.conflicts %}
+                      <span class="text-warning" title="Foreign NetBox IPs skipped to avoid overwriting them">⚠ Conflicts: <strong>{{ counts.conflicts }}</strong></span>
+                    {% endif %}
+                  </div>
+                {% elif latest_result.state == "skipped" %}
+                  <hr>
+                  <p class="small text-muted mb-0">The job skipped the IPAM sync of this Server.</p>
+                {% elif latest_result.state == "interrupted" %}
+                  <hr>
+                  <p class="small text-muted mb-0">The job stopped before the IPAM sync of this Server finished.</p>
+                {% endif %}
+              {% endwith %}
             {% else %}
               <p class="text-muted">No sync runs recorded yet.</p>
             {% endif %}
