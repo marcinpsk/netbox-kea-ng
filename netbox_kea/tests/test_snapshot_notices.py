@@ -423,29 +423,40 @@ _IDENTITY_ONLY = {"subnet4-list": _subnet_list(4, [_SUBNET]), "config-get": requ
 class TestNoticeGapsFromReview(_ViewTestBase):
     """Pages that read a Snapshot show its Notice once, in a channel that renders it."""
 
-    def test_a_subnets_table_refresh_shows_the_notice_out_of_band_and_queues_no_message(self):
-        # NetBox renders htmx/table.html without messages, so a queued one would surface on the next page.
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
-        display_cache.rotate_configuration(self.server, 4)
-        with stub_kea(_UNAVAILABLE):
-            failed = self.client.get(url, HTTP_HX_REQUEST="true")
-        self.assertEqual(failed.status_code, 200)
-        self.assertEqual(_page_messages(failed), [])
-        self.assertContains(failed, '<div id="subnet-notice" hx-swap-oob="true">')
-        self.assertContains(failed, f"<strong>{HEADLINES['catalogue']}</strong>", html=True)
-        self.assertContains(failed, f"<li>{_IDENTITY_UNAVAILABLE}</li>", html=True)
-        # A later refresh with a complete Catalogue clears the slot.
-        display_cache.rotate_configuration(self.server, 4)
-        with stub_kea({**_COMPLETE, "stat-lease4-get": {"result": 2, "text": "unknown command"}}):
-            recovered = self.client.get(url, HTTP_HX_REQUEST="true")
-        self.assertContains(recovered, '<div id="subnet-notice" hx-swap-oob="true"></div>', html=True)
+    # The Server tab lists, the Snapshot kind of each, and the detail of its unavailable Notice.
+    _LISTS = (
+        ("server_subnets4", "catalogue", _IDENTITY_UNAVAILABLE),
+        ("server_shared_networks4", "configuration", _CONFIGURATION_UNAVAILABLE),
+    )
 
-    def test_the_subnets_page_has_an_empty_notice_slot_and_shows_the_notice_as_messages(self):
-        display_cache.rotate_configuration(self.server, 4)
-        with stub_kea(_UNAVAILABLE):
-            response = self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
-        self.assertContains(response, '<div id="subnet-notice"></div>', html=True)
-        self.assertIn((django_messages.ERROR, HEADLINES["catalogue"]), _page_messages(response))
+    def test_a_list_table_refresh_shows_the_notice_out_of_band_and_queues_no_message(self):
+        # NetBox renders htmx/table.html without messages, so a queued one would surface on the next page.
+        for route, kind, detail in self._LISTS:
+            with self.subTest(route=route):
+                url = reverse(f"plugins:netbox_kea:{route}", args=[self.server.pk])
+                display_cache.rotate_configuration(self.server, 4)
+                with stub_kea(_UNAVAILABLE):
+                    failed = self.client.get(url, HTTP_HX_REQUEST="true")
+                self.assertEqual(failed.status_code, 200)
+                self.assertTemplateNotUsed(failed, "generic/object_children.html")
+                self.assertEqual(_page_messages(failed), [])
+                self.assertContains(failed, '<div id="list-notice" hx-swap-oob="true">')
+                self.assertContains(failed, f"<strong>{HEADLINES[kind]}</strong>", html=True)
+                self.assertContains(failed, f"<li>{detail}</li>", html=True)
+                # A later refresh with a complete read clears the slot.
+                display_cache.rotate_configuration(self.server, 4)
+                with stub_kea({**_COMPLETE, "stat-lease4-get": {"result": 2, "text": "unknown command"}}):
+                    recovered = self.client.get(url, HTTP_HX_REQUEST="true")
+                self.assertContains(recovered, '<div id="list-notice" hx-swap-oob="true"></div>', html=True)
+
+    def test_a_list_page_has_an_empty_notice_slot_and_shows_the_notice_as_messages(self):
+        for route, kind, _detail in self._LISTS:
+            with self.subTest(route=route):
+                display_cache.rotate_configuration(self.server, 4)
+                with stub_kea(_UNAVAILABLE):
+                    response = self.client.get(reverse(f"plugins:netbox_kea:{route}", args=[self.server.pk]))
+                self.assertContains(response, '<div id="list-notice"></div>', html=True)
+                self.assertIn((django_messages.ERROR, HEADLINES[kind]), _page_messages(response))
 
     def test_the_pool_forms_warn_about_an_incomplete_catalogue(self):
         urls = (

@@ -106,7 +106,7 @@ class BaseServerDHCPSubnetsView(ServerFamilyMixin, generic.ObjectChildrenView):
         if htmx_partial(request):
             return render(
                 request,
-                "netbox_kea/inc/subnets_table_htmx.html",
+                "netbox_kea/inc/list_table_htmx.html",
                 {
                     "object": instance,
                     "table": table,

@@ -9,6 +9,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
 from netbox.views import generic
+from utilities.htmx import htmx_partial
 from utilities.views import register_model_view
 
 from .. import config_write, forms, managed_fields, server_configuration, tables
@@ -60,6 +61,13 @@ class BaseServerSharedNetworksView(ServerFamilyMixin, generic.ObjectChildrenView
                 table,
                 filename=f"kea-dhcpv{self.dhcp_version}-shared-networks.csv",
                 use_selected_columns=request.GET["export"] == "table",
+            )
+
+        if htmx_partial(request):
+            return render(
+                request,
+                "netbox_kea/inc/list_table_htmx.html",
+                {"object": instance, "table": table, "notice": presented.notice},
             )
 
         show_notices(request, presented.notice)

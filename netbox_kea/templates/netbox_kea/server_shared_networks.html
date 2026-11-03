@@ -14,6 +14,7 @@
 {% block content %}
 {% include "netbox_kea/inc/subsection_nav.html" %}
 {% include "netbox_kea/includes/persist_config_warning.html" %}
+<div id="list-notice"></div>
 {{ block.super }}
 <div class="d-flex justify-content-end gap-2 mt-3">
   <a href="{{ add_url }}" class="btn btn-success">
