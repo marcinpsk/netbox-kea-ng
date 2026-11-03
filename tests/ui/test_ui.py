@@ -812,6 +812,35 @@ _SHARED_NETWORK_MEMBERS = {
 
 
 @pytest.mark.parametrize("family", (4, 6))
+def test_server_list_sort_logs_no_console_error(page: Page, kea: KeaClient, family: Literal[4, 6]) -> None:
+    """A sort refreshes the Server Subnets and Shared Networks tables through htmx without a console error.
+
+    NetBox's htmx/table.html swaps two targets out of band, and a page without them logs htmx:oobErrorNoTarget.
+    """
+    errors: list[str] = []
+    page.on("console", lambda message: errors.append(message.text) if message.type == "error" else None)
+    open_subnets(page, family)
+    sorted_lists: list[str] = []
+    try:
+        for subsection, column in (("Subnets", "ID"), ("Shared Networks", "Name")):
+            if subsection == "Shared Networks":
+                page.get_by_role("link", name=subsection, exact=True).click()
+                page.wait_for_url(re.compile(rf"/shared_networks{family}/"))
+            sorted_lists.append(page.url.split("?")[0])
+            header = page.locator("table thead th a").filter(has_text=re.compile(rf"^\s*{column}\s*$"))
+            with page.expect_response(lambda r: "sort=" in r.url and r.request.headers.get("hx-request") == "true"):
+                header.click()
+            # htmx pushes the sorted URL after the swap, so the out-of-band swaps have run.
+            page.wait_for_url(re.compile(r"[?&]sort="))
+            expect(page.locator("table tbody tr").first).to_be_visible()
+        assert errors == [], f"Console errors after a table sort: {errors}"
+    finally:
+        # An empty sort clears the saved ordering, so later tests see the default row order.
+        for url in sorted_lists:
+            page.goto(f"{url}?sort=")
+
+
+@pytest.mark.parametrize("family", (4, 6))
 @pytest.mark.parametrize("all_data", (False, True))
 def test_dhcp_shared_networks_export_csv(page: Page, kea: KeaClient, family: Literal[4, 6], all_data: bool) -> None:
     """The Server Shared Networks page exports the selected columns, or every column."""
