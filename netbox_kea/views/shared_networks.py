@@ -19,9 +19,10 @@ from ._base import (
     _KeaChangeMixin,
     _run_change,
     _safe_return_url,
-    _shared_network_row,
 )
 from .notices import notice, show_notices
+from .server_scope import writable_servers
+from .subnet_lists import fetch_shared_networks, present_shared_networks
 from .subnets import _SUBNETS_TAB, subnets_nav_context
 from .workspace import ServerFamilyMixin
 
@@ -41,29 +42,19 @@ class BaseServerSharedNetworksView(ServerFamilyMixin, generic.ObjectChildrenView
     template_name = "netbox_kea/server_shared_networks.html"
     dhcp_version: Family
 
-    def get_children(self, request: HttpRequest, parent: Server) -> list[dict[str, Any]]:
-        """Return Shared Network rows from the Server Configuration snapshot."""
-        if not (parent.dhcp4 if self.dhcp_version == 4 else parent.dhcp6):
-            return []
-        snapshot = server_configuration.display(parent, self.dhcp_version)
-        show_notices(request, notice(snapshot))
-        if snapshot.unavailable:
-            return []
-        can_change = Server.objects.restrict(request.user, "change").filter(pk=parent.pk).exists()
-        rows = [
-            _shared_network_row(network, parent, self.dhcp_version, can_change) for network in snapshot.shared_networks
-        ]
-        for row in rows:
-            row["return_url"] = _safe_return_url(request, request.get_full_path())
-        return rows
-
     def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
-        """Handle GET: check DHCP enabled, then render shared-network table."""
+        """Render the Shared Network table."""
         instance = self.get_object(**kwargs)
-        child_objects = self.get_children(request, instance)
-        table_data = self.prep_table_data(request, child_objects, instance)
+        presented = present_shared_networks(
+            instance,
+            fetch_shared_networks(instance, self.dhcp_version),
+            writable=writable_servers(request.user, [instance]),
+            return_url=_safe_return_url(request, request.get_full_path()),
+        )
+        table_data = self.prep_table_data(request, presented.rows, instance)
         table = self.get_table(table_data, request, False)
 
+        show_notices(request, presented.notice)
         return render(
             request,
             self.get_template_name(),

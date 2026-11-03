@@ -3004,12 +3004,12 @@ class TestSubnetDeleteExceptionPaths(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# _fetch_subnets_from_server — null config, shared-network subnets, stat_cmds exception
+# fetch_subnets — null config, shared-network subnets, stat_cmds exception
 # ---------------------------------------------------------------------------
 
 
 class TestFetchSubnetsFromServer(_ViewTestBase):
-    """_fetch_subnets_from_server edge cases, through the combined Subnets view."""
+    """fetch_subnets edge cases, through the combined Subnets view."""
 
     def _run(self, responses):
         """Render the combined Subnet table through its public HTTP view."""
@@ -3145,7 +3145,8 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
             }
         )
         self.assertEqual([(row["id"], row["subnet"]) for row in result], [(7, "198.18.7.0/24")])
-        self.assertFalse(result[0]["identity_verified"])
+        # A Subnet that subnet4-list did not verify offers no change to a user who may change the Server.
+        self.assertFalse(result[0]["can_change"])
 
     def test_identity_only_snapshot_remains_visible(self):
         """A config-get failure does not hide verified Subnet identity."""
@@ -3160,7 +3161,8 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
             }
         )
         self.assertEqual([(row["id"], row["subnet"]) for row in result], [(8, "198.18.8.0/24")])
-        self.assertTrue(result[0]["identity_verified"])
+        self.assertTrue(result[0]["can_change"])
+        self.assertFalse(result[0]["can_edit_options"])
         self.assertEqual(result[0]["pools"], [])
 
 

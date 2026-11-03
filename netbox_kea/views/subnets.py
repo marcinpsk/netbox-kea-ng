@@ -24,7 +24,6 @@ from ..reservations import InSubnetReservationScope
 from ..subnet_catalogue import (
     CatalogueSnapshot,
     CatalogueUnavailable,
-    ConfiguredSubnet,
     SubnetIdentityConflict,
     SubnetIdExhausted,
     VerifiedSubnet,
@@ -35,15 +34,14 @@ from ..utilities import (
 )
 from ._base import (
     _POOL_RE,
-    _catalogue_subnet_row,
     _client_or_refusal,
-    _enrich_subnet_statistics,
-    _filter_subnets,
     _KeaChangeMixin,
     _run_change,
     _safe_return_url,
 )
 from .notices import Notice, load_snapshot, notice, show_notices
+from .server_scope import writable_servers
+from .subnet_lists import fetch_subnets, filter_subnets, present_subnets
 from .workspace import WORKSPACE_SECTIONS, ServerFamilyMixin, subsection_nav
 
 logger = logging.getLogger(__name__)
@@ -81,28 +79,18 @@ class BaseServerDHCPSubnetsView(ServerFamilyMixin, generic.ObjectChildrenView):
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_dhcp_subnets.html"
 
-    def _catalogue_rows(
-        self, request: HttpRequest, parent: Server, snapshot: CatalogueSnapshot
-    ) -> list[dict[str, Any]]:
-        """Return safe Subnet Catalogue rows for this Server. An export reads their utilization live."""
-        if snapshot.unavailable:
-            return []
-        can_change = Server.objects.restrict(request.user, "change").filter(pk=parent.pk).exists()
-        subnets: tuple[VerifiedSubnet | ConfiguredSubnet, ...] = (*snapshot.subnets, *snapshot.configured_subnets)
-        rows = [_catalogue_subnet_row(subnet, parent, self.dhcp_version, can_change) for subnet in subnets]
-        for row in rows:
-            row["return_url"] = _safe_return_url(request, request.get_full_path())
-        _enrich_subnet_statistics(rows, parent, self.dhcp_version, live="export" in request.GET)
-        return rows
-
     def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
         """Handle GET: check DHCP enabled, then render table or export."""
         instance = self.get_object(**kwargs)
         # We can't use the original get() since it calls get_table_configs which requires a NetBox model.
-        snapshot = subnet_catalogue.display(instance, self.dhcp_version)
-        subnet_notice = notice(snapshot)
+        presented = present_subnets(
+            instance,
+            fetch_subnets(instance, self.dhcp_version, live="export" in request.GET),
+            writable=writable_servers(request.user, [instance]),
+            return_url=_safe_return_url(request, request.get_full_path()),
+        )
         search_form = forms.SubnetSearchForm(request.GET or None)
-        child_objects = _filter_subnets(self._catalogue_rows(request, instance, snapshot), search_form)
+        child_objects = filter_subnets(presented.rows, search_form)
 
         table_data = self.prep_table_data(request, child_objects, instance)
         table = self.get_table(table_data, request, False)
@@ -123,11 +111,11 @@ class BaseServerDHCPSubnetsView(ServerFamilyMixin, generic.ObjectChildrenView):
                     "object": instance,
                     "table": table,
                     "model": self.child_model,
-                    "notice": subnet_notice,
+                    "notice": presented.notice,
                 },
             )
 
-        show_notices(request, subnet_notice)
+        show_notices(request, presented.notice)
 
         return render(
             request,
