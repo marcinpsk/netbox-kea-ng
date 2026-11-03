@@ -173,12 +173,32 @@ def workspace_filters(query: QueryDict, section: WorkspaceSection) -> QueryDict:
     return result
 
 
-def family_filters(query: QueryDict, section: WorkspaceSection) -> QueryDict:
-    """Keep the filters of *section* that mean the same in the other family; Kea gives Subnet IDs per family."""
+def drop_invalid_filters(query: QueryDict, section: WorkspaceSection, family: Family) -> bool:
+    """Remove each search field that the search form of *family* refuses, with its paired fields."""
+    form_class = section.search_forms.get(family)
+    if form_class is None:
+        return False
+    form = form_class(query)
+    if form.is_valid():
+        return False
+    invalid = set(form.errors)
+    if invalid & (section.paired_fields | {"__all__"}):
+        invalid.update(section.paired_fields)
+    for key in invalid:
+        query.pop(key, None)
+    return True
+
+
+def family_filters(query: QueryDict, section: WorkspaceSection, family: Family) -> QueryDict:
+    """Keep the filters of *section* that mean the same in *family*, without a Kea read.
+
+    Kea gives Subnet IDs per family, so a Subnet-bound field never stays.
+    """
     result = workspace_filters(query, section)
     if (search := section.subnet_search(result)) is not None:
         for key in search.fields:
             result.pop(key, None)
+    drop_invalid_filters(result, section, family)
     return result
 
 
@@ -224,7 +244,7 @@ def server_context(request: HttpRequest, server: Server) -> dict[str, Any]:
 
     def family_url(version: Family) -> str:
         url = with_return_url(section.server_url(server.pk, version), return_url)
-        return with_query(url, family_filters(request.GET, section))
+        return with_query(url, family_filters(request.GET, section, version))
 
     switch_query = workspace_filters(request.GET, scoped)
     switch_query["section"] = scoped.key

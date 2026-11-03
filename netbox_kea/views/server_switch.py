@@ -16,6 +16,7 @@ from .notices import notice, show_notices
 from .workspace import (
     WORKSPACE_SECTIONS,
     WorkspaceSection,
+    drop_invalid_filters,
     scope_section,
     with_query,
     with_return_url,
@@ -26,16 +27,7 @@ from .workspace import (
 def _checked_filters(request: HttpRequest, target: Server, section: WorkspaceSection, family: Family) -> QueryDict:
     """Keep valid filters and confirm every Subnet search against fresh target identities."""
     query = workspace_filters(request.GET, section)
-    form_class = section.search_forms.get(family)
-    if form_class is None:
-        return query
-    form = form_class(query)
-    if not form.is_valid():
-        invalid = set(form.errors)
-        if invalid & (section.paired_fields | {"__all__"}):
-            invalid.update(section.paired_fields)
-        for key in invalid:
-            query.pop(key, None)
+    if drop_invalid_filters(query, section, family):
         messages.warning(request, "Invalid search filters dropped when switching Servers.")
     search = section.subnet_search(query)
     if search is None or not search.text:

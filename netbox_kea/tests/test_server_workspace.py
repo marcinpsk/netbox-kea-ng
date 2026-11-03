@@ -404,6 +404,36 @@ class TestServerWorkspace(_ViewTestBase):
                 self.assertEqual(target.text, "DHCPv6")
                 self.assertEqual(parse_qs(urlsplit(target["href"]).query), kept)
 
+    def test_family_switch_drops_a_lease_search_that_the_other_family_refuses(self):
+        """A hardware address, client ID or DUID search exists in one family only, and an address has one family."""
+        pk = self.server.pk
+        cases = (
+            (4, "server_leases4", {"by": "hw", "q": "02:00:00:00:00:01", "state": "0"}),
+            (4, "server_leases4", {"by": "client_id", "q": "01:02:03", "state": "0"}),
+            (4, "server_leases4", {"by": "ip", "q": "192.0.2.10", "state": "0"}),
+            (6, "server_leases6", {"by": "duid", "q": "00:01:02:03:04:05:06:07", "state": "0"}),
+            (6, "server_leases6", {"by": "ip", "q": "2001:db8::10", "state": "0"}),
+            (4, "combined_leases4", {"by": "hw", "q": "02:00:00:00:00:01", "state": "0"}),
+            (6, "combined_leases6", {"by": "duid", "q": "00:01:02:03:04:05:06:07", "state": "0"}),
+        )
+        for family, route, query in cases:
+            with self.subTest(route=route, query=query):
+                url = reverse(f"plugins:netbox_kea:{route}", args=[pk] if route.startswith("server") else [])
+                with stub_kea(_catalogue_responses_for_subnets(family, [])):
+                    response = self.client.get(url, query)
+                self.assertEqual(response.status_code, 200)
+                links = BeautifulSoup(response.content, "html.parser").select('[aria-label="DHCP family"] a')
+                target = links[1 if family == 4 else 0]
+                self.assertEqual(target.text, f"DHCPv{10 - family}")
+                self.assertEqual(parse_qs(urlsplit(target["href"]).query), {"state": ["0"]})
+
+    def test_family_switch_keeps_a_lease_search_that_both_families_accept(self):
+        query = {"by": "hostname", "q": "printer", "state": "0"}
+        with stub_kea(_catalogue_responses_for_subnets(4, [])):
+            response = self.client.get(reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]), query)
+        target = BeautifulSoup(response.content, "html.parser").select('[aria-label="DHCP family"] a')[1]
+        self.assertEqual(parse_qs(urlsplit(target["href"]).query), {key: [value] for key, value in query.items()})
+
     def test_native_edit_and_delete_keep_family_and_style_above_form_tabs(self):
         for action in ("edit", "delete"):
             response = self.client.get(
