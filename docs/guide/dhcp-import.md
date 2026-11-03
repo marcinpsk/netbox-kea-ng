@@ -330,8 +330,8 @@ the import needs the delete permission of each DHCP plugin model that it can rem
 
 The **Drift** card of the **DHCP Plugin** page reads Kea after the page opens and compares it with the imported rows
 of each mapped kind. It lists each missing object (Kea has it, NetBox has no imported row), each stale object (no row
-uses it, so the next run removes it) and each kept object (another row uses it now), with a count of the objects that
-are in step. It finds the kept objects with the rule that the run uses, and shows the reason that the run reports for
+that NetBox keeps uses it, so the next run removes it) and each kept object (a row that NetBox keeps uses it now), with
+a count of the objects that are in step. It finds the kept objects with the rule that the run uses, and shows the reason that the run reports for
 each. The card shows the rows as they are now. The run updates the other rows first, so it removes a kept object when
 these updates remove its last use, for example when Kea also removed the reference. An imported row that another
 writer confirmed after the card began its read is in step. When Kea was not read in full for a kind, the card shows

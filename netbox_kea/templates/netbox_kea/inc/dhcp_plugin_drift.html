@@ -15,9 +15,10 @@
     <p class="small text-muted mb-0 drift-legend">
       A live read of Kea, compared with the DHCP Import Mappings. <strong>Missing</strong>: Kea has the object, and
       NetBox has no imported row for it. <strong>Stale</strong>: NetBox has an imported row whose Kea object is gone,
-      and no row uses it, so the next run removes it. <strong>Kept</strong>: NetBox has an imported row whose Kea object
-      is gone, and another row uses it now. The next run updates the other rows first. It removes the row when these
-      updates remove the last use, for example when Kea also removed the reference. <strong>Not seen</strong>: Kea was
+      and no row that NetBox keeps uses it, so the next run removes it. <strong>Kept</strong>: NetBox has an imported
+      row whose Kea object is gone, and a row that NetBox keeps uses it now. The next run updates the other rows first.
+      It removes the row when these updates remove the last use, for example when Kea also removed the reference. A
+      removal that fails keeps the row and each stale row that relies on it. <strong>Not seen</strong>: Kea was
       not read in full for that row, so it cannot be stale. A DHCP Option is not seen only when the read of its own
       entries or of its object is not complete. <strong>Unknown</strong>: Kea could not be read, or its configuration
       could not be parsed, so the state of each imported row is not known. An object that the installed DHCP plugin

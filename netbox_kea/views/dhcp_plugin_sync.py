@@ -129,9 +129,9 @@ class DriftState(StrEnum):
 
     # Kea has the object, and no mapping names it.
     MISSING = "missing"
-    # The observation no longer reports the mapped row, no gap of it covers the row, and no row uses it now.
+    # The observation no longer reports the mapped row, no gap covers it, and no row that stays uses it now.
     STALE = "stale"
-    # A stale row that another row uses now. The run updates the other rows first, and removes it when no use stays.
+    # A stale row that a row that stays uses now. The run updates the other rows first; it removes it when no use stays.
     KEPT = "kept"
     # The observation did not report the mapped row, and a gap of it covers the row, so it cannot judge it.
     UNSEEN = "unseen"
@@ -216,11 +216,11 @@ def family_drift(server: Server, family: Family, user) -> FamilyDrift:
     """Compare a live read of *family* with its DHCP Import Mappings, through the judgment that the removal uses.
 
     A missing object is in Kea without a mapping. A stale object has a mapping that the observation no longer reports
-    and that no gap of the observation covers. When no row uses it now, the next run removes it. When another row uses
-    it now, it is kept, with the reason of the removal. The card shows the rows as they are now: the run updates the
-    other rows first, so it removes a kept row when these updates remove its last use. An unobserved row that a gap
-    covers is not seen, and a mapping confirmed after the read began is in step. A family that Kea did not give leaves
-    every mapped row unknown. An object names its imported row only when *user* may view it.
+    and that no gap of the observation covers. When no row that stays uses it now, the next run removes it. When a row
+    that stays uses it now, it is kept, with the reason of the removal. The card shows the rows as they are now: the
+    run updates the other rows first, so it removes a kept row when these updates remove its last use. An unobserved
+    row that a gap covers is not seen, and a mapping confirmed after the read began is in step. A family that Kea did
+    not give leaves every mapped row unknown. An object names its imported row only when *user* may view it.
     """
     drift = FamilyDrift(family)
     read = read_family(server, family)
