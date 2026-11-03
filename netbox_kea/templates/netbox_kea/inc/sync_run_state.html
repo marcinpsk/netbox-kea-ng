@@ -1,0 +1,10 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{# The label of a Sync Run Result without counts; a job that holds no result of the Server shows a dash. #}
+{% if result.state == "skipped" %}
+  <span class="badge text-bg-secondary" data-sync-run-state="skipped" title="The job finished, but it did not run the IPAM sync of this Server.">Skipped</span>
+{% elif result.state == "interrupted" %}
+  <span class="badge text-bg-warning" data-sync-run-state="interrupted" title="The job stopped before the IPAM sync of this Server finished.">Interrupted</span>
+{% elif result.state == "unknown" %}
+  <span class="badge text-bg-secondary" data-sync-run-state="unknown" title="The job record does not show the result of this Server.">Unknown</span>
+{% else %}—{% endif %}

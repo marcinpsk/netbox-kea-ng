@@ -48,7 +48,7 @@
                   {% endif %}
                 </td>
                 <td>
-                  {% if job %}
+                  {% if job.completed %}
                     <span title="{{ job.completed }}">{{ job.completed|timesince }} ago</span>
                   {% else %}—{% endif %}
                 </td>
@@ -73,7 +73,7 @@
                   <td>{% if counts.errors > 0 %}<span class="text-danger">{{ counts.errors }}</span>{% else %}{{ counts.errors }}{% endif %}</td>
                   <td>{% if counts.conflicts %}<span class="text-warning" title="Foreign NetBox IPs skipped to avoid overwriting them">{{ counts.conflicts }}</span>{% else %}{{ counts.conflicts }}{% endif %}</td>
                 {% else %}
-                  <td>—</td><td>—</td><td>—</td><td>—</td>
+                  <td colspan="4">{% include "netbox_kea/inc/sync_run_state.html" %}</td>
                 {% endif %}
                 <td>
                   {% if server.pk in allowed_server_pks %}

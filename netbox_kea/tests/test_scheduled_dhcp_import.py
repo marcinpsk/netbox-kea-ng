@@ -330,8 +330,8 @@ class ScheduledImportTest(_ScheduledImportTestCase):
         jobs_tab = self.client.get(reverse("plugins:netbox_kea:server_jobs", args=[server.pk]))
         self.assertContains(jobs_tab, job.get_absolute_url())
         sync_tab = self.client.get(reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]))
-        self.assertContains(sync_tab, "The job skipped the IPAM sync of this Server.")
-        self.assertNotContains(sync_tab, "The job stopped before the IPAM sync of this Server finished.")
+        self.assertContains(sync_tab, 'data-sync-run-state="skipped"')
+        self.assertNotContains(sync_tab, 'data-sync-run-state="interrupted"')
 
     def test_a_dual_family_server_imports_both_families(self):
         server = _server("dual", dhcp6=True)
@@ -584,7 +584,7 @@ class ScheduledImportEventsTest(TransactionTestCase):
         self._assert_pages_show_the_errored_job(server, job)
 
     def _assert_pages_show_the_errored_job(self, server, job) -> None:
-        """The Jobs tab lists the job; the Sync tab and the overview show it with no IPAM counts."""
+        """The Jobs tab lists the job; the Sync tab and the overview show it as Interrupted, with no IPAM counts."""
         from bs4 import BeautifulSoup
         from django.urls import reverse
 
@@ -592,14 +592,14 @@ class ScheduledImportEventsTest(TransactionTestCase):
         jobs_tab = self.client.get(reverse("plugins:netbox_kea:server_jobs", args=[server.pk]))
         self.assertContains(jobs_tab, job.get_absolute_url())
         sync_tab = self.client.get(reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]))
-        self.assertContains(sync_tab, "The job stopped before the IPAM sync of this Server finished.")
+        self.assertContains(sync_tab, 'data-sync-run-state="interrupted"')
         self.assertNotContains(sync_tab, "Created:")
         overview = BeautifulSoup(self.client.get(reverse("plugins:netbox_kea:sync_jobs")).content, "html.parser")
         link = overview.find("a", string=server.name)
         row = link.find_parent("tr") if link is not None else None
         assert row is not None, "The overview has no row for the Server"
         cells = [cell.get_text(strip=True) for cell in row.find_all("td")]
-        self.assertEqual(cells[3:8], ["errored", "—", "—", "—", "—"])
+        self.assertEqual(cells[3:5], ["errored", "Interrupted"])
 
     @override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_scheduled_dhcp_import.fail_ip_address_dispatch"])
     @with_dhcp_integration_config(scheduled_import_enabled=True)

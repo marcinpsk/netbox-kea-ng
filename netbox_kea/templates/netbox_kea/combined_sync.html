@@ -20,7 +20,7 @@
           <td>{{ counts.prefix_errors }}</td>
           <td>{{ counts.conflicts }}</td>
         {% else %}
-          <td>Unknown</td><td>Unknown</td><td>Unknown</td><td>Unknown</td><td>Unknown</td>
+          <td colspan="5">{% include "netbox_kea/inc/sync_run_state.html" %}</td>
         {% endif %}
       </tr>
       {% endwith %}

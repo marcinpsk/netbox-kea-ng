@@ -82,22 +82,22 @@ class TestCombinedWorkspace(_ViewTestBase):
                 target = self.client.get(link["href"])
             self.assertEqual(target.status_code, 200)
 
-    def test_sync_without_a_recorded_job_shows_unknown_counts(self):
+    def test_sync_without_a_recorded_job_shows_no_counts(self):
         response = self.client.get(reverse("plugins:netbox_kea:combined_sync4"), self.selection)
         page = BeautifulSoup(response.content, "html.parser")
         rows = page.select(".table tbody tr")
         self.assertEqual(len(rows), 2)
         for row in rows:
             cells = [cell.get_text(strip=True) for cell in row.select("td")]
-            self.assertEqual(cells[3:], ["Unknown", "Unknown", "Unknown", "Unknown", "Unknown"])
+            self.assertEqual(cells[3:], ["—"])
 
-    def test_job_without_a_summary_keeps_counts_unknown(self):
+    def test_a_job_without_a_result_of_the_server_shows_no_counts(self):
         stored_job([], object_type=ContentType.objects.get_for_model(Server), object_id=self.server.pk)
         response = self.client.get(reverse("plugins:netbox_kea:combined_sync4"), self.selection)
         rows = BeautifulSoup(response.content, "html.parser").select(".table tbody tr")
         for row in rows:
             cells = [cell.get_text(strip=True) for cell in row.select("td")]
-            self.assertEqual(cells[3:], ["Unknown", "Unknown", "Unknown", "Unknown", "Unknown"])
+            self.assertEqual(cells[3:], ["—"])
 
     def test_new_sections_report_unsupported_families_and_offer_the_other_family(self):
         Server.objects.filter(pk=self.server.pk).update(dhcp6=False)

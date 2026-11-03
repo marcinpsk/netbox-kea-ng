@@ -529,6 +529,66 @@ class TestServerSyncStatusView(TestCase):
 
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)
+class TestSyncRunStateLabels(TestCase):
+    """The Sync tab, the Sync Jobs page and the combined Sync page show each state without counts with one label."""
+
+    def setUp(self):
+        from django.contrib.contenttypes.models import ContentType
+
+        self.client.force_login(User.objects.create_superuser("states", "st@s.com", "pass"))
+        self.servers = {label: _make_db_server(name=f"state-{label.lower()}") for label in self.LABELS}
+        for label, state in (("Skipped", SyncRunState.SKIPPED), ("Interrupted", SyncRunState.INTERRUPTED)):
+            server = self.servers[label]
+            stored_job([SyncRunResult(server.pk, server.name, state)])
+        unknown = self.servers["Unknown"]
+        legacy = stored_job([])
+        # An entry that an older version wrote: the reader input is the subject here.
+        legacy.data = {"summary": [{"name": unknown.name, "pk": unknown.pk, "created": 1, "updated": 0, "errors": 0}]}
+        legacy.save(update_fields=["data"])
+        unrecorded = self.servers["—"]
+        stored_job([], object_type=ContentType.objects.get_for_model(Server), object_id=unrecorded.pk)
+
+    #: The label of each Server; "—" is a job that holds no result of its Server.
+    LABELS = ("Skipped", "Interrupted", "Unknown", "—")
+
+    def _row(self, response, server: Server) -> list[str]:
+        page = BeautifulSoup(response.content, "html.parser")
+        link = page.find("a", string=server.name)
+        row = link.find_parent("tr") if link is not None else None
+        assert row is not None, f"The page has no row for {server.name}"
+        return [cell.get_text(" ", strip=True) for cell in row.find_all("td")]
+
+    def test_the_sync_jobs_page_shows_the_label_in_place_of_the_counts(self):
+        response = self.client.get(reverse("plugins:netbox_kea:sync_jobs"))
+        for label, server in self.servers.items():
+            with self.subTest(label=label):
+                self.assertEqual(self._row(response, server)[4:-1], [label])
+
+    def test_the_combined_sync_page_shows_the_label_in_place_of_the_counts(self):
+        selection = {"server": [server.pk for server in self.servers.values()]}
+        response = self.client.get(reverse("plugins:netbox_kea:combined_sync4"), selection)
+        for label, server in self.servers.items():
+            with self.subTest(label=label):
+                self.assertEqual(self._row(response, server)[3:], [label])
+
+    def test_a_job_without_a_completion_time_shows_no_time(self):
+        server = self.servers["—"]
+        self.assertEqual(self._row(self.client.get(reverse("plugins:netbox_kea:sync_jobs")), server)[2], "—")
+        tab = self.client.get(reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]))
+        card = BeautifulSoup(tab.content, "html.parser").find("h5", string="Last Sync").find_parent()
+        self.assertNotIn("None", card.get_text())
+
+    def test_the_server_sync_tab_shows_the_label_in_place_of_the_counts(self):
+        for label, server in self.servers.items():
+            with self.subTest(label=label):
+                response = self.client.get(reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]))
+                card = BeautifulSoup(response.content, "html.parser").find("h5", string="Last Sync").find_parent()
+                states = [element.get_text(strip=True) for element in card.select("[data-sync-run-state]")]
+                self.assertEqual(states, [] if label == "—" else [label])
+                self.assertNotIn("Created:", card.get_text())
+
+
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestServerSyncNowView(TestCase):
     """POST /plugins/kea/servers/{pk}/sync-now/"""
 

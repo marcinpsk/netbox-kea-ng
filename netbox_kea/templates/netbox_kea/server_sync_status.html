@@ -26,7 +26,7 @@
                   <span class="badge text-bg-secondary">{{ latest_job.status }}</span>
                 {% endif %}
               </p>
-              <p class="small text-muted mb-1">{{ latest_job.completed }}</p>
+              {% if latest_job.completed %}<p class="small text-muted mb-1">{{ latest_job.completed }}</p>{% endif %}
               {% with counts=latest_result.counts %}
                 {% if counts %}
                   <hr>
@@ -42,12 +42,9 @@
                       <span class="text-warning" title="Foreign NetBox IPs skipped to avoid overwriting them">⚠ Conflicts: <strong>{{ counts.conflicts }}</strong></span>
                     {% endif %}
                   </div>
-                {% elif latest_result.state == "skipped" %}
+                {% elif latest_result %}
                   <hr>
-                  <p class="small text-muted mb-0">The job skipped the IPAM sync of this Server.</p>
-                {% elif latest_result.state == "interrupted" %}
-                  <hr>
-                  <p class="small text-muted mb-0">The job stopped before the IPAM sync of this Server finished.</p>
+                  {% include "netbox_kea/inc/sync_run_state.html" with result=latest_result %}
                 {% endif %}
               {% endwith %}
             {% else %}
