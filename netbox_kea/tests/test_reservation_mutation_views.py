@@ -844,6 +844,57 @@ class TestReservationMutationViews(_ViewTestBase):
         sent = kea.bodies("reservation-add")[0]["arguments"]["reservation"]
         self.assertEqual(sent, raw)
 
+    def test_add_and_edit_show_a_refused_option_class_field_on_the_form(self):
+        responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
+        rows = {
+            "options-TOTAL_FORMS": "1",
+            "options-INITIAL_FORMS": "0",
+            "options-MIN_NUM_FORMS": "0",
+            "options-MAX_NUM_FORMS": "1000",
+            "options-0-name": "domain-name",
+            "options-0-data": "lab.example.org",
+            "options-0-client_classes": "voip, voip",
+        }
+        add = {
+            "subnet_cidr": "198.18.0.0/24",
+            "ip_address": "198.18.0.20",
+            "identifier_type": "hw-address",
+            "identifier": "aa:bb:cc:dd:ee:ff",
+            **rows,
+        }
+        with stub_kea({**responses, "reservation-add": {"result": 0}}) as kea:
+            refused = self.client.post(
+                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]), add
+            )
+        self.assertEqual(refused.status_code, 200)
+        self.assertEqual(
+            refused.context["form"].non_field_errors(),
+            ["Enter each client class name of DHCP Option 'domain-name' once."],
+        )
+        self.assertNotIn("reservation-add", kea.commands())
+
+        option = {"name": "domain-name", "data": "lab.example.org", "client-classes": ["a,b"]}
+        current = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "option-data": [option]}
+        url = f"{reverse('plugins:netbox_kea:server_reservation4_edit', args=[self.server.pk, 20])}?{_identity_query()}"
+        with stub_kea({**responses, "reservation-get": _res_get(current)}):
+            page = self.client.get(url)
+        edit = {
+            "subnet_cidr": "198.18.0.0/24",
+            "identifier_type": "hw-address",
+            "identifier": "aa:bb:cc:dd:ee:ff",
+            "managed_fingerprint": page.context["form"].initial["managed_fingerprint"],
+            **rows,
+            "options-INITIAL_FORMS": "1",
+            "options-0-original_option": json.dumps(page.context["options_formset"].initial[0]["original_option"]),
+            "options-0-client_classes": "a,b, new",
+        }
+        with stub_kea({**responses, "reservation-get": _res_get(current), "reservation-update": {"result": 0}}) as kea:
+            refused = self.client.post(url, edit)
+        self.assertEqual(refused.status_code, 200)
+        (error,) = refused.context["form"].non_field_errors()
+        self.assertIn("A client class name of DHCP Option 'domain-name' has a comma", error)
+        self.assertNotIn("reservation-update", kea.commands())
+
     def test_create_keeps_the_form_visible_when_kea_rejects_the_mutation(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         responses["reservation-add"] = {"result": 2, "text": "'reservation-add' command not supported."}

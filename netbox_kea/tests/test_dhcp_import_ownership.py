@@ -325,6 +325,7 @@ class ImportOwnershipTest(TestCase):
     def test_import_only_owner_protects_addresses_prefixes_and_ranges(self):
         from netbox_kea.jobs import KeaIpamSyncJob
         from netbox_kea.tests.test_jobs import _lease_page, _make_job
+        from netbox_kea.tests.utils import run_counts
 
         owner = _make_db_server(name="periodic-owner", dhcp6=False, sync_deprecate_prefixes_and_ranges=True)
         unknown = _make_db_server(name="import-only", dhcp6=False, sync_enabled=False, sync_dhcp_plugin_enabled=True)
@@ -343,11 +344,11 @@ class ImportOwnershipTest(TestCase):
             job = _make_job()
             with stub_kea(responses):
                 KeaIpamSyncJob(job).run(server_pk=owner.pk)
-            return job.data["summary"][0]
+            return run_counts(job)[0]
 
         run_job(config, [{"ip-address": "10.0.0.25", "subnet-id": 1, "valid-lft": 3600, "state": 0}])
         waiting = run_job({"subnet4": []}, [])
-        self.assertEqual(waiting["waiting"], 3)
+        self.assertEqual(waiting.waiting, 3)
         for obj in (address, prefix, ip_range):
             obj.refresh_from_db()
             self.assertNotEqual(obj.status, "deprecated")

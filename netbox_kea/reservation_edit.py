@@ -7,7 +7,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 from collections import Counter
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from django.core import signing
@@ -18,15 +18,19 @@ from .after_apply import SideEffectStatus, send_signal, write_journal
 from .config_write import ReservationChangeOutcome
 from .constants import Family, IPAddressValue
 from .dhcp_options import (
+    ClassTextRefused,
     DHCPOption,
-    DHCPOptionChange,
     DHCPOptionConflict,
-    DHCPOptionEdit,
     DHCPOptionNameChange,
+    OptionRow,
     check_option_snapshot,
+    class_text,
+    client_class_change,
     merge_option_edit,
     option_data,
+    option_row_edit,
     parse_dhcp_options,
+    posted_snapshot,
 )
 from .ipam_reconciliation import RESERVATION, claim_permissions
 from .manual_sync import ManualSyncOutcome, NotRun, sync_reservation
@@ -100,19 +104,6 @@ def check_token(token: str, family: Family, subnet_id: int, identity: Reservatio
 
 
 @dataclass(frozen=True)
-class OptionRow:
-    """The parsed visible values and shown DHCP Option of one Reservation row."""
-
-    name: str
-    data: str
-    always_send: bool = False
-    delete: bool = False
-    original_option: DHCPOption | None = None
-    #: The text of the client class field, as the browser sent it.
-    client_classes: str = ""
-
-
-@dataclass(frozen=True)
 class SubmittedValues:
     """Parsed allocation, Published Name, DHCPv4 boot fields, client classes and option rows of the operator.
 
@@ -131,40 +122,17 @@ class SubmittedValues:
     excluded_prefixes: tuple[ipaddress.IPv6Network, ...] = ()
 
 
-def class_text(classes: tuple[str, ...]) -> str:
-    """Return the text of a client class field: the names, separated by commas."""
-    return ", ".join(classes)
-
-
-def class_names(text: str) -> tuple[str, ...]:
-    """Return the names of a client class field, without the empty ones."""
-    return tuple(name for name in (part.strip() for part in text.split(",")) if name)
-
-
-def _shows_exactly(name: str) -> bool:
-    """Return whether the text of a class field shows *name* exactly, and a browser sends it back unchanged."""
-    return bool(name) and name == name.strip() and not any(char in name for char in ",\r\n")
-
-
-def _class_change(live: tuple[str, ...], text: str, field: str | None, owner: str) -> tuple[str, ...]:
-    """Return the client classes that the text of a class field sets: the live ones while it is the shown text.
+def _reservation_classes(live: tuple[str, ...], text: str) -> tuple[str, ...]:
+    """Return the client classes that the class field of the Reservation sets.
 
     Raises:
-        EditConflict: If the text changes and cannot show a live name exactly, or names a class twice.
+        EditConflict: If the text cannot set the classes safely. The conflict names the class field.
 
     """
-    if text == class_text(live):
-        return live
-    if not all(_shows_exactly(name) for name in live):
-        raise EditConflict(
-            f"A client class name of {owner} has a comma, a line break or surrounding spaces, so this field cannot "
-            "change the classes without changing that name. Change them in Kea.",
-            field=field,
-        )
-    names = class_names(text)
-    if len(set(names)) != len(names):
-        raise EditConflict(f"Enter each client class name of {owner} once.", field=field)
-    return names
+    try:
+        return client_class_change(live, text, "this Reservation")
+    except ClassTextRefused as exc:
+        raise EditConflict(exc.message, field="client_classes") from exc
 
 
 def excluded_prefix_pairs(
@@ -259,31 +227,6 @@ def _in_subnet_scope(reservation: Reservation) -> InSubnetReservationScope:
     if not isinstance(reservation.scope, InSubnetReservationScope):
         raise RuntimeError("Reservation mutation requires an In-Subnet Reservation.")
     return reservation.scope
-
-
-def _option_edit(rows: tuple[OptionRow, ...], snapshot: tuple[DHCPOption, ...]) -> DHCPOptionEdit:
-    """Translate parsed rows without using their position to identify an assignment."""
-    changes: list[DHCPOptionChange] = []
-    for row in rows:
-        seen = row.original_option
-        if row.delete:
-            intended = None
-        elif seen is None:
-            if not row.name:
-                continue
-            classes = _class_change((), row.client_classes, None, f"DHCP Option '{row.name}'")
-            intended = DHCPOption(
-                None, row.name, None, row.data, None, True if row.always_send else None, None, classes
-            )
-        else:
-            label = f"DHCP Option '{row.name or seen.name or seen.code}'"
-            classes = _class_change(seen.client_classes, row.client_classes, None, label)
-            intended = replace(seen, name=row.name or None, data=row.data, client_classes=classes)
-            if bool(seen.always_send) != row.always_send:
-                intended = replace(intended, always_send=row.always_send)
-        if seen != intended:
-            changes.append(DHCPOptionChange(seen, intended))
-    return DHCPOptionEdit(snapshot, tuple(changes))
 
 
 def _signed_fingerprint(reservation: Reservation, suffix: str | None) -> str:
@@ -418,10 +361,7 @@ def form_state(reservation: Reservation, catalogue: CatalogueSnapshot) -> FormSt
         initial["ip_addresses"] = ",".join(str(address) for address in reservation.addresses)
         initial["prefixes"] = ",".join(str(prefix) for prefix in reservation.delegated_prefixes)
         initial["excluded_prefixes"] = ",".join(str(pair.excluded) for pair in reservation.excluded_prefixes)
-    options = tuple(
-        {**option.form_initial(), "client_classes": class_text(option.client_classes)} for option in reservation.options
-    )
-    return FormState(initial, options)
+    return FormState(initial, tuple(option.form_initial() for option in reservation.options))
 
 
 def build_add(
@@ -433,14 +373,14 @@ def build_add(
 ) -> Reservation:
     """Build the typed Reservation in the Subnet and Catalogue verified under the change lock."""
     scope = InSubnetReservationScope(subnet.identity)
-    edit = _option_edit(values.option_rows, ())
     try:
+        edit = option_row_edit(values.option_rows, ())
         options = parse_dhcp_options(merge_option_edit(edit, [], family, catalogue.option_definitions))
     except (DHCPOptionConflict, DHCPOptionNameChange) as exc:
         raise EditConflict(exc.message) from exc
     hostname = _stored_for(catalogue, subnet, values.hostname, values.addresses)
     excluded = excluded_prefix_pairs(values.delegated_prefixes, values.excluded_prefixes)
-    classes = _class_change((), values.client_classes, "client_classes", "this Reservation")
+    classes = _reservation_classes((), values.client_classes)
     if family == 4:
         return IPv4Reservation(
             scope=scope,
@@ -474,14 +414,11 @@ def build_edit(
     """Build explicit managed changes from the submitted values and live facts under the lock."""
     try:
         check_option_snapshot(
-            shown.options,
-            tuple(row.original_option for row in values.option_rows if row.original_option is not None),
-            current.family,
-            catalogue.option_definitions,
+            shown.options, posted_snapshot(values.option_rows), current.family, catalogue.option_definitions
         )
+        options = option_row_edit(values.option_rows, shown.options)
     except DHCPOptionConflict as exc:
         raise EditConflict(exc.message) from exc
-    options = _option_edit(values.option_rows, shown.options)
     prefixes = current.delegated_prefixes if current.family == 4 else values.delegated_prefixes
     excluded = excluded_prefix_pairs(prefixes, values.excluded_prefixes, current.excluded_prefixes)
     return ReservationChange(
@@ -491,7 +428,7 @@ def build_edit(
         options=options,
         client_classes=_change(
             current.client_classes,
-            _class_change(current.client_classes, values.client_classes, "client_classes", "this Reservation"),
+            _reservation_classes(current.client_classes, values.client_classes),
             (),
         ),
         next_server=_change(current.next_server, values.next_server, None),

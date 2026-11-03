@@ -885,6 +885,87 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         self.assertIn(response.status_code, (302, 403))
 
 
+_NOT_SENT_CHANGED = (
+    "The change was not sent to Kea. Shared Network 'prod-net' changed in Kea. Reload the page and try again."
+)
+
+
+class TestSharedNetworkEditWritesOnlyChangedFields(_ViewTestBase):
+    """A Shared Network save writes only the fields that the operator changed. Each other field keeps its live text."""
+
+    # Kea refuses an interface that the system does not have, and returns each relay address in its canonical form.
+    _LIVE: dict = {
+        4: {
+            "name": "prod-net",
+            "subnet4": [],
+            "interface": "eth0",
+            "relay": {"ip-addresses": ["192.0.2.1"]},
+            "option-data": [],
+        },
+        6: {
+            "name": "prod-net",
+            "subnet6": [],
+            "interface": "eth0",
+            "relay": {"ip-addresses": ["2001:db8::1"]},
+            "option-data": [],
+        },
+    }
+
+    def _save(self, version, **changes):
+        """Open the edit page of the live Shared Network, post it with *changes*, and return what config-set sent."""
+        url = reverse(f"plugins:netbox_kea:server_shared_network{version}_edit", args=[self.server.pk, "prod-net"])
+        config = _catalogue_responses_for_subnets(version, [], shared_networks=[self._LIVE[version]])["config-get"]
+        with _edit_stub(config) as kea:
+            page = self.client.get(url)
+            post = self.client.post(url, {**_page_data(page), **changes})
+        self.assertEqual(post.status_code, 302)
+        self.assertEqual(
+            [str(message) for message in django_messages.get_messages(post.wsgi_request)],
+            ["Shared network 'prod-net' updated."],
+        )
+        return _written_sn(kea, version)
+
+    def test_an_unchanged_field_keeps_its_live_text(self):
+        for version in (4, 6):
+            with self.subTest(version=version):
+                self.assertEqual(
+                    self._save(version, description="Renamed"),
+                    {**self._LIVE[version], "user-context": {"comment": "Renamed"}},
+                )
+
+    def test_a_live_change_after_the_page_was_shown_is_still_refused(self):
+        for version in (4, 6):
+            url = reverse(f"plugins:netbox_kea:server_shared_network{version}_edit", args=[self.server.pk, "prod-net"])
+            changed = {**self._LIVE[version], "interface": "eth9"}
+            shown, live = (
+                _catalogue_responses_for_subnets(version, [], shared_networks=[network])["config-get"]
+                for network in (self._LIVE[version], changed)
+            )
+            # The page reads the first configuration, and the save reads the second.
+            with self.subTest(version=version), _edit_stub(shown, **{"config-get": queued(shown, live)}) as kea:
+                page = self.client.get(url)
+                post = self.client.post(url, {**_page_data(page), "description": "Renamed"})
+                self.assertEqual(post.status_code, 302)
+                self.assertEqual(
+                    [str(message) for message in django_messages.get_messages(post.wsgi_request)],
+                    [_NOT_SENT_CHANGED],
+                )
+                self.assertNotIn("config-set", kea.commands())
+
+    def test_a_changed_field_is_written(self):
+        relay = {4: "192.0.2.2", 6: "2001:db8::2"}
+        for version in (4, 6):
+            with self.subTest(version=version):
+                self.assertEqual(
+                    self._save(version, interface="eth1", relay_addresses=relay[version]),
+                    {
+                        **self._LIVE[version],
+                        "interface": "eth1",
+                        "relay": {"ip-addresses": [relay[version]]},
+                    },
+                )
+
+
 class TestServerSharedNetwork6EditView(_ViewTestBase):
     """Tests for ServerSharedNetwork6EditView — verifies the dhcp6 service."""
 

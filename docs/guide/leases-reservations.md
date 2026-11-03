@@ -228,7 +228,7 @@ the lease. After the save, the lease search shows the lease as *Reserved*.
 - Add, edit and delete subnets (requires [`subnet_cmds`](https://kea.readthedocs.io/en/latest/arm/hooks.html#hooks-subnet-cmds) or `config-set`)
 - Pool management (add/delete pools per subnet)
 - Shared network management (add/edit/delete)
-- Per-subnet and global DHCP option editing
+- Per-subnet and global DHCP option editing. Each option row also takes the client classes that receive the option
 
 ![The DHCPv4 Subnets of a Server, with the pools, the utilization, the options and the shared network of each Subnet](assets/screenshots/subnets-light.png#only-light)
 ![The DHCPv4 Subnets of a Server, with the pools, the utilization, the options and the shared network of each Subnet](assets/screenshots/subnets-dark.png#only-dark)

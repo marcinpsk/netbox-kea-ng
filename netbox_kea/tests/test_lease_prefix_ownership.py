@@ -32,11 +32,12 @@ from netbox_kea.ipam_reconciliation import (
 )
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import CONFIRMATION_SEQUENCE, IPAMOwnershipLink, Server, SyncConfig, next_confirmation_number
+from netbox_kea.sync_run_result import SyncCounts
 from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, lease_record, stub_kea, typed_lease
 from netbox_kea.tests.test_ipam_reconciliation import ConcurrencyHarness
 from netbox_kea.tests.test_jobs import _make_job, _patch_kea
 from netbox_kea.tests.test_models import _MigrationTestCase
-from netbox_kea.tests.utils import _make_db_server, with_sync_config
+from netbox_kea.tests.utils import _make_db_server, run_counts, with_sync_config
 
 PD = "2001:db8:1:100::"
 PD_NETWORK = f"{PD}/56"
@@ -57,12 +58,12 @@ def _address(address: str = ADDRESS6, **changes) -> dict:
     return lease_record(address, **{"subnet_id": 1, **changes})
 
 
-def _run_job(server, leases6: list[dict]) -> dict:
-    """Run the job for *server* against a DHCPv6 Kea with *leases6* and no Reservations; return its summary."""
+def _run_job(server, leases6: list[dict]) -> SyncCounts:
+    """Run the job for *server* against a DHCPv6 Kea with *leases6* and no Reservations; return its counts."""
     job = _make_job()
     with _patch_kea(leases6=leases6), suppress(JobFailed):
         KeaIpamSyncJob(job).run(server_pk=server.pk)
-    return job.data["summary"][0]
+    return run_counts(job)[0]
 
 
 def _legacy_pd_ip(server, *, vrf=None, prefix_length: int = 64, **link) -> NbIP:
@@ -91,7 +92,7 @@ class LivePrefixLeaseJobTest(TestCase):
         server = _server(sync_vrf=vrf)
         summary = _run_job(server, [_pd(), _address()])
 
-        self.assertEqual((summary["errors"], summary["prefix_errors"]), (0, 0))
+        self.assertEqual((summary.errors, summary.prefix_errors), (0, 0))
         prefix = Prefix.objects.get(prefix=PD_NETWORK)
         self.assertEqual(
             (prefix.vrf, prefix.status, prefix.description), (vrf, "active", "[kea-sync: delegated prefix]")
@@ -184,13 +185,13 @@ class LivePrefixLeaseJobTest(TestCase):
         operator.refresh_from_db()
         self.assertEqual(operator.description, "Customer site")
         self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=operator).exists())
-        self.assertEqual(summary["conflicts"], 1)
+        self.assertEqual(summary.conflicts, 1)
 
     def test_a_delegated_prefix_of_an_unknown_subnet_fails_its_row_and_blocks_cleanup(self):
         server = _server(sync_deprecate_prefixes_and_ranges=True)
         _run_job(server, [_pd("2001:db8:2:100::")])
         summary = _run_job(server, [_pd(subnet_id=99)])
-        self.assertEqual(summary["prefix_errors"], 1)
+        self.assertEqual(summary.prefix_errors, 1)
         self.assertFalse(Prefix.objects.filter(prefix=PD_NETWORK).exists())
         kept = Prefix.objects.get(prefix="2001:db8:2:100::/56")
         self.assertEqual((kept.status, _sources(kept)), ("active", {("owner", "lease-prefix")}))
@@ -204,12 +205,12 @@ class LegacyPrefixLeaseRepairTest(TestCase):
         ip = _legacy_pd_ip(server)
         summary = _run_job(server, [_pd()])
 
-        self.assertEqual((summary["errors"], summary["prefix_errors"], summary["unclassified"]), (0, 0, 0))
+        self.assertEqual((summary.errors, summary.prefix_errors, summary.unclassified), (0, 0, 0))
         self.assertEqual(_sources(Prefix.objects.get(prefix=PD_NETWORK)), {("owner", "lease-prefix")})
         self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())
 
         again = _run_job(server, [_pd()])
-        self.assertEqual((again["created"], again["updated"], again["errors"], again["prefix_errors"]), (0, 0, 0, 0))
+        self.assertEqual((again.created, again.updated, again.errors, again.prefix_errors), (0, 0, 0, 0))
         self.assertEqual(Prefix.objects.filter(prefix=PD_NETWORK).count(), 1)
 
     def test_the_repair_follows_the_configured_stale_ip_cleanup(self):
@@ -267,13 +268,13 @@ class LegacyPrefixLeaseRepairTest(TestCase):
         ip = _legacy_pd_ip(server)
         for _ in range(2):
             summary = _run_job(server, [])
-            self.assertEqual((summary["unclassified"], summary["errors"]), (1, 0))
+            self.assertEqual((summary.unclassified, summary.errors), (1, 0))
             self.assertEqual(_sources(ip), {("owner", "lease")})
 
         ip.description = "Released by the operator"
         ip.save()
         summary = _run_job(server, [])
-        self.assertEqual(summary["unclassified"], 0)
+        self.assertEqual(summary.unclassified, 0)
         self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=ip).exists())
         self.assertTrue(NbIP.objects.filter(pk=ip.pk).exists())
 
@@ -306,7 +307,7 @@ class LegacyPrefixLeaseRepairTest(TestCase):
         )
         # Kea state 3 is released: the address is known, and it is not current.
         summary = _run_job(server, [_address(state=3)])
-        self.assertEqual((summary["unclassified"], summary["errors"]), (0, 0))
+        self.assertEqual((summary.unclassified, summary.errors), (0, 0))
         self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())
 
     def test_an_inactive_delegated_prefix_lease_classifies_the_legacy_link_on_a_complete_run(self):
@@ -314,7 +315,7 @@ class LegacyPrefixLeaseRepairTest(TestCase):
         ip = _legacy_pd_ip(server)
         # Kea state 2 is expired-reclaimed: the delegation is known, and it is not current.
         summary = _run_job(server, [_pd(state=2)])
-        self.assertEqual((summary["unclassified"], summary["errors"], summary["prefix_errors"]), (0, 0, 0))
+        self.assertEqual((summary.unclassified, summary.errors, summary.prefix_errors), (0, 0, 0))
         self.assertFalse(NbIP.objects.filter(pk=ip.pk).exists())
         self.assertFalse(Prefix.objects.filter(prefix=PD_NETWORK).exists())
 
@@ -365,13 +366,13 @@ class LivePrefixReceiptTest(TestCase):
 
         first = _run_job(server, [])
         adopted.refresh_from_db()
-        self.assertEqual((first["waiting"], adopted.status), (1, "active"))
+        self.assertEqual((first.waiting, adopted.status), (1, "active"))
         server.refresh_from_db()
         self.assertIn([6, "lease-prefix"], server.ipam_initial_observations["job"]["sources"])
 
         second = _run_job(server, [])
         adopted.refresh_from_db()
-        self.assertEqual((second["waiting"], adopted.status), (0, "deprecated"))
+        self.assertEqual((second.waiting, adopted.status), (0, "deprecated"))
 
     def test_a_job_whose_live_prefix_phase_failed_records_no_receipt(self):
         server = _server()

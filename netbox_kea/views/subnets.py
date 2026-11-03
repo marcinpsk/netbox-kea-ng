@@ -14,7 +14,7 @@ from netbox.views import generic
 from utilities.htmx import htmx_partial
 from utilities.views import register_model_view
 
-from .. import config_write, forms, runtime_change, server_configuration, subnet_catalogue, tables
+from .. import config_write, forms, managed_fields, runtime_change, server_configuration, subnet_catalogue, tables
 from ..constants import Family
 from ..dhcp_options import AmbiguousFormOption, DHCPOption, form_option_fields
 from ..kea import subnet_network
@@ -580,7 +580,7 @@ class _BaseSubnetEditView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView
         shown = (
             None
             if subnet_configuration is None
-            else server_configuration.shown_subnet(subnet_configuration, self.dhcp_version)
+            else managed_fields.shown_subnet(subnet_configuration, self.dhcp_version)
         )
         if shown is None:
             messages.error(

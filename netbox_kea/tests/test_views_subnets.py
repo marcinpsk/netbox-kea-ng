@@ -33,6 +33,7 @@ from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
 from django.urls import reverse
 
+from ..constants import Family
 from ..dhcp_options import ShownOption
 from ..views.notices import HEADLINES
 from ..views.subnets import _NO_SUBNET_CIDR
@@ -1267,6 +1268,100 @@ _CONFIG6_NO_NETWORKS = [
 ]
 
 
+class TestSubnetEditWritesOnlyChangedFields(_ViewTestBase):
+    """A Subnet save writes only the fields that the operator changed. Each other field keeps its exact live text."""
+
+    # Kea keeps the suffix verbatim and returns an aligned Pool as a prefix. The form shows the stripped suffix and the
+    # Pool range.
+    _LIVE: dict[Family, dict] = {
+        4: {
+            "id": 42,
+            "subnet": "10.0.0.0/24",
+            "pools": [{"pool": "10.0.0.16/28", "client-class": "lab"}],
+            "option-data": [{"name": "routers", "data": " 10.0.0.1"}],
+            "ddns-qualifying-suffix": " example.com ",
+            "valid-lifetime": 3600,
+        },
+        6: {
+            "id": 42,
+            "subnet": "2001:db8::/64",
+            "pools": [{"pool": "2001:db8::100/120", "client-class": "lab"}],
+            "option-data": [{"name": "dns-servers", "data": "2001:DB8::53"}],
+            "ddns-qualifying-suffix": " example.com ",
+            "valid-lifetime": 3600,
+        },
+    }
+
+    def _save(self, version: Family, **changes: str) -> dict:
+        """Open the edit page of the live Subnet, post it with *changes*, and return the Subnet that Kea received."""
+        url = reverse(f"plugins:netbox_kea:server_subnet{version}_edit", args=[self.server.pk, 42])
+        daemon = SubnetDaemon(version, [self._LIVE[version]])
+        with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
+            page = self.client.get(url)
+            post = self.client.post(url, {**_page_data(page), **changes})
+        self.assertEqual(post.status_code, 302)
+        self.assertEqual(
+            [str(message) for message in get_messages(post.wsgi_request)],
+            [f"Subnet 42 ({self._LIVE[version]['subnet']}) updated."],
+        )
+        ((sent,),) = [body["arguments"][f"subnet{version}"] for body in kea.bodies(f"subnet{version}-update")]
+        return sent
+
+    def test_an_unchanged_field_keeps_its_live_text(self):
+        for version in (4, 6):
+            with self.subTest(version=version):
+                self.assertEqual(self._save(version, valid_lft="7200"), {**self._LIVE[version], "valid-lifetime": 7200})
+
+    def test_a_kept_pool_keeps_its_live_entry_when_another_pool_is_added(self):
+        shown = {4: "10.0.0.16-10.0.0.31", 6: "2001:db8::100-2001:db8::1ff"}
+        added = {4: "10.0.0.40-10.0.0.50", 6: "2001:db8::300-2001:db8::3ff"}
+        for version in (4, 6):
+            (kept,) = self._LIVE[version]["pools"]
+            with self.subTest(version=version):
+                sent = self._save(version, pools=f"{shown[version]}\n{added[version]}")
+                self.assertEqual(sent["pools"], [kept, {"pool": added[version]}])
+
+    def test_a_live_change_after_the_page_was_shown_is_still_refused(self):
+        for version in (4, 6):
+            url = reverse(f"plugins:netbox_kea:server_subnet{version}_edit", args=[self.server.pk, 42])
+            daemon = SubnetDaemon(version, [self._LIVE[version]])
+            with self.subTest(version=version), stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
+                page = self.client.get(url)
+                daemon.subnets[0]["ddns-qualifying-suffix"] = "other.example.com"
+                post = self.client.post(url, {**_page_data(page), "valid_lft": "7200"})
+                # A refused save shows the form again.
+                self.assertEqual(post.status_code, 200)
+                changed = f"Subnet 42 ({self._LIVE[version]['subnet']}) changed in Kea. Reload the page and try again."
+                self.assertEqual(
+                    [str(message) for message in get_messages(post.wsgi_request)],
+                    [f"The change was not sent to Kea. {changed}"],
+                )
+                self.assertNotIn(f"subnet{version}-update", kea.commands())
+
+    def test_a_changed_field_is_written(self):
+        new = {
+            4: ("10.0.0.30-10.0.0.40", "dns_servers", "192.0.2.53"),
+            6: ("2001:db8::300-2001:db8::3ff", "ntp_servers", "2001:db8::123"),
+        }
+        option = {
+            4: {"name": "domain-name-servers", "data": "192.0.2.53"},
+            6: {"name": "sntp-servers", "data": "2001:db8::123"},
+        }
+        for version in (4, 6):
+            pool, field, address = new[version]
+            with self.subTest(version=version):
+                sent = self._save(version, pools=pool, ddns_qualifying_suffix="new.example.com", **{field: address})
+                self.assertEqual(
+                    sent,
+                    {
+                        **self._LIVE[version],
+                        "pools": [{"pool": pool}],
+                        "option-data": [*self._LIVE[version]["option-data"], option[version]],
+                        "ddns-qualifying-suffix": "new.example.com",
+                    },
+                )
+
+
 class TestServerSubnet4EditViewNetworkAssignment(_ViewTestBase):
     """Tests for shared-network assignment in ServerSubnet4EditView."""
 
@@ -1748,6 +1843,105 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, INVALID_SERVER_SETTINGS)
         self.assertEqual(kea.commands(), [])
+
+
+# The form values of a Subnet add with every optional field set, and the subnet{v}-add entry they send.
+_ADD_EVERY_FIELD: dict[Family, tuple[dict, dict]] = {
+    4: (
+        {
+            "subnet": "10.2.0.0/24",
+            "subnet_id": "40",
+            "pools": "10.2.0.10 - 10.2.0.20\n10.2.0.96/28",
+            "gateway": "10.2.0.1",
+            "dns_servers": "192.0.2.54, 192.0.2.53",
+            "ntp_servers": "192.0.2.123",
+            "ddns_qualifying_suffix": "example.org.",
+        },
+        {
+            "subnet": "10.2.0.0/24",
+            "id": 40,
+            "pools": [{"pool": "10.2.0.10-10.2.0.20"}, {"pool": "10.2.0.96-10.2.0.111"}],
+            "option-data": [
+                {"name": "routers", "data": "10.2.0.1"},
+                {"name": "domain-name-servers", "data": "192.0.2.54, 192.0.2.53"},
+                {"name": "ntp-servers", "data": "192.0.2.123"},
+            ],
+            "ddns-qualifying-suffix": "example.org.",
+        },
+    ),
+    6: (
+        {
+            "subnet": "2001:db8:2::/64",
+            "subnet_id": "40",
+            "pools": "2001:db8:2::100-2001:db8:2::1ff",
+            "gateway": "",
+            "dns_servers": "2001:db8::53",
+            "ntp_servers": "2001:db8::123, 2001:db8::124",
+            "ddns_qualifying_suffix": "v6.example.org.",
+        },
+        {
+            "subnet": "2001:db8:2::/64",
+            "id": 40,
+            "pools": [{"pool": "2001:db8:2::100-2001:db8:2::1ff"}],
+            "option-data": [
+                {"name": "dns-servers", "data": "2001:db8::53"},
+                {"name": "sntp-servers", "data": "2001:db8::123, 2001:db8::124"},
+            ],
+            "ddns-qualifying-suffix": "v6.example.org.",
+        },
+    ),
+}
+# The Kea key of each optional form field in the subnet{v}-add entry. The Subnet ID always goes to Kea.
+_ADD_FIELD_KEYS = {
+    "pools": ("pools",),
+    "gateway": ("option-data", "routers"),
+    "dns_servers": ("option-data", "domain-name-servers", "dns-servers"),
+    "ntp_servers": ("option-data", "ntp-servers", "sntp-servers"),
+    "ddns_qualifying_suffix": ("ddns-qualifying-suffix",),
+}
+
+
+class TestSubnetAddPayload(_ViewTestBase):
+    """The exact subnet{v}-add entry that the Subnet add form sends, with each optional field set and unset."""
+
+    def _sent(self, version: Family, data: dict) -> dict:
+        """POST the add form of *version* with *data*, and return the one Subnet entry that subnet{v}-add sent."""
+        url = reverse(f"plugins:netbox_kea:server_subnet{version}_add", args=[self.server.pk])
+        daemon = SubnetDaemon(version)
+        post = {**_SUBNET_ADD_POST, "ddns_qualifying_suffix": "", **data}
+        with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
+            response = self.client.post(url, post)
+        self.assertEqual(response.status_code, 302)
+        ((entry,),) = [body["arguments"][f"subnet{version}"] for body in kea.bodies(f"subnet{version}-add")]
+        return entry
+
+    def test_every_optional_field_set(self):
+        for version, (data, expected) in _ADD_EVERY_FIELD.items():
+            with self.subTest(version=version):
+                self.assertEqual(self._sent(version, data), expected)
+
+    def test_every_optional_field_unset(self):
+        for version, (data, expected) in _ADD_EVERY_FIELD.items():
+            unset = {**dict.fromkeys(_ADD_FIELD_KEYS, ""), "subnet": data["subnet"], "subnet_id": ""}
+            with self.subTest(version=version):
+                self.assertEqual(self._sent(version, unset), {"subnet": expected["subnet"], "id": 1})
+
+    def test_each_optional_field_alone(self):
+        for version, (data, expected) in _ADD_EVERY_FIELD.items():
+            for field, keys in _ADD_FIELD_KEYS.items():
+                if not data[field]:
+                    continue
+                alone = {
+                    **dict.fromkeys(_ADD_FIELD_KEYS, ""),
+                    "subnet": data["subnet"],
+                    "subnet_id": "40",
+                    field: data[field],
+                }
+                kept = {key: value for key, value in expected.items() if key in ("subnet", "id") or key == keys[0]}
+                if keys[0] == "option-data":
+                    kept["option-data"] = [option for option in expected["option-data"] if option["name"] in keys[1:]]
+                with self.subTest(version=version, field=field):
+                    self.assertEqual(self._sent(version, alone), kept)
 
 
 _ADDED = "Subnet 4 (10.2.0.0/24) added."

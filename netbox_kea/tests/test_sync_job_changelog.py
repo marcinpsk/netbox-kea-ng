@@ -23,7 +23,7 @@ from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import SyncConfig
 from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, complete_lease, queued
 from netbox_kea.tests.test_jobs import _lease_page, _patch_kea
-from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server, with_sync_config
+from netbox_kea.tests.utils import DISPATCHED_EVENTS, _make_db_server, run_counts, with_sync_config
 
 _SUBNETS = [{"id": 1, "subnet": "198.18.0.0/24"}]
 _LEASE = complete_lease(
@@ -143,7 +143,7 @@ class SyncJobChangeRecordTest(TestCase):
             KeaIpamSyncJob.handle(job)
         job.refresh_from_db()
         self.assertEqual(job.status, "completed")
-        self.assertEqual(len(job.data["summary"]), 2)
+        self.assertEqual(len(run_counts(job)), 2)
         changes = ObjectChange.objects.filter(changed_object_type=ContentType.objects.get_for_model(IPAddress))
         self.assertEqual(changes.count(), 2)
         self.assertEqual(set(changes.values_list("action", flat=True)), {"create"})

@@ -17,7 +17,6 @@ from netbox.views import generic
 from .. import config_write, forms, reservation_edit, subnet_catalogue
 from ..config_write import ReservationChangeOutcome
 from ..constants import Family, IPAddressValue
-from ..dhcp_options import parse_dhcp_option
 from ..integrations import dhcp_plugin
 from ..ipam_reconciliation import RESERVATION, claim_permissions
 from ..models import Server
@@ -86,26 +85,12 @@ def _submitted_values(
             ipaddress.IPv6Address(value) for value in (cleaned_data.get("ip_addresses") or "").split(",") if value
         )
     prefixes = _networks(cleaned_data.get("prefixes"))
-    rows = tuple(
-        reservation_edit.OptionRow(
-            name=row.get("name", ""),
-            data=row.get("data", ""),
-            always_send=bool(row.get("always_send")),
-            delete=bool(row.get("DELETE")),
-            original_option=parse_dhcp_option(row["original_option"])
-            if row.get("original_option") is not None
-            else None,
-            client_classes=row.get("client_classes", ""),
-        )
-        for row in (getattr(options_formset, "cleaned_data", []) or [])
-        if row
-    )
     next_server = cleaned_data.get("next_server")
     return reservation_edit.SubmittedValues(
         addresses,
         prefixes,
         cleaned_data.get("hostname", ""),
-        rows,
+        forms.option_rows(options_formset),
         client_classes=cleaned_data.get("client_classes", ""),
         next_server=ipaddress.IPv4Address(next_server) if next_server else None,
         server_hostname=cleaned_data.get("server_hostname", ""),
@@ -395,7 +380,7 @@ class _ReservationAddView(_ReservationMutationView):
             request,
             server,
             form,
-            forms.ReservationOptionsFormSet(prefix="options"),
+            forms.DHCPOptionRowFormSet(prefix="options"),
             capabilities,
             subnet_cmds_available=snapshot.subnet_cmds_available,
         )
@@ -491,7 +476,7 @@ class _ReservationEditView(_ReservationMutationView):
             request,
             server,
             form,
-            forms.ReservationOptionsFormSet(initial=state.options_initial, prefix="options"),
+            forms.DHCPOptionRowFormSet(initial=state.options_initial, prefix="options"),
             capabilities,
             user_context=reservation.user_context,
         )

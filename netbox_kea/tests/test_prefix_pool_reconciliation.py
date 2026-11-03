@@ -11,7 +11,7 @@ from ipam.models import VRF, IPRange, Prefix
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import IPAMOwnershipLink, next_confirmation_number
 from netbox_kea.tests.kea_stub import _catalogue_responses_for_subnets, stub_kea
-from netbox_kea.tests.utils import _make_db_server
+from netbox_kea.tests.utils import _make_db_server, run_counts
 
 SUBNET = {"id": 1, "subnet": "198.18.0.0/24", "pools": [{"pool": "198.18.0.10 - 198.18.0.20"}]}
 
@@ -20,7 +20,7 @@ def run_job(server, subnets=(SUBNET,)):
     job = Job.objects.create(name="Kea IPAM Sync", job_id=uuid.uuid4(), data={})
     with stub_kea(_catalogue_responses_for_subnets(4, list(subnets))):
         KeaIpamSyncJob(job).run(server_pk=server.pk)
-    return job.data["summary"][0]
+    return run_counts(job)[0]
 
 
 class PrefixPoolJobTest(TestCase):
@@ -35,7 +35,7 @@ class PrefixPoolJobTest(TestCase):
             set(IPAMOwnershipLink.objects.filter(server=server).values_list("source", "prefix_id", "ip_range_id")),
             {("subnet", prefix.pk, None), ("pool", None, pool.pk)},
         )
-        self.assertEqual((summary["created"], summary["errors"]), (2, 0))
+        self.assertEqual((summary.created, summary.errors), (2, 0))
 
     def test_removed_subnet_and_pool_keep_objects_and_drop_links_by_default(self):
         server = _make_db_server(dhcp6=False, sync_leases_enabled=False, sync_reservations_enabled=False)
@@ -98,7 +98,7 @@ class PrefixPoolJobTest(TestCase):
 
         summary = run_job(server, overlapping)
 
-        self.assertEqual((summary["created"], summary["disagreements"], summary["prefix_errors"]), (0, 1, 0))
+        self.assertEqual((summary.created, summary.disagreements, summary.prefix_errors), (0, 1, 0))
         self.assertFalse(IPRange.objects.exists())
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
@@ -124,13 +124,13 @@ class PrefixPoolJobTest(TestCase):
 
         disagreement = run_job(second, [smaller])
 
-        self.assertEqual(disagreement["disagreements"], 1)
+        self.assertEqual(disagreement.disagreements, 1)
         self.assertEqual(IPRange.objects.values().get(pk=pool.pk), before)
         self.assertEqual(IPAMOwnershipLink.objects.get(server=second, ip_range=pool).facts, {"prefix_length": 25})
         run_job(first, ())
         accepted = run_job(second, [smaller])
         pool.refresh_from_db()
-        self.assertEqual((accepted["disagreements"], accepted["updated"]), (0, 1))
+        self.assertEqual((accepted.disagreements, accepted.updated), (0, 1))
         self.assertEqual((str(pool.start_address), str(pool.end_address)), ("198.18.0.10/25", "198.18.0.20/25"))
         self.assertEqual(set(IPAMOwnershipLink.objects.values_list("server_id", flat=True)), {second.pk})
 
@@ -154,8 +154,8 @@ class PrefixPoolJobTest(TestCase):
 
         summary = run_job(server)
 
-        self.assertEqual(summary["conflicts"], 1)
-        self.assertEqual(summary["conflict_sample"], ["198.18.0.0/24"])
+        self.assertEqual(summary.conflicts, 1)
+        self.assertEqual(summary.conflict_sample, ("198.18.0.0/24",))
         self.assertEqual(Prefix.objects.values().get(pk=prefix.pk), before)
         link.refresh_from_db()
         self.assertEqual(link.stale_mark, mark)
@@ -183,13 +183,13 @@ class PrefixPoolJobTest(TestCase):
 
         summary = run_job(server, ())
 
-        self.assertEqual(summary["conflicts"], 1)
+        self.assertEqual(summary.conflicts, 1)
         self.assertEqual(Prefix.objects.values().get(pk=prefix.pk), before)
         self.assertEqual(IPAMOwnershipLink.objects.filter(prefix=prefix).count(), 2)
         Prefix.objects.filter(pk=prefix.pk).update(description="[kea-sync: subnet] Short operator note")
         retry = run_job(server, ())
         prefix.refresh_from_db()
-        self.assertEqual((retry["conflicts"], retry["updated"]), (0, 1))
+        self.assertEqual((retry.conflicts, retry.updated), (0, 1))
         self.assertEqual(prefix.description, "[kea-sync: delegated prefix] Short operator note")
         self.assertEqual(
             set(IPAMOwnershipLink.objects.filter(prefix=prefix).values_list("server_id", flat=True)), {other.pk}
@@ -213,7 +213,7 @@ class PrefixPoolJobTest(TestCase):
         self.assertEqual(Prefix.objects.values().get(), prefix)
         self.assertEqual(IPRange.objects.values().get(), pool)
         self.assertEqual(list(IPAMOwnershipLink.objects.order_by("pk").values()), links)
-        self.assertEqual((summary["created"], summary["updated"], summary["conflicts"]), (0, 0, 0))
+        self.assertEqual((summary.created, summary.updated, summary.conflicts), (0, 0, 0))
 
     def test_many_failed_pools_report_exact_error_count_and_limit_row_logs(self):
         from core.exceptions import JobFailed
@@ -231,8 +231,8 @@ class PrefixPoolJobTest(TestCase):
         ):
             KeaIpamSyncJob(job).run(server_pk=server.pk)
 
-        self.assertEqual(job.data["summary"][0]["prefix_errors"], 11)
-        self.assertEqual(job.data["summary"][0]["created"], 1)
+        self.assertEqual(run_counts(job)[0].prefix_errors, 11)
+        self.assertEqual(run_counts(job)[0].created, 1)
         self.assertEqual(sum("IPAM reconciliation of" in message for message in logs.output), 10)
         self.assertEqual(sum("Further row failures" in message for message in logs.output), 1)
         self.assertFalse(IPRange.objects.exists())
@@ -331,8 +331,8 @@ class PrefixPoolJobTest(TestCase):
         self.assertEqual(IPRange.objects.get().description, "Operator pool note")
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
-        self.assertEqual(summary["conflicts"], 2)
-        self.assertEqual(summary["conflict_sample"], ["198.18.0.0/24", "198.18.0.10 - 198.18.0.20"])
+        self.assertEqual(summary.conflicts, 2)
+        self.assertEqual(summary.conflict_sample, ("198.18.0.0/24", "198.18.0.10 - 198.18.0.20"))
 
     def test_operator_release_of_deprecated_prefix_and_pool_drops_marked_links(self):
         server = _make_db_server(
@@ -355,8 +355,8 @@ class PrefixPoolJobTest(TestCase):
         self.assertEqual(Prefix.objects.values().get(), prefix)
         self.assertEqual(IPRange.objects.values().get(), pool)
         self.assertFalse(IPAMOwnershipLink.objects.exists())
-        self.assertEqual(summary["conflicts"], 2)
-        self.assertEqual(summary["conflict_sample"], ["198.18.0.0/24", "198.18.0.10 - 198.18.0.20"])
+        self.assertEqual(summary.conflicts, 2)
+        self.assertEqual(summary.conflict_sample, ("198.18.0.0/24", "198.18.0.10 - 198.18.0.20"))
 
     def test_blank_descriptions_release_prefix_and_pool_even_while_reported(self):
         server = _make_db_server(
@@ -369,7 +369,7 @@ class PrefixPoolJobTest(TestCase):
         Prefix.objects.update(description="")
         IPRange.objects.update(description="")
         summary = run_job(server)
-        self.assertEqual(summary["conflicts"], 2)
+        self.assertEqual(summary.conflicts, 2)
         self.assertEqual((Prefix.objects.get().description, IPRange.objects.get().description), ("", ""))
         self.assertEqual((Prefix.objects.get().status, IPRange.objects.get().status), ("active", "active"))
         self.assertFalse(IPAMOwnershipLink.objects.exists())

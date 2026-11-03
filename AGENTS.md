@@ -218,6 +218,7 @@ URL request
       settings_page.py  (Settings page: one tab per settings singleton; ADR 0010)
   → reservation_edit.py (Reservation add/edit/import, signed form state, Published Name rules and after-apply facts)
   → config_write.py     (Configuration Changes, Reservation writes included: typed outcome, advisory lock, persist step)
+  → managed_fields.py   (the fields of the Subnet and Shared Network forms: edit types, shown values, entry writers)
   → change_outcome.py   (ChangeRejected and the Application classifier that every change shares; ADR 0011)
   → read_failure.py     (attempt() and ReadFailure: the one classifier of a failed Kea read; ADR 0015)
   → runtime_change.py   (Runtime Changes: Lease add/edit/delete/wipe, DHCP enable/disable; ADR 0011)
@@ -232,6 +233,7 @@ URL request
   → manual_sync.py      (Manual Sync of one Lease or Reservation: permission verdict, claim, typed outcome; ADR 0011)
   → ipam_marker.py     (the `[kea-sync: <kind>]` description marker: parse, rewrite, legacy text; ADR 0006)
   → sync_plan.py        (the Sync Plan: the switches and type flags that decide which sources a sync run reads)
+  → sync_run_result.py  (the Sync Run Result of each Server in `job.data["summary"]`: writer, reader, jobs of a Server)
   → jobs.py             (KeaIpamSyncJob — periodic background sync)
   → tables.py           (non-model GenericTable renders enriched dicts)
   → template            (django-tables2 + HTMX for pagination)
@@ -577,10 +579,15 @@ from the `ServerConfigurationSnapshot` that the operation's own scope read (`Mut
 When that read cannot show the Shared Network, the operation sends `network{v}-get` as before.
 
 Subnet edit and Shared Network edit also take the values that the page showed (`shown`, the type of the edit),
-and send nothing while a live value differs, because a save writes back every field that the form shows. One
-function maps the live facts to those values for the GET and for the check under the lock:
-`server_configuration.shown_subnet` and `shown_shared_network`. `_ShownValuesForm` builds each hidden `shown_`
-field as a copy of its visible field, so a value that Kea writes in another text form is not a change.
+and send nothing while a live value differs. `managed_fields.py` holds the edit types and both directions of these
+fields. Its reader maps the parsed facts of `server_configuration` to the shown values, for the GET and for the check
+under the lock (`shown_subnet`, `shown_shared_network`). Its writers (`write_subnet`, `write_shared_network`) change
+on the raw Kea entry only the fields whose edited value differs from the shown value. The check proves that the shown
+values are live, so a field that the operator did not change keeps its exact live text. A kept Pool of a changed Pool
+list keeps its live entry. The Subnet add writes a new entry through `write_subnet`, with nothing shown
+(`new_subnet`).
+`_ShownValuesForm` builds each hidden `shown_` field as a copy of its visible field, so a value that Kea writes in
+another text form is not a change.
 
 A read-modify-write operation holds the lock from its `config-get` to the end of the
 persist step. `KeaClient` sends each command (`config_candidate`, `config_test`,
@@ -709,7 +716,7 @@ resort, reserved for true external boundaries you cannot run locally.
   configuration keys or service names. String templates (f-strings, `.format`, `%`, `+`)
   count when they can build a wire literal. Wire owners are `kea.py`, `kea_paths.py`,
   `integrations/dhcp_import_ledger.py`, `integrations/dhcp_import_fields.py`, `server_configuration.py`, `subnet_catalogue.py`, `reservations.py`,
-  `dhcp_options.py`, `leases.py`, and `subnet_settings.py`, relative to `netbox_kea/`. The vocabulary of hyphenated
+  `dhcp_options.py`, `leases.py`, `subnet_settings.py`, and `managed_fields.py`, relative to `netbox_kea/`. The vocabulary of hyphenated
   keys includes every key in `accepted-keys.json`.
   The checker excludes these exact modules, tests, and migrations. The transport stub
   `tests/kea_stub.py` may also use wire literals to model Kea responses.

@@ -70,5 +70,5 @@ need two options that differ only in their client classes to stay two options.
   changes this ADR.
 - Adding a custom Option Definition can change a name-identified option into a code-identified one. Both forms refer
   to the same Kea entry, so no stored state depends on the change.
-- Editing the client classes of a Reservation option, and carrying them in the Reservation Transfer Document, belong to
-  #102. This ADR fixes only how entries are identified and merged.
+- The client classes of an option are editable in every scope: the global, Subnet and Reservation editors share one
+  option row form and one translation into the typed edit (#226). The Reservation Transfer Document carries them (#102).
