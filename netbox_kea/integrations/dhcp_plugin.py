@@ -70,10 +70,11 @@ v1 scope (import + diff, read-only against Kea):
   Each member Subnet belongs to its Shared Network instead of the DHCPServer. Without the capability for an
   optional prefix (netbox-plugin-dhcp 0.2.0 requires one) every Shared Network is unsupported, and its member Subnets
   import onto the DHCPServer. Names follow the same uniqueness rule as client classes.
-* **Removal.** A mapped row whose Kea source a Complete observation of its kind no longer reports is a Stale DHCP
-  Import Object (:func:`stale_judgment`, :func:`remove_stale_objects`). The run removes it, children first, and reports it. An Incomplete
-  observation keeps every row of its kind. A row whose delete would also delete a DHCP plugin row that the run keeps,
-  that an Option still uses, or that a kept row names in a client class relation, stays. IPAM objects stay: ADR 0006 ownership decides them.
+* **Removal.** A mapped row whose Kea source a Complete observation of its kind no longer reports is a Stale DHCP Import
+  Object (:func:`stale_judgment`, :func:`remove_stale_objects`). The run removes it, children first, and reports it. An
+  Incomplete observation keeps every row of its kind. A row whose delete would also delete a DHCP plugin row that the
+  run keeps, that an Option still uses, or that a kept row names in a client class relation, stays. IPAM objects stay:
+  ADR 0006 ownership decides them.
   The Subnet writes run first, so a kept Subnet that left a stale Shared Network no longer belongs to it.
 """
 

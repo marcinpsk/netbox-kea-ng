@@ -328,14 +328,14 @@ whose removal relies on it, directly or through other objects, is kept too. A re
 its DHCP Options. It never deletes an IP address, a Prefix or an IP Range. The change log records each removal, and
 the import needs the delete permission of each DHCP plugin model that it can remove.
 
-The **Drift** card of the **DHCP Plugin** page reads Kea after the page opens and compares it with the imported rows
-of each mapped kind. It lists each missing object (Kea has it, NetBox has no imported row), each stale object (no row
-that NetBox keeps uses it, so the next run removes it) and each kept object (a row that NetBox keeps uses it now), with
-a count of the objects that are in step. It finds the kept objects with the rule that the run uses, and shows the reason that the run reports for
-each. The card shows the rows as they are now. The run updates the other rows first, so it removes a kept object when
-these updates remove its last use, for example when Kea also removed the reference. An imported row that another
-writer confirmed after the card began its read is in step. When Kea was not read in full for a kind, the card shows
-why, and it lists the imported rows that it did not see as not seen, never as stale. A DHCP Option is judged by the
-read of its own entries and of its object, so its kind can show why the read is not complete and still list a stale
-Option of an object that Kea gave in full. When Kea cannot be read, the card shows the error and lists the imported
-rows as unknown. Its **Latest run** link opens the stored result of the last run.
+The **Drift** card of the **DHCP Plugin** page reads Kea after the page opens and compares it with the imported rows of
+each mapped kind. It lists each missing object (Kea has it, NetBox has no imported row), each stale object (no row that
+NetBox keeps uses it, so the next run removes it) and each kept object (a row that NetBox keeps uses it now), with a
+count of the objects that are in step. It finds the kept objects with the rule that the run uses, and shows the reason
+that the run reports for each. The card shows the rows as they are now. The run updates the other rows first, so it
+removes a kept object when these updates remove its last use, for example when Kea also removed the reference. An
+imported row that another writer confirmed after the card began its read is in step. When Kea was not read in full
+for a kind, the card shows why, and it lists the imported rows that it did not see as not seen, never as stale. A DHCP
+Option is judged by the read of its own entries and of its object, so its kind can show why the read is not complete
+and still list a stale Option of an object that Kea gave in full. When Kea cannot be read, the card shows the error
+and lists the imported rows as unknown. Its **Latest run** link opens the stored result of the last run.
