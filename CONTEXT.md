@@ -62,10 +62,11 @@ _Avoid_: Import log, import summary
 
 **Stale DHCP Import Object**:
 A NetBox DHCP object with a DHCP Import Mapping whose Kea source a Complete observation of the same kind no longer
-reports. The DHCP Import removes it. An Incomplete observation cannot make an object stale. A Pool whose range
-changes in Kea is a different Pool, so the old one becomes stale. So is a delegated-prefix Pool whose prefix or
-delegated length changes, and a DHCP Option whose client classes change. A DHCP Option is judged by its own
-observation and by the observation of the kind of the object that assigns it.
+reports. The DHCP Import removes it. A stale object stays while a row that the run keeps uses it. An Incomplete
+observation cannot make an object stale. A Pool whose range changes in Kea is a different Pool, so the old one becomes
+stale. So is a delegated-prefix Pool whose prefix or delegated length changes, and a DHCP Option whose client classes
+change. A DHCP Option is judged by its own observation and by the observation of the kind of the object that assigns
+it.
 _Avoid_: Orphan, orphaned Subnet
 
 **Declared Value**:
