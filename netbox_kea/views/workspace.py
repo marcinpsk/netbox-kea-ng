@@ -1,60 +1,179 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""Shared section definitions and canonical Server workspace navigation."""
+"""The Workspace Sections and the canonical Server workspace navigation."""
 
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from django import forms as django_forms
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse, QueryDict
 from django.shortcuts import get_object_or_404, render
 from django.urls import reverse
 from utilities.views import ObjectPermissionRequiredMixin
 
+from .. import constants, forms
 from ..constants import Family
 from ..models import Server
 from ._base import _safe_return_url
 
-SECTIONS = (
-    ("overview", "Overview"),
-    ("leases", "Leases"),
-    ("subnets", "Subnets"),
-    ("reservations", "Reservations"),
-    ("configuration", "Configuration"),
-    ("sync", "Sync"),
-)
+PAGINATION = "page"
+TABLE_FIELDS = ("sort", "per_page")
 
 
-def server_section_url(server: Server, section: str, family: Family) -> str:
-    """Return the canonical list or Overview of one Server section and family."""
-    names = {
-        "overview": "server",
-        "leases": f"server_leases{family}",
-        "subnets": f"server_subnets{family}",
-        "shared_networks": f"server_shared_networks{family}",
-        "reservations": f"server_reservations{family}",
-        "configuration": f"server_option_def{family}",
-        "options": f"server_dhcp{family}_options_edit",
-        "sync": "server_sync_status",
-    }
-    url = reverse(f"plugins:netbox_kea:{names[section]}", args=[server.pk])
-    return url + (f"?family={family}" if section in ("overview", "sync") else "")
+@dataclass(frozen=True)
+class SubnetSearch:
+    """A search value that names one Subnet of one Server and family, and the query fields that carry it."""
+
+    fields: tuple[str, ...]
+    text: str
+    by_cidr: bool
 
 
-def workspace_filters(query: QueryDict, section: str) -> QueryDict:
-    """Keep section filters and table preferences; pagination belongs to its Server."""
-    fields = {"sort", "per_page"}
-    if section == "leases":
-        fields.update(("q", "by", "state"))
-    elif section == "reservations":
-        fields.update(("q", "subnet_id", "scope"))
-    elif section == "subnets":
-        fields.update(("q", "subnet_id"))
-    result = query.copy()
-    for key in list(result):
-        if key not in fields:
-            result.pop(key)
+def _no_subnet_search(query: QueryDict) -> SubnetSearch | None:
+    return None
+
+
+def _subnet_id_search(query: QueryDict) -> SubnetSearch | None:
+    return SubnetSearch(("subnet_id",), query.get("subnet_id", ""), by_cidr=False) if "subnet_id" in query else None
+
+
+def _lease_subnet_search(query: QueryDict) -> SubnetSearch | None:
+    by = query.get("by")
+    if by not in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
+        return None
+    return SubnetSearch(("q", "by"), query.get("q", ""), by_cidr=by == constants.BY_SUBNET)
+
+
+@dataclass(frozen=True)
+class WorkspaceSection:
+    """One Workspace Section or subsection: its routes, native tab and search filters.
+
+    A route name holds ``{family}`` when each family has its own route; otherwise the family is a query field.
+    """
+
+    key: str
+    label: str
+    server_route: str
+    combined_route: str | None
+    native_tab: str | None = None
+    search_forms: dict[Family, type[django_forms.Form]] = field(default_factory=dict)
+    parent: str | None = None
+    subnet_search: Callable[[QueryDict], SubnetSearch | None] = _no_subnet_search
+    # Filter fields that are valid only together, so an invalid one drops all of them.
+    paired_fields: frozenset[str] = frozenset()
+
+    @property
+    def filter_fields(self) -> frozenset[str]:
+        """Return the fields of the search form and the table fields; pagination is never a filter."""
+        searched = {name for form in self.search_forms.values() for name in form.base_fields}
+        return frozenset((searched | set(TABLE_FIELDS)) - {PAGINATION})
+
+    def server_url(self, pk: int, family: Family) -> str:
+        """Return the list of this section on one Server for *family*."""
+        url = reverse(f"plugins:netbox_kea:{self.server_route.format(family=family)}", args=[pk])
+        return url if "{family}" in self.server_route else f"{url}?family={family}"
+
+    def combined_url(self, family: Family) -> str:
+        """Return the combined page of this section for *family*."""
+        if self.combined_route is None:
+            raise ValueError(f"The Workspace Section {self.key} has no combined page.")
+        return reverse(f"plugins:netbox_kea:{self.combined_route.format(family=family)}")
+
+
+WORKSPACE_SECTIONS = {
+    section.key: section
+    for section in (
+        WorkspaceSection("overview", "Overview", "server", "combined_overview{family}", "status"),
+        WorkspaceSection(
+            "leases",
+            "Leases",
+            "server_leases{family}",
+            "combined_leases{family}",
+            "leases4",
+            {4: forms.Leases4SearchForm, 6: forms.Leases6SearchForm},
+            subnet_search=_lease_subnet_search,
+            paired_fields=frozenset(("q", "by")),
+        ),
+        WorkspaceSection(
+            "subnets",
+            "Subnets",
+            "server_subnets{family}",
+            "combined_subnets{family}",
+            "subnets4",
+            {4: forms.SubnetSearchForm, 6: forms.SubnetSearchForm},
+            subnet_search=_subnet_id_search,
+        ),
+        WorkspaceSection(
+            "shared_networks",
+            "Shared Networks",
+            "server_shared_networks{family}",
+            "combined_shared_networks{family}",
+            parent="subnets",
+        ),
+        WorkspaceSection(
+            "reservations",
+            "Reservations",
+            "server_reservations{family}",
+            "combined_reservations{family}",
+            "reservations4",
+            {4: forms.ReservationSearchForm, 6: forms.ReservationSearchForm},
+            subnet_search=_subnet_id_search,
+        ),
+        WorkspaceSection(
+            "configuration",
+            "Configuration",
+            "server_option_def{family}",
+            "combined_configuration{family}",
+            "option_def4",
+        ),
+        WorkspaceSection("options", "Server Options", "server_dhcp{family}_options_edit", None, parent="configuration"),
+        WorkspaceSection("sync", "Sync", "server_sync_status", "combined_sync{family}", "sync_status"),
+    )
+}
+
+
+def top_sections() -> list[WorkspaceSection]:
+    """Return the Workspace Sections without their subsections, in navigation order."""
+    return [section for section in WORKSPACE_SECTIONS.values() if section.parent is None]
+
+
+def subsections(section: WorkspaceSection) -> list[WorkspaceSection]:
+    """Return the top-level *section* and its subsections, in navigation order."""
+    return [section, *(child for child in WORKSPACE_SECTIONS.values() if child.parent == section.key)]
+
+
+def top_section(section: WorkspaceSection) -> WorkspaceSection:
+    """Return the top-level section of *section*."""
+    return WORKSPACE_SECTIONS[section.parent] if section.parent else section
+
+
+def scope_section(section: WorkspaceSection) -> WorkspaceSection:
+    """Return the section that a scope change opens: a subsection without a combined page opens its parent."""
+    return section if section.combined_route else top_section(section)
+
+
+def view_section(view: Any) -> WorkspaceSection:
+    """Return the Workspace Section that a view class or instance declares."""
+    subsection = getattr(view, "workspace_subsection", None)
+    return WORKSPACE_SECTIONS[subsection or str(getattr(view, "workspace_section", "overview"))]
+
+
+def workspace_filters(query: QueryDict, section: WorkspaceSection) -> QueryDict:
+    """Keep the last value of each filter field of *section*, as a Django form reads it."""
+    fields = section.filter_fields
+    result = QueryDict(mutable=True)
+    for key in query:
+        if key in fields:
+            result.setlist(key, query.getlist(key)[-1:])
     return result
+
+
+def with_query(url: str, query: QueryDict) -> str:
+    """Append *query* to *url*, which can already hold query fields."""
+    return url + (("&" if "?" in url else "?") + query.urlencode() if query else "")
 
 
 def with_return_url(url: str, return_url: str) -> str:
@@ -88,22 +207,16 @@ def server_context(request: HttpRequest, server: Server) -> dict[str, Any]:
     match = request.resolver_match
     view = getattr(match.func, "view_class", None) if match else None
     family = selected_family(request, server, view)
-    section = getattr(view, "workspace_section", "overview")
-    subsection = getattr(view, "workspace_subsection", None)
+    section = view_section(view)
+    scoped = scope_section(section)
     return_url = _safe_return_url(request, "")
 
-    def section_url(key: str, version: Family) -> str:
-        return with_return_url(server_section_url(server, key, version), return_url)
-
     def family_url(version: Family) -> str:
-        url = section_url(subsection or section, version)
-        query = workspace_filters(request.GET, subsection or section)
-        suffix = query.urlencode()
-        return url + (("&" if "?" in url else "?") + suffix if suffix else "")
+        url = with_return_url(section.server_url(server.pk, version), return_url)
+        return with_query(url, workspace_filters(request.GET, section))
 
-    switch_section = "configuration" if subsection == "options" else subsection or section
-    switch_query = workspace_filters(request.GET, switch_section)
-    switch_query["section"] = switch_section
+    switch_query = workspace_filters(request.GET, scoped)
+    switch_query["section"] = scoped.key
     switch_query["family"] = str(family)
     if match and set(match.kwargs) - {"pk"}:
         switch_query["record_selection"] = "1"
@@ -114,21 +227,20 @@ def server_context(request: HttpRequest, server: Server) -> dict[str, Any]:
     for choice in Server.objects.restrict(request.user, "view").exclude(pk=server.pk).order_by("name"):
         switch_query["target"] = str(choice.pk)
         switches.append((choice.name, switch_url + "?" + switch_query.urlencode()))
-    all_url = reverse(f"plugins:netbox_kea:combined_{switch_section}{family}")
-    all_filters = workspace_filters(request.GET, switch_section)
-    if all_filters:
-        all_url += "?" + all_filters.urlencode()
 
     return {
         "workspace_scope_label": server.name,
         "workspace_return_url": return_url,
-        "workspace_section": section,
+        "workspace_section": top_section(section).key,
         "workspace_family": family,
-        "workspace_sections": [(key, label, section_url(key, family)) for key, label in SECTIONS],
+        "workspace_sections": [
+            (entry.key, entry.label, with_return_url(entry.server_url(server.pk, family), return_url))
+            for entry in top_sections()
+        ],
         "workspace_families": [(version, family_url(version)) for version in (4, 6)],
         "workspace_subsections": [],
         "workspace_server_switches": switches,
-        "workspace_all_servers_url": all_url,
+        "workspace_all_servers_url": with_query(scoped.combined_url(family), workspace_filters(request.GET, scoped)),
     }
 
 

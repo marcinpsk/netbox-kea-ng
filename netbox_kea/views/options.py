@@ -37,7 +37,7 @@ from ._base import (
 )
 from .notices import notice, show_notices
 from .subnets import _NO_SUBNET_CIDR, _SUBNETS_TAB, _displayed_subnet
-from .workspace import ServerFamilyMixin
+from .workspace import WORKSPACE_SECTIONS, ServerFamilyMixin
 
 # One Config tab for both sections and both families; ServerOptionDef4View owns it.
 _CONFIG_TAB = OptionalViewTab(label="Config", weight=1050, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
@@ -48,14 +48,12 @@ def config_nav_context(server_pk: int, section: str, dhcp_version: Family) -> di
 
     ``section`` selects the server DHCP Option editor or the Option Definition list.
     """
-    options_name = "server_dhcp{}_options_edit"
-    optiondef_name = "server_option_def{}"
     return {
         "tab": _CONFIG_TAB,
         "config_section": section,
         "dhcp_version": dhcp_version,
-        "nav_options_url": reverse(f"plugins:netbox_kea:{options_name.format(dhcp_version)}", args=[server_pk]),
-        "nav_optiondef_url": reverse(f"plugins:netbox_kea:{optiondef_name.format(dhcp_version)}", args=[server_pk]),
+        "nav_options_url": WORKSPACE_SECTIONS["options"].server_url(server_pk, dhcp_version),
+        "nav_optiondef_url": WORKSPACE_SECTIONS["configuration"].server_url(server_pk, dhcp_version),
     }
 
 

@@ -44,7 +44,7 @@ from ._base import (
     _safe_return_url,
 )
 from .notices import Notice, load_snapshot, notice, show_notices
-from .workspace import ServerFamilyMixin
+from .workspace import WORKSPACE_SECTIONS, ServerFamilyMixin, subsections
 
 logger = logging.getLogger(__name__)
 
@@ -63,15 +63,17 @@ _SUBNETS_TAB = OptionalViewTab(label="Subnets", weight=1020, is_enabled=lambda s
 def subnets_nav_context(server_pk: int, section: str, dhcp_version: Family) -> dict[str, Any]:
     """Build context for the Subnets and Shared Networks subsection navigation.
 
-    ``section`` is ``"subnets"`` or ``"shared_networks"``. Returns the shared tab
-    plus the URLs of the two subsections.
+    ``section`` is the key of the shown subsection. Returns the shared tab and the key, label and URL of each
+    subsection.
     """
     return {
         "tab": _SUBNETS_TAB,
         "section": section,
         "dhcp_version": dhcp_version,
-        "nav_subnets_url": reverse(f"plugins:netbox_kea:server_subnets{dhcp_version}", args=[server_pk]),
-        "nav_shared_url": reverse(f"plugins:netbox_kea:server_shared_networks{dhcp_version}", args=[server_pk]),
+        "subsections": [
+            (entry.key, entry.label, entry.server_url(server_pk, dhcp_version))
+            for entry in subsections(WORKSPACE_SECTIONS["subnets"])
+        ],
     }
 
 

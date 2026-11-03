@@ -1,14 +1,12 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 from typing import Any, cast
-from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.forms import ChoiceField, Field
-from django.http import HttpResponse
+from django.http import HttpResponse, QueryDict
 from django.http.request import HttpRequest
 from django.shortcuts import redirect, render
-from django.urls import reverse
 from django.views import View
 
 from .. import forms, server_configuration, subnet_catalogue, tables
@@ -33,9 +31,17 @@ from .reservations import empty_text as reservation_empty_text
 from .reservations import fetch as fetch_reservations
 from .reservations import present as present_reservations
 from .server_scope import SELECTION_FIELD, ServerScope, resolve
-from .workspace import SECTIONS, server_section_url, with_return_url
-
-_LEASE_SEARCH_FIELDS = ("q", "by", "state")
+from .workspace import (
+    WORKSPACE_SECTIONS,
+    WorkspaceSection,
+    subsections,
+    top_section,
+    top_sections,
+    view_section,
+    with_query,
+    with_return_url,
+    workspace_filters,
+)
 
 
 def _search_value_label(field: Field, value: str) -> str:
@@ -49,10 +55,16 @@ def _search_value_label(field: Field, value: str) -> str:
 class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
     """Resolve the Server Scope once before a combined page reads live data."""
 
-    active_tab: str = "overview"
-    dhcp_version: Family | None = None
+    workspace_section = "overview"
+    workspace_subsection: str | None = None
+    dhcp_version: Family
     server_scope: ServerScope
     has_combined_export = True
+
+    @property
+    def section(self) -> WorkspaceSection:
+        """Return the Workspace Section of this combined page."""
+        return view_section(self)
 
     def get(self, request: HttpRequest) -> HttpResponse:
         """Resolve the Server Scope and show an explicit state for an invalid selection."""
@@ -65,11 +77,13 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
             messages.warning(request, f"Export refused: DHCPv{self.dhcp_version} is not enabled on {names}.")
             query = request.GET.copy()
             query.pop("export")
-            url = reverse(f"plugins:netbox_kea:combined_{self.active_tab}")
-            return redirect(url + "?" + query.urlencode())
+            return redirect(self.section.combined_url(self.dhcp_version) + "?" + query.urlencode())
         # A download stays on a section that supports combined exports.
         if self.server_scope.is_one and not is_export:
-            target = self._single_server_url(request)
+            server = self.server_scope.servers[0]
+            target = with_query(
+                self.section.server_url(server.pk, self.dhcp_version), workspace_filters(request.GET, self.section)
+            )
             if request.headers.get("HX-Request") == "true":
                 response = HttpResponse()
                 response["HX-Redirect"] = target
@@ -77,47 +91,9 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
             return redirect(target)
         return self.get_server_scoped(request)
 
-    def _single_server_url(self, request: HttpRequest) -> str:
-        """Keep only query fields that the canonical Server tab understands."""
-        server = self.server_scope.servers[0]
-        if self.active_tab == "overview":
-            return server.get_absolute_url() + f"?family={self.dhcp_version}"
-        if self.active_tab.startswith("configuration"):
-            return reverse(f"plugins:netbox_kea:server_option_def{self.dhcp_version}", args=[server.pk])
-        if self.active_tab.startswith("sync"):
-            return reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]) + f"?family={self.dhcp_version}"
-        compatible = {"sort", "per_page"}
-        if self.active_tab.startswith("leases"):
-            # The chooser has no per-Server Lease cursor.
-            compatible.update(_LEASE_SEARCH_FIELDS)
-        elif self.active_tab.startswith("reservations"):
-            # Combined table pagination is not a per-Server Reservation cursor.
-            compatible.update(forms.ReservationSearchForm.base_fields)
-        else:
-            compatible.add("page")
-        query = request.GET.copy()
-        for key in list(query):
-            if key not in compatible:
-                query.pop(key)
-        url = reverse(f"plugins:netbox_kea:server_{self.active_tab}", args=[server.pk])
-        return url + (f"?{query.urlencode()}" if query else "")
-
     def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """Render a combined section within its resolved Server Scope."""
         raise NotImplementedError
-
-    def _filter_fields(self) -> set[str]:
-        """Return the query fields that filter or order this combined section; pagination is not one."""
-        if self.active_tab == "overview" or self.active_tab.startswith(("configuration", "sync")):
-            return set()
-        fields = {"sort", "per_page"}
-        if self.active_tab.startswith("leases"):
-            fields.update(_LEASE_SEARCH_FIELDS)
-        elif self.active_tab.startswith("reservations"):
-            fields.update(forms.ReservationSearchForm.base_fields)
-        elif self.active_tab.startswith("subnets"):
-            fields.update(forms.SubnetSearchForm.base_fields)
-        return fields
 
     def _combined_context(self, request: HttpRequest) -> dict[str, Any]:
         """Build context vars shared by every combined view."""
@@ -128,11 +104,10 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
                 (server.name, f"DHCPv{self.dhcp_version} is not enabled on this Server.")
                 for server in self.server_scope.missing_family
             )
-        filter_fields = self._filter_fields()
-        family = self.dhcp_version or 4
-        subsection = self.active_tab.rstrip("46")
-        section = "subnets" if subsection == "shared_networks" else subsection
-        label = dict(SECTIONS)[section]
+        section = self.section
+        parent = top_section(section)
+        filters = workspace_filters(request.GET, section)
+        family = self.dhcp_version
         scope_label = (
             "Invalid Server selection"
             if self.server_scope.is_invalid
@@ -143,41 +118,30 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
             else f"{len(self.server_scope.servers)} Servers selected"
         )
 
-        def section_url(key: str, version: Family, *, filters: bool = False) -> str:
-            query = request.GET.copy()
-            for name in list(query):
-                if name not in {"server", SELECTION_FIELD} and (not filters or name not in filter_fields):
-                    query.pop(name)
-                elif name in filter_fields:
-                    query.setlist(name, [request.GET[name]])
+        def scope_url(entry: WorkspaceSection, version: Family, query: QueryDict | None = None) -> str:
             # Use the resolver's normalized IDs, or its raw invalid selection.
-            query.pop("server", None)
-            query.pop(SELECTION_FIELD, None)
-            suffix = "&".join(value for value in (self.server_scope.server_qs, query.urlencode()) if value)
-            url = reverse(f"plugins:netbox_kea:combined_{key}{version}")
-            return url + (f"?{suffix}" if suffix else "")
+            url = entry.combined_url(version)
+            if self.server_scope.server_qs:
+                url += f"?{self.server_scope.server_qs}"
+            return with_query(url, query) if query is not None else url
 
+        combined_subsections = [entry for entry in subsections(parent) if entry.combined_route]
         return {
             "server_scope": self.server_scope,
-            "server_selector_fields": [
-                (SELECTION_FIELD, "1"),
-                *((key, request.GET[key]) for key in request.GET if key in filter_fields),
-            ],
+            "server_selector_fields": [(SELECTION_FIELD, "1"), *filters.items()],
             "server_scope_warnings": server_scope_warnings,
-            "active_tab": self.active_tab,
-            "workspace_title": f"{scope_label} · {label} · DHCPv{family}",
+            "workspace_title": f"{scope_label} · {parent.label} · DHCPv{family}",
             "workspace_scope_label": scope_label,
-            "workspace_section_label": label,
-            "workspace_section": section,
-            "workspace_subsection": subsection,
+            "workspace_section_label": parent.label,
+            "workspace_section": parent.key,
+            "workspace_subsection": section.key,
             "workspace_family": family,
-            "workspace_sections": [(key, text, section_url(key, family)) for key, text in SECTIONS],
-            "workspace_families": [(version, section_url(subsection, version, filters=True)) for version in (4, 6)],
+            "workspace_sections": [(entry.key, entry.label, scope_url(entry, family)) for entry in top_sections()],
+            "workspace_families": [(version, scope_url(section, version, filters)) for version in (4, 6)],
             "workspace_subsections": [
-                (key, text, section_url(key, family))
-                for key, text in (("subnets", "Subnets"), ("shared_networks", "Shared Networks"))
+                (entry.key, entry.label, scope_url(entry, family)) for entry in combined_subsections
             ]
-            if section == "subnets"
+            if len(combined_subsections) > 1
             else [],
         }
 
@@ -189,7 +153,6 @@ class CombinedDashboardView(_CombinedViewMixin):
     regardless of server availability.
     """
 
-    active_tab = "overview"
     dhcp_version: Family = 4
     has_combined_export = False
     template_name = "netbox_kea/combined_overview.html"
@@ -198,17 +161,13 @@ class CombinedDashboardView(_CombinedViewMixin):
         """Render the overview with the Servers in the resolved Server Scope."""
         ctx = self._combined_context(request)
         ctx["page_title"] = "All Kea Servers"
+        path = request.get_full_path()
         ctx["server_cards"] = [
             (
                 server,
-                with_return_url(server.get_absolute_url() + f"?family={self.dhcp_version}", request.get_full_path()),
-                with_return_url(
-                    reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk]),
-                    request.get_full_path(),
-                ),
-                with_return_url(
-                    reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[server.pk]),
-                    request.get_full_path(),
+                *(
+                    with_return_url(WORKSPACE_SECTIONS[key].server_url(server.pk, self.dhcp_version), path)
+                    for key in ("overview", "reservations", "subnets")
                 ),
             )
             for server in self.server_scope.servers
@@ -225,6 +184,7 @@ class CombinedDashboard6View(CombinedDashboardView):
 class _ConfigurationServerChooserView(_CombinedViewMixin):
     """Choose a permitted Server for family-specific DHCP configuration."""
 
+    workspace_section = "configuration"
     has_combined_export = False
     dhcp_version: Family = 4
 
@@ -234,9 +194,7 @@ class _ConfigurationServerChooserView(_CombinedViewMixin):
         ctx["configuration_servers"] = [
             (
                 server,
-                with_return_url(
-                    server_section_url(server, "configuration", self.dhcp_version), request.get_full_path()
-                ),
+                with_return_url(self.section.server_url(server.pk, self.dhcp_version), request.get_full_path()),
             )
             for server in self.server_scope.query_servers
         ]
@@ -246,19 +204,17 @@ class _ConfigurationServerChooserView(_CombinedViewMixin):
 class CombinedConfiguration4View(_ConfigurationServerChooserView):
     """Server chooser for DHCPv4 configuration."""
 
-    active_tab = "configuration4"
-
 
 class CombinedConfiguration6View(_ConfigurationServerChooserView):
     """Server chooser for DHCPv6 configuration."""
 
-    active_tab = "configuration6"
     dhcp_version = 6
 
 
 class _CombinedSyncView(_CombinedViewMixin):
     """Show recorded sync results for selected Servers without reading Kea."""
 
+    workspace_section = "sync"
     has_combined_export = False
     dhcp_version: Family = 4
 
@@ -267,7 +223,7 @@ class _CombinedSyncView(_CombinedViewMixin):
         ctx = self._combined_context(request)
         rows = []
         for server in self.server_scope.query_servers:
-            url = with_return_url(server_section_url(server, "sync", self.dhcp_version), request.get_full_path())
+            url = with_return_url(self.section.server_url(server.pk, self.dhcp_version), request.get_full_path())
             rows.append((server, *latest(server.pk), url))
         ctx["sync_results"] = rows
         return render(request, "netbox_kea/combined_sync.html", ctx)
@@ -276,13 +232,10 @@ class _CombinedSyncView(_CombinedViewMixin):
 class CombinedSync4View(_CombinedSyncView):
     """Recorded sync results with DHCPv4 selected."""
 
-    active_tab = "sync4"
-
 
 class CombinedSync6View(_CombinedSyncView):
     """Recorded sync results with DHCPv6 selected."""
 
-    active_tab = "sync6"
     dhcp_version = 6
 
 
@@ -311,6 +264,7 @@ def _fetch_subnets_from_server(
 class _CombinedSubnetsView(_CombinedViewMixin):
     """Base view: fetch subnets from all selected servers concurrently."""
 
+    workspace_section = "subnets"
     template_name = "netbox_kea/combined_subnets.html"
     dhcp_version: Family = 4
 
@@ -338,7 +292,7 @@ class _CombinedSubnetsView(_CombinedViewMixin):
         for subnet in all_subnets:
             subnet["return_url"] = request.get_full_path()
             subnet["record_url"] = with_return_url(
-                reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[subnet["server_pk"]]),
+                self.section.server_url(subnet["server_pk"], self.dhcp_version),
                 request.get_full_path(),
             )
             can_change = subnet.get("server_pk") in writable_pks
@@ -373,19 +327,19 @@ class CombinedSubnets4View(_CombinedSubnetsView):
     """Combined DHCPv4 subnets across all selected servers."""
 
     dhcp_version = 4
-    active_tab = "subnets4"
 
 
 class CombinedSubnets6View(_CombinedSubnetsView):
     """Combined DHCPv6 subnets across all selected servers."""
 
     dhcp_version = 6
-    active_tab = "subnets6"
 
 
 class _CombinedSharedNetworksView(_CombinedViewMixin):
     """Base view: fetch shared networks from all selected servers concurrently."""
 
+    workspace_section = "subnets"
+    workspace_subsection = "shared_networks"
     template_name = "netbox_kea/combined_shared_networks.html"
     dhcp_version: Family = 4
 
@@ -420,7 +374,7 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
         for row in all_networks:
             row["return_url"] = request.get_full_path()
             row["record_url"] = with_return_url(
-                reverse(f"plugins:netbox_kea:server_shared_networks{self.dhcp_version}", args=[row["server_pk"]]),
+                self.section.server_url(row["server_pk"], self.dhcp_version),
                 request.get_full_path(),
             )
         table = tables.GlobalSharedNetworkTable(all_networks, user=request.user)
@@ -445,19 +399,18 @@ class CombinedSharedNetworks4View(_CombinedSharedNetworksView):
     """Combined DHCPv4 shared networks across all selected servers."""
 
     dhcp_version = 4
-    active_tab = "shared_networks4"
 
 
 class CombinedSharedNetworks6View(_CombinedSharedNetworksView):
     """Combined DHCPv6 shared networks across all selected servers."""
 
     dhcp_version = 6
-    active_tab = "shared_networks6"
 
 
 class _CombinedReservationsView(_CombinedViewMixin):
     """Base view: fetch reservations from all selected servers concurrently."""
 
+    workspace_section = "reservations"
     template_name = "netbox_kea/combined_reservations.html"
     dhcp_version: Family = 4
 
@@ -529,7 +482,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
             notices.add(server, presented.notice)
             for row in presented.rows:
                 row["record_url"] = with_return_url(
-                    reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk]),
+                    self.section.server_url(server.pk, self.dhcp_version),
                     request.get_full_path(),
                 )
             all_records.extend(presented.rows)
@@ -613,19 +566,18 @@ class CombinedReservations4View(_CombinedReservationsView):
     """Combined DHCPv4 reservations across all selected servers."""
 
     dhcp_version = 4
-    active_tab = "reservations4"
 
 
 class CombinedReservations6View(_CombinedReservationsView):
     """Combined DHCPv6 reservations across all selected servers."""
 
     dhcp_version = 6
-    active_tab = "reservations6"
 
 
 class _LeaseServerChooserView(_CombinedViewMixin):
     """Choose one Server in the Server Scope for a lease search."""
 
+    workspace_section = "leases"
     has_combined_export = False
     template_name = "netbox_kea/combined_leases.html"
     dhcp_version: Family = 4
@@ -633,20 +585,20 @@ class _LeaseServerChooserView(_CombinedViewMixin):
     def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """List the Servers that serve the requested family without reading Kea."""
         ctx = self._combined_context(request)
-        # Django forms read the last value of a repeated field, so the chooser does too.
-        search = {key: value for key in _LEASE_SEARCH_FIELDS if (value := request.GET.get(key))}
-        search_suffix = f"?{urlencode(search)}" if search else ""
-        fields = (forms.Leases4SearchForm if self.dhcp_version == 4 else forms.Leases6SearchForm).base_fields
+        filters = workspace_filters(request.GET, self.section)
+        fields = self.section.search_forms[self.dhcp_version].base_fields
         ctx.update(
             {
                 "pending_search": [
-                    (fields[key].label, _search_value_label(fields[key], value)) for key, value in search.items()
+                    (fields[key].label, _search_value_label(fields[key], value))
+                    for key in filters
+                    if key in fields and (value := filters.getlist(key)[-1])
                 ],
                 "lease_servers": [
                     (
                         server,
                         with_return_url(
-                            server_section_url(server, "leases", self.dhcp_version) + search_suffix,
+                            with_query(self.section.server_url(server.pk, self.dhcp_version), filters),
                             request.get_full_path(),
                         ),
                     )
@@ -663,11 +615,9 @@ class CombinedLeases4View(_LeaseServerChooserView):
     """Server chooser for DHCPv4 leases."""
 
     dhcp_version = 4
-    active_tab = "leases4"
 
 
 class CombinedLeases6View(_LeaseServerChooserView):
     """Server chooser for DHCPv6 leases."""
 
     dhcp_version = 6
-    active_tab = "leases6"

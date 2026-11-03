@@ -11,7 +11,7 @@ from netbox.views import generic
 from utilities.templatetags.tabs import model_view_tabs
 
 from ..views._base import _safe_return_url
-from ..views.workspace import server_context, with_return_url
+from ..views.workspace import WORKSPACE_SECTIONS, server_context, with_return_url
 
 register = template.Library()
 
@@ -43,7 +43,7 @@ def server_workspace(context, server, out_of_band=False):
 
 def _object_tabs(context, server, family) -> list[dict]:
     """Return the native tabs that follow the workspace sections, such as Journal, Changelog and Jobs."""
-    workspace_tabs = {"status", "leases4", "subnets4", "reservations4", "option_def4", "sync_status"}
+    workspace_tabs = {section.native_tab for section in WORKSPACE_SECTIONS.values() if section.native_tab}
     return_url = _safe_return_url(context["request"], "")
     tabs = []
     for tab in model_view_tabs(context, server)["tabs"]:

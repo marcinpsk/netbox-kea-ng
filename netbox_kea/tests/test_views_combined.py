@@ -344,8 +344,9 @@ class TestServerScope(_ViewTestBase):
             f"reservation_cursor_{self.server.pk}": "abc",
             "export": "csv",
         }
+        # Every section keeps its table fields, as on the Server pages.
         expected = {
-            "overview": set(),
+            "overview": {"sort", "per_page"},
             "subnets": {"q", "subnet_id", "sort", "per_page"},
             "shared_networks": {"sort", "per_page"},
             "reservations": {"q", "subnet_id", "scope", "sort", "per_page"},
@@ -396,9 +397,10 @@ class TestServerScope(_ViewTestBase):
         self.assertFalse(server_scope.is_invalid)
 
     def test_one_server_redirects_to_each_family_tab_with_only_compatible_filters(self):
+        # The Server Subnets page has the Subnet search too, and no scope change keeps pagination.
         expected_filters = {
-            "subnets": {"page", "per_page", "sort"},
-            "shared_networks": {"page", "per_page", "sort"},
+            "subnets": {"q", "subnet_id", "per_page", "sort"},
+            "shared_networks": {"per_page", "sort"},
             "reservations": {"q", "subnet_id", "scope", "per_page", "sort"},
             "leases": {"q", "by", "state", "per_page", "sort"},
         }
