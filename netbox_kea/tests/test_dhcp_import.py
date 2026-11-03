@@ -42,6 +42,8 @@ from netbox_kea.integrations.dhcp_import_plan import (
     GlobalReservationKey,
     InSubnetReservationKey,
     InvalidPoolKey,
+    KindObservation,
+    KindSplit,
     MappingSource,
     NamedKey,
     OptionDefinitionKey,
@@ -689,6 +691,41 @@ class KindObservationTest(SimpleTestCase):
                 observed = observations(plan_family(_recorded_intent(4), observation))[Kind.RESERVATION]
                 self.assertFalse(observed.complete)
                 self.assertIn(reason, observed.incomplete)
+
+    def test_a_complete_observation_judges_each_unobserved_row_stale(self):
+        seen, gone = MappingSource.subnet(1), MappingSource.subnet(2)
+
+        split = KindObservation(frozenset({seen})).judge({seen: "kept", gone: "stale"}, 4)
+
+        self.assertEqual(split, KindSplit({seen: "kept"}, {gone: "stale"}, {}, ()))
+
+    def test_an_incomplete_observation_judges_no_unobserved_row_and_gives_its_gap(self):
+        seen, first, second = (MappingSource.subnet(subnet_id) for subnet_id in (1, 2, 3))
+        observation = KindObservation(frozenset({seen}), "The Server Configuration was not read in full.")
+
+        split = observation.judge({seen: "a", first: "b", second: "c"}, 4)
+
+        self.assertEqual(
+            split,
+            KindSplit({seen: "a"}, {}, {first: "b", second: "c"}, ("The Server Configuration was not read in full.",)),
+        )
+
+    def test_an_option_is_judged_by_the_gaps_of_the_kind_of_its_parent(self):
+        from netbox_kea.dhcp_options import DHCPOptionIdentity
+        from netbox_kea.integrations.dhcp_import_plan import OptionKey
+
+        identity = DHCPOptionIdentity("dhcp4", 3, frozenset())
+        global_option = OptionKey(MappingSource.server(), identity).source
+        pool_option = OptionKey(MappingSource(Kind.POOL, 20, "192.0.2.10-192.0.2.20"), identity).source
+        gaps = {Kind.SERVER: ("The Server Configuration was not read in full.",), Kind.POOL: ()}
+        observation = KindObservation(frozenset(), "The Server Configuration was not read in full.", gaps)
+
+        split = observation.judge({global_option: "global", pool_option: "pool"}, 4)
+
+        self.assertEqual(
+            split,
+            KindSplit({}, {pool_option: "pool"}, {global_option: "global"}, gaps[Kind.SERVER]),
+        )
 
     def test_a_source_or_a_kind_without_a_path_refuses_instead_of_naming_the_daemon(self):
         # An Option source names its parent in its identity.
@@ -1931,6 +1968,16 @@ class PDPoolCoverageTest(TestCase):
             ],
         )
         self.assertEqual(summary.pd_pools_created, 3)
+
+    def test_one_apply_computes_the_observation_of_its_plan_once(self):
+        from netbox_kea.integrations import dhcp_import_plan
+
+        with patch.object(
+            dhcp_plugin, "observations", autospec=True, side_effect=dhcp_import_plan.observations
+        ) as observed:
+            self._apply()
+
+        self.assertEqual(observed.call_count, 1)
 
     def test_a_pd_pool_takes_its_classes_its_pool_id_and_its_options(self):
         self._apply()
