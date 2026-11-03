@@ -133,6 +133,7 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
                 (SELECTION_FIELD, "1"),
                 *((key, value) for key, values in filters.lists() for value in values),
             ],
+            "server_scope_all_url": with_query(request.path, filters),
             "server_scope_warnings": server_scope_warnings,
             "workspace_title": f"{scope_label} · {parent.label} · DHCPv{family}",
             "workspace_scope_label": scope_label,

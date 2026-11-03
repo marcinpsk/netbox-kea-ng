@@ -34,7 +34,6 @@ class ServerScope:
     missing_family: tuple[Server, ...]
     selected_pks: frozenset[int]
     server_qs: str
-    all_servers_url: str
 
     @property
     def is_all(self) -> bool:
@@ -60,11 +59,6 @@ class ServerScope:
 def resolve(request: HttpRequest, family: Family | None) -> ServerScope:
     """Resolve repeated Server IDs against view permissions; one bad value invalidates the selection."""
     permitted = tuple(Server.objects.restrict(request.user, "view").order_by("name"))
-    query = request.GET.copy()
-    query.pop("server", None)
-    query.pop(SELECTION_FIELD, None)
-    query.pop("export", None)
-    all_url = request.path + (f"?{query.urlencode()}" if query else "")
     selection = QueryDict(mutable=True)
     selection.setlist("server", request.GET.getlist("server"))
     selected: set[int] = set()
@@ -93,4 +87,4 @@ def resolve(request: HttpRequest, family: Family | None) -> ServerScope:
     missing = tuple(
         server for server in servers if family is not None and not (server.dhcp4 if family == 4 else server.dhcp6)
     )
-    return ServerScope(kind, permitted, servers, missing, frozenset(selected), selection.urlencode(), all_url)
+    return ServerScope(kind, permitted, servers, missing, frozenset(selected), selection.urlencode())
