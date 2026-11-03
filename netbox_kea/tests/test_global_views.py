@@ -182,10 +182,10 @@ class TestCombinedDashboardView(_CombinedViewBase):
         self.assertIn("server_scope", response.context)
         self.assertEqual(len(response.context["server_scope"].all_servers), 3)
 
-    def test_context_active_tab_is_overview(self):
+    def test_context_section_is_overview(self):
         url = reverse("plugins:netbox_kea:combined")
         response = self.client.get(url)
-        self.assertEqual(response.context["active_tab"], "overview")
+        self.assertEqual((response.context["workspace_section"], response.context["workspace_family"]), ("overview", 4))
 
     def test_tab_navigation_links_present(self):
         """The workspace links to six sections in the selected family."""
@@ -386,11 +386,13 @@ class TestCombinedReservations4View(_CombinedViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
 
-    def test_context_active_tab(self):
+    def test_context_section(self):
         with _reservation_stub(4, {"reservation-get-page": _RES_EMPTY_PAGE}):
             url = reverse("plugins:netbox_kea:combined_reservations4")
             response = self.client.get(url)
-        self.assertEqual(response.context["active_tab"], "reservations4")
+        self.assertEqual(
+            (response.context["workspace_section"], response.context["workspace_family"]), ("reservations", 4)
+        )
 
     def test_export_returns_yaml(self):
         """?export=yaml returns a structured v4 Reservation document."""
@@ -706,11 +708,13 @@ class TestCombinedSubnets4View(_CombinedViewBase):
             response = self.client.get(url)
         self.assertContains(response, "DDNS: dhcp.example")
 
-    def test_context_active_tab(self):
+    def test_context_section(self):
         with stub_kea(_subnet_responses(4)):
             url = reverse("plugins:netbox_kea:combined_subnets4")
             response = self.client.get(url)
-        self.assertEqual(response.context["active_tab"], "subnets4")
+        self.assertEqual(
+            (response.context["workspace_subsection"], response.context["workspace_family"]), ("subnets", 4)
+        )
 
     def test_export_returns_csv(self):
         """?export=table returns a CSV download of the subnet table."""
@@ -1175,11 +1179,13 @@ class TestCombinedSharedNetworks4View(_CombinedViewBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "v4-server")
 
-    def test_context_active_tab(self):
+    def test_context_section(self):
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V4}):
             url = reverse("plugins:netbox_kea:combined_shared_networks4")
             response = self.client.get(url)
-        self.assertEqual(response.context["active_tab"], "shared_networks4")
+        self.assertEqual(
+            (response.context["workspace_subsection"], response.context["workspace_family"]), ("shared_networks", 4)
+        )
 
     def test_shared_network_name_in_response(self):
         """The shared network name must appear in the rendered table."""
@@ -1234,11 +1240,13 @@ class TestCombinedSharedNetworks6View(_CombinedViewBase):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
-    def test_context_active_tab(self):
+    def test_context_section(self):
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V6}):
             url = reverse("plugins:netbox_kea:combined_shared_networks6")
             response = self.client.get(url)
-        self.assertEqual(response.context["active_tab"], "shared_networks6")
+        self.assertEqual(
+            (response.context["workspace_subsection"], response.context["workspace_family"]), ("shared_networks", 6)
+        )
 
     def test_shared_network_name_in_response(self):
         """The v6 shared network name must appear in the rendered table."""

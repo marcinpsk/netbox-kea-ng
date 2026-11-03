@@ -18,6 +18,12 @@ The Servers that a combined page covers: all permitted Servers, an explicit sele
 An explicit selection is invalid if any selected Server is unknown or inaccessible, or any selected ID is empty or invalid.
 _Avoid_: Scope, Server filter
 
+**Workspace Section**:
+One area of the plugin that a user opens for one Server or for a Server Scope: Overview, Leases, Subnets, Reservations,
+Configuration, or Sync. Subnets has the Shared Networks subsection, and Configuration has the Server Options subsection.
+A Workspace Section has the same search filters for one Server and for a Server Scope.
+_Avoid_: tab, page, section alone
+
 **Subnet**:
 A Kea-managed IP network for one address family. Within a Server and address family, its CIDR and Kea subnet ID identify the same Subnet.
 _Avoid_: Network

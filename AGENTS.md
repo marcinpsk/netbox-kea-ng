@@ -206,6 +206,7 @@ URL request
       leases.py         (DHCPv4/v6 lease search, add, edit, delete, badge enrichment)
       reservations.py   (DHCPv4/v6 reservation CRUD)
       subnets.py        (subnet/pool management)
+      subnet_lists.py   (the Subnet and Shared Network lists of both scopes: fetch in a worker, present in the request)
       shared_networks.py (shared network CRUD)
       options.py        (global and per-subnet DHCP option editing)
       dhcp_control.py   (enable/disable DHCP daemons)
@@ -310,7 +311,7 @@ URL request
   of the Server tab and the combined page (kind `reservations`, in `views/reservations.fetch()`), each Lease Snapshot
   of the Leases tab and of the Lease badges of Reservation rows (kind `leases`, in `lease_reads.cached_read()`), each
   Reservation lookup of a Lease row (kind `reservation_lookups`, in `lease_reservation_reads._KeaReservationLookup`), Subnet
-  utilization (kind `utilization`, in `views/_base._enrich_subnet_statistics()`) and the `status-get` and
+  utilization (kind `utilization`, in `views/subnet_lists.fetch_subnets()`) and the `status-get` and
   `version-get` reads of the Overview and the combined status badge (kind `status`, in `views/_base.daemon_status()`
   and `daemon_version()`). It stores only a value whose `settled` property is true (the `Cacheable` protocol). A
   failed read raises, so it is never stored. A Reservation entry (`_ReservationPage`) holds the page Snapshot and the

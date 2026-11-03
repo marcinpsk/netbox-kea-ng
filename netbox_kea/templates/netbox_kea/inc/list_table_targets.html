@@ -1,0 +1,5 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{# The out-of-band targets of NetBox's htmx/table.html refresh, which generic/object_children.html does not have. #}
+<span class="total-object-count d-none">{{ table.rows|length }}</span>
+<input type="hidden" id="object-list-return-url" value="{{ request.get_full_path }}">

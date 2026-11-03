@@ -29,6 +29,7 @@ from copy import deepcopy
 from unittest.mock import patch
 
 import requests
+from bs4 import BeautifulSoup
 from django.contrib import messages as django_messages
 from django.contrib.messages import get_messages
 from django.urls import reverse
@@ -194,6 +195,67 @@ class TestServerSubnets6View(_ViewTestBase):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIs(response.context["tab"], ServerDHCP4SubnetsView.tab)
+
+
+class TestServerSubnetsSearch(_ViewTestBase):
+    """The Server Subnets page filters its table and its export like the combined Subnets page."""
+
+    _SUBNETS = {
+        4: ({"id": 1, "subnet": "10.0.1.0/24"}, {"id": 2, "subnet": "192.168.0.0/24"}),
+        6: ({"id": 1, "subnet": "2001:db8:1::/64"}, {"id": 2, "subnet": "2001:db8:ff::/64"}),
+    }
+    # A CIDR text matches case-insensitively, so the DHCPv6 search is in upper case.
+    _CIDR_TEXT = {4: "10.0", 6: "DB8:1:"}
+
+    def _get(self, family: Family, query: dict[str, str], *, htmx: bool = False):
+        responses = {
+            **_catalogue_responses_for_subnets(family, list(self._SUBNETS[family])),
+            f"stat-lease{family}-get": _STAT_ABSENT4 if family == 4 else _STAT_ABSENT6,
+        }
+        with stub_kea(responses):
+            return self.client.get(
+                reverse(f"plugins:netbox_kea:server_subnets{family}", args=[self.server.pk]),
+                query,
+                headers={"HX-Request": "true"} if htmx else {},
+            )
+
+    def test_cidr_text_and_subnet_id_filter_the_table_the_htmx_table_and_the_export(self):
+        for family in (4, 6):
+            first, second = (subnet["subnet"] for subnet in self._SUBNETS[family])
+            for query, shown, hidden in (
+                ({"q": self._CIDR_TEXT[family]}, first, second),
+                ({"subnet_id": "2"}, second, first),
+            ):
+                with self.subTest(family=family, query=query):
+                    response = self._get(family, query)
+                    self.assertEqual([row["subnet"] for row in response.context["table"].data], [shown])
+                    page = BeautifulSoup(response.content, "html.parser")
+                    form = page.select_one("#id_q").find_parent("form")
+                    self.assertEqual(form.get("method"), "get")
+                    field, value = next(iter(query.items()))
+                    self.assertEqual(form.select_one(f"#id_{field}")["value"], value)
+                    partial = self._get(family, query, htmx=True)
+                    self.assertContains(partial, shown)
+                    self.assertNotContains(partial, hidden)
+                    for export in ("table", ""):
+                        csv = self._get(family, {**query, "export": export})
+                        self.assertIn("text/csv", csv["Content-Type"])
+                        self.assertIn(shown, csv.content.decode())
+                        self.assertNotIn(hidden, csv.content.decode())
+
+    def test_export_links_carry_the_filter(self):
+        response = self._get(4, {"q": "10.0"})
+        links = {
+            link.get_text(strip=True): link["href"]
+            for link in BeautifulSoup(response.content, "html.parser").select("a.dropdown-item[href*='export']")
+        }
+        self.assertEqual(links, {"Current View": "?q=10.0&export=table", "All Data (CSV)": "?q=10.0&export"})
+
+    def test_an_invalid_subnet_id_shows_its_error_and_every_subnet(self):
+        response = self._get(4, {"subnet_id": "x"})
+        self.assertEqual(len(response.context["table"].data), 2)
+        error = BeautifulSoup(response.content, "html.parser").select_one("#id_subnet_id").find_next("div")
+        self.assertIn("Enter a whole number.", error.get_text())
 
 
 class TestSubnetEnrichment(_ViewTestBase):
@@ -2942,12 +3004,12 @@ class TestSubnetDeleteExceptionPaths(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# _fetch_subnets_from_server — null config, shared-network subnets, stat_cmds exception
+# fetch_subnets — null config, shared-network subnets, stat_cmds exception
 # ---------------------------------------------------------------------------
 
 
 class TestFetchSubnetsFromServer(_ViewTestBase):
-    """_fetch_subnets_from_server edge cases, through the combined Subnets view."""
+    """fetch_subnets edge cases, through the combined Subnets view."""
 
     def _run(self, responses):
         """Render the combined Subnet table through its public HTTP view."""
@@ -3083,7 +3145,8 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
             }
         )
         self.assertEqual([(row["id"], row["subnet"]) for row in result], [(7, "198.18.7.0/24")])
-        self.assertFalse(result[0]["identity_verified"])
+        # A Subnet that subnet4-list did not verify offers no change to a user who may change the Server.
+        self.assertFalse(result[0]["can_change"])
 
     def test_identity_only_snapshot_remains_visible(self):
         """A config-get failure does not hide verified Subnet identity."""
@@ -3098,7 +3161,8 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
             }
         )
         self.assertEqual([(row["id"], row["subnet"]) for row in result], [(8, "198.18.8.0/24")])
-        self.assertTrue(result[0]["identity_verified"])
+        self.assertTrue(result[0]["can_change"])
+        self.assertFalse(result[0]["can_edit_options"])
         self.assertEqual(result[0]["pools"], [])
 
 

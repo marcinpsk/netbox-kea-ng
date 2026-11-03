@@ -7,6 +7,7 @@ They share the ``tests/ui`` harness with ``test_ui.py`` and run against the comp
 stack that ``tests/test_setup.sh`` starts. See AGENTS.md for how to start it.
 """
 
+import csv
 import ipaddress
 import re
 import subprocess
@@ -604,6 +605,46 @@ class TestKeaServerTabs:
     ) -> None:
         server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/subnets6/")
+        _check_no_django_error(page)
+        _assert_no_http_errors(track_http_errors)
+
+    @pytest.mark.parametrize(
+        ("family", "subnets", "cidr_text"),
+        [
+            (4, {1: "192.0.2.0/24", 2: "198.51.100.0/24"}, "198.51"),
+            (6, {1: "2001:db8:1::/64", 2: "2001:db8:2::/64"}, "DB8:2:"),
+        ],
+        ids=["dhcp4", "dhcp6"],
+    )
+    def test_server_subnets_search_filters_the_table_and_the_export(
+        self,
+        page: Page,
+        netbox_login: None,
+        plugin_base: str,
+        kea_server,
+        track_http_errors: list,
+        family: int,
+        subnets: dict[int, str],
+        cidr_text: str,
+    ) -> None:
+        """A CIDR text and a Subnet ID each leave one Subnet in the table and in the CSV export."""
+        page.goto(f"{plugin_base}/servers/{kea_server.id}/subnets{family}/")
+        rows = page.locator("#object_list table tbody tr")
+        for subnet in subnets.values():
+            expect(rows.filter(has_text=subnet)).to_have_count(1)
+        search = page.locator("form").filter(has=page.locator("#id_q"))
+        for field, value, shown in (("q", cidr_text, subnets[2]), ("subnet_id", "1", subnets[1])):
+            page.goto(f"{plugin_base}/servers/{kea_server.id}/subnets{family}/")
+            search.locator(f"#id_{field}").fill(value)
+            search.get_by_role("button", name="Filter").click()
+            page.wait_for_url(re.compile(rf"[?&]{field}="))
+            expect(rows).to_have_count(1)
+            expect(rows.first).to_contain_text(shown)
+            page.get_by_role("button", name="Export").click()
+            with page.expect_download() as download:
+                page.get_by_role("link", name="Current View").click()
+            with open(download.value.path()) as export:
+                assert [row["Subnet"] for row in csv.DictReader(export)] == [shown]
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
 
