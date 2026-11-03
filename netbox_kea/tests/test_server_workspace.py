@@ -350,7 +350,7 @@ class TestServerWorkspace(_ViewTestBase):
         self.assertNotIn("page", parse_qs(urlsplit(target["href"]).query))
 
     def test_family_switch_drops_subnet_bound_filters_and_keeps_the_others(self):
-        """Kea gives Subnet IDs per family, so the other family must not open filtered by an unrelated Subnet."""
+        """Kea gives Subnet IDs per family, so only the link to the other family drops the Subnet-bound filters."""
         responses = {
             **_catalogue_responses_for_subnets(4, [{"id": 7, "subnet": "198.18.0.0/24"}]),
             "reservation-get-page": _res_page([]),
@@ -400,9 +400,13 @@ class TestServerWorkspace(_ViewTestBase):
                     response = self.client.get(url, query)
                 self.assertEqual(response.status_code, 200)
                 page = BeautifulSoup(response.content, "html.parser")
-                target = page.select('[aria-label="DHCP family"] a')[1]
+                current, target = page.select('[aria-label="DHCP family"] a')
                 self.assertEqual(target.text, "DHCPv6")
                 self.assertEqual(parse_qs(urlsplit(target["href"]).query), kept)
+                self.assertEqual(current["aria-current"], "page")
+                current_query = parse_qs(urlsplit(current["href"]).query)
+                current_query.pop("server", None)
+                self.assertEqual(current_query, {key: [value] for key, value in query.items()})
 
     def test_family_switch_drops_a_lease_search_that_the_other_family_refuses(self):
         """A hardware address, client ID or DUID search exists in one family only, and an address has one family."""

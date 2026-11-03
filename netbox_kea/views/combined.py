@@ -151,7 +151,7 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
             "workspace_family": family,
             "workspace_sections": [(entry.key, entry.label, scope_url(entry, family)) for entry in top_sections()],
             "workspace_families": [
-                (version, scope_url(section, version, family_filters(request.GET, section, version)))
+                (version, scope_url(section, version, family_filters(request.GET, section, version, family)))
                 for version in (4, 6)
             ],
             "workspace_subsections": [
