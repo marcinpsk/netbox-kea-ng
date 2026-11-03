@@ -34,6 +34,7 @@ from .server_scope import SELECTION_FIELD, ServerScope, resolve
 from .workspace import (
     WORKSPACE_SECTIONS,
     WorkspaceSection,
+    family_filters,
     subsections,
     top_section,
     top_sections,
@@ -137,7 +138,9 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
             "workspace_subsection": section.key,
             "workspace_family": family,
             "workspace_sections": [(entry.key, entry.label, scope_url(entry, family)) for entry in top_sections()],
-            "workspace_families": [(version, scope_url(section, version, filters)) for version in (4, 6)],
+            "workspace_families": [
+                (version, scope_url(section, version, family_filters(request.GET, section))) for version in (4, 6)
+            ],
             "workspace_subsections": [
                 (entry.key, entry.label, scope_url(entry, family)) for entry in combined_subsections
             ]

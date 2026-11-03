@@ -136,9 +136,13 @@ class TestCombinedWorkspace(_ViewTestBase):
                     link = page.select('[aria-label="DHCP family"] a')[0 if other == 4 else 1]
                     target = urlsplit(link["href"])
                     self.assertEqual(target.path, reverse(f"plugins:netbox_kea:combined_{section}{other}"))
+                    # Kea gives Subnet IDs per family, so the other family drops a Subnet ID.
                     self.assertEqual(
                         parse_qs(target.query, keep_blank_values=True),
-                        {"server": ["invalid", ""], **{key: [value] for key, value in filters.items()}},
+                        {
+                            "server": ["invalid", ""],
+                            **{key: [value] for key, value in filters.items() if key != "subnet_id"},
+                        },
                     )
 
     def test_new_sections_honor_object_permissions_and_invalid_selections(self):

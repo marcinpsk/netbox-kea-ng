@@ -16,7 +16,7 @@ from users.models import ObjectPermission
 
 from netbox_kea.models import Server
 
-from .kea_stub import LeaseDaemon, _catalogue_responses_for_subnets, stub_kea
+from .kea_stub import LeaseDaemon, _catalogue_responses_for_subnets, _res_page, stub_kea
 from .test_views_server import _status_stub
 from .utils import _make_db_server, _ViewTestBase, with_dhcp_integration_config
 
@@ -348,6 +348,61 @@ class TestServerWorkspace(_ViewTestBase):
         self.assertIn("state=0", target["href"])
         self.assertIn("per_page=25", target["href"])
         self.assertNotIn("page", parse_qs(urlsplit(target["href"]).query))
+
+    def test_family_switch_drops_subnet_bound_filters_and_keeps_the_others(self):
+        """Kea gives Subnet IDs per family, so the other family must not open filtered by an unrelated Subnet."""
+        responses = {
+            **_catalogue_responses_for_subnets(4, [{"id": 7, "subnet": "198.18.0.0/24"}]),
+            "reservation-get-page": _res_page([]),
+            "stat-lease4-get": {"result": 2, "text": "unknown command 'stat-lease4-get'"},
+        }
+        pk = self.server.pk
+        cases = (
+            (
+                reverse("plugins:netbox_kea:server_leases4", args=[pk]),
+                {"q": "7", "by": "subnet_id", "state": "0", "per_page": "25"},
+                {"state": ["0"], "per_page": ["25"]},
+            ),
+            (
+                reverse("plugins:netbox_kea:server_leases4", args=[pk]),
+                {"q": "198.18.0.0/24", "by": "subnet", "state": "0"},
+                {"state": ["0"]},
+            ),
+            (
+                reverse("plugins:netbox_kea:server_reservations4", args=[pk]),
+                {"q": "printer", "subnet_id": "7", "scope": "in-subnet"},
+                {"q": ["printer"], "scope": ["in-subnet"]},
+            ),
+            (
+                reverse("plugins:netbox_kea:server_subnets4", args=[pk]),
+                {"q": "198.18", "subnet_id": "7", "sort": "subnet"},
+                {"q": ["198.18"], "sort": ["subnet"]},
+            ),
+            (
+                reverse("plugins:netbox_kea:combined_leases4"),
+                {"q": "198.18.0.0/24", "by": "subnet", "state": "0"},
+                {"state": ["0"]},
+            ),
+            (
+                reverse("plugins:netbox_kea:combined_reservations4"),
+                {"q": "printer", "subnet_id": "7", "scope": "in-subnet"},
+                {"q": ["printer"], "scope": ["in-subnet"]},
+            ),
+            (
+                reverse("plugins:netbox_kea:combined_subnets4"),
+                {"q": "198.18", "subnet_id": "7"},
+                {"q": ["198.18"]},
+            ),
+        )
+        for url, query, kept in cases:
+            with self.subTest(url=url, query=query):
+                with stub_kea(responses):
+                    response = self.client.get(url, query)
+                self.assertEqual(response.status_code, 200)
+                page = BeautifulSoup(response.content, "html.parser")
+                target = page.select('[aria-label="DHCP family"] a')[1]
+                self.assertEqual(target.text, "DHCPv6")
+                self.assertEqual(parse_qs(urlsplit(target["href"]).query), kept)
 
     def test_native_edit_and_delete_keep_family_and_style_above_form_tabs(self):
         for action in ("edit", "delete"):
