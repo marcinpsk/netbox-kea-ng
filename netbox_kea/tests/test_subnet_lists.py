@@ -238,3 +238,25 @@ class TestListExports(_ViewTestBase):
                 }
                 expected = {"Current View": "?per_page=25&export=table", "All Data (CSV)": "?per_page=25&export"}
                 self.assertEqual(links, expected)
+
+
+class TestTableRefreshTargets(_ViewTestBase):
+    """Each out-of-band swap of a Server list's table refresh has its target on the page."""
+
+    @staticmethod
+    def _oob_selectors(content: bytes) -> list[str]:
+        """Return the target selector of each out-of-band element: ``strategy:selector``, or the element's own id."""
+        selectors = []
+        for element in BeautifulSoup(content, "html.parser").select("[hx-swap-oob]"):
+            swap = str(element["hx-swap-oob"])
+            selectors.append(swap.split(":", 1)[1] if ":" in swap else f"#{element['id']}")
+        return selectors
+
+    def test_each_out_of_band_swap_has_its_target(self):
+        for route in ("server_subnets4", "server_shared_networks4"):
+            with self.subTest(route=route), stub_kea(_responses()):
+                url = reverse(f"plugins:netbox_kea:{route}", args=[self.server.pk])
+                page = BeautifulSoup(self.client.get(url).content, "html.parser")
+                selectors = self._oob_selectors(self.client.get(url, {"sort": "-name"}, HTTP_HX_REQUEST="true").content)
+                self.assertIn("#list-notice", selectors)
+                self.assertEqual([selector for selector in selectors if not page.select(selector)], [])
