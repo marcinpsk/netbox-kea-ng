@@ -307,9 +307,15 @@ class TestServerScope(_ViewTestBase):
                         # Show all Servers keeps only the filters of the section.
                         searched = section not in ("shared_networks", "overview")
                         href = self._url(section, family) + ("?q=needle" if searched else "")
-                        self.assertContains(response, f'href="{href}"')
+                        self.assertEqual(self._show_all_href(response), href)
                         self.assertNotContains(response, '<div class="table-responsive')
                         self.assertEqual(kea.commands(), [])
+
+    def _show_all_href(self, response):
+        """Return the href of the "Show all Servers" link in the invalid-selection notice."""
+        link = BeautifulSoup(response.content, "html.parser").find("a", string="Show all Servers")
+        self.assertIsNotNone(link)
+        return link["href"]
 
     def _apply(self, response, checked):
         """Submit the Server selector as a browser does, with only the *checked* Server IDs ticked."""
@@ -327,11 +333,10 @@ class TestServerScope(_ViewTestBase):
                     page = self.client.get(self._url(section, family), {"server": "abc", "q": "needle"})
                     response = self._apply(page, checked=())
                     self.assertContains(response, "Invalid Server selection")
-                    if section not in ("shared_networks", "overview"):
-                        # Show all Servers keeps only the filters of the section.
-                        searched = section not in ("shared_networks", "overview")
-                        href = self._url(section, family) + ("?q=needle" if searched else "")
-                        self.assertContains(response, f'href="{href}"')
+                    # Show all Servers keeps only the filters of the section.
+                    searched = section not in ("shared_networks", "overview")
+                    href = self._url(section, family) + ("?q=needle" if searched else "")
+                    self.assertEqual(self._show_all_href(response), href)
                     tab = BeautifulSoup(response.content, "html.parser").select_one(".nav-tabs a.active")
                     self.assertContains(self.client.get(tab["href"]), "Invalid Server selection")
                     self.assertEqual(kea.commands(), [])
