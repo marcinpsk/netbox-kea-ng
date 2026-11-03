@@ -374,11 +374,17 @@ class KeaIpamSyncJob(JobRunner):
     def _run_ipam_sync(self, server_pk: int | None, results: list[SyncRunResult], started: dict[int, str]) -> bool:
         """Apply the configured IPAM synchronization, add a Sync Run Result per Server, and return whether it failed.
 
-        *started* gets each Server before its sync starts.
+        *started* gets each Server before its sync starts, and the Server of a Run Now first.
         """
         from .models import Server, SyncConfig
 
         sync_cfg = SyncConfig.get()
+        server_qs = Server.objects.filter(pk=server_pk) if server_pk is not None else Server.objects.all()
+        servers = list(server_qs)
+        if server_pk is not None:
+            # A Run Now that the settings stop still records a Skipped result for its Server.
+            started.update((server.pk, server.name) for server in servers)
+
         if not sync_cfg.sync_enabled:
             self.logger.info("Global sync kill-switch is active (SyncConfig.sync_enabled=False) — skipping.")
             return False
@@ -388,9 +394,6 @@ class KeaIpamSyncJob(JobRunner):
         if not any_source_enabled(sync_cfg):
             self.logger.info("All sync type flags are False — nothing to do.")
             return False
-
-        server_qs = Server.objects.filter(pk=server_pk) if server_pk is not None else Server.objects.all()
-        servers = list(server_qs)
 
         if not servers:
             self.logger.info("No Kea servers configured. Count unowned IPAM objects.")

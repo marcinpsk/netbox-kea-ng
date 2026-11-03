@@ -608,6 +608,36 @@ class TestServerSyncNowView(TestCase):
             fetch_redirect_response=False,
         )
 
+    def test_a_run_now_that_the_settings_stop_shows_skipped_for_its_server(self):
+        """The global switch and the sync type flags stop a Run Now before any Server; the job still names its Server."""
+        from django.contrib.contenttypes.models import ContentType
+
+        from netbox_kea.jobs import KeaIpamSyncJob
+
+        flags_off = dict.fromkeys(
+            ("sync_leases_enabled", "sync_reservations_enabled", "sync_prefixes_enabled", "sync_ip_ranges_enabled"),
+            False,
+        )
+        for reason, values in (("global switch off", {"sync_enabled": False}), ("no sync type", flags_off)):
+            with self.subTest(reason=reason), with_sync_config(**values):
+                server = _make_db_server(name=f"run-now {reason}")
+                job = stored_job(
+                    [],
+                    status="pending",
+                    object_type=ContentType.objects.get_for_model(Server),
+                    object_id=server.pk,
+                )
+                KeaIpamSyncJob.handle(job, server_pk=server.pk)
+
+                jobs = BeautifulSoup(self.client.get(reverse("plugins:netbox_kea:sync_jobs")).content, "html.parser")
+                row = jobs.find("a", string=server.name).find_parent("tr")
+                self.assertEqual([cell.get_text(" ", strip=True) for cell in row.find_all("td")][4:-1], ["Skipped"])
+                tab = self.client.get(reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]))
+                card = BeautifulSoup(tab.content, "html.parser").find("h5", string="Last Sync").find_parent()
+                self.assertEqual(
+                    [element.get_text(strip=True) for element in card.select("[data-sync-run-state]")], ["Skipped"]
+                )
+
     def test_post_without_permission_returns_403(self):
         restricted = User.objects.create_user("noperm", "n@n.com", "pass")
         self.client.force_login(restricted)
