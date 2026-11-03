@@ -805,6 +805,41 @@ def test_dhcp_subnets_configure_table(page: Page, kea: KeaClient, family: int) -
     expect(page.locator(".object-list > thead > tr > th > a")).to_have_text(["Subnet", "Shared Network", ""])
 
 
+_SHARED_NETWORK_MEMBERS = {
+    4: ("test-shared-network-4", "198.51.100.0/24"),
+    6: ("test-shared-network-6", "2001:db8:2::/64"),
+}
+
+
+@pytest.mark.parametrize("family", (4, 6))
+@pytest.mark.parametrize("all_data", (False, True))
+def test_dhcp_shared_networks_export_csv(page: Page, kea: KeaClient, family: Literal[4, 6], all_data: bool) -> None:
+    """The Server Shared Networks page exports the selected columns, or every column."""
+    open_subnets(page, family)
+    page.get_by_role("link", name="Shared Networks", exact=True).click()
+    page.wait_for_url(re.compile(rf"/shared_networks{family}/"))
+    if not all_data:
+        configure_table(page, "name", "subnets")
+
+    page.get_by_role("button", name="Export").click()
+    with page.expect_download() as dl:
+        page.get_by_role("link", name="All Data (CSV)" if all_data else "Current View").click()
+    assert dl.value.suggested_filename == f"kea-dhcpv{family}-shared-networks.csv"
+
+    with open(dl.value.path()) as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    if all_data:
+        # All Data writes every column; the saved column choice only orders them.
+        assert sorted(reader.fieldnames or ()) == ["Description", "Name", "Subnet CIDRs", "Subnets"]
+    else:
+        assert reader.fieldnames == ["Name", "Subnet CIDRs"]
+    name, member = _SHARED_NETWORK_MEMBERS[family]
+    assert {"Name": name, "Subnet CIDRs": member} in [
+        {key: row[key] for key in ("Name", "Subnet CIDRs")} for row in rows
+    ]
+
+
 _SUBNET_ATTRIBUTES = {"Subnet": "subnet", "Subnet ID": "subnet_id"}
 
 

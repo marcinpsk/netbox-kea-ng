@@ -9,20 +9,14 @@ from django.http.request import HttpRequest
 from django.shortcuts import redirect, render
 from django.views import View
 
-from .. import forms, server_configuration, subnet_catalogue, tables
+from .. import forms, subnet_catalogue, tables
 from ..constants import Family
 from ..models import Server
 from ..reservation_transfer import export_reservation_document
 from ..subnet_catalogue import CatalogueSnapshot
 from ..sync_run_result import latest
 from ..utilities import export_table
-from ._base import (
-    ConditionalLoginRequiredMixin,
-    _catalogue_subnet_row,
-    _enrich_subnet_statistics,
-    _filter_subnets,
-    _shared_network_row,
-)
+from ._base import ConditionalLoginRequiredMixin
 from .fan_out import fan_out
 from .notices import Notice, ServerNotices, notice
 from .read_age import read_age_context, refresh_requested
@@ -30,7 +24,14 @@ from .reservations import ReservationQuery, ReservationRead
 from .reservations import empty_text as reservation_empty_text
 from .reservations import fetch as fetch_reservations
 from .reservations import present as present_reservations
-from .server_scope import SELECTION_FIELD, ServerScope, resolve
+from .server_scope import SELECTION_FIELD, ServerScope, resolve, writable_servers
+from .subnet_lists import (
+    fetch_shared_networks,
+    fetch_subnets,
+    filter_subnets,
+    present_shared_networks,
+    present_subnets,
+)
 from .workspace import (
     WORKSPACE_SECTIONS,
     WorkspaceSection,
@@ -95,6 +96,13 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
     def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """Render a combined section within its resolved Server Scope."""
         raise NotImplementedError
+
+    def _linked_rows(self, request: HttpRequest, server: Server, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Return the rows of *server*, each with a link to its Server tab that returns to this page."""
+        record_url = with_return_url(self.section.server_url(server.pk, self.dhcp_version), request.get_full_path())
+        for row in rows:
+            row["record_url"] = record_url
+        return rows
 
     def _combined_context(self, request: HttpRequest) -> dict[str, Any]:
         """Build context vars shared by every combined view."""
@@ -248,28 +256,6 @@ class CombinedSync6View(_CombinedSyncView):
     dhcp_version = 6
 
 
-def _fetch_subnets_from_server(
-    server: "Server",
-    version: Family,
-    *,
-    live: bool,
-) -> tuple[list[dict[str, Any]], Notice | None]:
-    """Fetch safe Subnet Catalogue facts for one server, tagged for the combined table, and its Notice.
-
-    With *live*, for an export, the utilization is read live.
-    """
-    snapshot = subnet_catalogue.display(server, version)
-    if snapshot.unavailable:
-        return [], notice(snapshot)
-    result = [
-        _catalogue_subnet_row(subnet, server, version, can_change=False)
-        for subnet in (*snapshot.subnets, *snapshot.configured_subnets)
-    ]
-
-    _enrich_subnet_statistics(result, server, version, live=live)
-    return result, notice(snapshot)
-
-
 class _CombinedSubnetsView(_CombinedViewMixin):
     """Base view: fetch subnets from all selected servers concurrently."""
 
@@ -281,43 +267,27 @@ class _CombinedSubnetsView(_CombinedViewMixin):
         """Merge subnet lists from all queried servers into one table."""
         ctx = self._combined_context(request)
         servers = self.server_scope.query_servers
-
-        all_subnets: list[dict[str, Any]] = []
         live = "export" in request.GET
-        read = fan_out(
-            servers, "catalogue", lambda server: _fetch_subnets_from_server(server, self.dhcp_version, live=live)
-        )
+        read = fan_out(servers, "catalogue", lambda server: fetch_subnets(server, self.dhcp_version, live=live))
         notices = read.notices
-        for server, (subnets, found) in read.results:
-            all_subnets.extend(subnets)
-            notices.add(server, found)
-
-        # Annotate can_change per server so subnet pool/action controls render correctly.
-        writable_pks = set(
-            Server.objects.restrict(request.user, "change")
-            .filter(pk__in=[s.pk for s in servers])
-            .values_list("pk", flat=True)
-        )
-        for subnet in all_subnets:
-            subnet["return_url"] = request.get_full_path()
-            subnet["record_url"] = with_return_url(
-                self.section.server_url(subnet["server_pk"], self.dhcp_version),
-                request.get_full_path(),
-            )
-            can_change = subnet.get("server_pk") in writable_pks
-            subnet["can_change"] = bool(subnet.get("identity_verified")) and can_change
-            subnet["can_edit_options"] = subnet["can_change"] and bool(subnet.get("configuration_available"))
-
-        table_cls = tables.GlobalSubnetTable4 if self.dhcp_version == 4 else tables.GlobalSubnetTable6
+        writable = writable_servers(request.user, servers)
+        all_subnets: list[dict[str, Any]] = []
+        for server, server_read in read.results:
+            presented = present_subnets(server, server_read, writable=writable, return_url=request.get_full_path())
+            notices.add(server, presented.notice)
+            all_subnets.extend(self._linked_rows(request, server, presented.rows))
 
         search_form = forms.SubnetSearchForm(request.GET or None)
-        all_subnets = _filter_subnets(all_subnets, search_form)
-
-        table = table_cls(all_subnets, user=request.user)
+        table_cls = tables.GlobalSubnetTable4 if self.dhcp_version == 4 else tables.GlobalSubnetTable6
+        table = table_cls(filter_subnets(all_subnets, search_form), user=request.user)
         table.configure(request)
 
         if "export" in request.GET:
-            return export_table(table, filename=f"kea-dhcpv{self.dhcp_version}-subnets.csv")
+            return export_table(
+                table,
+                filename=f"kea-dhcpv{self.dhcp_version}-subnets.csv",
+                use_selected_columns=request.GET["export"] == "table",
+            )
 
         ctx.update(
             {
@@ -356,41 +326,26 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
         """Merge shared network lists from all queried servers into one table."""
         ctx = self._combined_context(request)
         servers = self.server_scope.query_servers
-
-        all_networks: list[dict[str, Any]] = []
-        writable_pks = set(
-            Server.objects.restrict(request.user, "change")
-            .filter(pk__in=[s.pk for s in servers])
-            .values_list("pk", flat=True)
-        )
-
-        # An unavailable Server Configuration is a Snapshot with no facts and an error Notice.
-        read = fan_out(servers, "configuration", lambda server: server_configuration.display(server, self.dhcp_version))
+        read = fan_out(servers, "configuration", lambda server: fetch_shared_networks(server, self.dhcp_version))
         notices = read.notices
-        for server, snapshot in read.results:
-            notices.add(server, notice(snapshot))
-            all_networks.extend(
-                _shared_network_row(
-                    network,
-                    server,
-                    self.dhcp_version,
-                    can_change=server.pk in writable_pks,
-                    include_server_name=True,
-                )
-                for network in snapshot.shared_networks
+        writable = writable_servers(request.user, servers)
+        all_networks: list[dict[str, Any]] = []
+        for server, server_read in read.results:
+            presented = present_shared_networks(
+                server, server_read, writable=writable, return_url=request.get_full_path()
             )
+            notices.add(server, presented.notice)
+            all_networks.extend(self._linked_rows(request, server, presented.rows))
 
-        for row in all_networks:
-            row["return_url"] = request.get_full_path()
-            row["record_url"] = with_return_url(
-                self.section.server_url(row["server_pk"], self.dhcp_version),
-                request.get_full_path(),
-            )
         table = tables.GlobalSharedNetworkTable(all_networks, user=request.user)
         table.configure(request)
 
         if "export" in request.GET:
-            return export_table(table, filename=f"kea-dhcpv{self.dhcp_version}-shared-networks.csv")
+            return export_table(
+                table,
+                filename=f"kea-dhcpv{self.dhcp_version}-shared-networks.csv",
+                use_selected_columns=request.GET["export"] == "table",
+            )
 
         ctx.update(
             {
@@ -438,11 +393,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
         if is_export:
             queries = {server.pk: ReservationQuery(full=True) for server in servers}
         else:
-            writable_pks = set(
-                Server.objects.restrict(request.user, "change")
-                .filter(pk__in=[server.pk for server in servers])
-                .values_list("pk", flat=True)
-            )
+            writable_pks = writable_servers(request.user, servers)
             queries = {
                 server.pk: ReservationQuery(
                     cursor=request.GET.get(f"reservation_cursor_{server.pk}"),
@@ -489,12 +440,7 @@ class _CombinedReservationsView(_CombinedViewMixin):
         for server, server_read in read.results:
             presented = present_reservations(request.user, server, server_read, return_url=request.get_full_path())
             notices.add(server, presented.notice)
-            for row in presented.rows:
-                row["record_url"] = with_return_url(
-                    self.section.server_url(server.pk, self.dhcp_version),
-                    request.get_full_path(),
-                )
-            all_records.extend(presented.rows)
+            all_records.extend(self._linked_rows(request, server, presented.rows))
             partial = partial or presented.partial
             if presented.rows and presented.mutation_unavailable_reason:
                 mutation_unavailable_servers.append((server.name, presented.mutation_unavailable_reason))

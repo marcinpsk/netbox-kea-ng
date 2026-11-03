@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Resolve a combined page's Server Scope without broadening an explicit selection."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from django.http import HttpRequest, QueryDict
 
@@ -88,3 +90,9 @@ def resolve(request: HttpRequest, family: Family | None) -> ServerScope:
         server for server in servers if family is not None and not (server.dhcp4 if family == 4 else server.dhcp6)
     )
     return ServerScope(kind, permitted, servers, missing, frozenset(selected), selection.urlencode())
+
+
+def writable_servers(user: Any, servers: Iterable[Server]) -> frozenset[int]:
+    """Return the pks of the *servers* that *user* may change, with one query for every Server of a page."""
+    pks = [server.pk for server in servers]
+    return frozenset(Server.objects.restrict(user, "change").filter(pk__in=pks).values_list("pk", flat=True))

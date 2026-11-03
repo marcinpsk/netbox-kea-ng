@@ -1366,25 +1366,3 @@ class TestSharedNetworkEditOptionParsing(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "8.8.8.8")
         self.assertContains(response, "192.0.2.1")
-
-
-# ---------------------------------------------------------------------------
-# Shared networks tab disabled — defensive get_children guard
-# ---------------------------------------------------------------------------
-
-
-class TestSharedNetworksTabDisabled(_ViewTestBase):
-    """server.dhcp4=False → get_children returns [] immediately (before any client)."""
-
-    def test_dhcp4_disabled_returns_empty_children(self):
-        """dhcp4=False → get_children returns [] immediately (defensive guard, no Kea)."""
-        from django.test import RequestFactory
-
-        from netbox_kea.views.shared_networks import ServerSharedNetworks4View
-
-        server = _make_db_server(name="no-dhcp4-children", dhcp4=False, dhcp6=True)
-        view = ServerSharedNetworks4View()
-        request = RequestFactory().get("/")
-        request.user = self.user
-        result = view.get_children(request, server)
-        self.assertEqual(result, [])

@@ -9,19 +9,22 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views import View
 from netbox.views import generic
+from utilities.htmx import htmx_partial
 from utilities.views import register_model_view
 
 from .. import config_write, forms, managed_fields, server_configuration, tables
 from ..constants import Family
 from ..models import Server
+from ..utilities import export_table
 from ._base import (
     ConditionalLoginRequiredMixin,
     _KeaChangeMixin,
     _run_change,
     _safe_return_url,
-    _shared_network_row,
 )
 from .notices import notice, show_notices
+from .server_scope import writable_servers
+from .subnet_lists import fetch_shared_networks, present_shared_networks
 from .subnets import _SUBNETS_TAB, subnets_nav_context
 from .workspace import ServerFamilyMixin
 
@@ -41,29 +44,33 @@ class BaseServerSharedNetworksView(ServerFamilyMixin, generic.ObjectChildrenView
     template_name = "netbox_kea/server_shared_networks.html"
     dhcp_version: Family
 
-    def get_children(self, request: HttpRequest, parent: Server) -> list[dict[str, Any]]:
-        """Return Shared Network rows from the Server Configuration snapshot."""
-        if not (parent.dhcp4 if self.dhcp_version == 4 else parent.dhcp6):
-            return []
-        snapshot = server_configuration.display(parent, self.dhcp_version)
-        show_notices(request, notice(snapshot))
-        if snapshot.unavailable:
-            return []
-        can_change = Server.objects.restrict(request.user, "change").filter(pk=parent.pk).exists()
-        rows = [
-            _shared_network_row(network, parent, self.dhcp_version, can_change) for network in snapshot.shared_networks
-        ]
-        for row in rows:
-            row["return_url"] = _safe_return_url(request, request.get_full_path())
-        return rows
-
     def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
-        """Handle GET: check DHCP enabled, then render shared-network table."""
+        """Render the Shared Network table, or export it."""
         instance = self.get_object(**kwargs)
-        child_objects = self.get_children(request, instance)
-        table_data = self.prep_table_data(request, child_objects, instance)
+        presented = present_shared_networks(
+            instance,
+            fetch_shared_networks(instance, self.dhcp_version),
+            writable=writable_servers(request.user, [instance]),
+            return_url=_safe_return_url(request, request.get_full_path()),
+        )
+        table_data = self.prep_table_data(request, presented.rows, instance)
         table = self.get_table(table_data, request, False)
 
+        if "export" in request.GET:
+            return export_table(
+                table,
+                filename=f"kea-dhcpv{self.dhcp_version}-shared-networks.csv",
+                use_selected_columns=request.GET["export"] == "table",
+            )
+
+        if htmx_partial(request):
+            return render(
+                request,
+                "netbox_kea/inc/list_table_htmx.html",
+                {"object": instance, "table": table, "notice": presented.notice},
+            )
+
+        show_notices(request, presented.notice)
         return render(
             request,
             self.get_template_name(),
