@@ -1240,9 +1240,9 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.client.force_login(self.user)
         self.client.cookies[COOKIE_NAME] = branch.schema_id
         rounds = 1 + len(target_models())
-        # Each reply: its mapping check and the sources header. The drift card also: the guarded KeaDhcpLink query of
-        # each family. One round each.
-        for name, expected in (("server_dhcp_plugin", 2 * rounds), ("server_dhcp_plugin_drift", 4 * rounds)):
+        # Each reply: its mapping check and the sources header. The drift card also: two guarded KeaDhcpLink queries
+        # of each family, the mappings and the mapped Options of the stale judgment. One round each.
+        for name, expected in (("server_dhcp_plugin", 2 * rounds), ("server_dhcp_plugin_drift", 6 * rounds)):
             with self.subTest(name), stub_kea(_recorded_kea()):
                 with CaptureQueriesContext(connections["default"]) as queries:
                     response = self.client.get(reverse(f"plugins:netbox_kea:{name}", args=[server.pk]))
