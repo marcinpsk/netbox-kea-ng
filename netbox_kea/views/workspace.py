@@ -64,6 +64,8 @@ class WorkspaceSection:
     subnet_search: Callable[[QueryDict], SubnetSearch | None] = _no_subnet_search
     # Filter fields that are valid only together, so an invalid one drops all of them.
     paired_fields: frozenset[str] = frozenset()
+    # The label of a top-level section among its own subsections, when it differs from its section tab.
+    subsection_label: str | None = None
 
     @property
     def filter_fields(self) -> frozenset[str]:
@@ -128,6 +130,7 @@ WORKSPACE_SECTIONS = {
             "server_option_def{family}",
             "combined_configuration{family}",
             "option_def4",
+            subsection_label="Option Definitions",
         ),
         WorkspaceSection("options", "Server Options", "server_dhcp{family}_options_edit", None, parent="configuration"),
         WorkspaceSection("sync", "Sync", "server_sync_status", "combined_sync{family}", "sync_status"),
@@ -143,6 +146,14 @@ def top_sections() -> list[WorkspaceSection]:
 def subsections(section: WorkspaceSection) -> list[WorkspaceSection]:
     """Return the top-level *section* and its subsections, in navigation order."""
     return [section, *(child for child in WORKSPACE_SECTIONS.values() if child.parent == section.key)]
+
+
+def subsection_nav(section: WorkspaceSection, pk: int, family: Family) -> list[tuple[str, str, str, bool]]:
+    """Return the key, label, Server URL and current state of each subsection beside *section*."""
+    return [
+        (entry.key, entry.subsection_label or entry.label, entry.server_url(pk, family), entry.key == section.key)
+        for entry in subsections(top_section(section))
+    ]
 
 
 def top_section(section: WorkspaceSection) -> WorkspaceSection:

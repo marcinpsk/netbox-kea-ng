@@ -147,7 +147,8 @@ class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
                 for version in (4, 6)
             ],
             "workspace_subsections": [
-                (entry.key, entry.label, scope_url(entry, family)) for entry in combined_subsections
+                (entry.key, entry.subsection_label or entry.label, scope_url(entry, family))
+                for entry in combined_subsections
             ]
             if len(combined_subsections) > 1
             else [],

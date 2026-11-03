@@ -615,6 +615,35 @@ class TestWorkspaceTabRow(_ViewTestBase):
         self.assertEqual([a.get_text() for a in current], ["Sync"])
         self.assertIn("is not installed", page.get_text())
 
+    def test_each_subsection_row_lists_the_section_first_and_then_its_subsections(self):
+        replies = {
+            **_catalogue_responses_for_subnets(6, []),
+            "stat-lease6-get": {"result": 2, "text": "unknown command"},
+        }
+        pk = self.server.pk
+        rows = {
+            "Subnets": (("Subnets", "server_subnets6"), ("Shared Networks", "server_shared_networks6")),
+            "Configuration": (
+                ("Option Definitions", "server_option_def6"),
+                ("Server Options", "server_dhcp6_options_edit"),
+            ),
+        }
+        for links in rows.values():
+            for _, route in links:
+                with self.subTest(route=route):
+                    with stub_kea(replies):
+                        response = self.client.get(reverse(f"plugins:netbox_kea:{route}", args=[pk]))
+                    self.assertEqual(response.status_code, 200)
+                    row = BeautifulSoup(response.content, "html.parser").select_one("ul.nav-tabs.kea-tabs.mb-3")
+                    shown = [(a.get_text(strip=True), urlsplit(a["href"]).path) for a in row.select("a.nav-link")]
+                    self.assertEqual(
+                        shown, [(label, reverse(f"plugins:netbox_kea:{name}", args=[pk])) for label, name in links]
+                    )
+                    current = row.select('[aria-current="page"]')
+                    self.assertEqual(
+                        [a["href"].split("?")[0] for a in current], [reverse(f"plugins:netbox_kea:{route}", args=[pk])]
+                    )
+
     def test_every_tab_row_carries_the_active_tab_style_and_marks_one_tab_current(self):
         routes = (
             ("server", "Overview"),

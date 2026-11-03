@@ -44,7 +44,7 @@ from ._base import (
     _safe_return_url,
 )
 from .notices import Notice, load_snapshot, notice, show_notices
-from .workspace import WORKSPACE_SECTIONS, ServerFamilyMixin, subsections
+from .workspace import WORKSPACE_SECTIONS, ServerFamilyMixin, subsection_nav
 
 logger = logging.getLogger(__name__)
 
@@ -61,19 +61,14 @@ _SUBNETS_TAB = OptionalViewTab(label="Subnets", weight=1020, is_enabled=lambda s
 
 
 def subnets_nav_context(server_pk: int, section: str, dhcp_version: Family) -> dict[str, Any]:
-    """Build context for the Subnets and Shared Networks subsection navigation.
+    """Build the shared Subnets tab and the subsection navigation of the Subnets section.
 
-    ``section`` is the key of the shown subsection. Returns the shared tab and the key, label and URL of each
-    subsection.
+    ``section`` is ``"subnets"`` or ``"shared_networks"``.
     """
     return {
         "tab": _SUBNETS_TAB,
-        "section": section,
         "dhcp_version": dhcp_version,
-        "subsections": [
-            (entry.key, entry.label, entry.server_url(server_pk, dhcp_version))
-            for entry in subsections(WORKSPACE_SECTIONS["subnets"])
-        ],
+        "subsection_nav": subsection_nav(WORKSPACE_SECTIONS[section], server_pk, dhcp_version),
     }
 
 
