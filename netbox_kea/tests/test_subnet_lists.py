@@ -102,15 +102,21 @@ class _ListParity(_ViewTestBase):
         return (
             _cells(server_tab.context["table"], self.server.pk, record_column=self.record_column),
             _cells(combined.context["table"], self.server.pk, record_column=self.record_column),
+            _cells(combined.context["table"], self.other.pk, record_column=self.record_column),
         )
 
-    def _assert_parity(self, responses: dict, *, controls: bool) -> None:
-        server_tab, combined = self._pages(responses)
+    def _assert_parity(self, responses: dict, *, controls: bool) -> list[dict[str, tuple[str, list[str]]]]:
+        server_tab, combined, other = self._pages(responses)
         self.assertTrue(server_tab)
         self.assertEqual(server_tab, combined)
         route, args = self.change_route
         change = reverse(f"plugins:netbox_kea:{route}", args=[self.server.pk, *args])
         self.assertEqual(any(change in links for row in server_tab for _text, links in row.values()), controls)
+        # The permission on the first Server gives no control on the other Server's rows.
+        other_change = reverse(f"plugins:netbox_kea:{route}", args=[self.other.pk, *args])
+        self.assertTrue(other)
+        self.assertFalse(any(other_change in links for row in other for _text, links in row.values()))
+        return server_tab
 
     def _grant_change(self) -> None:
         # Only the first Server is writable, so the combined page must decide the controls for each Server.
@@ -128,7 +134,8 @@ class TestSubnetListParity(_ListParity):
 
     def test_a_change_user_sees_the_same_rows_and_change_controls(self):
         self._grant_change()
-        self._assert_parity(_responses(), controls=True)
+        rows = self._assert_parity(_responses(), controls=True)
+        self.assertEqual([row["utilization"][0] for row in rows], ["25%", "100%"])
 
     def test_a_subnet_that_kea_did_not_verify_offers_no_change_on_either_page(self):
         self._grant_change()
