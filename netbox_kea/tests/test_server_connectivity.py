@@ -17,6 +17,7 @@ from ipam.models import VRF
 from rest_framework.test import APIClient
 from users.models import ObjectPermission
 
+from netbox_kea.forms import ServerForm
 from netbox_kea.models import Server
 
 from .kea_stub import _http_response, _raw_http_response, queued, stub_kea
@@ -89,9 +90,11 @@ class ServerSubmissionConnectivityTest(_ViewTestBase):
 
     def test_blank_password_edit_keeps_stored_passwords(self):
         passwords = {"ca_password": "ca-secret", "dhcp4_password": "v4-secret", "dhcp6_password": "v6-secret"}
-        Server.objects.filter(pk=self.server.pk).update(**passwords)
+        Server.objects.filter(pk=self.server.pk).update(**passwords, dhcp4_url="https://v4.example.invalid")
         url = reverse("plugins:netbox_kea:server_edit", args=[self.server.pk])
-        payload = self._payload(name="renamed-server", ca_url=self.server.ca_url, dhcp6=True)
+        payload = self._payload(
+            name="renamed-server", ca_url=self.server.ca_url, dhcp6=True, dhcp4_url="https://v4.example.invalid"
+        )
         payload.update(dict.fromkeys(passwords, ""))
         with stub_kea({"version-get": requests.ConnectionError("Unavailable")}) as kea:
             response = self.client.post(url, payload)
@@ -104,7 +107,7 @@ class ServerSubmissionConnectivityTest(_ViewTestBase):
         with stub_kea({"version-get": _VERSION_OK}) as kea:
             response = self.client.post(url, {**payload, "dhcp4_password": "new-secret"})
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(len(kea.requests), 2)
+        self.assertEqual(kea.requests, [{"command": "version-get", "service": ["dhcp4"]}])
         self.server.refresh_from_db()
         self.assertEqual(self.server.dhcp4_password, "new-secret")
         self.assertEqual(self.server.ca_password, "ca-secret")
@@ -272,31 +275,26 @@ class ServerAPIConnectivityTest(_ViewTestBase):
                 self.server.refresh_from_db()
                 self.assertEqual(self.server.ca_url, "https://kea.example.com")
 
-    def test_connection_fields_trigger_probes_of_currently_enabled_services(self):
+    def _with_client_certificate(self, directory: str) -> tuple[Path, Path, Path]:
+        """Store a client certificate and key on the DHCPv4-only Server; return a CA file and another pair."""
+        paths = [Path(directory) / name for name in ("cert.pem", "key.pem", "other-cert.pem", "other-key.pem")]
+        for path in paths:
+            path.write_text("")
         self.server.dhcp6 = False
+        self.server.client_cert_path, self.server.client_key_path = str(paths[0]), str(paths[1])
         self.server.save()
+        return paths[0], paths[2], paths[3]
+
+    def test_effective_connection_changes_probe_the_changed_enabled_family(self):
         with tempfile.TemporaryDirectory() as directory:
-            cert, key = Path(directory) / "cert.pem", Path(directory) / "key.pem"
-            cert.write_text("")
-            key.write_text("")
-            self.server.client_cert_path = str(cert)
-            self.server.client_key_path = str(key)
-            self.server.save()
-            other_cert, other_key = Path(directory) / "other-cert.pem", Path(directory) / "other-key.pem"
-            other_cert.write_text("")
-            other_key.write_text("")
+            ca_file, other_cert, other_key = self._with_client_certificate(directory)
             changes = (
                 {"ca_url": "https://changed.example.invalid"},
                 {"dhcp4_url": "https://v4.example.invalid"},
-                {"dhcp6_url": "https://unused.example.invalid"},
                 {"ca_username": "placeholder"},
                 {"ca_password": "placeholder"},
-                {"dhcp4_username": "placeholder"},
-                {"dhcp4_password": "placeholder"},
-                {"dhcp6_username": "placeholder"},
-                {"dhcp6_password": "placeholder"},
                 {"ssl_verify": False},
-                {"ca_file_path": str(cert)},
+                {"ca_file_path": str(ca_file)},
                 {"client_cert_path": str(other_cert)},
                 {"client_key_path": str(other_key)},
                 {"has_control_agent": False},
@@ -312,6 +310,25 @@ class ServerAPIConnectivityTest(_ViewTestBase):
                     self.assertEqual(response.status_code, 400, response.data)
                     self.assertIn(f"dhcp{family}", response.data)
                     self.assertEqual(len(kea.requests), 1)
+
+    def test_connection_changes_with_no_effect_send_no_http(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._with_client_certificate(directory)
+            changes = (
+                {"dhcp6_url": "https://unused.example.invalid"},
+                {"dhcp4_username": "placeholder"},
+                {"dhcp4_password": "placeholder"},
+                {"dhcp6_username": "placeholder"},
+                {"dhcp6_password": "placeholder"},
+            )
+            for payload in changes:
+                with (
+                    self.subTest(payload=payload),
+                    stub_kea({"version-get": requests.ConnectionError("Unavailable")}) as kea,
+                ):
+                    response = self.api.patch(self.detail, payload, format="json")
+                    self.assertEqual(response.status_code, 200, response.data)
+                    self.assertEqual(kea.requests, [])
 
     def test_create_keeps_native_related_validation_and_connection_defaults(self):
         vrf = VRF.objects.create(name="create-vrf")
@@ -433,7 +450,13 @@ class ServerBulkConnectivityTest(_ViewTestBase):
     def test_second_server_failure_rolls_back_the_batch_and_dispatches_no_events(self):
         second = _make_db_server(name="second-server")
         tag = Tag.objects.create(name="Connection change", slug="connection-change")
-        payload = {"pk": [self.server.pk, second.pk], "dhcp4": "false", "add_tags": [tag.pk], "_apply": True}
+        payload = {
+            "pk": [self.server.pk, second.pk],
+            "dhcp4": "false",
+            "has_control_agent": "false",
+            "add_tags": [tag.pk],
+            "_apply": True,
+        }
         url = reverse("plugins:netbox_kea:server_bulk_edit")
         changes_before = ObjectChange.objects.count()
         jobs_before = Job.objects.count()
@@ -551,3 +574,70 @@ class ServerImportConnectivityTest(_ViewTestBase):
         self.assertEqual(len(kea.requests), 1)
         self.server.refresh_from_db()
         self.assertEqual(self.server.ca_url, "https://kea.example.com")
+
+
+_SPLIT_URLS = {"dhcp4_url": "https://v4.example.invalid", "dhcp6_url": "https://v6.example.invalid"}
+_BULK_FIELDS = frozenset({"has_control_agent", "dhcp4", "dhcp6"})
+_FORM_FIELDS = tuple(name for name in ServerForm._meta.fields if name not in {"tags", "sync_vrf"})
+#: (case, Server shape, change, expected probes as (URL, service)). Bulk edit runs a case that changes only its fields.
+_CHANGE_CASES: tuple[tuple[str, dict, dict, list], ...] = (
+    ("DHCPv6 URL while DHCPv6 is off", {"dhcp6": False}, {"dhcp6_url": "https://v6-new.example.invalid"}, []),
+    ("CA URL while both families have their own URL", _SPLIT_URLS, {"ca_url": "https://ca-new.example.invalid"}, []),
+    ("DHCPv4 username while DHCPv4 has no URL", {"ca_username": "ca-user"}, {"dhcp4_username": "v4-user"}, []),
+    (
+        "the URL of one family",
+        _SPLIT_URLS,
+        {"dhcp4_url": "https://v4-new.example.invalid"},
+        [("https://v4-new.example.invalid", ["dhcp4"])],
+    ),
+    (
+        "Control Agent routing while DHCPv6 is off",
+        {"dhcp6": False},
+        {"has_control_agent": False},
+        [("https://kea.example.com", None)],
+    ),
+    ("enabling DHCPv6", {**_SPLIT_URLS, "dhcp6": False}, {"dhcp6": True}, [("https://v6.example.invalid", ["dhcp6"])]),
+    ("disabling DHCPv4", _SPLIT_URLS, {"dhcp4": False}, []),
+)
+
+
+def _submitted(value: str | bool) -> str:
+    return str(value).lower() if isinstance(value, bool) else value
+
+
+class ServerChangeRuleTest(_ViewTestBase):
+    """A Server change probes only the enabled families whose effective connection changed, on every surface."""
+
+    def _submit(self, surface: str, server: Server, change: dict) -> None:
+        if surface == "api":
+            api = APIClient()
+            api.force_authenticate(self.user)
+            detail = reverse("plugins-api:netbox_kea-api:server-detail", args=[server.pk])
+            reply = api.patch(detail, change, format="json")
+            self.assertEqual(reply.status_code, 200, reply.data)
+            return
+        if surface == "form":
+            payload = {**{name: getattr(server, name) for name in _FORM_FIELDS}, **change}
+            response = self.client.post(reverse("plugins:netbox_kea:server_edit", args=[server.pk]), payload)
+        elif surface == "csv":
+            csv = f"id,{','.join(change)}\r\n{server.pk},{','.join(_submitted(value) for value in change.values())}\r\n"
+            response = self.client.post(
+                reverse("plugins:netbox_kea:server_bulk_import"), {"data": csv, "format": "csv", "csv_delimiter": ","}
+            )
+        else:
+            payload = {"pk": [server.pk], "_apply": True, **{key: _submitted(value) for key, value in change.items()}}
+            response = self.client.post(reverse("plugins:netbox_kea:server_bulk_edit"), payload)
+        self.assertEqual(response.status_code, 302)
+
+    def test_a_change_probes_only_the_enabled_families_whose_connection_changed(self):
+        for index, (case, shape, change, probes) in enumerate(_CHANGE_CASES):
+            surfaces = ("form", "api", "csv", *(("bulk",) if change.keys() <= _BULK_FIELDS else ()))
+            for surface in surfaces:
+                with self.subTest(case=case, surface=surface):
+                    server = _make_db_server(name=f"rule-{index}-{surface}", **shape)
+                    with stub_kea({"version-get": _VERSION_OK}) as kea:
+                        self._submit(surface, server, change)
+                        sent = list(zip(kea.urls(), [request.get("service") for request in kea.requests], strict=True))
+                    self.assertEqual(sent, probes)
+                    server.refresh_from_db()
+                    self.assertEqual({field: getattr(server, field) for field in change}, change)

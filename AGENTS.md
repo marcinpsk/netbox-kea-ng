@@ -255,8 +255,9 @@ URL request
   (`ssl_verify`, `ca_file_path`, `client_cert_path`, `client_key_path`),
   `has_control_agent`, per-server IPAM sync toggles, `sync_vrf` (`PROTECT` FK to `ipam.VRF`;
   blank = global table), and `persist_config`. `clean()` validates local settings only.
-  `server_connection.py` checks enabled services on UI, REST, CSV and bulk submissions
-  that create a Server or change connection values. Metadata and unchanged connection values send no HTTP.
+  `server_connection.py` checks each enabled service on UI, REST, CSV and bulk submissions that create a Server,
+  and each enabled service whose effective connection changed (`service_connections()`, from `kea_connection()`).
+  A change with no effect on an enabled service sends no HTTP.
   `get_client(version=4|6|None)` returns a protocol-aware `KeaClient`.
 - **Settings singletons** (`models.py`, ADR 0010): every runtime setting is a field of a `SettingsSingleton`
   row (pk=1). `SyncConfig` holds the sync settings (`interval_minutes`, `sync_enabled`, the type toggles,
