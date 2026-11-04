@@ -125,7 +125,7 @@ def _read_page(
     The records are parsed against *catalogue*. A browse page has the time of its own read. A search, and a page
     that needs no read, have the time at which this call started.
     """
-    q, subnet_id, scope, cursor = query.q, query.subnet_id, query.scope, query.cursor
+    subnet_id, scope, cursor = query.subnet_id, query.scope, query.cursor
     started = timezone.now()
     if subnet_id is not None and subnet_id > 0 and scope == "global":
         return replace(empty_snapshot(family, started), complete=True)
@@ -138,9 +138,22 @@ def _read_page(
         if catalogue.identity_complete and catalogue.consistent:
             return replace(empty_snapshot(family, started), complete=True)
         read_subnet_id = None
-    client = server.get_client(version=family)
-    if not query.filtered:
-        return client.reservation_page(family, catalogue, cursor=cursor, limit=PAGE_SIZE)
+    with server.get_client(version=family) as client:
+        if not query.filtered:
+            return client.reservation_page(family, catalogue, cursor=cursor, limit=PAGE_SIZE)
+        return _search_batch(client, family, catalogue, query, read_subnet_id, started)
+
+
+def _search_batch(
+    client: KeaClient,
+    family: Family,
+    catalogue: CatalogueSnapshot,
+    query: ReservationQuery,
+    read_subnet_id: int | None,
+    started: datetime,
+) -> ReservationSnapshot:
+    """Scan a bounded batch of filtered pages from the cursor of *query* until a page matches."""
+    q, subnet_id, scope, cursor = query.q, query.subnet_id, query.scope, query.cursor
     diagnostics = []
     complete = True
     for page_index in range(SEARCH_PAGE_LIMIT):
@@ -220,7 +233,8 @@ def read_snapshot(server: Server, family: Family) -> ReservationSnapshot:
     The records are parsed against the display Subnet Catalogue. A Kea, transport or reply failure raises.
     """
     catalogue = subnet_catalogue.display(server, family)
-    return server.get_client(version=family).reservation_snapshot(family, catalogue, page_size=PAGE_SIZE)
+    with server.get_client(version=family) as client:
+        return client.reservation_snapshot(family, catalogue, page_size=PAGE_SIZE)
 
 
 def read_page(server: Server, family: Family, *, cursor: str | None, limit: int) -> ReservationSnapshot:
@@ -228,8 +242,8 @@ def read_page(server: Server, family: Family, *, cursor: str | None, limit: int)
 
     The records are parsed against the display Subnet Catalogue. A Kea, transport or reply failure raises.
     """
-    client = server.get_client(version=family)
-    return client.reservation_page(family, subnet_catalogue.display(server, family), cursor=cursor, limit=limit)
+    with server.get_client(version=family) as client:
+        return client.reservation_page(family, subnet_catalogue.display(server, family), cursor=cursor, limit=limit)
 
 
 def _scope(catalogue: CatalogueSnapshot, subnet_id: int | None) -> ReservationScope:
@@ -258,9 +272,9 @@ def read_by_identity(
         ValueError: If *subnet_id* is not a verified Subnet, or *identity* is not valid for *family*.
 
     """
-    client = server.get_client(version=family)
-    catalogue = subnet_catalogue.display(server, family)
-    return client.reservation_by_identity(family, catalogue, _scope(catalogue, subnet_id), identity)
+    with server.get_client(version=family) as client:
+        catalogue = subnet_catalogue.display(server, family)
+        return client.reservation_by_identity(family, catalogue, _scope(catalogue, subnet_id), identity)
 
 
 def read_by_address(server: Server, family: Family, subnet_id: int, address: str) -> Reservation | None:
@@ -272,9 +286,9 @@ def read_by_address(server: Server, family: Family, subnet_id: int, address: str
         ValueError: If *subnet_id* is not a verified Subnet, or *address* is not valid.
 
     """
-    client = server.get_client(version=family)
-    catalogue = subnet_catalogue.display(server, family)
-    return client.reservation_by_address(family, catalogue, _scope(catalogue, subnet_id), address)
+    with server.get_client(version=family) as client:
+        catalogue = subnet_catalogue.display(server, family)
+        return client.reservation_by_address(family, catalogue, _scope(catalogue, subnet_id), address)
 
 
 def read_by_hostname(server: Server, family: Family, hostname: str) -> ReservationSnapshot:
@@ -284,5 +298,5 @@ def read_by_hostname(server: Server, family: Family, hostname: str) -> Reservati
         ValueError: If *hostname* is not valid.
 
     """
-    client = server.get_client(version=family)
-    return client.reservations_by_hostname(family, subnet_catalogue.display(server, family), hostname)
+    with server.get_client(version=family) as client:
+        return client.reservations_by_hostname(family, subnet_catalogue.display(server, family), hostname)

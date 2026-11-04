@@ -85,6 +85,7 @@ from .utils import (
     imported_dhcp_server,
     imported_dhcp_servers,
     optional_shared_network_prefix,
+    record_kea_clients,
     without_dhcp_plugin,
 )
 
@@ -2035,6 +2036,14 @@ class CreatedAndRemovedPathTest(TestCase):
             for entry in summary.entries
             if entry.kind in (Kind.PD_POOL, Kind.RESERVATION) and entry.reason is None
         }
+
+    def test_a_run_closes_each_kea_client(self):
+        server = _make_db_server(name="closed-clients", ca_url="https://kea.example.invalid", dhcp4=False)
+        host = {"subnet-id": 90, "duid": "00:01:00:01:aa:bb", "ip-addresses": ["2001:db8:90::50"]}
+        with record_kea_clients() as clients:
+            created = self._run(server, {"subnet6": [{"id": 90, "subnet": "2001:db8:90::/64"}]}, [host])
+        self.assertIn((Kind.RESERVATION, Outcome.CREATED), created)
+        clients.assert_all_closed(self)
 
     def test_a_pd_pool_and_a_reservation_have_one_path_when_created_and_when_removed(self):
         server = _make_db_server(name="created-removed-paths", ca_url="https://kea.example.invalid", dhcp4=False)

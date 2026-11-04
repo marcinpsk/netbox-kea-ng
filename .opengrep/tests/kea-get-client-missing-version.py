@@ -6,22 +6,22 @@
 
 def fetch(server):
     # ruleid: kea-get-client-missing-version
-    client = server.get_client()
-    return client
+    with server.get_client() as client:
+        return client.command(KeaCommand.VERSION_GET, 4)
 
 
 def fetch_versioned(server):
     # ok: kea-get-client-missing-version
-    client = server.get_client(version=4)
-    return client
+    with server.get_client(version=4) as client:
+        return client.command(KeaCommand.VERSION_GET, 4)
 
 
 def fetch_versioned_var(server, version):
     # ok: kea-get-client-missing-version
-    client = server.get_client(version=version)
-    return client
+    with server.get_client(version=version) as client:
+        return client.command(KeaCommand.VERSION_GET, 4)
 
 
 def nested(server, helper):
-    # ruleid: kea-get-client-missing-version
+    # ruleid: kea-get-client-missing-version, kea-client-outside-with
     return helper(server.get_client())

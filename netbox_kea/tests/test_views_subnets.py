@@ -52,11 +52,11 @@ from .kea_stub import (
     stub_kea,
 )
 from .utils import (
-    INVALID_SERVER_SETTINGS,
     UNCONFIRMED_RUNTIME,
     _make_db_server,
     _page_data,
     _ViewTestBase,
+    invalid_server_settings,
     save_key_without_certificate,
 )
 
@@ -635,7 +635,9 @@ class TestServerSubnet4WipeView(_ViewTestBase):
             response = self.client.post(self._url(subnet_id=10))
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands(), [])
-        self.assertEqual([str(message) for message in get_messages(response.wsgi_request)], [INVALID_SERVER_SETTINGS])
+        self.assertEqual(
+            [str(message) for message in get_messages(response.wsgi_request)], [invalid_server_settings(self.server)]
+        )
 
     def test_post_on_a_subnet_without_leases_reports_success(self):
         """Kea 3.2.0 answers result 3 when there is no lease to delete; the Subnet is still empty."""
@@ -1903,7 +1905,7 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
         with stub_kea(SubnetDaemon(4).responses()) as kea:
             response = self.client.post(url, _SUBNET_ADD_POST)
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, INVALID_SERVER_SETTINGS)
+        self.assertContains(response, invalid_server_settings(bad_server))
         self.assertEqual(kea.commands(), [])
 
 
@@ -2971,7 +2973,7 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
                 bad_url = url.replace(f"/servers/{self.server.pk}/", f"/servers/{bad.pk}/")
                 messages, kea = self._post(bad_url, data, _change_responses(_subnet_1()))
                 self.assertEqual(kea.commands(), [])
-                self.assertEqual(messages, [(django_messages.ERROR, INVALID_SERVER_SETTINGS)])
+                self.assertEqual(messages, [(django_messages.ERROR, invalid_server_settings(bad))])
 
     def test_a_pool_delete_whose_pool_is_outside_the_cidr_sends_nothing(self):
         url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 1, "10.0.1.10-10.0.1.20"])
@@ -4252,7 +4254,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
         with stub_kea({}) as kea:
             response = self.client.post(url, {**_shown(), "subnet_cidr": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, INVALID_SERVER_SETTINGS)
+        self.assertContains(response, invalid_server_settings(bad))
         self.assertEqual(kea.commands(), [])
 
     # ── 6. Pool add with reservation overlap warning ────

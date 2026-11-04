@@ -971,7 +971,10 @@ class TestCombinedReservationFanOut(_ViewTestBase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "printer")
-        self.assertEqual(response.context["errors"], [("broken-kea", HEADLINES["reservation"])])
+        settings = "The Kea client settings of Server broken-kea are invalid. Check the client certificate and key."
+        self.assertEqual(
+            response.context["errors"], [("broken-kea", HEADLINES["reservation"]), ("broken-kea", settings)]
+        )
         self.assertEqual(response.context["mutation_unavailable_servers"], [])
 
     @with_kea_client_config(kea_timeout=7, lease_query_max_unpaged_leases=250)

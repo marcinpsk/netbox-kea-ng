@@ -15,7 +15,7 @@ from django.utils import timezone
 from . import display_cache
 from .constants import Family, IPAddressValue, IPNetworkValue, validate_family
 from .dhcp_options import DHCPOption, OptionDefinition, parse_dhcp_option, parse_option_definition
-from .kea import CandidateConfiguration, KeaCommand, SubnetDefinition, subnet_network
+from .kea import CandidateConfiguration, KeaCommand, KeaResponse, SubnetDefinition, subnet_network
 from .managed_fields import shared_network_description
 from .models import Server, require_persisted_server
 from .pools import Pool, parse_pool
@@ -195,10 +195,12 @@ def _read_configuration(
     server: Server, family: Family
 ) -> tuple[dict[str, Any], str | None] | ServerConfigurationSnapshot:
     """Read the live ``Dhcp{v}`` block and its hash, or return the unavailable Snapshot of a failed read."""
-    response = attempt(
-        f"The DHCPv{family} Server Configuration read of Server {server.pk}",
-        lambda: server.get_client(version=family).command(KeaCommand.CONFIG_GET, family),
-    )
+
+    def config_get() -> list[KeaResponse]:
+        with server.get_client(version=family) as client:
+            return client.command(KeaCommand.CONFIG_GET, family)
+
+    response = attempt(f"The DHCPv{family} Server Configuration read of Server {server.pk}", config_get)
     if isinstance(response, ReadFailure):
         if response.kind == "malformed":
             return _unavailable(
@@ -564,10 +566,12 @@ def _parse_configured_fact(
 def subnet_for_display(server: Server, family: int, subnet_id: int) -> DeclaredSubnet | None:
     """Read one Subnet for form display without authorizing a mutation."""
     validated_family = validate_family(family)
-    entry = attempt(
-        f"The DHCPv{family} Subnet display read of Server {server.pk}",
-        lambda: server.get_client(version=validated_family).subnet_get(validated_family, subnet_id),
-    )
+
+    def subnet_get() -> dict:
+        with server.get_client(version=validated_family) as client:
+            return client.subnet_get(validated_family, subnet_id)
+
+    entry = attempt(f"The DHCPv{family} Subnet display read of Server {server.pk}", subnet_get)
     if isinstance(entry, ReadFailure):
         return None
     subnet = _complete_subnet(entry, validated_family)

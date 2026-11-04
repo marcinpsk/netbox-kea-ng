@@ -25,7 +25,7 @@ from .kea_stub import (
     stub_kea,
 )
 from .test_lease_actions import _address4, _inputs
-from .utils import INVALID_SERVER_SETTINGS, _ViewTestBase, save_key_without_certificate
+from .utils import _ViewTestBase, invalid_server_settings, save_key_without_certificate
 
 _IDENTITY = {"identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"}
 
@@ -89,7 +89,7 @@ class ClientSettingsErrorTest(_ViewTestBase):
                     response = self.client.post(self._url(name), data)
                 self.assertEqual(response.status_code, 302)
                 self.assertEqual(kea.commands(), [])
-                self.assertEqual(_messages(response), [INVALID_SERVER_SETTINGS])
+                self.assertEqual(_messages(response), [invalid_server_settings(self.server)])
 
     def test_the_export_of_all_leases_names_the_client_settings(self):
         expected = save_key_without_certificate(self.server)
@@ -116,7 +116,7 @@ class ClientSettingsErrorTest(_ViewTestBase):
             response = self.client.post(url, {**form, "hostname": "renamed.example.org"})
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands(), [])
-        self.assertEqual(_messages(response), [f"Lease 192.0.2.40: {INVALID_SERVER_SETTINGS}"])
+        self.assertEqual(_messages(response), [f"Lease 192.0.2.40: {invalid_server_settings(self.server)}"])
 
     def test_a_lease_add_is_not_sent_with_invalid_server_settings(self):
         save_key_without_certificate(self.server)
@@ -126,7 +126,7 @@ class ClientSettingsErrorTest(_ViewTestBase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
-        self.assertEqual(_messages(response), [f"Lease 192.0.2.50: {INVALID_SERVER_SETTINGS}"])
+        self.assertEqual(_messages(response), [f"Lease 192.0.2.50: {invalid_server_settings(self.server)}"])
 
     def test_a_lease_sync_row_names_the_client_settings(self):
         expected = save_key_without_certificate(self.server)

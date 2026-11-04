@@ -385,7 +385,11 @@ class TestCombinedPagesKeepANoticePerServer(_ViewTestBase):
         with stub_kea({}) as kea:
             reservations = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"))
         self.assertEqual(kea.commands(), [])
-        self.assertEqual(reservations.context["errors"], [(self.server.name, HEADLINES["reservation"])])
+        settings = "The Kea client settings of Server test-kea are invalid. Check the client certificate and key."
+        self.assertEqual(
+            reservations.context["errors"],
+            [(self.server.name, HEADLINES["reservation"]), (self.server.name, settings)],
+        )
 
 
 class TestReservationEditNotice(_ViewTestBase):

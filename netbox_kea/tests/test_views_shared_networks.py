@@ -47,6 +47,7 @@ from .utils import (
     _page_data,
     _ReadModifyWriteMessages,
     _ViewTestBase,
+    invalid_server_settings,
     with_kea_client_config,
 )
 
@@ -588,15 +589,7 @@ class _SharedNetworkChangeMessages:
         messages, commands = self._post(self._stub(), client_cert_path="/etc/kea/client.pem")
         self.assertEqual(
             messages,
-            [
-                (
-                    django_messages.ERROR,
-                    (
-                        "The change was not sent to Kea, because the Server settings are not valid. "
-                        "NetBox could not build a Kea client from the Server connection settings."
-                    ),
-                )
-            ],
+            [(django_messages.ERROR, invalid_server_settings(self.server))],
         )
         self.assertEqual(commands, [])
 

@@ -207,13 +207,12 @@ class ServerViewSet(NetBoxModelViewSet):
         if state_error is not None:
             return Response({"detail": state_error}, status=status.HTTP_400_BAD_REQUEST)
 
+        def lease_search() -> LeaseSnapshot:
+            with server.get_client(version=version) as client:
+                return client.lease_search(version, selector, value, state=lease_state, server_id=server.pk)
+
         try:
-            snapshot = attempt(
-                f"The DHCPv{version} Lease API search of Server {server.pk}",
-                lambda: server.get_client(version=version).lease_search(
-                    version, selector, value, state=lease_state, server_id=server.pk
-                ),
-            )
+            snapshot = attempt(f"The DHCPv{version} Lease API search of Server {server.pk}", lease_search)
         except LeaseQueryGuardError as exc:
             logger.info("Rejected unsafe Subnet lease API query on server %s", server.name)
             return Response(
