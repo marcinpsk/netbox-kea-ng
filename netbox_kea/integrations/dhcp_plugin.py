@@ -27,8 +27,8 @@ v1 scope (import + diff, read-only against Kea):
   even when the snapshot quarantines other records. A Global Reservation skips the
   IPAM sync, so the import creates no address rows for it and reports every reserved
   address it could not attach.  Delegated prefixes and the prefixes that they exclude carry their own length, so
-  they import as shared ``ipam.Prefix`` rows for every Scope, under the IPAM source ``delegated-prefix``. The stale
-  cleanup of ``delegated-prefix`` runs after the removal of Stale DHCP Import Objects, as the ``pd-pool`` phase does.
+  they import as shared ``ipam.Prefix`` rows for every Scope, under the IPAM source ``reservation-prefix``. The stale
+  cleanup of ``reservation-prefix`` runs after the removal of Stale DHCP Import Objects, as the ``pd-pool`` phase does.
 * Each imported Shared Network, Subnet, Pool, delegated-prefix Pool, Reservation, client class, custom Option
   Definition and DHCP Option has a DHCP Import Mapping (:class:`netbox_kea.models.KeaDhcpLink`) to its Kea source, and
   a re-import finds the row through it, also after an operator renames the row. The first import after an upgrade
@@ -93,7 +93,13 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from ..ipam_reconciliation import ClaimResult, DelegatedPrefixPhase, RangeClaim, ReservationObservation, SyncReport
+    from ..ipam_reconciliation import (
+        ClaimResult,
+        RangeClaim,
+        ReservationObservation,
+        ReservationPrefixPhase,
+        SyncReport,
+    )
     from ..models import DhcpIntegrationConfig, Server
     from ..subnet_catalogue import CatalogueSnapshot
     from .dhcp_import_plan import (
@@ -2245,7 +2251,7 @@ def import_reservation_snapshot(
     Return the delegated-prefix step of the imported Reservations for :func:`reconcile_delegated_prefixes`, or
     ``None`` when no Snapshot was read or their Prefixes could not be attached.
     """
-    from ..ipam_reconciliation import DelegatedPrefixClaim, DelegatedPrefixPhase, claim
+    from ..ipam_reconciliation import ReservationPrefixClaim, ReservationPrefixPhase, claim
 
     server, family, summary, capabilities = scope.server, scope.family, scope.summary, scope.capabilities
     if observation is None:
@@ -2300,13 +2306,13 @@ def import_reservation_snapshot(
     try:
         with event_scope.atomic():
             prefix_claims = claim(
-                server, snapshot.family, [DelegatedPrefixClaim(network) for network in networks], force=False
+                server, snapshot.family, [ReservationPrefixClaim(network) for network in networks], force=False
             )
             _attach_delegated_prefixes(
                 [(planned.intent, late.row) for planned, late in imported], prefix_claims, summary
             )
         failed = frozenset(address for address, result in prefix_claims.prefixes.items() if result.outcome == "error")
-        step = DelegatedPrefixStep(DelegatedPrefixPhase(records, observation.cutoff, complete and not failed), failed)
+        step = DelegatedPrefixStep(ReservationPrefixPhase(records, observation.cutoff, complete and not failed), failed)
         if complete:
             summary.ownership.completed_sources.add("reservation")
         else:
@@ -2323,7 +2329,7 @@ def import_reservation_snapshot(
                 "Delegated Prefixes could not be attached. See server logs.",
             )
         )
-        summary.ownership.incomplete.add("delegated-prefix")
+        summary.ownership.incomplete.add("reservation-prefix")
         logger.exception("Could not attach delegated Prefixes after DHCP import")
         summary.warn("Delegated Prefixes could not be attached. See server logs.")
     relations = _relation_states([late.row for _, late in imported])
@@ -2338,7 +2344,7 @@ def import_reservation_snapshot(
 class DelegatedPrefixStep:
     """The delegated-prefix phase of the imported Reservations, and the Prefixes whose claim failed before attachment."""
 
-    phase: DelegatedPrefixPhase
+    phase: ReservationPrefixPhase
     failed: frozenset[str]
 
 
@@ -2941,16 +2947,16 @@ def import_permissions(server) -> tuple[str, ...]:
     """
     from ..ipam_reconciliation import (
         RESERVATION,
-        DelegatedPrefixPhase,
         PDPoolPhase,
         PoolPhase,
+        ReservationPrefixPhase,
         SubnetPhase,
         claim_permissions,
         reconcile_permissions,
     )
 
     claims = claim_permissions(SubnetPhase.source, PoolPhase.source, PDPoolPhase.source, RESERVATION)
-    reconciles = reconcile_permissions(server, DelegatedPrefixPhase.source, PDPoolPhase.source)
+    reconciles = reconcile_permissions(server, ReservationPrefixPhase.source, PDPoolPhase.source)
     return tuple(dict.fromkeys((*claims, *reconciles, *_PLUGIN_UPSERTS, *_removal_permissions())))
 
 

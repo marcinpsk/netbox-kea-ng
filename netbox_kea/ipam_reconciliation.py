@@ -128,7 +128,7 @@ R = TypeVar("R")
 # The type check sees a TextChoices member as its (value, label) tuple; at runtime it is the str value.
 PD_POOL = cast("str", IPAMOwnershipSource.PD_POOL)
 # The sources that own Prefixes and IP Ranges; their failures count as prefix errors.
-_NETWORK_SOURCES = frozenset({"subnet", "pool", "delegated-prefix", LEASE_PREFIX, PD_POOL})
+_NETWORK_SOURCES = frozenset({"subnet", "pool", "reservation-prefix", LEASE_PREFIX, PD_POOL})
 
 # The status of an IP address from the sources of its live links.
 _STATUSES: dict[frozenset[str], str] = {
@@ -261,13 +261,13 @@ class ReservationObservation:
 
 
 @dataclass(frozen=True)
-class DelegatedPrefixPhase:
+class ReservationPrefixPhase:
     """Successfully imported Reservations with their original read cutoff: their delegated and excluded prefixes."""
 
     records: Sequence[Reservation]
     cutoff: int
     complete: bool
-    source: ClassVar[str] = "delegated-prefix"
+    source: ClassVar[str] = "reservation-prefix"
 
 
 @dataclass(frozen=True)
@@ -283,7 +283,9 @@ class PDPoolPhase:
     source: ClassVar[str] = PD_POOL
 
 
-Phase = LeasePhase | LeasePrefixPhase | ReservationPhase | SubnetPhase | PoolPhase | DelegatedPrefixPhase | PDPoolPhase
+Phase = (
+    LeasePhase | LeasePrefixPhase | ReservationPhase | SubnetPhase | PoolPhase | ReservationPrefixPhase | PDPoolPhase
+)
 
 # The NetBox permissions that a claim of each source uses. An address claim also writes the MAC address rows.
 _ADDRESS_WRITES = ("ipam.add_ipaddress", "ipam.change_ipaddress", "dcim.add_macaddress", "dcim.change_macaddress")
@@ -294,7 +296,7 @@ _CLAIM_PERMISSIONS: dict[str, tuple[str, ...]] = {
     RESERVATION: _ADDRESS_WRITES,
     SubnetPhase.source: _PREFIX_WRITES,
     PoolPhase.source: ("ipam.add_iprange", "ipam.change_iprange"),
-    DelegatedPrefixPhase.source: _PREFIX_WRITES,
+    ReservationPrefixPhase.source: _PREFIX_WRITES,
     PDPoolPhase.source: _PREFIX_WRITES,
 }
 
@@ -436,8 +438,8 @@ def _effective_sources(
         imported = frozenset(
             (family, source)
             for family in families
-            for source in ("reservation", "subnet", "pool", "delegated-prefix", PD_POOL)
-            if source not in ("delegated-prefix", PD_POOL) or family == 6
+            for source in ("reservation", "subnet", "pool", "reservation-prefix", PD_POOL)
+            if source not in ("reservation-prefix", PD_POOL) or family == 6
         )
     return {"job": sync_plan(server, config).sources, "import": imported}
 
@@ -521,7 +523,7 @@ def _pending_adoptions() -> set[tuple[Family, str]]:
         "lease": "ip_address",
         "reservation": "ip_address",
         "subnet": "prefix",
-        "delegated-prefix": "prefix",
+        "reservation-prefix": "prefix",
         LEASE_PREFIX: "prefix",
         PD_POOL: "prefix",
         "pool": "ip_range",
@@ -648,20 +650,20 @@ class PDPoolClaim:
 
 
 @dataclass(frozen=True)
-class DelegatedPrefixClaim:
+class ReservationPrefixClaim:
     """A delegated or excluded prefix of an imported Reservation, to claim without cleanup."""
 
     prefix: IPNetworkValue
 
 
-_NetworkClaim = SubnetClaim | PoolClaim | PDPoolClaim | DelegatedPrefixClaim
+_NetworkClaim = SubnetClaim | PoolClaim | PDPoolClaim | ReservationPrefixClaim
 
 # The source of each network record that a claim takes.
 _NETWORK_CLAIM_SOURCES: dict[type[_NetworkClaim], str] = {
     SubnetClaim: "subnet",
     PoolClaim: "pool",
     PDPoolClaim: PD_POOL,
-    DelegatedPrefixClaim: DelegatedPrefixPhase.source,
+    ReservationPrefixClaim: ReservationPrefixPhase.source,
 }
 
 
@@ -820,7 +822,7 @@ def claim(
     | Sequence[SubnetClaim]
     | Sequence[PoolClaim]
     | Sequence[PDPoolClaim]
-    | Sequence[DelegatedPrefixClaim],
+    | Sequence[ReservationPrefixClaim],
     force: bool,
 ) -> ClaimResult: ...
 
@@ -833,7 +835,7 @@ def claim(
     | Sequence[SubnetClaim]
     | Sequence[PoolClaim]
     | Sequence[PDPoolClaim]
-    | Sequence[DelegatedPrefixClaim],
+    | Sequence[ReservationPrefixClaim],
     force: bool,
     *,
     catalogue: CatalogueSnapshot | None = None,
@@ -1152,7 +1154,7 @@ def _run_phase(server: Server, family: Family, phase: Phase, report: SyncReport)
 
     The cutoff number comes before the snapshot request, so a claim that confirms a link after it keeps the link.
     """
-    if isinstance(phase, (DelegatedPrefixPhase, PDPoolPhase)):
+    if isinstance(phase, (ReservationPrefixPhase, PDPoolPhase)):
         return _run_imported_prefix_phase(server, family, phase, report)
     if isinstance(phase, LeasePrefixPhase):
         return _run_lease_prefix_phase(server, family, phase, report)
@@ -1980,7 +1982,7 @@ def _claim_network_records(
     for record in records:
         if type(record) is not expected or not isinstance(record, tuple(_NETWORK_CLAIM_SOURCES)):
             raise ValueError("A claim takes one homogeneous source")
-        network = record.prefix if isinstance(record, (PDPoolClaim, DelegatedPrefixClaim)) else record.network
+        network = record.prefix if isinstance(record, (PDPoolClaim, ReservationPrefixClaim)) else record.network
         if network.version != family:
             raise ValueError("The network does not match the claim family")
         if not isinstance(record, PoolClaim):
@@ -2030,7 +2032,7 @@ def _claim_network_reports(
     return result
 
 
-def _imported_prefixes(family: Family, phase: DelegatedPrefixPhase | PDPoolPhase) -> list[IPNetworkValue]:
+def _imported_prefixes(family: Family, phase: ReservationPrefixPhase | PDPoolPhase) -> list[IPNetworkValue]:
     """Return the Prefixes that an import phase reports, after a check of their family before any write."""
     if isinstance(phase, PDPoolPhase):
         if any(prefix.version != family for prefix in phase.prefixes):
@@ -2046,7 +2048,7 @@ def _imported_prefixes(family: Family, phase: DelegatedPrefixPhase | PDPoolPhase
 
 
 def _run_imported_prefix_phase(
-    server: Server, family: Family, phase: DelegatedPrefixPhase | PDPoolPhase, report: SyncReport
+    server: Server, family: Family, phase: ReservationPrefixPhase | PDPoolPhase, report: SyncReport
 ) -> int | None:
     """Claim the Prefixes of an import phase (Reservation delegated and excluded prefixes, or PD Pools) before cleanup."""
     reports = {

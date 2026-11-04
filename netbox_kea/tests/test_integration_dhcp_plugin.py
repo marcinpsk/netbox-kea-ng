@@ -4292,7 +4292,7 @@ class DhcpPluginReservationFieldsImportTest(TestCase):
         self.assertEqual(excluded.description, "[kea-sync: delegated prefix]")
         self.assertEqual(
             list(IPAMOwnershipLink.objects.filter(prefix=excluded).values_list("server", "source")),
-            [(self.server.pk, "delegated-prefix")],
+            [(self.server.pk, "reservation-prefix")],
         )
 
     def test_a_global_dhcpv6_reservation_links_its_delegated_and_excluded_prefixes(self):

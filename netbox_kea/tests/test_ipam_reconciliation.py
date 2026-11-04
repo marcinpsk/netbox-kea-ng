@@ -1842,7 +1842,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
                 server=server,
                 prefix=prefix,
                 family=6,
-                source="delegated-prefix",
+                source="reservation-prefix",
                 adopted=True,
                 facts={"prefix_length": 64},
                 confirmation=next_confirmation_number(),
@@ -1921,8 +1921,8 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         first = Prefix.objects.create(prefix="2001:db8::/64", description="[kea-sync: delegated prefix]")
         second = Prefix.objects.create(prefix="2001:db8:1::/64", description="[kea-sync: delegated prefix]")
         for server, prefix, source in (
-            (owner, first, "delegated-prefix"),
-            (owner, second, "delegated-prefix"),
+            (owner, first, "reservation-prefix"),
+            (owner, second, "reservation-prefix"),
             (sibling, second, "subnet"),
         ):
             IPAMOwnershipLink.objects.create(
@@ -2353,7 +2353,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
     def test_subnet_and_delegated_prefix_claims_share_one_identity_lock(self):
         import ipaddress
 
-        from netbox_kea.ipam_reconciliation import DelegatedPrefixPhase, SubnetClaim
+        from netbox_kea.ipam_reconciliation import ReservationPrefixPhase, SubnetClaim
         from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
 
         first, second = _server("subnet-owner"), _server("delegated-owner")
@@ -2366,7 +2366,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         self._start(
             "delegated",
             lambda: reconcile(
-                second, 6, [DelegatedPrefixPhase(observation.snapshot.records, observation.cutoff, True)]
+                second, 6, [ReservationPrefixPhase(observation.snapshot.records, observation.cutoff, True)]
             ),
         )
         self._wait_for_lock_waits(2)
@@ -2375,7 +2375,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         prefix = Prefix.objects.get(prefix=str(network))
         self.assertEqual(
             set(IPAMOwnershipLink.objects.filter(prefix=prefix).values_list("source", flat=True)),
-            {"subnet", "delegated-prefix"},
+            {"subnet", "reservation-prefix"},
         )
         self.assertEqual(self._report("delegated").errors, 0)
         self.assertIn(self._claim_result("subnet").prefixes[str(network)].outcome, {"created", "updated", "unchanged"})

@@ -858,7 +858,7 @@ class IPAMOwnershipSource(models.TextChoices):
     RESERVATION = "reservation", "Reservation"
     SUBNET = "subnet", "Subnet"
     POOL = "pool", "Pool"
-    DELEGATED_PREFIX = "delegated-prefix", "Delegated prefix"
+    RESERVATION_PREFIX = "reservation-prefix", "Reservation delegated prefix"
     LEASE_PREFIX = "lease-prefix", "Delegated-prefix lease"
     PD_POOL = "pd-pool", "Delegated-prefix Pool"
 
@@ -886,7 +886,9 @@ class IPAMOwnershipLink(models.Model):
     family: models.PositiveSmallIntegerField = models.PositiveSmallIntegerField(
         choices=[(family, f"IPv{family}") for family in get_args(Family)]
     )
-    source: models.CharField = models.CharField(max_length=16, choices=IPAMOwnershipSource.choices)
+    source: models.CharField = models.CharField(
+        max_length=max(map(len, IPAMOwnershipSource.values)), choices=IPAMOwnershipSource.choices
+    )
     ip_address: models.ForeignKey = models.ForeignKey(
         to="ipam.IPAddress",
         on_delete=models.CASCADE,
