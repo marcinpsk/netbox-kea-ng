@@ -150,7 +150,7 @@ class TestDualURLOptionViews(_DualURLBase):
 
     def test_option_defs4_uses_dhcp4_url(self):
         """GET option-defs4 → request POSTed to dhcp4_url."""
-        url = reverse("plugins:netbox_kea:server_option_def4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_option_def", kwargs={"pk": self.server.pk, "family": 4})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -158,7 +158,7 @@ class TestDualURLOptionViews(_DualURLBase):
 
     def test_option_defs6_uses_dhcp6_url(self):
         """GET option-defs6 → request POSTed to dhcp6_url."""
-        url = reverse("plugins:netbox_kea:server_option_def6", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_option_def", kwargs={"pk": self.server.pk, "family": 6})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -166,7 +166,7 @@ class TestDualURLOptionViews(_DualURLBase):
 
     def test_server_options4_uses_dhcp4_url(self):
         """GET server-options4 → request POSTed to dhcp4_url."""
-        url = reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_dhcp_options_edit", kwargs={"pk": self.server.pk, "family": 4})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -174,7 +174,7 @@ class TestDualURLOptionViews(_DualURLBase):
 
     def test_server_options6_uses_dhcp6_url(self):
         """GET server-options6 → request POSTed to dhcp6_url."""
-        url = reverse("plugins:netbox_kea:server_dhcp6_options_edit", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_dhcp_options_edit", kwargs={"pk": self.server.pk, "family": 6})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)

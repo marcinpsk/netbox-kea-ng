@@ -53,12 +53,6 @@ _FAMILY_NAMES = {
     "combined_shared_networks": "combined_shared_networks{family}",
     "combined_subnets": "combined_subnets{family}",
     "combined_sync": "combined_sync{family}",
-    "server_dhcp_disable": "server_dhcp{family}_disable",
-    "server_dhcp_enable": "server_dhcp{family}_enable",
-    "server_dhcp_options_edit": "server_dhcp{family}_options_edit",
-    "server_option_def": "server_option_def{family}",
-    "server_option_def_add": "server_option_def{family}_add",
-    "server_option_def_delete": "server_option_def{family}_delete",
 }
 
 

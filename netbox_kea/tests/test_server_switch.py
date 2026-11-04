@@ -86,7 +86,9 @@ class TestServerSwitch(_ViewTestBase):
             permission.users.add(self.user)
         self.client.force_login(self.user)
         with stub_kea(_catalogue_responses_for_subnets(4, [])):
-            source = self.client.get(reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk]))
+            source = self.client.get(
+                reverse("plugins:netbox_kea:server_dhcp_options_edit", kwargs={"pk": self.server.pk, "family": 4})
+            )
         self.assertEqual(source.status_code, 200)
         page = BeautifulSoup(source.content, "html.parser")
         link = next(
@@ -96,7 +98,8 @@ class TestServerSwitch(_ViewTestBase):
             destination = self.client.get(link["href"], follow=True)
         self.assertEqual(destination.status_code, 200)
         self.assertEqual(
-            destination.redirect_chain[0][0], reverse("plugins:netbox_kea:server_option_def4", args=[target.pk])
+            destination.redirect_chain[0][0],
+            reverse("plugins:netbox_kea:server_option_def", kwargs={"pk": target.pk, "family": 4}),
         )
         self.assertEqual(
             BeautifulSoup(destination.content, "html.parser")
@@ -105,7 +108,9 @@ class TestServerSwitch(_ViewTestBase):
             "Configuration",
         )
         with stub_kea(_catalogue_responses_for_subnets(6, [])):
-            source6 = self.client.get(reverse("plugins:netbox_kea:server_dhcp6_options_edit", args=[self.server.pk]))
+            source6 = self.client.get(
+                reverse("plugins:netbox_kea:server_dhcp_options_edit", kwargs={"pk": self.server.pk, "family": 6})
+            )
             page6 = BeautifulSoup(source6.content, "html.parser")
             link6 = next(
                 node for node in page6.select('nav[aria-label="Switch Server"] a') if node.text.strip() == target.name

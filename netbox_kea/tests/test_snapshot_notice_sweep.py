@@ -55,6 +55,7 @@ _EXEMPT = {
     "server_reservation_published_name": "An htmx preview that shows no suffix when the Catalogue cannot.",
     "server_shared_network_add": "A form that reads no Kea data.",
     "server_shared_network_delete": "A confirmation page that reads no Kea data.",
+    "server_option_def_tab": "The v4 tab link of server_option_def, which the sweep checks.",
     "server_leases_tab": "The v4 tab link of server_leases, which the sweep checks.",
     "server_reservations_tab": "The v4 tab link of server_reservations, which the sweep checks.",
     "server_subnets_tab": "The v4 tab link of server_subnets, which the sweep checks.",

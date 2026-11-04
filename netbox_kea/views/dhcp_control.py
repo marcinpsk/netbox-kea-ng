@@ -8,25 +8,25 @@ from django.shortcuts import redirect, render
 from netbox.views import generic
 
 from .. import forms, runtime_change
-from ..constants import Family
 from ..models import Server
 from ._base import _KeaChangeMixin, _run_change
-from .workspace import ServerFamilyMixin, server_family_url
+from .workspace import FamilyRouteMixin, ServerFamilyMixin, server_family_url
 
 
-class _BaseServerDHCPEnableView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
-    """Confirmation view to re-enable a Kea DHCP service that was previously disabled."""
+class ServerDHCPEnableView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
+    """Confirm and re-enable a Kea DHCP service that was disabled."""
 
     workspace_section = "overview"
 
     queryset = Server.objects.all()
-    dhcp_version: Family
     template_name = "netbox_kea/server_dhcp_enable.html"
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
+        """Return the family of the service."""
         return {"dhcp_version": self.dhcp_version}
 
     def post(self, request: HttpRequest, pk: int, **kwargs: Any) -> HttpResponse:
+        """Re-enable the service."""
         instance = self.get_object(pk=pk)
         _run_change(
             request,
@@ -36,32 +36,21 @@ class _BaseServerDHCPEnableView(_KeaChangeMixin, ServerFamilyMixin, generic.Obje
         return redirect(server_family_url(request, instance, self, "server"))
 
 
-class ServerDHCP4EnableView(_BaseServerDHCPEnableView):
-    """Re-enable DHCPv4 processing."""
-
-    dhcp_version = 4
-
-
-class ServerDHCP6EnableView(_BaseServerDHCPEnableView):
-    """Re-enable DHCPv6 processing."""
-
-    dhcp_version = 6
-
-
-class _BaseServerDHCPDisableView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
-    """Confirmation form to temporarily disable a Kea DHCP service."""
+class ServerDHCPDisableView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
+    """Confirm and disable a Kea DHCP service for a time."""
 
     workspace_section = "overview"
 
     queryset = Server.objects.all()
-    dhcp_version: Family
     template_name = "netbox_kea/server_dhcp_disable.html"
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
+        """Return the family of the service and the disable form."""
         form = forms.DHCPDisableForm(request.POST or None)
         return {"dhcp_version": self.dhcp_version, "form": form}
 
     def post(self, request: HttpRequest, pk: int, **kwargs: Any) -> HttpResponse:
+        """Disable the service."""
         instance = self.get_object(pk=pk)
         form = forms.DHCPDisableForm(request.POST)
         if not form.is_valid():
@@ -79,15 +68,3 @@ class _BaseServerDHCPDisableView(_KeaChangeMixin, ServerFamilyMixin, generic.Obj
             applied_warning=True,
         )
         return redirect(server_family_url(request, instance, self, "server"))
-
-
-class ServerDHCP4DisableView(_BaseServerDHCPDisableView):
-    """Disable DHCPv4 processing."""
-
-    dhcp_version = 4
-
-
-class ServerDHCP6DisableView(_BaseServerDHCPDisableView):
-    """Disable DHCPv6 processing."""
-
-    dhcp_version = 6

@@ -33,7 +33,7 @@ class TestServerWorkspace(_ViewTestBase):
                 with self.subTest(action=action, result=result):
                     with stub_kea({f"dhcp-{action}": result}) as kea:
                         response = self.client.post(
-                            reverse(f"plugins:netbox_kea:server_dhcp6_{action}", args=[self.server.pk]),
+                            family_url(f"server_dhcp_{action}", 6, pk=self.server.pk),
                             {"confirm": "1", "max_period": 300},
                         )
                     self.assertEqual(response.status_code, 302)

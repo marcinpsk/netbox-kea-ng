@@ -4,7 +4,7 @@
 
 Covers the views in ``netbox_kea/views/options.py`` (e.g.
 ``ServerSubnetOptionsEditView``, ``ServerOptionDefAddView``,
-``ServerOptionDef4DeleteView``, etc.).
+``ServerOptionDefDeleteView``, etc.).
 
 These tests drive the **real** ``KeaClient`` through ``config_write``; only the
 HTTP boundary is stubbed via ``kea_stub.stub_kea``, so the request payloads the
@@ -285,7 +285,7 @@ class TestSubnetOptionsView(_ViewTestBase):
 
     def test_get_reads_the_live_configuration_even_when_the_display_cache_is_warm(self):
         with stub_kea(_catalogue_responses_for_subnets(4, [_SUBNET4])) as kea:
-            self.client.get(reverse("plugins:netbox_kea:server_option_def4", args=[self.server.pk]))
+            self.client.get(reverse("plugins:netbox_kea:server_option_def", kwargs={"pk": self.server.pk, "family": 4}))
             self.client.get(self._url())
             warm = kea.commands().count("config-get")
             self.client.get(self._url())
@@ -410,13 +410,10 @@ class TestSubnetOptionsView(_ViewTestBase):
 
 
 class TestServerOptionsView(_ViewTestBase):
-    """Tests for ServerDHCP4/6OptionsEditView (GET prefill + POST update)."""
+    """Tests for ServerDHCPOptionsEditView (GET prefill + POST update)."""
 
     def _url(self, version=4):
-        return reverse(
-            f"plugins:netbox_kea:server_dhcp{version}_options_edit",
-            args=[self.server.pk],
-        )
+        return reverse("plugins:netbox_kea:server_dhcp_options_edit", kwargs={"pk": self.server.pk, "family": version})
 
     def _post_data(self, name="routers", data="10.0.0.1", always_send="", delete=""):
         return {
@@ -431,12 +428,12 @@ class TestServerOptionsView(_ViewTestBase):
         }
 
     def test_url_registered_v4(self):
-        """URL server_dhcp4_options_edit is registered."""
+        """The DHCPv4 path of server_dhcp_options_edit is registered."""
         url = self._url(version=4)
         self.assertIn("options", url)
 
     def test_url_registered_v6(self):
-        """URL server_dhcp6_options_edit is registered."""
+        """The DHCPv6 path of server_dhcp_options_edit is registered."""
         url = self._url(version=6)
         self.assertIn("options", url)
 
@@ -500,7 +497,7 @@ class TestServerOptionsView(_ViewTestBase):
 
     def test_get_reads_the_live_configuration_even_when_the_display_cache_is_warm(self):
         with stub_kea(_catalogue_responses_for_subnets(4, [])) as kea:
-            self.client.get(reverse("plugins:netbox_kea:server_option_def4", args=[self.server.pk]))
+            self.client.get(reverse("plugins:netbox_kea:server_option_def", kwargs={"pk": self.server.pk, "family": 4}))
             self.client.get(self._url())
             self.client.get(self._url())
 
@@ -587,15 +584,15 @@ class TestServerOptionsView(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# ServerOptionDef4ListView / ServerOptionDef6ListView
+# ServerOptionDefView
 # ---------------------------------------------------------------------------
 
 
 class TestServerOptionDef4ListView(_ViewTestBase):
-    """Tests for ServerOptionDef4ListView: GET list of custom option definitions."""
+    """Tests for ServerOptionDefView on DHCPv4: GET list of custom option definitions."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_option_def4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_option_def", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_get_returns_200(self):
         """GET returns 200 OK."""
@@ -700,7 +697,7 @@ class TestServerOptionDef4ListView(_ViewTestBase):
     def test_get_with_dhcp4_disabled_shows_protocol_not_enabled(self):
         """A disabled DHCPv4 family shows the protocol-disabled state without a Kea read."""
         v6_only = _make_db_server(name="v6only-od", dhcp4=False, dhcp6=True)
-        url = reverse("plugins:netbox_kea:server_option_def4", args=[v6_only.pk])
+        url = reverse("plugins:netbox_kea:server_option_def", kwargs={"pk": v6_only.pk, "family": 4})
         with stub_kea({}) as kea:
             response = self.client.get(url)
         self.assertContains(response, "Protocol not enabled")
@@ -714,19 +711,19 @@ class TestServerOptionDef4ListView(_ViewTestBase):
 
     def test_get_sets_tab_in_context(self):
         """F2: GET response must include 'tab' in context for tab bar highlighting."""
-        from netbox_kea.views.options import ServerOptionDef4View
+        from netbox_kea.views.options import ServerOptionDefView
 
         with stub_kea({"config-get": _option_def_config(_OPTION_DEF_LIST_V4)}):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
-        self.assertIs(response.context["tab"], ServerOptionDef4View.tab)
+        self.assertIs(response.context["tab"], ServerOptionDefView.tab)
 
 
 class TestServerOptionDef6ListView(_ViewTestBase):
-    """Tests for ServerOptionDef6ListView (v6 variant)."""
+    """Tests for ServerOptionDefView on DHCPv6."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_option_def6", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_option_def", kwargs={"pk": self.server.pk, "family": 6})
 
     def test_get_returns_200(self):
         """GET returns 200 OK."""
@@ -751,15 +748,15 @@ class TestServerOptionDef6ListView(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# ServerOptionDef4AddView / ServerOptionDef6AddView
+# ServerOptionDefAddView
 # ---------------------------------------------------------------------------
 
 
 class TestServerOptionDef4AddView(_ViewTestBase):
-    """Tests for ServerOptionDef4AddView: GET form + POST create."""
+    """Tests for ServerOptionDefAddView on DHCPv4: GET form + POST create."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_option_def4_add", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_option_def_add", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_get_returns_200_with_form(self):
         """GET renders the add option-def form."""
@@ -823,10 +820,10 @@ class TestServerOptionDef4AddView(_ViewTestBase):
 
 
 class TestServerOptionDef6AddView(_ViewTestBase):
-    """Tests for ServerOptionDef6AddView — verifies v6 uses version=6."""
+    """Tests for ServerOptionDefAddView on DHCPv6 — verifies v6 uses version=6."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_option_def6_add", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_option_def_add", kwargs={"pk": self.server.pk, "family": 6})
 
     def test_get_returns_200(self):
         """GET renders the add form for v6."""
@@ -850,15 +847,18 @@ class TestServerOptionDef6AddView(_ViewTestBase):
 
 
 # ---------------------------------------------------------------------------
-# ServerOptionDef4DeleteView / ServerOptionDef6DeleteView
+# ServerOptionDefDeleteView
 # ---------------------------------------------------------------------------
 
 
 class TestServerOptionDef4DeleteView(_ViewTestBase):
-    """Tests for ServerOptionDef4DeleteView: GET confirm + POST delete."""
+    """Tests for ServerOptionDefDeleteView on DHCPv4: GET confirm + POST delete."""
 
     def _url(self, code=200, space="dhcp4"):
-        return reverse("plugins:netbox_kea:server_option_def4_delete", args=[self.server.pk, code, space])
+        return reverse(
+            "plugins:netbox_kea:server_option_def_delete",
+            kwargs={"pk": self.server.pk, "family": 4, "code": code, "space": space},
+        )
 
     def test_get_returns_200_with_confirmation(self):
         """GET renders a confirmation page mentioning code and space (no Kea call)."""
@@ -908,10 +908,13 @@ class TestServerOptionDef4DeleteView(_ViewTestBase):
 
 
 class TestServerOptionDef6DeleteView(_ViewTestBase):
-    """Tests for ServerOptionDef6DeleteView — v6 uses version=6."""
+    """Tests for ServerOptionDefDeleteView on DHCPv6 — v6 uses version=6."""
 
     def _url(self, code=250, space="dhcp6"):
-        return reverse("plugins:netbox_kea:server_option_def6_delete", args=[self.server.pk, code, space])
+        return reverse(
+            "plugins:netbox_kea:server_option_def_delete",
+            kwargs={"pk": self.server.pk, "family": 6, "code": code, "space": space},
+        )
 
     def test_get_returns_200(self):
         """GET renders the v6 confirmation page (no Kea call)."""
@@ -988,10 +991,10 @@ class TestSubnetOptionsPostInvalid(_ViewTestBase):
 
 
 class TestServerOptionsPostInvalid(_ViewTestBase):
-    """_BaseServerOptionsEditView POST: formset invalid and always_send coverage."""
+    """ServerDHCPOptionsEditView POST: formset invalid and always_send coverage."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_dhcp_options_edit", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_post_invalid_formset_rerenders(self):
         """POST with an invalid formset must re-render (not crash)."""
@@ -1071,10 +1074,10 @@ class TestServerOptionsPostInvalid(_ViewTestBase):
 
 
 class TestOptionDefAddExceptions(_ViewTestBase):
-    """BaseServerOptionDefAddView POST exception paths."""
+    """ServerOptionDefAddView POST exception paths."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_option_def4_add", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_option_def_add", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_post_invalid_form_rerenders(self):
         """POST with invalid form (missing required fields) must return 200, no Kea call."""
@@ -1120,10 +1123,13 @@ class TestOptionDefAddExceptions(_ViewTestBase):
 
 
 class TestOptionDefDeleteExceptions(_ViewTestBase):
-    """BaseServerOptionDefDeleteView POST exception paths."""
+    """ServerOptionDefDeleteView POST exception paths."""
 
     def _url(self, code=200, space="dhcp4"):
-        return reverse("plugins:netbox_kea:server_option_def4_delete", args=[self.server.pk, code, space])
+        return reverse(
+            "plugins:netbox_kea:server_option_def_delete",
+            kwargs={"pk": self.server.pk, "family": 4, "code": code, "space": space},
+        )
 
     def test_post_kea_exception_shows_error_and_redirects(self):
         """KeaException on the mutation must show error message."""
@@ -1209,7 +1215,7 @@ class TestServerOptionsGetClientError(_ViewTestBase):
     def test_get_client_value_error_redirects(self):
         """A get_client ValueError (cert-without-key) redirects with a generic message."""
         bad = _make_db_server(name="badtls-server", client_cert_path="/nonexistent/cert.pem")
-        url = reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[bad.pk])
+        url = reverse("plugins:netbox_kea:server_dhcp_options_edit", kwargs={"pk": bad.pk, "family": 4})
         with stub_kea({}):
             response = self.client.get(url, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -1228,7 +1234,7 @@ class TestOptionDefListFetchError(_ViewTestBase):
 
     def test_kea_exception_returns_200_with_an_error(self):
         """A KeaException while fetching the option-def list yields 200 and no empty-list text."""
-        url = reverse("plugins:netbox_kea:server_option_def4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_option_def", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({"config-get": {"result": 1, "text": "error"}}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -1646,7 +1652,7 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
                 "plugins:netbox_kea:server_subnet_options_edit",
                 kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42},
             )
-        return reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_dhcp_options_edit", kwargs={"pk": self.server.pk, "family": 4})
 
     def _config(self, scope, options):
         body = (
@@ -1778,7 +1784,7 @@ class TestOptionChangeMessages(_ReadModifyWriteMessages):
 
     def test_server_options(self):
         self._assert_one_message_per_case(
-            reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk]),
+            reverse("plugins:netbox_kea:server_dhcp_options_edit", kwargs={"pk": self.server.pk, "family": 4}),
             self._ROW,
             {"config-get": _EMPTY_SERVER_OPTIONS_CONFIG_GET},
             "DHCPv4 server options updated.",
@@ -1786,7 +1792,7 @@ class TestOptionChangeMessages(_ReadModifyWriteMessages):
 
     def test_option_definition_add(self):
         self._assert_one_message_per_case(
-            reverse("plugins:netbox_kea:server_option_def4_add", args=[self.server.pk]),
+            reverse("plugins:netbox_kea:server_option_def_add", kwargs={"pk": self.server.pk, "family": 4}),
             {"name": "my-opt", "code": "200", "type": "string", "space": "dhcp4"},
             {"config-get": _option_def_config([])},
             "Option definition 'my-opt' (code 200) added.",
@@ -1794,14 +1800,20 @@ class TestOptionChangeMessages(_ReadModifyWriteMessages):
 
     def test_option_definition_delete(self):
         self._assert_one_message_per_case(
-            reverse("plugins:netbox_kea:server_option_def4_delete", args=[self.server.pk, 200, "dhcp4"]),
+            reverse(
+                "plugins:netbox_kea:server_option_def_delete",
+                kwargs={"pk": self.server.pk, "family": 4, "code": 200, "space": "dhcp4"},
+            ),
             {},
             {"config-get": _option_def_config(_OPTION_DEF_LIST_V4)},
             "Option definition code=200 space=dhcp4 deleted.",
         )
 
     def test_option_definition_delete_of_a_missing_definition_is_not_sent(self):
-        url = reverse("plugins:netbox_kea:server_option_def4_delete", args=[self.server.pk, 250, "dhcp4"])
+        url = reverse(
+            "plugins:netbox_kea:server_option_def_delete",
+            kwargs={"pk": self.server.pk, "family": 4, "code": 250, "space": "dhcp4"},
+        )
         with _persist_stub(_option_def_config(_OPTION_DEF_LIST_V4)) as kea:
             response = self.client.post(url)
         self.assertEqual(

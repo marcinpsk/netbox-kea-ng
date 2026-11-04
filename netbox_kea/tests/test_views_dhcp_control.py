@@ -59,10 +59,10 @@ def _control_stub(**overrides):
 
 
 class TestServerDHCP4EnableView(_ViewTestBase):
-    """Tests for ServerDHCP4EnableView (GET confirmation + POST enable)."""
+    """Tests for ServerDHCPEnableView on DHCPv4 (GET confirmation + POST enable)."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_dhcp4_enable", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_dhcp_enable", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_get_returns_confirmation_page(self):
         """GET must render the enable confirmation page with dhcp_version=4 (no Kea)."""
@@ -151,7 +151,9 @@ class TestServerDHCPEnableMissingTLSFile(_ViewTestBase):
         server = _make_db_server(
             name="missing-ca", ca_url="https://127.0.0.1:9/", ca_file_path="/nonexistent/kea-ca.pem", ssl_verify=True
         )
-        response = self.client.post(reverse("plugins:netbox_kea:server_dhcp4_enable", args=[server.pk]))
+        response = self.client.post(
+            reverse("plugins:netbox_kea:server_dhcp_enable", kwargs={"pk": server.pk, "family": 4})
+        )
         self.assertEqual(response.status_code, 302)
         self.assertEqual(
             _messages(response),
@@ -165,10 +167,10 @@ class TestServerDHCPEnableMissingTLSFile(_ViewTestBase):
 
 
 class TestServerDHCP6EnableView(_ViewTestBase):
-    """Tests for ServerDHCP6EnableView — verifies v6 variant uses the dhcp6 service."""
+    """Tests for ServerDHCPEnableView on DHCPv6 — verifies v6 variant uses the dhcp6 service."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_dhcp6_enable", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_dhcp_enable", kwargs={"pk": self.server.pk, "family": 6})
 
     def test_post_calls_dhcp_enable_v6(self):
         """POST must issue dhcp-enable to the dhcp6 service."""
@@ -179,10 +181,10 @@ class TestServerDHCP6EnableView(_ViewTestBase):
 
 
 class TestServerDHCP4DisableView(_ViewTestBase):
-    """Tests for ServerDHCP4DisableView (GET form + POST disable with optional max_period)."""
+    """Tests for ServerDHCPDisableView on DHCPv4 (GET form + POST disable with optional max_period)."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_dhcp4_disable", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_dhcp_disable", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_get_returns_form_page(self):
         """GET must render the disable form with max_period field (no Kea)."""
@@ -197,7 +199,9 @@ class TestServerDHCP4DisableView(_ViewTestBase):
         with stub_kea({}) as kea:
             for action in ("enable", "disable"):
                 for version in (4, 6):
-                    url = reverse(f"plugins:netbox_kea:server_dhcp{version}_{action}", args=[self.server.pk])
+                    url = reverse(
+                        f"plugins:netbox_kea:server_dhcp_{action}", kwargs={"pk": self.server.pk, "family": version}
+                    )
                     with self.subTest(action=action, version=version):
                         self.assertEqual(active_tabs(self.client.get(url)), ["Overview"])
             with self.subTest("invalid disable form"):
@@ -284,10 +288,10 @@ class TestServerDHCP4DisableView(_ViewTestBase):
 
 
 class TestServerDHCP6DisableView(_ViewTestBase):
-    """Tests for ServerDHCP6DisableView — verifies v6 variant uses the dhcp6 service."""
+    """Tests for ServerDHCPDisableView on DHCPv6 — verifies v6 variant uses the dhcp6 service."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_dhcp6_disable", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_dhcp_disable", kwargs={"pk": self.server.pk, "family": 6})
 
     def test_post_calls_dhcp_disable_v6(self):
         """POST must issue dhcp-disable to the dhcp6 service with no max-period argument."""

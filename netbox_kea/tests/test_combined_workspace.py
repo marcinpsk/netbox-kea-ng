@@ -14,7 +14,7 @@ from netbox_kea.models import Server
 from netbox_kea.sync_run_result import SyncRunResult
 
 from .kea_stub import stub_kea
-from .utils import _make_db_server, _ViewTestBase, stored_job
+from .utils import _make_db_server, _ViewTestBase, family_url, stored_job
 
 
 class TestCombinedWorkspace(_ViewTestBase):
@@ -175,19 +175,14 @@ class TestCombinedWorkspace(_ViewTestBase):
     def test_configuration_and_sync_single_selection_open_the_canonical_server(self):
         for family in (4, 6):
             for section, target in (
-                ("configuration", f"server_option_def{family}"),
-                ("sync", "server_sync_status"),
+                ("configuration", family_url("server_option_def", family, pk=self.server.pk)),
+                ("sync", reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk]) + f"?family={family}"),
             ):
                 response = self.client.get(
                     reverse(f"plugins:netbox_kea:combined_{section}{family}"),
                     {"server": self.server.pk, "page": "2", "q": "drop", "export": "table"},
                 )
-                self.assertRedirects(
-                    response,
-                    reverse(f"plugins:netbox_kea:{target}", args=[self.server.pk])
-                    + (f"?family={family}" if section == "sync" else ""),
-                    fetch_redirect_response=False,
-                )
+                self.assertRedirects(response, target, fetch_redirect_response=False)
 
     def test_sync_keeps_each_servers_result_and_real_zero_counts(self):
         hidden = _make_db_server(name="unselected-server")

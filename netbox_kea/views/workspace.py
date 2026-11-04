@@ -134,12 +134,12 @@ WORKSPACE_SECTIONS = {
         WorkspaceSection(
             "configuration",
             "Configuration",
-            "server_option_def{family}",
+            "server_option_def",
             "combined_configuration{family}",
-            "option_def4",
+            "option_def_tab",
             subsection_label="Option Definitions",
         ),
-        WorkspaceSection("options", "Server Options", "server_dhcp{family}_options_edit", None, parent="configuration"),
+        WorkspaceSection("options", "Server Options", "server_dhcp_options_edit", None, parent="configuration"),
         WorkspaceSection(
             "sync", "Sync", "server_sync_status", "combined_sync{family}", "sync_status", family_in_query=True
         ),

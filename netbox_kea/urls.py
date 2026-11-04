@@ -109,56 +109,6 @@ urlpatterns = (
         sync_views.ReservationCheckNetboxIPView.as_view(),
         name="reservation_check_ip",
     ),
-    path(
-        "servers/<int:pk>/dhcp4/enable/",
-        dhcp_control.ServerDHCP4EnableView.as_view(),
-        name="server_dhcp4_enable",
-    ),
-    path(
-        "servers/<int:pk>/dhcp4/disable/",
-        dhcp_control.ServerDHCP4DisableView.as_view(),
-        name="server_dhcp4_disable",
-    ),
-    path(
-        "servers/<int:pk>/dhcp6/enable/",
-        dhcp_control.ServerDHCP6EnableView.as_view(),
-        name="server_dhcp6_enable",
-    ),
-    path(
-        "servers/<int:pk>/dhcp6/disable/",
-        dhcp_control.ServerDHCP6DisableView.as_view(),
-        name="server_dhcp6_disable",
-    ),
-    path(
-        "servers/<int:pk>/dhcp4/options/",
-        options.ServerDHCP4OptionsEditView.as_view(),
-        name="server_dhcp4_options_edit",
-    ),
-    path(
-        "servers/<int:pk>/dhcp6/options/",
-        options.ServerDHCP6OptionsEditView.as_view(),
-        name="server_dhcp6_options_edit",
-    ),
-    path(
-        "servers/<int:pk>/dhcp4/option-def/add/",
-        options.ServerOptionDef4AddView.as_view(),
-        name="server_option_def4_add",
-    ),
-    path(
-        "servers/<int:pk>/dhcp6/option-def/add/",
-        options.ServerOptionDef6AddView.as_view(),
-        name="server_option_def6_add",
-    ),
-    path(
-        "servers/<int:pk>/dhcp4/option-def/<int:code>/<str:space>/delete/",
-        options.ServerOptionDef4DeleteView.as_view(),
-        name="server_option_def4_delete",
-    ),
-    path(
-        "servers/<int:pk>/dhcp6/option-def/<int:code>/<str:space>/delete/",
-        options.ServerOptionDef6DeleteView.as_view(),
-        name="server_option_def6_delete",
-    ),
     path("servers/<int:pk>/subnets<family:family>/", subnets.ServerSubnetsView.as_view(), name="server_subnets"),
     path(
         "servers/<int:pk>/subnets<family:family>/add/",
@@ -284,6 +234,36 @@ urlpatterns = (
         "servers/<int:pk>/reservations<family:family>/<int:subnet_id>/sync/",
         sync_views.ServerReservationSyncView.as_view(),
         name="server_reservation_sync",
+    ),
+    path(
+        "servers/<int:pk>/dhcp<family:family>/enable/",
+        dhcp_control.ServerDHCPEnableView.as_view(),
+        name="server_dhcp_enable",
+    ),
+    path(
+        "servers/<int:pk>/dhcp<family:family>/disable/",
+        dhcp_control.ServerDHCPDisableView.as_view(),
+        name="server_dhcp_disable",
+    ),
+    path(
+        "servers/<int:pk>/dhcp<family:family>/options/",
+        options.ServerDHCPOptionsEditView.as_view(),
+        name="server_dhcp_options_edit",
+    ),
+    path(
+        "servers/<int:pk>/dhcp<family:family>/option-def/",
+        options.ServerOptionDefView.as_view(),
+        name="server_option_def",
+    ),
+    path(
+        "servers/<int:pk>/dhcp<family:family>/option-def/add/",
+        options.ServerOptionDefAddView.as_view(),
+        name="server_option_def_add",
+    ),
+    path(
+        "servers/<int:pk>/dhcp<family:family>/option-def/<int:code>/<str:space>/delete/",
+        options.ServerOptionDefDeleteView.as_view(),
+        name="server_option_def_delete",
     ),
     path("servers/<int:pk>/", include(get_model_urls("netbox_kea", "server"))),
     path(
