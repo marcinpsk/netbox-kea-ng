@@ -4,7 +4,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django import forms as django_forms
@@ -15,7 +15,7 @@ from django.urls import reverse
 from utilities.views import ObjectPermissionRequiredMixin
 
 from .. import constants, forms
-from ..constants import Family
+from ..constants import Family, validate_family
 from ..models import Server
 from ._base import _safe_return_url
 
@@ -51,7 +51,8 @@ def _lease_subnet_search(query: QueryDict) -> SubnetSearch | None:
 class WorkspaceSection:
     """One Workspace Section or subsection: its routes, native tab and search filters.
 
-    A route name holds ``{family}`` when each family has its own route; otherwise the family is a query field.
+    A route takes the family as its ``family`` route parameter; a Server route with *family_in_query* takes it as
+    a query field.
     """
 
     key: str
@@ -66,6 +67,7 @@ class WorkspaceSection:
     paired_fields: frozenset[str] = frozenset()
     # The label of a top-level section among its own subsections, when it differs from its section tab.
     subsection_label: str | None = None
+    family_in_query: bool = False
 
     @property
     def filter_fields(self) -> frozenset[str]:
@@ -75,26 +77,27 @@ class WorkspaceSection:
 
     def server_url(self, pk: int, family: Family) -> str:
         """Return the list of this section on one Server for *family*."""
-        url = reverse(f"plugins:netbox_kea:{self.server_route.format(family=family)}", args=[pk])
-        return url if "{family}" in self.server_route else f"{url}?family={family}"
+        if self.family_in_query:
+            return reverse(f"plugins:netbox_kea:{self.server_route}", args=[pk]) + f"?family={family}"
+        return reverse(f"plugins:netbox_kea:{self.server_route}", kwargs={"pk": pk, "family": family})
 
     def combined_url(self, family: Family) -> str:
         """Return the combined page of this section for *family*."""
         if self.combined_route is None:
             raise ValueError(f"The Workspace Section {self.key} has no combined page.")
-        return reverse(f"plugins:netbox_kea:{self.combined_route.format(family=family)}")
+        return reverse(f"plugins:netbox_kea:{self.combined_route}", kwargs={"family": family})
 
 
 WORKSPACE_SECTIONS = {
     section.key: section
     for section in (
-        WorkspaceSection("overview", "Overview", "server", "combined_overview{family}", "status"),
+        WorkspaceSection("overview", "Overview", "server", "combined_overview", "status", family_in_query=True),
         WorkspaceSection(
             "leases",
             "Leases",
-            "server_leases{family}",
-            "combined_leases{family}",
-            "leases4",
+            "server_leases",
+            "combined_leases",
+            "leases_tab",
             {4: forms.Leases4SearchForm, 6: forms.Leases6SearchForm},
             subnet_search=_lease_subnet_search,
             paired_fields=frozenset(("q", "by")),
@@ -102,38 +105,38 @@ WORKSPACE_SECTIONS = {
         WorkspaceSection(
             "subnets",
             "Subnets",
-            "server_subnets{family}",
-            "combined_subnets{family}",
-            "subnets4",
+            "server_subnets",
+            "combined_subnets",
+            "subnets_tab",
             {4: forms.SubnetSearchForm, 6: forms.SubnetSearchForm},
             subnet_search=_subnet_id_search,
         ),
         WorkspaceSection(
             "shared_networks",
             "Shared Networks",
-            "server_shared_networks{family}",
-            "combined_shared_networks{family}",
+            "server_shared_networks",
+            "combined_shared_networks",
             parent="subnets",
         ),
         WorkspaceSection(
             "reservations",
             "Reservations",
-            "server_reservations{family}",
-            "combined_reservations{family}",
-            "reservations4",
+            "server_reservations",
+            "combined_reservations",
+            "reservations_tab",
             {4: forms.ReservationSearchForm, 6: forms.ReservationSearchForm},
             subnet_search=_subnet_id_search,
         ),
         WorkspaceSection(
             "configuration",
             "Configuration",
-            "server_option_def{family}",
-            "combined_configuration{family}",
-            "option_def4",
+            "server_option_def",
+            "combined_configuration",
+            "option_def_tab",
             subsection_label="Option Definitions",
         ),
-        WorkspaceSection("options", "Server Options", "server_dhcp{family}_options_edit", None, parent="configuration"),
-        WorkspaceSection("sync", "Sync", "server_sync_status", "combined_sync{family}", "sync_status"),
+        WorkspaceSection("options", "Server Options", "server_dhcp_options_edit", None, parent="configuration"),
+        WorkspaceSection("sync", "Sync", "server_sync_status", "combined_sync", "sync_status", family_in_query=True),
     )
 }
 
@@ -229,20 +232,20 @@ def with_return_url(url: str, return_url: str) -> str:
     return urlunsplit(parsed._replace(query=urlencode([*query, ("return_url", return_url)])))
 
 
-def selected_family(request: HttpRequest, server: Server, view: Any) -> Family:
-    """Read the route's family, or the explicit selection on a native Server page."""
-    family = getattr(view, "dhcp_version", None)
-    if family in (4, 6):
-        return cast(Family, family)
+def selected_family(request: HttpRequest, server: Server) -> Family:
+    """Read the family route parameter, or the explicit selection on a Server page without one."""
+    match = request.resolver_match
+    if match is not None and "family" in match.kwargs:
+        return validate_family(match.kwargs["family"])
     selected = request.GET.get("family")
     if selected in ("4", "6"):
         return 4 if selected == "4" else 6
     return 4 if server.dhcp4 else 6
 
 
-def server_family_url(request: HttpRequest, server: Server, view: Any, name: str) -> str:
+def server_family_url(request: HttpRequest, server: Server, name: str) -> str:
     """Retain the selected family when navigating to a native Server route."""
-    url = reverse(f"plugins:netbox_kea:{name}", args=[server.pk]) + f"?family={selected_family(request, server, view)}"
+    url = reverse(f"plugins:netbox_kea:{name}", args=[server.pk]) + f"?family={selected_family(request, server)}"
     return with_return_url(url, _safe_return_url(request, ""))
 
 
@@ -250,7 +253,7 @@ def server_context(request: HttpRequest, server: Server) -> dict[str, Any]:
     """Build the shared shell from the Server page's section and requested family."""
     match = request.resolver_match
     view = getattr(match.func, "view_class", None) if match else None
-    family = selected_family(request, server, view)
+    family = selected_family(request, server)
     section = view_section(view)
     scoped = scope_section(section)
     return_url = _safe_return_url(request, "")
@@ -262,7 +265,7 @@ def server_context(request: HttpRequest, server: Server) -> dict[str, Any]:
     switch_query = workspace_filters(request.GET, scoped)
     switch_query["section"] = scoped.key
     switch_query["family"] = str(family)
-    if match and set(match.kwargs) - {"pk"}:
+    if match and set(match.kwargs) - {"pk", "family"}:
         switch_query["record_selection"] = "1"
     if return_url:
         switch_query["return_url"] = return_url
@@ -288,10 +291,25 @@ def server_context(request: HttpRequest, server: Server) -> dict[str, Any]:
     }
 
 
+class FamilyRouteMixin:
+    """Read the address family of a view from its ``family`` route parameter."""
+
+    kwargs: dict[str, Any]
+
+    @property
+    def dhcp_version(self) -> Family:
+        """Return the address family of the route."""
+        return validate_family(self.kwargs["family"])
+
+    def dispatch(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
+        """Keep the family out of the handler arguments, so that a handler reads it from ``dhcp_version``."""
+        kwargs.pop("family", None)
+        return super().dispatch(request, *args, **kwargs)  # type: ignore[misc]
+
+
 class ServerFamilyMixin:
     """Refuse a disabled family before a Server view reads or changes Kea."""
 
-    dhcp_version: Family
     workspace_section = "overview"
 
     def dispatch(self, request: HttpRequest, *args: Any, **kwargs: Any) -> HttpResponse:
@@ -303,7 +321,7 @@ class ServerFamilyMixin:
         if request.method not in ("GET", "HEAD", "OPTIONS") and (refusal := self.server_scope_access(request)):
             return refusal
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=kwargs["pk"])
-        family = selected_family(request, server, self)
+        family = selected_family(request, server)
         if not (server.dhcp4 if family == 4 else server.dhcp6):
             if request.method not in ("GET", "HEAD", "OPTIONS") and (
                 refusal := self.disabled_family_access(request, server)

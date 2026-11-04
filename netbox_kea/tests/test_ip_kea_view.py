@@ -93,7 +93,9 @@ class TestIPv4AddressPanel(TestCase):
 
     def test_create_link_uses_reservation4_add_url(self):
         response = self.client.get(_url(self.nb_ip.pk))
-        expected_base = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.v4server.pk])
+        expected_base = reverse(
+            "plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.v4server.pk, "family": 4}
+        )
         self.assertContains(response, expected_base)
 
     def test_create_link_has_ip_address_param(self):
@@ -138,7 +140,9 @@ class TestIPv6AddressPanel(TestCase):
 
     def test_create_link_uses_reservation6_add_url(self):
         response = self.client.get(_url(self.nb_ip.pk))
-        expected_base = reverse("plugins:netbox_kea:server_reservation6_add", args=[self.v6server.pk])
+        expected_base = reverse(
+            "plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.v6server.pk, "family": 6}
+        )
         self.assertContains(response, expected_base)
 
     def test_create_link_has_ipv6_address_param(self):

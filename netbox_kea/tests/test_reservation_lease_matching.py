@@ -73,7 +73,7 @@ class TestReservationLeaseRelationship(_ViewTestBase):
     """The Reservation table reports one lease relationship per complete Reservation."""
 
     def _url(self, version: int = 4) -> str:
-        return reverse(f"plugins:netbox_kea:server_reservations{version}", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": version})
 
     def _rows(self, responses, version: int = 4, subnets=None):
         merged = _catalogue_responses_for_subnets(version, subnets or _SUBNETS4)

@@ -571,7 +571,7 @@ class BaseLeasesSarchForm(forms.Form):
         self.subnet_notice = subnet_notice
         self.subnet_options = self.options_for(self["by"].value(), subnet_choices)
         offer_choices(self, "q", self.subnet_options, "---------")
-        # A change of Attribute replaces the Search value control: see BaseServerLeasesView.get.
+        # A change of Attribute replaces the Search value control: see ServerLeasesView.get.
         self.fields["by"].widget.attrs.update(
             {
                 "hx-get": "?value_control=1",

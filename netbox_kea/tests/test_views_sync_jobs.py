@@ -566,7 +566,7 @@ class TestSyncRunStateLabels(TestCase):
 
     def test_the_combined_sync_page_shows_the_label_in_place_of_the_counts(self):
         selection = {"server": [server.pk for server in self.servers.values()]}
-        response = self.client.get(reverse("plugins:netbox_kea:combined_sync4"), selection)
+        response = self.client.get(reverse("plugins:netbox_kea:combined_sync", kwargs={"family": 4}), selection)
         for label, server in self.servers.items():
             with self.subTest(label=label):
                 self.assertEqual(self._row(response, server)[3:], [label])

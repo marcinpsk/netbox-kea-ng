@@ -320,6 +320,10 @@ class ApplicationTests(TestCase):
             with self.subTest(operation.name):
                 rejection, commands = self._rejection(operation, operation.responses({"result": 0}))
                 self.assertEqual(rejection.reason, "invalid-client-configuration")
+                self.assertEqual(
+                    rejection.diagnostics,
+                    ("The Kea client settings of Server test-kea are invalid. Check the client certificate and key.",),
+                )
                 self.assertEqual(commands, [])
 
 

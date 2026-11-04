@@ -14,7 +14,7 @@ from netbox_kea.models import Server
 from netbox_kea.sync_run_result import SyncRunResult
 
 from .kea_stub import stub_kea
-from .utils import _make_db_server, _ViewTestBase, stored_job
+from .utils import _make_db_server, _ViewTestBase, family_url, stored_job
 
 
 class TestCombinedWorkspace(_ViewTestBase):
@@ -51,7 +51,9 @@ class TestCombinedWorkspace(_ViewTestBase):
     def test_valid_lease_family_switch_preserves_search_and_never_reads_kea(self):
         filters = {"q": "printer", "by": "hostname", "state": "0"}
         with stub_kea({}) as kea:
-            response = self.client.get(reverse("plugins:netbox_kea:combined_leases4"), {**self.selection, **filters})
+            response = self.client.get(
+                reverse("plugins:netbox_kea:combined_leases", kwargs={"family": 4}), {**self.selection, **filters}
+            )
             page = BeautifulSoup(response.content, "html.parser")
             link = page.select('[aria-label="DHCP family"] a')[1]
             switched = self.client.get(link["href"])
@@ -73,7 +75,9 @@ class TestCombinedWorkspace(_ViewTestBase):
         permission.object_types.add(ContentType.objects.get_for_model(Server))
         permission.users.add(self.user)
         self.client.force_login(self.user)
-        response = self.client.get(reverse("plugins:netbox_kea:combined_configuration4"), self.selection)
+        response = self.client.get(
+            reverse("plugins:netbox_kea:combined_configuration", kwargs={"family": 4}), self.selection
+        )
         page = BeautifulSoup(response.content, "html.parser")
         links = page.select(".list-group a")
         self.assertEqual(len(links), 2)
@@ -83,7 +87,7 @@ class TestCombinedWorkspace(_ViewTestBase):
             self.assertEqual(target.status_code, 200)
 
     def test_sync_without_a_recorded_job_shows_no_counts(self):
-        response = self.client.get(reverse("plugins:netbox_kea:combined_sync4"), self.selection)
+        response = self.client.get(reverse("plugins:netbox_kea:combined_sync", kwargs={"family": 4}), self.selection)
         page = BeautifulSoup(response.content, "html.parser")
         rows = page.select(".table tbody tr")
         self.assertEqual(len(rows), 2)
@@ -93,7 +97,7 @@ class TestCombinedWorkspace(_ViewTestBase):
 
     def test_a_job_without_a_result_of_the_server_shows_no_counts(self):
         stored_job([], object_type=ContentType.objects.get_for_model(Server), object_id=self.server.pk)
-        response = self.client.get(reverse("plugins:netbox_kea:combined_sync4"), self.selection)
+        response = self.client.get(reverse("plugins:netbox_kea:combined_sync", kwargs={"family": 4}), self.selection)
         rows = BeautifulSoup(response.content, "html.parser").select(".table tbody tr")
         for row in rows:
             cells = [cell.get_text(strip=True) for cell in row.select("td")]
@@ -102,9 +106,7 @@ class TestCombinedWorkspace(_ViewTestBase):
     def test_new_sections_report_unsupported_families_and_offer_the_other_family(self):
         Server.objects.filter(pk=self.server.pk).update(dhcp6=False)
         for section in ("overview", "configuration", "sync"):
-            response = self.client.get(
-                reverse(f"plugins:netbox_kea:combined_{section}6"), {"server": self.server.pk}, follow=True
-            )
+            response = self.client.get(family_url(f"combined_{section}", 6), {"server": self.server.pk}, follow=True)
             self.assertContains(response, "Protocol not enabled")
             page = BeautifulSoup(response.content, "html.parser")
             enabled = page.select('[aria-label="DHCP family"] a')[0]
@@ -129,13 +131,13 @@ class TestCombinedWorkspace(_ViewTestBase):
                 with self.subTest(section=section, family=family):
                     # An invalid scope still renders navigation and never reads Kea.
                     response = self.client.get(
-                        reverse(f"plugins:netbox_kea:combined_{section}{family}"),
+                        family_url(f"combined_{section}", family),
                         {"server": ["invalid", ""], **filters, "page": "2", "export": "table", "unrelated": "drop"},
                     )
                     page = BeautifulSoup(response.content, "html.parser")
                     link = page.select('[aria-label="DHCP family"] a')[0 if other == 4 else 1]
                     target = urlsplit(link["href"])
-                    self.assertEqual(target.path, reverse(f"plugins:netbox_kea:combined_{section}{other}"))
+                    self.assertEqual(target.path, family_url(f"combined_{section}", other))
                     # Kea gives Subnet IDs per family, so the other family drops a Subnet ID.
                     self.assertEqual(
                         parse_qs(target.query, keep_blank_values=True),
@@ -157,7 +159,7 @@ class TestCombinedWorkspace(_ViewTestBase):
         self.client.force_login(self.user)
         for section in ("overview", "configuration", "sync"):
             for family in (4, 6):
-                url = reverse(f"plugins:netbox_kea:combined_{section}{family}")
+                url = family_url(f"combined_{section}", family)
                 for selection in ({}, self.selection):
                     with self.subTest(section=section, family=family, selection=selection), stub_kea({}) as kea:
                         response = self.client.get(url, selection)
@@ -175,19 +177,14 @@ class TestCombinedWorkspace(_ViewTestBase):
     def test_configuration_and_sync_single_selection_open_the_canonical_server(self):
         for family in (4, 6):
             for section, target in (
-                ("configuration", f"server_option_def{family}"),
-                ("sync", "server_sync_status"),
+                ("configuration", family_url("server_option_def", family, pk=self.server.pk)),
+                ("sync", reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk]) + f"?family={family}"),
             ):
                 response = self.client.get(
-                    reverse(f"plugins:netbox_kea:combined_{section}{family}"),
+                    family_url(f"combined_{section}", family),
                     {"server": self.server.pk, "page": "2", "q": "drop", "export": "table"},
                 )
-                self.assertRedirects(
-                    response,
-                    reverse(f"plugins:netbox_kea:{target}", args=[self.server.pk])
-                    + (f"?family={family}" if section == "sync" else ""),
-                    fetch_redirect_response=False,
-                )
+                self.assertRedirects(response, target, fetch_redirect_response=False)
 
     def test_sync_keeps_each_servers_result_and_real_zero_counts(self):
         hidden = _make_db_server(name="unselected-server")
@@ -201,7 +198,7 @@ class TestCombinedWorkspace(_ViewTestBase):
                 SyncRunResult.synced(hidden.pk, hidden.name, SyncReport(created=9999, updated=9999, errors=9999)),
             ]
         )
-        response = self.client.get(reverse("plugins:netbox_kea:combined_sync6"), self.selection)
+        response = self.client.get(reverse("plugins:netbox_kea:combined_sync", kwargs={"family": 6}), self.selection)
         rows = BeautifulSoup(response.content, "html.parser").select(".table tbody tr")
         counts = {
             row.select_one("td").get_text(strip=True): [cell.get_text(strip=True) for cell in row.select("td")[3:]]
@@ -219,7 +216,7 @@ class TestCombinedWorkspace(_ViewTestBase):
     def test_sync_reports_prefix_and_range_failures_separately_from_address_failures(self):
         job = SyncRunResult.synced(self.server.pk, self.server.name, SyncReport(prefix_errors=1))
         stored_job([job], status="failed")
-        response = self.client.get(reverse("plugins:netbox_kea:combined_sync4"), self.selection)
+        response = self.client.get(reverse("plugins:netbox_kea:combined_sync", kwargs={"family": 4}), self.selection)
         table = BeautifulSoup(response.content, "html.parser").select_one(".table")
         headings = [cell.get_text(strip=True) for cell in table.select("thead th")]
         self.assertIn("Address Errors", headings)
@@ -232,7 +229,9 @@ class TestCombinedWorkspace(_ViewTestBase):
         self.assertEqual(cells[headings.index("Prefix/Range Errors")], "1")
 
     def test_shared_networks_are_a_subsection_of_subnets(self):
-        response = self.client.get(reverse("plugins:netbox_kea:combined_shared_networks6"), {"server": "invalid"})
+        response = self.client.get(
+            reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 6}), {"server": "invalid"}
+        )
         page = BeautifulSoup(response.content, "html.parser")
         self.assertEqual(page.select_one('[aria-label="Workspace sections"] a.active').get_text(strip=True), "Subnets")
         self.assertEqual(

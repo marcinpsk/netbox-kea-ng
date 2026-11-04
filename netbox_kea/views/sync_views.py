@@ -74,7 +74,7 @@ from .reservation_mutations import (
     show_reservation_side_effects,
 )
 from .reservations import MUTATION_UNCONFIRMED, RESERVATIONS_TAB, reservation_badge
-from .workspace import ServerFamilyMixin
+from .workspace import FamilyRouteMixin, ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +100,10 @@ def _manual_sync_reply(
     )
 
 
-class _BaseSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
+class ServerLeaseSyncView(FamilyRouteMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Claim one fresh Current Lease: an address as an IP Address, a delegated prefix as a Prefix."""
 
     workspace_section = "leases"
-
-    dhcp_version: Family
 
     def server_scope_access(self, request: HttpRequest) -> HttpResponse | None:
         """Preserve the manual claim permission of the selected Lease allocation kind."""
@@ -117,6 +115,7 @@ class _BaseSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
         return None if gate.allowed else _row_error(request, gate.reason)
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Claim the selected Lease."""
         selected = request.POST.get("ip_address", "").strip()
         if not selected:
             return _row_error(request, "ip_address is required")
@@ -130,11 +129,10 @@ class _BaseSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
             return _row_error(request, gate.reason)
 
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        client = _client_or_refusal(server, self.dhcp_version)
-        if isinstance(client, str):
-            return _row_error(request, client)
-
-        observed = load_target(server, "lease_target", lambda: client.lease_get(identity))
+        with _client_or_refusal(server, self.dhcp_version) as client:
+            if isinstance(client, str):
+                return _row_error(request, client)
+            observed = load_target(server, "lease_target", lambda: client.lease_get(identity))
         if isinstance(observed, Notice):
             return _row_error(request, observed.text)
         if isinstance(observed, LeaseAbsent):
@@ -147,24 +145,10 @@ class _BaseSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
         return _manual_sync_reply(request, outcome, f"Lease {label}")
 
 
-class ServerLease4SyncView(_BaseSyncView):
-    """Claim a DHCPv4 lease in the Server's sync VRF."""
-
-    dhcp_version: Family = 4
-
-
-class ServerLease6SyncView(_BaseSyncView):
-    """Claim a DHCPv6 lease in the Server's sync VRF."""
-
-    dhcp_version: Family = 6
-
-
-class _BaseReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
+class ServerReservationSyncView(FamilyRouteMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Synchronize one exact typed Reservation and all its allocation addresses."""
 
     workspace_section = "reservations"
-
-    dhcp_version: Family
 
     def server_scope_access(self, request: HttpRequest) -> HttpResponse | None:
         """Preserve manual Reservation claim permissions before the Server lookup."""
@@ -172,6 +156,7 @@ class _BaseReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin,
         return None if gate.allowed else _row_error(request, gate.reason)
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        """Synchronize the selected Reservation."""
         gate = sync_gate(request.user, claim_permissions(RESERVATION))
         if not gate.allowed:
             return _row_error(request, gate.reason)
@@ -204,24 +189,10 @@ class _BaseReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin,
         return _manual_sync_reply(request, outcome, "Reservation", record)
 
 
-class ServerReservation4SyncView(_BaseReservationSyncView):
-    """Synchronize one canonical DHCPv4 Reservation target."""
-
-    dhcp_version = 4
-
-
-class ServerReservation6SyncView(_BaseReservationSyncView):
-    """Synchronize one canonical DHCPv6 Reservation target."""
-
-    dhcp_version = 6
-
-
-class _BaseBulkReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
+class ServerReservationBulkSyncView(FamilyRouteMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
     """Fetch one full typed Snapshot and synchronize every valid Reservation."""
 
     workspace_section = "reservations"
-
-    dhcp_version: Family = 4  # overridden in subclasses
 
     def disabled_family_access(self, request: HttpRequest, server: Server) -> HttpResponse | None:
         """Preserve all manual reconciliation permissions on a disabled family."""
@@ -229,6 +200,7 @@ class _BaseBulkReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMi
         return None if gate.allowed else HttpResponseForbidden(gate.reason)
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Synchronize every valid Reservation of the family."""
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
         if refusal := self.disabled_family_access(request, server):
             return refusal
@@ -259,23 +231,8 @@ class _BaseBulkReservationSyncView(ServerFamilyMixin, ConditionalLoginRequiredMi
             messages.warning(request, summary)
         else:
             messages.success(request, summary)
-        redirect_url = reverse(
-            f"plugins:netbox_kea:server_reservations{self.dhcp_version}",
-            args=[pk],
-        )
+        redirect_url = reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": pk, "family": self.dhcp_version})
         return HttpResponseRedirect(redirect_url)
-
-
-class ServerReservation4BulkSyncView(_BaseBulkReservationSyncView):
-    """Bulk sync all DHCPv4 reservations to NetBox IPAM."""
-
-    dhcp_version = 4
-
-
-class ServerReservation6BulkSyncView(_BaseBulkReservationSyncView):
-    """Bulk sync all DHCPv6 reservations to NetBox IPAM."""
-
-    dhcp_version = 6
 
 
 class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
@@ -407,7 +364,9 @@ class _ImportRefusal:
     lines: tuple[str, ...]
 
 
-class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
+class ServerReservationBulkImportView(
+    FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View
+):
     """Validate one document, then create its Reservations, one Configuration Change for each entry (ADR 0012).
 
     An entry that Kea did not apply or did not confirm stops the import.
@@ -415,10 +374,12 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
 
     workspace_section = "reservations"
 
-    dhcp_version: Family
-    form_class: type
-
     template_name = "netbox_kea/server_reservation_bulk_import.html"
+
+    @property
+    def form_class(self) -> type[forms._BaseBulkReservationImportForm]:
+        """Return the import form of the route family."""
+        return {4: forms.Reservation4ImportForm, 6: forms.Reservation6ImportForm}[self.dhcp_version]
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the Reservation document import form."""
@@ -433,7 +394,9 @@ class _BaseBulkReservationImportView(_KeaChangeMixin, ServerFamilyMixin, Conditi
                 "object": instance,
                 "form": form,
                 "dhcp_version": self.dhcp_version,
-                "return_url": reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[instance.pk]),
+                "return_url": reverse(
+                    "plugins:netbox_kea:server_reservations", kwargs={"pk": instance.pk, "family": self.dhcp_version}
+                ),
                 "result": result,
                 "tab": RESERVATIONS_TAB,
             },
@@ -585,26 +548,14 @@ def _created_note(outcome: reservation_edit.AddOutcome, facts: reservation_edit.
     return " ".join(note for note in notes if note)
 
 
-class ServerReservation4BulkImportView(_BaseBulkReservationImportView):
-    """Bulk import DHCPv4 Reservations from a YAML or JSON document."""
-
-    dhcp_version = 4
-    form_class = forms.Reservation4ImportForm
-
-
-class ServerReservation6BulkImportView(_BaseBulkReservationImportView):
-    """Bulk import DHCPv6 Reservations from a YAML or JSON document."""
-
-    dhcp_version = 6
-    form_class = forms.Reservation6ImportForm
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Bulk Lease CSV Import
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class _BaseBulkLeaseImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
+class ServerLeaseBulkImportView(
+    FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View
+):
     """Upload a CSV file and create one Lease for each row via ``lease_add``.
 
     **GET**: render the upload form.
@@ -615,10 +566,12 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLo
 
     workspace_section = "leases"
 
-    dhcp_version: Family
-    form_class: type
-
     template_name = "netbox_kea/server_lease_bulk_import.html"
+
+    @property
+    def form_class(self) -> type[forms._BaseBulkLeaseImportForm]:
+        """Return the import form of the route family."""
+        return {4: forms.Lease4BulkImportForm, 6: forms.Lease6BulkImportForm}[self.dhcp_version]
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the CSV upload form."""
@@ -633,7 +586,9 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLo
                 "object": instance,
                 "form": form,
                 "dhcp_version": self.dhcp_version,
-                "return_url": reverse(f"plugins:netbox_kea:server_leases{self.dhcp_version}", args=[instance.pk]),
+                "return_url": reverse(
+                    "plugins:netbox_kea:server_leases", kwargs={"pk": instance.pk, "family": self.dhcp_version}
+                ),
                 "result": result,
                 "tab": _LEASES_TAB,
             },
@@ -676,17 +631,3 @@ class _BaseBulkLeaseImportView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLo
             show_lease_side_effects(request, facts)
         result = _import_report(loop, len(rows), _LEASE_ROWS, lambda row: (str(row[0]), str(row[1].address)))
         return self._render(request, instance, self.form_class(), result)
-
-
-class ServerLease4BulkImportView(_BaseBulkLeaseImportView):
-    """Bulk import DHCPv4 leases from a CSV file."""
-
-    dhcp_version = 4
-    form_class = forms.Lease4BulkImportForm
-
-
-class ServerLease6BulkImportView(_BaseBulkLeaseImportView):
-    """Bulk import DHCPv6 leases from a CSV file."""
-
-    dhcp_version = 6
-    form_class = forms.Lease6BulkImportForm

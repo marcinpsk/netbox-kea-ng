@@ -60,15 +60,9 @@
 </div>
 {{ block.super }}
 <div class="d-flex justify-content-end gap-2 mt-3">
-  {% if object.dhcp4 and '4' in request.resolver_match.url_name %}
-  <a href="{% url 'plugins:netbox_kea:server_subnet4_add' object.pk %}" class="btn btn-success">
+  <a href="{% url 'plugins:netbox_kea:server_subnet_add' pk=object.pk family=dhcp_version %}" class="btn btn-success">
     <i class="mdi mdi-plus-thick" aria-hidden="true"></i> Add Subnet
   </a>
-  {% elif object.dhcp6 and '6' in request.resolver_match.url_name %}
-  <a href="{% url 'plugins:netbox_kea:server_subnet6_add' object.pk %}" class="btn btn-success">
-    <i class="mdi mdi-plus-thick" aria-hidden="true"></i> Add Subnet
-  </a>
-  {% endif %}
   <div class="dropdown">
     <button type="button" class="btn btn-purple dropdown-toggle" data-bs-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
       <i class="mdi mdi-download"></i> Export

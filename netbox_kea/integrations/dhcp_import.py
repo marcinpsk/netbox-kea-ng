@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 
     from ..ipam_reconciliation import ReservationObservation
     from ..models import DhcpImportTrigger, Server
+    from ..reservations import ReservationSnapshot
     from ..views.notices import Notice
 
 logger = logging.getLogger(__name__)
@@ -138,9 +139,13 @@ def _read_reservation_observation(server: Server, version: Family) -> Reservatio
     except CatalogueUnavailable:
         logger.warning("DHCP-plugin sync: no complete Subnet Catalogue for %s (v%s)", server.name, version)
         return None
+
+    def reservation_snapshot() -> ReservationSnapshot:
+        with server.get_client(version=version) as client:
+            return client.reservation_snapshot(version, catalogue)
+
     snapshot = attempt(
-        f"DHCP-plugin sync: the Reservation Snapshot of {server.name} (v{version})",
-        lambda: server.get_client(version=version).reservation_snapshot(version, catalogue),
+        f"DHCP-plugin sync: the Reservation Snapshot of {server.name} (v{version})", reservation_snapshot
     )
     if isinstance(snapshot, ReadFailure):
         return None

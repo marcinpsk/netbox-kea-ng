@@ -69,13 +69,6 @@ def _persistence_failure(outcome):
     return " ".join(outcome.diagnostics)
 
 
-def _read_reservations(client, version, catalogue, diagnostics):
-    page = client.reservation_page(version, catalogue)
-    # ok: kea-snapshot-notice-outside-notice-module
-    diagnostics.extend(page.diagnostics)
-    return page
-
-
 def _incomplete_export_message(snapshot):
     # ok: kea-snapshot-notice-outside-notice-module
     return f"Export refused: {len(snapshot.diagnostics)} record(s) could not be read."

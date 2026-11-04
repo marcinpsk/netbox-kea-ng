@@ -7,14 +7,14 @@ from netbox_kea import config_write
 
 
 def bad_view_creates_a_reservation(server, reservation):
-    client = server.get_client(version=4)
-    # ruleid: kea-reservation-write-outside-config-write
-    client.reservation_add(reservation)
+    with server.get_client(version=4) as client:
+        # ruleid: kea-reservation-write-outside-config-write
+        client.reservation_add(reservation)
 
 
 def bad_import_creates_each_entry_on_a_chained_client(server, reservations):
     for reservation in reservations:
-        # ruleid: kea-reservation-write-outside-config-write
+        # ruleid: kea-reservation-write-outside-config-write, kea-client-outside-with
         server.get_client(version=4).reservation_add(reservation)
 
 
@@ -50,5 +50,5 @@ def ok_view_sends_the_signal_of_a_created_reservation(request, server):
 # A data migration is not exempt. `opengrep test` does not apply path filters, so a directory scan proves the path.
 def bad_migration_deletes_a_reservation(apps, schema_editor, scope, identity):
     server = apps.get_model("netbox_kea", "Server").objects.first()
-    # ruleid: kea-reservation-write-outside-config-write
+    # ruleid: kea-reservation-write-outside-config-write, kea-client-outside-with
     server.get_client(version=4).reservation_del(4, scope, identity)

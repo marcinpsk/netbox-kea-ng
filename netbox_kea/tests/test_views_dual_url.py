@@ -103,7 +103,7 @@ class TestDualURLSubnetViews(_DualURLBase):
 
     def test_subnets4_uses_dhcp4_url(self):
         """GET subnets4 → request POSTed to dhcp4_url."""
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -111,7 +111,7 @@ class TestDualURLSubnetViews(_DualURLBase):
 
     def test_subnets6_uses_dhcp6_url(self):
         """GET subnets6 → request POSTed to dhcp6_url."""
-        url = reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 6})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -129,7 +129,7 @@ class TestDualURLLeaseViews(_DualURLBase):
 
     def test_leases4_uses_dhcp4_url(self):
         """Export leases4 → request POSTed to dhcp4_url."""
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with _dual_url_stub() as kea:
             response = self.client.get(url, {"export": "1", "by": "subnet", "q": "10.0.0.0/24"})
         self.assertIn(response.status_code, (200, 302))
@@ -137,7 +137,7 @@ class TestDualURLLeaseViews(_DualURLBase):
 
     def test_leases6_uses_dhcp6_url(self):
         """Export leases6 → request POSTed to dhcp6_url."""
-        url = reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6})
         with _dual_url_stub() as kea:
             response = self.client.get(url, {"export": "1", "by": "subnet", "q": "2001:db8::/64"})
         self.assertIn(response.status_code, (200, 302))
@@ -150,7 +150,7 @@ class TestDualURLOptionViews(_DualURLBase):
 
     def test_option_defs4_uses_dhcp4_url(self):
         """GET option-defs4 → request POSTed to dhcp4_url."""
-        url = reverse("plugins:netbox_kea:server_option_def4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_option_def", kwargs={"pk": self.server.pk, "family": 4})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -158,7 +158,7 @@ class TestDualURLOptionViews(_DualURLBase):
 
     def test_option_defs6_uses_dhcp6_url(self):
         """GET option-defs6 → request POSTed to dhcp6_url."""
-        url = reverse("plugins:netbox_kea:server_option_def6", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_option_def", kwargs={"pk": self.server.pk, "family": 6})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -166,7 +166,7 @@ class TestDualURLOptionViews(_DualURLBase):
 
     def test_server_options4_uses_dhcp4_url(self):
         """GET server-options4 → request POSTed to dhcp4_url."""
-        url = reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_dhcp_options_edit", kwargs={"pk": self.server.pk, "family": 4})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -174,7 +174,7 @@ class TestDualURLOptionViews(_DualURLBase):
 
     def test_server_options6_uses_dhcp6_url(self):
         """GET server-options6 → request POSTed to dhcp6_url."""
-        url = reverse("plugins:netbox_kea:server_dhcp6_options_edit", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_dhcp_options_edit", kwargs={"pk": self.server.pk, "family": 6})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -187,7 +187,7 @@ class TestDualURLReservationViews(_DualURLBase):
 
     def test_reservations4_uses_dhcp4_url(self):
         """GET reservations4 → request POSTed to dhcp4_url."""
-        url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -195,7 +195,7 @@ class TestDualURLReservationViews(_DualURLBase):
 
     def test_reservations6_uses_dhcp6_url(self):
         """GET reservations6 → request POSTed to dhcp6_url."""
-        url = reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 6})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -209,7 +209,7 @@ class TestDualURLFallback(_DualURLBase):
     def test_v4_falls_back_to_server_url(self):
         """When dhcp4_url is empty, v4 views use ca_url."""
         server = _make_dual_url_server(name="v4-fallback", dhcp4_url="", dhcp6_url=_DHCP6_URL)
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": server.pk, "family": 4})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -218,7 +218,7 @@ class TestDualURLFallback(_DualURLBase):
     def test_v6_falls_back_to_server_url(self):
         """When dhcp6_url is empty, v6 views use ca_url."""
         server = _make_dual_url_server(name="v6-fallback", dhcp4_url=_DHCP4_URL, dhcp6_url="")
-        url = reverse("plugins:netbox_kea:server_subnets6", args=[server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": server.pk, "family": 6})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)

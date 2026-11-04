@@ -122,7 +122,10 @@ class TestWrittenValuesReadBack(_ViewTestBase):
     def test_subnet_edit(self):
         for family in (4, 6):
             daemon = SubnetDaemon(family, [{"id": 42, "subnet": _CIDR[family], "pools": [], "option-data": []}])
-            url = reverse(f"plugins:netbox_kea:server_subnet{family}_edit", args=[self.server.pk, 42])
+            url = reverse(
+                "plugins:netbox_kea:server_subnet_edit",
+                kwargs={"pk": self.server.pk, "family": family, "subnet_id": 42},
+            )
             with self.subTest(family=family), stub_kea(daemon.responses()):
                 page = _page_data(self.client.get(url))
                 values = {form_field: str(value) for form_field, value in _EDITED_SETTINGS.values()}
@@ -144,7 +147,7 @@ class TestWrittenValuesReadBack(_ViewTestBase):
                 "ddns_qualifying_suffix": "office.example.org.",
                 **_OPTIONS[family],
             }
-            url = reverse(f"plugins:netbox_kea:server_subnet{family}_add", args=[self.server.pk])
+            url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": family})
             with self.subTest(family=family), stub_kea(daemon.responses()):
                 self.assertEqual(self.client.post(url, data).status_code, 302)
                 configuration = self._read_back(family)
@@ -157,7 +160,10 @@ class TestWrittenValuesReadBack(_ViewTestBase):
             daemon = _RunningConfiguration(
                 _catalogue_responses_for_subnets(family, [], shared_networks=[network])["config-get"]
             )
-            url = reverse(f"plugins:netbox_kea:server_shared_network{family}_edit", args=[self.server.pk, "office"])
+            url = reverse(
+                "plugins:netbox_kea:server_shared_network_edit",
+                kwargs={"pk": self.server.pk, "family": family, "network_name": "office"},
+            )
             with self.subTest(family=family), stub_kea(daemon.responses()):
                 page = _page_data(self.client.get(url))
                 options = {field: text for field, text in _OPTIONS[family].items() if field != "gateway"}
@@ -170,7 +176,10 @@ class TestWrittenValuesReadBack(_ViewTestBase):
         live = [{"name": "domain-name-servers", "data": "192.0.2.53,192.0.2.54"}]
         network = {"name": "office", "subnet4": [], "option-data": live}
         daemon = _RunningConfiguration(_catalogue_responses_for_subnets(4, [], shared_networks=[network])["config-get"])
-        url = reverse("plugins:netbox_kea:server_shared_network4_edit", args=[self.server.pk, "office"])
+        url = reverse(
+            "plugins:netbox_kea:server_shared_network_edit",
+            kwargs={"pk": self.server.pk, "family": 4, "network_name": "office"},
+        )
         with stub_kea(daemon.responses()):
             page = _page_data(self.client.get(url))
             self.assertEqual(self.client.post(url, {**page, "description": "Floor 2"}).status_code, 302)

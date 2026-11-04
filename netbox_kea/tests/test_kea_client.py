@@ -1719,6 +1719,15 @@ class TestKeaClientContextManager(TestCase):
                 pass
             mock_close.assert_called_once()
 
+    def test_a_close_failure_at_the_end_of_the_block_is_logged_and_the_block_error_still_raises(self):
+        client = kea_client(url="http://kea:8000")
+        with patch.object(client._session, "close", side_effect=OSError("connection already gone")):
+            with self.assertLogs("netbox_kea.kea", level="WARNING") as logs, client:
+                pass
+            self.assertEqual(logs.records[0].getMessage(), "Could not close a Kea client")
+            with self.assertLogs("netbox_kea.kea", level="WARNING"), self.assertRaises(KeyError), client:
+                raise KeyError("the block")
+
 
 class TestConfigGetShapeGuard(TestCase):
     """Methods that call config-get raise KeaException on malformed arguments."""

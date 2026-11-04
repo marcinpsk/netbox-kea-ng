@@ -914,7 +914,7 @@ class BranchPageTest(_BranchReadTestCase):
 
     def test_the_ipaddress_panel_lists_mains_servers_without_reservation_links(self):
         page = reverse("ipam:ipaddress", args=[self.ip.pk])
-        add = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        add = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4})
 
         on_main = self.client.get(page)
         self.client.cookies[COOKIE_NAME] = self.branch.schema_id
@@ -1829,6 +1829,8 @@ class _Route:
     pattern: str
     parameters: tuple[str, ...]
     callback: Any
+    # The address family of the route: its family parameter, or the family digit of a REST action name.
+    family: int | None = None
 
     @property
     def api(self) -> bool:
@@ -1845,18 +1847,23 @@ def _plugin_routes(resolver: URLResolver | None = None, name: str = "", pattern:
             namespace = f"{name}{entry.namespace}:" if entry.namespace else name
             routes += _plugin_routes(entry, namespace, text, found)
         elif isinstance(entry, URLPattern) and branching.plugin_owned(entry.callback):
-            routes.append(_Route(f"{name}{entry.name}", text, found, entry.callback))
+            route_name = f"{name}{entry.name}"
+            if "family" in found:
+                routes += [_Route(route_name, text, found, entry.callback, family) for family in (4, 6)]
+            else:
+                digit = _FAMILY.search(route_name.rsplit(":", 1)[-1])
+                routes.append(_Route(route_name, text, found, entry.callback, int(digit.group(1)) if digit else None))
     return routes
 
 
 _PARAMETER = re.compile(r"<(?:\w+:)?(\w+)>|\(\?P<(\w+)>[^)]*\)")
+# A REST action keeps one name per family, such as server-leases4.
 _FAMILY = re.compile(r"[a-z]([46])(?:_|$)")
 
 
 def _route_arguments(route: _Route, server: Server, ip: IPAddress) -> dict[str, object]:
     """Return a value for each parameter of *route* that names a real object, or fail and name the route."""
-    family = _FAMILY.search(route.name.rsplit(":", 1)[-1])
-    objects = _KEA_OBJECTS[int(family.group(1))] if family else None
+    objects = _KEA_OBJECTS[route.family] if route.family is not None else None
     by_family = {
         "subnet_id": lambda o: o.subnet_id,
         "pool": lambda o: o.pool,
@@ -1871,6 +1878,8 @@ def _route_arguments(route: _Route, server: Server, ip: IPAddress) -> dict[str, 
             arguments[parameter] = ip.pk if route.name.endswith(":ipaddress_kea_reservations") else server.pk
         elif parameter == "format":
             arguments[parameter] = "json"
+        elif parameter == "family" and route.family is not None:
+            arguments[parameter] = route.family
         elif parameter == "section" and route.name.endswith(":settings_section"):
             arguments[parameter] = "sync"
         elif parameter in by_family and objects is not None:
@@ -1883,21 +1892,26 @@ def _route_arguments(route: _Route, server: Server, ip: IPAddress) -> dict[str, 
     return arguments
 
 
+def _page(route: _Route) -> str:
+    """Return the name of *route* without its namespace."""
+    return route.name.rsplit(":", 1)[-1]
+
+
 def _route_query(route: _Route, server: Server, ip: IPAddress) -> str:
     """Return the query string that a page of *route* needs to show a real object."""
-    short = route.name.rsplit(":", 1)[-1]
+    short = _page(route)
     if short == "server_switch":
         return urlencode({"target": server.pk, "section": "overview", "family": 4})
-    if short.startswith(("server_reservation4_edit", "server_reservation4_delete")):
+    if short in ("server_reservation_edit", "server_reservation_delete") and route.family == 4:
         return urlencode({"identifier_type": "hw-address", "identifier": _KEA_OBJECTS[4].reservation["hw-address"]})
-    if short.startswith(("server_reservation6_edit", "server_reservation6_delete")):
+    if short in ("server_reservation_edit", "server_reservation_delete") and route.family == 6:
         return urlencode({"identifier_type": "duid", "identifier": _KEA_OBJECTS[6].reservation["duid"]})
     if short == "reservation_check_ip":
         return urlencode({"ip": str(ip.address.ip)})
     if short in ("server-leases4", "server-leases6"):
         return urlencode({"ip_address": _KEA_OBJECTS[int(short[-1])].lease["ip-address"]})
-    if short in ("server_leases4", "server_leases6"):
-        return urlencode({"by": "ip", "q": _KEA_OBJECTS[int(short[-1])].lease["ip-address"]})
+    if short == "server_leases" and route.family is not None:
+        return urlencode({"by": "ip", "q": _KEA_OBJECTS[route.family].lease["ip-address"]})
     if short in ("server-reservations4", "server-reservations6"):
         return urlencode({"limit": 100})
     return ""
@@ -1924,22 +1938,13 @@ def _route_url(route: _Route, server: Server, ip: IPAddress) -> str:
 
 # A page GET that main answers with a redirect: NetBox's bulk views, the lease delete confirmation, and Settings.
 _MAIN_GET_REDIRECTS = frozenset(
-    f"plugins:netbox_kea:{name}"
-    for name in (
-        "server_bulk_delete",
-        "server_bulk_edit",
-        "server_leases4_delete",
-        "server_leases6_delete",
-        "server_status",
-        "server_switch",
-        "settings",
-    )
+    ("server_bulk_delete", "server_bulk_edit", "server_leases_delete", "server_status", "server_switch", "settings")
 )
 
 
 def _main_get_status(route: _Route) -> int:
     """Return the status that a GET of *route* gets on main, from the recorded Kea and real objects."""
-    if route.name in _MAIN_GET_REDIRECTS:
+    if not route.api and _page(route) in _MAIN_GET_REDIRECTS:
         return 302
     if not route.api and not hasattr(_view(route.callback), "get"):
         return 405
@@ -2242,7 +2247,7 @@ class RenderedBranchControlsTest(TransactionTestCase):
                         if not mutation:
                             continue
                         checked += 1
-                        covered.add(route.name)
+                        covered.add(_page(route))
                         candidates = [
                             candidate
                             for candidate in after.find_all(control.name)
@@ -2258,14 +2263,14 @@ class RenderedBranchControlsTest(TransactionTestCase):
         self.assertGreater(checked, 100, "the recorded pages must populate their mutation controls")
         for name in (
             "server",
-            "server_subnets4",
-            "server_shared_networks4",
-            "server_reservations4",
-            "server_leases4",
+            "server_subnets",
+            "server_shared_networks",
+            "server_reservations",
+            "server_leases",
             "sync_jobs",
             "settings_section",
         ):
-            self.assertIn(f"plugins:netbox_kea:{name}", covered)
+            self.assertIn(name, covered)
 
     def _assert_no_active_mutation_targets(self, page, url, mutation_paths, plugin_paths):
         for control in page.find_all(True):

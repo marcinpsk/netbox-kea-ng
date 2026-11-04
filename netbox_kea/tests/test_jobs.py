@@ -34,7 +34,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import run_counts, run_results, with_sync_config
+from .utils import record_kea_clients, run_counts, run_results, with_sync_config
 
 _LEASE4 = {
     "ip-address": "10.0.0.1",
@@ -350,6 +350,13 @@ class TestKeaIpamSyncJobRun(TestCase):
         from ipam.models import IPAddress
 
         self.assertTrue(IPAddress.objects.filter(address__net_host="10.0.0.1").exists())
+
+    def test_a_sync_run_closes_each_kea_client(self):
+        self._make_db_server()
+        with _patch_kea(leases4=[_LEASE4], leases6=[], reservations=[_RESV4]), record_kea_clients() as clients:
+            self._run()
+        self.assertTrue(NbIP.objects.filter(address__net_host="10.0.0.100").exists())
+        clients.assert_all_closed(self)
 
     def test_lease_ip_status_is_dhcp(self):
         """Synced lease IP has status='dhcp'."""

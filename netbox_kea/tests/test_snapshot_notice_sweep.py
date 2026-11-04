@@ -24,14 +24,10 @@ _NAMESPACE = "plugins:netbox_kea:"
 #: Each Server GET route that shows no Snapshot Notice, with the reason.
 _EXEMPT = {
     "combined": "The Overview reads no Snapshot; badges have their own route.",
-    "combined_overview4": "The Overview reads no Snapshot; badges have their own route.",
-    "combined_overview6": "The Overview reads no Snapshot; badges have their own route.",
-    "combined_leases4": "A Server chooser that reads no Kea data.",
-    "combined_leases6": "A Server chooser that reads no Kea data.",
-    "combined_configuration4": "A Server chooser that reads no Kea data.",
-    "combined_configuration6": "A Server chooser that reads no Kea data.",
-    "combined_sync4": "Recorded NetBox jobs, with no live Kea read.",
-    "combined_sync6": "Recorded NetBox jobs, with no live Kea read.",
+    "combined_overview": "The Overview reads no Snapshot; badges have their own route.",
+    "combined_leases": "A Server chooser that reads no Kea data.",
+    "combined_configuration": "A Server chooser that reads no Kea data.",
+    "combined_sync": "Recorded NetBox jobs, with no live Kea read.",
     "combined_server_status_badge": "An htmx badge that reads version-get, not a Snapshot.",
     "ipaddress_kea_reservations": "Its pk names an IP address, and it reads no Kea data.",
     "reservation_check_ip": "An htmx fragment that reads NetBox IPAM, not Kea.",
@@ -48,31 +44,24 @@ _EXEMPT = {
     "server_dhcp_plugin_drift": (
         "An htmx card that reads nothing while the integration is off; DriftPartialTest covers its Notice."
     ),
-    "server_dhcp4_enable": "A confirmation page that reads no Kea data.",
-    "server_dhcp4_disable": "A confirmation page that reads no Kea data.",
-    "server_dhcp6_enable": "A confirmation page that reads no Kea data.",
-    "server_dhcp6_disable": "A confirmation page that reads no Kea data.",
-    "server_lease4_add": "A form that reads no Snapshot.",
-    "server_lease6_add": "A form that reads no Snapshot.",
-    "server_lease4_bulk_import": "An upload form that reads no Kea data.",
-    "server_lease6_bulk_import": "An upload form that reads no Kea data.",
-    "server_leases4_delete": "A GET redirects; the delete is a POST.",
-    "server_leases6_delete": "A GET redirects; the delete is a POST.",
-    "server_option_def4_add": "A form that reads no Kea data.",
-    "server_option_def6_add": "A form that reads no Kea data.",
-    "server_option_def4_delete": "A confirmation page that reads no Kea data.",
-    "server_option_def6_delete": "A confirmation page that reads no Kea data.",
-    "server_reservation4_bulk_import": "An upload form that reads no Kea data.",
-    "server_reservation6_bulk_import": "An upload form that reads no Kea data.",
-    "server_reservation4_published_name": "An htmx preview that shows no suffix when the Catalogue cannot.",
-    "server_reservation6_published_name": "An htmx preview that shows no suffix when the Catalogue cannot.",
-    "server_shared_network4_add": "A form that reads no Kea data.",
-    "server_shared_network6_add": "A form that reads no Kea data.",
-    "server_shared_network4_delete": "A confirmation page that reads no Kea data.",
-    "server_shared_network6_delete": "A confirmation page that reads no Kea data.",
+    "server_dhcp_enable": "A confirmation page that reads no Kea data.",
+    "server_dhcp_disable": "A confirmation page that reads no Kea data.",
+    "server_lease_add": "A form that reads no Snapshot.",
+    "server_lease_bulk_import": "An upload form that reads no Kea data.",
+    "server_leases_delete": "A GET redirects; the delete is a POST.",
+    "server_option_def_add": "A form that reads no Kea data.",
+    "server_option_def_delete": "A confirmation page that reads no Kea data.",
+    "server_reservation_bulk_import": "An upload form that reads no Kea data.",
+    "server_reservation_published_name": "An htmx preview that shows no suffix when the Catalogue cannot.",
+    "server_shared_network_add": "A form that reads no Kea data.",
+    "server_shared_network_delete": "A confirmation page that reads no Kea data.",
+    "server_option_def_tab": "The v4 tab link of server_option_def, which the sweep checks.",
+    "server_leases_tab": "The v4 tab link of server_leases, which the sweep checks.",
+    "server_reservations_tab": "The v4 tab link of server_reservations, which the sweep checks.",
+    "server_subnets_tab": "The v4 tab link of server_subnets, which the sweep checks.",
 }
 
-#: The kinds whose error headline each page must show, by route name without its family.
+#: The kinds whose error headline each page must show, by route name.
 _EXPECTED: dict[str, frozenset[NoticeKind]] = {
     "combined_subnets": frozenset({"catalogue"}),
     "combined_shared_networks": frozenset({"configuration"}),
@@ -100,18 +89,18 @@ _EXPECTED: dict[str, frozenset[NoticeKind]] = {
 
 #: The query that a page needs before it reads anything.
 _QUERIES = {
-    "server_reservation4_edit": {"identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"},
-    "server_reservation6_edit": {"identifier_type": "duid", "identifier": "00:01:02:03"},
-    "server_reservation4_delete": {"identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"},
-    "server_reservation6_delete": {"identifier_type": "duid", "identifier": "00:01:02:03"},
+    ("server_reservation_edit", 4): {"identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"},
+    ("server_reservation_edit", 6): {"identifier_type": "duid", "identifier": "00:01:02:03"},
+    ("server_reservation_delete", 4): {"identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"},
+    ("server_reservation_delete", 6): {"identifier_type": "duid", "identifier": "00:01:02:03"},
 }
 
 #: The htmx partial request of a page, and the Snapshot kinds whose error headline it must show inline.
-_HTMX_SEARCHES: dict[str, tuple[dict[str, str], frozenset[NoticeKind]]] = {
-    "server_leases4": ({"by": "hw", "q": "aa:bb:cc:dd:ee:ff"}, frozenset({"catalogue", "lease"})),
-    "server_leases6": ({"by": "duid", "q": "00:01:02:03:04:05"}, frozenset({"catalogue", "lease"})),
-    "server_subnets4": ({}, frozenset({"catalogue"})),
-    "server_subnets6": ({}, frozenset({"catalogue"})),
+_HTMX_SEARCHES: dict[tuple[str, int], tuple[dict[str, str], frozenset[NoticeKind]]] = {
+    ("server_leases", 4): ({"by": "hw", "q": "aa:bb:cc:dd:ee:ff"}, frozenset({"catalogue", "lease"})),
+    ("server_leases", 6): ({"by": "duid", "q": "00:01:02:03:04:05"}, frozenset({"catalogue", "lease"})),
+    ("server_subnets", 4): ({}, frozenset({"catalogue"})),
+    ("server_subnets", 6): ({}, frozenset({"catalogue"})),
 }
 
 _ARGUMENTS = {
@@ -132,7 +121,6 @@ _ARGUMENTS = {
         "ip_address": "2001:db8::10",
     },
 }
-_FAMILY = re.compile(r"(?<=[a-z])([46])(?=_|$)")
 
 
 def _server_routes(resolver: URLResolver | None = None, namespace: str = "", parameters: tuple = ()):
@@ -169,7 +157,7 @@ class TestEveryServerPageShowsAFailedRead(_ViewTestBase):
     def test_every_server_page_shows_an_error_notice_when_kea_fails(self):
         routes = dict(_server_routes())
         self.assertFalse(set(_EXEMPT) - set(routes), "An exemption names a route that no longer exists.")
-        stale = set(_EXPECTED) - {_FAMILY.sub("", name) for name in routes}
+        stale = set(_EXPECTED) - set(routes)
         self.assertFalse(stale, "An expected entry names a route that no longer exists.")
         failure = requests.ConnectionError("Kea is unreachable")
         checked = []
@@ -177,24 +165,26 @@ class TestEveryServerPageShowsAFailedRead(_ViewTestBase):
             for name, parameters in sorted(routes.items()):
                 if name in _EXEMPT:
                     continue
-                family = _FAMILY.search(name)
-                arguments = {"pk": self.server.pk, **_ARGUMENTS[int(family.group(1)) if family else 4]}
-                url = reverse(_NAMESPACE + name, kwargs={key: arguments[key] for key in parameters})
-                expected = _EXPECTED.get(_FAMILY.sub("", name))
+                expected = _EXPECTED.get(name)
                 self.assertIsNotNone(expected, f"Add the Snapshot kinds of {name} to _EXPECTED, or exempt it.")
-                requests_ = [(url, _QUERIES.get(name, {}), {}, expected)]
-                if name in _HTMX_SEARCHES:
-                    htmx_query, htmx_kinds = _HTMX_SEARCHES[name]
-                    requests_.append((url, htmx_query, {"HTTP_HX_REQUEST": "true"}, htmx_kinds))
-                for path, query, headers, kinds in requests_:
-                    with self.subTest(route=name, htmx=bool(headers)):
-                        self._fresh_client()
-                        response = self.client.get(path, query, **headers)
-                        self.assertIn(response.status_code, (200, 302))
-                        missing = sorted(kinds - _shown_error_kinds(response))
-                        self.assertEqual(missing, [], f"{name} shows no error headline of {missing}")
-                        checked.append(name)
+                families = (4, 6) if "family" in parameters else (4,)
+                for family in families:
+                    arguments = {"pk": self.server.pk, "family": family, **_ARGUMENTS[family]}
+                    url = reverse(_NAMESPACE + name, kwargs={key: arguments[key] for key in parameters})
+                    requests_ = [(url, _QUERIES.get((name, family), {}), {}, expected)]
+                    if (name, family) in _HTMX_SEARCHES:
+                        htmx_query, htmx_kinds = _HTMX_SEARCHES[name, family]
+                        requests_.append((url, htmx_query, {"HTTP_HX_REQUEST": "true"}, htmx_kinds))
+                    for path, query, headers, kinds in requests_:
+                        with self.subTest(route=name, family=family, htmx=bool(headers)):
+                            self._fresh_client()
+                            response = self.client.get(path, query, **headers)
+                            self.assertIn(response.status_code, (200, 302))
+                            missing = sorted(kinds - _shown_error_kinds(response))
+                            self.assertEqual(missing, [], f"{name} shows no error headline of {missing}")
+                            checked.append((name, family))
         # The sweep must reach the pages that read each Snapshot kind.
         self.assertTrue(
-            {"server_subnets4", "server_status_data", "server_reservations4", "server_leases6"} <= set(checked)
+            {("server_subnets", 4), ("server_status_data", 4), ("server_reservations", 4), ("server_leases", 6)}
+            <= set(checked)
         )

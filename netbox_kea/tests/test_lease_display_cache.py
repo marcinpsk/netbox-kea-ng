@@ -117,7 +117,7 @@ class _LeaseCacheBase(_ViewTestBase):
         """Render the Leases table partial as the search form requests it; return it and the Kea commands."""
         with stub_kea({**_catalogue_responses(4, 20, _CIDR), "reservation-get": {"result": 3}, **responses}) as kea:
             response = self.client.get(
-                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4}),
                 _BROWSE if query is None else query,
                 headers={"HX-Request": "true", **(headers or {})},
             )
@@ -142,7 +142,8 @@ class _LeaseCacheBase(_ViewTestBase):
         }
         with stub_kea(responses) as kea:
             response = self.client.get(
-                url or reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]), headers=headers
+                url or reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4}),
+                headers=headers,
             )
         self.assertEqual(response.status_code, 200)
         return response, kea.commands()
@@ -258,7 +259,7 @@ class LeaseTableCacheTest(_LeaseCacheBase):
         warm()
         with stub_kea({**_catalogue_responses(4, 20, _CIDR), **daemon.responses()}) as kea:
             deleted = self.client.post(
-                reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4}),
                 {"pk": shown_token(held), "_confirm": "1"},
             )
         self.assertEqual(deleted.status_code, 302)
@@ -298,7 +299,7 @@ class LeaseTableCacheTest(_LeaseCacheBase):
             sessions.tracking(),
         ):
             response = self.client.get(
-                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4}),
                 _BROWSE,
                 headers={"HX-Request": "true"},
             )
@@ -423,7 +424,7 @@ class LeaseBadgeCacheTest(_LeaseCacheBase):
             ):
                 with self.assertLogs("netbox_kea.read_failure", "INFO") as logs:
                     response = self.client.get(
-                        reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+                        reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
                     )
                 lookup = f"The Lease lookup of Server {self.server.pk} failed"
                 self.assertTrue(all(record.getMessage().startswith(lookup) for record in logs.records), logs.output)
@@ -444,7 +445,9 @@ class LeaseBadgeCacheTest(_LeaseCacheBase):
         }
         sessions = _SessionLog()
         with stub_kea(responses), sessions.tracking():
-            response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
+            )
 
         self.assertEqual(response.status_code, 200)
         lease_commands = [
@@ -469,7 +472,10 @@ class LeaseBadgeCacheTest(_LeaseCacheBase):
 
     def test_a_combined_reservations_refresh_rereads_the_lease_badges_of_its_rows(self):
         other = _make_db_server(name="test-kea-other", ca_url="https://kea-other.example.com")
-        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.server.pk}&server={other.pk}"
+        url = (
+            reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
+            + f"?server={self.server.pk}&server={other.pk}"
+        )
         page, _ = self._reservations([_lease("198.18.0.21")], url=url)
         control = _refresh_control(page)
 
@@ -528,7 +534,7 @@ class BadgePageRequestTest(_ViewTestBase):
         }
         with stub_kea(responses) as kea:
             response = self.client.get(
-                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4}),
                 _BROWSE,
                 headers={"HX-Request": "true"},
             )
@@ -572,7 +578,9 @@ class BadgePageRequestTest(_ViewTestBase):
             "lease4-get-by-client-id": lease_reply(),
         }
         with stub_kea(responses) as kea:
-            response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
+            )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
@@ -681,7 +689,7 @@ class StatusAndUtilizationCacheTest(_ViewTestBase):
 
     def test_a_second_subnets_render_within_the_ttl_sends_no_utilization_read(self):
         stats = _stats
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_catalogue_responses(4, 20, _CIDR), "stat-lease4-get": stats(25)}) as kea:
             first = self.client.get(url)
         self.assertEqual(kea.commands().count("stat-lease4-get"), 1)
@@ -697,8 +705,12 @@ class StatusAndUtilizationCacheTest(_ViewTestBase):
     def test_a_subnets_export_reads_utilization_live(self):
         other = _make_db_server(name="test-kea-other", ca_url="https://kea-other.example.com")
         pages = (
-            (reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]), {}, 1),
-            (reverse("plugins:netbox_kea:combined_subnets4"), {"server": [self.server.pk, other.pk]}, 2),
+            (reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4}), {}, 1),
+            (
+                reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4}),
+                {"server": [self.server.pk, other.pk]},
+                2,
+            ),
         )
         for url, query, servers in pages:
             with self.subTest(url=url):
