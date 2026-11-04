@@ -95,7 +95,7 @@ class TestCombinedReservationSubnetIdFilter(_ViewTestBase):
         ):
             with stub_kea(_catalogue_responses_for_subnets(4, subnets)):
                 subnet_catalogue.display(server, 4)
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
         responses = {
             "reservation-get-page": _res_page([]),
             # The mutation capability read takes the configuration; the Catalogue needs no new read.
@@ -136,7 +136,7 @@ class TestCombinedReservationSubnetIdFilter(_ViewTestBase):
             f"reservation_cursor_{second.pk}": "WzEsNV0",
         }
         with stub_kea(responses) as kea:
-            response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"), query)
+            response = self.client.get(reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4}), query)
         self.assertEqual(response.status_code, 200)
         # Page 2 reads the Reservations of kea-b only.
         self.assertEqual(len(kea.bodies("reservation-get-page")), 1)
@@ -186,7 +186,9 @@ class TestCombinedReservationSubnetIdFilter(_ViewTestBase):
                 return answered(session, url, **kwargs)
 
             with patch("netbox_kea.kea.requests.Session.post", new=post):
-                response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"), query)
+                response = self.client.get(
+                    reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4}), query
+                )
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("reservation-get-page", sent_to_a)
         return response, kea, unanswered

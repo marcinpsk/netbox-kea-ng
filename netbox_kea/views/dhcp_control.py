@@ -33,7 +33,7 @@ class ServerDHCPEnableView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin,
             f"DHCPv{self.dhcp_version} service re-enabled on {instance}.",
             lambda: runtime_change.enable_dhcp(instance, self.dhcp_version),
         )
-        return redirect(server_family_url(request, instance, self, "server"))
+        return redirect(server_family_url(request, instance, "server"))
 
 
 class ServerDHCPDisableView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
@@ -67,4 +67,4 @@ class ServerDHCPDisableView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin
             lambda: runtime_change.disable_dhcp(instance, self.dhcp_version, max_period),
             applied_warning=True,
         )
-        return redirect(server_family_url(request, instance, self, "server"))
+        return redirect(server_family_url(request, instance, "server"))

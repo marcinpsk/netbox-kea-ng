@@ -113,7 +113,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertNotContains(page, "Reservation mutation controls are unavailable")
 
     def test_combined_row_actions_return_to_the_combined_search(self):
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
         other = _make_db_server(name="search-other", dhcp4=False)
         row, search = self._searched_row(url, {"server": [self.server.pk, other.pk], "q": "searched"})
         self.assertEqual(_return_url(row["edit_url"]), [search])
@@ -163,7 +163,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
 
     def test_the_tab_and_the_combined_view_present_the_same_row(self):
         tab_row, _ = self._searched_row(self._url(), {})
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
         combined_row, _ = self._searched_row(url, {})
 
         # The same domain facts have page-specific navigation targets.
@@ -667,7 +667,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
             }
         )
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
 
         with stub_kea(responses):
             response = self.client.get(url)
@@ -697,7 +697,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
             next_source=1,
         )
         responses["lease6-get-by-state"] = {"result": 0, "arguments": {"leases": []}}
-        url = reverse("plugins:netbox_kea:combined_reservations6")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 6})
 
         with stub_kea(responses) as kea:
             response = self.client.get(url)
@@ -727,7 +727,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
                 "config-get": queued(responses["config-get"], requests.ConnectionError("capability discovery failed")),
             }
         )
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
 
         with stub_kea(responses) as kea:
             response = self.client.get(url)
@@ -758,7 +758,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
             }
         )
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
 
         with stub_kea(responses):
             other = _make_db_server(name="scope-only-other", dhcp4=False)
@@ -780,7 +780,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
             ),
             _res_page([{"subnet-id": 20, "flex-id": "second-page", "hostname": "second.example.invalid"}]),
         )
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
 
         with stub_kea(responses) as kea:
             response = self.client.get(url, {"export": "json"})

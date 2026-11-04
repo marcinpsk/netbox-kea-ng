@@ -35,6 +35,7 @@ from .subnet_lists import (
 )
 from .workspace import (
     WORKSPACE_SECTIONS,
+    FamilyRouteMixin,
     WorkspaceSection,
     family_filters,
     subsections,
@@ -55,12 +56,11 @@ def _search_value_label(field: Field, value: str) -> str:
     return dict(cast("list[tuple[str, str]]", field.choices)).get(value, value)
 
 
-class _CombinedViewMixin(ConditionalLoginRequiredMixin, View):
+class _CombinedViewMixin(FamilyRouteMixin, ConditionalLoginRequiredMixin, View):
     """Resolve the Server Scope once before a combined page reads live data."""
 
     workspace_section = "overview"
     workspace_subsection: str | None = None
-    dhcp_version: Family
     server_scope: ServerScope
     has_combined_export = True
 
@@ -171,7 +171,6 @@ class CombinedDashboardView(_CombinedViewMixin):
     regardless of server availability.
     """
 
-    dhcp_version: Family = 4
     has_combined_export = False
     template_name = "netbox_kea/combined_overview.html"
 
@@ -193,18 +192,11 @@ class CombinedDashboardView(_CombinedViewMixin):
         return render(request, self.template_name, ctx)
 
 
-class CombinedDashboard6View(CombinedDashboardView):
-    """Combined overview with DHCPv6 selected in the workspace shell."""
-
-    dhcp_version = 6
-
-
-class _ConfigurationServerChooserView(_CombinedViewMixin):
+class CombinedConfigurationView(_CombinedViewMixin):
     """Choose a permitted Server for family-specific DHCP configuration."""
 
     workspace_section = "configuration"
     has_combined_export = False
-    dhcp_version: Family = 4
 
     def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """List only selected Servers that serve this family, without reading Kea."""
@@ -219,22 +211,11 @@ class _ConfigurationServerChooserView(_CombinedViewMixin):
         return render(request, "netbox_kea/combined_configuration.html", ctx)
 
 
-class CombinedConfiguration4View(_ConfigurationServerChooserView):
-    """Server chooser for DHCPv4 configuration."""
-
-
-class CombinedConfiguration6View(_ConfigurationServerChooserView):
-    """Server chooser for DHCPv6 configuration."""
-
-    dhcp_version = 6
-
-
-class _CombinedSyncView(_CombinedViewMixin):
+class CombinedSyncView(_CombinedViewMixin):
     """Show recorded sync results for selected Servers without reading Kea."""
 
     workspace_section = "sync"
     has_combined_export = False
-    dhcp_version: Family = 4
 
     def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """Show the latest job of each Server and the Sync Run Result of the Server in it."""
@@ -247,22 +228,11 @@ class _CombinedSyncView(_CombinedViewMixin):
         return render(request, "netbox_kea/combined_sync.html", ctx)
 
 
-class CombinedSync4View(_CombinedSyncView):
-    """Recorded sync results with DHCPv4 selected."""
-
-
-class CombinedSync6View(_CombinedSyncView):
-    """Recorded sync results with DHCPv6 selected."""
-
-    dhcp_version = 6
-
-
-class _CombinedSubnetsView(_CombinedViewMixin):
-    """Base view: fetch subnets from all selected servers concurrently."""
+class CombinedSubnetsView(_CombinedViewMixin):
+    """Fetch the subnets of all selected servers concurrently."""
 
     workspace_section = "subnets"
     template_name = "netbox_kea/combined_subnets.html"
-    dhcp_version: Family = 4
 
     def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """Merge subnet lists from all queried servers into one table."""
@@ -303,25 +273,12 @@ class _CombinedSubnetsView(_CombinedViewMixin):
         return render(request, self.template_name, ctx)
 
 
-class CombinedSubnets4View(_CombinedSubnetsView):
-    """Combined DHCPv4 subnets across all selected servers."""
-
-    dhcp_version = 4
-
-
-class CombinedSubnets6View(_CombinedSubnetsView):
-    """Combined DHCPv6 subnets across all selected servers."""
-
-    dhcp_version = 6
-
-
-class _CombinedSharedNetworksView(_CombinedViewMixin):
-    """Base view: fetch shared networks from all selected servers concurrently."""
+class CombinedSharedNetworksView(_CombinedViewMixin):
+    """Fetch the shared networks of all selected servers concurrently."""
 
     workspace_section = "subnets"
     workspace_subsection = "shared_networks"
     template_name = "netbox_kea/combined_shared_networks.html"
-    dhcp_version: Family = 4
 
     def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """Merge shared network lists from all queried servers into one table."""
@@ -360,24 +317,11 @@ class _CombinedSharedNetworksView(_CombinedViewMixin):
         return render(request, self.template_name, ctx)
 
 
-class CombinedSharedNetworks4View(_CombinedSharedNetworksView):
-    """Combined DHCPv4 shared networks across all selected servers."""
-
-    dhcp_version = 4
-
-
-class CombinedSharedNetworks6View(_CombinedSharedNetworksView):
-    """Combined DHCPv6 shared networks across all selected servers."""
-
-    dhcp_version = 6
-
-
-class _CombinedReservationsView(_CombinedViewMixin):
-    """Base view: fetch reservations from all selected servers concurrently."""
+class CombinedReservationsView(_CombinedViewMixin):
+    """Fetch the reservations of all selected servers concurrently."""
 
     workspace_section = "reservations"
     template_name = "netbox_kea/combined_reservations.html"
-    dhcp_version: Family = 4
 
     def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """Merge reservation lists from all queried servers into one table."""
@@ -518,25 +462,12 @@ class _CombinedReservationsView(_CombinedViewMixin):
         )
 
 
-class CombinedReservations4View(_CombinedReservationsView):
-    """Combined DHCPv4 reservations across all selected servers."""
-
-    dhcp_version = 4
-
-
-class CombinedReservations6View(_CombinedReservationsView):
-    """Combined DHCPv6 reservations across all selected servers."""
-
-    dhcp_version = 6
-
-
-class _LeaseServerChooserView(_CombinedViewMixin):
+class CombinedLeasesView(_CombinedViewMixin):
     """Choose one Server in the Server Scope for a lease search."""
 
     workspace_section = "leases"
     has_combined_export = False
     template_name = "netbox_kea/combined_leases.html"
-    dhcp_version: Family = 4
 
     def get_server_scoped(self, request: HttpRequest) -> HttpResponse:
         """List the Servers that serve the requested family without reading Kea."""
@@ -565,15 +496,3 @@ class _LeaseServerChooserView(_CombinedViewMixin):
             }
         )
         return render(request, self.template_name, ctx)
-
-
-class CombinedLeases4View(_LeaseServerChooserView):
-    """Server chooser for DHCPv4 leases."""
-
-    dhcp_version = 4
-
-
-class CombinedLeases6View(_LeaseServerChooserView):
-    """Server chooser for DHCPv6 leases."""
-
-    dhcp_version = 6

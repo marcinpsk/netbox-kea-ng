@@ -146,9 +146,7 @@ class TestServerWorkspace(_ViewTestBase):
     def test_combined_overview_and_sync_handoff_preserves_requested_family(self):
         for section, target in (("overview", "server"), ("sync", "server_sync_status")):
             with self.subTest(section=section):
-                response = self.client.get(
-                    reverse(f"plugins:netbox_kea:combined_{section}6"), {"server": self.server.pk}
-                )
+                response = self.client.get(family_url(f"combined_{section}", 6), {"server": self.server.pk})
                 self.assertRedirects(
                     response,
                     reverse(f"plugins:netbox_kea:{target}", args=[self.server.pk]) + "?family=6",
@@ -389,17 +387,17 @@ class TestServerWorkspace(_ViewTestBase):
                 {"q": ["198.18"], "sort": ["subnet"]},
             ),
             (
-                reverse("plugins:netbox_kea:combined_leases4"),
+                reverse("plugins:netbox_kea:combined_leases", kwargs={"family": 4}),
                 {"q": "198.18.0.0/24", "by": "subnet", "state": "0"},
                 {"state": ["0"]},
             ),
             (
-                reverse("plugins:netbox_kea:combined_reservations4"),
+                reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4}),
                 {"q": "printer", "subnet_id": "7", "scope": "in-subnet"},
                 {"q": ["printer"], "scope": ["in-subnet"]},
             ),
             (
-                reverse("plugins:netbox_kea:combined_subnets4"),
+                reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4}),
                 {"q": "198.18", "subnet_id": "7"},
                 {"q": ["198.18"]},
             ),
@@ -682,6 +680,33 @@ class TestWorkspaceTabRow(_ViewTestBase):
                         self.assertTrue(marked, link)
                         active.append(link.get_text(" ", strip=True))
                 self.assertTrue(any(text.startswith(label) for text in active), active)
+
+    def test_each_section_tab_links_to_its_v4_page_and_is_current_on_its_v6_page(self):
+        from utilities.templatetags.tabs import model_view_tabs
+
+        pages = {
+            "Leases": "server_leases",
+            "Subnets": "server_subnets",
+            "Reservations": "server_reservations",
+            "Config": "server_option_def",
+        }
+        replies = {
+            **_catalogue_responses_for_subnets(6, []),
+            "reservation-get-page": _res_page([]),
+            "stat-lease6-get": {"result": 2, "text": "unknown command"},
+        }
+        for label, name in pages.items():
+            with self.subTest(label):
+                with stub_kea(replies):
+                    response = self.client.get(
+                        reverse(f"plugins:netbox_kea:{name}", kwargs={"pk": self.server.pk, "family": 6})
+                    )
+                self.assertEqual(response.status_code, 200)
+                context = {"request": response.wsgi_request, "tab": response.context["tab"]}
+                tabs = {tab["label"]: tab for tab in model_view_tabs(context, self.server)["tabs"]}
+                v4_page = reverse(f"plugins:netbox_kea:{name}", kwargs={"pk": self.server.pk, "family": 4})
+                self.assertEqual(tabs[label]["url"], v4_page)
+                self.assertEqual([tab["label"] for tab in tabs.values() if tab["is_active"]], [label])
 
     def test_the_recent_runs_header_spaces_its_link_with_flex(self):
         header = next(

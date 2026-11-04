@@ -44,22 +44,8 @@ if TYPE_CHECKING:
     from django.test.client import _MonkeyPatchedWSGIResponse
 
 
-# Each route that still has one name per family; the folding commits empty it.
-_FAMILY_NAMES = {
-    "combined_configuration": "combined_configuration{family}",
-    "combined_leases": "combined_leases{family}",
-    "combined_overview": "combined_overview{family}",
-    "combined_reservations": "combined_reservations{family}",
-    "combined_shared_networks": "combined_shared_networks{family}",
-    "combined_subnets": "combined_subnets{family}",
-    "combined_sync": "combined_sync{family}",
-}
-
-
 def family_url(name: str, family: int, **kwargs) -> str:
     """Reverse the plugin route *name* for one address family."""
-    if name in _FAMILY_NAMES:
-        return reverse(f"plugins:netbox_kea:{_FAMILY_NAMES[name].format(family=family)}", kwargs=kwargs)
     return reverse(f"plugins:netbox_kea:{name}", kwargs={**kwargs, "family": family})
 
 

@@ -65,7 +65,9 @@ class TestWorkspaceReturn(_ViewTestBase):
 
     def test_return_validation_uses_the_same_path_as_real_application_navigation(self):
         invalid = reverse("plugins:netbox_kea:combined") + ";junk"
-        quoted = reverse("plugins:netbox_kea:combined_reservations4").replace("reservations4", "%72eservations4")
+        quoted = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4}).replace(
+            "reservations4", "%72eservations4"
+        )
         quoted += "?q=printer%20room#selected"
         form_url = reverse("plugins:netbox_kea:server_shared_network_add", kwargs={"pk": self.server.pk, "family": 4})
         fallback = reverse("plugins:netbox_kea:server_shared_networks", kwargs={"pk": self.server.pk, "family": 4})
@@ -81,7 +83,10 @@ class TestWorkspaceReturn(_ViewTestBase):
                 self.assertEqual(cancel["href"], destination)
 
     def test_server_filter_forms_and_subsections_keep_the_workspace_destination(self):
-        origin = reverse("plugins:netbox_kea:combined_reservations4") + "?q=printer&scope=subnet#selected"
+        origin = (
+            reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
+            + "?q=printer&scope=subnet#selected"
+        )
         responses = {
             **_catalogue_responses_for_subnets(4, []),
             "reservation-get-page": {"result": 3},
@@ -119,7 +124,7 @@ class TestWorkspaceReturn(_ViewTestBase):
         other = _make_db_server(name="other-server")
         for family, cidr in ((4, "198.18.0.0/24"), (6, "2001:db8::/64")):
             origin = (
-                reverse(f"plugins:netbox_kea:combined_subnets{family}")
+                reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": family})
                 + "?"
                 + urlencode([("server", self.server.pk), ("server", other.pk), ("q", cidr)])
             )
@@ -139,7 +144,10 @@ class TestWorkspaceReturn(_ViewTestBase):
 
     @override_settings(FORCE_SCRIPT_NAME="/netbox/")
     def test_valid_return_paths_keep_script_prefix_quoted_queries_and_fragments(self):
-        origin = reverse("plugins:netbox_kea:combined_reservations6") + "?q=printer%20room&scope=subnet#selected"
+        origin = (
+            reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 6})
+            + "?q=printer%20room&scope=subnet#selected"
+        )
         url = reverse("plugins:netbox_kea:server_shared_network_add", kwargs={"pk": self.server.pk, "family": 6})
         response = self.client.get(url, {"return_url": origin})
         self.assertEqual(response.status_code, 200)
@@ -150,7 +158,7 @@ class TestWorkspaceReturn(_ViewTestBase):
         )
 
     def test_native_delete_modal_posts_its_original_workspace_destination(self):
-        origin = reverse("plugins:netbox_kea:combined_overview6") + "?server_scope=1"
+        origin = reverse("plugins:netbox_kea:combined_overview", kwargs={"family": 6}) + "?server_scope=1"
         page = BeautifulSoup(
             self.client.get(self.server.get_absolute_url(), {"family": 6, "return_url": origin}).content, "html.parser"
         )
@@ -204,7 +212,7 @@ class TestWorkspaceReturn(_ViewTestBase):
         other = _make_db_server(name="other-server")
         for family in (4, 6):
             origin = (
-                reverse(f"plugins:netbox_kea:combined_shared_networks{family}")
+                reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": family})
                 + "?"
                 + urlencode([("server", self.server.pk), ("server", other.pk), ("per_page", 25)])
             )
@@ -241,7 +249,7 @@ class TestWorkspaceReturn(_ViewTestBase):
             (6, "2001:db8::/64", "2001:db8::20-2001:db8::3f"),
         ):
             origin = (
-                reverse(f"plugins:netbox_kea:combined_subnets{family}")
+                reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": family})
                 + "?"
                 + urlencode([("server", self.server.pk), ("server", other.pk), ("q", cidr)])
             )
@@ -274,7 +282,7 @@ class TestWorkspaceReturn(_ViewTestBase):
     def test_server_navigation_and_reservation_edits_keep_the_combined_origin(self):
         other = _make_db_server(name="other-server")
         origin = (
-            reverse("plugins:netbox_kea:combined_reservations4")
+            reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
             + "?"
             + urlencode([("server", self.server.pk), ("server", other.pk), ("q", "printer"), ("scope", "subnet")])
         )
@@ -319,7 +327,7 @@ class TestWorkspaceReturn(_ViewTestBase):
             }
             for section, label in (("shared_networks", "clients"), ("reservations", record["hw-address"])):
                 origin = (
-                    reverse(f"plugins:netbox_kea:combined_{section}{family}")
+                    family_url(f"combined_{section}", family)
                     + "?"
                     + urlencode(
                         [("server", self.server.pk), ("server", other.pk), ("sort", "server"), ("per_page", 25)]
@@ -340,7 +348,7 @@ class TestWorkspaceReturn(_ViewTestBase):
         other = _make_db_server(name="other-server")
         for family in (4, 6):
             origin = (
-                reverse(f"plugins:netbox_kea:combined_overview{family}")
+                reverse("plugins:netbox_kea:combined_overview", kwargs={"family": family})
                 + "?"
                 + urlencode([("server", self.server.pk), ("server", other.pk)])
             )
@@ -361,7 +369,7 @@ class TestWorkspaceReturn(_ViewTestBase):
         other = _make_db_server(name="other-server")
         for family, cidr in ((4, "198.18.0.0/24"), (6, "2001:db8::/64")):
             origin = (
-                reverse(f"plugins:netbox_kea:combined_subnets{family}")
+                reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": family})
                 + "?"
                 + urlencode(
                     [
@@ -406,7 +414,7 @@ class TestChooserWorkspaceOrigin(_ViewTestBase):
         query = [("server", self.server.pk), ("server", other.pk)]
         if section == "leases":
             query.extend((("q", "documentation-client"), ("by", "hostname")))
-        origin = reverse(f"plugins:netbox_kea:combined_{section}{family}") + "?" + urlencode(query)
+        origin = family_url(f"combined_{section}", family) + "?" + urlencode(query)
         response = self.client.get(origin)
         self.assertEqual(response.status_code, 200)
         page = BeautifulSoup(response.content, "html.parser")
@@ -437,7 +445,7 @@ class TestChooserWorkspaceOrigin(_ViewTestBase):
     def test_overview_handoff_keeps_workspace_origin(self):
         other = _make_db_server(name="other-workspace-server")
         origin = (
-            reverse("plugins:netbox_kea:combined_overview6")
+            reverse("plugins:netbox_kea:combined_overview", kwargs={"family": 6})
             + "?"
             + urlencode([("server", self.server.pk), ("server", other.pk)])
         )
@@ -448,7 +456,11 @@ class TestChooserWorkspaceOrigin(_ViewTestBase):
         self.assertEqual(parse_qs(urlsplit(target["href"]).query).get("return_url"), [origin])
 
     def test_overview_status_controls_keep_workspace_origin(self):
-        origin = reverse("plugins:netbox_kea:combined_overview4") + "?" + urlencode([("server", self.server.pk)])
+        origin = (
+            reverse("plugins:netbox_kea:combined_overview", kwargs={"family": 4})
+            + "?"
+            + urlencode([("server", self.server.pk)])
+        )
         overview = self.client.get(self.server.get_absolute_url(), {"family": 4, "return_url": origin})
         status = BeautifulSoup(overview.content, "html.parser").select_one("#kea-server-status")["hx-get"]
         self.assertEqual(parse_qs(urlsplit(status).query).get("return_url"), [origin])
@@ -468,7 +480,7 @@ class TestChooserWorkspaceOrigin(_ViewTestBase):
     def _disabled_canonical(self, family):
         setattr(self.server, f"dhcp{family}", False)
         self.server.save()
-        source = reverse(f"plugins:netbox_kea:combined_leases{family}")
+        source = reverse("plugins:netbox_kea:combined_leases", kwargs={"family": family})
         target = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": family})
         with stub_kea({}) as kea:
             response = self.client.get(source, {"server": self.server.pk})
@@ -486,7 +498,7 @@ class TestChooserWorkspaceOrigin(_ViewTestBase):
         self._disabled_canonical(6)
 
     def test_one_enabled_server_uses_canonical_workspace(self):
-        source = reverse("plugins:netbox_kea:combined_leases4")
+        source = reverse("plugins:netbox_kea:combined_leases", kwargs={"family": 4})
         target = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         response = self.client.get(source, {"server": self.server.pk})
         self.assertRedirects(response, target, fetch_redirect_response=False)

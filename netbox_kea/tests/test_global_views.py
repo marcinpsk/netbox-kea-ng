@@ -18,7 +18,7 @@ from ipam.models import IPAddress
 from netbox_kea.models import Server
 
 from .kea_stub import _res_page, complete_lease, queued, stub_kea
-from .utils import User, _make_db_server, ownership_link, with_display_cache_config, with_kea_client_config
+from .utils import User, _make_db_server, family_url, ownership_link, with_display_cache_config, with_kea_client_config
 
 # ---------------------------------------------------------------------------
 # Kea response fixtures
@@ -190,9 +190,9 @@ class TestCombinedDashboardView(_CombinedViewBase):
     def test_tab_navigation_links_present(self):
         """The workspace links to six sections in the selected family."""
         for family in (4, 6):
-            response = self.client.get(reverse(f"plugins:netbox_kea:combined_overview{family}"))
+            response = self.client.get(reverse("plugins:netbox_kea:combined_overview", kwargs={"family": family}))
             for section in ("overview", "leases", "subnets", "reservations", "configuration", "sync"):
-                self.assertContains(response, reverse(f"plugins:netbox_kea:combined_{section}{family}"))
+                self.assertContains(response, family_url(f"combined_{section}", family))
             self.assertNotContains(response, "/combined/shared-networks4/")
             self.assertNotContains(response, "/combined/shared-networks6/")
 
@@ -286,7 +286,7 @@ class TestCombinedServerStatusBadge(_CombinedViewBase):
 
 
 # ---------------------------------------------------------------------------
-# CombinedReservations4View  GET /plugins/kea/combined/reservations4/
+# CombinedReservationsView  GET /plugins/kea/combined/reservations4/
 # ---------------------------------------------------------------------------
 
 
@@ -295,13 +295,13 @@ class TestCombinedReservations4View(_CombinedViewBase):
 
     def test_get_returns_200(self):
         with _reservation_stub(4, {"reservation-get-page": _RES_EMPTY_PAGE}):
-            url = reverse("plugins:netbox_kea:combined_reservations4")
+            url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_unauthenticated_redirects_to_login(self):
         self.client.logout()
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
         response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self.assertIn("login", response.url)
@@ -311,7 +311,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
         with _reservation_stub(
             4, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-by-state": _LEASE_NONE}
         ) as kea:
-            url = reverse("plugins:netbox_kea:combined_reservations4")
+            url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
             self.client.get(url)
         # v4_server + dual_server have dhcp4=True → at least 2 get-page calls
         self.assertGreaterEqual(kea.commands().count("reservation-get-page"), 2)
@@ -320,7 +320,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
         """An explicit selection reads only its Servers that serve the page's family."""
         with _reservation_stub(4, {"reservation-get-page": _RES_EMPTY_PAGE}) as kea:
             url = (
-                reverse("plugins:netbox_kea:combined_reservations4")
+                reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
                 + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
             )
             self.client.get(url)
@@ -332,7 +332,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
             4, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-by-state": _LEASE_NONE}
         ):
             url = (
-                reverse("plugins:netbox_kea:combined_reservations4")
+                reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
                 + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
             )
             response = self.client.get(url)
@@ -342,7 +342,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
     def test_unreachable_server_returns_200_with_warning(self):
         """A server that raises an exception must not cause a 500."""
         with _reservation_stub(4, {"reservation-get-page": requests.ConnectionError("refused")}):
-            url = reverse("plugins:netbox_kea:combined_reservations4")
+            url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -358,7 +358,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
         )
         # A search with no match on the first page reads the next one, and that read fails.
         url = (
-            reverse("plugins:netbox_kea:combined_reservations4")
+            reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
             + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=needle"
         )
 
@@ -381,14 +381,14 @@ class TestCombinedReservations4View(_CombinedViewBase):
         """If no dhcp4-enabled servers exist, the view renders with an empty table (no Kea traffic)."""
         Server.objects.filter(dhcp4=True).update(dhcp4=False)
         with _reservation_stub(4, {}) as kea:
-            url = reverse("plugins:netbox_kea:combined_reservations4")
+            url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
 
     def test_context_section(self):
         with _reservation_stub(4, {"reservation-get-page": _RES_EMPTY_PAGE}):
-            url = reverse("plugins:netbox_kea:combined_reservations4")
+            url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
             response = self.client.get(url)
         self.assertEqual(
             (response.context["workspace_section"], response.context["workspace_family"]), ("reservations", 4)
@@ -399,7 +399,10 @@ class TestCombinedReservations4View(_CombinedViewBase):
         with _reservation_stub(
             4, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-by-state": _LEASE_NONE}
         ):
-            url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.v4_server.pk}&export=yaml"
+            url = (
+                reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
+                + f"?server={self.v4_server.pk}&export=yaml"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("application/yaml", response.get("Content-Type", ""))
@@ -411,7 +414,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
 
     def test_export_rejects_an_incomplete_snapshot(self):
         first_page = _res_page([dict(_MOCK_RESERVATION_V4)], next_from=1, next_source=1)
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
         url += f"?server={self.v4_server.pk}&export=yaml"
 
         with _reservation_stub(
@@ -427,7 +430,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
     def test_search_form_in_context(self):
         """Response context must contain search_form for the search card to render."""
         with _reservation_stub(4, {"reservation-get-page": _RES_EMPTY_PAGE}):
-            url = reverse("plugins:netbox_kea:combined_reservations4")
+            url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
             response = self.client.get(url)
         self.assertIn("search_form", response.context)
 
@@ -441,7 +444,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
             4, {"reservation-get-page": _res_page([rec_match, rec_nomatch]), "lease4-get-by-state": _LEASE_NONE}
         ):
             url = (
-                reverse("plugins:netbox_kea:combined_reservations4")
+                reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
                 + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=host-v4"
             )
             response = self.client.get(url)
@@ -457,7 +460,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
         rec2["hostname"] = "other"
         with _reservation_stub(4, {"reservation-get-page": _res_page([rec, rec2]), "lease4-get-by-state": _LEASE_NONE}):
             url = (
-                reverse("plugins:netbox_kea:combined_reservations4")
+                reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
                 + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=10.0.0.100"
             )
             response = self.client.get(url)
@@ -497,7 +500,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
             },
         ):
             url = (
-                reverse("plugins:netbox_kea:combined_reservations4")
+                reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
                 + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&subnet_id=2"
             )
             response = self.client.get(url)
@@ -510,7 +513,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
             4, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V4)]), "lease4-get-by-state": _LEASE_NONE}
         ):
             url = (
-                reverse("plugins:netbox_kea:combined_reservations4")
+                reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
                 + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=zzz-no-match"
             )
             response = self.client.get(url)
@@ -518,7 +521,7 @@ class TestCombinedReservations4View(_CombinedViewBase):
 
 
 # ---------------------------------------------------------------------------
-# CombinedReservations6View  GET /plugins/kea/combined/reservations6/
+# CombinedReservationsView  GET /plugins/kea/combined/reservations6/
 # ---------------------------------------------------------------------------
 
 
@@ -527,13 +530,13 @@ class TestCombinedReservations6View(_CombinedViewBase):
 
     def test_get_returns_200(self):
         with _reservation_stub(6, {"reservation-get-page": _RES_EMPTY_PAGE}):
-            url = reverse("plugins:netbox_kea:combined_reservations6")
+            url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 6})
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_unauthenticated_redirects_to_login(self):
         self.client.logout()
-        url = reverse("plugins:netbox_kea:combined_reservations6")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 6})
         response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self.assertIn("login", response.url)
@@ -542,14 +545,14 @@ class TestCombinedReservations6View(_CombinedViewBase):
         with _reservation_stub(
             6, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6)]), "lease6-get-by-state": _LEASE_NONE}
         ) as kea:
-            url = reverse("plugins:netbox_kea:combined_reservations6")
+            url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 6})
             self.client.get(url)
         self.assertGreaterEqual(kea.commands().count("reservation-get-page"), 2)
 
     def test_server_filter_limits_queried_servers(self):
         with _reservation_stub(6, {"reservation-get-page": _RES_EMPTY_PAGE}) as kea:
             url = (
-                reverse("plugins:netbox_kea:combined_reservations6")
+                reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 6})
                 + f"?server={self.v6_server.pk}&server={self.v4_server.pk}"
             )
             self.client.get(url)
@@ -557,7 +560,7 @@ class TestCombinedReservations6View(_CombinedViewBase):
 
     def test_unreachable_server_returns_200_with_warning(self):
         with _reservation_stub(6, {"reservation-get-page": requests.ConnectionError("refused")}):
-            url = reverse("plugins:netbox_kea:combined_reservations6")
+            url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 6})
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -566,7 +569,10 @@ class TestCombinedReservations6View(_CombinedViewBase):
         with _reservation_stub(
             6, {"reservation-get-page": _res_page([dict(_MOCK_RESERVATION_V6)]), "lease6-get-by-state": _LEASE_NONE}
         ):
-            url = reverse("plugins:netbox_kea:combined_reservations6") + f"?server={self.v6_server.pk}&export=json"
+            url = (
+                reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 6})
+                + f"?server={self.v6_server.pk}&export=json"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("application/json", response.get("Content-Type", ""))
@@ -578,7 +584,7 @@ class TestCombinedReservations6View(_CombinedViewBase):
     def test_search_form_in_context(self):
         """Response context must contain search_form."""
         with _reservation_stub(6, {"reservation-get-page": _RES_EMPTY_PAGE}):
-            url = reverse("plugins:netbox_kea:combined_reservations6")
+            url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 6})
             response = self.client.get(url)
         self.assertIn("search_form", response.context)
 
@@ -595,7 +601,7 @@ class TestCombinedReservations6View(_CombinedViewBase):
             6, {"reservation-get-page": _res_page([rec_match, rec_nomatch]), "lease6-get-by-state": _LEASE_NONE}
         ):
             url = (
-                reverse("plugins:netbox_kea:combined_reservations6")
+                reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 6})
                 + f"?server={self.v6_server.pk}&server={self.v4_server.pk}&q=host-v6"
             )
             response = self.client.get(url)
@@ -614,7 +620,7 @@ class TestCombinedReservations6View(_CombinedViewBase):
         }
         with _reservation_stub(6, {"reservation-get-page": _res_page([rec, rec2]), "lease6-get-by-state": _LEASE_NONE}):
             url = (
-                reverse("plugins:netbox_kea:combined_reservations6")
+                reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 6})
                 + f"?server={self.v6_server.pk}&server={self.v4_server.pk}&q=00:01:aa:bb"
             )
             response = self.client.get(url)
@@ -623,7 +629,7 @@ class TestCombinedReservations6View(_CombinedViewBase):
 
 
 # ---------------------------------------------------------------------------
-# CombinedSubnets4View  GET /plugins/kea/combined/subnets4/
+# CombinedSubnetsView  GET /plugins/kea/combined/subnets4/
 # ---------------------------------------------------------------------------
 
 
@@ -632,13 +638,13 @@ class TestCombinedSubnets4View(_CombinedViewBase):
 
     def test_get_returns_200(self):
         with stub_kea(_subnet_responses(4)):
-            url = reverse("plugins:netbox_kea:combined_subnets4")
+            url = reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4})
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_unauthenticated_redirects_to_login(self):
         self.client.logout()
-        url = reverse("plugins:netbox_kea:combined_subnets4")
+        url = reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4})
         response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self.assertIn("login", response.url)
@@ -646,7 +652,7 @@ class TestCombinedSubnets4View(_CombinedViewBase):
     def test_queries_all_v4_servers(self):
         """Without a filter, every dhcp4-enabled server is queried for config-get."""
         with stub_kea(_subnet_responses(4)) as kea:
-            url = reverse("plugins:netbox_kea:combined_subnets4")
+            url = reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4})
             self.client.get(url)
         # v4_server + dual_server → at least 2 config-get calls
         self.assertGreaterEqual(kea.commands().count("config-get"), 2)
@@ -654,7 +660,7 @@ class TestCombinedSubnets4View(_CombinedViewBase):
     def test_server_filter_limits_queried_servers(self):
         with stub_kea(_subnet_responses(4)) as kea:
             url = (
-                reverse("plugins:netbox_kea:combined_subnets4")
+                reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4})
                 + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
             )
             self.client.get(url)
@@ -668,14 +674,14 @@ class TestCombinedSubnets4View(_CombinedViewBase):
                 "config-get": requests.ConnectionError("refused"),
             }
         ):
-            url = reverse("plugins:netbox_kea:combined_subnets4")
+            url = reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4})
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_results_include_server_name(self):
         with stub_kea(_subnet_responses(4)):
             url = (
-                reverse("plugins:netbox_kea:combined_subnets4")
+                reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4})
                 + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
             )
             response = self.client.get(url)
@@ -702,7 +708,7 @@ class TestCombinedSubnets4View(_CombinedViewBase):
         ]
         with stub_kea(_subnet_responses(4, config=config)):
             url = (
-                reverse("plugins:netbox_kea:combined_subnets4")
+                reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4})
                 + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
             )
             response = self.client.get(url)
@@ -710,7 +716,7 @@ class TestCombinedSubnets4View(_CombinedViewBase):
 
     def test_context_section(self):
         with stub_kea(_subnet_responses(4)):
-            url = reverse("plugins:netbox_kea:combined_subnets4")
+            url = reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4})
             response = self.client.get(url)
         self.assertEqual(
             (response.context["workspace_subsection"], response.context["workspace_family"]), ("subnets", 4)
@@ -719,7 +725,10 @@ class TestCombinedSubnets4View(_CombinedViewBase):
     def test_export_returns_csv(self):
         """?export=table returns a CSV download of the subnet table."""
         with stub_kea(_subnet_responses(4)):
-            url = reverse("plugins:netbox_kea:combined_subnets4") + f"?server={self.v4_server.pk}&export=table"
+            url = (
+                reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4})
+                + f"?server={self.v4_server.pk}&export=table"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
@@ -727,7 +736,7 @@ class TestCombinedSubnets4View(_CombinedViewBase):
     def test_search_form_in_context(self):
         """Response context must contain search_form."""
         with stub_kea(_subnet_responses(4)):
-            url = reverse("plugins:netbox_kea:combined_subnets4")
+            url = reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4})
             response = self.client.get(url)
         self.assertIn("search_form", response.context)
 
@@ -735,7 +744,7 @@ class TestCombinedSubnets4View(_CombinedViewBase):
         """?q=10.0 returns subnets whose CIDR contains '10.0', excludes others."""
         with stub_kea(_subnet_responses(4, config=_MOCK_CONFIG_TWO_V4, subnets=_MOCK_SUBNET_LIST_TWO_V4)):
             url = (
-                reverse("plugins:netbox_kea:combined_subnets4")
+                reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4})
                 + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=10.0"
             )
             response = self.client.get(url)
@@ -747,7 +756,7 @@ class TestCombinedSubnets4View(_CombinedViewBase):
         """?subnet_id=2 returns only the subnet with id=2."""
         with stub_kea(_subnet_responses(4, config=_MOCK_CONFIG_TWO_V4, subnets=_MOCK_SUBNET_LIST_TWO_V4)):
             url = (
-                reverse("plugins:netbox_kea:combined_subnets4")
+                reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4})
                 + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&subnet_id=2"
             )
             response = self.client.get(url)
@@ -758,7 +767,7 @@ class TestCombinedSubnets4View(_CombinedViewBase):
         """?q=zzz with no matching subnets renders 200 with empty table."""
         with stub_kea(_subnet_responses(4)):
             url = (
-                reverse("plugins:netbox_kea:combined_subnets4")
+                reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4})
                 + f"?server={self.v4_server.pk}&server={self.v6_server.pk}&q=zzz-no-match"
             )
             response = self.client.get(url)
@@ -780,7 +789,7 @@ class TestCombinedSubnets4View(_CombinedViewBase):
         subnets = {"result": 2, "text": "unknown command"}
         with stub_kea(_subnet_responses(4, config=config, subnets=subnets)):
             url = (
-                reverse("plugins:netbox_kea:combined_subnets4")
+                reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4})
                 + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
             )
             response = self.client.get(url)
@@ -792,7 +801,7 @@ class TestCombinedSubnets4View(_CombinedViewBase):
 
 
 # ---------------------------------------------------------------------------
-# CombinedSubnets6View  GET /plugins/kea/combined/subnets6/
+# CombinedSubnetsView  GET /plugins/kea/combined/subnets6/
 # ---------------------------------------------------------------------------
 
 
@@ -801,20 +810,20 @@ class TestCombinedSubnets6View(_CombinedViewBase):
 
     def test_get_returns_200(self):
         with stub_kea(_subnet_responses(6)):
-            url = reverse("plugins:netbox_kea:combined_subnets6")
+            url = reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 6})
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_unauthenticated_redirects_to_login(self):
         self.client.logout()
-        url = reverse("plugins:netbox_kea:combined_subnets6")
+        url = reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 6})
         response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self.assertIn("login", response.url)
 
     def test_queries_all_v6_servers(self):
         with stub_kea(_subnet_responses(6)) as kea:
-            url = reverse("plugins:netbox_kea:combined_subnets6")
+            url = reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 6})
             self.client.get(url)
         self.assertGreaterEqual(kea.commands().count("config-get"), 2)
 
@@ -825,14 +834,17 @@ class TestCombinedSubnets6View(_CombinedViewBase):
                 "config-get": requests.ConnectionError("refused"),
             }
         ):
-            url = reverse("plugins:netbox_kea:combined_subnets6")
+            url = reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 6})
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_export_returns_csv(self):
         """?export=table returns a CSV download of the v6 subnet table."""
         with stub_kea(_subnet_responses(6)):
-            url = reverse("plugins:netbox_kea:combined_subnets6") + f"?server={self.v6_server.pk}&export=table"
+            url = (
+                reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 6})
+                + f"?server={self.v6_server.pk}&export=table"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
@@ -840,7 +852,7 @@ class TestCombinedSubnets6View(_CombinedViewBase):
     def test_search_form_in_context(self):
         """Response context must contain search_form."""
         with stub_kea(_subnet_responses(6)):
-            url = reverse("plugins:netbox_kea:combined_subnets6")
+            url = reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 6})
             response = self.client.get(url)
         self.assertIn("search_form", response.context)
 
@@ -855,7 +867,7 @@ class TestCombinedSubnets6View(_CombinedViewBase):
         subnet_list = {"result": 0, "arguments": {"subnets": two_subnets}}
         with stub_kea(_subnet_responses(6, config=config_with_two_subnets, subnets=subnet_list)):
             url = (
-                reverse("plugins:netbox_kea:combined_subnets6")
+                reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 6})
                 + f"?server={self.v6_server.pk}&server={self.v4_server.pk}&q=2001:db8"
             )
             response = self.client.get(url)
@@ -877,7 +889,7 @@ class TestCombinedReservations4Enrichment(_CombinedViewBase):
 
     def _url(self):
         return (
-            reverse("plugins:netbox_kea:combined_reservations4")
+            reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
             + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
         )
 
@@ -1046,7 +1058,7 @@ class TestCombinedReservations6Enrichment(_CombinedViewBase):
 
     def _url(self):
         return (
-            reverse("plugins:netbox_kea:combined_reservations6")
+            reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 6})
             + f"?server={self.v6_server.pk}&server={self.v4_server.pk}"
         )
 
@@ -1133,7 +1145,7 @@ _MOCK_CONFIG_WITH_SHARED_NET_V6 = [
 
 
 # ---------------------------------------------------------------------------
-# CombinedSharedNetworks4View  GET /plugins/kea/combined/shared-networks4/
+# CombinedSharedNetworksView  GET /plugins/kea/combined/shared-networks4/
 # ---------------------------------------------------------------------------
 
 
@@ -1142,13 +1154,13 @@ class TestCombinedSharedNetworks4View(_CombinedViewBase):
 
     def test_get_returns_200(self):
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V4}):
-            url = reverse("plugins:netbox_kea:combined_shared_networks4")
+            url = reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 4})
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_unauthenticated_redirects_to_login(self):
         self.client.logout()
-        url = reverse("plugins:netbox_kea:combined_shared_networks4")
+        url = reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 4})
         response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self.assertIn("login", response.url)
@@ -1156,14 +1168,14 @@ class TestCombinedSharedNetworks4View(_CombinedViewBase):
     def test_queries_all_v4_servers(self):
         """Without a filter, every dhcp4-enabled server is queried for config-get."""
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V4}) as kea:
-            url = reverse("plugins:netbox_kea:combined_shared_networks4")
+            url = reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 4})
             self.client.get(url)
         # v4_server + dual_server → at least 2 config-get calls
         self.assertGreaterEqual(kea.commands().count("config-get"), 2)
 
     def test_unreachable_server_returns_200_with_warning(self):
         with stub_kea({"config-get": requests.ConnectionError("refused")}):
-            url = reverse("plugins:netbox_kea:combined_shared_networks4")
+            url = reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 4})
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -1171,7 +1183,7 @@ class TestCombinedSharedNetworks4View(_CombinedViewBase):
         """Shared network rows must include the server name they came from."""
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V4}):
             url = (
-                reverse("plugins:netbox_kea:combined_shared_networks4")
+                reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 4})
                 + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
             )
             response = self.client.get(url)
@@ -1180,7 +1192,7 @@ class TestCombinedSharedNetworks4View(_CombinedViewBase):
 
     def test_context_section(self):
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V4}):
-            url = reverse("plugins:netbox_kea:combined_shared_networks4")
+            url = reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 4})
             response = self.client.get(url)
         self.assertEqual(
             (response.context["workspace_subsection"], response.context["workspace_family"]), ("shared_networks", 4)
@@ -1190,7 +1202,7 @@ class TestCombinedSharedNetworks4View(_CombinedViewBase):
         """The shared network name must appear in the rendered table."""
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V4}):
             url = (
-                reverse("plugins:netbox_kea:combined_shared_networks4")
+                reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 4})
                 + f"?server={self.v4_server.pk}&server={self.v6_server.pk}"
             )
             response = self.client.get(url)
@@ -1199,14 +1211,17 @@ class TestCombinedSharedNetworks4View(_CombinedViewBase):
     def test_export_returns_csv(self):
         """?export=table returns a CSV download of shared network data."""
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V4}):
-            url = reverse("plugins:netbox_kea:combined_shared_networks4") + f"?server={self.v4_server.pk}&export=table"
+            url = (
+                reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 4})
+                + f"?server={self.v4_server.pk}&export=table"
+            )
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/csv", response.get("Content-Type", ""))
 
 
 # ---------------------------------------------------------------------------
-# CombinedSharedNetworks6View  GET /plugins/kea/combined/shared-networks6/
+# CombinedSharedNetworksView  GET /plugins/kea/combined/shared-networks6/
 # ---------------------------------------------------------------------------
 
 
@@ -1215,13 +1230,13 @@ class TestCombinedSharedNetworks6View(_CombinedViewBase):
 
     def test_get_returns_200(self):
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V6}):
-            url = reverse("plugins:netbox_kea:combined_shared_networks6")
+            url = reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 6})
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_unauthenticated_redirects_to_login(self):
         self.client.logout()
-        url = reverse("plugins:netbox_kea:combined_shared_networks6")
+        url = reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 6})
         response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self.assertIn("login", response.url)
@@ -1229,19 +1244,19 @@ class TestCombinedSharedNetworks6View(_CombinedViewBase):
     def test_queries_all_v6_servers(self):
         """Without a filter, every dhcp6-enabled server is queried."""
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V6}) as kea:
-            url = reverse("plugins:netbox_kea:combined_shared_networks6")
+            url = reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 6})
             self.client.get(url)
         self.assertGreaterEqual(kea.commands().count("config-get"), 2)
 
     def test_unreachable_server_returns_200_with_warning(self):
         with stub_kea({"config-get": requests.ConnectionError("refused")}):
-            url = reverse("plugins:netbox_kea:combined_shared_networks6")
+            url = reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 6})
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_context_section(self):
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V6}):
-            url = reverse("plugins:netbox_kea:combined_shared_networks6")
+            url = reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 6})
             response = self.client.get(url)
         self.assertEqual(
             (response.context["workspace_subsection"], response.context["workspace_family"]), ("shared_networks", 6)
@@ -1251,7 +1266,7 @@ class TestCombinedSharedNetworks6View(_CombinedViewBase):
         """The v6 shared network name must appear in the rendered table."""
         with stub_kea({"config-get": _MOCK_CONFIG_WITH_SHARED_NET_V6}):
             url = (
-                reverse("plugins:netbox_kea:combined_shared_networks6")
+                reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 6})
                 + f"?server={self.v6_server.pk}&server={self.v4_server.pk}"
             )
             response = self.client.get(url)

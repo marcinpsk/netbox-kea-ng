@@ -148,7 +148,9 @@ class TestServerSwitch(_ViewTestBase):
         all_servers = next(
             link for link in page.select('nav[aria-label="Switch Server"] a') if link.text == "All Servers"
         )
-        self.assertEqual(urlsplit(all_servers["href"]).path, reverse("plugins:netbox_kea:combined_leases6"))
+        self.assertEqual(
+            urlsplit(all_servers["href"]).path, reverse("plugins:netbox_kea:combined_leases", kwargs={"family": 6})
+        )
         self.assertEqual(
             parse_qs(urlsplit(all_servers["href"]).query), {"q": ["printer"], "by": ["hostname"], "state": ["0"]}
         )
@@ -206,7 +208,7 @@ class TestServerSwitch(_ViewTestBase):
     def test_permitted_reservation_filters_and_previous_selection_survive_switching(self):
         target = _make_db_server(name="second-server", ca_url="http://target.example.invalid/")
         previous = (
-            reverse("plugins:netbox_kea:combined_reservations6")
+            reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 6})
             + f"?server={self.server.pk}&server={target.pk}&q=printer"
         )
         url = reverse("plugins:netbox_kea:server_switch", args=[self.server.pk])

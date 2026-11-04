@@ -95,7 +95,7 @@ class _ListParity(_ViewTestBase):
             server_tab = self.client.get(
                 reverse(f"plugins:netbox_kea:{self.server_route}", kwargs={"pk": self.server.pk, "family": 4})
             )
-            combined = self.client.get(reverse(f"plugins:netbox_kea:{self.combined_route}"))
+            combined = self.client.get(reverse(f"plugins:netbox_kea:{self.combined_route}", kwargs={"family": 4}))
         self.assertEqual(server_tab.status_code, 200)
         self.assertEqual(combined.status_code, 200)
         self.assertEqual(
@@ -127,7 +127,7 @@ class _ListParity(_ViewTestBase):
 
 class TestSubnetListParity(_ListParity):
     server_route = "server_subnets"
-    combined_route = "combined_subnets4"
+    combined_route = "combined_subnets"
     record_column = "subnet"
     change_route = ("server_subnet_edit", {"subnet_id": 1})
 
@@ -146,7 +146,7 @@ class TestSubnetListParity(_ListParity):
 
 class TestSharedNetworkListParity(_ListParity):
     server_route = "server_shared_networks"
-    combined_route = "combined_shared_networks4"
+    combined_route = "combined_shared_networks"
     record_column = "name"
     change_route = ("server_shared_network_edit", {"network_name": "clients"})
 
@@ -164,7 +164,7 @@ class TestCombinedChangePermissionRead(_ViewTestBase):
     def _query_count(self, route: str) -> int:
         """Return the number of queries of one request."""
         with stub_kea(_responses()), CaptureQueriesContext(connection) as queries:
-            response = self.client.get(reverse(f"plugins:netbox_kea:{route}"))
+            response = self.client.get(reverse(f"plugins:netbox_kea:{route}", kwargs={"family": 4}))
         self.assertEqual(response.status_code, 200)
         return len(queries)
 
@@ -175,7 +175,7 @@ class TestCombinedChangePermissionRead(_ViewTestBase):
         permission.object_types.add(ContentType.objects.get_for_model(Server))
         permission.users.add(self.user)
         _make_db_server(name="second-kea")
-        for route in ("combined_subnets4", "combined_shared_networks4"):
+        for route in ("combined_subnets", "combined_shared_networks"):
             with self.subTest(route=route):
                 self._query_count(route)
                 two = self._query_count(route)
@@ -193,9 +193,9 @@ class TestListExports(_ViewTestBase):
     # Route, whether it takes the Server pk, table name, selected columns, and one exported row of them.
     _LISTS = (
         ("server_subnets", True, "SubnetTable", ["subnet"], ["192.0.2.0/24"]),
-        ("combined_subnets4", False, "GlobalSubnetTable4", ["server", "subnet"], ["test-kea", "192.0.2.0/24"]),
+        ("combined_subnets", False, "GlobalSubnetTable4", ["server", "subnet"], ["test-kea", "192.0.2.0/24"]),
         ("server_shared_networks", True, "SharedNetworkTable", ["name"], ["clients"]),
-        ("combined_shared_networks4", False, "GlobalSharedNetworkTable", ["server", "name"], ["test-kea", "clients"]),
+        ("combined_shared_networks", False, "GlobalSharedNetworkTable", ["server", "name"], ["test-kea", "clients"]),
     )
     _HEADERS = {
         "subnet": "Subnet",
@@ -204,13 +204,15 @@ class TestListExports(_ViewTestBase):
     }
     _EVERY = {
         "server_subnets": _SUBNET_COLUMNS,
-        "combined_subnets4": ["Server", *_SUBNET_COLUMNS],
+        "combined_subnets": ["Server", *_SUBNET_COLUMNS],
         "server_shared_networks": _NETWORK_COLUMNS,
-        "combined_shared_networks4": ["Server", *_NETWORK_COLUMNS],
+        "combined_shared_networks": ["Server", *_NETWORK_COLUMNS],
     }
 
     def _url(self, route: str, server_pk: bool) -> str:
-        return reverse(f"plugins:netbox_kea:{route}", kwargs={"pk": self.server.pk, "family": 4} if server_pk else {})
+        return reverse(
+            f"plugins:netbox_kea:{route}", kwargs={"pk": self.server.pk, "family": 4} if server_pk else {"family": 4}
+        )
 
     def _csv(self, url: str, export: str) -> list[list[str]]:
         with stub_kea(_responses()):

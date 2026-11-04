@@ -472,7 +472,10 @@ class LeaseBadgeCacheTest(_LeaseCacheBase):
 
     def test_a_combined_reservations_refresh_rereads_the_lease_badges_of_its_rows(self):
         other = _make_db_server(name="test-kea-other", ca_url="https://kea-other.example.com")
-        url = reverse("plugins:netbox_kea:combined_reservations4") + f"?server={self.server.pk}&server={other.pk}"
+        url = (
+            reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
+            + f"?server={self.server.pk}&server={other.pk}"
+        )
         page, _ = self._reservations([_lease("198.18.0.21")], url=url)
         control = _refresh_control(page)
 
@@ -703,7 +706,11 @@ class StatusAndUtilizationCacheTest(_ViewTestBase):
         other = _make_db_server(name="test-kea-other", ca_url="https://kea-other.example.com")
         pages = (
             (reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4}), {}, 1),
-            (reverse("plugins:netbox_kea:combined_subnets4"), {"server": [self.server.pk, other.pk]}, 2),
+            (
+                reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4}),
+                {"server": [self.server.pk, other.pk]},
+                2,
+            ),
         )
         for url, query, servers in pages:
             with self.subTest(url=url):

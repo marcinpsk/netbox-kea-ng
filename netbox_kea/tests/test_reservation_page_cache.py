@@ -362,7 +362,9 @@ class CombinedReservationPageCacheTest(_ViewTestBase):
     def _render(self, *pages: object, headers: dict | None = None, url: str | None = None):
         with stub_kea(_responses(*pages)) as kea:
             if url is None:
-                response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"), self.query)
+                response = self.client.get(
+                    reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4}), self.query
+                )
             else:
                 response = self.client.get(url, headers=headers)
         self.assertEqual(response.status_code, 200)
@@ -414,7 +416,8 @@ class CombinedReservationPageCacheTest(_ViewTestBase):
 
         with stub_kea(_responses(_res_page([_NEW]))) as kea:
             response = self.client.get(
-                reverse("plugins:netbox_kea:combined_reservations4"), {**self.query, "export": "json"}
+                reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4}),
+                {**self.query, "export": "json"},
             )
 
         self.assertEqual(response.status_code, 200)

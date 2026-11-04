@@ -21,7 +21,7 @@ from .utils import _ViewTestBase
 
 _NAMESPACE = "plugins:netbox_kea:"
 
-#: Each Server GET route that shows no Snapshot Notice, by route name without its family, with the reason.
+#: Each Server GET route that shows no Snapshot Notice, with the reason.
 _EXEMPT = {
     "combined": "The Overview reads no Snapshot; badges have their own route.",
     "combined_overview": "The Overview reads no Snapshot; badges have their own route.",
@@ -61,7 +61,7 @@ _EXEMPT = {
     "server_subnets_tab": "The v4 tab link of server_subnets, which the sweep checks.",
 }
 
-#: The kinds whose error headline each page must show, by route name without its family.
+#: The kinds whose error headline each page must show, by route name.
 _EXPECTED: dict[str, frozenset[NoticeKind]] = {
     "combined_subnets": frozenset({"catalogue"}),
     "combined_shared_networks": frozenset({"configuration"}),
@@ -121,7 +121,6 @@ _ARGUMENTS = {
         "ip_address": "2001:db8::10",
     },
 }
-_FAMILY = re.compile(r"(?<=[a-z])([46])(?=_|$)")
 
 
 def _server_routes(resolver: URLResolver | None = None, namespace: str = "", parameters: tuple = ()):
@@ -157,29 +156,24 @@ def _shown_error_kinds(response) -> set[NoticeKind]:
 class TestEveryServerPageShowsAFailedRead(_ViewTestBase):
     def test_every_server_page_shows_an_error_notice_when_kea_fails(self):
         routes = dict(_server_routes())
-        self.assertFalse(
-            set(_EXEMPT) - {_FAMILY.sub("", name) for name in routes},
-            "An exemption names a route that no longer exists.",
-        )
-        stale = set(_EXPECTED) - {_FAMILY.sub("", name) for name in routes}
+        self.assertFalse(set(_EXEMPT) - set(routes), "An exemption names a route that no longer exists.")
+        stale = set(_EXPECTED) - set(routes)
         self.assertFalse(stale, "An expected entry names a route that no longer exists.")
         failure = requests.ConnectionError("Kea is unreachable")
         checked = []
         with stub_kea(dict.fromkeys(WIRE_COMMANDS, failure)):
             for name, parameters in sorted(routes.items()):
-                page = _FAMILY.sub("", name)
-                if page in _EXEMPT:
+                if name in _EXEMPT:
                     continue
-                expected = _EXPECTED.get(page)
+                expected = _EXPECTED.get(name)
                 self.assertIsNotNone(expected, f"Add the Snapshot kinds of {name} to _EXPECTED, or exempt it.")
-                digit = _FAMILY.search(name)
-                families = (int(digit.group(1)),) if digit else (4, 6) if "family" in parameters else (4,)
+                families = (4, 6) if "family" in parameters else (4,)
                 for family in families:
                     arguments = {"pk": self.server.pk, "family": family, **_ARGUMENTS[family]}
                     url = reverse(_NAMESPACE + name, kwargs={key: arguments[key] for key in parameters})
-                    requests_ = [(url, _QUERIES.get((page, family), {}), {}, expected)]
-                    if (page, family) in _HTMX_SEARCHES:
-                        htmx_query, htmx_kinds = _HTMX_SEARCHES[page, family]
+                    requests_ = [(url, _QUERIES.get((name, family), {}), {}, expected)]
+                    if (name, family) in _HTMX_SEARCHES:
+                        htmx_query, htmx_kinds = _HTMX_SEARCHES[name, family]
                         requests_.append((url, htmx_query, {"HTTP_HX_REQUEST": "true"}, htmx_kinds))
                     for path, query, headers, kinds in requests_:
                         with self.subTest(route=name, family=family, htmx=bool(headers)):
@@ -188,7 +182,7 @@ class TestEveryServerPageShowsAFailedRead(_ViewTestBase):
                             self.assertIn(response.status_code, (200, 302))
                             missing = sorted(kinds - _shown_error_kinds(response))
                             self.assertEqual(missing, [], f"{name} shows no error headline of {missing}")
-                            checked.append((page, family))
+                            checked.append((name, family))
         # The sweep must reach the pages that read each Snapshot kind.
         self.assertTrue(
             {("server_subnets", 4), ("server_status_data", 4), ("server_reservations", 4), ("server_leases", 6)}

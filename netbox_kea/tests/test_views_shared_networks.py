@@ -219,7 +219,9 @@ class TestServerSharedNetworks4View(_ViewTestBase):
 
         with stub_kea(responses) as kea:
             server_list = self.client.get(self._url())
-            combined_list = self.client.get(reverse("plugins:netbox_kea:combined_shared_networks4"))
+            combined_list = self.client.get(
+                reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 4})
+            )
             subnet_add = self.client.get(
                 reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
             )

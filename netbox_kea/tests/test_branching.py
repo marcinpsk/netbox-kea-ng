@@ -1857,6 +1857,7 @@ def _plugin_routes(resolver: URLResolver | None = None, name: str = "", pattern:
 
 
 _PARAMETER = re.compile(r"<(?:\w+:)?(\w+)>|\(\?P<(\w+)>[^)]*\)")
+# A REST action keeps one name per family, such as server-leases4.
 _FAMILY = re.compile(r"[a-z]([46])(?:_|$)")
 
 
@@ -1892,9 +1893,8 @@ def _route_arguments(route: _Route, server: Server, ip: IPAddress) -> dict[str, 
 
 
 def _page(route: _Route) -> str:
-    """Return the short name of *route*; a UI route name loses its family digit, a REST action name keeps it."""
-    short = route.name.rsplit(":", 1)[-1]
-    return short if route.api else re.sub(r"(?<=[a-z])[46](?=_|$)", "", short)
+    """Return the name of *route* without its namespace."""
+    return route.name.rsplit(":", 1)[-1]
 
 
 def _route_query(route: _Route, server: Server, ip: IPAddress) -> str:

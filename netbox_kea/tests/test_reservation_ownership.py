@@ -41,7 +41,7 @@ class TestReservationOwnershipBadge(_ViewTestBase):
         return {
             "per-server": reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4}),
             # A second selected Server keeps the combined page from redirecting to the Server tab.
-            "combined": reverse("plugins:netbox_kea:combined_reservations4")
+            "combined": reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
             + f"?server={self.server.pk}&server={self.v6_only.pk}",
         }
 

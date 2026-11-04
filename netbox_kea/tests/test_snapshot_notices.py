@@ -368,7 +368,7 @@ class TestCombinedPagesKeepANoticePerServer(_ViewTestBase):
     def test_two_servers_that_report_one_diagnostic_show_it_under_each(self):
         other = type(self.server).objects.create(name="other-kea", ca_url="https://other.example.com", dhcp4=True)
         with stub_kea({**_INCOMPLETE, "stat-lease4-get": {"result": 2, "text": "unknown command"}}):
-            response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"))
+            response = self.client.get(reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4}))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["errors"], [])
         self.assertCountEqual(
@@ -380,7 +380,7 @@ class TestCombinedPagesKeepANoticePerServer(_ViewTestBase):
         refusal = {"result": 1, "text": "the host backend is down"}
         responses = {**_catalogue_responses(4, 20, "198.18.0.0/24"), "reservation-get-page": refusal}
         with stub_kea(responses):
-            response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"))
+            response = self.client.get(reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4}))
         self.assertEqual(response.status_code, 200)
         reply = "Kea replied: the host backend is down"
         self.assertEqual(
@@ -395,7 +395,7 @@ class TestCombinedPagesKeepANoticePerServer(_ViewTestBase):
             client_key_path="/tls/client.key", client_cert_path=""
         )
         with stub_kea({}) as kea:
-            reservations = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"))
+            reservations = self.client.get(reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4}))
         self.assertEqual(kea.commands(), [])
         settings = "The Kea client settings of Server test-kea are invalid. Check the client certificate and key."
         self.assertEqual(
