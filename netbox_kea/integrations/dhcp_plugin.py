@@ -2252,6 +2252,7 @@ def import_reservation_snapshot(
     ``None`` when no Snapshot was read or their Prefixes could not be attached.
     """
     from ..ipam_reconciliation import ReservationPrefixClaim, ReservationPrefixPhase, claim
+    from ..ipam_sources import RESERVATION, RESERVATION_PREFIX
 
     server, family, summary, capabilities = scope.server, scope.family, scope.summary, scope.capabilities
     if observation is None:
@@ -2264,7 +2265,7 @@ def import_reservation_snapshot(
                 "The Reservation Snapshot could not be read.",
             )
         )
-        summary.ownership.incomplete.add("reservation")
+        summary.ownership.incomplete.add(RESERVATION)
         return None
     snapshot = observation.snapshot
     _record_snapshot_diagnostics(observation, family, summary)
@@ -2314,9 +2315,9 @@ def import_reservation_snapshot(
         failed = frozenset(address for address, result in prefix_claims.prefixes.items() if result.outcome == "error")
         step = DelegatedPrefixStep(ReservationPrefixPhase(records, observation.cutoff, complete and not failed), failed)
         if complete:
-            summary.ownership.completed_sources.add("reservation")
+            summary.ownership.completed_sources.add(RESERVATION)
         else:
-            summary.ownership.incomplete.add("reservation")
+            summary.ownership.incomplete.add(RESERVATION)
     except event_scope.EventDispatchError:
         raise
     except Exception:
@@ -2329,7 +2330,7 @@ def import_reservation_snapshot(
                 "Delegated Prefixes could not be attached. See server logs.",
             )
         )
-        summary.ownership.incomplete.add("reservation-prefix")
+        summary.ownership.incomplete.add(RESERVATION_PREFIX)
         logger.exception("Could not attach delegated Prefixes after DHCP import")
         summary.warn("Delegated Prefixes could not be attached. See server logs.")
     relations = _relation_states([late.row for _, late in imported])
@@ -2946,7 +2947,6 @@ def import_permissions(server) -> tuple[str, ...]:
     and the delegated-prefix Pool Prefixes, writes the DHCP plugin rows, and removes Stale DHCP Import Objects.
     """
     from ..ipam_reconciliation import (
-        RESERVATION,
         PDPoolPhase,
         PoolPhase,
         ReservationPrefixPhase,
@@ -2954,6 +2954,7 @@ def import_permissions(server) -> tuple[str, ...]:
         claim_permissions,
         reconcile_permissions,
     )
+    from ..ipam_sources import RESERVATION
 
     claims = claim_permissions(SubnetPhase.source, PoolPhase.source, PDPoolPhase.source, RESERVATION)
     reconciles = reconcile_permissions(server, ReservationPrefixPhase.source, PDPoolPhase.source)
@@ -2996,6 +2997,8 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     Idempotent: re-running finds each row through its ``KeaDhcpLink`` mapping and updates it rather than
     duplicating it.
     """
+    from ..ipam_sources import POOL, RESERVATION, SUBNET
+
     summary = ImportSummary()
     scope = WriteScope(server, plan.family, summary, capabilities)
     root = plan.server.key.path(plan.family)
@@ -3041,7 +3044,7 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
         upsert_options(scope, subnet_obj, planned_options(planned_subnet, plan.family, declared), references)
         upsert_pools(scope, subnet_obj, planned_subnet, references, pool_claims)
         upsert_pd_pools(scope, subnet_obj, planned_subnet, references, pd_pool_claims)
-    for source, outcomes in (("subnet", prefix_claims.prefixes), ("pool", pool_claims.ranges)):
+    for source, outcomes in ((SUBNET, prefix_claims.prefixes), (POOL, pool_claims.ranges)):
         if any(result.outcome == "error" for result in outcomes.values()):
             summary.ownership.incomplete.add(source)
         else:
@@ -3063,14 +3066,14 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     if plan.family == 6:
         reconcile_pd_pool_prefixes(server, plan, observed, unobserved, summary)
     if not plan.configuration_complete:
-        summary.ownership.incomplete.update({"subnet", "pool"})
+        summary.ownership.incomplete.update({SUBNET, POOL})
     if (
         summary.errors
         or summary.reservations_skipped
         or summary.reservations_quarantined
         or summary.reservations_unread
     ):
-        summary.ownership.incomplete.add("reservation")
+        summary.ownership.incomplete.add(RESERVATION)
     return summary
 
 

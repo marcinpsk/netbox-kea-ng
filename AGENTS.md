@@ -234,6 +234,7 @@ URL request
                         the cached Kea adapters of the two reservations.py ports, in one worker pool)
   → sync.py             (the aggregate Reservation Synchronization State and DCIM MAC synchronization)
   → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
+  → ipam_sources.py     (the IPAM Ownership sources: one constant and one row of facts for each; ADR 0006)
   → manual_sync.py      (Manual Sync of one Lease or Reservation: permission verdict, claim, typed outcome; ADR 0011)
   → ipam_marker.py     (the `[kea-sync: <kind>]` description marker: parse, rewrite, legacy text; ADR 0006)
   → sync_plan.py        (the Sync Plan: the switches and type flags that decide which sources a sync run reads)

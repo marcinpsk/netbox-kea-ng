@@ -17,7 +17,8 @@ from typing import TYPE_CHECKING
 from core.exceptions import JobFailed
 from core.models import Job
 from django.db import connection, connections
-from django.test import TestCase, TransactionTestCase
+from django.db.models import BooleanField
+from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from django.utils import timezone
 from ipam.models import VRF, Prefix
 from ipam.models import IPAddress as NbIP
@@ -32,10 +33,14 @@ from netbox_kea.ipam_reconciliation import (
     claim,
     reconcile,
 )
+from netbox_kea.ipam_sources import SOURCES
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import (
     CONFIRMATION_SEQUENCE,
     IPAMOwnershipLink,
+    IPAMOwnershipSource,
+    Server,
+    SyncConfig,
     next_confirmation_number,
 )
 from netbox_kea.sync_run_result import SyncCounts
@@ -52,7 +57,6 @@ from netbox_kea.tests.utils import _make_db_server, lease_phase, run_counts, wit
 if TYPE_CHECKING:
     from netbox_kea.integrations.dhcp_plugin import ImportSummary
     from netbox_kea.ipam_reconciliation import ReservationObservation
-    from netbox_kea.models import Server
 
 ADDRESS = "10.0.0.5"
 SUBNET = {"id": 1, "subnet": "10.0.0.0/24"}
@@ -139,6 +143,21 @@ def _run_job(server, leases: list[dict], reservations: list[dict] | None = None)
     with _patch_kea(leases4=leases, reservations=reservations), suppress(JobFailed):
         KeaIpamSyncJob(job).run(server_pk=server.pk)
     return run_counts(job)[0]
+
+
+class OwnershipSourceTableTest(SimpleTestCase):
+    """The source table has one row for each stored source, and each type flag names a field of both settings rows."""
+
+    def test_the_table_has_one_row_for_each_source(self):
+        self.assertCountEqual(SOURCES, IPAMOwnershipSource.values)
+
+    def test_each_type_flag_is_a_field_of_the_sync_settings_and_the_server(self):
+        flags = [row.type_flag for row in SOURCES.values() if row.type_flag is not None]
+        self.assertEqual(len(flags), 4)
+        for flag in flags:
+            with self.subTest(flag=flag):
+                self.assertIsInstance(SyncConfig._meta.get_field(flag), BooleanField)
+                self.assertIsInstance(Server._meta.get_field(flag), BooleanField)
 
 
 @with_sync_config(stale_ip_cleanup="remove")

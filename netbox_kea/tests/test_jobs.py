@@ -1200,8 +1200,9 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
 
     def test_the_job_and_the_add_forms_follow_one_sync_rule(self):
         """The job reads a source exactly when every switch and type flag allows it; the add forms say the same."""
+        from netbox_kea.ipam_sources import LEASE, RESERVATION
         from netbox_kea.models import Server
-        from netbox_kea.sync_plan import LEASE, RESERVATION, periodic_sync_enabled, sync_plan
+        from netbox_kea.sync_plan import periodic_sync_enabled, sync_plan
 
         server = self._make_db_server()
 

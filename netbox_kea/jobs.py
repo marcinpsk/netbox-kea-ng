@@ -36,17 +36,8 @@ from . import branching, event_scope
 from .constants import Family
 from .dhcp_mapping_lifecycle import ensure_boundaries
 from .ipam_reconciliation import SyncReport, complete_job_observation, upgrade_counts
-from .sync_plan import (
-    LEASE,
-    LEASE_PREFIX,
-    POOL,
-    RESERVATION,
-    SUBNET,
-    SyncPlan,
-    any_source_enabled,
-    server_sync_enabled,
-    sync_plan,
-)
+from .ipam_sources import LEASE, LEASE_PREFIX, POOL, RESERVATION, SUBNET
+from .sync_plan import SyncPlan, any_source_enabled, server_sync_enabled, sync_plan
 from .sync_run_result import CONFLICT_SAMPLE_SIZE, SyncRunResult, SyncRunState, store
 
 logger = logging.getLogger(__name__)

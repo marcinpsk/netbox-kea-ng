@@ -38,6 +38,18 @@ from .ipam_marker import (
     rewrite_marker,
     status_kind,
 )
+from .ipam_sources import (
+    LEASE,
+    LEASE_PREFIX,
+    PD_POOL,
+    POOL,
+    RESERVATION,
+    RESERVATION_PREFIX,
+    SOURCES,
+    SUBNET,
+    ObjectField,
+    Workflow,
+)
 from .leases import LEASE_VARIANTS, AllocationKind, DHCPv6PrefixLease, Lease, LeaseSnapshot
 from .models import (
     DhcpIntegrationConfig,
@@ -53,7 +65,7 @@ from .read_failure import ReadFailure, attempt
 from .reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, ReservationSnapshot
 from .subnet_catalogue import CatalogueUnavailable
 from .sync import normalized_mac, sync_mac_address
-from .sync_plan import LEASE, LEASE_PREFIX, POOL, RESERVATION, SUBNET, SourceScope, served_families, sync_plan
+from .sync_plan import SourceScope, served_families, sync_plan
 
 if TYPE_CHECKING:
     from .subnet_catalogue import CatalogueSnapshot, CompleteCatalogueSnapshot
@@ -125,10 +137,8 @@ def _single_match(queryset, kea_object: str, list_filter: dict[str, str]):
 T = TypeVar("T")
 R = TypeVar("R")
 
-# The type check sees a TextChoices member as its (value, label) tuple; at runtime it is the str value.
-PD_POOL = cast("str", IPAMOwnershipSource.PD_POOL)
 # The sources that own Prefixes and IP Ranges; their failures count as prefix errors.
-_NETWORK_SOURCES = frozenset({"subnet", "pool", "reservation-prefix", LEASE_PREFIX, PD_POOL})
+_NETWORK_SOURCES = frozenset(source for source, row in SOURCES.items() if row.object_field != "ip_address")
 
 # The status of an IP address from the sources of its live links.
 _STATUSES: dict[frozenset[str], str] = {
@@ -267,7 +277,7 @@ class ReservationPrefixPhase:
     records: Sequence[Reservation]
     cutoff: int
     complete: bool
-    source: ClassVar[str] = "reservation-prefix"
+    source: ClassVar[str] = RESERVATION_PREFIX
 
 
 @dataclass(frozen=True)
@@ -287,18 +297,13 @@ Phase = (
     LeasePhase | LeasePrefixPhase | ReservationPhase | SubnetPhase | PoolPhase | ReservationPrefixPhase | PDPoolPhase
 )
 
-# The NetBox permissions that a claim of each source uses. An address claim also writes the MAC address rows.
-_ADDRESS_WRITES = ("ipam.add_ipaddress", "ipam.change_ipaddress", "dcim.add_macaddress", "dcim.change_macaddress")
-_PREFIX_WRITES = ("ipam.add_prefix", "ipam.change_prefix")
-_CLAIM_PERMISSIONS: dict[str, tuple[str, ...]] = {
-    LEASE: _ADDRESS_WRITES,
-    LEASE_PREFIX: _PREFIX_WRITES,
-    RESERVATION: _ADDRESS_WRITES,
-    SubnetPhase.source: _PREFIX_WRITES,
-    PoolPhase.source: ("ipam.add_iprange", "ipam.change_iprange"),
-    ReservationPrefixPhase.source: _PREFIX_WRITES,
-    PDPoolPhase.source: _PREFIX_WRITES,
+# The NetBox permissions that a claim of each object kind uses. An address claim also writes the MAC address rows.
+_OBJECT_WRITES: dict[ObjectField, tuple[str, ...]] = {
+    "ip_address": ("ipam.add_ipaddress", "ipam.change_ipaddress", "dcim.add_macaddress", "dcim.change_macaddress"),
+    "prefix": ("ipam.add_prefix", "ipam.change_prefix"),
+    "ip_range": ("ipam.add_iprange", "ipam.change_iprange"),
 }
+_CLAIM_PERMISSIONS = {source: _OBJECT_WRITES[row.object_field] for source, row in SOURCES.items()}
 
 
 def claim_permissions(*sources: str) -> tuple[str, ...]:
@@ -421,9 +426,6 @@ class SyncReport:
             logger.warning("Further row failures of this reconciliation are not logged; see the error count.")
 
 
-Workflow = Literal["job", "import"]
-
-
 def effective_sources(server: Server) -> dict[Workflow, SourceScope]:
     """Return current potential owners, shared by workflow completion and the upgrade barrier."""
     return _effective_sources(server, SyncConfig.get())
@@ -432,14 +434,13 @@ def effective_sources(server: Server) -> dict[Workflow, SourceScope]:
 def _effective_sources(
     server: Server, config: SyncConfig, switch: DhcpIntegrationConfig | None = None
 ) -> dict[Workflow, SourceScope]:
-    families = served_families(server)
     imported: SourceScope = frozenset()
     if dhcp_plugin.runs_for(server, switch):
         imported = frozenset(
             (family, source)
-            for family in families
-            for source in ("reservation", "subnet", "pool", "reservation-prefix", PD_POOL)
-            if source not in ("reservation-prefix", PD_POOL) or family == 6
+            for family in served_families(server)
+            for source, row in SOURCES.items()
+            if "import" in row.workflows and family in row.families
         )
     return {"job": sync_plan(server, config).sources, "import": imported}
 
@@ -519,21 +520,12 @@ def _complete_observation(server: Server, workflow: Workflow, observed: SourceSc
 def _pending_adoptions() -> set[tuple[Family, str]]:
     """Read potential owners for the current policy or one count snapshot."""
     pending: set[tuple[Family, str]] = set()
-    fields = {
-        "lease": "ip_address",
-        "reservation": "ip_address",
-        "subnet": "prefix",
-        "reservation-prefix": "prefix",
-        LEASE_PREFIX: "prefix",
-        PD_POOL: "prefix",
-        "pool": "ip_range",
-    }
     config, switch = SyncConfig.get(), DhcpIntegrationConfig.get()
     for server in Server.objects.all():
         receipts = _receipts(server)
         for workflow, scope in _effective_sources(server, config, switch).items():
             observed = receipts[workflow].sources if workflow in receipts else frozenset()
-            pending.update((family, fields[source]) for family, source in scope - observed)
+            pending.update((family, SOURCES[source].object_field) for family, source in scope - observed)
     return pending
 
 
@@ -660,10 +652,10 @@ _NetworkClaim = SubnetClaim | PoolClaim | PDPoolClaim | ReservationPrefixClaim
 
 # The source of each network record that a claim takes.
 _NETWORK_CLAIM_SOURCES: dict[type[_NetworkClaim], str] = {
-    SubnetClaim: "subnet",
-    PoolClaim: "pool",
+    SubnetClaim: SUBNET,
+    PoolClaim: POOL,
     PDPoolClaim: PD_POOL,
-    ReservationPrefixClaim: ReservationPrefixPhase.source,
+    ReservationPrefixClaim: RESERVATION_PREFIX,
 }
 
 
@@ -1101,7 +1093,7 @@ def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncRe
     for source, cutoff in cutoffs.items():
         if cutoff is None:
             continue
-        if source in {LEASE, RESERVATION}:
+        if SOURCES[source].object_field == "ip_address":
             _remove_stale_links(server, family, source, cutoff, mode, last_links_go, report)
         else:
             _remove_stale_network_links(server, family, source, cutoff, report)
@@ -1761,7 +1753,8 @@ def _object_field(obj: IPAddress | Prefix | IPRange) -> str:
 
 
 def _lock_network(vrf_id: int | None, source: str, address: str, *, nowait: bool = False) -> None:
-    kind = "ip-range" if source == "pool" else "prefix"
+    # The lock kind is the object field in the form of the address lock: prefix or ip-range.
+    kind = SOURCES[source].object_field.replace("_", "-")
     _lock_key(f"{kind} {vrf_id} {address}", nowait=nowait)
 
 
@@ -1770,7 +1763,7 @@ def _run_network_phase(
 ) -> int | None:
     catalogue = phase.observation.catalogue
     if catalogue is None:
-        if not report.incomplete.intersection({"subnet", "pool"}):
+        if not report.incomplete.intersection({SUBNET, POOL}):
             report.fail_snapshot(phase.source, "the Subnet Catalogue", CatalogueUnavailable("No complete catalogue."))
         report.incomplete.add(phase.source)
         return None
@@ -1802,19 +1795,19 @@ def _run_network_phase(
 
 
 def _network_marker_kind(sources: Collection[str]) -> MarkerKind:
-    """Prefer the Subnet marker, then the delegated-prefix Pool marker, when a Prefix has several live sources."""
-    if "pool" in sources:
-        return "pool"
-    if "subnet" in sources:
-        return "subnet"
-    return "pd pool" if PD_POOL in sources else "delegated prefix"
+    """Return the marker kind of the first of *sources* in the source table.
+
+    On a Prefix with several live sources, the Subnet marker wins, then the delegated-prefix Pool marker, then the
+    delegated prefix marker.
+    """
+    return next(row.marker_kind for source, row in SOURCES.items() if source in sources)
 
 
 def _claim_network(
     server: Server, family: Family, source: str, row: _NetworkReport, *, force: bool = False
 ) -> _Outcome:
     _lock_network(server.sync_vrf_id, source, row.address)
-    if source != "pool":
+    if SOURCES[source].object_field == "prefix":
         query = Prefix.objects.select_for_update().filter(vrf_id=server.sync_vrf_id, prefix=row.address)
         filters = {"prefix": row.address, "vrf_id": server.sync_vrf_id or "null"}
         fields: dict[str, Any] = {"prefix": IPNetwork(row.address)}
@@ -1874,7 +1867,7 @@ def _claim_network(
 
 def _remove_stale_network_links(server: Server, family: Family, source: str, cutoff: int, report: SyncReport) -> None:
     """Drop the stale links of a complete Subnet or Pool phase. These objects are never removed."""
-    field_name = "ip_range" if source == "pool" else "prefix"
+    field_name = SOURCES[source].object_field
     links = IPAMOwnershipLink.objects.filter(server=server, family=family, source=source, confirmation__lt=cutoff)
     # A marked link still needs the release check: an operator may have removed its object's marker.
     candidates = list(links.select_related(field_name))
@@ -1959,7 +1952,7 @@ def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cu
 
 def _network_result(server: Server, source: str, row: _NetworkReport, outcome: _Outcome) -> PrefixClaim | RangeClaim:
     """Return the object while its identity lock is held by the current savepoint."""
-    if source == "pool":
+    if SOURCES[source].object_field == "ip_range":
         obj = IPRange.objects.filter(
             vrf_id=server.sync_vrf_id, start_address__net_host=row.start, end_address__net_host=row.end
         ).first()
@@ -2013,7 +2006,7 @@ def _claim_network_reports(
     """Use the same network ownership policy as complete reconciliation phases."""
     result = ClaimResult()
     for address in reports:
-        if source == "pool":
+        if SOURCES[source].object_field == "ip_range":
             result.ranges[address] = RangeClaim("error")
         else:
             result.prefixes[address] = PrefixClaim("error")
@@ -2077,7 +2070,7 @@ def _run_lease_prefix_phase(server: Server, family: Family, phase: LeasePrefixPh
             return None
     catalogue = phase.catalogue
     if catalogue is None:
-        if not report.incomplete.intersection({"subnet", "pool"}):
+        if not report.incomplete.intersection({SUBNET, POOL}):
             report.fail_snapshot(LEASE_PREFIX, "the Subnet Catalogue", CatalogueUnavailable("No complete catalogue."))
         report.incomplete.add(LEASE_PREFIX)
         return None

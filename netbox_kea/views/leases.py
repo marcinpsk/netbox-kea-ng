@@ -24,14 +24,8 @@ from utilities.views import GetReturnURLMixin, register_model_view
 from .. import forms, runtime_change, subnet_catalogue, tables
 from ..after_apply import LEASE_SIGNAL_NAMES, LeaseAdded, LeaseAfterApplyFacts, LeasesDeleted, lease_after_apply
 from ..constants import Family, LeaseState
-from ..ipam_reconciliation import (
-    LEASE,
-    LEASE_PREFIX,
-    Ownership,
-    address_ownership,
-    claim_permissions,
-    prefix_ownership,
-)
+from ..ipam_reconciliation import Ownership, address_ownership, claim_permissions, prefix_ownership
+from ..ipam_sources import LEASE, LEASE_PREFIX
 from ..kea import (
     LeaseQueryGuardError,
     LeaseQueryUnknownSubnet,

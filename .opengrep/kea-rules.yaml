@@ -1556,3 +1556,36 @@ rules:
       - pattern-not-inside: |
           def _apply_global_settings(...):
               ...
+
+  - id: kea-ownership-source-literal
+    languages: [python]
+    severity: ERROR
+    message: >-
+      An IPAM Ownership source is compared with a string literal. Compare it with a constant of
+      netbox_kea/ipam_sources.py, or read the per-source fact from its SOURCES row, so the source table stays the one
+      place that knows each source.
+      Limits: the rule matches only a name or an attribute called "source", compared by ==, != or (not) in a literal
+      tuple, list or set. A literal in another collection ("pool" in sources), a renamed variable and a literal key of
+      a mapping are not seen.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+    patterns:
+      - pattern-either:
+          - pattern: $S == "..."
+          - pattern: '"..." == $S'
+          - pattern: $S != "..."
+          - pattern: '"..." != $S'
+          - pattern: $S in (..., "...", ...)
+          - pattern: $S in [..., "...", ...]
+          - pattern: $S in {..., "...", ...}
+          - pattern: $S not in (..., "...", ...)
+          - pattern: $S not in [..., "...", ...]
+          - pattern: $S not in {..., "...", ...}
+      - metavariable-regex:
+          metavariable: $S
+          regex: ^([\w.]+\.)?source$
