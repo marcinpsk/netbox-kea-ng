@@ -8,13 +8,16 @@ from django.test import SimpleTestCase
 from django.urls import (
     NoReverseMatch,
     Resolver404,
+    URLPattern,
     URLResolver,
+    get_resolver,
     include,
     path,
     resolve,
     reverse,
 )
 
+from netbox_kea import branching
 from netbox_kea.urls import urlpatterns
 from netbox_kea.views.leases import ServerLeaseAddView
 
@@ -204,10 +207,24 @@ _RECORDED_PATHS: tuple[tuple[str, int, dict[str, object], str], ...] = (
 )
 # A family digit at the end of a word of a route name or path, such as leases4 or dhcp6.
 _FAMILY_DIGIT = re.compile(r"(?<=[a-z])[46](?=[_/\\.]|$)")
+# The REST actions keep one action per family: a documented API contract.
+_REST_FAMILY_ACTIONS = frozenset(
+    f"plugins-api:netbox_kea-api:server-{name}" for name in ("leases4", "leases6", "reservations4", "reservations6")
+)
 
 
 def _new_name(old: str) -> str:
     return _FAMILY_DIGIT.sub("", old)
+
+
+def _plugin_routes(resolver=None, namespace="", pattern=""):
+    """Yield the name, pattern and callback of each URL pattern whose view is inside netbox_kea."""
+    for entry in (resolver or get_resolver()).url_patterns:
+        text = pattern + str(entry.pattern)
+        if isinstance(entry, URLResolver):
+            yield from _plugin_routes(entry, f"{namespace}{entry.namespace}:" if entry.namespace else namespace, text)
+        elif isinstance(entry, URLPattern) and branching.plugin_owned(entry.callback):
+            yield f"{namespace}{entry.name}", text, entry.callback
 
 
 class TestFamilyRouteParameter(SimpleTestCase):
@@ -238,3 +255,21 @@ class TestFamilyRouteParameter(SimpleTestCase):
             reverse("plugins:netbox_kea:server_leases", kwargs={"pk": 1, "family": 5})
         with self.assertRaises(Resolver404):
             resolve("/plugins/kea/servers/1/leases5/")
+
+    def test_no_ui_route_name_holds_a_family_digit(self):
+        named = [name for name, _, _ in _plugin_routes() if name not in _REST_FAMILY_ACTIONS]
+        self.assertGreater(len(named), 60)
+        self.assertEqual([name for name in named if _FAMILY_DIGIT.search(name.rsplit(":", 1)[-1])], [])
+
+    def test_no_two_ui_routes_differ_only_by_the_family_digit(self):
+        by_shape = defaultdict(list)
+        for name, pattern, _ in _plugin_routes():
+            if name not in _REST_FAMILY_ACTIONS:
+                by_shape[_FAMILY_DIGIT.sub("<family>", pattern)].append(pattern)
+        self.assertEqual({shape: found for shape, found in by_shape.items() if len(set(found)) > 1}, {})
+
+    def test_the_family_guards_fail_on_a_route_pair_per_family(self):
+        view = ServerLeaseAddView.as_view()
+        pair = [path("leases4/", view, name="server_leases4"), path("leases6/", view, name="server_leases6")]
+        self.assertEqual([_FAMILY_DIGIT.search(entry.name) is not None for entry in pair], [True, True])
+        self.assertEqual(len({_FAMILY_DIGIT.sub("<family>", str(entry.pattern)) for entry in pair}), 1)

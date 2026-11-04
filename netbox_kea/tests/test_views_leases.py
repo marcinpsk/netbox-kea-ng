@@ -1362,7 +1362,7 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Feature 3.3: Export All Leases — BaseServerDHCPLeasesView.get_export_all()
+# Feature 3.3: Export All Leases — ServerLeasesView.get_export_all()
 # ─────────────────────────────────────────────────────────────────────────────
 
 
