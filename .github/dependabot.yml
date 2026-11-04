@@ -18,3 +18,13 @@ updates:
       github-actions:
         patterns:
           - "*"
+
+  # The rev of each remote hook repository in .pre-commit-config.yaml; local hooks have no rev.
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      pre-commit:
+        patterns:
+          - "*"
