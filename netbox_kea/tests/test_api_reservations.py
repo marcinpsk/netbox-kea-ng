@@ -689,6 +689,28 @@ class TestReservation4API(_APITestBase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(kea.commands(), ["subnet4-list", "config-get"])
 
+    def test_identity_and_address_refuse_a_subnet_id_that_is_not_a_verified_subnet(self):
+        cases = (
+            (
+                {
+                    "scope": "in-subnet",
+                    "subnet_id": "21",
+                    "identifier_type": "hw-address",
+                    "identifier": "aa:bb:cc:dd:ee:ff",
+                },
+                "Invalid Reservation identity selector.",
+            ),
+            ({"subnet_id": "21", "ip_address": "198.18.1.20"}, "Invalid scoped address selector."),
+        )
+        for params, detail in cases:
+            with self.subTest(params=params):
+                display_cache.rotate_configuration(self.server, 4)
+                with stub_kea(_catalogue_responses(4, 20, "198.18.0.0/24")) as kea:
+                    response = self.api_client.get(self._url(), params)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json(), {"detail": detail})
+                self.assertEqual(kea.commands(), ["subnet4-list", "config-get"])
+
     def test_configured_only_subnet_cannot_select_a_reservation_scope(self):
         selectors = (
             {
