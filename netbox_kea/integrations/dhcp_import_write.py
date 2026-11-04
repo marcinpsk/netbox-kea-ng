@@ -8,7 +8,7 @@ observes the mapping. It records the entry of the object. When it does not write
 each descendant in the planned subtree of the object too, and returns why (:class:`NotWritten`). Only this module
 decides how a failed write is reported (the failure table of :func:`write_row`). :func:`adopt_options` maps the
 unmapped DHCP Options of one parent before any Option write. The DHCPServer is the root of a run, and its failure
-ends the run, so ``upsert_dhcp_server`` and ``_apply_global_settings`` in :mod:`.dhcp_plugin` write it themselves.
+ends the run, so ``upsert_dhcp_server`` and ``apply_global_settings`` in :mod:`.dhcp_import_server` write it themselves.
 """
 
 from __future__ import annotations

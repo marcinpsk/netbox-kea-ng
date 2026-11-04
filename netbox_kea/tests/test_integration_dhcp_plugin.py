@@ -25,6 +25,7 @@ from django.utils import timezone
 from netbox_kea import server_configuration
 from netbox_kea.constants import MAX_SUBNET_ID
 from netbox_kea.integrations.dhcp_import_report import Kind, Reason, not_written
+from netbox_kea.integrations.dhcp_import_server import apply_global_settings, server_values, upsert_dhcp_server
 from netbox_kea.integrations.dhcp_import_summary import ImportSummary
 from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import ServerConfigIntent, parse_dhcp_config
@@ -1006,9 +1007,9 @@ class DhcpPluginTuningImportTest(TestCase):
         planned = plan_family(parse_dhcp_config({"renew-timer": 1200, "rebind-timer": 1800, "subnet4": []}, 4), None)
         summary = ImportSummary()
         capabilities = probe()
-        values = self.adapter.server_values(dhcp_server, planned.server, 4, capabilities, summary)
+        values = server_values(dhcp_server, planned.server, 4, capabilities, summary)
 
-        saved = self.adapter._apply_global_settings(dhcp_server, values, summary, 4, capabilities)
+        saved = apply_global_settings(dhcp_server, values, summary, 4, capabilities)
 
         self.assertIsNone(saved)
         self.assertEqual(
@@ -1343,7 +1344,7 @@ class DhcpPluginServerPerFamilyTest(TestCase):
         intent.host_reservation_identifiers = ("hw-address", "flex-id")
         summary = ImportSummary()
 
-        values = self.adapter.server_values(
+        values = server_values(
             apps.get_model(DHCP_PLUGIN, "DHCPServer")(),
             plan_family(intent, None).server,
             6,
@@ -2036,7 +2037,7 @@ class DhcpPluginMappingImportTest(TestCase):
         ClientClass = apps.get_model(DHCP_PLUGIN, "ClientClass")
         capabilities = PluginCapabilities(frozenset({Capability.NAME_PER_SERVER}))
         conf = {"client-classes": [{"name": "voip", "test": "member('KNOWN')"}], "subnet4": []}
-        dhcp_server, _ = dhcp_plugin.upsert_dhcp_server(self.server, 4)
+        dhcp_server, _ = upsert_dhcp_server(self.server, 4)
         ClientClass.objects.create(name="voip", dhcp_server=dhcp_server)
 
         summary = dhcp_plugin.apply_plan(self.server, plan_family(parse_dhcp_config(conf, 4), None), capabilities)
@@ -2177,7 +2178,7 @@ class DhcpPluginSubnetIdImportTest(TestCase):
         from netbox_kea.integrations.dhcp_import_report import REASON_OUTCOME, Capability
         from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
-        dhcp_server, _ = self.adapter.upsert_dhcp_server(self.server, 4)
+        dhcp_server, _ = upsert_dhcp_server(self.server, 4)
         apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
             name="hand-made",
             subnet_id=9410,
@@ -2259,7 +2260,7 @@ class DhcpPluginSubnetIdImportTest(TestCase):
         from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
         Subnet = apps.get_model(DHCP_PLUGIN, "Subnet")
-        dhcp_server, _ = self.adapter.upsert_dhcp_server(self.server, 4)
+        dhcp_server, _ = upsert_dhcp_server(self.server, 4)
         hand_made = Subnet.objects.create(
             name="hand-made",
             subnet_id=9403,
@@ -2309,7 +2310,7 @@ class DhcpPluginSubnetIdImportTest(TestCase):
             name="largest-id",
             subnet_id=4294967295,
             prefix=Prefix.objects.create(prefix=IPNetwork("10.94.255.0/24")),
-            dhcp_server=self.adapter.upsert_dhcp_server(self.other, 4)[0],
+            dhcp_server=upsert_dhcp_server(self.other, 4)[0],
         )
 
         summary = self._import(self.server, conf)
@@ -2369,7 +2370,7 @@ class DhcpPluginSubnetIdImportTest(TestCase):
             name="row-c",
             subnet_id=2_100_000,
             prefix=Prefix.objects.create(prefix=IPNetwork("10.94.23.0/24")),
-            dhcp_server=self.adapter.upsert_dhcp_server(fourth, 4)[0],
+            dhcp_server=upsert_dhcp_server(fourth, 4)[0],
         )
         KeaDhcpLink.objects.create(
             confirmation=next_confirmation_number(),
@@ -3609,7 +3610,7 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
     def test_a_global_reservation_imports_with_its_adoption_servers_and_no_custom_definitions(self):
         from netbox_kea.integrations.dhcp_import_options import CustomDefinitions, OptionReferences
         from netbox_kea.integrations.dhcp_import_write import WriteScope
-        from netbox_kea.integrations.dhcp_plugin import ClassReferences, import_reservation_snapshot, upsert_dhcp_server
+        from netbox_kea.integrations.dhcp_plugin import ClassReferences, import_reservation_snapshot
         from netbox_kea.integrations.dhcp_plugin_capabilities import probe
 
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")

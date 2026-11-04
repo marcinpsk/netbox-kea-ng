@@ -46,7 +46,7 @@ def upsert_dhcp_server(server, family, source):
     return dhcp_server
 
 
-def _apply_global_settings(dhcp_server, summary):
+def apply_global_settings(dhcp_server, summary):
     # ok: kea-dhcp-row-write-outside-protocol
     try:
         with event_scope.atomic():

@@ -58,7 +58,7 @@ class CustomDefinitions:
     """
 
     declared: dict[OptionDefinitionKey, OptionDefIntent]
-    # The DHCPServers whose unmapped rows of this family the import adopts (_adoption_servers).
+    # The DHCPServers whose unmapped rows of this family the import adopts (adoption_servers).
     adoption_servers: tuple[int, ...]
     # The row of each written definition, or why the run did not write it (a NotWritten).
     written: dict[OptionDefinitionKey, object] = field(default_factory=dict)

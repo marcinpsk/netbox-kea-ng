@@ -1351,7 +1351,8 @@ def test_every_module_that_needs_the_dhcp_plugin_runs_in_a_dhcp_plugin_job():
 
 # The modules of the DHCP Import that look up netbox_dhcp models (dhcp_plugin also covers dhcp_plugin_capabilities).
 _PLUGIN_INTEGRATION_MODULES = tuple(
-    f"netbox_kea.integrations.{name}" for name in ("dhcp_plugin", "dhcp_import_mappings", "dhcp_import_options")
+    f"netbox_kea.integrations.{name}"
+    for name in ("dhcp_plugin", "dhcp_import_mappings", "dhcp_import_options", "dhcp_import_server")
 )
 
 
