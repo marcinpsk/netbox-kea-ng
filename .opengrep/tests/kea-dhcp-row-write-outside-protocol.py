@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 from netbox_kea import event_scope
-from netbox_kea.dhcp_mapping_lifecycle import mapped_target, observe_mapping
+from netbox_kea.integrations.dhcp_import_mappings import mapped_target, observe_mapping
 from netbox_kea.integrations.dhcp_import_write import ManagedFieldsMismatch, write_row
 
 

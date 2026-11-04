@@ -665,7 +665,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
     def test_mixed_tags_cover_iterative_created_then_deleted_targets_and_squash_skips(self):
         from extras.models import Tag
 
-        from netbox_kea.dhcp_mapping_lifecycle import observe_mapping
+        from netbox_kea.integrations.dhcp_import_mappings import observe_mapping
 
         for strategy in ("iterative", "squash"):
             with self.subTest(strategy=strategy):
@@ -812,7 +812,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         self.assertIsNone(current_request.get())
 
     def test_mapping_observation_during_revert_preserves_native_update(self):
-        from netbox_kea.dhcp_mapping_lifecycle import observe_mapping
+        from netbox_kea.integrations.dhcp_import_mappings import observe_mapping
 
         server, _, _, target, link = self._imported("subnet", 4, "mapping-revert-observation")
         merged_source = _make_db_server(name="mapping-observed-source", ca_url="https://kea.example.invalid")
@@ -909,7 +909,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
             Subnet,
         )
 
-        from netbox_kea.dhcp_mapping_lifecycle import observe_mapping
+        from netbox_kea.integrations.dhcp_import_mappings import observe_mapping
 
         server = _make_db_server(name=f"mapping-{suffix}", ca_url="https://kea.example.invalid")
         network, shared, start, end = (
@@ -974,8 +974,8 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
         return targets, mappings
 
     def test_squash_restores_every_mapped_target_kind(self):
-        from netbox_kea.dhcp_mapping_lifecycle import mapping_identity
         from netbox_kea.integrations.dhcp_import_report import Kind
+        from netbox_kea.models import mapping_identity
 
         for family in (4, 6):
             with self.subTest(family=family):
@@ -1013,7 +1013,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
     def test_squash_restores_an_imported_pd_pool_and_reimport_creates_none(self):
         from netbox_dhcp.models import PDPool, Subnet
 
-        from netbox_kea.dhcp_mapping_lifecycle import mapping_identity
+        from netbox_kea.models import mapping_identity
 
         # netbox-plugin-dhcp 0.2.0 keeps Subnet IDs unique across all DHCP servers.
         subnet_id = next(n for n in count(7) if not Subnet.objects.filter(subnet_id=n).exists())
@@ -1067,7 +1067,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
     def test_squash_restores_imported_rows_of_every_kind_and_reimport_creates_none(self):
         from netbox_dhcp.models import ClientClass, OptionDefinition, Subnet
 
-        from netbox_kea.dhcp_mapping_lifecycle import mapping_identity
+        from netbox_kea.models import mapping_identity
 
         conf = _mapped_conf()
         server = _make_db_server(name="mapping-imported-kinds", ca_url="https://kea.example.invalid")
@@ -1449,7 +1449,7 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
     def test_native_endpoint_deletion_composes_with_mapped_target_cleanup(self):
         from netbox_dhcp.models import ClientClass
 
-        from netbox_kea.dhcp_mapping_lifecycle import observe_mapping
+        from netbox_kea.integrations.dhcp_import_mappings import observe_mapping
         from netbox_kea.integrations.dhcp_import_report import Kind
 
         for kind in ("client-class", "mapped-client-class", "mac-address"):

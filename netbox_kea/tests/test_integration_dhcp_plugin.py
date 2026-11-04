@@ -1765,7 +1765,7 @@ class DhcpPluginMappingImportTest(TestCase):
         self.assertEqual((definition.dhcp_server_id, definition.client_class_id), (dhcp_server_id, None))
 
     def test_a_moved_in_subnet_reservation_returns_to_its_subnet(self):
-        from netbox_kea.dhcp_mapping_lifecycle import mapped_target
+        from netbox_kea.integrations.dhcp_import_mappings import mapped_target
         from netbox_kea.integrations.dhcp_import_plan import MappingSource
         from netbox_kea.models import KeaDhcpLink
 

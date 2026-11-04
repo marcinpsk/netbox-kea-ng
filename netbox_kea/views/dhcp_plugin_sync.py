@@ -34,6 +34,7 @@ from ..integrations.dhcp_import import (
     read_family,
     run_dhcp_plugin_import,
 )
+from ..integrations.dhcp_import_mappings import mapped_rows
 from ..integrations.dhcp_import_plan import MappingSource, mapped_kinds, observations, plan_family
 from ..integrations.dhcp_import_report import KIND_LABELS, OUTCOME_LABELS, Kind, Outcome
 from ..models import DhcpImportTrigger, Server
@@ -226,7 +227,7 @@ def family_drift(server: Server, family: Family, user) -> FamilyDrift:
     read = read_family(server, family)
     if not isinstance(read, FamilyRead):
         drift.notice, drift.unparsable = read, read is None
-        for kind, rows in dhcp_plugin.mapped_rows(server, family).items():
+        for kind, rows in mapped_rows(server, family).items():
             drift.show(_drift_objects(family, kind, rows, DriftState.UNKNOWN))
         drift.objects = _viewable_targets(drift.objects, user)
         return drift

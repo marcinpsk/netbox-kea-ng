@@ -1589,3 +1589,35 @@ rules:
       - metavariable-regex:
           metavariable: $S
           regex: ^([\w.]+\.)?source$
+
+  - id: kea-dhcp-mapping-query-outside-store
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Read and write DHCP Import Mappings through netbox_kea/integrations/dhcp_import_mappings.py, the Mapping store.
+      It holds every KeaDhcpLink query of the DHCP Import, so each lookup of a source goes through its unique index
+      (exact_source) and each write takes the mapping lock of ADR 0008. Add a function there and call it.
+      Exempt: the ADR 0008 coordination in dhcp_mapping_lifecycle.py, models.py, the REST API, GraphQL, the
+      migrations and the tests.
+      Limits: the rule sees KeaDhcpLink.objects, KeaDhcpLink._base_manager and a KeaDhcpLink(...) call by that name. An
+      alias of the class, a model from apps.get_model(), a related manager (server.dhcp_plugin_links) and a raw SQL
+      query are not seen.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/**"
+        - "kea-dhcp-mapping-query-outside-store.py"
+      exclude:
+        - "netbox_kea/integrations/dhcp_import_mappings.py"
+        - "netbox_kea/dhcp_mapping_lifecycle.py"
+        - "netbox_kea/models.py"
+        - "netbox_kea/api/**"
+        - "netbox_kea/graphql.py"
+        - "**/migrations/**"
+        - "**/tests/**"
+    pattern-either:
+      - pattern: KeaDhcpLink.objects
+      - pattern: KeaDhcpLink._base_manager
+      - pattern: KeaDhcpLink(...)

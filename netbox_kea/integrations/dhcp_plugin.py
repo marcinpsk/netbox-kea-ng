@@ -29,12 +29,6 @@ v1 scope (import + diff, read-only against Kea):
   address it could not attach.  Delegated prefixes and the prefixes that they exclude carry their own length, so
   they import as shared ``ipam.Prefix`` rows for every Scope, under the IPAM source ``reservation-prefix``. The stale
   cleanup of ``reservation-prefix`` runs after the removal of Stale DHCP Import Objects, as the ``pd-pool`` phase does.
-* Each imported Shared Network, Subnet, Pool, delegated-prefix Pool, Reservation, client class, custom Option
-  Definition and DHCP Option has a DHCP Import Mapping (:class:`netbox_kea.models.KeaDhcpLink`) to its Kea source, and
-  a re-import finds the row through it, also after an operator renames the row. The first import after an upgrade
-  maps each unmapped row that matches by structure. No release imported delegated-prefix Pools before, so an unmapped PD Pool
-  is an operator's row and stays. Kea refuses a Subnet without a subnet ID, so the parse drops one as Kea data that is
-  not valid, with its Pools, PD Pools and DHCP Options. Each object that the import writes has a mapping.
 * A plugin Subnet holds Kea's subnet ID (:func:`settle_subnet_ids`). While the plugin keeps Subnet IDs
   unique across all servers, a Subnet whose ID another Server or family holds is reported as unsupported,
   with its Pools, delegated-prefix Pools and In-Subnet Reservations.
@@ -121,11 +115,10 @@ from django.apps import apps
 from django.core.exceptions import ValidationError
 from django.db.models import F, Q
 from django.db.models.deletion import Collector, ProtectedError
-from django.db.models.signals import post_delete
 
 from .. import event_scope, kea_paths
 from ..constants import Family
-from ..dhcp_mapping_lifecycle import coordinated_import, mapped_target, observe_mapping, options_mapped, target_models
+from ..dhcp_mapping_lifecycle import coordinated_import
 from ..dhcp_options import MAX_ONE_OCTET_OPTION_CODE, DHCPOption
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import OptionDefIntent, PDPoolIntent, PoolIntent, ServerConfigIntent
@@ -143,6 +136,17 @@ from .dhcp_import_fields import (
     SERVER_FIELDS,
     GatedFieldMap,
     server_id_field,
+)
+from .dhcp_import_mappings import (
+    first_mapping,
+    mapped_elsewhere,
+    mapped_links,
+    mapped_option_keys,
+    mapped_target,
+    observe_mapping,
+    options_mapped,
+    subnet_id_mappings,
+    unlinked,
 )
 from .dhcp_import_plan import (
     MAX_KEA_NAME_LENGTH,
@@ -230,25 +234,6 @@ def scheduled_import_runs_for(server: Server) -> bool:
 
     switch = DhcpIntegrationConfig.get()
     return switch.scheduled_import_enabled and runs_for(server, switch) and supported_plugin_installed()
-
-
-def register_link_cleanup() -> None:
-    """Remove mappings in the same database as a deleted supported DHCP target."""
-    if not is_available():
-        return
-    for model in target_models():
-        post_delete.connect(
-            _delete_target_links,
-            sender=model,
-            dispatch_uid=f"netbox_kea.dhcp_target_links.{model._meta.label}",
-        )
-
-
-def _delete_target_links(sender, instance, using: str, **kwargs) -> None:
-    from django.contrib.contenttypes.models import ContentType
-
-    content_type = ContentType.objects.db_manager(using).get_for_model(sender)
-    _link_model().objects.using(using).filter(object_type_id=content_type.pk, object_id=instance.pk).delete()
 
 
 def _ownership_report() -> SyncReport:
@@ -357,12 +342,6 @@ class ImportSummary:
 def _model(name: str):
     """Return a ``netbox_dhcp`` model class by name (lazy; plugin must be installed)."""
     return apps.get_model(PLUGIN_APP_LABEL, name)
-
-
-def _link_model():
-    from ..models import KeaDhcpLink
-
-    return KeaDhcpLink
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -513,13 +492,7 @@ def _option_definition_fields(
 
 def _held_option_definition(held, key: OptionDefinitionKey) -> NotWritten:
     """Return why the run cannot create a definition that another row holds on its parent: the plugin holds one."""
-    from django.contrib.contenttypes.models import ContentType
-
-    holder = (
-        _link_model()
-        .objects.filter(object_type=ContentType.objects.get_for_model(held.model), object_id__in=held.values("pk"))
-        .first()
-    )
+    holder = first_mapping(held)
     parent = "DHCP server" if key.client_class is None else "client class"
     limit = f"The DHCP plugin holds one custom Option Definition for each space and code of a {parent}"
     holder_text = f"the DHCPv{holder.family} import holds it" if holder is not None else "another row holds it"
@@ -558,7 +531,7 @@ class _OptionDefinitionAdapter(RowAdapter):
             adoptable = self._held()
         else:
             adoptable = self._same_key().filter(dhcp_server__in=self.definitions.adoption_servers)
-        return _unlinked(adoptable.filter(family=self.scope.family)).first()
+        return unlinked(adoptable.filter(family=self.scope.family)).first()
 
     def refusal(self) -> NotWritten | None:
         """Return why the definition cannot be created: another row holds its space and code on the parent."""
@@ -834,7 +807,7 @@ def upsert_options(scope: WriteScope, parent_obj, planned_set: PlannedOptions, r
     unmapped = []
     if pairing:
         unmapped = list(
-            _unlinked(_model("Option").objects.filter(assigned_object_type=ct, assigned_object_id=parent_obj.pk))
+            unlinked(_model("Option").objects.filter(assigned_object_type=ct, assigned_object_id=parent_obj.pk))
             .select_related("definition")
             .prefetch_related("client_classes")
             .order_by("pk")
@@ -1119,16 +1092,9 @@ def _adoption_servers(server, dhcp_server) -> tuple[int, ...]:
 
     A DHCPServer that another Server maps is not that row, even when its name matches.
     """
-    from django.contrib.contenttypes.models import ContentType
-
     DHCPServer = _model("DHCPServer")
-    mapped_elsewhere = (
-        _link_model()
-        .objects.filter(object_type=ContentType.objects.get_for_model(DHCPServer))
-        .exclude(server=server)
-        .values("object_id")
-    )
-    legacy = DHCPServer.objects.filter(name=server.name).exclude(pk=dhcp_server.pk).exclude(pk__in=mapped_elsewhere)
+    elsewhere = mapped_elsewhere(DHCPServer, server)
+    legacy = DHCPServer.objects.filter(name=server.name).exclude(pk=dhcp_server.pk).exclude(pk__in=elsewhere)
     return (dhcp_server.pk, *legacy.values_list("pk", flat=True))
 
 
@@ -1160,7 +1126,7 @@ def upsert_dhcp_server(server, family: int):
     with event_scope.atomic():
         dhcp_server = mapped_target(server, family, source)
         if dhcp_server is None and family == _primary_family(server):
-            dhcp_server = _unlinked(DHCPServer.objects.filter(name=server.name)).first()
+            dhcp_server = unlinked(DHCPServer.objects.filter(name=server.name)).first()
         if dhcp_server is None:
             other = mapped_target(server, _other_family(family), source)
             dhcp_server = DHCPServer(
@@ -1286,7 +1252,7 @@ class _ClientClassAdapter(_NamedAdapter):
     def adopt(self):
         """Return the row that the released importer created before client classes had a mapping."""
         released = _released_client_class_name(self.scope.server, self.key.name)
-        return _unlinked(_model("ClientClass").objects.filter(name=released)).first()
+        return unlinked(_model("ClientClass").objects.filter(name=released)).first()
 
     def new_row(self):
         """Return a new client class."""
@@ -1681,19 +1647,9 @@ def settle_subnet_ids(
     family or Server that holds the ID. The capability probe decides the scope of the plugin's uniqueness rule:
     all DHCP servers, or *dhcp_server* only.
     """
-    from django.contrib.contenttypes.models import ContentType
-
-    from ..models import KeaDhcpLink
-
     Subnet = _model("Subnet")
     planned = {subnet.key.subnet_id: subnet for subnet in plan.subnets}
-    links = KeaDhcpLink.objects.filter(kind=Kind.SUBNET.value, object_type=ContentType.objects.get_for_model(Subnet))
-    wants = dict(links.values_list("object_id", "kea_subnet_id"))
-    ours = dict(
-        links.filter(server=server, family=plan.family, kea_subnet_id__in=planned).values_list(
-            "kea_subnet_id", "object_id"
-        )
-    )
+    wants, ours = subnet_id_mappings(Subnet, server, plan.family, planned)
     current = dict(Subnet.objects.filter(pk__in=ours.values()).values_list("pk", "subnet_id"))
     scope = Subnet.objects.all()
     if capabilities.has(Capability.SUBNET_ID_PER_SERVER):
@@ -1846,7 +1802,7 @@ class _PoolAdapter(RowAdapter):
 
     def adopt(self):
         """Return the unmapped Pool of the same Subnet and IP Range."""
-        return _unlinked(_model("Pool").objects.filter(subnet=self.subnet_obj, ip_range=self._range())).first()
+        return unlinked(_model("Pool").objects.filter(subnet=self.subnet_obj, ip_range=self._range())).first()
 
     def new_row(self):
         """Return a new Pool with a name that is unique in its Subnet."""
@@ -1982,17 +1938,6 @@ def _unusable_pool(key: PoolKey | InvalidPoolKey, result: RangeClaim | None) -> 
     return NotWritten(Reason.WRITE_FAILED, "The IP Range could not be claimed.")
 
 
-def _unlinked(base):
-    """Restrict *base* to the rows no Kea link claims yet."""
-    from django.contrib.contenttypes.models import ContentType
-
-    KeaDhcpLink = _link_model()
-    claimed = KeaDhcpLink.objects.filter(
-        object_type=ContentType.objects.get_for_model(base.model),
-    ).values_list("object_id", flat=True)
-    return base.exclude(pk__in=claimed)
-
-
 def _find_reservation(base, reservation: Reservation, mac_obj):
     """Find an existing reservation with the same typed identity in the parent scope."""
     id_type = reservation.identity.identifier_type
@@ -2071,7 +2016,7 @@ class _ReservationAdapter(RowAdapter):
             base = HostReservation.objects.filter(subnet=self.subnet_obj)
         else:
             base = HostReservation.objects.filter(dhcp_server__in=self.adoption_servers, subnet__isnull=True)
-        return _find_reservation(_unlinked(base), self.reservation, self._addresses[2])
+        return _find_reservation(unlinked(base), self.reservation, self._addresses[2])
 
     def new_row(self):
         """Return a new Reservation with a name that is unique in its Scope."""
@@ -2494,17 +2439,6 @@ def _goes_with_parent(model) -> bool:
     return model._meta.app_label != PLUGIN_APP_LABEL or model._meta.auto_created or model is _model("Option")
 
 
-def _mapped_option_keys() -> frozenset[tuple]:
-    """Return the row key of each Option that a mapping holds, of any Server and family.
-
-    An operator can assign the Option of another Server to an object of this one.
-    """
-    from ..models import KeaDhcpLink
-
-    links = KeaDhcpLink.objects.filter(kind=Kind.OPTION.value)
-    return frozenset((_model("Option"), pk) for pk in links.values_list("object_id", flat=True))
-
-
 def _counted_rows(rows: list) -> str:
     """Return the number of *rows* of each model, for the detail of an entry."""
     models = Counter(row._meta.concrete_model for row in rows)
@@ -2765,29 +2699,6 @@ def _delete_component(
     return gone, None
 
 
-def _mapped_links(server, family: int) -> Iterator[tuple[MappingSource, Any]]:
-    """Yield the Kea source and the mapping of each mapped row of *family* whose kind a run can remove, in pk order.
-
-    A mapping whose row is gone has none, and is left out.
-    """
-    from ..models import KeaDhcpLink
-
-    links = KeaDhcpLink.objects.filter(
-        server=server, family=family, kind__in=[kind.value for kind in mapped_kinds(family)]
-    )
-    for link in links.prefetch_related("sys4_object").order_by("pk"):
-        if link.sys4_object is not None:
-            yield MappingSource(Kind(link.kind), link.kea_subnet_id, link.kea_identity), link
-
-
-def mapped_rows(server, family: int) -> dict[Kind, dict[MappingSource, Any]]:
-    """Return the DHCP plugin row of each mapping of *family* whose kind a run can remove, by kind and Kea source."""
-    rows: dict[Kind, dict[MappingSource, Any]] = {kind: {} for kind in mapped_kinds(family)}
-    for source, link in _mapped_links(server, family):
-        rows[source.kind][source] = link.sys4_object
-    return rows
-
-
 @dataclass(frozen=True)
 class KeptRow:
     """A stale row that the run keeps, and why, in counts only: a viewer of the Server may not view the rows."""
@@ -2838,13 +2749,13 @@ def stale_judgment(server, plan: FamilyPlan, observed: Mapping[Kind, KindObserva
     family = plan.family
     judged: dict[Kind, dict[MappingSource, Any]] = {kind: {} for kind in mapped_kinds(family)}
     newer: dict[Kind, dict[MappingSource, Any]] = {kind: {} for kind in mapped_kinds(family)}
-    for source, link in _mapped_links(server, family):
+    for source, link in mapped_links(server, family):
         unordered = plan.cutoff is None or link.confirmation >= plan.cutoff
         rows = newer if unordered and source not in observed[source.kind].sources else judged
         rows[source.kind][source] = link.sys4_object
     splits = {kind: observed[kind].judge(rows, family) for kind, rows in judged.items()}
     stale = {_row_key(row): _StaleRow(source, row) for split in splits.values() for source, row in split.stale.items()}
-    plans, staying = _removal_set(stale, _mapped_option_keys())
+    plans, staying = _removal_set(stale, mapped_option_keys())
     kinds = {
         kind: KindJudgment(
             observed=split.observed,

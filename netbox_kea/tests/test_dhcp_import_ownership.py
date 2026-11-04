@@ -68,7 +68,7 @@ class ImportOwnershipTest(TestCase):
         self.assertIn("import", self.server.ipam_initial_observations)
 
     def test_a_mapping_confirmed_after_the_cutoff_by_a_slower_clock_is_not_stale(self):
-        from netbox_kea.dhcp_mapping_lifecycle import observe_mapping
+        from netbox_kea.integrations.dhcp_import_mappings import observe_mapping
         from netbox_kea.integrations.dhcp_import_plan import MappingSource
 
         with stub_kea(_sync_responses({6: self.config}, {6: []})):

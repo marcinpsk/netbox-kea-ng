@@ -21,8 +21,8 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 from django.core.exceptions import ValidationError
 
 from .. import event_scope
-from ..dhcp_mapping_lifecycle import mapped_target, mark_options_mapped, observe_mapping
 from .dhcp_import_fields import managed_fields
+from .dhcp_import_mappings import mapped_target, mark_options_mapped, observe_mapping
 from .dhcp_import_report import REASON_OUTCOME, Capability, ImportEntry, Kind, Outcome, Reason, written
 
 if TYPE_CHECKING:

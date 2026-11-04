@@ -653,6 +653,18 @@ def exact_source(server, family: int, kind: str, kea_subnet_id: int | None, kea_
     return columns & shape & models.Q(digest, kea_identity=kea_identity)
 
 
+# The source of a mapping identifies it; with the target, it is the semantic identity of the association.
+MAPPING_SOURCE_FIELDS = ("server", "family", "kind", "kea_subnet_id", "kea_identity")
+MAPPING_IDENTITY_FIELDS = (*MAPPING_SOURCE_FIELDS, "object_type", "object_id")
+
+
+def mapping_identity(mapping) -> tuple:
+    """Read the shared semantic identity from a mapping instance or native history payload."""
+    if isinstance(mapping, dict):
+        return tuple(mapping.get(name) for name in MAPPING_IDENTITY_FIELDS)
+    return tuple(getattr(mapping, mapping._meta.get_field(name).attname) for name in MAPPING_IDENTITY_FIELDS)
+
+
 #: Each DHCP Import Mapping kind: the netbox_dhcp model it points at, and the identity columns it sets.
 MAPPING_KINDS: dict[Kind, tuple[str, models.Q]] = {
     # The global configuration of one family: one DHCPServer per Server and family.
