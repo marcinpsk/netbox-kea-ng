@@ -34,6 +34,7 @@ from netbox_kea.dhcp_options import parse_dhcp_option, parse_option_definition
 from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
 from netbox_kea.integrations.dhcp_import_ledger import KEA_DEFAULTS, LEDGER, MERGED_KEYS, Mapped, NotImported
+from netbox_kea.integrations.dhcp_import_networks import released_client_class_name
 from netbox_kea.integrations.dhcp_import_options import option_values
 from netbox_kea.integrations.dhcp_import_plan import (
     KEY_KINDS,
@@ -3345,7 +3346,7 @@ class OptionMappingTest(TestCase):
         KeaDhcpLink.objects.filter(server=self.server, kind=Kind.OPTION.value).delete()
         # A dangling mapping, from an installation without target cleanup, that mapped the Options of its old target.
         link.update(object_id=class_pk + 1000)
-        released = dhcp_plugin._released_client_class_name(self.server, "lab")
+        released = released_client_class_name(self.server, "lab")
         apps.get_model(DHCP_PLUGIN, "ClientClass").objects.filter(pk=class_pk).update(name=released)
         self.assertTrue(link.get().options_mapped)
 

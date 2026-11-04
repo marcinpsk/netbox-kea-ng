@@ -52,7 +52,7 @@ SITES = (
     SaveSite("views/settings_page.py", "SettingsSectionView.post", "instance", "loaded"),
     SaveSite("integrations/dhcp_import_write.py", "save_changes", "obj", "loaded"),
     SaveSite("integrations/dhcp_import_server.py", "_move_family_options", "option", "loaded"),
-    SaveSite("integrations/dhcp_plugin.py", "_move_subnet_ids", "row", "loaded"),
+    SaveSite("integrations/dhcp_import_networks.py", "_move_subnet_ids", "row", "loaded"),
     SaveSite("integrations/dhcp_import_write.py", "_create_row", "obj", "create"),
     SaveSite("integrations/dhcp_import_server.py", "upsert_dhcp_server", "dhcp_server", "create"),
     SaveSite("ipam_reconciliation.py", "_claim", "ip", "create"),

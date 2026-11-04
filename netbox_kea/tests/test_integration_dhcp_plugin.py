@@ -3608,9 +3608,10 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         self.assertIsNone(res.ipv4_address)
 
     def test_a_global_reservation_imports_with_its_adoption_servers_and_no_custom_definitions(self):
+        from netbox_kea.integrations.dhcp_import_networks import ClassReferences
         from netbox_kea.integrations.dhcp_import_options import CustomDefinitions, OptionReferences
         from netbox_kea.integrations.dhcp_import_write import WriteScope
-        from netbox_kea.integrations.dhcp_plugin import ClassReferences, import_reservation_snapshot
+        from netbox_kea.integrations.dhcp_plugin import import_reservation_snapshot
         from netbox_kea.integrations.dhcp_plugin_capabilities import probe
 
         HostReservation = apps.get_model(DHCP_PLUGIN, "HostReservation")
@@ -4454,9 +4455,10 @@ class ImportSummaryCompletenessTest(TestCase):
         )
 
     def _import(self, snapshot):
+        from netbox_kea.integrations.dhcp_import_networks import ClassReferences
         from netbox_kea.integrations.dhcp_import_options import CustomDefinitions, OptionReferences
         from netbox_kea.integrations.dhcp_import_write import WriteScope
-        from netbox_kea.integrations.dhcp_plugin import ClassReferences, import_reservation_snapshot
+        from netbox_kea.integrations.dhcp_plugin import import_reservation_snapshot
         from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
         summary = ImportSummary()
@@ -4508,9 +4510,10 @@ class SkippedReservationCompletenessTest(TestCase):
         self.server = _make_db_server()
 
     def test_record_for_an_unlinked_subnet_id_reports_the_record_as_skipped(self):
+        from netbox_kea.integrations.dhcp_import_networks import ClassReferences
         from netbox_kea.integrations.dhcp_import_options import CustomDefinitions, OptionReferences
         from netbox_kea.integrations.dhcp_import_write import WriteScope
-        from netbox_kea.integrations.dhcp_plugin import ClassReferences, import_reservation_snapshot
+        from netbox_kea.integrations.dhcp_plugin import import_reservation_snapshot
         from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
         from netbox_kea.views.dhcp_plugin_sync import _summary_problems
 

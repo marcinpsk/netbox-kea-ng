@@ -31,8 +31,8 @@ from .dhcp_import_write import NotWritten, RowAdapter, WriteScope, adopt_options
 from .dhcp_plugin_capabilities import PluginCapabilities, plugin_model
 
 if TYPE_CHECKING:
+    from .dhcp_import_networks import ClassReferences
     from .dhcp_import_plan import OptionKey, PlannedOptions
-    from .dhcp_plugin import ClassReferences
 
 
 def option_paths(planned: PlannedOptions, family: int) -> Iterator[tuple[Kind, str]]:

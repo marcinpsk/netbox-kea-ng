@@ -22,6 +22,7 @@ from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 
 from netbox_kea.integrations import dhcp_plugin
+from netbox_kea.integrations.dhcp_import_networks import ClassReferences
 from netbox_kea.integrations.dhcp_import_options import CustomDefinitions, OptionReferences
 from netbox_kea.integrations.dhcp_import_report import Kind, Outcome, Reason
 from netbox_kea.integrations.dhcp_import_summary import ImportSummary
@@ -591,7 +592,7 @@ class ImportOwnershipTest(TestCase):
         conf = {"subnet6": [{"id": 9, "subnet": "2001:db8:9::/64"}]}
         observation = _reservation_snapshot(conf, 6, [{**self.identity, "subnet-id": 9}])
         summary = ImportSummary()
-        references = OptionReferences(CustomDefinitions({}, ()), dhcp_plugin.ClassReferences(6, frozenset(), {}))
+        references = OptionReferences(CustomDefinitions({}, ()), ClassReferences(6, frozenset(), {}))
         scope = WriteScope(self.server, 6, summary, probe())
         step = dhcp_plugin.import_reservation_snapshot(scope, None, observation, references, adoption_servers=())
         dhcp_plugin.reconcile_delegated_prefixes(self.server, 6, step, set(), summary)

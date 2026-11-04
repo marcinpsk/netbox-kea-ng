@@ -27,6 +27,7 @@ from extras.validators import CustomValidator
 from netbox_kea.constants import Family
 from netbox_kea.dhcp_options import DHCPOptionIdentity
 from netbox_kea.integrations import dhcp_plugin
+from netbox_kea.integrations.dhcp_import_networks import released_client_class_name
 from netbox_kea.integrations.dhcp_import_plan import (
     InSubnetReservationKey,
     MappingSource,
@@ -475,7 +476,7 @@ def _other_class(fixture: _Fixture, config: dict) -> None:
 def _released_class(fixture: _Fixture, config: dict):
     """Return the class that the released importer wrote before client classes had a mapping."""
     fixture.apply_cleanly({"subnet4": []})
-    name = dhcp_plugin._released_client_class_name(fixture.server, "lab")
+    name = released_client_class_name(fixture.server, "lab")
     return _model("ClientClass").objects.create(name=name, dhcp_server=fixture.dhcp_server(), test="old")
 
 
