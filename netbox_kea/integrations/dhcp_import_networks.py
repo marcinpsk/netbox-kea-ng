@@ -881,10 +881,10 @@ def reconcile_pd_pool_prefixes(
 ) -> None:
     """Link the Prefixes of every planned delegated-prefix Pool again, and drop the stale ``pd-pool`` links (ADR 0006).
 
-    It runs after :func:`remove_stale_objects`: a removed PD Pool no longer uses its Prefix, so the cleanup can
-    deprecate it. Only a Complete observation of delegated-prefix Pools (*observed*), with a cutoff, drops a link. A PD
-    Pool that Kea no longer reports and that is still in NetBox (*unobserved*) still uses its Prefixes, so the phase is
-    then not complete.
+    It runs after :func:`.dhcp_import_stale.remove_stale_objects`: a removed PD Pool no longer uses its Prefix, so the
+    cleanup can deprecate it. Only a Complete observation of delegated-prefix Pools (*observed*), with a cutoff, drops a
+    link. A PD Pool that Kea no longer reports and that is still in NetBox (*unobserved*) still uses its Prefixes, so
+    the phase is then not complete.
     """
     from ..ipam_reconciliation import PDPoolPhase, reconcile
 

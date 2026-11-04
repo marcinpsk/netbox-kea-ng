@@ -472,10 +472,11 @@ def reconcile_delegated_prefixes(
 ) -> None:
     """Link the delegated and excluded Prefixes of the imported Reservations again, and drop the stale links (ADR 0006).
 
-    It runs after :func:`remove_stale_objects`: a removed Reservation no longer uses its Prefixes, so the cleanup can
-    deprecate them. A Reservation that Kea no longer reports and that is still in NetBox (*unobserved*, see
-    :func:`unobserved_kinds`) still uses its Prefixes, so the phase is then not complete and drops no link. A Prefix
-    whose claim failed before attachment counts as one error, also when this claim of it succeeds.
+    It runs after :func:`.dhcp_import_stale.remove_stale_objects`: a removed Reservation no longer uses its Prefixes,
+    so the cleanup can deprecate them. A Reservation that Kea no longer reports and that is still in NetBox
+    (*unobserved*, see :func:`.dhcp_import_stale.unobserved_kinds`) still uses its Prefixes, so the phase is then not
+    complete and drops no link. A Prefix whose claim failed before attachment counts as one error, also when this claim
+    of it succeeds.
     """
     from ..ipam_reconciliation import reconcile
 

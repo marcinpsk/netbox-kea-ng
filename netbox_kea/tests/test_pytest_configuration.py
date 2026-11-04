@@ -1359,6 +1359,7 @@ _PLUGIN_INTEGRATION_MODULES = tuple(
         "dhcp_import_server",
         "dhcp_import_networks",
         "dhcp_import_reservations",
+        "dhcp_import_stale",
     )
 )
 
