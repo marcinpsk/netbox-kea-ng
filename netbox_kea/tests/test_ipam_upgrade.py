@@ -15,7 +15,8 @@ from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 from rest_framework.test import APIClient
 
-from netbox_kea.ipam_reconciliation import POLICY_TABLES, claim, effective_sources, upgrade_counts
+from netbox_kea.ipam_reconciliation import POLICY_TABLES, claim
+from netbox_kea.ipam_upgrade_barrier import effective_sources, upgrade_counts
 from netbox_kea.models import IPAMOwnershipLink, Server
 from netbox_kea.sync_run_result import SyncCounts
 from netbox_kea.tests.kea_stub import typed_lease
@@ -127,7 +128,8 @@ class UpgradeAdoptionTest(TestCase):
         self.assertEqual(server.ipam_first_complete_at, observed["completed"])
 
     def test_import_completion_requires_complete_evidence_and_enabled_import(self):
-        from netbox_kea.ipam_reconciliation import SyncReport, complete_import_observation
+        from netbox_kea.ipam_reconciliation import SyncReport
+        from netbox_kea.ipam_upgrade_barrier import complete_import_observation
 
         server = _server("job-only", sync_dhcp_plugin_enabled=False)
         complete = SyncReport(completed_sources={"subnet", "pool", "reservation"})

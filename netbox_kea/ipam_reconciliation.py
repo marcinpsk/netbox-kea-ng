@@ -15,13 +15,11 @@ import ipaddress
 import logging
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast, overload
 
 from dcim.models import MACAddress
 from django.db import DatabaseError, connection
 from django.db.models import Exists, OuterRef, QuerySet
-from django.utils import timezone
 from ipam.models import IPAddress, IPRange, Prefix
 from netaddr import AddrFormatError, IPNetwork
 
@@ -32,7 +30,6 @@ from .integrations import dhcp_plugin
 from .ipam_marker import (
     Marker,
     MarkerKind,
-    marked_description_q,
     parse_marker,
     render_marker,
     rewrite_marker,
@@ -48,13 +45,11 @@ from .ipam_sources import (
     SOURCES,
     SUBNET,
     ObjectField,
-    Workflow,
 )
+from .ipam_upgrade_barrier import adoption_waits
 from .leases import LEASE_VARIANTS, AllocationKind, DHCPv6PrefixLease, Lease, LeaseSnapshot
 from .models import (
-    DhcpIntegrationConfig,
     IPAMOwnershipLink,
-    IPAMOwnershipSource,
     Server,
     SyncConfig,
     next_confirmation_number,
@@ -65,7 +60,6 @@ from .read_failure import ReadFailure, attempt
 from .reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, ReservationSnapshot
 from .subnet_catalogue import CatalogueUnavailable
 from .sync import normalized_mac, sync_mac_address
-from .sync_plan import SourceScope, served_families, sync_plan
 
 if TYPE_CHECKING:
     from .subnet_catalogue import CatalogueSnapshot, CompleteCatalogueSnapshot
@@ -334,7 +328,6 @@ class SyncReport:
 
     completed_sources: set[str] = field(default_factory=set)
     waiting_objects: set[tuple[str, int]] = field(default_factory=set)
-    unowned_objects: set[tuple[str, int]] = field(default_factory=set)
     # IP addresses whose stale DHCPv6 lease link has no known allocation kind, so the cleanup keeps it.
     unclassified_objects: set[tuple[str, int]] = field(default_factory=set)
     created: int = 0
@@ -369,7 +362,6 @@ class SyncReport:
         self.reservation_traversal_truncated |= other.reservation_traversal_truncated
         self.completed_sources.update(other.completed_sources)
         self.waiting_objects.update(other.waiting_objects)
-        self.unowned_objects.update(other.unowned_objects)
         self.unclassified_objects.update(other.unclassified_objects)
         self.conflicts.update(other.conflicts)
         self.disagreements.update(other.disagreements)
@@ -382,11 +374,6 @@ class SyncReport:
     def waiting(self) -> int:
         """Count distinct objects protected by the upgrade barrier."""
         return len(self.waiting_objects)
-
-    @property
-    def unowned(self) -> int:
-        """Count distinct marker objects with no ownership link."""
-        return len(self.unowned_objects)
 
     @property
     def unclassified(self) -> int:
@@ -426,121 +413,14 @@ class SyncReport:
             logger.warning("Further row failures of this reconciliation are not logged; see the error count.")
 
 
-def effective_sources(server: Server) -> dict[Workflow, SourceScope]:
-    """Return current potential owners, shared by workflow completion and the upgrade barrier."""
-    return _effective_sources(server, SyncConfig.get())
-
-
-def _effective_sources(
-    server: Server, config: SyncConfig, switch: DhcpIntegrationConfig | None = None
-) -> dict[Workflow, SourceScope]:
-    imported: SourceScope = frozenset()
-    if dhcp_plugin.runs_for(server, switch):
-        imported = frozenset(
-            (family, source)
-            for family in served_families(server)
-            for source, row in SOURCES.items()
-            if "import" in row.workflows and family in row.families
-        )
-    return {"job": sync_plan(server, config).sources, "import": imported}
-
-
-@dataclass(frozen=True)
-class _ObservationReceipt:
-    """One successful whole workflow; the serializer owns its persisted shape."""
-
-    sources: SourceScope
-    completed_at: datetime
-
-    def stored(self) -> dict[str, Any]:
-        return {"sources": [list(pair) for pair in sorted(self.sources)], "completed_at": self.completed_at.isoformat()}
-
-    @classmethod
-    def read(cls, value: Any) -> _ObservationReceipt:
-        if not isinstance(value, dict) or set(value) != {"sources", "completed_at"}:
-            raise ValueError("Malformed IPAM observation receipt")
-        sources = value["sources"]
-        if not isinstance(sources, list) or any(
-            not isinstance(pair, list)
-            or len(pair) != 2
-            or type(pair[0]) is not int
-            or pair[0] not in (4, 6)
-            or pair[1] not in IPAMOwnershipSource.values
-            for pair in sources
-        ):
-            raise ValueError("Malformed IPAM observation source scope")
-        completed_at = datetime.fromisoformat(value["completed_at"])
-        if timezone.is_naive(completed_at):
-            raise ValueError("An IPAM observation timestamp must be timezone aware")
-        return cls(frozenset((cast("Family", pair[0]), pair[1]) for pair in sources), completed_at)
-
-
-def _receipts(server: Server) -> dict[Workflow, _ObservationReceipt]:
-    value = server.ipam_initial_observations
-    if not isinstance(value, dict) or set(value) - {"job", "import"}:
-        raise ValueError("Malformed IPAM initial observations")
-    return {cast("Workflow", key): _ObservationReceipt.read(receipt) for key, receipt in value.items()}
-
-
-def complete_job_observation(server: Server, reports: Mapping[Family, SyncReport]) -> None:
-    """Publish only a whole job whose actual successful phase coverage satisfies current configuration."""
-    if not reports or any(not report.complete or report.errors or report.prefix_errors for report in reports.values()):
-        return
-    scope = frozenset((family, source) for family, report in reports.items() for source in report.completed_sources)
-    _complete_observation(server, "job", scope)
-
-
-def complete_import_observation(server: Server, reports: Mapping[Family, SyncReport]) -> None:
-    """Publish a whole import after successful ownership work and committed delegated attachments."""
-    if not reports or any(not report.complete or report.errors or report.prefix_errors for report in reports.values()):
-        return
-    scope = frozenset((family, source) for family, report in reports.items() for source in report.completed_sources)
-    _complete_observation(server, "import", scope)
-
-
-def _complete_observation(server: Server, workflow: Workflow, observed: SourceScope) -> None:
-    with event_scope.atomic():
-        current = Server.objects.select_for_update(no_key=True).get(pk=server.pk)
-        required = effective_sources(current)
-        if not required[workflow] or not required[workflow] <= observed:
-            return
-        receipts = _receipts(current)
-        receipts[workflow] = _ObservationReceipt(observed, timezone.now())
-        current.snapshot()
-        current.ipam_initial_observations = {key: receipt.stored() for key, receipt in receipts.items()}
-        if current.ipam_first_complete_at is None and all(
-            not scope or (key in receipts and scope <= receipts[key].sources) for key, scope in required.items()
-        ):
-            current.ipam_first_complete_at = timezone.now()
-        current.save(update_fields=["ipam_initial_observations", "ipam_first_complete_at"])
-        server.ipam_initial_observations = current.ipam_initial_observations
-        server.ipam_first_complete_at = current.ipam_first_complete_at
-
-
-def _pending_adoptions() -> set[tuple[Family, str]]:
-    """Read potential owners for the current policy or one count snapshot."""
-    pending: set[tuple[Family, str]] = set()
-    config, switch = SyncConfig.get(), DhcpIntegrationConfig.get()
-    for server in Server.objects.all():
-        receipts = _receipts(server)
-        for workflow, scope in _effective_sources(server, config, switch).items():
-            observed = receipts[workflow].sources if workflow in receipts else frozenset()
-            pending.update((family, SOURCES[source].object_field) for family, source in scope - observed)
-    return pending
-
-
-def _adoption_waits(link: IPAMOwnershipLink, object_field: str, pending: set[tuple[Family, str]]) -> bool:
-    return link.adopted and (link.family, object_field) in pending
-
-
-def _cleanup_adoption_waits(link: IPAMOwnershipLink, object_field: str) -> bool:
+def _cleanup_adoption_waits(link: IPAMOwnershipLink, object_field: ObjectField) -> bool:
     """Freeze policy for a final adopted link whose row the cleanup already locked."""
     if not link.adopted:
         return False
     with connection.cursor() as cursor:
         # Table locks also cover new Servers and bulk configuration updates.
         cursor.execute(f"LOCK TABLE {', '.join(POLICY_TABLES)} IN SHARE MODE NOWAIT")
-    return _adoption_waits(link, object_field, _pending_adoptions())
+    return adoption_waits(link, object_field)
 
 
 def _cleanup_links(obj: IPAddress | Prefix | IPRange) -> list[IPAMOwnershipLink]:
@@ -548,25 +428,6 @@ def _cleanup_links(obj: IPAddress | Prefix | IPRange) -> list[IPAMOwnershipLink]
     return list(
         IPAMOwnershipLink.objects.select_for_update(nowait=True).filter(**{_object_field(obj): obj}).order_by("pk")
     )
-
-
-def upgrade_counts() -> SyncReport:
-    """Count distinct unowned marker objects and marked objects held by the current upgrade barrier."""
-    report = SyncReport()
-    pending = _pending_adoptions()
-    for object_field, model in (("ip_address", IPAddress), ("prefix", Prefix), ("ip_range", IPRange)):
-        for obj in model.objects.filter(marked_description_q(), kea_ownership_links__isnull=True).only(
-            "pk", "description"
-        ):
-            if _is_owned_description(obj.description):
-                report.unowned_objects.add((object_field, obj.pk))
-        for link in IPAMOwnershipLink.objects.filter(adopted=True, **{f"{object_field}__isnull": False}).select_related(
-            object_field
-        ):
-            obj = getattr(link, object_field)
-            if _is_owned_description(obj.description) and _adoption_waits(link, object_field, pending):
-                report.waiting_objects.add((object_field, obj.pk))
-    return report
 
 
 @dataclass(frozen=True)
@@ -1892,7 +1753,9 @@ def _remove_stale_network_links(server: Server, family: Family, source: str, cut
             )
 
 
-def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cutoff: int, *, nowait: bool) -> str:
+def _remove_stale_network_link(
+    candidate: IPAMOwnershipLink, field_name: ObjectField, cutoff: int, *, nowait: bool
+) -> str:
     obj = getattr(candidate, field_name)
     address = str(obj.prefix) if field_name == "prefix" else f"{_host(obj.start_address)} - {_host(obj.end_address)}"
     _lock_network(obj.vrf_id, candidate.source, address, nowait=nowait)

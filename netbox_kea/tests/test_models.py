@@ -1401,7 +1401,7 @@ class TestReservationPrefixSourceMigration(_MigrationTestCase):
         from django.db.migrations.executor import MigrationExecutor
         from ipam.models import Prefix
 
-        from netbox_kea.ipam_reconciliation import _receipts
+        from netbox_kea.ipam_upgrade_barrier import _receipts
 
         server = _make_db_server(name="reservation-prefix-owner")
         prefixes = {

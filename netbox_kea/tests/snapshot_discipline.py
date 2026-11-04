@@ -40,7 +40,7 @@ class SaveSite:
 SITES = (
     SaveSite("dhcp_mapping_lifecycle.py", "observe_mapping", "desired", "create"),
     SaveSite("dhcp_mapping_lifecycle.py", "observe_mapping", "mapping", "loaded"),
-    SaveSite("ipam_reconciliation.py", "_complete_observation", "current", "loaded"),
+    SaveSite("ipam_upgrade_barrier.py", "_complete_observation", "current", "loaded"),
     SaveSite("ipam_reconciliation.py", "_claim", "legacy[0]", "loaded"),
     SaveSite("ipam_reconciliation.py", "_apply_claim", "ip", "loaded"),
     SaveSite("ipam_reconciliation.py", "_restatus", "ip", "loaded"),

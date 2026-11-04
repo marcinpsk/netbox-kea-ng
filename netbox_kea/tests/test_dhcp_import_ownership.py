@@ -1280,7 +1280,7 @@ class PDPoolOwnershipTest(TestCase):
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
     def test_a_dhcpv6_import_owns_the_pd_pool_source(self):
-        from netbox_kea.ipam_reconciliation import effective_sources
+        from netbox_kea.ipam_upgrade_barrier import effective_sources
 
         if not dhcp_plugin.is_available():
             self.skipTest("The import scope needs netbox_dhcp")

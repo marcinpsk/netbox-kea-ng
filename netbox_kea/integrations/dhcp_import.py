@@ -25,7 +25,7 @@ from packaging.version import InvalidVersion, Version
 from .. import event_scope, kea_paths, server_configuration
 from ..constants import Family
 from ..dhcp_mapping_lifecycle import ImportEventsNotDispatched, MetadataBusy
-from ..ipam_reconciliation import complete_import_observation
+from ..ipam_upgrade_barrier import complete_import_observation
 from ..mappers.kea_to_dhcp import ServerConfigIntent, parse_dhcp_config
 from ..read_failure import ReadFailure, attempt
 from ..server_configuration import ServerConfigurationSnapshot

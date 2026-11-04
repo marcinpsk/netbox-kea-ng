@@ -235,6 +235,8 @@ URL request
   → sync.py             (the aggregate Reservation Synchronization State and DCIM MAC synchronization)
   → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
   → ipam_sources.py     (the IPAM Ownership sources: one constant and one row of facts for each; ADR 0006)
+  → ipam_upgrade_barrier.py (the completion receipts and the upgrade barrier: effective sources, adoption waits,
+                        upgrade counts; ADR 0006)
   → manual_sync.py      (Manual Sync of one Lease or Reservation: permission verdict, claim, typed outcome; ADR 0011)
   → ipam_marker.py     (the `[kea-sync: <kind>]` description marker: parse, rewrite, legacy text; ADR 0006)
   → sync_plan.py        (the Sync Plan: the switches and type flags that decide which sources a sync run reads)
@@ -375,8 +377,8 @@ URL request
   `claim`, which never cleans up. A Lease whose Subnet ID the complete Subnet Catalogue does not hold raises
   `LeaseSubnetAbsent` (not a `ValueError`; a `ValueError` from `claim` is a caller bug), and the job counts it as a
   failed row. Adoption preserves legacy object identities and marks their links.
-  Complete whole-workflow job and DHCP import receipts protect each adopted object's last link until all
-  relevant enabled owners have observed their sources. `Server.ipam_first_complete_at` records the initial
+  Complete whole-workflow job and DHCP import receipts (`ipam_upgrade_barrier.py`) protect each adopted object's last
+  link until all relevant enabled owners have observed their sources. `Server.ipam_first_complete_at` records the initial
   completion time. Internal scoped receipts protect newly enabled sources after that time.
   Read design record #172 when changing adoption, completion receipts or upgrade cleanup.
   The job reads one `LeaseObservation` per family for its address `LeasePhase` and its DHCPv6 `LeasePrefixPhase`

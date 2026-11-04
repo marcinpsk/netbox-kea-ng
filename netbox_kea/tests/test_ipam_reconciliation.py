@@ -1540,7 +1540,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
     """Concurrent runs, row locks and operator edits, each on its own connection, in a fixed order."""
 
     def test_source_enabled_while_cleanup_waits_preserves_the_adopted_address(self):
-        from netbox_kea.ipam_reconciliation import upgrade_counts
+        from netbox_kea.ipam_upgrade_barrier import upgrade_counts
 
         for index, mode in enumerate(("remove", "deprecate", "none"), start=1):
             with self.subTest(mode=mode), with_sync_config(stale_ip_cleanup=mode):
@@ -2023,7 +2023,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
     def test_receipt_completion_does_not_block_an_ownership_foreign_key_at_commit(self):
         from django.db import transaction
 
-        from netbox_kea.ipam_reconciliation import complete_job_observation
+        from netbox_kea.ipam_upgrade_barrier import complete_job_observation
 
         owner = _server(
             "owner", sync_reservations_enabled=False, sync_prefixes_enabled=False, sync_ip_ranges_enabled=False

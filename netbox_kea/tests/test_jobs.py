@@ -1246,7 +1246,7 @@ class TestKeaIpamSyncJobKillSwitches(TestCase):
 
     def test_a_complete_periodic_run_observes_exactly_the_sources_that_completion_requires(self):
         """The receipt of a complete run holds the sources it ran; completion requires the same set."""
-        from netbox_kea.ipam_reconciliation import effective_sources
+        from netbox_kea.ipam_upgrade_barrier import effective_sources
         from netbox_kea.models import Server
 
         server = self._make_db_server()

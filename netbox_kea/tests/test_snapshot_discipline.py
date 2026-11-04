@@ -18,7 +18,7 @@ def test_new_direct_save_requires_inventory_classification():
 
 
 def test_an_added_save_changes_the_reviewed_site_count():
-    path = "ipam_reconciliation.py"
+    path = "ipam_upgrade_barrier.py"
     original = (PACKAGE_ROOT / path).read_text()
     tree = ast.parse(original)
     function = next(
@@ -29,7 +29,7 @@ def test_an_added_save_changes_the_reviewed_site_count():
 
 
 def _observation_update(body):
-    source = (PACKAGE_ROOT / "ipam_reconciliation.py").read_text()
+    source = (PACKAGE_ROOT / "ipam_upgrade_barrier.py").read_text()
     tree = ast.parse(source)
     function = next(
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_complete_observation"
@@ -40,7 +40,7 @@ def _observation_update(body):
 
 def test_direct_receiver_with_early_snapshot_passes():
     source = _observation_update("current.snapshot()\ncurrent.sync_enabled=False\ncurrent.save()")
-    assert scan_source(source, "ipam_reconciliation.py") == []
+    assert scan_source(source, "ipam_upgrade_barrier.py") == []
 
 
 @pytest.mark.parametrize(
@@ -57,15 +57,15 @@ def test_direct_receiver_with_early_snapshot_passes():
     ],
 )
 def test_nearby_direct_updates_need_their_own_early_snapshot(body, diagnostic):
-    assert any(diagnostic in hit.message for hit in scan_source(_observation_update(body), "ipam_reconciliation.py"))
+    assert any(diagnostic in hit.message for hit in scan_source(_observation_update(body), "ipam_upgrade_barrier.py"))
 
 
 @pytest.mark.parametrize("helper", sorted(MUTATORS))
 def test_recognized_mutators_start_the_direct_receiver_change(helper):
     good = _observation_update(f"current.snapshot()\n{helper}(current)\ncurrent.save()")
     bad = _observation_update(f"{helper}(current)\ncurrent.snapshot()\ncurrent.save()")
-    assert scan_source(good, "ipam_reconciliation.py") == []
-    assert any("snapshot after mutation" in hit.message for hit in scan_source(bad, "ipam_reconciliation.py"))
+    assert scan_source(good, "ipam_upgrade_barrier.py") == []
+    assert any("snapshot after mutation" in hit.message for hit in scan_source(bad, "ipam_upgrade_barrier.py"))
 
 
 def test_a_model_form_bound_to_the_receiver_changes_it():
@@ -79,9 +79,9 @@ def test_a_model_form_bound_to_the_receiver_changes_it():
     other = _observation_update(
         "current.snapshot()\nform=Form(data, instance=server)\nif form.is_valid():\n    current.save()"
     )
-    assert scan_source(good, "ipam_reconciliation.py") == []
-    assert any("snapshot after mutation" in hit.message for hit in scan_source(bad, "ipam_reconciliation.py"))
-    assert scan_source(other, "ipam_reconciliation.py") == []
+    assert scan_source(good, "ipam_upgrade_barrier.py") == []
+    assert any("snapshot after mutation" in hit.message for hit in scan_source(bad, "ipam_upgrade_barrier.py"))
+    assert scan_source(other, "ipam_upgrade_barrier.py") == []
 
 
 def test_inventory_accounts_for_loaded_creates_and_bookkeeping():
