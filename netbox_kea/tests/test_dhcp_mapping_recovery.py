@@ -4682,7 +4682,7 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
         self.assertIsNone(HostReservation.objects.get(pk=reservation.pk).ipv4_address_id)
 
     def test_import_view_shows_the_retry_refusal(self):
-        from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK
+        from netbox_kea.dhcp_mapping_lifecycle import METADATA_LOCK
 
         server = _make_db_server(
             name="lock-scope-view", ca_url="https://kea.example.invalid", dhcp6=False, sync_dhcp_plugin_enabled=True
@@ -4691,7 +4691,7 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
         holder = connection.Database.connect(**connection.get_connection_params())
         try:
             with holder.cursor() as cursor:
-                cursor.execute("SELECT pg_advisory_lock(%s, %s)", _METADATA_LOCK)
+                cursor.execute("SELECT pg_advisory_lock(%s, %s)", METADATA_LOCK)
             with stub_kea(_recorded_kea()), transaction.atomic():
                 response = self.client.post(reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[server.pk]))
         finally:

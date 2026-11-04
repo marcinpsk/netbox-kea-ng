@@ -16,7 +16,7 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from ipam.models import IPAddress
 
 from netbox_kea import event_scope
-from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK, ImportEventsNotDispatched
+from netbox_kea.dhcp_mapping_lifecycle import METADATA_LOCK, ImportEventsNotDispatched
 from netbox_kea.ipam_reconciliation import SyncReport
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import (
@@ -436,7 +436,7 @@ class ScheduledImportTest(_ScheduledImportTestCase):
         holder = _new_session()
         try:
             with holder.cursor() as cursor:
-                cursor.execute("SELECT pg_advisory_lock(%s, %s)", _METADATA_LOCK)
+                cursor.execute("SELECT pg_advisory_lock(%s, %s)", METADATA_LOCK)
             job = self._run_failed(_kea())
         finally:
             holder.close()

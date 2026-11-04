@@ -627,12 +627,12 @@ class StoppedRunTest(_ImportRunTestCase):
     """A run that stops part way still stores the entries it has, and an entry for the family that stopped."""
 
     def test_a_run_refused_by_the_mapping_lock_stores_its_result(self):
-        from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK
+        from netbox_kea.dhcp_mapping_lifecycle import METADATA_LOCK
 
         holder = connection.Database.connect(**connection.get_connection_params())
         try:
             with holder.cursor() as cursor:
-                cursor.execute("SELECT pg_advisory_lock(%s, %s)", _METADATA_LOCK)
+                cursor.execute("SELECT pg_advisory_lock(%s, %s)", METADATA_LOCK)
             response = self._run()
         finally:
             holder.close()

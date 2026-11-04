@@ -24,7 +24,7 @@ from utilities.exceptions import AbortRequest
 from . import branching, event_scope
 from .models import MAPPING_IDENTITY_FIELDS, MAPPING_SOURCE_FIELDS, mapping_identity
 
-_METADATA_LOCK = (0x4B4541, 0x44484350)
+METADATA_LOCK = (0x4B4541, 0x44484350)
 _TAG_INSTRUCTION = (
     "Apply Tag changes separately on main or in a Tag-only branch. Create a fresh branch for DHCP changes."
 )
@@ -127,7 +127,7 @@ def metadata_scope(using: str = "default"):
     with _lock_boundary(using):
         with connections[using].cursor() as cursor:
             function = "pg_try_advisory_xact_lock" if transactional else "pg_advisory_xact_lock"
-            cursor.execute(f"SELECT {function}(%s, %s)", _METADATA_LOCK)
+            cursor.execute(f"SELECT {function}(%s, %s)", METADATA_LOCK)
             if transactional and not cursor.fetchone()[0]:
                 raise MetadataBusy(_CONTENTION)
         token = _held.set(_held.get() | {using})
@@ -160,7 +160,7 @@ def _holds_key(using: str) -> bool:
         cursor.execute(
             "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid() "
             "AND granted AND classid = %s AND objid = %s AND objsubid = 2)",
-            _METADATA_LOCK,
+            METADATA_LOCK,
         )
         return cursor.fetchone()[0]
 

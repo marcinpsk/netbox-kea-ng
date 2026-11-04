@@ -156,7 +156,7 @@ class TestOptionalMetadataCoordination(TransactionTestCase):
         from extras.models import Tag
 
         from netbox_kea import branching
-        from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK
+        from netbox_kea.dhcp_mapping_lifecycle import METADATA_LOCK
 
         if branching.installed() and apps.is_installed("netbox_dhcp"):
             self.skipTest("This profile verifies ordinary behavior without both optional plugins")
@@ -167,10 +167,10 @@ class TestOptionalMetadataCoordination(TransactionTestCase):
         holder = connection.Database.connect(**connection.get_connection_params())
         try:
             with holder.cursor() as cursor:
-                cursor.execute("SELECT pg_advisory_lock(%s, %s)", _METADATA_LOCK)
+                cursor.execute("SELECT pg_advisory_lock(%s, %s)", METADATA_LOCK)
             with transaction.atomic():
                 with connection.cursor() as cursor:
-                    cursor.execute("SELECT pg_try_advisory_xact_lock(%s, %s)", _METADATA_LOCK)
+                    cursor.execute("SELECT pg_try_advisory_xact_lock(%s, %s)", METADATA_LOCK)
                     self.assertFalse(cursor.fetchone()[0], "The independent writer did not hold the mapping lock")
                 response = self.client.post(
                     reverse("extras:tag_edit", args=[tag.pk]),
