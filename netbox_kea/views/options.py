@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 from collections.abc import Callable
-from dataclasses import replace
 from typing import Any, cast
 from urllib.parse import urlencode as _urlencode
 
@@ -19,11 +18,11 @@ from ..config_write import ConfigChangeOutcome
 from ..constants import Family
 from ..dhcp_options import (
     DHCPOption,
-    DHCPOptionChange,
     DHCPOptionConflict,
     DHCPOptionEdit,
     DHCPOptionNameChange,
-    parse_dhcp_option,
+    option_row_edit,
+    posted_snapshot,
 )
 from ..models import Server
 from ..read_failure import ReadFailure, attempt
@@ -38,67 +37,32 @@ from ._base import (
 )
 from .notices import notice, show_notices
 from .subnets import _NO_SUBNET_CIDR, _SUBNETS_TAB, _displayed_subnet
-from .workspace import ServerFamilyMixin
+from .workspace import WORKSPACE_SECTIONS, ServerFamilyMixin, subsection_nav
 
 # One Config tab for both sections and both families; ServerOptionDef4View owns it.
 _CONFIG_TAB = OptionalViewTab(label="Config", weight=1050, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
 
 
 def config_nav_context(server_pk: int, section: str, dhcp_version: Family) -> dict[str, Any]:
-    """Build context for the Config tab's section+family toggle nav.
+    """Build the Config tab and the subsection navigation of the Configuration section.
 
-    ``section`` selects the server DHCP Option editor or the Option Definition list.
+    ``section`` is ``"options"`` (the server DHCP Option editor) or ``"configuration"`` (the Option Definitions).
     """
-    options_name = "server_dhcp{}_options_edit"
-    optiondef_name = "server_option_def{}"
     return {
         "tab": _CONFIG_TAB,
-        "config_section": section,
         "dhcp_version": dhcp_version,
-        "nav_options_url": reverse(f"plugins:netbox_kea:{options_name.format(dhcp_version)}", args=[server_pk]),
-        "nav_optiondef_url": reverse(f"plugins:netbox_kea:{optiondef_name.format(dhcp_version)}", args=[server_pk]),
+        "subsection_nav": subsection_nav(WORKSPACE_SECTIONS[section], server_pk, dhcp_version),
     }
 
 
-def _option_edit(formset: Any) -> DHCPOptionEdit:
-    """Translate the bound option rows into the snapshot and the operator's changed assignments."""
-    snapshot: list[DHCPOption] = []
-    changes: list[DHCPOptionChange] = []
-    for form in formset.forms:
-        row = form.cleaned_data
-        if not row:
-            continue
-        original = row.get("original_option")
-        seen = parse_dhcp_option(original) if original is not None else None
-        if seen is not None:
-            snapshot.append(seen)
-        if row.get("DELETE"):
-            intended = None
-        elif seen is None:
-            intended = DHCPOption(
-                code=None,
-                name=row["name"],
-                space=None,
-                data=row["data"],
-                csv_format=None,
-                always_send=True if row["always_send"] else None,
-                never_send=None,
-            )
-        else:
-            intended = replace(seen, name=row["name"] or None, data=row["data"])
-            if bool(seen.always_send) != row["always_send"]:
-                intended = replace(intended, always_send=row["always_send"])
-        if intended != seen:
-            changes.append(DHCPOptionChange(seen, intended))
-    return DHCPOptionEdit(tuple(snapshot), tuple(changes))
-
-
 def _run_option_change(
-    request: HttpRequest, confirmed: str, change: Callable[[], ConfigChangeOutcome], formset: Any
+    request: HttpRequest, confirmed: str, change: Callable[[DHCPOptionEdit], ConfigChangeOutcome], formset: Any
 ) -> bool:
-    """Run an option change, or keep its named conflict on the bound form."""
+    """Run the option change of the valid bound form, or keep its named conflict on the form."""
     try:
-        _run_change(request, confirmed, change)
+        rows = forms.option_rows(formset)
+        edit = option_row_edit(rows, posted_snapshot(rows))
+        _run_change(request, confirmed, lambda: change(edit))
     except (DHCPOptionConflict, DHCPOptionNameChange) as exc:
         formset._non_form_errors = formset.error_class([exc.message])
         return False
@@ -145,7 +109,7 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
             messages.error(request, "Could not load subnet configuration from Kea. The form cannot be displayed.")
             return redirect(return_url)
         initial = [opt.form_initial() for opt in subnet.configuration.options]
-        formset = forms.SubnetOptionsFormSet(initial=initial)
+        formset = forms.DHCPOptionRowFormSet(initial=initial)
         form = forms.SubnetConfirmForm(initial={"subnet_cidr": subnet.declared_cidr}, family=self.dhcp_version)
         return self._render(request, server, subnet_id, subnet.declared_cidr, formset, form, return_url)
 
@@ -183,7 +147,7 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
         return_url = _safe_return_url(
             request, reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
         )
-        formset = forms.SubnetOptionsFormSet(request.POST)
+        formset = forms.DHCPOptionRowFormSet(request.POST)
         form = forms.SubnetConfirmForm(request.POST, family=self.dhcp_version)
         if not form.is_valid():
             messages.error(request, _NO_SUBNET_CIDR)
@@ -191,11 +155,10 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
         cidr: str = form.cleaned_data["subnet_cidr"]
         if not formset.is_valid():
             return self._render(request, server, subnet_id, cidr, formset, form, return_url)
-        edit = _option_edit(formset)
         if not _run_option_change(
             request,
             f"Subnet {subnet_id} options updated.",
-            lambda: config_write.set_subnet_options(server, self.dhcp_version, subnet_id, cidr, edit),
+            lambda edit: config_write.set_subnet_options(server, self.dhcp_version, subnet_id, cidr, edit),
             formset,
         ):
             return self._render(request, server, subnet_id, cidr, formset, form, return_url)
@@ -246,7 +209,7 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
             messages.error(request, "Could not load server options from Kea. The form cannot be displayed.")
             return redirect(reverse("plugins:netbox_kea:server", args=[pk]))
         initial = [opt.form_initial() for opt in existing]
-        formset = forms.SubnetOptionsFormSet(initial=initial)
+        formset = forms.DHCPOptionRowFormSet(initial=initial)
         return render(
             request,
             "netbox_kea/server_dhcp_options_edit.html",
@@ -265,7 +228,7 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
             pk=pk,
         )
         return_url = reverse("plugins:netbox_kea:server", args=[pk])
-        formset = forms.SubnetOptionsFormSet(request.POST)
+        formset = forms.DHCPOptionRowFormSet(request.POST)
         if not formset.is_valid():
             return render(
                 request,
@@ -279,11 +242,10 @@ class _BaseServerOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
                 },
             )
 
-        edit = _option_edit(formset)
         if not _run_option_change(
             request,
             f"DHCPv{self.dhcp_version} server options updated.",
-            lambda: config_write.set_server_options(server, self.dhcp_version, edit),
+            lambda edit: config_write.set_server_options(server, self.dhcp_version, edit),
             formset,
         ):
             return render(
@@ -448,7 +410,7 @@ class BaseServerOptionDefView(ServerFamilyMixin, ConditionalLoginRequiredMixin, 
             "option_defs": enriched_defs,
             # An unavailable Snapshot shows its error instead of an empty list.
             "definitions_known": not snapshot.unavailable,
-            **config_nav_context(server.pk, "option_def", self.dhcp_version),
+            **config_nav_context(server.pk, "configuration", self.dhcp_version),
         }
         if can_change:
             ctx["add_url"] = reverse(

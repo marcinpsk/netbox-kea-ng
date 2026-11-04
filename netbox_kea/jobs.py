@@ -47,16 +47,13 @@ from .sync_plan import (
     server_sync_enabled,
     sync_plan,
 )
+from .sync_run_result import CONFLICT_SAMPLE_SIZE, SyncRunResult, SyncRunState, store
 
 logger = logging.getLogger(__name__)
 
 # NetBox requires a registry interval; enqueue_once replaces it with SyncConfig.interval_minutes.
 _DEFAULT_INTERVAL = 5
 
-
-#: How many conflicting IPs to name in the job summary and log line.  A bare count
-#: tells an operator nothing about which manually-curated IPs the sync left alone.
-_CONFLICT_SAMPLE_SIZE = 20
 _SYNC_USER = "netbox-kea-sync"
 
 
@@ -129,7 +126,7 @@ def _sync_one_server(server: Server, plan: SyncPlan, max_leases: int) -> SyncRep
     complete_job_observation(server, reports)
 
     if combined.disagreements:
-        sample = sorted(combined.disagreements)[:_CONFLICT_SAMPLE_SIZE]
+        sample = sorted(combined.disagreements)[:CONFLICT_SAMPLE_SIZE]
         logger.warning(
             "Server %s: %d NetBox IPAM object(s) keep their facts because their owners report different facts; first %d: %s",
             server.name,
@@ -146,7 +143,7 @@ def _sync_one_server(server: Server, plan: SyncPlan, max_leases: int) -> SyncRep
             combined.unclassified,
         )
     if combined.conflicts:
-        sample = sorted(combined.conflicts)[:_CONFLICT_SAMPLE_SIZE]
+        sample = sorted(combined.conflicts)[:CONFLICT_SAMPLE_SIZE]
         logger.warning(
             "Server %s: %d NetBox IPAM object(s) left untouched: the description does not start with the sync marker,"
             " or the new marker and the note do not fit; first %d: %s",
@@ -348,43 +345,46 @@ class KeaIpamSyncJob(JobRunner):
         server_pk = kwargs.get("server_pk")
         failed = False
         finished = False
-        summary: list[dict] = []
+        results: list[SyncRunResult] = []
         started: dict[int, str] = {}
         try:
             # A Run Now of one Server syncs its IPAM only: its trigger is not the schedule.
             if server_pk is None:
                 # The stale DHCP plugin rows go first, so the IPAM cleanup no longer counts their objects as used.
                 failed = self._run_scheduled_imports(started)
-            failed = self._run_ipam_sync(server_pk, summary, started) or failed
+            failed = self._run_ipam_sync(server_pk, results, started) or failed
             finished = True
         finally:
-            # Each started Server without IPAM counts keeps an entry: a skip after a finished job, else an interruption.
-            synced = {entry["pk"] for entry in summary}
-            skipped = {"ipam_skipped": True} if finished else {}
-            uncounted = [{"name": name, "pk": pk, **skipped} for pk, name in started.items() if pk not in synced]
-            self._save_summary([*summary, *uncounted])
+            # Each started Server without IPAM counts keeps a result: a skip after a finished job, else an interruption.
+            synced = {result.server_pk for result in results}
+            state = SyncRunState.SKIPPED if finished else SyncRunState.INTERRUPTED
+            uncounted = [SyncRunResult(pk, name, state) for pk, name in started.items() if pk not in synced]
+            self._save_results([*results, *uncounted])
         if failed:
             self.job.error = "The Kea IPAM sync or a scheduled DHCP Import failed. The job log has the details."
             raise JobFailed(self.job.error)
 
-    def _save_summary(self, summary: list[dict]) -> None:
-        """Store the per-server summary, which attributes a periodic job to its Servers."""
-        if not isinstance(self.job.data, dict):
-            self.job.data = {}
-        self.job.data["summary"] = summary
+    def _save_results(self, results: list[SyncRunResult]) -> None:
+        """Store the Sync Run Results, which attribute a periodic job to its Servers."""
         try:
-            self.job.save(update_fields=["data"])
+            store(self.job, results)
         except Exception:
-            logger.exception("Failed to persist sync job summary data")
+            logger.exception("Failed to save the Sync Run Results of the job")
 
-    def _run_ipam_sync(self, server_pk: int | None, summary: list[dict], started: dict[int, str]) -> bool:
-        """Apply the configured IPAM synchronization, add a summary entry per Server, and return whether it failed.
+    def _run_ipam_sync(self, server_pk: int | None, results: list[SyncRunResult], started: dict[int, str]) -> bool:
+        """Apply the configured IPAM synchronization, add a Sync Run Result per Server, and return whether it failed.
 
-        *started* gets each Server before its sync starts.
+        *started* gets each Server before its sync starts, and the Server of a Run Now first.
         """
         from .models import Server, SyncConfig
 
         sync_cfg = SyncConfig.get()
+        server_qs = Server.objects.filter(pk=server_pk) if server_pk is not None else Server.objects.all()
+        servers = list(server_qs)
+        if server_pk is not None:
+            # A Run Now that the settings stop still records a Skipped result for its Server.
+            started.update((server.pk, server.name) for server in servers)
+
         if not sync_cfg.sync_enabled:
             self.logger.info("Global sync kill-switch is active (SyncConfig.sync_enabled=False) — skipping.")
             return False
@@ -394,9 +394,6 @@ class KeaIpamSyncJob(JobRunner):
         if not any_source_enabled(sync_cfg):
             self.logger.info("All sync type flags are False — nothing to do.")
             return False
-
-        server_qs = Server.objects.filter(pk=server_pk) if server_pk is not None else Server.objects.all()
-        servers = list(server_qs)
 
         if not servers:
             self.logger.info("No Kea servers configured. Count unowned IPAM objects.")
@@ -451,29 +448,13 @@ class KeaIpamSyncJob(JobRunner):
             total_conflicts += len(report.conflicts)
             total_disagreements += len(report.disagreements)
 
-            summary.append(
-                {
-                    "name": server.name,
-                    "pk": server.pk,
-                    "created": report.created,
-                    "updated": report.updated,
-                    "errors": report.errors,
-                    "prefix_errors": report.prefix_errors,
-                    "conflicts": len(report.conflicts),
-                    "conflict_sample": sorted(report.conflicts)[:_CONFLICT_SAMPLE_SIZE],
-                    "conflicts_truncated": max(0, len(report.conflicts) - _CONFLICT_SAMPLE_SIZE),
-                    "disagreements": len(report.disagreements),
-                    "skipped": len(report.skipped_reservations),
-                    "waiting": report.waiting,
-                    "unclassified": report.unclassified,
-                }
-            )
+            results.append(SyncRunResult.synced(server.pk, server.name, report))
 
         counts = upgrade_counts()
         total.unowned_objects = counts.unowned_objects
         total.waiting_objects = counts.waiting_objects
         self.logger.info(
-            f"Kea IPAM sync complete — servers={len(summary)}"
+            f"Kea IPAM sync complete — servers={len(results)}"
             f" created={total.created} updated={total.updated}"
             f" errors={total.errors} prefix_errors={total.prefix_errors}"
             f" conflicts={total_conflicts} disagreements={total_disagreements} skipped={len(total.skipped_reservations)}"

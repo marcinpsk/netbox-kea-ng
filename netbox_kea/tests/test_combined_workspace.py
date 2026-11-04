@@ -9,11 +9,12 @@ from django.contrib.contenttypes.models import ContentType
 from django.urls import reverse
 from users.models import ObjectPermission
 
+from netbox_kea.ipam_reconciliation import SyncReport
 from netbox_kea.models import Server
+from netbox_kea.sync_run_result import SyncRunResult
 
 from .kea_stub import stub_kea
-from .test_views_sync_jobs import _make_job
-from .utils import _make_db_server, _ViewTestBase
+from .utils import _make_db_server, _ViewTestBase, stored_job
 
 
 class TestCombinedWorkspace(_ViewTestBase):
@@ -81,22 +82,22 @@ class TestCombinedWorkspace(_ViewTestBase):
                 target = self.client.get(link["href"])
             self.assertEqual(target.status_code, 200)
 
-    def test_sync_without_a_recorded_job_shows_unknown_counts(self):
+    def test_sync_without_a_recorded_job_shows_no_counts(self):
         response = self.client.get(reverse("plugins:netbox_kea:combined_sync4"), self.selection)
         page = BeautifulSoup(response.content, "html.parser")
         rows = page.select(".table tbody tr")
         self.assertEqual(len(rows), 2)
         for row in rows:
             cells = [cell.get_text(strip=True) for cell in row.select("td")]
-            self.assertEqual(cells[3:], ["Unknown", "Unknown", "Unknown", "Unknown", "Unknown"])
+            self.assertEqual(cells[3:], ["—"])
 
-    def test_job_without_a_summary_keeps_counts_unknown(self):
-        _make_job(object_type=ContentType.objects.get_for_model(Server), object_id=self.server.pk, data={})
+    def test_a_job_without_a_result_of_the_server_shows_no_counts(self):
+        stored_job([], object_type=ContentType.objects.get_for_model(Server), object_id=self.server.pk)
         response = self.client.get(reverse("plugins:netbox_kea:combined_sync4"), self.selection)
         rows = BeautifulSoup(response.content, "html.parser").select(".table tbody tr")
         for row in rows:
             cells = [cell.get_text(strip=True) for cell in row.select("td")]
-            self.assertEqual(cells[3:], ["Unknown", "Unknown", "Unknown", "Unknown", "Unknown"])
+            self.assertEqual(cells[3:], ["—"])
 
     def test_new_sections_report_unsupported_families_and_offer_the_other_family(self):
         Server.objects.filter(pk=self.server.pk).update(dhcp6=False)
@@ -135,9 +136,13 @@ class TestCombinedWorkspace(_ViewTestBase):
                     link = page.select('[aria-label="DHCP family"] a')[0 if other == 4 else 1]
                     target = urlsplit(link["href"])
                     self.assertEqual(target.path, reverse(f"plugins:netbox_kea:combined_{section}{other}"))
+                    # Kea gives Subnet IDs per family, so the other family drops a Subnet ID.
                     self.assertEqual(
                         parse_qs(target.query, keep_blank_values=True),
-                        {"server": ["invalid", ""], **{key: [value] for key, value in filters.items()}},
+                        {
+                            "server": ["invalid", ""],
+                            **{key: [value] for key, value in filters.items() if key != "subnet_id"},
+                        },
                     )
 
     def test_new_sections_honor_object_permissions_and_invalid_selections(self):
@@ -186,14 +191,15 @@ class TestCombinedWorkspace(_ViewTestBase):
 
     def test_sync_keeps_each_servers_result_and_real_zero_counts(self):
         hidden = _make_db_server(name="unselected-server")
-        _make_job(
-            data={
-                "summary": [
-                    {"pk": self.server.pk, "created": 0, "updated": 7, "errors": 0},
-                    {"pk": self.second.pk, "created": 2, "updated": 3, "errors": 1, "conflicts": 4},
-                    {"pk": hidden.pk, "created": 9999, "updated": 9999, "errors": 9999},
-                ]
-            }
+        conflicts = {f"10.0.0.{index}" for index in range(4)}
+        stored_job(
+            [
+                SyncRunResult.synced(self.server.pk, self.server.name, SyncReport(updated=7)),
+                SyncRunResult.synced(
+                    self.second.pk, self.second.name, SyncReport(created=2, updated=3, errors=1, conflicts=conflicts)
+                ),
+                SyncRunResult.synced(hidden.pk, hidden.name, SyncReport(created=9999, updated=9999, errors=9999)),
+            ]
         )
         response = self.client.get(reverse("plugins:netbox_kea:combined_sync6"), self.selection)
         rows = BeautifulSoup(response.content, "html.parser").select(".table tbody tr")
@@ -204,16 +210,15 @@ class TestCombinedWorkspace(_ViewTestBase):
         self.assertEqual(
             counts,
             {
-                self.server.name: ["0", "7", "0", "Unknown", "Unknown"],
-                self.second.name: ["2", "3", "1", "Unknown", "4"],
+                self.server.name: ["0", "7", "0", "0", "0"],
+                self.second.name: ["2", "3", "1", "0", "4"],
             },
         )
         self.assertNotContains(response, "9999")
 
     def test_sync_reports_prefix_and_range_failures_separately_from_address_failures(self):
-        job = _make_job(data={"summary": [{"pk": self.server.pk, "errors": 0, "prefix_errors": 1}]})
-        job.status = "failed"
-        job.save(update_fields=["status"])
+        job = SyncRunResult.synced(self.server.pk, self.server.name, SyncReport(prefix_errors=1))
+        stored_job([job], status="failed")
         response = self.client.get(reverse("plugins:netbox_kea:combined_sync4"), self.selection)
         table = BeautifulSoup(response.content, "html.parser").select_one(".table")
         headings = [cell.get_text(strip=True) for cell in table.select("thead th")]

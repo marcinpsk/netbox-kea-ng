@@ -304,9 +304,18 @@ class TestServerScope(_ViewTestBase):
                         response = self.client.get(self._url(section, family), {"server": selection, "q": "needle"})
                         self.assertContains(response, "Invalid Server selection")
                         self.assertTrue(response.context["server_scope"].is_invalid)
-                        self.assertContains(response, f'href="{self._url(section, family)}?q=needle"')
+                        # Show all Servers keeps only the filters of the section.
+                        searched = section not in ("shared_networks", "overview")
+                        href = self._url(section, family) + ("?q=needle" if searched else "")
+                        self.assertEqual(self._show_all_href(response), href)
                         self.assertNotContains(response, '<div class="table-responsive')
                         self.assertEqual(kea.commands(), [])
+
+    def _show_all_href(self, response):
+        """Return the href of the "Show all Servers" link in the invalid-selection notice."""
+        link = BeautifulSoup(response.content, "html.parser").find("a", string="Show all Servers")
+        self.assertIsNotNone(link)
+        return link["href"]
 
     def _apply(self, response, checked):
         """Submit the Server selector as a browser does, with only the *checked* Server IDs ticked."""
@@ -324,8 +333,10 @@ class TestServerScope(_ViewTestBase):
                     page = self.client.get(self._url(section, family), {"server": "abc", "q": "needle"})
                     response = self._apply(page, checked=())
                     self.assertContains(response, "Invalid Server selection")
-                    if section not in ("shared_networks", "overview"):
-                        self.assertContains(response, f'href="{self._url(section, family)}?q=needle"')
+                    # Show all Servers keeps only the filters of the section.
+                    searched = section not in ("shared_networks", "overview")
+                    href = self._url(section, family) + ("?q=needle" if searched else "")
+                    self.assertEqual(self._show_all_href(response), href)
                     tab = BeautifulSoup(response.content, "html.parser").select_one(".nav-tabs a.active")
                     self.assertContains(self.client.get(tab["href"]), "Invalid Server selection")
                     self.assertEqual(kea.commands(), [])
@@ -344,8 +355,9 @@ class TestServerScope(_ViewTestBase):
             f"reservation_cursor_{self.server.pk}": "abc",
             "export": "csv",
         }
+        # Every section keeps its table fields, as on the Server pages.
         expected = {
-            "overview": set(),
+            "overview": {"sort", "per_page"},
             "subnets": {"q", "subnet_id", "sort", "per_page"},
             "shared_networks": {"sort", "per_page"},
             "reservations": {"q", "subnet_id", "scope", "sort", "per_page"},
@@ -373,6 +385,19 @@ class TestServerScope(_ViewTestBase):
         (link,) = (link for link in form.select("a") if "Show all servers" in link.get_text())
         self.assertEqual(link["href"], f"{self._url()}?q=needle")
 
+    def test_show_all_servers_keeps_the_filters_and_drops_page(self):
+        query = {"server": [self.server.pk, self.second.pk], "q": "printer", "by": "hostname", "page": "2"}
+        with stub_kea({}) as kea:
+            page = self.client.get(self._url("leases"), {**query, "sort": ["hostname", "address"]})
+        form = BeautifulSoup(page.content, "html.parser").select_one("#server-filter-form")
+        (link,) = (link for link in form.select("a") if "Show all servers" in link.get_text())
+        self.assertEqual(urlsplit(link["href"]).path, self._url("leases"))
+        self.assertEqual(
+            parse_qs(urlsplit(link["href"]).query),
+            {"q": ["printer"], "by": ["hostname"], "sort": ["hostname", "address"]},
+        )
+        self.assertEqual(kea.commands(), [])
+
     def test_no_selection_reads_all_permitted_servers(self):
         responses = _catalogue_responses(4, 1, "198.18.0.0/24")
         responses["stat-lease4-get"] = {"result": 2, "text": "unsupported"}
@@ -396,9 +421,10 @@ class TestServerScope(_ViewTestBase):
         self.assertFalse(server_scope.is_invalid)
 
     def test_one_server_redirects_to_each_family_tab_with_only_compatible_filters(self):
+        # The Server Subnets page has the Subnet search too, and no scope change keeps pagination.
         expected_filters = {
-            "subnets": {"page", "per_page", "sort"},
-            "shared_networks": {"page", "per_page", "sort"},
+            "subnets": {"q", "subnet_id", "per_page", "sort"},
+            "shared_networks": {"per_page", "sort"},
             "reservations": {"q", "subnet_id", "scope", "per_page", "sort"},
             "leases": {"q", "by", "state", "per_page", "sort"},
         }

@@ -1,0 +1,11 @@
+{# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
+{# SPDX-License-Identifier: Apache-2.0 #}
+{% load kea_workspace %}
+{# The Workspace Section and its subsections, from the registry. Context: subsection_nav. #}
+<ul class="nav nav-tabs kea-tabs mb-3">
+  {% for key, label, url, current in subsection_nav %}
+  <li class="nav-item">
+    <a class="nav-link{% if current %} active{% endif %}" href="{% workspace_url url %}"{% if current %} aria-current="page"{% endif %}>{{ label }}</a>
+  </li>
+  {% endfor %}
+</ul>

@@ -7,6 +7,7 @@ They share the ``tests/ui`` harness with ``test_ui.py`` and run against the comp
 stack that ``tests/test_setup.sh`` starts. See AGENTS.md for how to start it.
 """
 
+import csv
 import ipaddress
 import re
 import subprocess
@@ -604,6 +605,46 @@ class TestKeaServerTabs:
     ) -> None:
         server_id = kea_server.id
         page.goto(f"{plugin_base}/servers/{server_id}/subnets6/")
+        _check_no_django_error(page)
+        _assert_no_http_errors(track_http_errors)
+
+    @pytest.mark.parametrize(
+        ("family", "subnets", "cidr_text"),
+        [
+            (4, {1: "192.0.2.0/24", 2: "198.51.100.0/24"}, "198.51"),
+            (6, {1: "2001:db8:1::/64", 2: "2001:db8:2::/64"}, "DB8:2:"),
+        ],
+        ids=["dhcp4", "dhcp6"],
+    )
+    def test_server_subnets_search_filters_the_table_and_the_export(
+        self,
+        page: Page,
+        netbox_login: None,
+        plugin_base: str,
+        kea_server,
+        track_http_errors: list,
+        family: int,
+        subnets: dict[int, str],
+        cidr_text: str,
+    ) -> None:
+        """A CIDR text and a Subnet ID each leave one Subnet in the table and in the CSV export."""
+        page.goto(f"{plugin_base}/servers/{kea_server.id}/subnets{family}/")
+        rows = page.locator("#object_list table tbody tr")
+        for subnet in subnets.values():
+            expect(rows.filter(has_text=subnet)).to_have_count(1)
+        search = page.locator("form").filter(has=page.locator("#id_q"))
+        for field, value, shown in (("q", cidr_text, subnets[2]), ("subnet_id", "1", subnets[1])):
+            page.goto(f"{plugin_base}/servers/{kea_server.id}/subnets{family}/")
+            search.locator(f"#id_{field}").fill(value)
+            search.get_by_role("button", name="Filter").click()
+            page.wait_for_url(re.compile(rf"[?&]{field}="))
+            expect(rows).to_have_count(1)
+            expect(rows.first).to_contain_text(shown)
+            page.get_by_role("button", name="Export").click()
+            with page.expect_download() as download:
+                page.get_by_role("link", name="Current View").click()
+            with open(download.value.path()) as export:
+                assert [row["Subnet"] for row in csv.DictReader(export)] == [shown]
         _check_no_django_error(page)
         _assert_no_http_errors(track_http_errors)
 
@@ -2234,3 +2275,135 @@ class TestSubnetManagement:
             # Unconditional: the helper matches by CIDR under check=(0, 3), so it is a no-op
             # once the UI delete succeeded, and no flag can be left stale by a failed wait.
             self._kea4_cleanup_subnet(kea_client, test_subnet, strict=sys.exc_info()[0] is None)
+
+
+class TestDhcpOptionEditors:
+    """E2E tests for the Client Classes column of the global and Subnet DHCP Option editors."""
+
+    # The harness runs Kea 3.x only (direct daemon control sockets); Kea 2.6 refuses client-classes in option-data.
+    _OPTION = "ntp-servers"
+    _DATA = "192.0.2.123"
+
+    @staticmethod
+    def _option_scope(config: dict, subnet_id: int | None) -> dict:
+        """Return the global DHCPv4 configuration, or the Subnet with this ID, from a config-get reply."""
+        daemon = config["Dhcp4"]
+        if subnet_id is None:
+            return daemon
+        subnets = [*daemon.get("subnet4", []), *(s for n in daemon.get("shared-networks", []) for s in n["subnet4"])]
+        (subnet,) = [s for s in subnets if s["id"] == subnet_id]
+        return subnet
+
+    def _kea_options(self, kea_client, subnet_id: int | None) -> list[dict]:
+        config = kea_client.command("config-get", 4)[0]["arguments"]
+        return self._option_scope(config, subnet_id).get("option-data", [])
+
+    def _restore_options(self, kea_client, subnet_id: int | None, original: list[dict], *, strict: bool) -> None:
+        """Set the option-data that the test read before its first change (safe to call twice)."""
+        try:
+            config = kea_client.command("config-get", 4)[0]["arguments"]
+            config.pop("hash", None)
+            self._option_scope(config, subnet_id)["option-data"] = original
+            kea_client.command("config-set", 4, arguments=config)
+        except Exception as exc:
+            if strict:
+                raise
+            warnings.warn(f"Could not restore the DHCPv4 option-data of scope {subnet_id}: {exc}", stacklevel=2)
+
+    def _save(self, page: Page, editor_path: str, return_path: str, confirmed: str) -> dict[str, list[str]]:
+        """Click Save Options, require the redirect and the confirmation, and return the submitted fields."""
+        with page.expect_response(
+            lambda r: r.request.method == "POST" and urlparse(r.url).path == editor_path
+        ) as posted:
+            page.get_by_role("button", name="Save Options").click()
+        if posted.value.status != 302:
+            page.wait_for_load_state("networkidle")
+            errors = page.locator(".alert, .text-danger").all_inner_texts()
+            pytest.fail(f"The editor did not save (HTTP {posted.value.status}): {errors}")
+        page.wait_for_url(lambda u: urlparse(u).path == return_path)
+        expect(page.locator("body")).to_contain_text(confirmed)
+        return parse_qs(posted.value.request.post_data or "")
+
+    def _option_row(self, page: Page) -> Locator:
+        rows = page.locator("#formset-rows tr.formset-row")
+        return rows.filter(has=page.locator(f'input[name$="-name"][value="{self._OPTION}"]'))
+
+    @pytest.mark.parametrize("subnet_id", [None, 1], ids=["global", "subnet"])
+    def test_client_classes_of_an_added_and_an_existing_row_reach_kea(
+        self,
+        page: Page,
+        netbox_login: None,
+        plugin_base: str,
+        kea_server,
+        kea_client,
+        track_http_errors: list,
+        subnet_id: int | None,
+    ) -> None:
+        """Add an option row with client classes, save, then change the classes of that existing row."""
+        base = urlparse(plugin_base).path
+        if subnet_id is None:
+            editor_path = f"{base}/servers/{kea_server.id}/dhcp4/options/"
+            return_path = f"{base}/servers/{kea_server.id}/"
+            confirmed = "DHCPv4 server options updated."
+        else:
+            editor_path = f"{base}/servers/{kea_server.id}/subnets4/{subnet_id}/options/"
+            return_path = f"{base}/servers/{kea_server.id}/subnets4/"
+            confirmed = f"Subnet {subnet_id} options updated."
+        editor_url = f"{plugin_base}{editor_path.removeprefix(base)}"
+
+        original = self._kea_options(kea_client, subnet_id)
+        assert all(o.get("name") != self._OPTION for o in original), f"{self._OPTION} is already in the harness scope"
+        try:
+            # ---- ADD a row with client classes ----
+            page.goto(editor_url)
+            page.wait_for_load_state("networkidle")
+            _check_no_django_error(page)
+            _dismiss_debug_toolbar(page)
+            expect(page.locator("#options-form thead th")).to_have_text(
+                ["Option Name", "Value", "Client Classes", "Always Send", "Delete"]
+            )
+            rows = page.locator("#formset-rows tr.formset-row")
+            count = rows.count()
+            expect(rows.locator('input[name$="-client_classes"]')).to_have_count(count)
+
+            page.get_by_role("button", name="Add Option").click()
+            expect(rows).to_have_count(count + 1)
+            added = rows.nth(count)
+            added.locator(f'input[name="form-{count}-name"]').fill(self._OPTION)
+            added.locator(f'input[name="form-{count}-data"]').fill(self._DATA)
+            added.locator(f'input[name="form-{count}-client_classes"]').fill("voip, KNOWN")
+            fields = self._save(page, editor_path, return_path, confirmed)
+            assert fields["form-TOTAL_FORMS"] == [str(count + 1)]
+            assert fields[f"form-{count}-client_classes"] == ["voip, KNOWN"]
+
+            stored = self._kea_options(kea_client, subnet_id)
+            (entry,) = [o for o in stored if o.get("name") == self._OPTION]
+            assert (entry["data"], entry.get("client-classes")) == (self._DATA, ["voip", "KNOWN"])
+            assert [o for o in stored if o is not entry] == original
+
+            page.goto(editor_url)
+            page.wait_for_load_state("networkidle")
+            _dismiss_debug_toolbar(page)
+            row = self._option_row(page)
+            expect(row).to_have_count(1)
+            expect(row.locator('input[name$="-client_classes"]')).to_have_value("voip, KNOWN")
+
+            # ---- CHANGE the classes of the existing row ----
+            row.locator('input[name$="-client_classes"]').fill("UNKNOWN")
+            index = re.search(r"form-(\d+)-", row.locator('input[name$="-name"]').get_attribute("name") or "")
+            assert index, "The option row has no formset field name"
+            fields = self._save(page, editor_path, return_path, confirmed)
+            assert fields[f"form-{index.group(1)}-client_classes"] == ["UNKNOWN"]
+
+            stored = self._kea_options(kea_client, subnet_id)
+            (entry,) = [o for o in stored if o.get("name") == self._OPTION]
+            assert (entry["data"], entry.get("client-classes")) == (self._DATA, ["UNKNOWN"])
+            assert [o for o in stored if o is not entry] == original
+
+            page.goto(editor_url)
+            page.wait_for_load_state("networkidle")
+            expect(self._option_row(page).locator('input[name$="-client_classes"]')).to_have_value("UNKNOWN")
+            _assert_no_http_errors(track_http_errors)
+        finally:
+            # Kea keeps the change in memory, so a leftover option makes every later run refuse the add.
+            self._restore_options(kea_client, subnet_id, original, strict=sys.exc_info()[0] is None)

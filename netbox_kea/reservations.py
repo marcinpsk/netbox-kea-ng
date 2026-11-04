@@ -9,9 +9,9 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, auto
-from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, assert_never, cast
+from typing import TYPE_CHECKING, Any, Generic, Literal, Protocol, TypeVar, assert_never, cast
 
-from .constants import Family, IPAddressValue
+from .constants import LEASE_SELECTOR_BY_IDENTIFIER, Family, IPAddressValue, LeaseState
 from .dhcp_options import (
     DHCPOption,
     DHCPOptionEdit,
@@ -217,12 +217,59 @@ def current_lease_facts(snapshot: LeaseSnapshot) -> CurrentLeaseFacts:
     )
 
 
-def current_lease_presence(reservation: Reservation, facts: CurrentLeaseFacts) -> CurrentLeasePresence:
-    """Return whether the client of *reservation* holds one of the Current Leases of *facts*.
+@dataclass(frozen=True)
+class SubnetLeases:
+    """The Leases of one Subnet, in one state or in every state: they show the client of an In-Subnet Reservation."""
 
-    The facts of an In-Subnet Reservation are the Leases of its Subnet, so a reserved address matches too. The facts
-    of a Global Reservation are the Leases of its identity in any Subnet, so only the identity matches.
+    subnet: SubnetIdentity
+    #: ``None`` is every state.
+    state: LeaseState | None
+
+
+@dataclass(frozen=True)
+class IdentityLeases:
+    """The Leases of one identity in any Subnet: they show the client of a Global Reservation."""
+
+    identity: ReservationIdentity
+
+
+#: The Kea Lease query whose Leases can show whether the client of a Reservation holds a Current Lease.
+LeaseQuery = SubnetLeases | IdentityLeases
+
+
+class CurrentLeases(Protocol):
+    """The Current Leases that one Lease query finds in Kea."""
+
+    def current_leases(self, query: LeaseQuery) -> CurrentLeaseFacts:
+        """Return the Current Leases that *query* finds. A failed read raises the exception of the implementation."""
+        ...
+
+
+def current_lease_presence(reservation: Reservation, leases: CurrentLeases) -> CurrentLeasePresence:
+    """Return whether the client of *reservation* holds one of the Current Leases that *leases* shows.
+
+    An In-Subnet Reservation queries the Leases of its Subnet, so a reserved address matches too. A Global
+    Reservation queries the Leases of its identity in any Subnet, so only the identity matches. Kea has no Lease
+    query for some identifier types, so a Global Reservation of one is Unknown without a read. A failed read raises.
     """
+    query = _lease_query(reservation)
+    if query is None:
+        return LeasePresenceUnknown(UnknownLeasePresence.UNSEARCHABLE_IDENTIFIER)
+    return _presence(reservation, leases.current_leases(query))
+
+
+def _lease_query(reservation: Reservation) -> LeaseQuery | None:
+    """Return the Lease query that shows the client of *reservation*, or ``None`` when Kea has none."""
+    if isinstance(reservation.scope, InSubnetReservationScope):
+        # DHCPv6 registered leases are current too, and only an unfiltered Subnet query returns them.
+        return SubnetLeases(reservation.scope.subnet, "assigned" if reservation.family == 4 else None)
+    if reservation.identity.identifier_type not in LEASE_SELECTOR_BY_IDENTIFIER[reservation.family]:
+        return None
+    return IdentityLeases(reservation.identity)
+
+
+def _presence(reservation: Reservation, facts: CurrentLeaseFacts) -> CurrentLeasePresence:
+    """Return whether the client of *reservation* holds one of the Current Leases of *facts*."""
     if isinstance(reservation.scope, InSubnetReservationScope):
         matched = next((address for address in reservation.addresses if address in facts.addresses), None)
         if matched is not None:
@@ -350,6 +397,58 @@ ReservationMatch = (
 def reservation_match(
     lease: Lease,
     subnet: VerifiedSubnet,
+    shared_network: tuple[VerifiedSubnet, ...] | None,
+    lookup: ReservationLookup,
+) -> ReservationMatch:
+    """Return how the Reservation that Kea finds for the client of *lease* relates to *lease*.
+
+    The lookups follow Kea: first the scopes that the reservation flags of *subnet* enable, then the others. Unknown
+    flags keep the In-Subnet scope first. The In-Subnet scope looks up the allocation of *lease*, then each of its
+    identities. The Global scope looks up each identity. The first Reservation found is the match. When
+    ``_tries_global_reservation()`` is true, the Global Reservation of the client is looked up too, because Kea
+    tries it next. *shared_network* holds *subnet* and the other Subnets of its Shared Network; ``None`` is a Shared
+    Network that the Catalogue cannot show. A failed lookup raises its own exception, which ends the walk.
+
+    Raises:
+        ValueError: If *subnet* is not the Subnet of *lease*, or *shared_network* does not hold *subnet*.
+
+    """
+    if lease.subnet_id != subnet.subnet_id:
+        raise ValueError("The Reservation Match of a Lease needs the Subnet of the Lease.")
+    if shared_network is not None and subnet not in shared_network:
+        raise ValueError("The Shared Network of a Reservation Match must hold the Subnet of the Lease.")
+    flags = subnet.reservation_flags
+    scopes: tuple[tuple[ReservationScope, bool], ...] = (
+        (InSubnetReservationScope(subnet.identity), flags is None or flags.in_subnet),
+        (GlobalReservationScope(), flags is None or flags.global_),
+    )
+    reservation = None
+    for scope in (*(scope for scope, on in scopes if on), *(scope for scope, on in scopes if not on)):
+        reservation = _first_found(lease, scope, lookup)
+        if reservation is not None:
+            break
+    global_reservation = None
+    if reservation is not None and _tries_global_reservation(lease, subnet, reservation):
+        global_reservation = _first_found(lease, GlobalReservationScope(), lookup)
+    return _match(lease, subnet, reservation, shared_network, global_reservation=global_reservation)
+
+
+def _first_found(lease: Lease, scope: ReservationScope, lookup: ReservationLookup) -> Reservation | None:
+    """Return the first Reservation of *scope* found by the allocation of *lease* (In-Subnet only), then its identities."""
+    keys: list[ReservationKey] = []
+    if isinstance(scope, InSubnetReservationScope):
+        keys.append(lease.prefix if isinstance(lease, DHCPv6PrefixLease) else lease.address)
+    keys.extend(lease_identities(lease).identities)
+    for key in keys:
+        found = lookup.find(scope, key)
+        if found is not None:
+            return found
+    return None
+
+
+def _match(
+    lease: Lease,
+    subnet: VerifiedSubnet,
     reservation: Reservation | None,
     shared_network: tuple[VerifiedSubnet, ...] | None,
     *,
@@ -357,34 +456,16 @@ def reservation_match(
 ) -> ReservationMatch:
     """Return how *reservation*, which the lookups of *lease* found in *subnet* or globally, relates to *lease*.
 
-    ``None`` is no Reservation found. *shared_network* holds *subnet* and the other Subnets of its Shared Network;
-    ``None`` is a Shared Network that the Catalogue cannot show. A Reservation of a scope that the reservation flags
-    of *subnet* disable is ignored: the lookups try the enabled scopes first. Global and In-Subnet Reservations
-    follow one rule: a reserved address counts in *subnet*, and a reserved delegated prefix always counts. With
-    reservations-out-of-pool, an In-Subnet reserved allocation in a Pool of *subnet* does not count, but a Lease of
-    a reserved allocation stays Reserved. When the In-Subnet Reservation holds allocations but gives none of the
-    Lease kind, Kea tries *global_reservation*, the Global Reservation of the client: the lookups read it only where
-    ``tries_global_reservation()`` is true. An In-Subnet Reservation of no allocation stays Host-Only. When the
-    Global Reservation gives an allocation, the match is Unknown with other Subnets in *shared_network* or with no
-    *shared_network*, because Kea tries their In-Subnet Reservations first. Else DHCPv6 takes the Global match, and
-    DHCPv4 gives the In-Subnet address. The match is Unknown when a fact that the configuration does not show
-    changes it.
-
-    Raises:
-        ValueError: If *subnet* is not the Subnet of *lease*, *shared_network* does not hold *subnet*, or
-            *global_reservation* is not a Global Reservation that Kea tries after *reservation*.
-
+    ``None`` is no Reservation found. A Reservation of a scope that the reservation flags of *subnet* disable is
+    ignored. Global and In-Subnet Reservations follow one rule: a reserved address counts in *subnet*, and a reserved
+    delegated prefix always counts. With reservations-out-of-pool, an In-Subnet reserved allocation in a Pool of
+    *subnet* does not count, but a Lease of a reserved allocation stays Reserved. When the In-Subnet Reservation holds
+    allocations but gives none of the Lease kind, Kea tries *global_reservation*, the Global Reservation of the
+    client. An In-Subnet Reservation of no allocation stays Host-Only. When the Global Reservation gives an
+    allocation, the match is Unknown with other Subnets in *shared_network* or with no *shared_network*, because Kea
+    tries their In-Subnet Reservations first. Else DHCPv6 takes the Global match, and DHCPv4 gives the In-Subnet
+    address. The match is Unknown when a fact that the configuration does not show changes it.
     """
-    if lease.subnet_id != subnet.subnet_id:
-        raise ValueError("The Reservation Match of a Lease needs the Subnet of the Lease.")
-    if shared_network is not None and subnet not in shared_network:
-        raise ValueError("The Shared Network of a Reservation Match must hold the Subnet of the Lease.")
-    if global_reservation is not None and (
-        reservation is None
-        or not isinstance(global_reservation.scope, GlobalReservationScope)
-        or not tries_global_reservation(lease, subnet, reservation)
-    ):
-        raise ValueError("A Reservation Match tries a Global Reservation only where Kea tries it.")
     if reservation is None:
         if lease_identities(lease).foreign:
             return ReservationMatchUnknown(UnknownReservationMatch.FOREIGN_IDENTIFIER)
@@ -399,7 +480,7 @@ def reservation_match(
         return IgnoredReservation(reservation, IgnoredReservationReason.GLOBAL_RESERVATIONS_DISABLED)
     fallback = None
     if global_reservation is not None:
-        fallback = reservation_match(lease, subnet, global_reservation, shared_network, global_reservation=None)
+        fallback = _match(lease, subnet, global_reservation, shared_network, global_reservation=None)
     return _applied_match(
         lease, subnet, reservation, shared_network, out_of_pool=in_subnet and flags.out_of_pool, fallback=fallback
     )
@@ -480,7 +561,7 @@ def _fallback_match(
     return _allocation_match(lease, reservation, local, ())
 
 
-def tries_global_reservation(lease: Lease, subnet: VerifiedSubnet, reservation: Reservation) -> bool:
+def _tries_global_reservation(lease: Lease, subnet: VerifiedSubnet, reservation: Reservation) -> bool:
     """Return whether Kea can try the Global Reservation of the client of *lease* after *reservation*.
 
     Only an In-Subnet Reservation that can give no allocation of the Lease kind qualifies, in a Subnet that applies
@@ -679,6 +760,20 @@ class InSubnetReservationScope:
 
 
 ReservationScope = GlobalReservationScope | InSubnetReservationScope
+#: What a Reservation lookup finds a Reservation by: an allocation address, a delegated prefix or an identity.
+ReservationKey = IPAddressValue | ipaddress.IPv6Network | ReservationIdentity
+
+
+class ReservationLookup(Protocol):
+    """The Reservation lookup of a Reservation Match: one scope and one key, as Kea's ``reservation-get`` reads it."""
+
+    def find(self, scope: ReservationScope, key: ReservationKey) -> Reservation | None:
+        """Return the Reservation of *scope* that *key* finds, or ``None`` when there is none.
+
+        An address or a delegated prefix needs an In-Subnet scope. A failed lookup raises the exception of the
+        implementation.
+        """
+        ...
 
 
 #: The longest server-hostname and boot-file-name that Kea 3.2 accepts on a host.

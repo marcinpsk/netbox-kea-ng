@@ -3,43 +3,46 @@
 """The lookups that relate Leases and Reservations: display cache reads in a worker pool (ADR 0002, ADR 0009).
 
 The Current Lease lookups give the Lease badges of Reservation rows, and the Reservation lookups give the
-Reservation badges of Lease rows.
+Reservation badges of Lease rows. ``reservations`` decides which lookups a row needs; this module holds the Kea
+adapters of its ``CurrentLeases`` and ``ReservationLookup`` ports.
 """
 
 from __future__ import annotations
 
 import concurrent.futures
+import ipaddress
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
-from typing import Concatenate, ParamSpec, TypeVar
+from typing import Generic, TypeVar
 
 from . import constants, display_cache, subnet_catalogue
-from .constants import Family, LeaseState
+from .constants import Family
 from .kea import KeaClient, LeaseQueryGuardError, close_quietly
 from .lease_reads import LeaseSearch, cached_read
-from .leases import DHCPv6PrefixLease, Lease, LeaseSnapshot
+from .leases import Lease, LeaseSnapshot
 from .models import DisplayCacheConfig, KeaClientConfig, PinnedSettings, Server
 from .read_failure import ReadFailure, ReadFailureKind, attempt
 from .reservations import (
     CurrentLeaseFacts,
     CurrentLeasePresence,
-    GlobalReservationScope,
     InSubnetReservationScope,
     LeasePresenceUnknown,
+    LeaseQuery,
     Reservation,
+    ReservationIdentity,
+    ReservationKey,
     ReservationMatch,
     ReservationMatchUnknown,
     ReservationScope,
+    SubnetLeases,
     UnknownLeasePresence,
     UnknownReservationMatch,
     current_lease_facts,
     current_lease_presence,
-    lease_identities,
     reservation_match,
-    tries_global_reservation,
 )
 from .subnet_catalogue import CatalogueSnapshot, VerifiedSubnet
 
@@ -47,15 +50,24 @@ _MAX_WORKERS = 10
 
 T = TypeVar("T")
 R = TypeVar("R")
-P = ParamSpec("P")
+K = TypeVar("K", bound=Hashable)
+V = TypeVar("V")
 
 
-class _FailedLookup(Exception):
-    """A Reservation lookup failed, so the Reservation Match is *unknown*."""
+class _FailedLeaseLookup(Exception):
+    """A Lease lookup failed, so the Current Lease Presence is Unknown for *reason*."""
 
-    def __init__(self, unknown: ReservationMatchUnknown) -> None:
-        super().__init__(unknown.reason)
-        self.unknown = unknown
+    def __init__(self, reason: UnknownLeasePresence) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class _FailedReservationLookup(Exception):
+    """A Reservation lookup failed, so the Reservation Match is Unknown for *reason*."""
+
+    def __init__(self, reason: UnknownReservationMatch) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class WorkerClients:
@@ -86,19 +98,18 @@ class WorkerClients:
             close_quietly(client)
 
 
-def _pooled(server: Server, family: Family, work: Callable[[WorkerClients, T], R], items: Sequence[T]) -> list[R]:
+def _pooled(clients: WorkerClients, work: Callable[[T], R], items: Sequence[T]) -> list[R]:
     """Return the result of *work* for each of *items*, in their order, from a pool of at most ``_MAX_WORKERS`` worker threads.
 
-    The settings rows are read on the calling thread and pinned in each worker. Each worker builds its Kea client on
-    its first cache miss, and the pool closes each client when it ends. A failure of *work* raises.
+    The settings rows are read on the calling thread and pinned in each worker. Each worker builds its Kea client of
+    *clients* on its first cache miss, and the pool closes each client when it ends. A failure of *work* raises.
     """
-    if not items:
-        return []
-    pinned = PinnedSettings.read(KeaClientConfig, DisplayCacheConfig)
-    clients = WorkerClients(server, family)
     try:
+        if not items:
+            return []
+        pinned = PinnedSettings.read(KeaClientConfig, DisplayCacheConfig)
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(items), _MAX_WORKERS)) as executor:
-            futures = [executor.submit(pinned.context().run, work, clients, item) for item in items]
+            futures = [executor.submit(pinned.context().run, work, item) for item in items]
             try:
                 return [future.result() for future in futures]
             except BaseException:
@@ -109,36 +120,27 @@ def _pooled(server: Server, family: Family, work: Callable[[WorkerClients, T], R
         clients.close()
 
 
-def _search(reservation: Reservation) -> LeaseSearch | None:
-    """Return the Lease search that observes the client of *reservation*, or ``None`` when Kea has none."""
-    family = reservation.family
-    if isinstance(reservation.scope, InSubnetReservationScope):
-        # DHCPv6 registered leases are current too, and only an unfiltered Subnet query returns them.
-        state: LeaseState | None = "assigned" if family == 4 else None
-        return LeaseSearch(constants.BY_SUBNET_ID, reservation.scope.subnet.subnet_id, state)
-    # A Global Reservation has no Subnet, so only a Subnet-free identity query can answer it.
-    selector = constants.LEASE_SELECTOR_BY_IDENTIFIER[family].get(reservation.identity.identifier_type)
-    return None if selector is None else LeaseSearch(selector, reservation.identity.value)
+class _OncePerCall(Generic[K, V]):
+    """The lookups of one batch call: each distinct lookup runs once, also when worker threads need it at once.
 
+    A Read Failure is kept, so each row that needs the lookup gets it without a new read. Any other failure raises,
+    and the next row that needs the lookup reads it again.
+    """
 
-def _observe(
-    server: Server, family: Family, read_since: datetime, clients: WorkerClients, search: LeaseSearch
-) -> CurrentLeaseFacts | UnknownLeasePresence:
-    """Return the Current Leases of one Lease search, or why Kea could not show them."""
-    try:
-        read = attempt(
-            f"The Lease lookup of Server {server.pk}",
-            lambda: cached_read(server, family, search, clients, read_since=read_since),
-        )
-    except LeaseQueryGuardError:
-        return UnknownLeasePresence.QUERY_GUARD
-    if isinstance(read, ReadFailure):
-        return _LEASE_PRESENCE_UNKNOWN[read.kind]
-    loaded = read.loaded
-    # Only a Subnet search by CIDR can resolve to a Catalogue, and no Reservation lookup sends one.
-    if not isinstance(loaded, LeaseSnapshot):
-        raise TypeError(f"The Lease lookup {search.parts!r} resolved to a Catalogue.")
-    return current_lease_facts(loaded)
+    def __init__(self, label: str) -> None:
+        self._label = label
+        self._registry = threading.Lock()
+        self._locks: dict[K, threading.Lock] = {}
+        self._results: dict[K, V | ReadFailure] = {}
+
+    def get(self, key: K, read: Callable[[], V]) -> V | ReadFailure:
+        """Return the result of the lookup *key*, read by *read* on its first call."""
+        with self._registry:
+            lock = self._locks.setdefault(key, threading.Lock())
+        with lock:
+            if key not in self._results:
+                self._results[key] = attempt(self._label, read)
+            return self._results[key]
 
 
 #: Why a failed Lease lookup leaves the Current Lease Presence unknown.
@@ -160,14 +162,73 @@ _RESERVATION_MATCH_UNKNOWN: dict[ReadFailureKind, UnknownReservationMatch] = {
 }
 
 
+class _KeaCurrentLeases:
+    """The ``CurrentLeases`` of one ``lease_presence()`` call: Kea's Lease queries through the display cache."""
+
+    def __init__(self, server: Server, family: Family, read_since: datetime, clients: WorkerClients) -> None:
+        self._server = server
+        self._family = family
+        self._read_since = read_since
+        self._clients = clients
+        self._lookups: _OncePerCall[LeaseSearch, CurrentLeaseFacts | UnknownLeasePresence] = _OncePerCall(
+            f"The Lease lookup of Server {server.pk}"
+        )
+
+    def current_leases(self, query: LeaseQuery) -> CurrentLeaseFacts:
+        """Return the Current Leases that *query* finds, from the display cache entry of its Lease search or from Kea.
+
+        Raises:
+            _FailedLeaseLookup: If the Lease search failed, in this row or in an earlier one.
+            ValueError: If Kea has no Lease query for the identity of *query*.
+            TypeError: If the search resolves to a Catalogue, which only a Subnet search by CIDR can do.
+
+        """
+        search = self._search(query)
+        facts = self._lookups.get(search, partial(self._read, search))
+        if isinstance(facts, ReadFailure):
+            raise _FailedLeaseLookup(_LEASE_PRESENCE_UNKNOWN[facts.kind])
+        if isinstance(facts, UnknownLeasePresence):
+            raise _FailedLeaseLookup(facts)
+        return facts
+
+    def _search(self, query: LeaseQuery) -> LeaseSearch:
+        """Return the Lease search that sends *query* to Kea."""
+        if isinstance(query, SubnetLeases):
+            return LeaseSearch(constants.BY_SUBNET_ID, query.subnet.subnet_id, query.state)
+        identity = query.identity
+        selector = constants.LEASE_SELECTOR_BY_IDENTIFIER[self._family].get(identity.identifier_type)
+        if selector is None:
+            raise ValueError(f"Kea has no DHCPv{self._family} Lease query for a {identity.identifier_type}.")
+        return LeaseSearch(selector, identity.value)
+
+    def _read(self, search: LeaseSearch) -> CurrentLeaseFacts | UnknownLeasePresence:
+        """Return the Current Leases of *search*, or ``QUERY_GUARD`` when the Lease query guard refuses it."""
+        try:
+            read = cached_read(self._server, self._family, search, self._clients, read_since=self._read_since)
+        except LeaseQueryGuardError:
+            return UnknownLeasePresence.QUERY_GUARD
+        loaded = read.loaded
+        # Only a Subnet search by CIDR can resolve to a Catalogue, and no Lease query of a Reservation sends one.
+        if not isinstance(loaded, LeaseSnapshot):
+            raise TypeError(f"The Lease lookup {search.parts!r} resolved to a Catalogue.")
+        return current_lease_facts(loaded)
+
+    def presence(self, reservation: Reservation) -> CurrentLeasePresence:
+        """Return the Current Lease Presence of *reservation*, or why Kea could not show it."""
+        try:
+            return current_lease_presence(reservation, self)
+        except _FailedLeaseLookup as failed:
+            return LeasePresenceUnknown(failed.reason)
+
+
 def lease_presence(
     server: Server, family: Family, reservations: Sequence[Reservation], *, read_since: datetime
 ) -> tuple[CurrentLeasePresence, ...]:
     """Return the Current Lease Presence of each of *reservations*, in their order.
 
-    Each distinct Lease search is one display cache entry. An entry read before *read_since*, the read time of the
-    Reservation table, is read again, so a Refresh also reads each lookup live. When Kea does not know a Lease
-    command, every Reservation is Unknown.
+    Each distinct Lease search is one display cache entry, read once per call. An entry read before *read_since*,
+    the read time of the Reservation table, is read again, so a Refresh also reads each lookup live. When Kea does
+    not know a Lease command, every Reservation is Unknown.
 
     Raises:
         ValueError: If a Reservation is not of *family*.
@@ -176,25 +237,17 @@ def lease_presence(
     """
     if any(reservation.family != family for reservation in reservations):
         raise ValueError(f"Every Reservation of a DHCPv{family} lookup must be a DHCPv{family} Reservation.")
-    searches = [_search(reservation) for reservation in reservations]
-    lookups = list(dict.fromkeys(search for search in searches if search is not None))
-    observed = dict(
-        zip(lookups, _pooled(server, family, partial(_observe, server, family, read_since), lookups), strict=True)
-    )
-    if UnknownLeasePresence.LEASE_HOOK_UNAVAILABLE in observed.values():
-        return tuple(LeasePresenceUnknown(UnknownLeasePresence.LEASE_HOOK_UNAVAILABLE) for _ in reservations)
-    presences: list[CurrentLeasePresence] = []
-    for reservation, search in zip(reservations, searches, strict=True):
-        facts = UnknownLeasePresence.UNSEARCHABLE_IDENTIFIER if search is None else observed[search]
-        if isinstance(facts, UnknownLeasePresence):
-            presences.append(LeasePresenceUnknown(facts))
-        else:
-            presences.append(current_lease_presence(reservation, facts))
-    return tuple(presences)
+    clients = WorkerClients(server, family)
+    leases = _KeaCurrentLeases(server, family, read_since, clients)
+    presences = tuple(_pooled(clients, leases.presence, reservations))
+    hook_unavailable = LeasePresenceUnknown(UnknownLeasePresence.LEASE_HOOK_UNAVAILABLE)
+    if hook_unavailable in presences:
+        return tuple(hook_unavailable for _ in reservations)
+    return presences
 
 
 @dataclass(frozen=True)
-class _ReservationLookup:
+class _ReservationLookupEntry:
     """One display cache entry: the Reservation that one lookup of a Lease row found, or ``None`` for none."""
 
     reservation: Reservation | None
@@ -208,62 +261,61 @@ class _ReservationLookup:
         return self.catalogue_settled
 
 
-class _ReservationLookups:
-    """The Reservation lookups of one ``reservation_matches()`` call, each read once for all of its Leases."""
+class _KeaReservationLookup:
+    """The ``ReservationLookup`` of one ``reservation_matches()`` call: Kea's ``reservation-get`` through the cache."""
 
-    def __init__(self, server: Server, family: Family, catalogue: CatalogueSnapshot, read_since: datetime) -> None:
+    def __init__(
+        self, server: Server, family: Family, catalogue: CatalogueSnapshot, read_since: datetime, clients: WorkerClients
+    ) -> None:
         self._server = server
         self._family = family
         self._catalogue = catalogue
         self._read_since = read_since
-        self._registry = threading.Lock()
-        self._locks: dict[display_cache.QueryParts, threading.Lock] = {}
-        self._found: dict[display_cache.QueryParts, Reservation | None] = {}
-        self._failures: dict[display_cache.QueryParts, ReservationMatchUnknown] = {}
+        self._clients = clients
+        self._lookups: _OncePerCall[display_cache.QueryParts, Reservation | None] = _OncePerCall(
+            f"A Reservation lookup of Server {server.pk}"
+        )
 
-    def _find(
-        self,
-        clients: WorkerClients,
-        parts: display_cache.QueryParts,
-        lookup: Callable[Concatenate[KeaClient, P], Reservation | None],
-        *args: P.args,
-        **kwargs: P.kwargs,
-    ) -> Reservation | None:
-        """Return the Reservation that *lookup* finds, from the display cache entry of *parts* or from Kea.
+    def find(self, scope: ReservationScope, key: ReservationKey) -> Reservation | None:
+        """Return the Reservation of *scope* that *key* finds, from the display cache entry of the lookup or from Kea.
 
-        Leases of one client repeat a lookup, so each one runs once per call, also when workers need it at once. A
-        failure that leaves the Reservation Match unknown is kept, and each Lease that needs the lookup gets a new
-        ``_FailedLookup``. Any other failure raises.
+        Raises:
+            _FailedReservationLookup: If the lookup failed with a Read Failure, in this row or in an earlier one.
+            ValueError: If *key* is an address or a delegated prefix and *scope* is not In-Subnet.
+
         """
-        with self._registry:
-            lock = self._locks.setdefault(parts, threading.Lock())
-        with lock:
-            if parts in self._failures:
-                raise _FailedLookup(self._failures[parts])
-            if parts not in self._found:
-                found = attempt(
-                    f"A Reservation lookup of Server {self._server.pk}",
-                    lambda: self._cached(clients, parts, lookup, *args, **kwargs),
-                )
-                if isinstance(found, ReadFailure):
-                    self._failures[parts] = ReservationMatchUnknown(_RESERVATION_MATCH_UNKNOWN[found.kind])
-                    raise _FailedLookup(self._failures[parts])
-                self._found[parts] = found
-            return self._found[parts]
+        parts, lookup = self._lookup(scope, key)
+        found = self._lookups.get(parts, partial(self._cached, parts, lookup))
+        if isinstance(found, ReadFailure):
+            raise _FailedReservationLookup(_RESERVATION_MATCH_UNKNOWN[found.kind])
+        return found
+
+    def _lookup(
+        self, scope: ReservationScope, key: ReservationKey
+    ) -> tuple[display_cache.QueryParts, Callable[[KeaClient], Reservation | None]]:
+        """Return the query parts of the lookup of *key* in *scope*, and the ``KeaClient`` read that answers it."""
+        family, catalogue = self._family, self._catalogue
+        if isinstance(key, ReservationIdentity):
+            scope_id = scope.subnet.subnet_id if isinstance(scope, InSubnetReservationScope) else 0
+            parts: display_cache.QueryParts = ("identity", scope_id, key.identifier_type, key.value)
+            return parts, lambda client: client.reservation_by_identity(family, catalogue, scope, key)
+        if not isinstance(scope, InSubnetReservationScope):
+            raise ValueError("A Reservation lookup by allocation needs an In-Subnet Scope.")
+        if isinstance(key, ipaddress.IPv6Network):
+            parts = ("prefix", scope.subnet.subnet_id, str(key))
+            return parts, lambda client: client.reservation_by_prefix(catalogue, scope, key)
+        address = str(key)
+        parts = ("address", scope.subnet.subnet_id, address)
+        return parts, lambda client: client.reservation_by_address(family, catalogue, scope, address)
 
     def _cached(
-        self,
-        clients: WorkerClients,
-        parts: display_cache.QueryParts,
-        lookup: Callable[Concatenate[KeaClient, P], Reservation | None],
-        *args: P.args,
-        **kwargs: P.kwargs,
+        self, parts: display_cache.QueryParts, lookup: Callable[[KeaClient], Reservation | None]
     ) -> Reservation | None:
         """Read the display cache entry of *parts*; a miss builds the client of the calling thread and asks Kea."""
 
-        def read() -> _ReservationLookup:
+        def read() -> _ReservationLookupEntry:
             started = datetime.now(tz=UTC)
-            return _ReservationLookup(lookup(clients(), *args, **kwargs), self._catalogue.settled, started)
+            return _ReservationLookupEntry(lookup(self._clients()), self._catalogue.settled, started)
 
         return display_cache.cached(
             self._server,
@@ -274,62 +326,13 @@ class _ReservationLookups:
             fresh=lambda entry: entry.read_started >= self._read_since,
         ).reservation
 
-    def _in_subnet(self, clients: WorkerClients, lease: Lease, subnet: VerifiedSubnet) -> Reservation | None:
-        """Return the In-Subnet Reservation found by the allocation of *lease*, then by each of its identities."""
-        family, catalogue, subnet_id = self._family, self._catalogue, subnet.subnet_id
-        scope = InSubnetReservationScope(subnet.identity)
-        if isinstance(lease, DHCPv6PrefixLease):
-            parts: display_cache.QueryParts = ("prefix", subnet_id, str(lease.prefix))
-            found = self._find(clients, parts, KeaClient.reservation_by_prefix, catalogue, scope, lease.prefix)
-        else:
-            address = str(lease.address)
-            parts = ("address", subnet_id, address)
-            found = self._find(clients, parts, KeaClient.reservation_by_address, family, catalogue, scope, address)
-        return found if found is not None else self._by_identity(clients, lease, scope, subnet_id)
-
-    def _global(self, clients: WorkerClients, lease: Lease, _subnet: VerifiedSubnet) -> Reservation | None:
-        """Return the Global Reservation found by an identity of *lease*."""
-        return self._by_identity(clients, lease, GlobalReservationScope(), 0)
-
-    def _by_identity(
-        self, clients: WorkerClients, lease: Lease, scope: ReservationScope, scope_id: int
-    ) -> Reservation | None:
-        """Return the Reservation of *scope* found by the first identity of *lease* that one is found by."""
-        for identity in lease_identities(lease).identities:
-            parts = ("identity", scope_id, identity.identifier_type, identity.value)
-            found = self._find(
-                clients, parts, KeaClient.reservation_by_identity, self._family, self._catalogue, scope, identity
-            )
-            if found is not None:
-                return found
-        return None
-
-    def reservation_of(self, clients: WorkerClients, lease: Lease, subnet: VerifiedSubnet) -> Reservation | None:
-        """Return the first Reservation found in the scopes that the flags of *subnet* enable, then in the others.
-
-        The In-Subnet scope comes before the Global scope. Unknown flags keep that order for every scope.
-        """
-        flags = subnet.reservation_flags
-        scopes = ((self._in_subnet, flags is None or flags.in_subnet), (self._global, flags is None or flags.global_))
-        enabled = [lookup for lookup, applies in scopes if applies]
-        disabled = [lookup for lookup, applies in scopes if not applies]
-        for lookup in (*enabled, *disabled):
-            found = lookup(clients, lease, subnet)
-            if found is not None:
-                return found
-        return None
-
-    def match(self, clients: WorkerClients, row: tuple[Lease, VerifiedSubnet]) -> ReservationMatch:
+    def match(self, row: tuple[Lease, VerifiedSubnet]) -> ReservationMatch:
         """Return the Reservation Match of one Lease in its Verified Subnet, or why Kea could not show it."""
         lease, subnet = row
         try:
-            found = self.reservation_of(clients, lease, subnet)
-            tries_global = found is not None and tries_global_reservation(lease, subnet, found)
-            global_found = self._global(clients, lease, subnet) if tries_global else None
-        except _FailedLookup as failed:
-            return failed.unknown
-        shared_network = self._catalogue.shared_network_subnets(subnet)
-        return reservation_match(lease, subnet, found, shared_network, global_reservation=global_found)
+            return reservation_match(lease, subnet, self._catalogue.shared_network_subnets(subnet), self)
+        except _FailedReservationLookup as failed:
+            return ReservationMatchUnknown(failed.reason)
 
 
 def reservation_matches(
@@ -352,8 +355,9 @@ def reservation_matches(
     catalogue = subnet_catalogue.display(server, family)
     rows = [(lease, catalogue.find_by_id(lease.subnet_id)) for lease in leases]
     verified = [(lease, subnet) for lease, subnet in rows if isinstance(subnet, VerifiedSubnet)]
-    lookups = _ReservationLookups(server, family, catalogue, read_since)
-    looked_up = iter(_pooled(server, family, lookups.match, verified))
+    clients = WorkerClients(server, family)
+    lookup = _KeaReservationLookup(server, family, catalogue, read_since, clients)
+    looked_up = iter(_pooled(clients, lookup.match, verified))
     unverified = ReservationMatchUnknown(UnknownReservationMatch.UNVERIFIED_SUBNET)
     matches = tuple(next(looked_up) if isinstance(subnet, VerifiedSubnet) else unverified for _lease, subnet in rows)
     hook_unavailable = ReservationMatchUnknown(UnknownReservationMatch.RESERVATION_HOOK_UNAVAILABLE)

@@ -15,11 +15,15 @@
     <p class="small text-muted mb-0 drift-legend">
       A live read of Kea, compared with the DHCP Import Mappings. <strong>Missing</strong>: Kea has the object, and
       NetBox has no imported row for it. <strong>Stale</strong>: NetBox has an imported row whose Kea object is gone,
-      so the next run removes it. <strong>Not seen</strong>: Kea was not read in full for that row, so it cannot be
-      stale. A DHCP Option is not seen only when the read of its own entries or of its object is not complete.
-      <strong>Unknown</strong>: Kea could not be read, or its configuration could not be parsed, so the state of each
-      imported row is not known. An object that the installed DHCP plugin cannot hold, such as a Shared
-      Network or a DHCP Option without its Option Definition, has no imported row, so it shows as missing.
+      and no row that NetBox keeps uses it, so the next run tries to remove it. <strong>Kept</strong>: NetBox has an
+      imported row whose Kea object is gone, and a row that NetBox keeps uses it now. The next run updates the other
+      rows first. It removes the row when these updates remove the last use, for example when Kea also removed the
+      reference. A removal that fails keeps the row and each stale row that relies on it. <strong>Not seen</strong>: Kea
+      was not read in full for that row, so it cannot be stale. A DHCP Option is not seen only when the read of its own
+      entries or of its object is not complete. <strong>Unknown</strong>: Kea could not be read, or its configuration
+      could not be parsed, so the state of each imported row is not known. An object that the installed DHCP plugin
+      cannot hold, such as a Shared Network or a DHCP Option without its Option Definition, has no imported row, so it
+      shows as missing.
     </p>
   </div>
   {% for drift in families %}
@@ -42,6 +46,7 @@
               <th scope="col" class="text-end">In step</th>
               <th scope="col" class="text-end">Missing</th>
               <th scope="col" class="text-end">Stale</th>
+              <th scope="col" class="text-end">Kept</th>
               <th scope="col" class="text-end">Not seen</th>
               <th scope="col">Observation</th>
             </tr>
@@ -53,6 +58,7 @@
                 <td class="text-end drift-count{% if not kind.in_step %} text-muted{% endif %}">{{ kind.in_step }}</td>
                 <td class="text-end drift-count{% if not kind.missing %} text-muted{% endif %}">{{ kind.missing }}</td>
                 <td class="text-end drift-count{% if not kind.stale %} text-muted{% endif %}">{{ kind.stale }}</td>
+                <td class="text-end drift-count{% if not kind.kept %} text-muted{% endif %}">{{ kind.kept }}</td>
                 <td class="text-end drift-count{% if not kind.unseen %} text-muted{% endif %}">{{ kind.unseen }}</td>
                 <td class="small">
                   {% if kind.incomplete %}
@@ -83,7 +89,10 @@
               <tr data-state="{{ obj.state.value }}" data-kind="{{ obj.kind.value }}">
                 <td>{{ obj.label }}</td>
                 <td><code>{{ obj.path }}</code></td>
-                <td><span class="badge text-bg-{{ obj.badge.1 }}">{{ obj.badge.0 }}</span></td>
+                <td>
+                  <span class="badge text-bg-{{ obj.badge.1 }}">{{ obj.badge.0 }}</span>
+                  {% if obj.reason %}<div class="small text-muted mt-1 drift-reason">{{ obj.reason }}</div>{% endif %}
+                </td>
                 <td>{% if obj.target %}<a href="{{ obj.target.get_absolute_url }}">{{ obj.name }}</a>{% else %}{{ obj.target|placeholder }}{% endif %}{% if obj.assigned %} on {{ obj.assigned|linkify }}{% endif %}</td>
               </tr>
             {% endfor %}

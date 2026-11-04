@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import logging
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 from urllib.parse import parse_qsl, unquote, urlparse, urlsplit
@@ -12,7 +12,7 @@ from django.contrib import messages
 from django.contrib.auth.models import AbstractUser, AnonymousUser, PermissionsMixin
 from django.http import Http404, HttpResponse, HttpResponseForbidden
 from django.http.request import HttpRequest
-from django.urls import Resolver404, get_script_prefix, resolve, reverse
+from django.urls import Resolver404, get_script_prefix, resolve
 from django.utils.http import url_has_allowed_host_and_scheme
 from django_htmx.middleware import HtmxDetails
 from netbox.tables import BaseTable
@@ -22,13 +22,10 @@ from ..after_apply import SideEffectStatus
 from ..change_outcome import ChangeRejected, RejectionReason
 from ..config_write import ConfigChangeOutcome, ReservationChangeOutcome
 from ..constants import Family
-from ..dhcp_options import shown_options
-from ..kea import DaemonStatus, DaemonVersion, KeaClient, KeaCommand, SubnetUtilization, close_quietly
+from ..kea import DaemonStatus, DaemonVersion, KeaClient, KeaCommand, close_quietly
 from ..models import Server
 from ..read_failure import ReadFailure, attempt
 from ..runtime_change import RuntimeChangeOutcome
-from ..server_configuration import SharedNetwork
-from ..subnet_catalogue import ConfiguredSubnet, VerifiedSubnet
 
 if TYPE_CHECKING:
     from ..ipam_reconciliation import OwnershipState
@@ -313,81 +310,6 @@ def _about(subject: str, text: str) -> str:
     return f"{subject}: {text}" if subject else text
 
 
-def _catalogue_subnet_row(
-    subnet: VerifiedSubnet | ConfiguredSubnet,
-    server: Server,
-    version: Family,
-    can_change: bool,
-) -> dict[str, Any]:
-    """Build one Subnet table row from typed catalogue facts."""
-    identity = subnet.identity if isinstance(subnet, VerifiedSubnet) else subnet.candidate_identity
-    configuration = subnet.configuration
-    row = {
-        "id": identity.subnet_id,
-        "subnet": identity.cidr,
-        "_subnet_sort_key": int(identity.network.network_address),
-        "dhcp_version": version,
-        "server_pk": server.pk,
-        "server_name": server.name,
-        "identity_verified": isinstance(subnet, VerifiedSubnet),
-        "configuration_available": configuration is not None,
-        "can_change": can_change and isinstance(subnet, VerifiedSubnet),
-        "can_edit_options": can_change and isinstance(subnet, VerifiedSubnet) and configuration is not None,
-        "ddns_qualifying_suffix": configuration.settings.ddns_qualifying_suffix if configuration else None,
-        "options": shown_options(configuration.options, version) if configuration else {},
-        "pools": [pool.range for pool in configuration.pools] if configuration else [],
-    }
-    if subnet.shared_network is not None:
-        row["shared_network"] = subnet.shared_network.name
-    return row
-
-
-def _shared_network_row(
-    network: SharedNetwork,
-    server: Server,
-    version: Family,
-    can_change: bool,
-    *,
-    include_server_name: bool = False,
-) -> dict[str, Any]:
-    """Build one Shared Network table row from typed configuration facts."""
-    subnet_links = [
-        {
-            "cidr": cidr,
-            "url": (
-                reverse(f"plugins:netbox_kea:server_leases{version}", args=[server.pk])
-                + "?"
-                + _urlencode({"by": "subnet", "q": cidr})
-            ),
-        }
-        for cidr in network.member_cidrs
-    ]
-    row = {
-        "name": network.name,
-        "description": network.description or "",
-        "subnet_count": len(network.member_cidrs),
-        "subnet_links": subnet_links,
-        "server_pk": server.pk,
-        "dhcp_version": version,
-        "can_change": can_change,
-    }
-    if include_server_name:
-        row["server_name"] = server.name
-    return row
-
-
-@dataclass(frozen=True)
-class _Utilization:
-    """One display cache entry: the ``stat_cmds`` address counts of each Subnet of one family."""
-
-    counts: Mapping[int, SubnetUtilization]
-
-    @property
-    def settled(self) -> bool:
-        """Return true: a failed read raises, so the display cache can store each read that returns."""
-        return True
-
-
 class LazyClient:
     """The Kea client of one Server and target, built on first use and closed quietly at the end of the block.
 
@@ -411,11 +333,6 @@ class LazyClient:
     def __exit__(self, *args: object) -> None:
         if self._client is not None:
             close_quietly(self._client)
-
-
-def _read_utilization(server: Server, version: Family) -> _Utilization:
-    with LazyClient(server, version) as client:
-        return _Utilization(client().subnet_utilization(version))
 
 
 def daemon_status(client: LazyClient) -> DaemonStatus:
@@ -452,23 +369,3 @@ def daemon_version(client: LazyClient) -> DaemonVersion:
         lambda: client().daemon_version(client.target),
         query=(KeaCommand.VERSION_GET.value,),
     )
-
-
-def _enrich_subnet_statistics(rows: list[dict[str, Any]], server: Server, version: Family, *, live: bool) -> None:
-    """Add available utilization measurements to Subnet presentation rows, through the display cache.
-
-    With *live*, for an export, it reads Kea live and replaces the entry.
-    """
-    read = attempt(
-        f"The DHCPv{version} Subnet utilization read of Server {server.pk}",
-        lambda: display_cache.cached(
-            server, version, "utilization", lambda: _read_utilization(server, version), refresh=live
-        ),
-    )
-    if isinstance(read, ReadFailure):
-        return
-    utilization = read.counts
-    for row in rows:
-        if (counts := utilization.get(row["id"])) is not None:
-            pct = round(counts.assigned / counts.total * 100) if counts.total > 0 else 0
-            row.update(total=counts.total, assigned=counts.assigned, utilization=f"{pct}%", utilization_pct=pct)

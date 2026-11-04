@@ -650,17 +650,17 @@ class DriftPartialTest(TestCase):
         page = self._drift(_sync_responses(_DRIFT_CONF, _DRIFT_HOSTS))
 
         self.assertEqual(self._objects(page), {("missing", "shared_network", "Dhcp4/shared-networks[name=office]")})
-        # In step, missing, stale, not seen.
+        # In step, missing, stale, kept, not seen.
         self.assertEqual(
             self._counts(page),
             {
-                "reservation": (2, 0, 0, 0),
-                "pool": (1, 0, 0, 0),
-                "subnet": (1, 0, 0, 0),
-                "shared_network": (0, 1, 0, 0),
-                "client_class": (1, 0, 0, 0),
-                "option_definition": (1, 0, 0, 0),
-                "option": (1, 0, 0, 0),
+                "reservation": (2, 0, 0, 0, 0),
+                "pool": (1, 0, 0, 0, 0),
+                "subnet": (1, 0, 0, 0, 0),
+                "shared_network": (0, 1, 0, 0, 0),
+                "client_class": (1, 0, 0, 0, 0),
+                "option_definition": (1, 0, 0, 0, 0),
+                "option": (1, 0, 0, 0, 0),
             },
         )
         self.assertEqual(page.select_one("a.drift-latest-run")["href"], "#dhcp-import-latest-run")
@@ -682,7 +682,7 @@ class DriftPartialTest(TestCase):
             )
 
         page = BeautifulSoup(resp.content, "html.parser")
-        self.assertEqual(self._counts(page)["pd_pool"], (1, 1, 0, 0))
+        self.assertEqual(self._counts(page)["pd_pool"], (1, 1, 0, 0, 0))
         self.assertEqual(
             self._objects(page),
             {("missing", "pd_pool", "Dhcp6/subnet6[id=1]/pd-pools[prefix=2001:db8:200::/48,delegated-len=64]")},
@@ -713,6 +713,7 @@ class DriftPartialTest(TestCase):
         self.assertIn(("stale", "option", path), self._objects(page))
         legend = " ".join(page.select_one(".drift-legend").get_text().split())
         self.assertIn("A DHCP Option is not seen only when the read of its own entries or of its object", legend)
+        self.assertIn("no row that NetBox keeps uses it, so the next run tries to remove it.", legend)
 
     def test_a_pool_without_a_valid_range_keeps_the_mapped_pools_and_their_options_and_the_card_reports_them(self):
         self._import()
@@ -749,6 +750,112 @@ class DriftPartialTest(TestCase):
             {row for row in self._objects(page) if row[1] in ("pool", "option")},
             {("unseen", kind, path) for kind, path in _MAPPED if kind in ("pool", "option")},
         )
+
+    def _reasons(self, page: BeautifulSoup) -> dict[tuple[str, str], str]:
+        return {
+            (str(row["data-kind"]), row.code.get_text() if row.code else ""): " ".join(reason.get_text().split())
+            for row in page.select("tr[data-state]")
+            if (reason := row.select_one(".drift-reason")) is not None
+        }
+
+    def test_the_card_judges_each_mapped_row_as_the_next_import_does(self):
+        from ipam.models import Prefix
+        from netaddr import IPNetwork
+
+        from netbox_kea.integrations.dhcp_import_report import Outcome, Reason
+
+        from .utils import imported_dhcp_server
+
+        self._import()
+        voip = KeaDhcpLink.objects.get(server=self.server, family=4, kind="client_class")
+        # An operator's Subnet without a mapping evaluates the class, so the run keeps the class.
+        operator = apps.get_model(DHCP_PLUGIN, "Subnet").objects.create(
+            name="operator subnet",
+            subnet_id=900,
+            prefix=Prefix.objects.create(prefix=IPNetwork("203.0.113.0/24")),
+            dhcp_server=imported_dhcp_server(self.server, 4),
+        )
+        operator.evaluate_additional_classes.set([voip.object_id])
+        config = deepcopy(_DRIFT_CONF)
+        config[4]["client-classes"] = []
+        config[4]["option-def"] = []
+        del config[4]["subnet4"][0]["pools"][0]["option-data"]
+        config[4]["subnet4"].append({"id": 52, "subnet": "10.87.0.0/24"})
+        # host_cmds is not loaded, so the Reservation observation is Incomplete.
+        responses = _sync_responses(config, reservations_available=False)
+
+        page = self._drift(responses)
+        with stub_kea(responses):
+            ((_family, summary),) = dhcp_import.run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+
+        shown = self._objects(page)
+        reasons = self._reasons(page)
+        removed = {(entry.kind.value, entry.path) for entry in summary.entries if entry.outcome == Outcome.REMOVED}
+        kept = {
+            (entry.kind.value, entry.path, entry.detail)
+            for entry in summary.entries
+            if entry.reason == Reason.REMOVAL_BLOCKED
+        }
+        not_judged = {
+            entry.kind.value: entry.detail for entry in summary.entries if entry.reason == Reason.INCOMPLETE_OBSERVATION
+        }
+        option = f"{_SUBNET_51}/pools[pool=10.86.0.10-10.86.0.20]/option-data[code=251]"
+        self.assertEqual({("option", option), ("option_definition", "Dhcp4/option-def[code=251]")}, removed)
+        self.assertEqual({(kind, path) for state, kind, path in shown if state == "stale"}, removed)
+        self.assertEqual(
+            kept,
+            {
+                (
+                    "client_class",
+                    "Dhcp4/client-classes[name=voip]",
+                    "It is kept while a class list of 1 Subnet names it.",
+                )
+            },
+        )
+        self.assertEqual(
+            {(kind, path, reasons[kind, path]) for state, kind, path in shown if state == "kept"},
+            kept,
+        )
+        unseen = {(kind, path) for state, kind, path in shown if state == "unseen"}
+        self.assertEqual(unseen, {(kind, path) for kind, path in _MAPPED if kind == "reservation"})
+        self.assertEqual(list(not_judged), ["reservation"])
+        self.assertTrue(not_judged["reservation"].endswith("2 mapped Reservation rows were kept."))
+        self.assertIn(("missing", "subnet", "Dhcp4/subnet4[id=52]"), shown)
+        self.assertIn(
+            ("subnet", "Dhcp4/subnet4[id=52]", Outcome.CREATED),
+            {(entry.kind.value, entry.path, entry.outcome) for entry in summary.entries},
+        )
+        # In step, missing, stale, kept, not seen.
+        self.assertEqual(self._counts(page)["client_class"], (0, 0, 0, 1, 0))
+
+    def test_a_kept_class_that_kea_also_drops_from_a_mapped_class_list_is_removed_by_the_next_import(self):
+        from netbox_kea.integrations.dhcp_import_report import Outcome
+
+        config = deepcopy(_DRIFT_CONF)
+        config[4]["subnet4"][0]["client-classes"] = ["voip"]
+        with stub_kea(_sync_responses(config, _DRIFT_HOSTS)):
+            dhcp_import.run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+        voip = KeaDhcpLink.objects.get(server=self.server, family=4, kind="client_class").object_id
+        # Kea drops the class and the class list of the Subnet together.
+        config[4]["client-classes"] = []
+        del config[4]["subnet4"][0]["client-classes"]
+        responses = _sync_responses(config, _DRIFT_HOSTS)
+
+        page = self._drift(responses)
+        with stub_kea(responses):
+            ((_family, summary),) = dhcp_import.run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+
+        path = "Dhcp4/client-classes[name=voip]"
+        self.assertIn(("kept", "client_class", path), self._objects(page))
+        self.assertEqual(
+            self._reasons(page)["client_class", path], "It is kept while a class list of 1 Subnet names it."
+        )
+        # The run updates the Subnet first, so the class has no use left when the run judges it.
+        self.assertIn(
+            ("client_class", path, Outcome.REMOVED),
+            {(entry.kind.value, entry.path, entry.outcome) for entry in summary.entries},
+        )
+        self.assertFalse(apps.get_model(DHCP_PLUGIN, "ClientClass").objects.filter(pk=voip).exists())
 
     def test_a_client_class_whose_name_is_not_text_makes_client_classes_incomplete(self):
         self._import()
@@ -859,7 +966,17 @@ class DriftPartialTest(TestCase):
         self.assertNotIn(f"[{dhcp_server.name}]", resp.content.decode())
         self.assertNotIn(dhcp_server.get_absolute_url(), resp.content.decode())
 
-    def test_the_card_reads_a_fixed_number_of_queries_for_any_number_of_rows(self):
+    def test_the_card_names_its_rows_with_a_fixed_number_of_queries_for_any_number_of_rows(self):
+        # The judgment plans the delete of each stale row, so only the names of the rows have a fixed count.
+        name_queries = []
+        viewable_targets = dps._viewable_targets
+
+        def counting(objects, user):
+            with CaptureQueriesContext(connection) as queries:
+                shown = viewable_targets(objects, user)
+            name_queries.append(len(queries.captured_queries))
+            return shown
+
         def stale_card_queries(codes: range) -> int:
             # Each code is an Option of the DHCP Server and an Option of its own client class.
             config = {
@@ -873,12 +990,15 @@ class DriftPartialTest(TestCase):
             }
             with stub_kea(_sync_responses(config, {4: []})):
                 self.client.post(reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[self.server.pk]))
-            with stub_kea(_sync_responses({4: {}}, {4: []})), CaptureQueriesContext(connection) as queries:
+            with (
+                stub_kea(_sync_responses({4: {}}, {4: []})),
+                patch.object(dps, "_viewable_targets", autospec=True, side_effect=counting),
+            ):
                 page = BeautifulSoup(self.client.get(self.url, HTTP_HX_REQUEST="true").content, "html.parser")
             # One link for each kind: the Option Definitions, the client classes and the Options.
             self.assertEqual(len(self._links(page)), 3 if len(codes) else 0)
             self.assertEqual(len(page.select("tr[data-state=stale]")), 4 * len(codes))
-            return len(queries.captured_queries)
+            return name_queries.pop()
 
         self.assertEqual(stale_card_queries(range(230, 231)), stale_card_queries(range(230, 234)))
 

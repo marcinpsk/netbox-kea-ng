@@ -70,13 +70,13 @@ MUTATION_UNCONFIRMED = "Reservation mutation capabilities could not be confirmed
 def _build_reservation_options_formset(post_data: Any) -> tuple[Any, bool]:
     """Build the Reservation options formset and reject a truncated management form."""
     if "options-TOTAL_FORMS" in post_data:
-        formset = forms.ReservationOptionsFormSet(data=post_data, prefix="options")
+        formset = forms.DHCPOptionRowFormSet(data=post_data, prefix="options")
         return formset, formset.is_valid()
     if any(key.startswith("options-") for key in post_data):
-        formset = forms.ReservationOptionsFormSet(data=post_data, prefix="options")
+        formset = forms.DHCPOptionRowFormSet(data=post_data, prefix="options")
         formset.is_valid()
         return formset, False
-    return forms.ReservationOptionsFormSet(prefix="options"), True
+    return forms.DHCPOptionRowFormSet(prefix="options"), True
 
 
 #: The title of the Lease Unknown badge, for each reason that shows one.

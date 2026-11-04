@@ -129,8 +129,10 @@ class DriftState(StrEnum):
 
     # Kea has the object, and no mapping names it.
     MISSING = "missing"
-    # The observation no longer reports the mapped row, and no gap of it covers the row, so the next run removes it.
+    # The observation no longer reports the mapped row, no gap covers it, and no row that stays uses it now.
     STALE = "stale"
+    # A stale row that a row that stays uses now. The run updates the other rows first; it removes it when no use stays.
+    KEPT = "kept"
     # The observation did not report the mapped row, and a gap of it covers the row, so it cannot judge it.
     UNSEEN = "unseen"
     # Kea was not read for the family.
@@ -141,6 +143,7 @@ class DriftState(StrEnum):
 _STATE_BADGES: dict[DriftState, tuple[str, str]] = {
     DriftState.MISSING: ("Missing", "info"),
     DriftState.STALE: ("Stale", "warning"),
+    DriftState.KEPT: ("Kept", "primary"),
     DriftState.UNSEEN: ("Not seen", "secondary"),
     DriftState.UNKNOWN: ("Unknown", "secondary"),
 }
@@ -159,6 +162,8 @@ class DriftObject:
     name: str = ""
     # The object that the imported DHCP Option is assigned to, when the user may view it.
     assigned: Any = None
+    # The use that keeps a stale row now, as the removal words it: in counts only.
+    reason: str = ""
 
     @property
     def label(self) -> str:
@@ -179,6 +184,7 @@ class KindDrift:
     in_step: int
     missing: int
     stale: int
+    kept: int
     unseen: int
     incomplete: str
 
@@ -207,42 +213,46 @@ class FamilyDrift:
 
 
 def family_drift(server: Server, family: Family, user) -> FamilyDrift:
-    """Compare a live read of *family* with its DHCP Import Mappings, through the rule that the removal uses.
+    """Compare a live read of *family* with its DHCP Import Mappings, through the judgment that the removal uses.
 
     A missing object is in Kea without a mapping. A stale object has a mapping that the observation no longer reports
-    and that no gap of the observation covers, so the next run removes it. An unobserved row that a gap covers is not
-    seen, and a family that Kea did not give leaves every mapped row unknown. An object names its imported row only
-    when *user* may view it.
+    and that no gap of the observation covers. When no row that stays uses it now, the next run tries to remove it. When
+    a row that stays uses it now, it is kept, with the reason of the removal. The card shows the rows as they are now:
+    the run updates the other rows first, so it removes a kept row when these updates remove its last use. An unobserved
+    row that a gap covers is not seen, and a mapping confirmed after the read began is in step. A family that Kea did
+    not give leaves every mapped row unknown. An object names its imported row only when *user* may view it.
     """
-    mapped = dhcp_plugin.mapped_rows(server, family)
     drift = FamilyDrift(family)
     read = read_family(server, family)
     if not isinstance(read, FamilyRead):
         drift.notice, drift.unparsable = read, read is None
-        for kind, rows in mapped.items():
+        for kind, rows in dhcp_plugin.mapped_rows(server, family).items():
             drift.show(_drift_objects(family, kind, rows, DriftState.UNKNOWN))
         drift.objects = _viewable_targets(drift.objects, user)
         return drift
-    observed = observations(plan_family(read.config, read.reservations))
+    plan = plan_family(read.config, read.reservations)
+    observed = observations(plan)
+    judgment = dhcp_plugin.stale_judgment(server, plan, observed)
     for kind in mapped_kinds(family):
-        observation, rows = observed[kind], mapped[kind]
-        missing = dict.fromkeys(observation.sources - rows.keys())
-        unobserved = {source: row for source, row in rows.items() if source not in observation.sources}
-        stale = {source: row for source, row in unobserved.items() if not observation.gap(source, family)}
-        unseen = {source: row for source, row in unobserved.items() if source not in stale}
+        observation, judged = observed[kind], judgment.kinds[kind]
+        missing = dict.fromkeys(observation.sources - judged.observed.keys())
+        kept = {source: row.target for source, row in judged.kept.items()}
+        reasons = {source: row.reason for source, row in judged.kept.items()}
         drift.kinds.append(
             KindDrift(
                 kind,
-                in_step=len(rows) - len(unobserved),
+                in_step=len(judged.observed) + len(judged.newer),
                 missing=len(missing),
-                stale=len(stale),
-                unseen=len(unseen),
+                stale=len(judged.removable),
+                kept=len(kept),
+                unseen=len(judged.not_judged),
                 incomplete=observation.incomplete,
             )
         )
         drift.show(_drift_objects(family, kind, missing, DriftState.MISSING))
-        drift.show(_drift_objects(family, kind, stale, DriftState.STALE))
-        drift.show(_drift_objects(family, kind, unseen, DriftState.UNSEEN))
+        drift.show(_drift_objects(family, kind, judged.removable, DriftState.STALE))
+        drift.show(_drift_objects(family, kind, kept, DriftState.KEPT, reasons))
+        drift.show(_drift_objects(family, kind, judged.not_judged, DriftState.UNSEEN))
     drift.objects = _viewable_targets(drift.objects, user)
     return drift
 
@@ -336,9 +346,18 @@ def _viewable_assigned(options: list, user) -> dict[int, Any]:
     return {option.pk: found.get((option.assigned_object_type_id, option.assigned_object_id)) for option in options}
 
 
-def _drift_objects(family: int, kind: Kind, rows: dict[MappingSource, Any], state: DriftState) -> list[DriftObject]:
-    """Return one object of *state* for each source of *rows*, in Kea path order."""
-    objects = [DriftObject(kind, source.path(family), state, row) for source, row in rows.items()]
+def _drift_objects(
+    family: int,
+    kind: Kind,
+    rows: dict[MappingSource, Any],
+    state: DriftState,
+    reasons: dict[MappingSource, str] | None = None,
+) -> list[DriftObject]:
+    """Return one object of *state* for each source of *rows*, with its reason from *reasons*, in Kea path order."""
+    objects = [
+        DriftObject(kind, source.path(family), state, row, reason=(reasons or {}).get(source, ""))
+        for source, row in rows.items()
+    ]
     return sorted(objects, key=lambda obj: obj.path)
 
 

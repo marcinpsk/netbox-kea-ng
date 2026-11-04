@@ -25,9 +25,6 @@ from .decimal_text import parse_decimal
 from .dhcp_options import (
     DHCPOptionEdit,
     OptionDefinition,
-    address_list_data,
-    form_managed_options,
-    form_option_edit,
     merge_option_edit,
     parse_dhcp_options,
     parse_option_definition,
@@ -58,7 +55,6 @@ from .leases import (
     read_lease_page_count,
 )
 from .malformed import MalformedKeaReply
-from .pools import parse_pool
 from .reservations import (
     RESERVATION_PAGE_FETCH_FAILED,
     RESERVATION_PAGE_LIMIT_REACHED,
@@ -78,7 +74,6 @@ from .reservations import (
     apply_reservation_change,
     reservation_identifier_types,
 )
-from .subnet_settings import setting_key
 
 logger = logging.getLogger(__name__)
 
@@ -602,53 +597,6 @@ def subnet_network(value: Any, family: int) -> IPNetworkValue:
     return network
 
 
-def shared_network_description(network: dict[str, Any]) -> str | None:
-    """Return the Shared Network description, which Kea keeps as ``user-context.comment``.
-
-    Kea rejects a ``description`` key on a Shared Network, and stores a config-file
-    ``comment`` in ``user-context``. A comment that is not a string has no description.
-
-    Raises:
-        ValueError: If ``user-context`` is not an object.
-
-    """
-    context = network.get("user-context")
-    if context is None:
-        return None
-    if not isinstance(context, dict):
-        raise ValueError("A Shared Network user-context must be an object.")
-    comment = context.get("comment")
-    return comment if isinstance(comment, str) else None
-
-
-def description_as_shown(text: str) -> str:
-    """Return *text* as a text input shows it and Django cleans it: without line breaks and outer spaces."""
-    return text.replace("\r", "").replace("\n", "").strip()
-
-
-def _set_shared_network_description(network: dict[str, Any], description: str) -> None:
-    """Write *description* as ``user-context.comment`` and keep every other user-context key.
-
-    An empty *description* keeps a comment the form cannot show, the same as a binary option.
-    A *description* equal to the comment as a text input shows it keeps the comment unchanged.
-    """
-    try:
-        existing = shared_network_description(network)
-    except ValueError as exc:
-        raise MalformedConfiguration(str(exc)) from exc
-    if existing is not None and description == description_as_shown(existing):
-        return
-    context = dict(network.get("user-context") or {})
-    if description:
-        context["comment"] = description
-    elif isinstance(context.get("comment"), str):
-        del context["comment"]
-    if context:
-        network["user-context"] = context
-    else:
-        network.pop("user-context", None)
-
-
 class MalformedReply(MalformedKeaReply):
     """Kea answered with a 2xx status, but the reply is not a list of entries that each carry a result."""
 
@@ -680,66 +628,6 @@ def _config_options(container: dict[str, Any], service: str) -> list[dict[str, A
 
 
 @dataclass(frozen=True)
-class SharedNetworkEdit:
-    """The Shared Network fields that the edit form manages. An empty value removes the field.
-
-    The values that the form showed have the same type, so that an operation can compare them with the live values.
-    """
-
-    description: str
-    interface: str
-    relay_addresses: tuple[str, ...]
-    dns_servers: tuple[str, ...]
-    ntp_servers: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class SubnetFields:
-    """The Subnet fields that the add form and the edit form both set.
-
-    An empty value leaves the field out of a new Subnet. It removes the field from an edited Subnet, except a DHCP
-    Option value that the edit form cannot show.
-    """
-
-    pools: tuple[str, ...]
-    gateway: str
-    dns_servers: tuple[str, ...]
-    ntp_servers: tuple[str, ...]
-    ddns_qualifying_suffix: str
-
-
-@dataclass(frozen=True)
-class SubnetEdit:
-    """The Subnet fields that the edit form manages: the *fields* of both forms, the lifetimes and the timers.
-
-    A lifetime or a timer of None keeps the live value. The values that the form showed have the same type, and there
-    None is a value that Kea does not set.
-    """
-
-    fields: SubnetFields
-    valid_lifetime: int | None
-    min_valid_lifetime: int | None
-    max_valid_lifetime: int | None
-    renew_timer: int | None
-    rebind_timer: int | None
-
-    def written_by(self, edit: "SubnetEdit") -> "SubnetEdit":
-        """Return these values with None for each lifetime and timer that *edit* keeps, because it cannot change them."""
-
-        def written(value: int | None, new: int | None) -> int | None:
-            return None if new is None else value
-
-        return SubnetEdit(
-            fields=self.fields,
-            valid_lifetime=written(self.valid_lifetime, edit.valid_lifetime),
-            min_valid_lifetime=written(self.min_valid_lifetime, edit.min_valid_lifetime),
-            max_valid_lifetime=written(self.max_valid_lifetime, edit.max_valid_lifetime),
-            renew_timer=written(self.renew_timer, edit.renew_timer),
-            rebind_timer=written(self.rebind_timer, edit.rebind_timer),
-        )
-
-
-@dataclass(frozen=True)
 class SubnetDefinition:
     """One Subnet as ``subnet{v}-get`` returned it. Two reads are equal when Kea returned the same Subnet."""
 
@@ -749,62 +637,9 @@ class SubnetDefinition:
     # The reply entry as sorted JSON text, so that the value is immutable and compares by content.
     entry: str
 
-    def edited(self, edit: SubnetEdit) -> dict[str, Any]:
-        """Return the Subnet with the fields of *edit*, and every other field that Kea returned.
-
-        Raises:
-            MalformedConfiguration: If the Subnet has a value that the edit cannot keep or replace safely.
-
-        """
-        subnet = json.loads(self.entry)
-        # Kea adds a read-only metadata key to some replies, so the update does not send it back.
-        subnet.pop("metadata", None)
-        fields = edit.fields
-        options = subnet.get("option-data", [])
-        option_fields = {}
-        if self.family == 4:
-            option_fields["gateway"] = fields.gateway
-        option_fields["dns_servers"] = address_list_data(fields.dns_servers)
-        option_fields["ntp_servers"] = address_list_data(fields.ntp_servers)
-        try:
-            option_edit = form_option_edit(parse_dhcp_options(options), self.family, option_fields)
-            subnet["option-data"] = merge_option_edit(option_edit, options, self.family)
-        except ValueError as exc:
-            raise MalformedConfiguration(str(exc)) from exc
-        suffix_key = setting_key("ddns_qualifying_suffix")
-        if fields.ddns_qualifying_suffix:
-            subnet[suffix_key] = fields.ddns_qualifying_suffix
-        else:
-            subnet.pop(suffix_key, None)
-        live_pools = self._pools_by_range(subnet.get("pools", []))
-        subnet["pools"] = [{**live_pools.get(pool, {}), "pool": pool} for pool in fields.pools]
-        for field in ("valid_lifetime", "min_valid_lifetime", "max_valid_lifetime", "renew_timer", "rebind_timer"):
-            value = getattr(edit, field)
-            if value is not None:
-                subnet[setting_key(field)] = value
-        return subnet
-
-    def _pools_by_range(self, pools: list[Any]) -> dict[str, dict[str, Any]]:
-        """Return each live Pool entry by its range text, so that a kept Pool keeps its Pool-level fields.
-
-        Raises:
-            MalformedConfiguration: If a live Pool entry is not an object or has no range in the Subnet.
-
-        """
-        by_range: dict[str, dict[str, Any]] = {}
-        for entry in pools:
-            if not isinstance(entry, dict):
-                raise MalformedConfiguration(
-                    f"subnet{self.family}-get returned a non-object Pool entry for Subnet {self.subnet_id}."
-                )
-            try:
-                by_range[parse_pool(entry.get("pool"), self.network).range] = entry
-            except ValueError as exc:
-                raise MalformedConfiguration(
-                    f"subnet{self.family}-get returned a malformed Pool {entry.get('pool')!r} for Subnet "
-                    f"{self.subnet_id}."
-                ) from exc
-        return by_range
+    def raw_entry(self) -> dict[str, Any]:
+        """Return a new copy of the Subnet entry that Kea returned."""
+        return json.loads(self.entry)
 
 
 class CandidateConfiguration:
@@ -879,8 +714,8 @@ class CandidateConfiguration:
             raise CandidateTargetMissing
         self._daemon["option-def"] = kept
 
-    def edit_shared_network(self, name: str, edit: SharedNetworkEdit) -> None:
-        """Set the managed fields of the Shared Network *name*, and keep every other field."""
+    def shared_network(self, name: str) -> dict[str, Any]:
+        """Return the entry of the Shared Network *name*. An edit of the entry changes this candidate."""
         matches = [
             network
             for network in _config_entries(self._daemon, "shared-networks", self.service)
@@ -890,29 +725,7 @@ class CandidateConfiguration:
             raise MalformedConfiguration(f"config-get declares more than one Shared Network named {name!r}.")
         if not matches:
             raise CandidateTargetMissing
-        network = matches[0]
-        _set_shared_network_description(network, edit.description)
-        if edit.interface:
-            network["interface"] = edit.interface
-        else:
-            network.pop("interface", None)
-        if edit.relay_addresses:
-            network["relay"] = {"ip-addresses": list(edit.relay_addresses)}
-        else:
-            network.pop("relay", None)
-        options = _config_options(network, self.service)
-        try:
-            option_edit = form_option_edit(
-                parse_dhcp_options(options),
-                self.family,
-                {
-                    "dns_servers": address_list_data(edit.dns_servers),
-                    "ntp_servers": address_list_data(edit.ntp_servers),
-                },
-            )
-            network["option-data"] = merge_option_edit(option_edit, options, self.family)
-        except ValueError as exc:
-            raise MalformedConfiguration(str(exc)) from exc
+        return matches[0]
 
 
 def _is_subnet_id(value: Any, subnet_id: int) -> bool:
@@ -1498,29 +1311,14 @@ class KeaClient:
         }
         return self._config_mutation_command(KeaCommand.RESERVATION_DEL, family, arguments, (0, 3))["result"] == 0
 
-    def subnet_add(self, version: Family, subnet_id: int, cidr: str, fields: SubnetFields) -> None:
-        """Send one ``subnet{v}-add`` for the Subnet *cidr* with *subnet_id*. It does not persist.
+    def subnet_add(self, version: Family, subnet: dict[str, Any]) -> None:
+        """Send one ``subnet{v}-add`` of the new Subnet entry *subnet*. It does not persist.
 
         Raises:
             KeaException: If Kea returns a failure result.
             MalformedReply: If the reply is malformed.
 
         """
-        subnet: dict[str, Any] = {"subnet": cidr, "id": subnet_id}
-        if fields.pools:
-            subnet["pools"] = [{"pool": pool} for pool in fields.pools]
-        managed = form_managed_options(version)
-        option_data: list[dict[str, str]] = []
-        if fields.gateway and version == 4:
-            option_data.append({"name": managed["gateway"].name, "data": fields.gateway})
-        if fields.dns_servers:
-            option_data.append({"name": managed["dns_servers"].name, "data": address_list_data(fields.dns_servers)})
-        if fields.ntp_servers:
-            option_data.append({"name": managed["ntp_servers"].name, "data": address_list_data(fields.ntp_servers)})
-        if option_data:
-            subnet["option-data"] = option_data
-        if fields.ddns_qualifying_suffix:
-            subnet[setting_key("ddns_qualifying_suffix")] = fields.ddns_qualifying_suffix
         self._config_mutation_command(SUBNET_ADD[version], version, {f"subnet{version}": [subnet]})
 
     def subnet_del(self, version: Family, subnet_id: int) -> None:
@@ -1630,7 +1428,7 @@ class KeaClient:
         return SubnetDefinition(version, subnet_id, network, json.dumps(entry, sort_keys=True))
 
     def subnet_update(self, family: Family, subnet: dict[str, Any]) -> None:
-        """Send one ``subnet{v}-update`` of *subnet*, as ``SubnetDefinition.edited`` built it. It does not persist.
+        """Send one ``subnet{v}-update`` of *subnet*, an edited ``SubnetDefinition`` entry. It does not persist.
 
         ``subnet{v}-update`` replaces the whole Subnet, so *subnet* holds every field that the read returned.
 
@@ -1639,7 +1437,9 @@ class KeaClient:
             MalformedReply: If the reply is malformed.
 
         """
-        self._config_mutation_command(SUBNET_UPDATE[family], family, {f"subnet{family}": [subnet]})
+        # Kea adds a read-only metadata key to some replies, so the update does not send it back.
+        sent = {key: value for key, value in subnet.items() if key != "metadata"}
+        self._config_mutation_command(SUBNET_UPDATE[family], family, {f"subnet{family}": [sent]})
 
     def lease_wipe(self, version: Family, subnet_id: int) -> None:
         """Delete all leases in a subnet using the ``lease{v}-wipe`` command.

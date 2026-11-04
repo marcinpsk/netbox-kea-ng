@@ -10,6 +10,9 @@ A `Server` object holds the connection to one Kea deployment. This page lists it
 
 Each Server has the shared workspace navigation: Overview, Leases, Subnets, Reservations, Configuration and Sync.
 The scope bar shows the Server name and one DHCP family switch on section pages and mutation forms.
+The family switch keeps the search filters of the section, but not a Subnet filter: Kea numbers the Subnets of each
+family separately. It also drops a Lease search that the other family refuses, for example a hardware address search
+or an IPv4 address on DHCPv6.
 Journal, Changelog and Jobs are at the right end of the same tab row, and the NetBox object controls stay available
 above it. When the DHCP plugin integration runs for the Server (see [DHCP Import](dhcp-import.md#when-the-import-runs)), Sync has two
 subsections: **IPAM** and **DHCP Plugin**.

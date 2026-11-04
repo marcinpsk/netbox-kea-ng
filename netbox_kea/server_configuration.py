@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ipaddress
-import json
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
@@ -15,27 +14,9 @@ from django.utils import timezone
 
 from . import display_cache
 from .constants import Family, IPAddressValue, IPNetworkValue, validate_family
-from .dhcp_options import (
-    AmbiguousFormOption,
-    DHCPOption,
-    InvalidAddress,
-    OptionDefinition,
-    address_list,
-    form_option_fields,
-    parse_dhcp_option,
-    parse_option_definition,
-)
-from .kea import (
-    CandidateConfiguration,
-    KeaCommand,
-    SharedNetworkEdit,
-    SubnetDefinition,
-    SubnetEdit,
-    SubnetFields,
-    description_as_shown,
-    shared_network_description,
-    subnet_network,
-)
+from .dhcp_options import DHCPOption, OptionDefinition, parse_dhcp_option, parse_option_definition
+from .kea import CandidateConfiguration, KeaCommand, SubnetDefinition, subnet_network
+from .managed_fields import shared_network_description
 from .models import Server, require_persisted_server
 from .pools import Pool, parse_pool
 from .read_failure import ReadFailure, attempt
@@ -602,45 +583,10 @@ def _complete_subnet(entry: Any, family: Family) -> DeclaredSubnet | None:
     return None if diagnostics else subnet
 
 
-def shown_subnet(configuration: SubnetConfiguration, family: Family) -> SubnetEdit | None:
-    """Return the values that the Subnet edit form shows for *configuration*.
-
-    Return None when a DHCP Option that the form shows holds a value that is not an address list, or when more than
-    one entry fits a form field.
-    """
-    settings = configuration.settings
-    try:
-        options = form_option_fields(configuration.options, family)
-        gateway = address_list(options.get("gateway", ""))
-        fields = SubnetFields(
-            pools=tuple(pool.range for pool in configuration.pools),
-            gateway=gateway[0] if gateway else "",
-            dns_servers=address_list(options.get("dns_servers", "")),
-            ntp_servers=address_list(options.get("ntp_servers", "")),
-            ddns_qualifying_suffix=(settings.ddns_qualifying_suffix or "").strip(),
-        )
-    except (InvalidAddress, AmbiguousFormOption):
-        logger.warning(
-            "A DHCP Option of a Subnet has a value or an entry that the edit form cannot show", exc_info=True
-        )
-        return None
-    return SubnetEdit(
-        fields=fields,
-        valid_lifetime=settings.valid_lifetime,
-        min_valid_lifetime=settings.min_valid_lifetime,
-        max_valid_lifetime=settings.max_valid_lifetime,
-        renew_timer=settings.renew_timer,
-        rebind_timer=settings.rebind_timer,
-    )
-
-
-def shown_subnet_definition(definition: SubnetDefinition) -> SubnetEdit | None:
-    """Return the values that the Subnet edit form shows for the Subnet of *definition*.
-
-    Return None when the Subnet has a fact that the form cannot show.
-    """
-    subnet = _complete_subnet(json.loads(definition.entry), definition.family)
-    return None if subnet is None else shown_subnet(subnet.configuration, definition.family)
+def definition_configuration(definition: SubnetDefinition) -> SubnetConfiguration | None:
+    """Return the configuration facts of the Subnet of *definition*, or None when a fact of it is not valid."""
+    subnet = _complete_subnet(definition.raw_entry(), definition.family)
+    return None if subnet is None else subnet.configuration
 
 
 def _shared_network(snapshot: ServerConfigurationSnapshot, name: str) -> SharedNetwork | None:
@@ -648,30 +594,12 @@ def _shared_network(snapshot: ServerConfigurationSnapshot, name: str) -> SharedN
     return next((network for network in snapshot.shared_networks if network.name == name), None)
 
 
-def shown_shared_network(snapshot: ServerConfigurationSnapshot, name: str) -> SharedNetworkEdit | None:
-    """Return the values that the Shared Network edit form shows for the Shared Network *name* in *snapshot*.
-
-    Return None when the snapshot has no Shared Network *name* with facts that the form can show.
-    """
+def editable_shared_network(snapshot: ServerConfigurationSnapshot, name: str) -> SharedNetwork | None:
+    """Return the Shared Network *name* of *snapshot* when every Shared Network fact and each fact of it parsed."""
     network = _shared_network(snapshot, name)
     if not snapshot.shared_networks_complete or network is None or not network.complete:
         return None
-    try:
-        options = form_option_fields(network.options, snapshot.family)
-        return SharedNetworkEdit(
-            description=description_as_shown(network.description or ""),
-            interface=(network.interface or "").strip(),
-            relay_addresses=tuple(str(address) for address in network.relay_addresses),
-            dns_servers=address_list(options.get("dns_servers", "")),
-            ntp_servers=address_list(options.get("ntp_servers", "")),
-        )
-    except (InvalidAddress, AmbiguousFormOption):
-        logger.warning(
-            "A DHCP Option of Shared Network %r has a value or an entry that the edit form cannot show",
-            name,
-            exc_info=True,
-        )
-        return None
+    return network
 
 
 def effective_qualifying_suffix(snapshot: ServerConfigurationSnapshot, subnet: DeclaredSubnet) -> str | None:
