@@ -14,6 +14,9 @@ from .reservations import (
 from .reservations import MUTATION_UNCONFIRMED, fetch, present
 
 # ok: kea-private-reservation-view-import
+from .reservations import present as _present
+
+# ok: kea-private-reservation-view-import
 from ..reservations import _exact_reservation
 
 from . import reservations as reservation_views

@@ -1286,9 +1286,9 @@ rules:
       category: maintainability
       confidence: HIGH
     pattern-either:
-      # A private name imported from either module, absolute or relative, also inside parentheses.
+      # A private name, not a private alias, imported from either module, also inside parentheses.
       - pattern-regex: >-
-          from\s+(?:netbox_kea\.|\.+)(?:views\.reservations|reservation_reads)\s+import\s+(?:\([^)]*?|[^\n]*?)\b_\w
+          from\s+(?:netbox_kea\.|\.+)(?:views\.reservations|reservation_reads)\s+import\s+(?:\(\s*(?:[^)]*?[,\n]\s*)?|(?:[^\n(]*?,\s*)?)_\w
       - patterns:
           - pattern-either:
               - pattern: netbox_kea.views.reservations.$NAME
@@ -1336,7 +1336,7 @@ rules:
         - "**/views/**"
         - "kea-private-reservation-view-import.py"
     pattern-either:
-      - pattern-regex: from\s+\.reservations\s+import\s+(?:\([^)]*?|[^\n]*?)\b_\w
+      - pattern-regex: from\s+\.reservations\s+import\s+(?:\(\s*(?:[^)]*?[,\n]\s*)?|(?:[^\n(]*?,\s*)?)_\w
       - patterns:
           - pattern-inside: |
               from . import reservations as $ALIAS
