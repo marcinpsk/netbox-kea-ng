@@ -54,6 +54,12 @@ def good_with_item_and_another_context(server, family):
         return client.command(KeaCommand.CONFIG_GET, family)
 
 
+def good_with_item_without_a_name(server, family):
+    # ok: kea-client-outside-with
+    with server.get_client(version=family):
+        return family
+
+
 def good_local_function_in_attempt(server, family):
     def read():
         # ok: kea-client-outside-with
@@ -85,6 +91,18 @@ def good_change_client_with_the_lock(server, family):
     # ok: kea-client-outside-with
     with build_client(server, family) as client, _serialized(client, family):
         return client.command(KeaCommand.CONFIG_GET, family)
+
+
+def good_change_client_without_a_name(server, family):
+    # ok: kea-client-outside-with
+    with build_client(server, family):
+        return family
+
+
+def good_change_client_through_the_module_without_a_name(server, family):
+    # ok: kea-client-outside-with
+    with change_outcome.build_client(server, family):
+        return family
 
 
 def good_change_client_through_the_module(server, family):
