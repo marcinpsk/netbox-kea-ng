@@ -933,7 +933,7 @@ class KeaClient:
         return self
 
     def __exit__(self, *args: object) -> None:
-        self.close()
+        close_quietly(self)
 
     def _reservation_raw_page(
         self,

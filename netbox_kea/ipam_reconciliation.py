@@ -168,12 +168,12 @@ class LeaseObservation:
 def read_leases(server: Server, family: Family, max_leases: int | None) -> LeaseObservation:
     """Read the family's Lease Snapshot after taking the cutoff for its lease phases."""
     cutoff = next_confirmation_number()
-    snapshot = attempt(
-        f"Server {server.name} (v{family}): the lease snapshot",
-        lambda: server.get_client(version=family).lease_get_all(
-            version=family, max_leases=max_leases, server_id=server.pk
-        ),
-    )
+
+    def lease_get_all() -> LeaseSnapshot:
+        with server.get_client(version=family) as client:
+            return client.lease_get_all(version=family, max_leases=max_leases, server_id=server.pk)
+
+    snapshot = attempt(f"Server {server.name} (v{family}): the lease snapshot", lease_get_all)
     if isinstance(snapshot, ReadFailure):
         return LeaseObservation(None, cutoff, max_leases, snapshot)
     return LeaseObservation(snapshot, cutoff, max_leases)
@@ -1242,7 +1242,12 @@ def _reservation_reports(
         report.fail_snapshot(RESERVATION, what, CatalogueUnavailable("The Subnet Catalogue is unavailable."))
         return {}
     catalogue = phase.catalogue
-    snapshot = attempt(what, lambda: server.get_client(version=family).reservation_snapshot(family, catalogue))
+
+    def reservation_snapshot() -> ReservationSnapshot:
+        with server.get_client(version=family) as client:
+            return client.reservation_snapshot(family, catalogue)
+
+    snapshot = attempt(what, reservation_snapshot)
     if isinstance(snapshot, ReadFailure):
         if snapshot.kind == "unsupported":
             # Without host_cmds, config-file Reservations can still exist. The phase is not complete.

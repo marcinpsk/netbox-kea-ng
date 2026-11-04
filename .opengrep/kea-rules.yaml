@@ -100,6 +100,71 @@ rules:
     patterns:
       - pattern: $X.get_client()
 
+  - id: kea-client-outside-with
+    languages: [python]
+    severity: ERROR
+    message: >-
+      A Kea client holds a requests.Session, so it lives for one operation (#239). Build it as the item of a
+      `with` (`with server.get_client(version=family) as client:`), or through a holder that closes it:
+      `change_outcome.build_client()` in a `with`, `views/_base.LazyClient`, `lease_reservation_reads.WorkerClients`,
+      or the context managers `views/_base._client_or_refusal()` and `subnet_catalogue._catalogue_client()`.
+      A lambda that `attempt()` runs becomes a local function with the `with` block. A `build_client()` call must
+      also be the item of a `with`.
+      Limits: the holders are exempt by name, and the rule does not check how a caller uses `LazyClient`,
+      `WorkerClients` or a context manager holder; a second call with the same receiver (or, for `build_client()`,
+      the same arguments) inside the block of such a `with` is not seen; a reference that is not called, such as
+      `partial(server.get_client)`, is not seen.
+    metadata:
+      category: correctness
+      confidence: HIGH
+      references:
+        - "AGENTS.md: a Kea client lives for one operation"
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+    pattern-either:
+      - patterns:
+          - pattern: $S.get_client($...ARGS)
+          - pattern-not-inside: |
+              with $S.get_client($...ARGS) as $C:
+                ...
+          - pattern-not-inside: |
+              with $S.get_client($...ARGS):
+                ...
+          - pattern-not-inside: |
+              def build_client(...):
+                ...
+          - pattern-not-inside: |
+              def _catalogue_client(...):
+                ...
+          - pattern-not-inside: |
+              def _client_or_refusal(...):
+                ...
+          - pattern-not-inside: |
+              class LazyClient:
+                ...
+          - pattern-not-inside: |
+              class WorkerClients:
+                ...
+      # build_client() returns the client, so its caller must close it.
+      - patterns:
+          - pattern-either:
+              - pattern: build_client($...ARGS)
+              - pattern: $M.build_client($...ARGS)
+          - pattern-not-inside: |
+              with build_client($...ARGS) as $C:
+                ...
+          - pattern-not-inside: |
+              with $M.build_client($...ARGS) as $C:
+                ...
+          - pattern-not-inside: |
+              with build_client($...ARGS):
+                ...
+          - pattern-not-inside: |
+              with $M.build_client($...ARGS):
+                ...
+
   - id: kea-exception-detail-in-response
     languages: [python]
     severity: ERROR
@@ -975,9 +1040,8 @@ rules:
       views/notices.py, and show the Notice through show_notices(), a template or ServerNotices. A view
       that picks a level by hand codes the rule again, and the copies drift.
       Exempt: the change outcome in _run_change(), _rejection_message(), _unconfirmed_message() and
-      _persistence_failure(), the Reservation search that builds its Snapshot in _read_reservations(), the
-      lease export refusal in _incomplete_export_message(), and a function that parses a Reservation
-      Transfer Document.
+      _persistence_failure(), the lease export refusal in _incomplete_export_message(), and a function that
+      parses a Reservation Transfer Document.
       Limits: an alias (a messages constant imported by name, or the diagnostics of a variable passed
       to a helper outside views/) and templates are not seen. A messages.error() or messages.warning()
       call is not seen either, because non-Snapshot messages use these calls correctly.
@@ -1009,10 +1073,6 @@ rules:
       - pattern-not-inside: |
           def _persistence_failure(...):
               ...
-      # It builds the Reservation search Snapshot from its pages; the caller loads it through load_snapshot().
-      - pattern-not-inside: |
-          def _read_reservations(...):
-              ...
       # A complete export refuses an incomplete Lease Snapshot; the message names the excluded records.
       - pattern-not-inside: |
           def _incomplete_export_message(...):
@@ -1033,8 +1093,7 @@ rules:
       not show an unavailable or incomplete Snapshot (ADR 0003, Presentation). Pass the Snapshot to
       notice() (or to failed_load() when a load cannot go on), or run a raised Reservation or Lease read
       through load_snapshot(), and show the Notice.
-      Exempt by name: the read helpers whose callers use load_snapshot(), and the reads that only feed
-      another read, a badge, a check or a preview.
+      Exempt by name: the DDNS suffix read of a hostname preview.
       Limits: a read through a helper that this rule does not name, a read function passed by reference
       other than to executor.submit(), an aliased import, and a Notice made in a called helper are not
       seen.
@@ -1061,7 +1120,11 @@ rules:
           - pattern: $CLIENT.lease_search(...)
           - pattern: $CLIENT.lease_get_page(...)
           - pattern: $CLIENT.lease_get_all(...)
-          - pattern: _read_reservations(...)
+          - patterns:
+              - pattern: reservation_reads.$READ(...)
+              - metavariable-regex:
+                  metavariable: $READ
+                  regex: ^(cached_page|read_\w+)$
           - pattern: read_leases(...)
           - patterns:
               - pattern: $EXECUTOR.submit($READ, ...)
@@ -1085,26 +1148,9 @@ rules:
               ...
               <... failed_load(...) ...>
               ...
-      # Read helpers: each caller runs them through load_snapshot(), or an export refuses a failed read.
-      - pattern-not-inside: |
-          def _read_reservations(...):
-              ...
-      - pattern-not-inside: |
-          def _read_reservation_page(...):
-              ...
-      - pattern-not-inside: |
-          def _read_later_search_page(...):
-              ...
       # The DDNS suffix of a hostname preview.
       - pattern-not-inside: |
           def _published_name_preview(...):
-              ...
-      # Reservation capabilities gate the mutation controls; an unconfirmed read hides them with a reason.
-      - pattern-not-inside: |
-          def _display_capabilities(...):
-              ...
-      - pattern-not-inside: |
-          def _live_capabilities(...):
               ...
 
   - id: kea-view-read-ladder
@@ -1284,6 +1330,96 @@ rules:
                           from .. import display_cache as $ALIAS
                           ...
                   - pattern: $ALIAS.$NAME
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^_
+
+  - id: kea-private-reservation-read-import
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Do not use a private name (a name that starts with "_") of netbox_kea/views/reservations.py or
+      netbox_kea/reservation_reads.py in another module, tests included. reservation_reads holds the Reservation read,
+      and its public names are its interface. A private name can change without notice, so a caller that uses it
+      breaks. Use a public name, or make the name public in its module.
+      Limits: the rule sees a from-import of a private source name (absolute, or relative with one or two dots
+      before views.reservations or reservation_reads, in any layout, also with "as") and an attribute of the module
+      name or of an alias from "from ... import reservation_reads as x" or "from ...views import reservations as x".
+      A "from .reservations import" in views/ is rule kea-private-reservation-view-import. "import ... as x" of the
+      full module path, getattr(), a mock.patch() target string and a re-export are not seen.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+    pattern-either:
+      # A private source name imported from either module; the import pattern sees through aliases and comments.
+      - patterns:
+          - pattern-either:
+              - pattern: from netbox_kea.views.reservations import $NAME
+              - pattern: from netbox_kea.reservation_reads import $NAME
+              - pattern: from .views.reservations import $NAME
+              - pattern: from ..views.reservations import $NAME
+              - pattern: from .reservation_reads import $NAME
+              - pattern: from ..reservation_reads import $NAME
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^_
+      - patterns:
+          - pattern-either:
+              - pattern: netbox_kea.views.reservations.$NAME
+              - pattern: netbox_kea.reservation_reads.$NAME
+              - pattern: reservation_reads.$NAME
+              - patterns:
+                  - pattern-either:
+                      - pattern-inside: |
+                          from netbox_kea import reservation_reads as $ALIAS
+                          ...
+                      - pattern-inside: |
+                          from . import reservation_reads as $ALIAS
+                          ...
+                      - pattern-inside: |
+                          from .. import reservation_reads as $ALIAS
+                          ...
+                      - pattern-inside: |
+                          from netbox_kea.views import reservations as $ALIAS
+                          ...
+                      - pattern-inside: |
+                          from .views import reservations as $ALIAS
+                          ...
+                      - pattern-inside: |
+                          from ..views import reservations as $ALIAS
+                          ...
+                  - pattern: $ALIAS.$NAME
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^_
+
+  - id: kea-private-reservation-view-import
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Do not import a private name (a name that starts with "_") of views/reservations.py into another view module
+      with "from .reservations import" or "from . import reservations". The reason is the same as for
+      kea-private-reservation-read-import. Use a public name, or make the name public in its module. The rule scans
+      views/ only, because outside it "from .reservations" names the domain module netbox_kea/reservations.py.
+      Limits: getattr() and a re-export are not seen.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+    paths:
+      include:
+        - "**/views/**"
+        - "kea-private-reservation-view-import.py"
+    pattern-either:
+      - patterns:
+          - pattern: from .reservations import $NAME
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^_
+      - patterns:
+          - pattern-inside: |
+              from . import reservations as $ALIAS
+              ...
+          - pattern: $ALIAS.$NAME
           - metavariable-regex:
               metavariable: $NAME
               regex: ^_

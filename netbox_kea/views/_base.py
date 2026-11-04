@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 import logging
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 from urllib.parse import parse_qsl, unquote, urlparse, urlsplit
@@ -24,7 +25,7 @@ from ..config_write import ConfigChangeOutcome, ReservationChangeOutcome
 from ..constants import Family
 from ..kea import DaemonStatus, DaemonVersion, KeaClient, KeaCommand, close_quietly
 from ..models import Server
-from ..read_failure import ReadFailure, attempt
+from ..read_failure import ReadFailure, attempt, client_settings_message
 from ..runtime_change import RuntimeChangeOutcome
 
 if TYPE_CHECKING:
@@ -118,16 +119,21 @@ def _strip_empty_params(path: str) -> str:
     return parsed._replace(query=query).geturl()
 
 
-def _client_or_refusal(server: Server, version: Family) -> KeaClient | str:
-    """Return the Kea client of *server*, or the message that names its invalid client settings. It sends nothing.
+@contextmanager
+def _client_or_refusal(server: Server, version: Family) -> Iterator[KeaClient | str]:
+    """Give the Kea client of *server*, closed at the end of the block, or the message of its invalid settings.
+
+    Building the client sends nothing.
 
     The client also refuses an invalid ``max_unpaged_leases``, but NetBox validates that setting when it is saved, so
     the remaining cause is a client key without a certificate, or the reverse.
     """
     client = attempt(f"The DHCPv{version} client of Server {server.pk}", lambda: server.get_client(version=version))
     if isinstance(client, ReadFailure):
-        return f"The Kea client settings of Server {server.name} are invalid. Check the client certificate and key."
-    return client
+        yield client_settings_message(server)
+        return
+    with client:
+        yield client
 
 
 def _client_settings_refusal(server: Server, version: Family) -> str:
@@ -135,11 +141,8 @@ def _client_settings_refusal(server: Server, version: Family) -> str:
 
     It builds the client and closes it again, so it sends nothing.
     """
-    client = _client_or_refusal(server, version)
-    if isinstance(client, str):
-        return client
-    client.close()
-    return ""
+    with _client_or_refusal(server, version) as client:
+        return client if isinstance(client, str) else ""
 
 
 class _KeaChangeMixin:

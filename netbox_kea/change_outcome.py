@@ -20,7 +20,7 @@ from urllib3.exceptions import MaxRetryError, NewConnectionError
 from .constants import Family
 from .kea import KeaClient, KeaException, KeaRequestEncodingError, KeaTLSFileError, kea_error_message
 from .malformed import MalformedKeaReply
-from .read_failure import ReadFailure, attempt
+from .read_failure import ReadFailure, attempt, client_settings_message
 
 if TYPE_CHECKING:
     from .models import Server
@@ -56,10 +56,7 @@ def build_client(server: Server, family: Family) -> KeaClient:
     """Return the client of *server* for *family*. A client that cannot be built means that the change was not sent."""
     client = attempt(f"The DHCPv{family} client of Server {server.pk}", lambda: server.get_client(version=family))
     if isinstance(client, ReadFailure):
-        raise ChangeRejected(
-            "invalid-client-configuration",
-            ("NetBox could not build a Kea client from the Server connection settings.",),
-        )
+        raise ChangeRejected("invalid-client-configuration", (client_settings_message(server),))
     return client
 
 

@@ -82,6 +82,7 @@ def bad_malformed_reply_in_a_tuple(server, family):
 def bad_client_settings_handler(request, server):
     # ruleid: kea-view-read-ladder
     try:
+        # ruleid: kea-client-outside-with
         return server.get_client(version=4)
     except KeaClientSettingsError as exc:
         messages.error(request, "The client settings are not valid.")

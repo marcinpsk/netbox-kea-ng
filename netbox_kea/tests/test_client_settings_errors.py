@@ -10,7 +10,6 @@ the real view, and checks that no Kea command was sent.
 """
 
 from django.contrib.messages import get_messages
-from django.urls import reverse
 from django.utils.html import escape
 
 from netbox_kea.models import Server
@@ -25,7 +24,7 @@ from .kea_stub import (
     stub_kea,
 )
 from .test_lease_actions import _address4, _inputs
-from .utils import INVALID_SERVER_SETTINGS, _ViewTestBase, save_key_without_certificate
+from .utils import _ViewTestBase, family_url, invalid_server_settings, save_key_without_certificate
 
 _IDENTITY = {"identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"}
 
@@ -47,13 +46,13 @@ class CredentialEncodingTest(_ViewTestBase):
             ca_url="http://127.0.0.1:1/", ca_username="kea", ca_password="pass\u20ac"
         )
 
-    def _url(self, name: str, *args) -> str:
-        return reverse(f"plugins:netbox_kea:{name}", args=[self.server.pk, *args])
+    def _url(self, name: str, family: int = 4, **kwargs) -> str:
+        return family_url(name, family, pk=self.server.pk, **kwargs)
 
     def test_the_lease_reads_show_the_lease_notice(self):
         for name, url, kind in (
-            ("export all", self._url("server_leases4") + "?export_all=1", "lease"),
-            ("edit", self._url("server_lease4_edit", "192.0.2.40"), "lease_target"),
+            ("export all", self._url("server_leases") + "?export_all=1", "lease"),
+            ("edit", self._url("server_lease_edit", ip_address="192.0.2.40"), "lease_target"),
         ):
             with self.subTest(name):
                 self._fresh_client()
@@ -64,24 +63,24 @@ class CredentialEncodingTest(_ViewTestBase):
     def test_an_encode_failure_after_the_send_is_the_transport_notice_of_the_read(self):
         Server.objects.filter(pk=self.server.pk).update(ca_url="http://kea.example.invalid/", ca_password="ascii")
         with redirect_to_netrc_host() as sent:
-            response = self.client.get(self._url("server_lease4_edit", "192.0.2.40"))
+            response = self.client.get(self._url("server_lease_edit", ip_address="192.0.2.40"))
         self.assertEqual(len(sent), 1)
         self.assertEqual(response.status_code, 302)
         self.assertEqual(_messages(response), [HEADLINES["lease_target"]])
 
     def test_the_reservation_export_is_a_502_reply_with_the_reservation_notice(self):
-        response = self.client.get(self._url("server_reservations4"), {"export": "yaml"})
+        response = self.client.get(self._url("server_reservations"), {"export": "yaml"})
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.content.decode(), HEADLINES["reservation"])
 
 
 class ClientSettingsErrorTest(_ViewTestBase):
-    def _url(self, name: str, *args) -> str:
-        return reverse(f"plugins:netbox_kea:{name}", args=[self.server.pk, *args])
+    def _url(self, name: str, family: int = 4, **kwargs) -> str:
+        return family_url(name, family, pk=self.server.pk, **kwargs)
 
     def test_runtime_changes_are_not_sent_with_invalid_server_settings(self):
         """A Runtime Change gives the rejection of the shared mapper, as a Configuration Change does (ADR 0011)."""
-        for name, data in (("server_dhcp4_enable", {}), ("server_dhcp4_disable", {"confirm": "True"})):
+        for name, data in (("server_dhcp_enable", {}), ("server_dhcp_disable", {"confirm": "True"})):
             with self.subTest(name):
                 self._fresh_client()
                 save_key_without_certificate(self.server)
@@ -89,12 +88,12 @@ class ClientSettingsErrorTest(_ViewTestBase):
                     response = self.client.post(self._url(name), data)
                 self.assertEqual(response.status_code, 302)
                 self.assertEqual(kea.commands(), [])
-                self.assertEqual(_messages(response), [INVALID_SERVER_SETTINGS])
+                self.assertEqual(_messages(response), [invalid_server_settings(self.server)])
 
     def test_the_export_of_all_leases_names_the_client_settings(self):
         expected = save_key_without_certificate(self.server)
         with stub_kea({}) as kea:
-            response = self.client.get(self._url("server_leases4"), {"export_all": "1"})
+            response = self.client.get(self._url("server_leases"), {"export_all": "1"})
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands(), [])
         self.assertEqual(_messages(response), [expected])
@@ -102,13 +101,13 @@ class ClientSettingsErrorTest(_ViewTestBase):
     def test_the_lease_edit_page_names_the_client_settings(self):
         expected = save_key_without_certificate(self.server)
         with stub_kea({}) as kea:
-            response = self.client.get(self._url("server_lease4_edit", "192.0.2.40"))
+            response = self.client.get(self._url("server_lease_edit", ip_address="192.0.2.40"))
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands(), [])
         self.assertEqual(_messages(response), [expected])
 
     def test_a_lease_edit_save_is_not_sent_with_invalid_server_settings(self):
-        url = self._url("server_lease4_edit", "192.0.2.40")
+        url = self._url("server_lease_edit", ip_address="192.0.2.40")
         with stub_kea(LeaseDaemon(4, _address4()).responses()):
             form = _inputs(self.client.get(url))
         save_key_without_certificate(self.server)
@@ -116,22 +115,22 @@ class ClientSettingsErrorTest(_ViewTestBase):
             response = self.client.post(url, {**form, "hostname": "renamed.example.org"})
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands(), [])
-        self.assertEqual(_messages(response), [f"Lease 192.0.2.40: {INVALID_SERVER_SETTINGS}"])
+        self.assertEqual(_messages(response), [f"Lease 192.0.2.40: {invalid_server_settings(self.server)}"])
 
     def test_a_lease_add_is_not_sent_with_invalid_server_settings(self):
         save_key_without_certificate(self.server)
         with stub_kea({}) as kea:
             response = self.client.post(
-                self._url("server_lease4_add"), {"ip_address": "192.0.2.50", "hw_address": "aa:bb:cc:00:00:50"}
+                self._url("server_lease_add"), {"ip_address": "192.0.2.50", "hw_address": "aa:bb:cc:00:00:50"}
             )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
-        self.assertEqual(_messages(response), [f"Lease 192.0.2.50: {INVALID_SERVER_SETTINGS}"])
+        self.assertEqual(_messages(response), [f"Lease 192.0.2.50: {invalid_server_settings(self.server)}"])
 
     def test_a_lease_sync_row_names_the_client_settings(self):
         expected = save_key_without_certificate(self.server)
         with stub_kea({}) as kea:
-            response = self.client.post(self._url("server_lease4_sync"), {"ip_address": "192.0.2.40"})
+            response = self.client.post(self._url("server_lease_sync"), {"ip_address": "192.0.2.40"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
         self.assertContains(response, escape(expected))
@@ -150,7 +149,7 @@ reservations:
         expected = save_key_without_certificate(self.server)
         with stub_kea({}) as kea:
             response = self.client.post(
-                self._url("server_reservation4_bulk_import"), {"format": "yaml", "document": document}
+                self._url("server_reservation_bulk_import"), {"format": "yaml", "document": document}
             )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands(), [])
@@ -159,9 +158,9 @@ reservations:
     def test_reservation_add_edit_and_delete_name_the_client_settings(self):
         query = "?identifier_type=hw-address&identifier=aa:bb:cc:dd:ee:ff"
         cases = {
-            "add": self._url("server_reservation4_add"),
-            "edit": self._url("server_reservation4_edit", 20) + query,
-            "delete": self._url("server_reservation4_delete", 20) + query,
+            "add": self._url("server_reservation_add"),
+            "edit": self._url("server_reservation_edit", subnet_id=20) + query,
+            "delete": self._url("server_reservation_delete", subnet_id=20) + query,
         }
         responses = _catalogue_responses_for_subnets(
             4,
@@ -195,7 +194,7 @@ reservations:
                 self._fresh_client()
                 expected = save_key_without_certificate(self.server)
                 with stub_kea({}) as kea:
-                    response = self.client.get(self._url(f"server_reservation{family}_add"))
+                    response = self.client.get(self._url("server_reservation_add", family))
                 self.assertEqual(kea.commands(), [])
                 self.assertContains(response, escape(expected))
                 self.assertContains(
@@ -209,7 +208,7 @@ reservations:
                 expected = save_key_without_certificate(self.server)
                 query = "?identifier_type=hw-address&identifier=aa:bb:cc:dd:ee:ff"
                 with stub_kea({}) as kea:
-                    response = self.client.get(self._url(f"server_reservation{family}_{action}", 20) + query)
+                    response = self.client.get(self._url(f"server_reservation_{action}", family, subnet_id=20) + query)
                 self.assertEqual(kea.commands(), [])
                 self.assertEqual(_messages(response), [expected])
-                self.assertRedirects(response, self._url(f"server_reservations{family}"), fetch_redirect_response=False)
+                self.assertRedirects(response, self._url("server_reservations", family), fetch_redirect_response=False)

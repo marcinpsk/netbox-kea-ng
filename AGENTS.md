@@ -169,7 +169,8 @@ uv run python scripts/check_docs_media.py site docs/guide/assets
   any read. Guard 1 in `test_branching.py`
   sends GET, HEAD, OPTIONS, POST, PUT, PATCH and DELETE to every netbox_kea URL in a provisioned
   branch, API action routes included; a new route with a parameter the guard cannot build fails
-  by name, so teach `_route_arguments` the object.
+  by name, so teach `_route_arguments` the object. A route with a `family` parameter is checked
+  once for each family.
   DHCP Import Mappings follow their imported target (one netbox_dhcp model for each kind in
   `MAPPING_KINDS`, `models.py`) through native squash merge and revert. `dhcp_mapping_lifecycle.py` owns their history and writer boundaries.
   Before changing mapping writes, target deletion or branch replay, read ADR 0008 and
@@ -198,7 +199,7 @@ except in tests, migrations, and `__init__.py`.
 ```text
 URL request
   → urls.py             (routes to view classes)
-  → views/              (view modules; each calls server.get_client() → KeaClient)
+  → views/              (view modules; each Kea client lives in a `with` block or a holder that closes it)
       _base.py          (ConditionalLoginRequiredMixin, _KeaChangeMixin, shared helpers)
       notices.py        (the one notice rule of a read: notice(), load_snapshot(), load_target() and the channels; ADR 0003)
       read_age.py       (the read age line and Refresh control of a cached table; ADR 0009)
@@ -227,6 +228,8 @@ URL request
   → kea.py              (HTTP POST to each daemon's / control socket)
   → display_cache.py    (the display cache: keys, generations, TTLs, admission; ADR 0009)
   → lease_reads.py      (the cached Lease Snapshot reads of the Leases tab and of the Lease badges; ADR 0009)
+  → reservation_reads.py (the Reservation reads: the cached page and search batch of the tabs, the export Snapshot,
+                        and the REST API reads; a failed read raises, and the views run it through load_snapshot())
   → lease_reservation_reads.py (Current Lease Presence of Reservation rows and Reservation Match of Lease rows:
                         the cached Kea adapters of the two reservations.py ports, in one worker pool)
   → sync.py             (the aggregate Reservation Synchronization State and DCIM MAC synchronization)
@@ -308,17 +311,18 @@ URL request
   rule `kea-cache-outside-display-cache` refuses `django.core.cache` and the private names of the module in other
   modules. `cached(server, family, kind, read, query=, refresh=)` serves the `display()` reads of
   `server_configuration` (kind `configuration`) and `subnet_catalogue` (kind `catalogue`), each Reservation page
-  of the Server tab and the combined page (kind `reservations`, in `views/reservations.fetch()`), each Lease Snapshot
-  of the Leases tab and of the Lease badges of Reservation rows (kind `leases`, in `lease_reads.cached_read()`), each
-  Reservation lookup of a Lease row (kind `reservation_lookups`, in `lease_reservation_reads._KeaReservationLookup`), Subnet
-  utilization (kind `utilization`, in `views/subnet_lists.fetch_subnets()`) and the `status-get` and
-  `version-get` reads of the Overview and the combined status badge (kind `status`, in `views/_base.daemon_status()`
-  and `daemon_version()`). It stores only a value whose `settled` property is true (the `Cacheable` protocol). A
-  failed read raises, so it is never stored. A Reservation entry (`_ReservationPage`) holds the page Snapshot and the
-  Subnet Catalogue it was parsed against, so a hit sends no Catalogue read; it is settled only when both are. A
-  Reservation walk that an error stopped (`page-fetch-failed`, `pagination-stalled`) is not settled; a walk stopped at
-  its limit is. A Lease entry (`LeaseRead`) holds the Snapshot, or the Catalogue that could not resolve a
-  Subnet search; the view shows its Notice. A Subnet search resolves its CIDR inside the cached read through a live Catalogue read, keyed by the
+  of the Server tab and the combined page (kind `reservations`, in `reservation_reads.cached_page()`), each Lease
+  Snapshot of the Leases tab and of the Lease badges of Reservation rows (kind `leases`, in
+  `lease_reads.cached_read()`), each Reservation lookup of a Lease row (kind `reservation_lookups`, in
+  `lease_reservation_reads._KeaReservationLookup`), Subnet utilization (kind `utilization`, in
+  `views/subnet_lists.fetch_subnets()`) and the `status-get` and `version-get` reads of the Overview and the combined
+  status badge (kind `status`, in `views/_base.daemon_status()` and `daemon_version()`). It stores only a value whose
+  `settled` property is true (the `Cacheable` protocol). A failed read raises, so it is never stored. A Reservation
+  entry (`reservation_reads.ReservationPage`) holds the page Snapshot and the Subnet Catalogue it was parsed against,
+  so a hit sends no Catalogue read; it is settled only when both are. A Reservation walk that an error stopped
+  (`page-fetch-failed`, `pagination-stalled`) is not settled; a walk stopped at its limit is. A Lease entry
+  (`LeaseRead`) holds the Snapshot, or the Catalogue that could not resolve a Subnet search; the view shows its
+  Notice. A Subnet search resolves its CIDR inside the cached read through a live Catalogue read, keyed by the
   unresolved search, so a hit sends no Kea command; a result of a Catalogue that did not settle is not stored. A Lease
   search key holds the Attribute, the value and the state; a read of every Lease also holds the cursor and the page
   size. `LeaseSnapshot.settled` is always true: a failed Lease read raises, and each diagnostic excludes one record.
@@ -619,6 +623,9 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
   settings and sends no request. Build it inside the read that `attempt()` runs (kind `misconfigured`), or in a view
   through `_client_or_refusal()` in `views/_base.py`, which names the client settings and never reports a
   connection failure. Never build it at module/class level.
+- **A Kea client lives for one operation.** Build it as the item of a `with`, or through a holder that closes it
+  (`build_client()` in a `with`, `LazyClient`, `WorkerClients`, `_client_or_refusal()`, `_catalogue_client()`).
+  A failed close is logged (`KeaClient.__exit__`). OpenGrep `kea-client-outside-with` refuses any other call.
 - **Validate Kea response shape before indexing.** After `client.command()`, check
   `resp` is a non-empty list and `resp[0]` is a dict before reading
   `resp[0]["arguments"]`; check nested keys (`"leases"`, `"subnet4"`, …) are lists
@@ -785,10 +792,17 @@ resort, reserved for true external boundaries you cannot run locally.
   reservations, subnets, shared-networks, options, DHCP control) are declared
   explicitly before the `include()`. Custom tabs use `OptionalViewTab` (a `ViewTab`
   accepting `is_enabled: Callable[[Server], bool]`).
-- **Generic views with TypeVar**: `BaseServerLeasesView` is `generic.ObjectView,
-  Generic[T]` (T bound to `BaseTable`); concrete subclasses declare `table_class`,
-  `form_class`, `dhcp_version`, `lease_service`. The base handles pagination, HTMX,
-  search, export, delete routing.
+- **Address family routing**: a page of one address family has one class and one route. The route
+  takes the family as the `family` path parameter (`leases<family:family>/`, converter in `urls.py`),
+  its name has no family digit (`server_leases`), and `FamilyRouteMixin` gives the class the validated
+  family as `dhcp_version`. Never add a v4/v6 class pair or a name with a family digit; `test_urls.py`
+  refuses both. The REST actions `leases4/6` and `reservations4/6` are the exception. NetBox reverses
+  a Server tab with `pk` only, so each of the Leases, Subnets, Reservations and Config tabs keeps a
+  `<x>_tab` registration with the v4 path and `kwargs={"family": 4}`, which only gives NetBox the
+  tab link; the family route in `urls.py` comes first and serves the page.
+- **Lease search view**: `ServerLeasesView` is a `generic.ObjectView`; its `table` and `form`
+  properties pick the v4 or v6 class from the route family. It handles pagination, HTMX, search,
+  export and delete routing.
 - **FakeLeaseModel**: leases aren't a real model, so `FakeLeaseModel` /
   `FakeLeaseModelMeta` provide `app_label`/`model_name` so `GetReturnURLMixin`
   resolves in delete views.
