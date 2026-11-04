@@ -569,14 +569,17 @@ _UNCONFIRMED = "Kea did not confirm the change. Check the server configuration b
 UNCONFIRMED_RUNTIME = (
     "Kea did not confirm the change. Check the Server before you try again. NetBox recorded nothing for this change."
 )
-#: The message of a change whose Kea client cannot be built.
-INVALID_SERVER_SETTINGS = (
-    "The change was not sent to Kea, because the Server settings are not valid. "
-    "NetBox could not build a Kea client from the Server connection settings."
-)
 
 
-def _read_modify_write_cases(confirmed: str) -> tuple:
+def invalid_server_settings(server: Server) -> str:
+    """Return the message of a change whose Kea client cannot be built from the settings of *server*."""
+    return (
+        "The change was not sent to Kea, because the Server settings are not valid. "
+        f"The Kea client settings of Server {server.name} are invalid. Check the client certificate and key."
+    )
+
+
+def _read_modify_write_cases(confirmed: str, server: Server) -> tuple:
     """Each outcome and rejection of a read-modify-write view: (label, Kea replies, Server fields, the message)."""
     lost = requests.ReadTimeout("read timed out")
     restart = "It is live, but it may not survive a Kea restart, because Kea did not save it to disk."
@@ -635,13 +638,7 @@ def _read_modify_write_cases(confirmed: str) -> tuple:
             "invalid client configuration",
             {},
             {"client_cert_path": "/etc/kea/client.pem"},
-            (
-                django_messages.ERROR,
-                (
-                    "The change was not sent to Kea, because the Server settings are not valid. "
-                    "NetBox could not build a Kea client from the Server connection settings."
-                ),
-            ),
+            (django_messages.ERROR, invalid_server_settings(server)),
         ),
     )
 
@@ -652,7 +649,7 @@ class _ReadModifyWriteMessages(_ViewTestBase):
     def _assert_one_message_per_case(self, url: str, data: dict, responses: dict, confirmed: str) -> None:
         original = {"persist_config": self.server.persist_config, "client_cert_path": self.server.client_cert_path}
         ok = {"result": 0}
-        for label, replies, fields, expected in _read_modify_write_cases(confirmed):
+        for label, replies, fields, expected in _read_modify_write_cases(confirmed, self.server):
             with self.subTest(label):
                 self._fresh_client()
                 for field, value in {**original, **fields}.items():

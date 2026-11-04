@@ -19,7 +19,7 @@ from django.http import HttpRequest
 
 from ..leases import LeaseAbsent, LeaseDiagnostic, LeaseFound, LeaseLookupFailed, LeaseSnapshot
 from ..models import Server
-from ..read_failure import ReadFailure, attempt
+from ..read_failure import ReadFailure, attempt, client_settings_message
 from ..reservations import ReservationDiagnostic, ReservationSnapshot
 from ..server_configuration import Diagnostic, ServerConfigurationSnapshot
 from ..subnet_catalogue import CatalogueSnapshot
@@ -61,6 +61,8 @@ class Notice:
     unreachable: bool = False
     #: Kea's answer to a refused read, from ``kea_error_message()``; empty for any other failure.
     reply: str = ""
+    #: The message of a ``misconfigured`` read, which names the invalid Kea client settings of the Server.
+    client_settings: str = ""
 
     @property
     def unavailable(self) -> bool:
@@ -79,9 +81,13 @@ class Notice:
 
     @property
     def lines(self) -> tuple[str, ...]:
-        """Return the headline, Kea's answer, then each distinct message. A record list shows record diagnostics."""
+        """Return the headline, Kea's answer, the client settings message, then each distinct message.
+
+        A record list shows record diagnostics.
+        """
         texts = () if self.kind in _RECORD_KINDS else tuple(diagnostic.message for diagnostic in self.diagnostics)
-        return tuple(dict.fromkeys(text for text in (self.headline, self.reply, *texts) if text))
+        lines = (self.headline, self.reply, self.client_settings, *texts)
+        return tuple(dict.fromkeys(text for text in lines if text))
 
     @property
     def details(self) -> tuple[str, ...]:
@@ -128,21 +134,25 @@ def failed_load(snapshot: CatalogueSnapshot | ServerConfigurationSnapshot) -> No
     return Notice(kind, messages.ERROR, snapshot.diagnostics)
 
 
-def _failure_notice(kind: NoticeKind, failure: ReadFailure) -> Notice:
-    """Return the unavailable Notice of a failed read. A Kea refusal carries Kea's answer."""
+def _failure_notice(server: Server, kind: NoticeKind, failure: ReadFailure) -> Notice:
+    """Return the unavailable Notice of a failed read of *server*.
+
+    A Kea refusal carries Kea's answer, and a ``misconfigured`` read names the client settings.
+    """
     return Notice(
         kind,
         messages.ERROR,
         unsupported_command=failure.kind == "unsupported",
         unreachable=failure.kind == "unreachable",
         reply=failure.reply,
+        client_settings=client_settings_message(server) if failure.kind == "misconfigured" else "",
     )
 
 
 def _classified(server: Server, kind: RecordKind | TargetKind, read: Callable[[], Read]) -> Read | Notice:
     """Run *read*, and return an unavailable Notice when it fails (``read_failure.attempt``)."""
     loaded = attempt(f"The {kind} read of Server {server.pk}", read)
-    return _failure_notice(kind, loaded) if isinstance(loaded, ReadFailure) else loaded
+    return _failure_notice(server, kind, loaded) if isinstance(loaded, ReadFailure) else loaded
 
 
 def load_snapshot(server: Server, kind: RecordKind, read: Callable[[], Read]) -> Read | Notice:

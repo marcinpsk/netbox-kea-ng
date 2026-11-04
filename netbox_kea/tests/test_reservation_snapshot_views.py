@@ -123,6 +123,11 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertEqual(kea.commands(), [])
         self.assertContains(response, HEADLINES["reservation"])
         self.assertNotIn(HEADLINES["reservation"], [str(message) for message in response.context["messages"]])
+        self.assertEqual(
+            response.context["reservation_notice"].details,
+            ("The Kea client settings of Server test-kea are invalid. Check the client certificate and key.",),
+        )
+        self.assertContains(response, "The Kea client settings of Server test-kea are invalid.")
         self.assertTrue(response.context["reservation_notice"].unavailable)
         self.assertFalse(response.context["snapshot_complete"])
         self.assertEqual(response.context["table"].data.data, [])

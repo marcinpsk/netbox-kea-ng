@@ -25,7 +25,7 @@ from ..config_write import ConfigChangeOutcome, ReservationChangeOutcome
 from ..constants import Family
 from ..kea import DaemonStatus, DaemonVersion, KeaClient, KeaCommand, close_quietly
 from ..models import Server
-from ..read_failure import ReadFailure, attempt
+from ..read_failure import ReadFailure, attempt, client_settings_message
 from ..runtime_change import RuntimeChangeOutcome
 
 if TYPE_CHECKING:
@@ -130,7 +130,7 @@ def _client_or_refusal(server: Server, version: Family) -> Iterator[KeaClient | 
     """
     client = attempt(f"The DHCPv{version} client of Server {server.pk}", lambda: server.get_client(version=version))
     if isinstance(client, ReadFailure):
-        yield f"The Kea client settings of Server {server.name} are invalid. Check the client certificate and key."
+        yield client_settings_message(server)
         return
     with client:
         yield client

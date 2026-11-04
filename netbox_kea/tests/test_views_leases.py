@@ -78,11 +78,11 @@ from .kea_stub import (
     typed_lease,
 )
 from .utils import (
-    INVALID_SERVER_SETTINGS,
     UNCONFIRMED_RUNTIME,
     _make_db_server,
     _ViewTestBase,
     active_tabs,
+    invalid_server_settings,
     ownership_link,
     prefix_ownership_link,
     save_key_without_certificate,
@@ -882,7 +882,7 @@ class TestLeaseDeleteFullFlow(_ViewTestBase):
         self.assertEqual(
             [(message.level, str(message)) for message in get_messages(response.wsgi_request)],
             [
-                (django_messages.ERROR, f"Lease 10.0.0.1: {INVALID_SERVER_SETTINGS}"),
+                (django_messages.ERROR, f"Lease 10.0.0.1: {invalid_server_settings(self.server)}"),
                 (
                     django_messages.WARNING,
                     "NetBox stopped at lease 10.0.0.1 and did not send the delete of 2 lease(s): 10.0.0.2, 10.0.0.3.",
@@ -900,7 +900,7 @@ class TestLeaseDeleteFullFlow(_ViewTestBase):
         self.assertEqual(kea.commands(), [])
         self.assertEqual(
             [str(message) for message in get_messages(response.wsgi_request)],
-            [f"Lease 10.0.0.1: {INVALID_SERVER_SETTINGS}"],
+            [f"Lease 10.0.0.1: {invalid_server_settings(self.server)}"],
         )
 
     def test_forbidden_user_gets_403(self):
@@ -3290,7 +3290,10 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
         self.assertEqual(
             _import_report(response),
             {
-                "not-applied": ("Rows that Kea did not apply", [("2", "10.0.0.1", INVALID_SERVER_SETTINGS)]),
+                "not-applied": (
+                    "Rows that Kea did not apply",
+                    [("2", "10.0.0.1", invalid_server_settings(self.server))],
+                ),
                 "not-sent": (
                     "Rows that NetBox did not send",
                     [("3", "10.0.0.2", _IMPORT_NOT_SENT), ("4", "10.0.0.3", _IMPORT_NOT_SENT)],
@@ -4221,6 +4224,9 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
             alert.get_text() for alert in BeautifulSoup(response.content, "html.parser").select(".alert-danger strong")
         ]
         self.assertIn(HEADLINES["lease"], alerts)
+        self.assertContains(
+            response, "The Kea client settings of Server test-kea are invalid. Check the client certificate and key."
+        )
         _assert_no_error_template(self, response)
 
 
