@@ -6,8 +6,10 @@ Import from this module instead of duplicating scaffold code in each test file.
 """
 
 import re
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import requests
 from django.apps import apps
@@ -23,6 +25,7 @@ from netaddr import IPNetwork
 from users.models import ObjectPermission
 
 from netbox_kea import dhcp_mapping_lifecycle, sync_run_result
+from netbox_kea.kea import KeaClient
 from netbox_kea.models import (
     DhcpIntegrationConfig,
     DisplayCacheConfig,
@@ -313,6 +316,42 @@ def save_key_without_certificate(server: Server) -> str:
     """
     Server.objects.filter(pk=server.pk).update(client_key_path="/tls/client.key", client_cert_path="")
     return f"The Kea client settings of Server {server.name} are invalid. Check the client certificate and key."
+
+
+class BuiltKeaClients:
+    """The real Kea clients that ``Server.get_client`` built inside :func:`record_kea_clients`, and the closed ones."""
+
+    def __init__(self) -> None:
+        self.built: list[KeaClient] = []
+        self.closed: list[KeaClient] = []
+
+    def assert_all_closed(self, test: TestCase) -> None:
+        """Fail unless a client was built and each built client was closed."""
+        test.assertTrue(self.built, "no Kea client was built, so the test proves nothing")
+        still_open = [client for client in self.built if not any(client is closed for closed in self.closed)]
+        test.assertEqual(len(still_open), 0, f"{len(still_open)} of {len(self.built)} Kea clients were not closed")
+
+
+@contextmanager
+def record_kea_clients() -> Iterator[BuiltKeaClients]:
+    """Record each real client that ``Server.get_client`` builds, also in a worker thread, and each close of one."""
+    clients = BuiltKeaClients()
+    real_get_client, real_close = Server.get_client, KeaClient.close
+
+    def get_client(server: Server, *args, **kwargs) -> KeaClient:
+        client = real_get_client(server, *args, **kwargs)
+        clients.built.append(client)
+        return client
+
+    def close(client: KeaClient) -> None:
+        real_close(client)
+        clients.closed.append(client)
+
+    with (
+        patch.object(Server, "get_client", autospec=True, side_effect=get_client),
+        patch.object(KeaClient, "close", autospec=True, side_effect=close),
+    ):
+        yield clients
 
 
 def _make_db_server(**kwargs) -> Server:

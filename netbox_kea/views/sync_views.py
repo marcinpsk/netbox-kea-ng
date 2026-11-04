@@ -130,11 +130,10 @@ class _BaseSyncView(ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
             return _row_error(request, gate.reason)
 
         server = get_object_or_404(Server.objects.restrict(request.user, "view"), pk=pk)
-        client = _client_or_refusal(server, self.dhcp_version)
-        if isinstance(client, str):
-            return _row_error(request, client)
-
-        observed = load_target(server, "lease_target", lambda: client.lease_get(identity))
+        with _client_or_refusal(server, self.dhcp_version) as client:
+            if isinstance(client, str):
+                return _row_error(request, client)
+            observed = load_target(server, "lease_target", lambda: client.lease_get(identity))
         if isinstance(observed, Notice):
             return _row_error(request, observed.text)
         if isinstance(observed, LeaseAbsent):

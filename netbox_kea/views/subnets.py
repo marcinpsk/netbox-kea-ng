@@ -166,11 +166,10 @@ def _warn_reservations_in_pool(
     not_checked = (
         f"The Reservation overlap check did not run. Pool {pool.range} was not checked against existing Reservations."
     )
-    client = _client_or_refusal(server, catalogue.family)
-    if isinstance(client, str):
-        messages.warning(request, f"{client} {not_checked}")
-        return
-    with client:
+    with _client_or_refusal(server, catalogue.family) as client:
+        if isinstance(client, str):
+            messages.warning(request, f"{client} {not_checked}")
+            return
         loaded = load_snapshot(
             server,
             "reservation",

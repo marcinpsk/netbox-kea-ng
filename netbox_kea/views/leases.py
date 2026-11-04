@@ -338,21 +338,23 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             return redirect(request.path)
 
         state_filter: LeaseState | None = form.cleaned_data.get("state")
-        client = _client_or_refusal(instance, self.dhcp_version)
-        if isinstance(client, str):
-            messages.error(request, client)
-            return redirect(request.path)
         search = LeaseSearch(by, form.cleaned_data["q"], state_filter)
-        try:
-            # An export reads the Leases live.
-            loaded = load_snapshot(instance, "lease", lambda: read_leases(client, instance, self.dhcp_version, search))
-        except LeaseQueryGuardError as exc:
-            messages.warning(request, lease_query_guard_message(exc, state_filter))
-            return redirect(request.path)
-        except ValueError:
-            logger.exception("The lease export search of server %s is not valid", instance.pk)
-            messages.error(request, "The lease search is not valid, so it was not exported.")
-            return redirect(request.path)
+        with _client_or_refusal(instance, self.dhcp_version) as client:
+            if isinstance(client, str):
+                messages.error(request, client)
+                return redirect(request.path)
+            try:
+                # An export reads the Leases live.
+                loaded = load_snapshot(
+                    instance, "lease", lambda: read_leases(client, instance, self.dhcp_version, search)
+                )
+            except LeaseQueryGuardError as exc:
+                messages.warning(request, lease_query_guard_message(exc, state_filter))
+                return redirect(request.path)
+            except ValueError:
+                logger.exception("The lease export search of server %s is not valid", instance.pk)
+                messages.error(request, "The lease search is not valid, so it was not exported.")
+                return redirect(request.path)
         if isinstance(loaded, Notice):
             show_notices(request, loaded)
             return redirect(request.path)
@@ -386,17 +388,17 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
 
         per_page = 1000
 
-        client = _client_or_refusal(instance, self.dhcp_version)
-        if isinstance(client, str):
-            messages.error(request, client)
-            return redirect(request.path)
-        loaded = load_snapshot(
-            instance,
-            "lease",
-            lambda: client.lease_get_all(
-                self.dhcp_version, per_page=per_page, max_leases=_LEASE_EXPORT_MAX_LEASES, server_id=instance.pk
-            ),
-        )
+        with _client_or_refusal(instance, self.dhcp_version) as client:
+            if isinstance(client, str):
+                messages.error(request, client)
+                return redirect(request.path)
+            loaded = load_snapshot(
+                instance,
+                "lease",
+                lambda: client.lease_get_all(
+                    self.dhcp_version, per_page=per_page, max_leases=_LEASE_EXPORT_MAX_LEASES, server_id=instance.pk
+                ),
+            )
         if isinstance(loaded, Notice):
             show_notices(request, loaded)
             return redirect(request.path)
@@ -749,18 +751,18 @@ class _BaseLeaseEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginReq
         """Render the edit form pre-filled with the current lease values and the shown facts."""
         server = self._get_server(pk)
 
-        client = _client_or_refusal(server, self.dhcp_version)
-        if isinstance(client, str):
-            messages.error(request, client)
-            return redirect(self._leases_url(server))
-        try:
-            label, identity = parse_selection(self.dhcp_version, ip_address)
-        except ValueError:
-            messages.error(
-                request, f"{ip_address} is not a DHCPv{self.dhcp_version} lease address or delegated prefix."
-            )
-            return redirect(self._leases_url(server))
-        result = load_target(server, "lease_target", lambda: client.lease_get(identity))
+        with _client_or_refusal(server, self.dhcp_version) as client:
+            if isinstance(client, str):
+                messages.error(request, client)
+                return redirect(self._leases_url(server))
+            try:
+                label, identity = parse_selection(self.dhcp_version, ip_address)
+            except ValueError:
+                messages.error(
+                    request, f"{ip_address} is not a DHCPv{self.dhcp_version} lease address or delegated prefix."
+                )
+                return redirect(self._leases_url(server))
+            result = load_target(server, "lease_target", lambda: client.lease_get(identity))
         if isinstance(result, Notice):
             show_notices(request, result)
             return redirect(self._leases_url(server))

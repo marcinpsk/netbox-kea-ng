@@ -26,7 +26,7 @@ from .kea_stub import (
     recorded_host,
     stub_kea,
 )
-from .utils import _make_db_server, _ViewTestBase, with_display_cache_config
+from .utils import _make_db_server, _ViewTestBase, record_kea_clients, with_display_cache_config
 
 
 def _return_url(url: str) -> list[str]:
@@ -130,6 +130,23 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
             response.context["mutation_unavailable_reason"],
             "Reservation mutation capabilities could not be confirmed.",
         )
+
+    def test_a_reservation_page_closes_each_kea_client(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        host = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "closed.example.invalid"}
+        responses.update(
+            {
+                "reservation-get-page": _res_page([host]),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            }
+        )
+        for query in ({}, {"q": "closed"}, {"export": "yaml"}):
+            with self.subTest(query=query):
+                display_cache.rotate_configuration(self.server, 4)
+                with stub_kea(responses), record_kea_clients() as clients:
+                    response = self.client.get(self._url(), query)
+                self.assertContains(response, "closed.example.invalid")
+                clients.assert_all_closed(self)
 
     def test_the_tab_and_the_combined_view_present_the_same_row(self):
         tab_row, _ = self._searched_row(self._url(), {})

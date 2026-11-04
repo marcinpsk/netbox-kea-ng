@@ -42,7 +42,8 @@ def connection_values(server: "Server") -> ConnectionValues:
 
 def _version_get(server: "Server", family: Family) -> object:
     """Send ``version-get`` to the DHCP daemon of *family*."""
-    return server.get_client(version=family).command(KeaCommand.VERSION_GET, family)
+    with server.get_client(version=family) as client:
+        return client.command(KeaCommand.VERSION_GET, family)
 
 
 def validate_connection_change(server: "Server", before: ConnectionValues | None) -> None:

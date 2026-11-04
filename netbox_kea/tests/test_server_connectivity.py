@@ -20,7 +20,7 @@ from users.models import ObjectPermission
 from netbox_kea.models import Server
 
 from .kea_stub import _http_response, _raw_http_response, queued, stub_kea
-from .utils import DISPATCHED_EVENTS, User, _make_db_server, _ViewTestBase, with_kea_client_config
+from .utils import DISPATCHED_EVENTS, User, _make_db_server, _ViewTestBase, record_kea_clients, with_kea_client_config
 
 _VERSION_OK = {"result": 0, "arguments": {"extended": "3.2.0"}}
 
@@ -178,6 +178,14 @@ class ServerSubmissionConnectivityTest(_ViewTestBase):
                             for family in families
                         ],
                     )
+
+    def test_a_connection_check_closes_each_kea_client(self):
+        url = reverse("plugins:netbox_kea:server_add")
+        with stub_kea({"version-get": _VERSION_OK}) as kea, record_kea_clients() as clients:
+            response = self.client.post(url, self._payload(dhcp6=True))
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands(), ["version-get", "version-get"])
+        clients.assert_all_closed(self)
 
     def test_connection_edit_rejects_an_unreachable_service(self):
         url = reverse("plugins:netbox_kea:server_edit", args=[self.server.pk])
