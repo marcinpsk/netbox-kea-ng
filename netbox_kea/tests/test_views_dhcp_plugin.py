@@ -491,7 +491,7 @@ class SummaryProblemsTest(SimpleTestCase):
         self, *, reservations_unread=False, reservations_quarantined=0, reservations_skipped=0, errors=0, **fields
     ):
         from netbox_kea.integrations.dhcp_import_report import Kind, Reason, not_written
-        from netbox_kea.integrations.dhcp_plugin import ImportSummary
+        from netbox_kea.integrations.dhcp_import_summary import ImportSummary
 
         summary = ImportSummary(**fields)
         for kind, reason, count in (

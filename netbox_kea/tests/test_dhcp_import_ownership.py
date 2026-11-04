@@ -23,6 +23,7 @@ from netaddr import IPNetwork
 
 from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.integrations.dhcp_import_report import Kind, Outcome, Reason
+from netbox_kea.integrations.dhcp_import_summary import ImportSummary
 from netbox_kea.integrations.dhcp_import_write import WriteScope
 from netbox_kea.integrations.dhcp_plugin_capabilities import probe
 from netbox_kea.ipam_reconciliation import (
@@ -588,7 +589,7 @@ class ImportOwnershipTest(TestCase):
         before = IPAMOwnershipLink.objects.values().get(prefix=self.delegated())
         conf = {"subnet6": [{"id": 9, "subnet": "2001:db8:9::/64"}]}
         observation = _reservation_snapshot(conf, 6, [{**self.identity, "subnet-id": 9}])
-        summary = dhcp_plugin.ImportSummary()
+        summary = ImportSummary()
         references = dhcp_plugin.OptionReferences(
             dhcp_plugin.CustomDefinitions({}, ()), dhcp_plugin.ClassReferences(6, frozenset(), {})
         )

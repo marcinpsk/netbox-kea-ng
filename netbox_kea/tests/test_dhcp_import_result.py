@@ -465,10 +465,10 @@ class EntryVocabularyTest(SimpleTestCase):
                 self.assertTrue(kea_paths.is_setting(path))
 
     def test_every_object_counter_excludes_setting_entries(self):
-        from netbox_kea.integrations.dhcp_plugin import ImportSummary, _Count
+        from netbox_kea.integrations.dhcp_import_summary import Count, ImportSummary
 
         for name, counter in vars(ImportSummary).items():
-            if not isinstance(counter, _Count):
+            if not isinstance(counter, Count):
                 continue
             match = counter.matches[0]
             path = kea_paths.setting(kea_paths.daemon(4), "metadata")

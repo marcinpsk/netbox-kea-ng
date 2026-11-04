@@ -28,7 +28,7 @@ from .dhcp_import_report import REASON_OUTCOME, Capability, ImportEntry, Kind, O
 if TYPE_CHECKING:
     from ..models import Server
     from .dhcp_import_plan import MappingSource
-    from .dhcp_plugin import ImportSummary
+    from .dhcp_import_summary import ImportSummary
     from .dhcp_plugin_capabilities import PluginCapabilities
 
 logger = logging.getLogger(__name__)

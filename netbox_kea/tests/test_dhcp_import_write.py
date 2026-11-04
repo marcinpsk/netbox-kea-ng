@@ -39,6 +39,7 @@ from netbox_kea.integrations.dhcp_import_plan import (
     plan_family,
 )
 from netbox_kea.integrations.dhcp_import_report import Capability, Kind, Outcome, Reason
+from netbox_kea.integrations.dhcp_import_summary import ImportSummary
 from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities, probe
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
 from netbox_kea.models import MAPPING_KINDS, KeaDhcpLink, next_confirmation_number
@@ -99,7 +100,7 @@ class _Fixture:
             name=_SERVER, ca_url="https://kea.example.invalid", dhcp4=family == 4, dhcp6=family == 6
         )
 
-    def apply(self, config: dict, server=None) -> dhcp_plugin.ImportSummary:
+    def apply(self, config: dict, server=None) -> ImportSummary:
         config = copy.deepcopy(config)
         intent = parse_dhcp_config(config, self.family)
         intent.configuration_complete = True

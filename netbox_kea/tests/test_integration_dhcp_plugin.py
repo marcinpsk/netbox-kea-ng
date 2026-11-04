@@ -25,6 +25,7 @@ from django.utils import timezone
 from netbox_kea import server_configuration
 from netbox_kea.constants import MAX_SUBNET_ID
 from netbox_kea.integrations.dhcp_import_report import Kind, Reason, not_written
+from netbox_kea.integrations.dhcp_import_summary import ImportSummary
 from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import ServerConfigIntent, parse_dhcp_config
 from netbox_kea.models import next_confirmation_number
@@ -1003,7 +1004,7 @@ class DhcpPluginTuningImportTest(TestCase):
         self._import({"renew-timer": 900, "subnet4": []})
         dhcp_server = imported_dhcp_server(self.server, 4)
         planned = plan_family(parse_dhcp_config({"renew-timer": 1200, "rebind-timer": 1800, "subnet4": []}, 4), None)
-        summary = self.adapter.ImportSummary()
+        summary = ImportSummary()
         capabilities = probe()
         values = self.adapter.server_values(dhcp_server, planned.server, 4, capabilities, summary)
 
@@ -1340,7 +1341,7 @@ class DhcpPluginServerPerFamilyTest(TestCase):
         }
         intent = parse_dhcp_config(self.conf[6], 6)
         intent.host_reservation_identifiers = ("hw-address", "flex-id")
-        summary = self.adapter.ImportSummary()
+        summary = ImportSummary()
 
         values = self.adapter.server_values(
             apps.get_model(DHCP_PLUGIN, "DHCPServer")(),
@@ -3610,7 +3611,6 @@ class DhcpPluginReservationSnapshotImportTest(TestCase):
         from netbox_kea.integrations.dhcp_plugin import (
             ClassReferences,
             CustomDefinitions,
-            ImportSummary,
             OptionReferences,
             import_reservation_snapshot,
             upsert_dhcp_server,
@@ -4462,7 +4462,6 @@ class ImportSummaryCompletenessTest(TestCase):
         from netbox_kea.integrations.dhcp_plugin import (
             ClassReferences,
             CustomDefinitions,
-            ImportSummary,
             OptionReferences,
             import_reservation_snapshot,
         )
@@ -4521,7 +4520,6 @@ class SkippedReservationCompletenessTest(TestCase):
         from netbox_kea.integrations.dhcp_plugin import (
             ClassReferences,
             CustomDefinitions,
-            ImportSummary,
             OptionReferences,
             import_reservation_snapshot,
         )

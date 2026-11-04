@@ -60,6 +60,7 @@ from netbox_kea.integrations.dhcp_import_plan import (
     planned_options,
 )
 from netbox_kea.integrations.dhcp_import_report import GAPS, Capability, Kind, Outcome, Reason
+from netbox_kea.integrations.dhcp_import_summary import ImportSummary
 from netbox_kea.integrations.dhcp_plugin_capabilities import CHECKS, PluginCapabilities, probe
 from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS, parse_dhcp_config
@@ -1237,7 +1238,7 @@ class GatedValuesTest(SimpleTestCase):
     def _plan(self, obj, field_map, settings: dict, capabilities: frozenset):
         from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
-        summary = dhcp_plugin.ImportSummary()
+        summary = ImportSummary()
         source = dhcp_plugin._Source(4, Kind.SUBNET, "Dhcp4/subnet4[id=10]")
         values = dhcp_plugin.gated_values(obj, settings, field_map, PluginCapabilities(capabilities), summary, source)
         return values, {(entry.path, entry.capability) for entry in summary.entries}
@@ -1414,7 +1415,7 @@ class OptionValuesTest(SimpleTestCase):
     def _values(self, candidate, opt, capabilities: frozenset):
         from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
-        summary = dhcp_plugin.ImportSummary()
+        summary = ImportSummary()
         source = dhcp_plugin._Source(6, Kind.OPTION, "Dhcp6/option-data[code=1003]")
         values = dhcp_plugin.option_values(candidate, opt, 6, PluginCapabilities(capabilities), summary, source)
         return values, {(entry.path, entry.capability) for entry in summary.entries}
@@ -2029,7 +2030,7 @@ class CreatedAndRemovedPathTest(TestCase):
     def _run(self, server, conf: dict, hosts: list[dict]):
         with stub_kea(_sync_responses({6: conf}, {6: hosts})):
             ((_family, summary),) = run_dhcp_plugin_import(server, cast("DhcpImportTrigger", DhcpImportTrigger.MANUAL))
-        assert isinstance(summary, dhcp_plugin.ImportSummary), summary
+        assert isinstance(summary, ImportSummary), summary
         self.assertEqual(summary.errors, 0, summary.warnings)
         return {
             (entry.kind, entry.outcome): entry.path
@@ -2743,7 +2744,7 @@ class OptionMappingTest(TestCase):
             ((_family, summary),) = run_dhcp_plugin_import(
                 server or self.server, cast("DhcpImportTrigger", DhcpImportTrigger.MANUAL)
             )
-        assert isinstance(summary, dhcp_plugin.ImportSummary), summary
+        assert isinstance(summary, ImportSummary), summary
         self.assertEqual(summary.errors, 0, summary.warnings)
         return summary
 
@@ -2991,7 +2992,7 @@ class OptionMappingTest(TestCase):
         with stub_kea(responses):
             ((_family, summary),) = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
 
-        assert isinstance(summary, dhcp_plugin.ImportSummary), summary
+        assert isinstance(summary, ImportSummary), summary
         option = f"{kea_paths.reservation(4, 21, 'hw-address', host['hw-address'])}/option-data[code=15]"
         self.assertEqual(self._changes(summary), {(Kind.OPTION, option, Outcome.REMOVED, None): 1})
         rows[("hostreservation", 15, "host.example.org", (), True)] -= 1
@@ -3514,7 +3515,7 @@ class OptionMappingTest(TestCase):
         responses = _sync_responses({4: config}, {4: _recorded_hosts(config, 4)})
         with stub_kea(responses):
             ((_, failing),) = run_dhcp_plugin_import(self.server, cast("DhcpImportTrigger", DhcpImportTrigger.MANUAL))
-        assert isinstance(failing, dhcp_plugin.ImportSummary), failing
+        assert isinstance(failing, ImportSummary), failing
 
         self.assertEqual(failing.count(Kind.CLIENT_CLASS, Reason.WRITE_FAILED), 1, failing.warnings)
         self.assertEqual(failing.count(Kind.OPTION, Reason.PARENT_NOT_IMPORTED), 1, failing.warnings)
@@ -3722,7 +3723,7 @@ class PoolNotImportedOptionsTest(TestCase):
         with stub_kea(_sync_responses({4: config})):
             ((_family, summary),) = run_dhcp_plugin_import(server, DhcpImportTrigger.MANUAL)
 
-        assert isinstance(summary, dhcp_plugin.ImportSummary), summary
+        assert isinstance(summary, ImportSummary), summary
         failed, unusable = (
             f"Dhcp4/subnet4[id=1]/pools[pool={text}]" for text in ("10.96.0.10-10.96.0.20", "10.96.1.10-10.96.1.20")
         )
@@ -3761,7 +3762,7 @@ class PoolNotImportedOptionsTest(TestCase):
         with stub_kea(_sync_responses({4: config(invalid)})):
             ((_family, summary),) = run_dhcp_plugin_import(server, DhcpImportTrigger.MANUAL)
 
-        assert isinstance(summary, dhcp_plugin.ImportSummary), summary
+        assert isinstance(summary, ImportSummary), summary
         path = "Dhcp4/subnet4[id=1]/pools[pool=10.96.1.10-10.96.1.20]"
         self.assertEqual(
             Counter(
@@ -4037,7 +4038,7 @@ class CoverageImportTest(TestCase):
         responses[f"subnet{family}-list"] = subnets
         with stub_kea(responses):
             ((_family, summary),) = run_dhcp_plugin_import(server, DhcpImportTrigger.MANUAL)
-        assert isinstance(summary, dhcp_plugin.ImportSummary), summary
+        assert isinstance(summary, ImportSummary), summary
         self.assertEqual(summary.errors, 0, summary.warnings)
 
     def _assert_coverage(self, family: Family):
