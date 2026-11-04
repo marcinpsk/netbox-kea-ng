@@ -4,12 +4,14 @@
 
 import os
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
 import requests
 from core.models import Job, ObjectChange, ObjectType
 from django.core.exceptions import ValidationError
+from django.db import models
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from extras.models import Tag
@@ -19,6 +21,7 @@ from users.models import ObjectPermission
 
 from netbox_kea.forms import ServerForm
 from netbox_kea.models import Server
+from netbox_kea.server_connection import service_connections
 
 from .kea_stub import _http_response, _raw_http_response, queued, stub_kea
 from .utils import DISPATCHED_EVENTS, User, _make_db_server, _ViewTestBase, record_kea_clients, with_kea_client_config
@@ -641,3 +644,69 @@ class ServerChangeRuleTest(_ViewTestBase):
                     self.assertEqual(sent, probes)
                     server.refresh_from_db()
                     self.assertEqual({field: getattr(server, field) for field in change}, change)
+
+
+#: The concrete Server fields that no effective connection reads. get_client also reads persist_config.
+NON_CONNECTION_FIELDS = frozenset(
+    {
+        "id",
+        "created",
+        "last_updated",
+        "custom_field_data",
+        "name",
+        "ipam_first_complete_at",
+        "ipam_initial_observations",
+        "sync_enabled",
+        "sync_leases_enabled",
+        "sync_reservations_enabled",
+        "sync_prefixes_enabled",
+        "sync_ip_ranges_enabled",
+        "sync_deprecate_prefixes_and_ranges",
+        "sync_dhcp_plugin_enabled",
+        "persist_config",
+        "sync_vrf",
+    }
+)
+
+
+def _changed(field: models.Field, value: object) -> object:
+    """Return a value of *field* that differs from *value*."""
+    if isinstance(field, models.BooleanField):
+        return not value
+    if isinstance(field, models.CharField):
+        return f"{value}-changed"
+    if isinstance(field, (models.IntegerField, models.ForeignKey)) and (value is None or isinstance(value, int)):
+        return (value or 0) + 1000
+    if isinstance(field, models.DateTimeField):
+        return datetime.now(UTC)
+    if isinstance(field, models.JSONField):
+        return {"changed": True}
+    raise AssertionError(f"Give _changed() a value for the {type(field).__name__} {field.name}.")
+
+
+class ServiceConnectionsCompletenessTest(TestCase):
+    """Each Server field changes the effective connection of a family, or is a listed non-connection field."""
+
+    def test_each_server_field_is_part_of_the_connection_or_listed_as_not(self):
+        credentials = {"ca_username": "ca-user", "ca_password": "ca-secret"}
+        shapes = {
+            "own URLs": _make_db_server(name="own-urls", **_SPLIT_URLS, **credentials),
+            "CA URL": _make_db_server(name="ca-url", **credentials),
+        }
+        fields = Server._meta.concrete_fields
+        self.assertLessEqual(NON_CONNECTION_FIELDS, {field.name for field in fields})
+        for field in fields:
+            with self.subTest(field=field.name):
+                changed_in = []
+                for shape, saved in shapes.items():
+                    server = Server.objects.get(pk=saved.pk)
+                    before = service_connections(server)
+                    setattr(server, field.attname, _changed(field, getattr(server, field.attname)))
+                    if service_connections(server) != before:
+                        changed_in.append(shape)
+                if field.name in NON_CONNECTION_FIELDS:
+                    self.assertEqual(changed_in, [], f"{field.name} changes a connection, so it is not listed.")
+                else:
+                    self.assertNotEqual(
+                        changed_in, [], f"Add {field.name} to kea_connection() or to NON_CONNECTION_FIELDS."
+                    )
