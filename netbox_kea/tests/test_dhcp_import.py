@@ -34,6 +34,7 @@ from netbox_kea.dhcp_options import parse_dhcp_option, parse_option_definition
 from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.integrations.dhcp_import import run_dhcp_plugin_import
 from netbox_kea.integrations.dhcp_import_ledger import KEA_DEFAULTS, LEDGER, MERGED_KEYS, Mapped, NotImported
+from netbox_kea.integrations.dhcp_import_options import option_values
 from netbox_kea.integrations.dhcp_import_plan import (
     KEY_KINDS,
     MAX_KEA_NAME_LENGTH,
@@ -1418,7 +1419,7 @@ class OptionValuesTest(SimpleTestCase):
 
         summary = ImportSummary()
         source = Source(6, Kind.OPTION, "Dhcp6/option-data[code=1003]")
-        values = dhcp_plugin.option_values(candidate, opt, 6, PluginCapabilities(capabilities), summary, source)
+        values = option_values(candidate, opt, 6, PluginCapabilities(capabilities), summary, source)
         return values, {(entry.path, entry.capability) for entry in summary.entries}
 
     @isolate_apps("netbox_kea")

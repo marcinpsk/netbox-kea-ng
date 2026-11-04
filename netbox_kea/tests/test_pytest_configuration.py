@@ -1349,6 +1349,12 @@ def test_every_module_that_needs_the_dhcp_plugin_runs_in_a_dhcp_plugin_job():
     assert not needs_plugin - covered, f"No DHCP plugin CI job runs: {sorted(needs_plugin - covered)}"
 
 
+# The modules of the DHCP Import that look up netbox_dhcp models (dhcp_plugin also covers dhcp_plugin_capabilities).
+_PLUGIN_INTEGRATION_MODULES = tuple(
+    f"netbox_kea.integrations.{name}" for name in ("dhcp_plugin", "dhcp_import_mappings", "dhcp_import_options")
+)
+
+
 def _unguarded_plugin_free_classes(path: Path) -> list[str]:
     """Return the classes of *path* that import the DHCP integration and run without netbox_dhcp, undecorated."""
     source = path.read_text()
@@ -1368,7 +1374,7 @@ def _unguarded_plugin_free_classes(path: Path) -> list[str]:
             if isinstance(child, ast.ImportFrom)
             for alias in child.names
         )
-        imports_integration = any(name.startswith("netbox_kea.integrations.dhcp_plugin") for name in imported)
+        imports_integration = any(name.startswith(_PLUGIN_INTEGRATION_MODULES) for name in imported)
         decorators = {ast.unparse(decorator) for decorator in node.decorator_list}
         if imports_integration and not skips(node) and "without_dhcp_plugin()" not in decorators:
             found.append(f"{path.name}::{node.name}")
@@ -1407,12 +1413,19 @@ def test_the_plugin_free_class_guard_reports_each_import_form_and_accepts_each_s
         "class DecoratedTest(TestCase):\n"
         "    def test_it(self):\n"
         "        from netbox_kea.integrations import dhcp_plugin\n"
+        "class ConceptModuleTest(TestCase):\n"
+        "    def test_it(self):\n"
+        "        from netbox_kea.integrations.dhcp_import_options import upsert_options\n"
         "class UnrelatedImportTest(TestCase):\n"
         "    def test_it(self):\n"
         "        from netbox_kea.integrations import dhcp_import\n"
     )
 
-    assert _unguarded_plugin_free_classes(module) == ["test_sample.py::ReExportTest", "test_sample.py::SubmoduleTest"]
+    assert _unguarded_plugin_free_classes(module) == [
+        "test_sample.py::ReExportTest",
+        "test_sample.py::SubmoduleTest",
+        "test_sample.py::ConceptModuleTest",
+    ]
 
 
 def test_a_test_class_that_runs_without_the_dhcp_plugin_also_runs_without_it_locally():

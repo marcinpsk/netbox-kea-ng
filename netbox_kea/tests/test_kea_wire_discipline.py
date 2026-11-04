@@ -10,10 +10,11 @@ import pytest
 
 from netbox_kea.tests import kea_wire_discipline as wd
 
-# This is the frozen follow-up brief. Files may leave but must not be added.
+# This is the frozen follow-up brief. Files may leave but must not be added; a moved function takes its entry along.
 _FOLLOW_UP_FILES = frozenset(
     {
         "constants.py",
+        "integrations/dhcp_import_options.py",
         "integrations/dhcp_plugin.py",
         "mappers/kea_to_dhcp.py",
         "models.py",
