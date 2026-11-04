@@ -192,7 +192,7 @@ from .dhcp_import_write import (
     save_changes,
     write_row,
 )
-from .dhcp_plugin_capabilities import PLUGIN_APP_LABEL, PluginCapabilities, probe
+from .dhcp_plugin_capabilities import PLUGIN_APP_LABEL, PluginCapabilities, plugin_model, probe
 
 logger = logging.getLogger(__name__)
 
@@ -332,16 +332,6 @@ class ImportSummary:
         """Record a non-fatal warning and log it, with the traceback of *error* when one caused it."""
         self.warnings.append(message)
         logger.warning("DHCP-plugin import: %s", message, exc_info=error)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Lazy model access
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def _model(name: str):
-    """Return a ``netbox_dhcp`` model class by name (lazy; plugin must be installed)."""
-    return apps.get_model(PLUGIN_APP_LABEL, name)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -513,7 +503,7 @@ class _OptionDefinitionAdapter(RowAdapter):
     parent: Any
 
     def _same_key(self):
-        return _model("OptionDefinition").objects.filter(standard=False, space=self.key.space, code=self.key.code)
+        return plugin_model("OptionDefinition").objects.filter(standard=False, space=self.key.space, code=self.key.code)
 
     def _held(self):
         """Return the definitions of the space and code of the key on *parent*, mapped or not."""
@@ -540,7 +530,7 @@ class _OptionDefinitionAdapter(RowAdapter):
 
     def new_row(self):
         """Return a new custom definition with its Kea name."""
-        return _model("OptionDefinition")(name=self.definitions.declared[self.key].name, standard=False)
+        return plugin_model("OptionDefinition")(name=self.definitions.declared[self.key].name, standard=False)
 
     def fields(self, row) -> dict:
         """Return the managed fields of the definition on its parent."""
@@ -609,7 +599,7 @@ def _resolve_option_definition(
     declare is never used. Returns ``None`` for an option that the plugin holds without a definition, or why the
     option cannot be imported.
     """
-    OptionDefinition = _model("OptionDefinition")
+    OptionDefinition = plugin_model("OptionDefinition")
     space = opt.space or kea_paths.default_space(family)
     owners = (None,) if class_name is None else (class_name, None)
     for owner in owners:
@@ -740,7 +730,7 @@ class _OptionAdapter(RowAdapter):
 
     def new_row(self):
         """Return a new Option of the definition, assigned to the parent row."""
-        return _model("Option")(
+        return plugin_model("Option")(
             definition=self.item.definition,
             assigned_object_type=self.content_type,
             assigned_object_id=self.parent_obj.pk,
@@ -807,7 +797,7 @@ def upsert_options(scope: WriteScope, parent_obj, planned_set: PlannedOptions, r
     unmapped = []
     if pairing:
         unmapped = list(
-            unlinked(_model("Option").objects.filter(assigned_object_type=ct, assigned_object_id=parent_obj.pk))
+            unlinked(plugin_model("Option").objects.filter(assigned_object_type=ct, assigned_object_id=parent_obj.pk))
             .select_related("definition")
             .prefetch_related("client_classes")
             .order_by("pk")
@@ -957,7 +947,7 @@ def _identifier_values(
     identifiers: tuple[str, ...], root: str, family: int, capabilities: PluginCapabilities, summary: ImportSummary
 ) -> list[str] | None:
     """Keep the Reservation identifier types that the DHCP plugin can hold; flex-id needs its capability."""
-    field = _model("DHCPServer")._meta.get_field("host_reservation_identifiers")
+    field = plugin_model("DHCPServer")._meta.get_field("host_reservation_identifiers")
     valid = {value for value, _label in field.base_field.flatchoices}
     if capabilities.has(Capability.FLEX_ID_IDENTIFIER):
         valid.add(FLEX_ID)
@@ -1092,7 +1082,7 @@ def _adoption_servers(server, dhcp_server) -> tuple[int, ...]:
 
     A DHCPServer that another Server maps is not that row, even when its name matches.
     """
-    DHCPServer = _model("DHCPServer")
+    DHCPServer = plugin_model("DHCPServer")
     elsewhere = mapped_elsewhere(DHCPServer, server)
     legacy = DHCPServer.objects.filter(name=server.name).exclude(pk=dhcp_server.pk).exclude(pk__in=elsewhere)
     return (dhcp_server.pk, *legacy.values_list("pk", flat=True))
@@ -1102,7 +1092,7 @@ def _move_family_options(dhcp_server, adoption_servers: tuple[int, ...], family:
     """Move the global Options of *family* that an import before #94 wrote on the DHCPServer of both families."""
     from django.contrib.contenttypes.models import ContentType
 
-    stale = _model("Option").objects.filter(
+    stale = plugin_model("Option").objects.filter(
         assigned_object_type=ContentType.objects.get_for_model(dhcp_server),
         assigned_object_id__in=[pk for pk in adoption_servers if pk != dhcp_server.pk],
         definition__family=family,
@@ -1120,7 +1110,7 @@ def upsert_dhcp_server(server, family: int):
     primary family. A new DHCPServer takes the device or virtual machine of the Server's other DHCPServer, and the
     global Options of its family that an earlier import wrote on that adopted row.
     """
-    DHCPServer = _model("DHCPServer")
+    DHCPServer = plugin_model("DHCPServer")
     source = ServerKey().source
     created = False
     with event_scope.atomic():
@@ -1187,7 +1177,7 @@ def _name_taken(kind: Kind, name: str, obj, dhcp_server, capabilities: PluginCap
     """Return whether another row of *kind* holds *name* in the scope where the DHCP plugin keeps the names unique."""
     from ..models import MAPPING_KINDS
 
-    others = _model(MAPPING_KINDS[kind][0]).objects.filter(name=name)
+    others = plugin_model(MAPPING_KINDS[kind][0]).objects.filter(name=name)
     if capabilities.has(Capability.NAME_PER_SERVER):
         others = others.filter(dhcp_server=dhcp_server)
     return (others.exclude(pk=obj.pk) if obj is not None else others).exists()
@@ -1252,11 +1242,11 @@ class _ClientClassAdapter(_NamedAdapter):
     def adopt(self):
         """Return the row that the released importer created before client classes had a mapping."""
         released = _released_client_class_name(self.scope.server, self.key.name)
-        return unlinked(_model("ClientClass").objects.filter(name=released)).first()
+        return unlinked(plugin_model("ClientClass").objects.filter(name=released)).first()
 
     def new_row(self):
         """Return a new client class."""
-        return _model("ClientClass")()
+        return plugin_model("ClientClass")()
 
     def fields(self, row) -> dict:
         """Return the managed fields of the class."""
@@ -1320,7 +1310,7 @@ class _SharedNetworkAdapter(_NamedAdapter):
 
     def new_row(self):
         """Return a new Shared Network. The import never links a Prefix; a Prefix that an operator sets stays."""
-        return _model("SharedNetwork")(prefix_id=None)
+        return plugin_model("SharedNetwork")(prefix_id=None)
 
     def fields(self, row) -> dict:
         """Return the managed fields of the Shared Network."""
@@ -1420,7 +1410,7 @@ class _SubnetAdapter(RowAdapter):
 
     def new_row(self):
         """Return a new Subnet with a name that is unique across all DHCP servers."""
-        return _model("Subnet")(name=_subnet_name(self.scope.server, self.planned))
+        return plugin_model("Subnet")(name=_subnet_name(self.scope.server, self.planned))
 
     def fields(self, row) -> dict:
         """Return the managed fields of the Subnet, with the Prefix that the IPAM claim gave it."""
@@ -1647,7 +1637,7 @@ def settle_subnet_ids(
     family or Server that holds the ID. The capability probe decides the scope of the plugin's uniqueness rule:
     all DHCP servers, or *dhcp_server* only.
     """
-    Subnet = _model("Subnet")
+    Subnet = plugin_model("Subnet")
     planned = {subnet.key.subnet_id: subnet for subnet in plan.subnets}
     wants, ours = subnet_id_mappings(Subnet, server, plan.family, planned)
     current = dict(Subnet.objects.filter(pk__in=ours.values()).values_list("pk", "subnet_id"))
@@ -1802,11 +1792,11 @@ class _PoolAdapter(RowAdapter):
 
     def adopt(self):
         """Return the unmapped Pool of the same Subnet and IP Range."""
-        return unlinked(_model("Pool").objects.filter(subnet=self.subnet_obj, ip_range=self._range())).first()
+        return unlinked(plugin_model("Pool").objects.filter(subnet=self.subnet_obj, ip_range=self._range())).first()
 
     def new_row(self):
         """Return a new Pool with a name that is unique in its Subnet."""
-        return _model("Pool")(name=_pool_name(self.subnet_obj, self.intent))
+        return plugin_model("Pool")(name=_pool_name(self.subnet_obj, self.intent))
 
     def fields(self, row) -> dict:
         """Return the managed fields of the Pool."""
@@ -1881,7 +1871,7 @@ class _PDPoolAdapter(RowAdapter):
 
     def new_row(self):
         """Return a new PD Pool with a name that is unique in its Subnet."""
-        return _model("PDPool")(name=_pd_pool_name(self.subnet_obj, self.key))
+        return plugin_model("PDPool")(name=_pd_pool_name(self.subnet_obj, self.key))
 
     def fields(self, row) -> dict:
         """Return the managed fields of the PD Pool."""
@@ -2011,7 +2001,7 @@ class _ReservationAdapter(RowAdapter):
 
         So an upgrade maps that row instead of duplicating it.
         """
-        HostReservation = _model("HostReservation")
+        HostReservation = plugin_model("HostReservation")
         if self.subnet_obj is not None:
             base = HostReservation.objects.filter(subnet=self.subnet_obj)
         else:
@@ -2020,7 +2010,7 @@ class _ReservationAdapter(RowAdapter):
 
     def new_row(self):
         """Return a new Reservation with a name that is unique in its Scope."""
-        return _model("HostReservation")(name=_reservation_name(self._scope_name(), self.reservation))
+        return plugin_model("HostReservation")(name=_reservation_name(self._scope_name(), self.reservation))
 
     def fields(self, row) -> dict:
         """Return the managed fields of the Reservation. Its Scope is managed: a row that an operator moved returns."""
@@ -2120,7 +2110,7 @@ def _relation_states(objs) -> dict[int, dict[str, frozenset[int]]]:
         # Without the DHCP plugin no row is imported, and its model does not exist.
         return {}
     states: dict[int, dict[str, set[int]]] = {pk: {name: set() for name in _RESERVATION_RELATIONS} for pk in pks}
-    rows = _model("HostReservation").objects.filter(pk__in=pks)
+    rows = plugin_model("HostReservation").objects.filter(pk__in=pks)
     for name in _RESERVATION_RELATIONS:
         for pk, related in rows.values_list("pk", name):
             if related is not None:
@@ -2436,7 +2426,7 @@ def _goes_with_parent(model) -> bool:
 
     A mapped Option goes only when it is stale itself (:func:`_removal_plan`).
     """
-    return model._meta.app_label != PLUGIN_APP_LABEL or model._meta.auto_created or model is _model("Option")
+    return model._meta.app_label != PLUGIN_APP_LABEL or model._meta.auto_created or model is plugin_model("Option")
 
 
 def _counted_rows(rows: list) -> str:
@@ -2457,7 +2447,7 @@ class _FootprintCollector(Collector):
     def related_objects(self, related_model, related_fields, objs):
         """Return the related rows of *objs*, without the Options that go first."""
         rows = super().related_objects(related_model, related_fields, objs)
-        return rows.exclude(pk__in=self.deleted_first) if related_model is _model("Option") else rows
+        return rows.exclude(pk__in=self.deleted_first) if related_model is plugin_model("Option") else rows
 
 
 def _collected(collector: Collector) -> list:
@@ -2524,7 +2514,7 @@ def _removal_plan(target, stale: dict, mapped_options: frozenset[tuple], named_b
     the object that it is assigned to. A mapped Option of *mapped_options* outside *stale* is kept. *named_by* gives the
     rows that name each stale row in a many-to-many relation.
     """
-    Option = _model("Option")
+    Option = plugin_model("Option")
     own = _row_key(target)
     first: dict[int, Any] = {}
     while True:
@@ -2685,7 +2675,9 @@ def _delete_component(
                     continue
                 plan = plans[current]
                 # An Option that the delete of its own owner already removed is gone.
-                for option in _model("Option").objects.filter(pk__in=[option.pk for option in plan.options_first]):
+                for option in plugin_model("Option").objects.filter(
+                    pk__in=[option.pk for option in plan.options_first]
+                ):
                     option.delete()
                 removable[current].target.delete()
                 gone += [current, *(each for each in plan.cascaded if each not in removed and each not in gone)]
@@ -2997,7 +2989,7 @@ def sys4_referenced_ip_ids() -> set[int]:
     """PKs of ``ipam.IPAddress`` rows referenced by any DHCP-plugin reservation."""
     if not is_available():
         return set()
-    HostReservation = _model("HostReservation")
+    HostReservation = plugin_model("HostReservation")
     ids: set[int] = set()
     ids.update(HostReservation.objects.exclude(ipv4_address__isnull=True).values_list("ipv4_address_id", flat=True))
     ids.update(HostReservation.objects.values_list("ipv6_addresses__id", flat=True))
@@ -3009,10 +3001,10 @@ def sys4_referenced_prefix_ids() -> set[int]:
     """PKs of ``ipam.Prefix`` rows referenced by DHCP-plugin subnets/shared-networks/PD pools/reservations."""
     if not is_available():
         return set()
-    Subnet = _model("Subnet")
-    SharedNetwork = _model("SharedNetwork")
-    PDPool = _model("PDPool")
-    HostReservation = _model("HostReservation")
+    Subnet = plugin_model("Subnet")
+    SharedNetwork = plugin_model("SharedNetwork")
+    PDPool = plugin_model("PDPool")
+    HostReservation = plugin_model("HostReservation")
     ids: set[int] = set()
     ids.update(Subnet.objects.values_list("prefix_id", flat=True))
     ids.update(SharedNetwork.objects.values_list("prefix_id", flat=True))
@@ -3028,7 +3020,7 @@ def sys4_referenced_iprange_ids() -> set[int]:
     """PKs of ``ipam.IPRange`` rows referenced by any DHCP-plugin pool."""
     if not is_available():
         return set()
-    Pool = _model("Pool")
+    Pool = plugin_model("Pool")
     ids = set(Pool.objects.values_list("ip_range_id", flat=True))
     ids.discard(None)
     return ids

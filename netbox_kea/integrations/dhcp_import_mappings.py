@@ -21,14 +21,13 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
-from django.apps import apps
 from django.db.models.signals import post_delete
 
 from ..dhcp_mapping_lifecycle import metadata_scope, target_models
 from ..models import KeaDhcpLink, exact_source, mapping_identity, next_confirmation_number
 from .dhcp_import_plan import MappingSource, mapped_kinds
 from .dhcp_import_report import Kind
-from .dhcp_plugin_capabilities import PLUGIN_APP_LABEL
+from .dhcp_plugin_capabilities import plugin_model
 
 if TYPE_CHECKING:
     from django.db.models import QuerySet
@@ -168,8 +167,7 @@ def mapped_option_keys() -> frozenset[tuple]:
     An operator can assign the Option of another Server to an object of this one.
     """
     links = KeaDhcpLink.objects.filter(kind=Kind.OPTION.value)
-    option = apps.get_model(PLUGIN_APP_LABEL, "Option")
-    return frozenset((option, pk) for pk in links.values_list("object_id", flat=True))
+    return frozenset((plugin_model("Option"), pk) for pk in links.values_list("object_id", flat=True))
 
 
 def mapped_links(server, family: int) -> Iterator[tuple[MappingSource, Any]]:
