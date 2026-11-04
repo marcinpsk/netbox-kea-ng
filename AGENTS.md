@@ -198,7 +198,7 @@ except in tests, migrations, and `__init__.py`.
 ```text
 URL request
   → urls.py             (routes to view classes)
-  → views/              (view modules; each calls server.get_client() → KeaClient)
+  → views/              (view modules; each Kea client lives in a `with` block or a holder that closes it)
       _base.py          (ConditionalLoginRequiredMixin, _KeaChangeMixin, shared helpers)
       notices.py        (the one notice rule of a read: notice(), load_snapshot(), load_target() and the channels; ADR 0003)
       read_age.py       (the read age line and Refresh control of a cached table; ADR 0009)
