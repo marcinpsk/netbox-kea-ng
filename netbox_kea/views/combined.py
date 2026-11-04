@@ -12,6 +12,7 @@ from django.views import View
 from .. import forms, subnet_catalogue, tables
 from ..constants import Family
 from ..models import Server
+from ..reservation_reads import ReservationQuery
 from ..reservation_transfer import export_reservation_document
 from ..subnet_catalogue import CatalogueSnapshot
 from ..sync_run_result import latest
@@ -20,7 +21,7 @@ from ._base import ConditionalLoginRequiredMixin
 from .fan_out import fan_out
 from .notices import Notice, ServerNotices, notice
 from .read_age import read_age_context, refresh_requested
-from .reservations import ReservationQuery, ReservationRead
+from .reservations import ReservationRead
 from .reservations import empty_text as reservation_empty_text
 from .reservations import fetch as fetch_reservations
 from .reservations import present as present_reservations

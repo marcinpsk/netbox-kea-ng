@@ -38,8 +38,8 @@ from django.urls import reverse
 from ipam.models import IPAddress as NbIP
 
 from netbox_kea.models import IPAMOwnershipLink, Server, next_confirmation_number
+from netbox_kea.reservation_reads import PAGE_SIZE as RESERVATION_PAGE_SIZE
 from netbox_kea.views.notices import HEADLINES, NoticeKind
-from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
 from .kea_stub import (
     READ_FAILURES,
@@ -1060,7 +1060,7 @@ class TestReservation4BulkSyncView(_SyncViewBase):
 
         hosts = [
             {"subnet-id": 1, "remote-id": "relay-value"},
-            *({"subnet-id": 0, "flex-id": f"global-{index}"} for index in range(_RESERVATION_PAGE_SIZE - 1)),
+            *({"subnet-id": 0, "flex-id": f"global-{index}"} for index in range(RESERVATION_PAGE_SIZE - 1)),
         ]
         pages = queued(
             _res_page(hosts, next_from=1, next_source=1),

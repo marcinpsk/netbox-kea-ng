@@ -11,8 +11,8 @@ from django.contrib import messages as django_messages
 from django.urls import reverse
 
 from netbox_kea import display_cache
+from netbox_kea.reservation_reads import PAGE_SIZE as RESERVATION_PAGE_SIZE
 from netbox_kea.views.notices import HEADLINES, Notice
-from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
 from .kea_stub import (
     READ_FAILURES,
@@ -248,7 +248,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
                 "option-data": [{"name": "domain-name-servers", "data": "198.18.0.53"}],
             },
             {"subnet-id": 20, "remote-id": "private rejected value"},
-            *[{"subnet-id": 20, "flex-id": f"page-filler-{index}"} for index in range(_RESERVATION_PAGE_SIZE - 3)],
+            *[{"subnet-id": 20, "flex-id": f"page-filler-{index}"} for index in range(RESERVATION_PAGE_SIZE - 3)],
         ]
         responses.update(
             {
@@ -319,7 +319,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
                 "hw-address": f"aa:bb:cc:00:{index // 256:02x}:{index % 256:02x}",
                 "ip-address": f"198.18.0.{index + 1}",
             }
-            for index in range(_RESERVATION_PAGE_SIZE)
+            for index in range(RESERVATION_PAGE_SIZE)
         ]
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         responses.update(
@@ -659,7 +659,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
                 "ip-addresses": ["2001:db8::20", "2001:db8::21"],
                 "prefixes": ["2001:db8:100::/56"],
             },
-            *[{"subnet-id": 30, "flex-id": f"page-filler-{index}"} for index in range(_RESERVATION_PAGE_SIZE - 1)],
+            *[{"subnet-id": 30, "flex-id": f"page-filler-{index}"} for index in range(RESERVATION_PAGE_SIZE - 1)],
         ]
         responses["reservation-get-page"] = _res_page(
             hosts,

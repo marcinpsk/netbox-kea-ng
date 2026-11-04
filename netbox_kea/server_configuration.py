@@ -943,3 +943,13 @@ def for_verification(server: Server, family: int) -> ServerConfigurationSnapshot
     validated_family = validate_family(family)
     require_persisted_server(server)
     return _read_live(server, validated_family)
+
+
+def display_capabilities(server: Server, family: Family) -> ReservationCapabilities | None:
+    """Return the Reservation capabilities that the cached Server Configuration shows, for a page render."""
+    return reservation_capabilities(display(server, family))
+
+
+def live_capabilities(server: Server, family: Family) -> ReservationCapabilities | None:
+    """Return the Reservation capabilities of a live Server Configuration read, to authorize a write."""
+    return reservation_capabilities(for_verification(server, family))

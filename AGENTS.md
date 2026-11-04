@@ -227,6 +227,8 @@ URL request
   → kea.py              (HTTP POST to each daemon's / control socket)
   → display_cache.py    (the display cache: keys, generations, TTLs, admission; ADR 0009)
   → lease_reads.py      (the cached Lease Snapshot reads of the Leases tab and of the Lease badges; ADR 0009)
+  → reservation_reads.py (the Reservation reads: the cached page and search batch of the tabs, the export Snapshot,
+                        and the REST API reads; a failed read raises, and the views run it through load_snapshot())
   → lease_reservation_reads.py (Current Lease Presence of Reservation rows and Reservation Match of Lease rows:
                         the cached Kea adapters of the two reservations.py ports, in one worker pool)
   → sync.py             (the aggregate Reservation Synchronization State and DCIM MAC synchronization)
@@ -308,16 +310,16 @@ URL request
   rule `kea-cache-outside-display-cache` refuses `django.core.cache` and the private names of the module in other
   modules. `cached(server, family, kind, read, query=, refresh=)` serves the `display()` reads of
   `server_configuration` (kind `configuration`) and `subnet_catalogue` (kind `catalogue`), each Reservation page
-  of the Server tab and the combined page (kind `reservations`, in `views/reservations.fetch()`), each Lease Snapshot
-  of the Leases tab and of the Lease badges of Reservation rows (kind `leases`, in `lease_reads.cached_read()`), each
-  Reservation lookup of a Lease row (kind `reservation_lookups`, in `lease_reservation_reads._KeaReservationLookup`), Subnet
-  utilization (kind `utilization`, in `views/subnet_lists.fetch_subnets()`) and the `status-get` and
-  `version-get` reads of the Overview and the combined status badge (kind `status`, in `views/_base.daemon_status()`
-  and `daemon_version()`). It stores only a value whose `settled` property is true (the `Cacheable` protocol). A
-  failed read raises, so it is never stored. A Reservation entry (`_ReservationPage`) holds the page Snapshot and the
-  Subnet Catalogue it was parsed against, so a hit sends no Catalogue read; it is settled only when both are. A
-  Reservation walk that an error stopped (`page-fetch-failed`, `pagination-stalled`) is not settled; a walk stopped at
-  its limit is. A Lease entry (`LeaseRead`) holds the Snapshot, or the Catalogue that could not resolve a
+  of the Server tab and the combined page (kind `reservations`, in `reservation_reads.cached_page()`), each Lease
+  Snapshot of the Leases tab and of the Lease badges of Reservation rows (kind `leases`, in
+  `lease_reads.cached_read()`), each Reservation lookup of a Lease row (kind `reservation_lookups`, in
+  `lease_reservation_reads._KeaReservationLookup`), Subnet utilization (kind `utilization`, in
+  `views/subnet_lists.fetch_subnets()`) and the `status-get` and `version-get` reads of the Overview and the combined
+  status badge (kind `status`, in `views/_base.daemon_status()` and `daemon_version()`). It stores only a value whose
+  `settled` property is true (the `Cacheable` protocol). A failed read raises, so it is never stored. A Reservation
+  entry (`reservation_reads.ReservationPage`) holds the page Snapshot and the Subnet Catalogue it was parsed against,
+  so a hit sends no Catalogue read; it is settled only when both are. A Reservation walk that an error stopped
+  (`page-fetch-failed`, `pagination-stalled`) is not settled; a walk stopped at its limit is. A Lease entry (`LeaseRead`) holds the Snapshot, or the Catalogue that could not resolve a
   Subnet search; the view shows its Notice. A Subnet search resolves its CIDR inside the cached read through a live Catalogue read, keyed by the
   unresolved search, so a hit sends no Kea command; a result of a Catalogue that did not settle is not stored. A Lease
   search key holds the Attribute, the value and the state; a read of every Lease also holds the cursor and the page

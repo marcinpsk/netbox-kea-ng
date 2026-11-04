@@ -23,8 +23,10 @@ from django.urls import clear_script_prefix, reverse, set_script_prefix
 from users.models import ObjectPermission
 
 from netbox_kea.models import Server
+from netbox_kea.reservation_reads import PAGE_SIZE as RESERVATION_PAGE_SIZE
+from netbox_kea.reservation_reads import ReservationQuery
 from netbox_kea.views.notices import HEADLINES
-from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE, ReservationQuery, fetch
+from netbox_kea.views.reservations import fetch
 
 from .kea_stub import (
     _catalogue_responses,
@@ -1081,7 +1083,7 @@ class TestCombinedReservationCursorPagination(_ViewTestBase):
         )
 
     #: Only a full page can carry a next cursor.
-    PAGE_SIZE = _RESERVATION_PAGE_SIZE
+    PAGE_SIZE = RESERVATION_PAGE_SIZE
 
     def _stub(self, *, next_from=0, next_source=0, hosts=None):
         if hosts is None:

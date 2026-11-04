@@ -11,24 +11,19 @@ from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from .. import constants, filtersets, models
+from .. import constants, filtersets, models, reservation_reads
 from ..constants import Family, LeaseState
 from ..decimal_text import parse_decimal
 from ..kea import LeaseQueryGuardError, lease_query_guard_message
 from ..leases import LeaseSnapshot, lease_record_data
 from ..read_failure import ReadFailure, ReadFailureKind, attempt
 from ..reservations import (
-    GlobalReservationScope,
-    InSubnetReservationScope,
     Reservation,
     ReservationIdentity,
-    ReservationScope,
     ReservationSnapshot,
     reservation_query_mode,
     reservation_record_data,
 )
-from ..subnet_catalogue import VerifiedSubnet
-from ..subnet_catalogue import display as subnet_catalogue
 from .serializers import ServerSerializer
 
 logger = logging.getLogger(__name__)
@@ -89,12 +84,6 @@ def _lease_snapshot_data(snapshot: LeaseSnapshot) -> dict:
         "coverage": snapshot.coverage,
         "evaluated_at": snapshot.evaluated_at.isoformat(),
     }
-
-
-def _read_reservation_page(server, version: int, cursor: str | None, limit: int) -> ReservationSnapshot:
-    """Read one bounded Reservation page, parsed against the display Subnet Catalogue."""
-    client = server.get_client(version=version)
-    return client.reservation_page(version, subnet_catalogue(server, version), cursor=cursor, limit=limit)
 
 
 def _single_reservation_response(version: int, reservation: Reservation | None) -> Response:
@@ -260,7 +249,7 @@ class ServerViewSet(NetBoxModelViewSet):
         """
         return self._reservation_search(request, version=6)
 
-    def _reservation_search(self, request, version: int) -> Response:
+    def _reservation_search(self, request, version: Family) -> Response:
         """Dispatch a reservation search to Kea and return JSON results."""
         server = self.get_object()
         params = request.query_params
@@ -286,7 +275,7 @@ class ServerViewSet(NetBoxModelViewSet):
             return self._reservation_hostname_response(server, hostname, version)
         raise AssertionError(f"Unsupported Reservation query mode {query_mode!r}")
 
-    def _reservation_page_response(self, server, params, version: int) -> Response:
+    def _reservation_page_response(self, server, params, version: Family) -> Response:
         """Return one validated and normalized bounded Reservation page."""
         # An empty value is what an unset form field posts, and the mode selector above
         # already ignores one, so the reader must ignore it too instead of failing.
@@ -303,7 +292,7 @@ class ServerViewSet(NetBoxModelViewSet):
         try:
             snapshot = attempt(
                 f"The DHCPv{version} Reservation API page of Server {server.pk}",
-                lambda: _read_reservation_page(server, version, params.get("cursor") or None, limit),
+                lambda: reservation_reads.read_page(server, version, cursor=params.get("cursor") or None, limit=limit),
             )
         except ValueError:
             logger.info("Rejected invalid Reservation page parameters for server %s", server.name)
@@ -312,7 +301,7 @@ class ServerViewSet(NetBoxModelViewSet):
             return _failure_response(snapshot)
         return Response(_reservation_snapshot_data(snapshot))
 
-    def _reservation_identity_response(self, server, params, version: int) -> Response:
+    def _reservation_identity_response(self, server, params, version: Family) -> Response:
         """Return one exact Reservation Identity target."""
         identifier_type = params.get("identifier_type")
         identifier = params.get("identifier")
@@ -335,16 +324,7 @@ class ServerViewSet(NetBoxModelViewSet):
             else:
                 raise ValueError("scope must be global or in-subnet.")
             identity = ReservationIdentity(identifier_type, identifier)
-            client = server.get_client(version=version)
-            catalogue = subnet_catalogue(server, version)
-            if subnet_id is None:
-                scope: ReservationScope = GlobalReservationScope()
-            else:
-                subnet = catalogue.find_by_id(subnet_id)
-                if not isinstance(subnet, VerifiedSubnet):
-                    raise ValueError("The Reservation Subnet is not verified.")
-                scope = InSubnetReservationScope(subnet.identity)
-            return client.reservation_by_identity(version, catalogue, scope, identity)
+            return reservation_reads.read_by_identity(server, version, subnet_id, identity)
 
         try:
             reservation = attempt(f"The DHCPv{version} Reservation API identity read of Server {server.pk}", read)
@@ -354,18 +334,12 @@ class ServerViewSet(NetBoxModelViewSet):
             return _failure_response(reservation)
         return _single_reservation_response(version, reservation)
 
-    def _reservation_address_response(self, server, params, version: int) -> Response:
+    def _reservation_address_response(self, server, params, version: Family) -> Response:
         """Resolve one In-Subnet address to its canonical Reservation."""
 
         def read() -> Reservation | None:
             subnet_id = parse_decimal(params.get("subnet_id", ""))
-            client = server.get_client(version=version)
-            catalogue = subnet_catalogue(server, version)
-            subnet = catalogue.find_by_id(subnet_id)
-            if not isinstance(subnet, VerifiedSubnet):
-                raise ValueError("The Reservation Subnet is not verified.")
-            scope = InSubnetReservationScope(subnet.identity)
-            return client.reservation_by_address(version, catalogue, scope, params.get("ip_address"))
+            return reservation_reads.read_by_address(server, version, subnet_id, params.get("ip_address"))
 
         try:
             reservation = attempt(f"The DHCPv{version} Reservation API address read of Server {server.pk}", read)
@@ -375,16 +349,14 @@ class ServerViewSet(NetBoxModelViewSet):
             return _failure_response(reservation)
         return _single_reservation_response(version, reservation)
 
-    def _reservation_hostname_response(self, server, hostname: str, version: int) -> Response:
+    def _reservation_hostname_response(self, server, hostname: str, version: Family) -> Response:
         """Return one normalized hostname Reservation Snapshot."""
         if not hostname:
             return Response({"detail": "Invalid hostname selector."}, status=status.HTTP_400_BAD_REQUEST)
         try:
             snapshot = attempt(
                 f"The DHCPv{version} Reservation API hostname read of Server {server.pk}",
-                lambda: server.get_client(version=version).reservations_by_hostname(
-                    version, subnet_catalogue(server, version), hostname
-                ),
+                lambda: reservation_reads.read_by_hostname(server, version, hostname),
             )
         except ValueError:
             return Response({"detail": "Invalid hostname selector."}, status=status.HTTP_400_BAD_REQUEST)

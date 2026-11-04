@@ -14,7 +14,7 @@ from django.urls import reverse
 from django.views import View
 from netbox.views import generic
 
-from .. import config_write, forms, reservation_edit, subnet_catalogue
+from .. import config_write, forms, reservation_edit, server_configuration, subnet_catalogue
 from ..config_write import ReservationChangeOutcome
 from ..constants import Family, IPAddressValue
 from ..integrations import dhcp_plugin
@@ -41,17 +41,24 @@ from ._base import (
 )
 from .manual_sync_presenter import manual_sync_lines, show_manual_sync
 from .notices import Notice, failed_load, load_target, notice, show_notices
-from .reservations import (
-    RESERVATIONS_TAB,
-    _build_reservation_options_formset,
-    _display_capabilities,
-    _live_capabilities,
-)
+from .reservations import RESERVATIONS_TAB
 from .workspace import ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
 
 RESERVATION_VERIFICATION_FAILED = "Kea applied the change, but NetBox Kea could not verify the final Reservation."
+
+
+def _build_reservation_options_formset(post_data: Any) -> tuple[Any, bool]:
+    """Build the Reservation options formset and reject a truncated management form."""
+    if "options-TOTAL_FORMS" in post_data:
+        formset = forms.DHCPOptionRowFormSet(data=post_data, prefix="options")
+        return formset, formset.is_valid()
+    if any(key.startswith("options-") for key in post_data):
+        formset = forms.DHCPOptionRowFormSet(data=post_data, prefix="options")
+        formset.is_valid()
+        return formset, False
+    return forms.DHCPOptionRowFormSet(prefix="options"), True
 
 
 def _warn_pool_facts(
@@ -305,7 +312,7 @@ class _ReservationMutationView(_KeaChangeMixin, ServerFamilyMixin, generic.Objec
         if refusal := _client_settings_refusal(server, self.dhcp_version):
             messages.error(request, refusal)
             return redirect(self._return_url(server))
-        capabilities = _live_capabilities(server, self.dhcp_version)
+        capabilities = server_configuration.live_capabilities(server, self.dhcp_version)
         if capabilities is None or not capabilities.mutation_available:
             messages.error(request, "Reservation mutation capabilities are unavailable.")
             return redirect(self._return_url(server))
@@ -365,7 +372,7 @@ class _ReservationAddView(_ReservationMutationView):
         if refusal := _client_settings_refusal(server, self.dhcp_version):
             messages.error(request, refusal)
         else:
-            capabilities = _display_capabilities(server, self.dhcp_version)
+            capabilities = server_configuration.display_capabilities(server, self.dhcp_version)
         snapshot = subnet_catalogue.display(server, self.dhcp_version)
         show_notices(request, notice(snapshot))
         initial_fields = (
@@ -469,7 +476,7 @@ class _ReservationEditView(_ReservationMutationView):
             return reservation
         show_notices(request, notice(catalogue))
         state = reservation_edit.form_state(reservation, catalogue)
-        capabilities = _display_capabilities(server, self.dhcp_version)
+        capabilities = server_configuration.display_capabilities(server, self.dhcp_version)
         form = self._form_for(server, state, capabilities)
         form.offer_subnets(catalogue.subnet_choices)
         return self._render(
