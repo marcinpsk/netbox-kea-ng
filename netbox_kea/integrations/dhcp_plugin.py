@@ -42,11 +42,6 @@ v1 scope (import + diff, read-only against Kea):
   the source of its parent and its identity (ADR 0014), so a changed class set gives a new Option. An Option that an
   operator adds to a mapped parent has no mapping and stays. An option whose definition the plugin cannot hold is
   unsupported with the capability it needs, and an option whose class has no row is skipped. Neither is fatal.
-* **Tuning fields** (lifetimes, timers, lease/DDNS/BOOTP/network settings) are
-  imported onto the ``DHCPServer`` (global), ``Subnet``, ``Pool`` (DDNS) and ``ClientClass``. A Subnet
-  or client class gets only its Declared Values (:func:`.dhcp_import_plan.declared_values`),
-  and every other field is cleared to inherit. A value that a member Subnet inherits
-  from its Shared Network is never copied onto the Subnet, and is reported when the Shared Network was not imported.
 * **Writes.** Every row except the DHCPServer goes through :func:`.dhcp_import_write.write_row`, with one small
   adapter class for its kind here. The protocol finds the row through its mapping or adopts an unmapped one, writes
   it, observes the mapping, reports a failure, and skips the planned subtree of an object that it does not write.
@@ -112,7 +107,6 @@ if TYPE_CHECKING:
     )
 
 from django.apps import apps
-from django.core.exceptions import ValidationError
 from django.db.models import F, Q
 from django.db.models.deletion import Collector, ProtectedError
 
@@ -134,8 +128,6 @@ from .dhcp_import_fields import (
     NETWORK_FIELDS,
     POOL_FIELDS,
     SERVER_FIELDS,
-    GatedFieldMap,
-    server_id_field,
 )
 from .dhcp_import_mappings import (
     first_mapping,
@@ -178,6 +170,16 @@ from .dhcp_import_report import (
     written,
 )
 from .dhcp_import_summary import ImportSummary
+from .dhcp_import_values import (
+    Source,
+    cleared,
+    declared_value,
+    gated_values,
+    is_unset,
+    server_id_values,
+    settings_fields,
+    user_context_fields,
+)
 from .dhcp_import_write import (
     FAILED,
     LateOutcome,
@@ -385,7 +387,7 @@ def _option_definition_fields(
         "dhcp_server_id": None,
         "client_class_id": None,
         **parent_field,
-        **_user_context_fields(obj, def_intent.user_context, capabilities, summary, source, "Option Definition"),
+        **user_context_fields(obj, def_intent.user_context, capabilities, summary, source, "Option Definition"),
     }
 
 
@@ -449,7 +451,7 @@ class _OptionDefinitionAdapter(RowAdapter):
             if self.key.client_class is not None
             else {"dhcp_server_id": self.parent.pk}
         )
-        source = _Source(family, Kind.OPTION_DEFINITION, self.key.path(family))
+        source = Source(family, Kind.OPTION_DEFINITION, self.key.path(family))
         intent = self.definitions.declared[self.key]
         return _option_definition_fields(
             row, intent, family, parent_field, self.scope.capabilities, self.scope.summary, source
@@ -545,7 +547,7 @@ def _data_gap(opt: DHCPOption, definition, capabilities: PluginCapabilities) -> 
 
 
 def option_values(
-    candidate, opt: DHCPOption, family: int, capabilities: PluginCapabilities, summary, source: _Source
+    candidate, opt: DHCPOption, family: int, capabilities: PluginCapabilities, summary, source: Source
 ) -> dict:
     """Return the managed fields of an Option as the DHCP plugin stores them, after ``Option.clean`` on *candidate*.
 
@@ -571,7 +573,7 @@ def option_values(
         "csv_format": candidate.csv_format,
         "send_option": candidate.send_option,
         **own,
-        **_user_context_fields(candidate, opt.user_context, capabilities, summary, source, "DHCP Option"),
+        **user_context_fields(candidate, opt.user_context, capabilities, summary, source, "DHCP Option"),
     }
 
 
@@ -648,7 +650,7 @@ class _OptionAdapter(RowAdapter):
     def fields(self, row) -> dict:
         """Return the managed fields of the Option, as the clean step of the plugin leaves them."""
         family = self.scope.family
-        source = _Source(family, Kind.OPTION, self.key.path(family))
+        source = Source(family, Kind.OPTION, self.key.path(family))
         # A new row is its own candidate; a stored row is compared with a clean candidate.
         candidate = row if row.pk is None else self.new_row()
         return option_values(candidate, self.item.option, family, self.scope.capabilities, self.scope.summary, source)
@@ -722,134 +724,8 @@ def upsert_options(scope: WriteScope, parent_obj, planned_set: PlannedOptions, r
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Managed fields (dhcp_import_fields): Kea owns them on a mapped row
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def _is_unset(value) -> bool:
-    """Return ``True`` for values treated as 'not configured' (None / empty str / empty list)."""
-    return value is None or value == "" or value == []
-
-
-@dataclass(frozen=True)
-class _Source:
-    """The Kea object whose settings a field map reads, for the entry of a value that cannot be converted."""
-
-    family: int
-    kind: Kind
-    path: str
-
-
-def _not_converted(kea_key: str, error: Exception, summary: ImportSummary, source: _Source) -> None:
-    """Record a Kea value that the DHCP plugin field cannot hold."""
-    path = kea_paths.setting(source.path, kea_key)
-    detail = "The value cannot be converted to the DHCP plugin field."
-    summary.record(not_written(source.family, source.kind, path, Reason.PLUGIN_GAP, detail))
-    summary.warn(f"setting {kea_key}: {error}")
-
-
-def _cleared(obj, attr: str):
-    """Return the value that clears field *attr* of *obj*: None when nullable, else the field's empty default."""
-    db_field = obj._meta.get_field(attr)
-    return None if db_field.null else db_field.get_default()
-
-
-def _settings_fields(obj, settings: dict, field_map, summary: ImportSummary, source: _Source) -> dict:
-    """Plan *obj*'s settings fields from its Declared Values. A key that *settings* lacks clears its field to inherit.
-
-    A value that cannot be converted or that the plugin field refuses has an entry and leaves its field as it is.
-    Return the desired fields without changing *obj*.
-    """
-    return {
-        attr: _declared_value(obj, attr, kea_key, settings[kea_key], transform, summary, source)
-        if kea_key in settings
-        else _cleared(obj, attr)
-        for kea_key, attr, transform in field_map
-    }
-
-
-def _declared_value(obj, attr: str, kea_key: str, raw, transform, summary: ImportSummary, source: _Source):
-    """Return the value of field *attr* of *obj* for the Kea value *raw*. ``None`` clears the field.
-
-    A value that *transform* cannot convert, or that the plugin field refuses, has an entry and keeps the current
-    value of the field.
-    """
-    try:
-        value = raw if transform is None else transform(raw)
-    except Exception as exc:  # noqa: BLE001 — a bad scalar must not abort the import
-        _not_converted(kea_key, exc, summary, source)
-        return getattr(obj, attr)
-    if value is None:
-        return _cleared(obj, attr)
-    try:
-        obj._meta.get_field(attr).clean(value, obj)
-    except ValidationError as exc:
-        _not_converted(kea_key, exc, summary, source)
-        return getattr(obj, attr)
-    return value
-
-
-def _declares(raw, transform) -> bool:
-    """Return whether the Kea value *raw* holds a value after *transform*. A value it cannot convert counts."""
-    try:
-        return not _is_unset(raw if transform is None else transform(raw))
-    except Exception:  # noqa: BLE001 (the value is reported, not converted)
-        return True
-
-
-def gated_values(
-    obj, settings: dict, field_map: GatedFieldMap, capabilities: PluginCapabilities, summary, source: _Source
-) -> dict:
-    """Plan the gated settings fields of *obj* as :func:`_settings_fields` does, for each capability the plugin has.
-
-    Without its capability a field is not planned, and a value that Kea declares for it is unsupported.
-    """
-    values: dict = {}
-    for kea_key, attr, transform, capability in field_map:
-        if capabilities.has(capability):
-            values |= _settings_fields(obj, settings, ((kea_key, attr, transform),), summary, source)
-        elif kea_key in settings and _declares(settings[kea_key], transform):
-            path = kea_paths.setting(source.path, kea_key)
-            detail = f"The installed DHCP plugin cannot hold {kea_key}."
-            summary.record(unsupported(source.family, source.kind, path, capability, detail))
-    return values
-
-
-def _user_context_fields(
-    obj, user_context: dict | None, capabilities: PluginCapabilities, summary, source: _Source, holder: str
-) -> dict:
-    """Plan the ``user_context`` field of *obj*, or report a declared user-context as unsupported without it."""
-    if capabilities.has(Capability.USER_CONTEXT):
-        return {"user_context": user_context if user_context is not None else _cleared(obj, "user_context")}
-    if user_context is not None:
-        path = kea_paths.setting(source.path, kea_paths.USER_CONTEXT)
-        detail = f"The DHCP plugin has no user-context field on a {holder}."
-        summary.record(unsupported(source.family, source.kind, path, Capability.USER_CONTEXT, detail))
-    return {}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Upserts
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-def _server_id_values(raw, root: str, family: int, capabilities: PluginCapabilities, summary: ImportSummary) -> dict:
-    """Return the ``server-id`` parameter fields of the DHCPServer; ``SERVER_FIELDS`` holds its type.
-
-    Without the capability each parameter that Kea does not generate is unsupported.
-    """
-    server_id = raw if isinstance(raw, dict) else {}
-    values = {}
-    for key, generated in kea_paths.SERVER_ID_PARAMETERS.items():
-        value = server_id.get(key, generated)
-        declared = value != generated
-        if capabilities.has(Capability.SERVER_ID_FIELDS):
-            values[server_id_field(key)] = value if declared else None
-        elif declared:
-            path = kea_paths.setting(kea_paths.setting(root, kea_paths.SERVER_ID), key)
-            detail = "The DHCP plugin keeps only the type of server-id."
-            summary.record(unsupported(family, Kind.SERVER, path, Capability.SERVER_ID_FIELDS, detail))
-    return values
 
 
 def _identifier_values(
@@ -878,9 +754,9 @@ def server_values(
     """
     settings = planned.global_settings
     root = planned.key.path(family)
-    source = _Source(family, Kind.SERVER, root)
-    values = _settings_fields(dhcp_server, settings, SERVER_FIELDS, summary, source)
-    values |= _server_id_values(settings.get(kea_paths.SERVER_ID), root, family, capabilities, summary)
+    source = Source(family, Kind.SERVER, root)
+    values = settings_fields(dhcp_server, settings, SERVER_FIELDS, summary, source)
+    values |= server_id_values(settings.get(kea_paths.SERVER_ID), root, family, capabilities, summary)
     if planned.host_reservation_identifiers is not None:
         values["host_reservation_identifiers"] = _identifier_values(
             planned.host_reservation_identifiers, root, family, capabilities, summary
@@ -890,7 +766,7 @@ def server_values(
     else:
         detail = "The DHCP plugin has no address family on a DHCP server."
         summary.record(unsupported(family, Kind.SERVER, root, Capability.SERVER_FAMILY, detail))
-    values |= _user_context_fields(dhcp_server, planned.user_context, capabilities, summary, source, "DHCP server")
+    values |= user_context_fields(dhcp_server, planned.user_context, capabilities, summary, source, "DHCP server")
     values |= gated_values(dhcp_server, settings, GATED_SERVER_FIELDS, capabilities, summary, source)
     return values
 
@@ -903,7 +779,7 @@ def _apply_global_settings(
     Each family has its own DHCPServer, so this family's configuration owns every managed field of it.
     Return whether a changed value was saved, or ``None`` after a failed save. The failure is recorded here.
     """
-    desired = {attr: _cleared(dhcp_server, attr) if _is_unset(value) else value for attr, value in values.items()}
+    desired = {attr: cleared(dhcp_server, attr) if is_unset(value) else value for attr, value in values.items()}
     # A Kea list that is not valid leaves the identifier types as they are.
     desired.setdefault("host_reservation_identifiers", dhcp_server.host_reservation_identifiers)
     changed: dict = {}
@@ -1076,9 +952,9 @@ def _client_class_fields(
         "template_test": intent.template_test or "",
         "only_in_additional_list": intent.only_in_additional_list,
     }
-    source = _Source(intent.family, Kind.CLIENT_CLASS, path)
-    fields |= _user_context_fields(obj, intent.user_context, capabilities, summary, source, "client class")
-    fields.update(_settings_fields(obj, planned.settings, CLIENT_CLASS_FIELDS, summary, source))
+    source = Source(intent.family, Kind.CLIENT_CLASS, path)
+    fields |= user_context_fields(obj, intent.user_context, capabilities, summary, source, "client class")
+    fields.update(settings_fields(obj, planned.settings, CLIENT_CLASS_FIELDS, summary, source))
     return fields
 
 
@@ -1193,13 +1069,13 @@ def _shared_network_fields(
     obj, dhcp_server, planned: PlannedSharedNetwork, summary: ImportSummary, path: str, capabilities, name: str
 ) -> dict:
     """Plan the managed fields of one Shared Network with the *name* that it keeps or takes."""
-    source = _Source(planned.intent.family, Kind.SHARED_NETWORK, path)
+    source = Source(planned.intent.family, Kind.SHARED_NETWORK, path)
     return {
         "name": name,
         "dhcp_server_id": dhcp_server.pk,
-        **_settings_fields(obj, planned.settings, NETWORK_FIELDS, summary, source),
+        **settings_fields(obj, planned.settings, NETWORK_FIELDS, summary, source),
         **gated_values(obj, planned.settings, GATED_NETWORK_FIELDS, capabilities, summary, source),
-        **_user_context_fields(obj, planned.intent.user_context, capabilities, summary, source, "Shared Network"),
+        **user_context_fields(obj, planned.intent.user_context, capabilities, summary, source, "Shared Network"),
     }
 
 
@@ -1331,7 +1207,7 @@ class _SubnetAdapter(RowAdapter):
             raise RuntimeError("The Subnet Prefix could not be claimed")
         if result.outcome in {"conflict", "disagreement"}:
             summary.warn(f"subnet {network}: IPAM ownership {result.outcome}, Prefix left unchanged")
-        source = _Source(family, Kind.SUBNET, self.key.path(family))
+        source = Source(family, Kind.SUBNET, self.key.path(family))
         existing = row if row.pk is not None else None
         settings = self.planned.settings
         return {
@@ -1339,9 +1215,9 @@ class _SubnetAdapter(RowAdapter):
             **_subnet_parent(existing, self.dhcp_server, self.shared_network, self.keep_membership),
             # settle_subnet_ids gave a mapped row its Kea subnet ID.
             "subnet_id": self.key.subnet_id,
-            **_settings_fields(row, settings, NETWORK_FIELDS, summary, source),
+            **settings_fields(row, settings, NETWORK_FIELDS, summary, source),
             **gated_values(row, settings, GATED_SUBNET_FIELDS, capabilities, summary, source),
-            **_user_context_fields(row, intent.user_context, capabilities, summary, source, "Subnet"),
+            **user_context_fields(row, intent.user_context, capabilities, summary, source, "Subnet"),
         }
 
     def relations(self, row) -> dict[str, set[int]]:
@@ -1710,13 +1586,13 @@ class _PoolAdapter(RowAdapter):
     def fields(self, row) -> dict:
         """Return the managed fields of the Pool."""
         family, summary, intent = self.scope.family, self.scope.summary, self.intent
-        source = _Source(family, Kind.POOL, self.key.path(family))
+        source = Source(family, Kind.POOL, self.key.path(family))
         return {
             "subnet_id": self.subnet_obj.pk,
             "ip_range_id": self._range().pk,
-            "pool_id": _declared_value(row, "pool_id", kea_paths.POOL_ID, intent.pool_id, None, summary, source),
-            **_settings_fields(row, intent.settings, POOL_FIELDS, summary, source),
-            **_user_context_fields(row, intent.user_context, self.scope.capabilities, summary, source, "Pool"),
+            "pool_id": declared_value(row, "pool_id", kea_paths.POOL_ID, intent.pool_id, None, summary, source),
+            **settings_fields(row, intent.settings, POOL_FIELDS, summary, source),
+            **user_context_fields(row, intent.user_context, self.scope.capabilities, summary, source, "Pool"),
         }
 
     def relations(self, row) -> dict[str, set[int]]:
@@ -1786,14 +1662,14 @@ class _PDPoolAdapter(RowAdapter):
         """Return the managed fields of the PD Pool."""
         family, summary, intent = self.scope.family, self.scope.summary, self.planned.intent
         prefix_obj, excluded_obj = _pd_pool_prefixes(self.claims, self.planned, summary)
-        source = _Source(family, Kind.PD_POOL, self.key.path(family))
+        source = Source(family, Kind.PD_POOL, self.key.path(family))
         return {
             "subnet_id": self.subnet_obj.pk,
             "prefix_id": prefix_obj.pk,
             "delegated_length": self.key.delegated_length,
             "excluded_prefix_id": excluded_obj.pk if excluded_obj is not None else None,
-            "pool_id": _declared_value(row, "pool_id", kea_paths.POOL_ID, intent.pool_id, None, summary, source),
-            **_user_context_fields(
+            "pool_id": declared_value(row, "pool_id", kea_paths.POOL_ID, intent.pool_id, None, summary, source),
+            **user_context_fields(
                 row, intent.user_context, self.scope.capabilities, summary, source, "delegated-prefix Pool"
             ),
         }
@@ -1925,7 +1801,7 @@ class _ReservationAdapter(RowAdapter):
         """Return the managed fields of the Reservation. Its Scope is managed: a row that an operator moved returns."""
         reservation, subnet_obj = self.reservation, self.subnet_obj
         ipv4_ip, _ipv6_ips, mac_obj = self._addresses
-        source = _Source(reservation.family, Kind.RESERVATION, self.key.path(reservation.family))
+        source = Source(reservation.family, Kind.RESERVATION, self.key.path(reservation.family))
         return {
             "subnet_id": subnet_obj.pk if subnet_obj is not None else None,
             "dhcp_server_id": None if subnet_obj is not None else self.dhcp_server.pk,
@@ -1936,7 +1812,7 @@ class _ReservationAdapter(RowAdapter):
             # family empty, which also splits a row an earlier import merged.
             "ipv4_address_id": ipv4_ip.pk if ipv4_ip is not None else None,
             **_reservation_boot_values(reservation),
-            **_user_context_fields(
+            **user_context_fields(
                 row, reservation.user_context, self.scope.capabilities, self.scope.summary, source, "Reservation"
             ),
         }

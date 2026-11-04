@@ -61,6 +61,7 @@ from netbox_kea.integrations.dhcp_import_plan import (
 )
 from netbox_kea.integrations.dhcp_import_report import GAPS, Capability, Kind, Outcome, Reason
 from netbox_kea.integrations.dhcp_import_summary import ImportSummary
+from netbox_kea.integrations.dhcp_import_values import Source, gated_values
 from netbox_kea.integrations.dhcp_plugin_capabilities import CHECKS, PluginCapabilities, probe
 from netbox_kea.ipam_reconciliation import ReservationObservation
 from netbox_kea.mappers.kea_to_dhcp import KEA_SETTINGS_KEYS, parse_dhcp_config
@@ -1239,8 +1240,8 @@ class GatedValuesTest(SimpleTestCase):
         from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
         summary = ImportSummary()
-        source = dhcp_plugin._Source(4, Kind.SUBNET, "Dhcp4/subnet4[id=10]")
-        values = dhcp_plugin.gated_values(obj, settings, field_map, PluginCapabilities(capabilities), summary, source)
+        source = Source(4, Kind.SUBNET, "Dhcp4/subnet4[id=10]")
+        values = gated_values(obj, settings, field_map, PluginCapabilities(capabilities), summary, source)
         return values, {(entry.path, entry.capability) for entry in summary.entries}
 
     @isolate_apps("netbox_kea")
@@ -1416,7 +1417,7 @@ class OptionValuesTest(SimpleTestCase):
         from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
         summary = ImportSummary()
-        source = dhcp_plugin._Source(6, Kind.OPTION, "Dhcp6/option-data[code=1003]")
+        source = Source(6, Kind.OPTION, "Dhcp6/option-data[code=1003]")
         values = dhcp_plugin.option_values(candidate, opt, 6, PluginCapabilities(capabilities), summary, source)
         return values, {(entry.path, entry.capability) for entry in summary.entries}
 
