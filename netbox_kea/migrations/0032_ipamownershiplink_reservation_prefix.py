@@ -2,12 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Rename the Reservation delegated prefix source from ``delegated-prefix`` to ``reservation-prefix`` (ADR 0006)."""
 
-import importlib
-
 from django.db import migrations, models
-
-_0030 = importlib.import_module("netbox_kea.migrations.0030_keadhcplink_unbounded_identity")
-_0031 = importlib.import_module("netbox_kea.migrations.0031_keadhcplink_wide_subnet_id")
 
 OLD = "delegated-prefix"
 NEW = "reservation-prefix"
@@ -85,7 +80,4 @@ class Migration(migrations.Migration):
                 name='ipamownershiplink_source',
             ),
         ),
-        # A reverse runs these first, so the refusals of 0031 and 0030 come before this migration reverses.
-        migrations.RunPython(migrations.RunPython.noop, _0031.refuse_wide_subnet_ids),
-        migrations.RunPython(migrations.RunPython.noop, _0030.refuse_long_identities),
     ]

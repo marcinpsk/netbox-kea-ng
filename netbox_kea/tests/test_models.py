@@ -1258,8 +1258,9 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         )
         executor = MigrationExecutor(connection)
         current = executor.loader.graph.leaf_nodes("netbox_kea")
-        after_0029 = [
-            key for key in executor.loader.graph.forwards_plan(current[0]) if key[0] == "netbox_kea" and key[1] > "0029"
+        released_together = [
+            ("netbox_kea", "0030_keadhcplink_unbounded_identity"),
+            ("netbox_kea", "0031_keadhcplink_wide_subnet_id"),
         ]
 
         def restore_migration_state():
@@ -1272,9 +1273,9 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         with self.assertRaisesRegex(IrreversibleError, r"longer than 517 characters \(1 in all\)"):
             executor.migrate([("netbox_kea", "0029_dhcp_import_option_mappings")])
 
-        # The refusal comes before every later migration reverses, so nothing changed.
+        # The refusal comes before 0031 and 0030 reverse (one release holds both), so their schema stays.
         applied = MigrationRecorder(connection).applied_migrations()
-        self.assertEqual([key for key in after_0029 if key not in applied], [])
+        self.assertEqual([key for key in released_together if key not in applied], [])
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT data_type FROM information_schema.columns "
@@ -1448,6 +1449,44 @@ class TestReservationPrefixSourceMigration(_MigrationTestCase):
         backward.migrate([("netbox_kea", self._PREVIOUS)])
 
         self.assertEqual(self._stored(server, prefixes), released)
+
+    def test_0032_reverses_with_a_mapping_that_0031_holds(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+        from django.db.migrations.recorder import MigrationRecorder
+
+        from netbox_kea.constants import MAX_SUBNET_ID
+
+        server = _make_db_server(name="released-mappings")
+        object_type = ContentType.objects.get_for_model(Server)
+        wide = KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
+            server=server,
+            family=4,
+            kind="subnet",
+            kea_subnet_id=MAX_SUBNET_ID,
+            object_type=object_type,
+            object_id=1,
+        )
+        long = KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
+            server=server,
+            family=4,
+            kind="option",
+            kea_identity="o" * 518,
+            object_type=object_type,
+            object_id=2,
+        )
+        current = MigrationExecutor(connection).loader.graph.leaf_nodes("netbox_kea")
+
+        # A release ends at 0031, and its columns hold a wide subnet ID and a long identity.
+        self._migrate_to(self._PREVIOUS)
+
+        applied = MigrationRecorder(connection).applied_migrations()
+        self.assertIn(("netbox_kea", self._PREVIOUS), applied)
+        self.assertNotIn(current[0], applied)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=wide.pk).kea_subnet_id, MAX_SUBNET_ID)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=long.pk).kea_identity, "o" * 518)
 
 
 class TestNoModelAdvertisesDocsItDoesNotShip(SimpleTestCase):
