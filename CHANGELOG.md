@@ -13,6 +13,78 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.12.1 (2026-11-04)
+
+### Bug Fixes
+
+- **opengrep**: Accept a Kea client in a with that has no name
+  ([`2d95fa7`](https://github.com/marcinpsk/netbox-kea-ng/commit/2d95fa7b9d340ca32649cd061a4de331b9ee72d5))
+
+### Chores
+
+- **deps**: Bump filelock
+  ([`18e05af`](https://github.com/marcinpsk/netbox-kea-ng/commit/18e05af35f10f4619e4ab482fad38f015f82db7f))
+
+- **opengrep**: Allow a private alias of a public Reservation read name
+  ([`f6536b9`](https://github.com/marcinpsk/netbox-kea-ng/commit/f6536b96347d16a10e131f2be4c5cde2c300e741))
+
+- **opengrep**: Match the imported names of the Reservation read modules structurally
+  ([`6bb4180`](https://github.com/marcinpsk/netbox-kea-ng/commit/6bb4180f48776077968f54835e712150025d977b))
+
+- **opengrep**: Refuse a change client that no with closes
+  ([`1d92162`](https://github.com/marcinpsk/netbox-kea-ng/commit/1d921628abfce90ddeb85c13d0acd5d5855637b7))
+
+- **opengrep**: Refuse a Kea client that no with closes
+  ([`cac3390`](https://github.com/marcinpsk/netbox-kea-ng/commit/cac3390ed51cef2322fa5c71b02cd31cc39d28ed))
+
+- **opengrep**: Refuse private names of the Reservation read modules
+  ([`df034b3`](https://github.com/marcinpsk/netbox-kea-ng/commit/df034b30854100a54bf1aad186e7de1e8ec7d76a))
+
+### Continuous Integration
+
+- **dependabot**: Update the hook revs of .pre-commit-config.yaml
+  ([`365eb0b`](https://github.com/marcinpsk/netbox-kea-ng/commit/365eb0b6c1eee04b6f2504f2e1b34a7879e18ae4))
+
+### Documentation
+
+- State the client lifetime in the architecture overview
+  ([`5dfb6c9`](https://github.com/marcinpsk/netbox-kea-ng/commit/5dfb6c9342cf6beac2e71d0fa939122e0c060810))
+
+### Refactoring
+
+- **kea**: Close each Kea client after one operation
+  ([`3ff657d`](https://github.com/marcinpsk/netbox-kea-ng/commit/3ff657ddd48b3e5342778374771ba3cbfb171a84))
+
+- **kea**: Name the invalid client settings with one message
+  ([`bc501dc`](https://github.com/marcinpsk/netbox-kea-ng/commit/bc501dca16a9c48080a81c104916f9f23cb57529))
+
+- **reservations**: Move the Reservation read out of the views
+  ([`92b34aa`](https://github.com/marcinpsk/netbox-kea-ng/commit/92b34aabb88b18195dfe3d5fdaa2bb46496a19aa))
+
+- **views**: Name the client settings in the Lease row badge
+  ([`be20661`](https://github.com/marcinpsk/netbox-kea-ng/commit/be206618fe89cf6238f68344950049e51463d22c))
+
+- **views**: Route the combined pages by family
+  ([`482e456`](https://github.com/marcinpsk/netbox-kea-ng/commit/482e45630cdc89fd2923e00d534064d1b7ba344d))
+
+- **views**: Route the Configuration and DHCP control pages by family
+  ([`99495f3`](https://github.com/marcinpsk/netbox-kea-ng/commit/99495f31df63a9bc2bf72a28b4df9b26266679f1))
+
+- **views**: Route the Lease and Reservation pages by family
+  ([`d36364c`](https://github.com/marcinpsk/netbox-kea-ng/commit/d36364cc1b1abb8b75a0a855933785eadbdab64d))
+
+- **views**: Route the Subnet and Shared Network pages by family
+  ([`2278213`](https://github.com/marcinpsk/netbox-kea-ng/commit/22782136df46c068e256d3059f3dc2d332afad16))
+
+### Testing
+
+- **api**: Pin the refusal of a Reservation Subnet that is not verified
+  ([`f044484`](https://github.com/marcinpsk/netbox-kea-ng/commit/f0444849cc71e5feaab7c8392556ce3bc0a0e79f))
+
+- **urls**: Refuse a route name or path pair per address family
+  ([`4b32ff7`](https://github.com/marcinpsk/netbox-kea-ng/commit/4b32ff7ac6775418b3a272d00deef30ada969654))
+
+
 ## v3.12.0 (2026-11-04)
 
 ### Performance Improvements
