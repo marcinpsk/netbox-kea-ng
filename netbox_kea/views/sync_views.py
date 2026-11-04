@@ -25,13 +25,8 @@ from .. import (
 )
 from ..after_apply import LeaseImportAfterApply
 from ..constants import Family
-from ..ipam_reconciliation import (
-    ReservationPhase,
-    address_ownership,
-    claim_permissions,
-    reconcile,
-    reconcile_permissions,
-)
+from ..ipam_ownership import address_ownership
+from ..ipam_reconciliation import ReservationPhase, claim_permissions, reconcile, reconcile_permissions
 from ..ipam_sources import RESERVATION
 from ..leases import (
     LeaseAbsent,

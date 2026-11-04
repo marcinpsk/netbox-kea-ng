@@ -6,7 +6,8 @@ from ipaddress import ip_address, ip_network
 from django.test import TestCase
 from ipam.models import IPAddress
 
-from netbox_kea.ipam_reconciliation import address_ownership, claim
+from netbox_kea.ipam_ownership import address_ownership
+from netbox_kea.ipam_reconciliation import claim
 from netbox_kea.reservations import (
     GlobalReservationScope,
     InSubnetReservationScope,

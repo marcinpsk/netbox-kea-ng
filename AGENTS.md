@@ -234,6 +234,7 @@ URL request
                         the cached Kea adapters of the two reservations.py ports, in one worker pool)
   → sync.py             (the aggregate Reservation Synchronization State and DCIM MAC synchronization)
   → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
+  → ipam_ownership.py   (the IPAM Ownership reads of the Lease and Reservation views, and the canonical address text)
   → ipam_sources.py     (the IPAM Ownership sources: one constant and one row of facts for each; ADR 0006)
   → ipam_upgrade_barrier.py (the completion receipts and the upgrade barrier: effective sources, adoption waits,
                         upgrade counts; ADR 0006)
@@ -366,7 +367,7 @@ URL request
   (see "Settings singletons"). The test fixture `_plugin_cache_hygiene` clears `display_cache.KEY_PREFIX`
   around each test.
 - **`sync.py`**: builds the aggregate Reservation Synchronization State and synchronizes DCIM MAC addresses.
-  IPAM ownership reads, creation, status changes and cleanup belong to `ipam_reconciliation.py`.
+  IPAM ownership reads belong to `ipam_ownership.py`; creation, status changes and cleanup to `ipam_reconciliation.py`.
 - **`ipam_reconciliation.py`**: `reconcile(server, family, phases) -> SyncReport` (ADR 0006). The job's
   lease, Reservation, Subnet and Pool phases run through it: it links each reported IPAM object in `Server.sync_vrf` under
   an advisory lock on the identity and a row lock, the status comes from the live links, and a complete
@@ -378,8 +379,8 @@ URL request
   `LeaseSubnetAbsent` (not a `ValueError`; a `ValueError` from `claim` is a caller bug), and the job counts it as a
   failed row. Adoption preserves legacy object identities and marks their links.
   Complete whole-workflow job and DHCP import receipts (`ipam_upgrade_barrier.py`) protect each adopted object's last
-  link until all relevant enabled owners have observed their sources. `Server.ipam_first_complete_at` records the initial
-  completion time. Internal scoped receipts protect newly enabled sources after that time.
+  link until all relevant enabled owners have observed their sources. `Server.ipam_first_complete_at` records the
+  initial completion time. Internal scoped receipts protect newly enabled sources after that time.
   Read design record #172 when changing adoption, completion receipts or upgrade cleanup.
   The job reads one `LeaseObservation` per family for its address `LeasePhase` and its DHCPv6 `LeasePrefixPhase`
   (source `lease-prefix`, enabled by the lease and the Prefix flags together). Both own objects only through Current Leases.
@@ -819,7 +820,7 @@ resort, reserved for true external boundaries you cannot run locally.
   `reservations-out-of-pool`), the walk looks up the Global Reservation too. The Kea adapter of the port
   reads each lookup once per call. The view maps each outcome to its badge, links and Sync with `match` and
   `assert_never`. The NetBox IP column shows the Lease Synchronization State of each Current Lease from one
-  ownership read per page: `ipam_reconciliation.address_ownership()` (source `lease`) and `prefix_ownership()`
+  ownership read per page: `ipam_ownership.address_ownership()` (source `lease`) and `prefix_ownership()`
   (source `lease-prefix`), limited to the objects that the user may view.
 - **Sync lifecycle**: IP status is `dhcp` (dynamic lease only), `reserved`
   (reservation only), or `active` (both). `reconcile()` claims all phase reports
