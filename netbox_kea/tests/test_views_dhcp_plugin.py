@@ -1002,6 +1002,34 @@ class DriftPartialTest(TestCase):
 
         self.assertEqual(stale_card_queries(range(230, 231)), stale_card_queries(range(230, 234)))
 
+    def test_the_card_reads_the_class_lists_that_name_its_stale_classes_with_a_fixed_number_of_queries(self):
+        client_class = apps.get_model(DHCP_PLUGIN, "ClientClass")
+        class_lists = {
+            relation.remote_field.through._meta.db_table
+            for model in apps.get_app_config(DHCP_PLUGIN).get_models()
+            for relation in model._meta.many_to_many
+            if relation.related_model is client_class
+        }
+
+        def class_list_queries(count: int) -> int:
+            server = _make_db_server(
+                name=f"{self.server.name}-{count}", sync_dhcp_plugin_enabled=True, dhcp4=True, dhcp6=False
+            )
+            config = {4: {"client-classes": [{"name": f"class-{count}-{index}"} for index in range(count)]}}
+            with stub_kea(_sync_responses(config, {4: []})):
+                self.client.post(reverse("plugins:netbox_kea:server_dhcp_plugin_sync", args=[server.pk]))
+            url = reverse("plugins:netbox_kea:server_dhcp_plugin_drift", args=[server.pk])
+            with stub_kea(_sync_responses({4: {}}, {4: []})), CaptureQueriesContext(connection) as queries:
+                page = BeautifulSoup(self.client.get(url, HTTP_HX_REQUEST="true").content, "html.parser")
+            self.assertEqual(len(page.select("tr[data-state=stale]")), count)
+            # A class list query reads the rows of a model through its join table; the delete plan reads the table.
+            return sum(
+                any(f'JOIN "{table}"' in query["sql"] for table in class_lists) for query in queries.captured_queries
+            )
+
+        self.assertTrue(class_lists)
+        self.assertEqual(class_list_queries(1), class_list_queries(6))
+
     def test_the_card_shows_at_most_the_shown_number_of_objects_for_the_whole_family(self):
         # Two lists of 40 missing objects: each is under the limit, the family is over it.
         config = {

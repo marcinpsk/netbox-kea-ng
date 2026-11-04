@@ -84,7 +84,7 @@ import hashlib
 import ipaddress
 import logging
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from itertools import count
@@ -113,7 +113,7 @@ if TYPE_CHECKING:
 
 from django.apps import apps
 from django.core.exceptions import ValidationError
-from django.db.models import Q
+from django.db.models import F, Q
 from django.db.models.deletion import Collector, ProtectedError
 from django.db.models.signals import post_delete
 
@@ -2541,14 +2541,22 @@ def _option_goes_with(option, stale: dict, mapped_options: frozenset[tuple]) -> 
     return None if own in mapped_options else _owner_key(option)
 
 
-def _class_relation_rows(target) -> list:
-    """Return the DHCP plugin rows that name *target* in a many-to-many relation, such as ``client_classes``."""
-    rows: dict[tuple, Any] = {}
+def _class_relation_rows(targets: Iterable[tuple]) -> dict[tuple, list]:
+    """Return the DHCP plugin rows that name each row key of *targets* in a many-to-many relation, by row key.
+
+    A relation such as ``client_classes`` takes one query for all *targets*, whatever their number.
+    """
+    pks: dict[Any, list] = {}
+    for model, pk in targets:
+        pks.setdefault(model, []).append(pk)
+    rows: dict[tuple, dict[tuple, Any]] = {}
     for model in apps.get_app_config(PLUGIN_APP_LABEL).get_models():
         for relation in model._meta.many_to_many:
-            if relation.related_model is target._meta.concrete_model:
-                rows.update((_row_key(row), row) for row in model.objects.filter(**{relation.name: target}))
-    return list(rows.values())
+            if relation.related_model in pks:
+                named: Any = model.objects.filter(**{f"{relation.name}__in": pks[relation.related_model]})
+                for row in named.annotate(named_pk=F(relation.name)):
+                    rows.setdefault((relation.related_model, row.named_pk), {})[_row_key(row)] = row
+    return {key: list(each.values()) for key, each in rows.items()}
 
 
 @dataclass(frozen=True)
@@ -2566,13 +2574,14 @@ class _RemovalPlan:
     blocked: str = ""
 
 
-def _removal_plan(target, stale: dict, mapped_options: frozenset[tuple]) -> _RemovalPlan:
+def _removal_plan(target, stale: dict, mapped_options: frozenset[tuple], named_by: dict[tuple, list]) -> _RemovalPlan:
     """Plan the delete of the stale row *target* against every *stale* row of the run. It writes nothing.
 
     A row outside *stale* is kept: when the delete would remove it, when it uses a row that the delete removes, or when
     it names the row in a many-to-many relation (without it, that row would reach more clients), the row stays. Each
     stale row with such a part is evidence in ``relies_on``. A stale Option goes alone, and an unmapped Option goes with
-    the object that it is assigned to. A mapped Option of *mapped_options* outside *stale* is kept.
+    the object that it is assigned to. A mapped Option of *mapped_options* outside *stale* is kept. *named_by* gives the
+    rows that name each stale row in a many-to-many relation.
     """
     Option = _model("Option")
     own = _row_key(target)
@@ -2609,7 +2618,7 @@ def _removal_plan(target, stale: dict, mapped_options: frozenset[tuple]) -> _Rem
     cascaded = frozenset(_row_key(obj) for obj in rows if _row_key(obj) != own and _row_key(obj) in stale)
     relies_on = {*cascaded, *(_option_goes_with(obj, stale, mapped_options) for obj in first.values())}
     users = []
-    for obj in _class_relation_rows(target):
+    for obj in named_by.get(own, ()):
         goes_with = _option_goes_with(obj, stale, mapped_options) if isinstance(obj, Option) else _row_key(obj)
         if goes_with is not None and (goes_with in stale or goes_with in footprint):
             relies_on.add(goes_with)
@@ -2658,7 +2667,8 @@ def _removal_set(
     Return the plan of each row of that subset, and why each other stale row stays. Each plan is read once; a row that
     stays keeps every row that relies on it, through the reverse index.
     """
-    plans = {key: _removal_plan(row.target, stale, mapped_options) for key, row in stale.items()}
+    named_by = _class_relation_rows(stale)
+    plans = {key: _removal_plan(row.target, stale, mapped_options, named_by) for key, row in stale.items()}
     kept = {key: plan.blocked for key, plan in plans.items() if plan.blocked}
     alive = set(plans) - kept.keys()
     dependents = _dependents(plans)
