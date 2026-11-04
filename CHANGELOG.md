@@ -13,6 +13,14 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.12.0 (2026-11-04)
+
+### Performance Improvements
+
+- **dhcp-import**: Read the class lists of all stale rows together
+  ([`72d1b3f`](https://github.com/marcinpsk/netbox-kea-ng/commit/72d1b3f780eb32a86e4c93a41a0e6a241ecdf711))
+
+
 ## v3.11.0 (2026-11-02)
 
 ### Bug Fixes
