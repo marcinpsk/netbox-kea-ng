@@ -1269,6 +1269,83 @@ rules:
               metavariable: $NAME
               regex: ^_
 
+  - id: kea-private-reservation-read-import
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Do not use a private name (a name that starts with "_") of netbox_kea/views/reservations.py or
+      netbox_kea/reservation_reads.py in another module, tests included. reservation_reads holds the Reservation read,
+      and its public names are its interface. A private name can change without notice, so a caller that uses it
+      breaks. Use a public name, or make the name public in its module.
+      Limits: the rule sees a from-import (absolute, or relative with one or more dots before views.reservations or
+      reservation_reads, also inside parentheses or with "as") and an attribute of the module name or of an alias
+      from "from ... import reservation_reads as x" or "from ...views import reservations as x". A
+      "from .reservations import" in views/ is rule kea-private-reservation-view-import. "import ... as x" of the
+      full module path, getattr(), a mock.patch() target string and a re-export are not seen.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+    pattern-either:
+      # A private name imported from either module, absolute or relative, also inside parentheses.
+      - pattern-regex: >-
+          from\s+(?:netbox_kea\.|\.+)(?:views\.reservations|reservation_reads)\s+import\s+(?:\([^)]*?|[^\n]*?)\b_\w
+      - patterns:
+          - pattern-either:
+              - pattern: netbox_kea.views.reservations.$NAME
+              - pattern: netbox_kea.reservation_reads.$NAME
+              - pattern: reservation_reads.$NAME
+              - patterns:
+                  - pattern-either:
+                      - pattern-inside: |
+                          from netbox_kea import reservation_reads as $ALIAS
+                          ...
+                      - pattern-inside: |
+                          from . import reservation_reads as $ALIAS
+                          ...
+                      - pattern-inside: |
+                          from .. import reservation_reads as $ALIAS
+                          ...
+                      - pattern-inside: |
+                          from netbox_kea.views import reservations as $ALIAS
+                          ...
+                      - pattern-inside: |
+                          from .views import reservations as $ALIAS
+                          ...
+                      - pattern-inside: |
+                          from ..views import reservations as $ALIAS
+                          ...
+                  - pattern: $ALIAS.$NAME
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^_
+
+  - id: kea-private-reservation-view-import
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Do not import a private name (a name that starts with "_") of views/reservations.py into another view module
+      with "from .reservations import" or "from . import reservations". The reason is the same as for
+      kea-private-reservation-read-import. Use a public name, or make the name public in its module. The rule scans
+      views/ only, because outside it "from .reservations" names the domain module netbox_kea/reservations.py.
+      Limits: getattr() and a re-export are not seen.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+    paths:
+      include:
+        - "**/views/**"
+        - "kea-private-reservation-view-import.py"
+    pattern-either:
+      - pattern-regex: from\s+\.reservations\s+import\s+(?:\([^)]*?|[^\n]*?)\b_\w
+      - patterns:
+          - pattern-inside: |
+              from . import reservations as $ALIAS
+              ...
+          - pattern: $ALIAS.$NAME
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^_
+
   - id: kea-ownership-read-without-database-error
     languages: [python]
     severity: ERROR
