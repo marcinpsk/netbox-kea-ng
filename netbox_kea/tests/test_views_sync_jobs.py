@@ -3,7 +3,6 @@
 """Tests for SettingsView, SyncJobsView, ServerSyncStatusView, ServerSyncNowView, ServerSyncToggleView."""
 
 import uuid
-from datetime import timedelta
 from unittest.mock import patch
 
 from bs4 import BeautifulSoup
@@ -14,45 +13,17 @@ from django.utils import timezone
 from netbox_kea.integrations import dhcp_plugin
 from netbox_kea.ipam_reconciliation import _get_stale_cleanup_mode
 from netbox_kea.models import DhcpIntegrationConfig, DisplayCacheConfig, KeaClientConfig, Server, SyncConfig
+from netbox_kea.sync_run_result import SyncRunResult, SyncRunState
 from netbox_kea.tests.utils import (
     User,
     _get_with_writes,
     _grant,
     _make_db_server,
     _sync_page_urls,
+    stored_job,
     with_kea_client_config,
     with_sync_config,
 )
-
-_MAKE_JOB_NO_DATA = object()  # sentinel: caller did not pass data at all
-
-
-def _make_job(*, name="Kea IPAM Sync", object_id=None, object_type=None, data=_MAKE_JOB_NO_DATA, delta_seconds=0):
-    """Create a real Job row in the test DB.
-
-    Pass ``data=None`` explicitly to store a NULL data field (exercises the
-    ``isinstance(job.data, dict)`` guard in ``get_recent_jobs_for_servers``).
-    Omitting *data* defaults to ``{}``.
-
-    ``delta_seconds`` shifts the stored ``created`` timestamp backwards so that
-    ordering tests are reliable.  Because ``Job.created`` is ``auto_now_add``
-    Django silently ignores the field in ``create()``, so we back-fill it via
-    a raw ``update()`` call which bypasses that restriction.
-    """
-    from core.models import Job
-
-    job = Job.objects.create(
-        name=name,
-        object_type=object_type,
-        object_id=object_id,
-        status="completed",
-        data={} if data is _MAKE_JOB_NO_DATA else data,
-        job_id=uuid.uuid4(),
-    )
-    if delta_seconds:
-        Job.objects.filter(pk=job.pk).update(created=timezone.now() - timedelta(seconds=delta_seconds))
-        job.refresh_from_db(fields=["created"])
-    return job
 
 
 def _tab(slug: str) -> str:
@@ -558,6 +529,66 @@ class TestServerSyncStatusView(TestCase):
 
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)
+class TestSyncRunStateLabels(TestCase):
+    """The Sync tab, the Sync Jobs page and the combined Sync page show each state without counts with one label."""
+
+    def setUp(self):
+        from django.contrib.contenttypes.models import ContentType
+
+        self.client.force_login(User.objects.create_superuser("states", "st@s.com", "pass"))
+        self.servers = {label: _make_db_server(name=f"state-{label.lower()}") for label in self.LABELS}
+        for label, state in (("Skipped", SyncRunState.SKIPPED), ("Interrupted", SyncRunState.INTERRUPTED)):
+            server = self.servers[label]
+            stored_job([SyncRunResult(server.pk, server.name, state)])
+        unknown = self.servers["Unknown"]
+        legacy = stored_job([])
+        # An entry that an older version wrote: the reader input is the subject here.
+        legacy.data = {"summary": [{"name": unknown.name, "pk": unknown.pk, "created": 1, "updated": 0, "errors": 0}]}
+        legacy.save(update_fields=["data"])
+        unrecorded = self.servers["—"]
+        stored_job([], object_type=ContentType.objects.get_for_model(Server), object_id=unrecorded.pk)
+
+    #: The label of each Server; "—" is a job that holds no result of its Server.
+    LABELS = ("Skipped", "Interrupted", "Unknown", "—")
+
+    def _row(self, response, server: Server) -> list[str]:
+        page = BeautifulSoup(response.content, "html.parser")
+        link = page.find("a", string=server.name)
+        row = link.find_parent("tr") if link is not None else None
+        assert row is not None, f"The page has no row for {server.name}"
+        return [cell.get_text(" ", strip=True) for cell in row.find_all("td")]
+
+    def test_the_sync_jobs_page_shows_the_label_in_place_of_the_counts(self):
+        response = self.client.get(reverse("plugins:netbox_kea:sync_jobs"))
+        for label, server in self.servers.items():
+            with self.subTest(label=label):
+                self.assertEqual(self._row(response, server)[4:-1], [label])
+
+    def test_the_combined_sync_page_shows_the_label_in_place_of_the_counts(self):
+        selection = {"server": [server.pk for server in self.servers.values()]}
+        response = self.client.get(reverse("plugins:netbox_kea:combined_sync4"), selection)
+        for label, server in self.servers.items():
+            with self.subTest(label=label):
+                self.assertEqual(self._row(response, server)[3:], [label])
+
+    def test_a_job_without_a_completion_time_shows_no_time(self):
+        server = self.servers["—"]
+        self.assertEqual(self._row(self.client.get(reverse("plugins:netbox_kea:sync_jobs")), server)[2], "—")
+        tab = self.client.get(reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]))
+        card = BeautifulSoup(tab.content, "html.parser").find("h5", string="Last Sync").find_parent()
+        self.assertNotIn("None", card.get_text())
+
+    def test_the_server_sync_tab_shows_the_label_in_place_of_the_counts(self):
+        for label, server in self.servers.items():
+            with self.subTest(label=label):
+                response = self.client.get(reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]))
+                card = BeautifulSoup(response.content, "html.parser").find("h5", string="Last Sync").find_parent()
+                states = [element.get_text(strip=True) for element in card.select("[data-sync-run-state]")]
+                self.assertEqual(states, [] if label == "—" else [label])
+                self.assertNotIn("Created:", card.get_text())
+
+
+@with_kea_client_config(lease_query_max_unpaged_leases=0)
 class TestServerSyncNowView(TestCase):
     """POST /plugins/kea/servers/{pk}/sync-now/"""
 
@@ -576,6 +607,36 @@ class TestServerSyncNowView(TestCase):
             reverse("plugins:netbox_kea:server_sync_status", args=[self.server.pk]) + "?family=4",
             fetch_redirect_response=False,
         )
+
+    def test_a_run_now_that_the_settings_stop_shows_skipped_for_its_server(self):
+        """The global switch and the sync type flags stop a Run Now before any Server; the job still names its Server."""
+        from django.contrib.contenttypes.models import ContentType
+
+        from netbox_kea.jobs import KeaIpamSyncJob
+
+        flags_off = dict.fromkeys(
+            ("sync_leases_enabled", "sync_reservations_enabled", "sync_prefixes_enabled", "sync_ip_ranges_enabled"),
+            False,
+        )
+        for reason, values in (("global switch off", {"sync_enabled": False}), ("no sync type", flags_off)):
+            with self.subTest(reason=reason), with_sync_config(**values):
+                server = _make_db_server(name=f"run-now {reason}")
+                job = stored_job(
+                    [],
+                    status="pending",
+                    object_type=ContentType.objects.get_for_model(Server),
+                    object_id=server.pk,
+                )
+                KeaIpamSyncJob.handle(job, server_pk=server.pk)
+
+                jobs = BeautifulSoup(self.client.get(reverse("plugins:netbox_kea:sync_jobs")).content, "html.parser")
+                row = jobs.find("a", string=server.name).find_parent("tr")
+                self.assertEqual([cell.get_text(" ", strip=True) for cell in row.find_all("td")][4:-1], ["Skipped"])
+                tab = self.client.get(reverse("plugins:netbox_kea:server_sync_status", args=[server.pk]))
+                card = BeautifulSoup(tab.content, "html.parser").find("h5", string="Last Sync").find_parent()
+                self.assertEqual(
+                    [element.get_text(strip=True) for element in card.select("[data-sync-run-state]")], ["Skipped"]
+                )
 
     def test_post_without_permission_returns_403(self):
         restricted = User.objects.create_user("noperm", "n@n.com", "pass")
@@ -749,174 +810,6 @@ class TestMigrationsApplied(TestCase):
 
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)
-class TestGetRecentJobsForServers(TestCase):
-    """Unit tests for get_recent_jobs_for_servers helper."""
-
-    def setUp(self):
-        from django.contrib.contenttypes.models import ContentType
-
-        from netbox_kea.models import Server
-
-        self.server_a = _make_db_server(name="server-a")
-        self.server_b = _make_db_server(name="server-b")
-        self.ct = ContentType.objects.get_for_model(Server)
-
-    def test_returns_empty_list_for_server_with_no_jobs(self):
-        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
-
-        result = get_recent_jobs_for_servers([self.server_a.pk])
-        self.assertEqual(result[self.server_a.pk], [])
-
-    def test_returns_bound_job_for_server(self):
-        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
-
-        job = _make_job(object_id=self.server_a.pk, object_type=self.ct)
-        result = get_recent_jobs_for_servers([self.server_a.pk])
-        self.assertEqual(len(result[self.server_a.pk]), 1)
-        self.assertEqual(result[self.server_a.pk][0].pk, job.pk)
-
-    def test_returns_unbound_periodic_job_attributed_via_summary(self):
-        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
-
-        job = _make_job(data={"summary": [{"pk": self.server_a.pk, "name": "server-a"}]})
-        result = get_recent_jobs_for_servers([self.server_a.pk])
-        self.assertEqual(len(result[self.server_a.pk]), 1)
-        self.assertEqual(result[self.server_a.pk][0].pk, job.pk)
-
-    def test_periodic_job_shown_even_when_bound_jobs_fill_limit(self):
-        """Core regression: periodic (unbound) jobs must appear even when limit bound jobs exist."""
-        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
-
-        # Create 3 bound manual jobs (older)
-        for i in range(3, 0, -1):
-            _make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=i * 100)
-
-        # Create 1 periodic job (newer than all bound jobs)
-        periodic = _make_job(
-            data={"summary": [{"pk": self.server_a.pk}]},
-            delta_seconds=10,  # very recent
-        )
-
-        result = get_recent_jobs_for_servers([self.server_a.pk], limit=3)
-        pks = [j.pk for j in result[self.server_a.pk]]
-        self.assertIn(periodic.pk, pks, "Periodic job must appear even when limit bound jobs fill the slot")
-
-    def test_most_recent_job_returned_first(self):
-        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
-
-        old = _make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=200)
-        new = _make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=10)
-        result = get_recent_jobs_for_servers([self.server_a.pk], limit=5)
-        pks = [j.pk for j in result[self.server_a.pk]]
-        self.assertEqual(pks[0], new.pk)
-        self.assertEqual(pks[1], old.pk)
-
-    def test_limit_respected(self):
-        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
-
-        for i in range(5):
-            _make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=i * 10)
-        result = get_recent_jobs_for_servers([self.server_a.pk], limit=2)
-        self.assertEqual(len(result[self.server_a.pk]), 2)
-
-    def test_multiple_servers_independent(self):
-        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
-
-        job_a = _make_job(object_id=self.server_a.pk, object_type=self.ct)
-        job_b = _make_job(object_id=self.server_b.pk, object_type=self.ct)
-        result = get_recent_jobs_for_servers([self.server_a.pk, self.server_b.pk])
-        self.assertEqual(result[self.server_a.pk][0].pk, job_a.pk)
-        self.assertEqual(result[self.server_b.pk][0].pk, job_b.pk)
-
-    def test_unbound_job_summary_none_does_not_raise(self):
-        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
-
-        _make_job(data={"summary": None})
-        # Should not raise, server gets no jobs
-        result = get_recent_jobs_for_servers([self.server_a.pk])
-        self.assertEqual(result[self.server_a.pk], [])
-
-    def test_unbound_job_missing_data_does_not_raise(self):
-        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
-
-        _make_job(data=None)
-        result = get_recent_jobs_for_servers([self.server_a.pk])
-        self.assertEqual(result[self.server_a.pk], [])
-
-    def test_unknown_server_pk_returns_empty(self):
-        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
-
-        result = get_recent_jobs_for_servers([999999])
-        self.assertEqual(result[999999], [])
-
-    def test_deduplication_when_job_attributed_to_two_pks(self):
-        """An unbound job covering two servers must not be double-counted per server."""
-        from netbox_kea.views.sync_jobs import get_recent_jobs_for_servers
-
-        job = _make_job(
-            data={"summary": [{"pk": self.server_a.pk}, {"pk": self.server_b.pk}]},
-        )
-        result = get_recent_jobs_for_servers([self.server_a.pk, self.server_b.pk])
-        # Each server sees the job exactly once
-        self.assertEqual(len([j for j in result[self.server_a.pk] if j.pk == job.pk]), 1)
-        self.assertEqual(len([j for j in result[self.server_b.pk] if j.pk == job.pk]), 1)
-
-
-@with_kea_client_config(lease_query_max_unpaged_leases=0)
-@skipUnlessDBFeature("supports_json_field_contains")
-class TestGetAllJobsForServer(TestCase):
-    """Unit tests for get_all_jobs_for_server helper (used by per-server Jobs tab)."""
-
-    def setUp(self):
-        from django.contrib.contenttypes.models import ContentType
-
-        from netbox_kea.models import Server
-
-        self.server_a = _make_db_server(name="server-a")
-        self.server_b = _make_db_server(name="server-b")
-        self.ct = ContentType.objects.get_for_model(Server)
-
-    def test_includes_bound_jobs(self):
-        from netbox_kea.views.sync_jobs import get_all_jobs_for_server
-
-        job = _make_job(object_id=self.server_a.pk, object_type=self.ct)
-        pks = list(get_all_jobs_for_server(self.server_a.pk).values_list("pk", flat=True))
-        self.assertIn(job.pk, pks)
-
-    def test_includes_unbound_periodic_jobs(self):
-        from netbox_kea.views.sync_jobs import get_all_jobs_for_server
-
-        job = _make_job(data={"summary": [{"pk": self.server_a.pk, "name": "server-a"}]})
-        pks = list(get_all_jobs_for_server(self.server_a.pk).values_list("pk", flat=True))
-        self.assertIn(job.pk, pks)
-
-    def test_excludes_unrelated_periodic_jobs(self):
-        from netbox_kea.views.sync_jobs import get_all_jobs_for_server
-
-        # periodic job referencing only server_b
-        _make_job(data={"summary": [{"pk": self.server_b.pk}]})
-        pks = list(get_all_jobs_for_server(self.server_a.pk).values_list("pk", flat=True))
-        self.assertEqual(pks, [])
-
-    def test_excludes_jobs_with_different_name(self):
-        from netbox_kea.views.sync_jobs import get_all_jobs_for_server
-
-        _make_job(name="Some Other Job", object_id=self.server_a.pk, object_type=self.ct)
-        _make_job(name="Some Other Job", data={"summary": [{"pk": self.server_a.pk}]})
-        pks = list(get_all_jobs_for_server(self.server_a.pk).values_list("pk", flat=True))
-        self.assertEqual(pks, [])
-
-    def test_orders_newest_first(self):
-        from netbox_kea.views.sync_jobs import get_all_jobs_for_server
-
-        old = _make_job(object_id=self.server_a.pk, object_type=self.ct, delta_seconds=200)
-        new = _make_job(data={"summary": [{"pk": self.server_a.pk}]}, delta_seconds=10)
-        pks = list(get_all_jobs_for_server(self.server_a.pk).values_list("pk", flat=True))
-        self.assertEqual(pks[0], new.pk)
-        self.assertEqual(pks[1], old.pk)
-
-
-@with_kea_client_config(lease_query_max_unpaged_leases=0)
 @skipUnlessDBFeature("supports_json_field_contains")
 class TestServerJobsView(TestCase):
     """Tests for the per-server Jobs tab override (includes periodic jobs)."""
@@ -942,7 +835,7 @@ class TestServerJobsView(TestCase):
         self.assertIs(entries[0]["view"], ServerJobsView)
 
     def test_jobs_tab_renders_bound_job(self):
-        bound = _make_job(object_id=self.server.pk, object_type=self.ct)
+        bound = stored_job([], object_id=self.server.pk, object_type=self.ct)
         url = reverse("plugins:netbox_kea:server_jobs", args=[self.server.pk])
         r = self.client.get(url)
         self.assertEqual(r.status_code, 200)
@@ -950,7 +843,7 @@ class TestServerJobsView(TestCase):
 
     def test_jobs_tab_renders_periodic_job(self):
         """Regression: periodic (object_id=NULL) jobs must appear on the Jobs tab."""
-        periodic = _make_job(data={"summary": [{"pk": self.server.pk, "name": "server-jobs"}]})
+        periodic = stored_job([SyncRunResult(self.server.pk, self.server.name, SyncRunState.SKIPPED)])
         url = reverse("plugins:netbox_kea:server_jobs", args=[self.server.pk])
         r = self.client.get(url)
         self.assertEqual(r.status_code, 200)
@@ -958,15 +851,11 @@ class TestServerJobsView(TestCase):
 
     def test_jobs_tab_excludes_unrelated_periodic_job(self):
         other = _make_db_server(name="other-server")
-        _make_job(data={"summary": [{"pk": other.pk}]})
+        job = stored_job([SyncRunResult(other.pk, other.name, SyncRunState.SKIPPED)])
         url = reverse("plugins:netbox_kea:server_jobs", args=[self.server.pk])
         r = self.client.get(url)
         self.assertEqual(r.status_code, 200)
-        # Table should be empty (no link to any /core/jobs/N/)
-        # Use a strict check: no rendered job rows
-        from netbox_kea.views.sync_jobs import get_all_jobs_for_server
-
-        self.assertEqual(get_all_jobs_for_server(self.server.pk).count(), 0)
+        self.assertNotContains(r, f"/core/jobs/{job.pk}/")
 
     def test_jobs_tab_returns_403_without_view_job_permission(self):
         """Users without core.view_job must receive 403 even on direct URL access."""

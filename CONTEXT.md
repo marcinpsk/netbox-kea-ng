@@ -18,6 +18,12 @@ The Servers that a combined page covers: all permitted Servers, an explicit sele
 An explicit selection is invalid if any selected Server is unknown or inaccessible, or any selected ID is empty or invalid.
 _Avoid_: Scope, Server filter
 
+**Workspace Section**:
+One area of the plugin that a user opens for one Server or for a Server Scope: Overview, Leases, Subnets, Reservations,
+Configuration, or Sync. Subnets has the Shared Networks subsection, and Configuration has the Server Options subsection.
+A Workspace Section has the same search filters for one Server and for a Server Scope.
+_Avoid_: tab, page, section alone
+
 **Subnet**:
 A Kea-managed IP network for one address family. Within a Server and address family, its CIDR and Kea subnet ID identify the same Subnet.
 _Avoid_: Network
@@ -56,10 +62,11 @@ _Avoid_: Import log, import summary
 
 **Stale DHCP Import Object**:
 A NetBox DHCP object with a DHCP Import Mapping whose Kea source a Complete observation of the same kind no longer
-reports. The DHCP Import removes it. An Incomplete observation cannot make an object stale. A Pool whose range
-changes in Kea is a different Pool, so the old one becomes stale. So is a delegated-prefix Pool whose prefix or
-delegated length changes, and a DHCP Option whose client classes change. A DHCP Option is judged by its own
-observation and by the observation of the kind of the object that assigns it.
+reports. The DHCP Import removes it. A stale object stays while a row that the run keeps uses it. An Incomplete
+observation cannot make an object stale. A Pool whose range changes in Kea is a different Pool, so the old one becomes
+stale. So is a delegated-prefix Pool whose prefix or delegated length changes, and a DHCP Option whose client classes
+change. A DHCP Option is judged by its own observation and by the observation of the kind of the object that assigns
+it.
 _Avoid_: Orphan, orphaned Subnet
 
 **Declared Value**:
@@ -258,6 +265,11 @@ both on. A source is in the plan when the global switch, the Server switch, the 
 flag are all on. A Run Now of one Server skips the Server switch, but a Run Now of a Server whose switch is off does
 not count as an observation of the Server.
 _Avoid_: sync flags, enabled types
+
+**Sync Run Result**:
+The recorded result of one Server in one IPAM synchronization run: Synced (with its counts), Skipped, Interrupted, or
+Unknown.
+_Avoid_: job summary, summary entry
 
 **Manual Sync**:
 A claim of one Lease or one Reservation in the sync VRF of its Server that an operator requests: with a row Sync

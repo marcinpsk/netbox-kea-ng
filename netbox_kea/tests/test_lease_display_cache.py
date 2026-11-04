@@ -4,6 +4,7 @@
 
 import json
 import time
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -477,6 +478,119 @@ class LeaseBadgeCacheTest(_LeaseCacheBase):
         )
 
         self.assertEqual(_lease_commands(commands), ["lease4-get-by-state"] * 2)
+
+
+def _reservation_get_key(body: dict[str, Any]) -> tuple:
+    arguments = body["arguments"]
+    return (arguments["subnet-id"], arguments.get("ip-address") or arguments["identifier"])
+
+
+class BadgePageRequestTest(_ViewTestBase):
+    """The Kea requests of one table page with its badges: each distinct lookup is sent once."""
+
+    def test_a_lease_page_sends_each_reservation_lookup_once(self):
+        pool = {"pools": [{"pool": "198.18.0.100 - 198.18.0.200"}], "reservations-out-of-pool": True}
+        hosts = (
+            {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "198.18.0.21"},
+            # The reserved address is in a Pool, so Kea tries the Global Reservation of the client too.
+            {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:03", "ip-address": "198.18.0.150"},
+            {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:03", "ip-address": "198.18.0.50"},
+        )
+
+        def reservation_get(body):
+            arguments = body["arguments"]
+            for host in hosts:
+                if host["subnet-id"] != arguments["subnet-id"]:
+                    continue
+                if host["ip-address"] == arguments.get("ip-address") or host["hw-address"] == arguments.get(
+                    "identifier"
+                ):
+                    return _res_get(host)
+            return {"result": 3, "text": "Host not found."}
+
+        leases = [
+            lease_record(address, subnet_id=20, hw_address=f"aa:bb:cc:dd:ee:{client}", drop=("client-id",))
+            for address, client in (
+                ("198.18.0.21", "01"),
+                ("198.18.0.22", "01"),
+                ("198.18.0.23", "02"),
+                ("198.18.0.24", "02"),
+                ("198.18.0.160", "03"),
+                ("198.18.0.161", "03"),
+            )
+        ]
+        responses = {
+            **_catalogue_responses_for_subnets(
+                4, [{"id": 20, "subnet": _CIDR, **pool}], global_settings={"reservations-global": True}
+            ),
+            "lease4-get-page": lease_pages(leases),
+            "reservation-get": reservation_get,
+        }
+        with stub_kea(responses) as kea:
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                _BROWSE,
+                headers={"HX-Request": "true"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            Counter(kea.commands()),
+            Counter({"subnet4-list": 1, "config-get": 1, "lease4-get-page": 1, "reservation-get": 11}),
+        )
+        self.assertEqual(
+            Counter(_reservation_get_key(body) for body in kea.bodies("reservation-get")),
+            Counter(
+                {
+                    **{(20, f"198.18.0.{last}"): 1 for last in (21, 22, 23, 24, 160, 161)},
+                    (20, "aa:bb:cc:dd:ee:01"): 1,
+                    (20, "aa:bb:cc:dd:ee:02"): 1,
+                    (20, "aa:bb:cc:dd:ee:03"): 1,
+                    (0, "aa:bb:cc:dd:ee:02"): 1,
+                    (0, "aa:bb:cc:dd:ee:03"): 1,
+                }
+            ),
+        )
+
+    def test_a_reservation_page_sends_each_lease_search_once(self):
+        subnets = [{"id": 20, "subnet": _CIDR}, {"id": 21, "subnet": "198.18.1.0/24"}]
+        hosts = [
+            {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:01", "ip-address": "198.18.0.21"},
+            {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:02", "ip-address": "198.18.0.22"},
+            {"subnet-id": 20, "duid": "00:01:02:03"},
+            {"subnet-id": 21, "hw-address": "aa:bb:cc:dd:ee:04", "ip-address": "198.18.1.21"},
+            {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:05"},
+            {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:06"},
+            {"subnet-id": 0, "client-id": "01:aa:bb:cc:dd:ee:07"},
+            {"subnet-id": 0, "flex-id": "port-7"},
+        ]
+        responses = {
+            **_catalogue_responses_for_subnets(4, subnets),
+            "reservation-get-page": _res_page(hosts),
+            "lease4-get-by-state": lease_reply(_lease("198.18.0.21")),
+            "lease4-get-by-hw-address": lease_reply(),
+            "lease4-get-by-client-id": lease_reply(),
+        }
+        with stub_kea(responses) as kea:
+            response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            Counter(kea.commands()),
+            Counter(
+                {
+                    "subnet4-list": 1,
+                    "config-get": 2,
+                    "reservation-get-page": 1,
+                    "lease4-get-by-state": 2,
+                    "lease4-get-by-hw-address": 2,
+                    "lease4-get-by-client-id": 1,
+                }
+            ),
+        )
+        self.assertEqual(
+            sorted(body["arguments"].get("subnet-id", 0) for body in kea.bodies("lease4-get-by-state")), [20, 21]
+        )
 
 
 def _status_responses(**overrides: Any) -> dict[str, Any]:

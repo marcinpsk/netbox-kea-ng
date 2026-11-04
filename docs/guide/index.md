@@ -46,10 +46,15 @@ NetBox plugin for the [Kea DHCP](https://www.isc.org/kea/) server. Manage your D
 
 Open **Kea Workspace** from the plugin menu. The scope bar shows the **Server Scope**: all permitted Servers or the selected
 Servers. It stays visible while scrolling. Use its DHCPv4/DHCPv6 switch to change the family and keep
-the Server selection and compatible filters. Selecting one Server opens its own workspace.
+the Server selection and compatible filters. Kea numbers the Subnets of each family separately, so the switch drops a
+Subnet filter and a search that the other family refuses. Selecting one Server opens its own workspace.
 
 The sections are Overview, Leases, Subnets, Reservations, Configuration, and Sync. Shared Networks
 is a subsection of Subnets. Leases and Configuration choose a Server for the selected family.
+Subnets has the same search for one Server and for the Server Scope: a part of the CIDR, a Subnet ID or both.
+Its CSV export contains only the Subnets that match the search.
+The Subnet and Shared Network lists each have two CSV exports, for one Server and for the Server Scope.
+*Current View* writes the columns that the table shows. *All Data* writes every column.
 Sync shows the latest recorded results for each Server in the scope. A sync run covers all enabled
 families on its Server. Unknown counts remain unknown.
 

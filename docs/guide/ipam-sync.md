@@ -110,6 +110,16 @@ Each server's summary reports `created`, `updated`, `errors`, `prefix_errors`, `
 - **unclassified**: IP addresses that keep a stale DHCPv6 lease link from before the sync recorded the allocation
   kind (see "Delegated-prefix leases from earlier releases" below).
 
+The Sync tab of a Server, the **Sync Jobs** page and the combined Sync page show the result of each Server in its
+latest job. A Synced result shows its counts. Each other result shows one label in place of the counts:
+
+- **Skipped**: the job finished, but it did not run the IPAM sync of the Server. For example, the scheduled DHCP
+  Import ran for the Server, and its IPAM sync is off.
+- **Interrupted**: the job stopped before the IPAM sync of the Server finished.
+- **Unknown**: the job record does not show the result of the Server. Jobs of earlier releases show this label.
+
+A dash means that the job holds no result of the Server, for example a Run Now job that is still running.
+
 View job history, next scheduled time and logs under **System → Background Jobs → Kea IPAM Sync**.
 
 To change the sync interval, edit it on the **Settings** page. You do not need to restart the worker: the new interval applies after the next scheduled run.

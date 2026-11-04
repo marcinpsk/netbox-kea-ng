@@ -1,7 +1,6 @@
 {# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com> #}
 {# SPDX-License-Identifier: Apache-2.0 #}
 {% extends "base/layout.html" %}
-{% load helpers %}
 
 {% block title %}Kea Sync Jobs{% endblock %}
 
@@ -35,8 +34,8 @@
             </tr>
           </thead>
           <tbody>
-            {% for server in servers %}
-              {% with job=latest_jobs|get_item:server.pk %}
+            {% for server, job, result in rows %}
+              {% with counts=result.counts %}
               <tr>
                 <td>
                   <a href="{{ server.get_absolute_url }}">{{ server.name }}</a>
@@ -49,7 +48,7 @@
                   {% endif %}
                 </td>
                 <td>
-                  {% if job %}
+                  {% if job.completed %}
                     <span title="{{ job.completed }}">{{ job.completed|timesince }} ago</span>
                   {% else %}—{% endif %}
                 </td>
@@ -68,48 +67,14 @@
                     <span class="badge text-bg-secondary">Never</span>
                   {% endif %}
                 </td>
-                <td>
-                  {% if job and job.data.summary %}
-                    {% for entry in job.data.summary %}
-                      {% if entry.pk == server.pk %}{% if "created" in entry %}{{ entry.created }}{% else %}—{% endif %}{% endif %}
-                    {% endfor %}
-                  {% else %}—{% endif %}
-                </td>
-                <td>
-                  {% if job and job.data.summary %}
-                    {% for entry in job.data.summary %}
-                      {% if entry.pk == server.pk %}{% if "updated" in entry %}{{ entry.updated }}{% else %}—{% endif %}{% endif %}
-                    {% endfor %}
-                  {% else %}—{% endif %}
-                </td>
-                <td>
-                  {% if job and job.data.summary %}
-                    {% for entry in job.data.summary %}
-                      {% if entry.pk == server.pk and "errors" not in entry %}—
-                      {% elif entry.pk == server.pk %}
-                        {% if entry.errors > 0 %}
-                          <span class="text-danger">{{ entry.errors }}</span>
-                        {% else %}
-                          {{ entry.errors }}
-                        {% endif %}
-                      {% endif %}
-                    {% endfor %}
-                  {% else %}—{% endif %}
-                </td>
-                <td>
-                  {% if job and job.data.summary %}
-                    {% for entry in job.data.summary %}
-                      {% if entry.pk == server.pk and "conflicts" not in entry %}—
-                      {% elif entry.pk == server.pk %}
-                        {% if entry.conflicts %}
-                          <span class="text-warning" title="Foreign NetBox IPs skipped to avoid overwriting them">{{ entry.conflicts }}</span>
-                        {% else %}
-                          {{ entry.conflicts|default:0 }}
-                        {% endif %}
-                      {% endif %}
-                    {% endfor %}
-                  {% else %}—{% endif %}
-                </td>
+                {% if counts %}
+                  <td>{{ counts.created }}</td>
+                  <td>{{ counts.updated }}</td>
+                  <td>{% if counts.errors > 0 %}<span class="text-danger">{{ counts.errors }}</span>{% else %}{{ counts.errors }}{% endif %}</td>
+                  <td>{% if counts.conflicts %}<span class="text-warning" title="Foreign NetBox IPs skipped to avoid overwriting them">{{ counts.conflicts }}</span>{% else %}{{ counts.conflicts }}{% endif %}</td>
+                {% else %}
+                  <td colspan="4">{% include "netbox_kea/inc/sync_run_state.html" %}</td>
+                {% endif %}
                 <td>
                   {% if server.pk in allowed_server_pks %}
                   <form method="post" action="{% url 'plugins:netbox_kea:server_sync_now' server.pk %}" class="d-inline">

@@ -17,6 +17,11 @@ Import can plan it. Our forms never edit it, and an update preserves it. This is
 marcinpsk/netbox-kea-ng#102 builds it, and marcinpsk/netbox-kea-ng#100 and #104 import it. Since #102,
 `user-context` is the only host key that an update keeps as an unknown field._
 
+_Amended 2026-11-02 (marcinpsk/netbox-kea-ng#220): `reservations.py` also holds the lookup walk of the Reservation
+Match and the choice of the Leases that show the Current Lease Presence. They read Kea through two ports,
+`ReservationLookup.find(scope, key)` and `CurrentLeases.current_leases(query)`, and
+`lease_reservation_reads.py` holds the cached Kea adapters of both._
+
 ## Context
 
 The repository interprets raw Kea host reservation dictionaries in views, forms, REST actions, synchronization,

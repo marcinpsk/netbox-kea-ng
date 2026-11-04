@@ -38,7 +38,8 @@
             <i class="mdi mdi-download"></i> Export
           </button>
           <ul class="dropdown-menu dropdown-menu-end">
-            <li><a class="dropdown-item" href="?{% if request.GET.urlencode %}{{ request.GET.urlencode }}&{% endif %}export=table">Current View (CSV)</a></li>
+            <li><a class="dropdown-item" href="?{% if request.GET.urlencode %}{{ request.GET.urlencode }}&{% endif %}export=table">Current View</a></li>
+            <li><a class="dropdown-item" href="?{% if request.GET.urlencode %}{{ request.GET.urlencode }}&{% endif %}export">All Data (CSV)</a></li>
           </ul>
         </div>
       </div>

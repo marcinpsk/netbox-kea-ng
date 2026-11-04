@@ -38,6 +38,7 @@ from netbox_kea.models import (
     IPAMOwnershipLink,
     next_confirmation_number,
 )
+from netbox_kea.sync_run_result import SyncCounts
 from netbox_kea.tests.kea_stub import (
     _catalogue_responses_for_subnets,
     _res_page,
@@ -46,7 +47,7 @@ from netbox_kea.tests.kea_stub import (
     typed_lease,
 )
 from netbox_kea.tests.test_jobs import _lease_page, _make_job, _patch_kea
-from netbox_kea.tests.utils import _make_db_server, lease_phase, with_sync_config
+from netbox_kea.tests.utils import _make_db_server, lease_phase, run_counts, with_sync_config
 
 if TYPE_CHECKING:
     from netbox_kea.integrations.dhcp_plugin import ImportSummary
@@ -132,12 +133,12 @@ def _owners(ip: NbIP) -> set[tuple[str, str]]:
     return set(IPAMOwnershipLink.objects.filter(ip_address=ip).values_list("server__name", "source"))
 
 
-def _run_job(server, leases: list[dict], reservations: list[dict] | None = None) -> dict:
-    """Run the sync job for *server* against a Kea that reports *leases* and *reservations*; return its summary."""
+def _run_job(server, leases: list[dict], reservations: list[dict] | None = None) -> SyncCounts:
+    """Run the sync job for *server* against a Kea that reports *leases* and *reservations*; return its counts."""
     job = _make_job()
     with _patch_kea(leases4=leases, reservations=reservations), suppress(JobFailed):
         KeaIpamSyncJob(job).run(server_pk=server.pk)
-    return job.data["summary"][0]
+    return run_counts(job)[0]
 
 
 @with_sync_config(stale_ip_cleanup="remove")
@@ -251,8 +252,8 @@ class JobLeasePhaseOwnershipTest(TestCase):
 
         summary = _run_job(second, [_lease(hostname="host-b")])
 
-        self.assertEqual(summary["disagreements"], 1)
-        self.assertEqual(summary["errors"], 0)
+        self.assertEqual(summary.disagreements, 1)
+        self.assertEqual(summary.errors, 0)
 
 
 class JobDisabledReservationCleanupTest(TestCase):
@@ -285,7 +286,7 @@ class JobDisabledReservationCleanupTest(TestCase):
         job = Job.objects.create(name="Kea IPAM Sync", job_id=uuid.uuid4(), data={})
         with stub_kea(registry):
             KeaIpamSyncJob(job).run(server_pk=server.pk)
-        return job.data["summary"][0]
+        return run_counts(job)[0]
 
     def test_complete_lease_snapshot_removes_the_last_link_when_reservations_are_disabled(self):
         for family in (4, 6):
@@ -420,7 +421,7 @@ class JobDeprecatedIPReleaseTest(TestCase):
                     job = Job.objects.create(name="Kea IPAM Sync", job_id=uuid.uuid4(), data={})
                     with _kea(leases, reservations, subnets=[subnet]):
                         KeaIpamSyncJob(job).run(server_pk=server.pk)
-                    return job.data["summary"][0]
+                    return run_counts(job)[0]
 
                 run(
                     [_lease(address)] if source == "lease" else (),
@@ -441,8 +442,8 @@ class JobDeprecatedIPReleaseTest(TestCase):
 
                 self.assertEqual(NbIP.objects.values().get(pk=ip.pk), operator_row)
                 self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=ip).exists())
-                self.assertEqual(summary["conflicts"], 1)
-                self.assertEqual(summary["conflict_sample"], [address])
+                self.assertEqual(summary.conflicts, 1)
+                self.assertEqual(summary.conflict_sample, (address,))
 
 
 class LeasePhaseOwnersTest(TestCase):
@@ -1403,7 +1404,7 @@ class JobReservationPhaseTest(TestCase):
         row = _row()
         self.assertEqual((row.status, row.dns_name), ("active", "host"))
         self.assertEqual(_owners(row), {("owner", "lease"), ("owner", "reservation")})
-        self.assertEqual((summary["created"], summary["errors"], summary["disagreements"]), (1, 0, 0))
+        self.assertEqual((summary.created, summary.errors, summary.disagreements), (1, 0, 0))
 
     def test_the_old_stale_cleanup_keeps_an_unlinked_row_at_a_reservation_address(self):
         server = _server("owner", sync_vrf=VRF.objects.create(name="sync"))

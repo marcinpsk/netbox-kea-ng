@@ -22,7 +22,7 @@ from django.urls import reverse
 from netaddr import IPNetwork
 from users.models import ObjectPermission
 
-from netbox_kea import dhcp_mapping_lifecycle
+from netbox_kea import dhcp_mapping_lifecycle, sync_run_result
 from netbox_kea.models import (
     DhcpIntegrationConfig,
     DisplayCacheConfig,
@@ -33,6 +33,7 @@ from netbox_kea.models import (
     SyncConfig,
     next_confirmation_number,
 )
+from netbox_kea.sync_run_result import SyncCounts, SyncRunResult
 
 from .kea_stub import stub_kea
 
@@ -325,6 +326,42 @@ def _make_db_server(**kwargs) -> Server:
     }
     defaults.update(kwargs)
     return Server.objects.create(**defaults)
+
+
+def run_results(job) -> list[SyncRunResult]:
+    """Return the Sync Run Results of *job*, in the order that the job stored them."""
+    return list(sync_run_result.read(job).values())
+
+
+def run_counts(job) -> list[SyncCounts]:
+    """Return the counts of each Sync Run Result of *job*; each result must be Synced."""
+    results = run_results(job)
+    counts = [result.counts for result in results if result.counts is not None]
+    assert len(counts) == len(results), f"Not every result is Synced: {results}"
+    return counts
+
+
+def stored_job(results: list[SyncRunResult], *, delta_seconds: int = 0, **fields):
+    """Create a Kea IPAM Sync Job row whose Sync Run Results the writer stored.
+
+    *delta_seconds* moves ``created`` back, because ``Job.created`` is ``auto_now_add``.
+    """
+    import uuid
+    from datetime import timedelta
+
+    from core.models import Job
+    from django.utils import timezone
+
+    from netbox_kea.jobs import KeaIpamSyncJob
+
+    job = Job.objects.create(
+        **{"name": KeaIpamSyncJob.name, "status": "completed", "data": {}, "job_id": uuid.uuid4(), **fields}
+    )
+    sync_run_result.store(job, results)
+    if delta_seconds:
+        Job.objects.filter(pk=job.pk).update(created=timezone.now() - timedelta(seconds=delta_seconds))
+        job.refresh_from_db(fields=["created"])
+    return job
 
 
 def ownership_link(ip, server: Server, source: str = "reservation", **fields) -> IPAMOwnershipLink:

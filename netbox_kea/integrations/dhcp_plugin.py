@@ -70,10 +70,11 @@ v1 scope (import + diff, read-only against Kea):
   Each member Subnet belongs to its Shared Network instead of the DHCPServer. Without the capability for an
   optional prefix (netbox-plugin-dhcp 0.2.0 requires one) every Shared Network is unsupported, and its member Subnets
   import onto the DHCPServer. Names follow the same uniqueness rule as client classes.
-* **Removal.** A mapped row whose Kea source a Complete observation of its kind no longer reports is a Stale DHCP
-  Import Object (:func:`remove_stale_objects`). The run removes it, children first, and reports it. An Incomplete
-  observation keeps every row of its kind. A row whose delete would also delete a DHCP plugin row that the run keeps,
-  that an Option still uses, or that a kept row names in a client class relation, stays. IPAM objects stay: ADR 0006 ownership decides them.
+* **Removal.** A mapped row whose Kea source a Complete observation of its kind no longer reports is a Stale DHCP Import
+  Object (:func:`stale_judgment`, :func:`remove_stale_objects`). The run removes it, children first, and reports it. An
+  Incomplete observation keeps every row of its kind. A row whose delete would also delete a DHCP plugin row that the
+  run keeps, that an Option still uses, or that a kept row names in a client class relation, stays. IPAM objects stay:
+  ADR 0006 ownership decides them.
   The Subnet writes run first, so a kept Subnet that left a stale Shared Network no longer belongs to it.
 """
 
@@ -83,7 +84,7 @@ import hashlib
 import ipaddress
 import logging
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from itertools import count
@@ -97,6 +98,7 @@ if TYPE_CHECKING:
     from ..subnet_catalogue import CatalogueSnapshot
     from .dhcp_import_plan import (
         FamilyPlan,
+        KindObservation,
         NamedKey,
         OptionKey,
         PDPoolKey,
@@ -111,7 +113,7 @@ if TYPE_CHECKING:
 
 from django.apps import apps
 from django.core.exceptions import ValidationError
-from django.db.models import Q
+from django.db.models import F, Q
 from django.db.models.deletion import Collector, ProtectedError
 from django.db.models.signals import post_delete
 
@@ -2421,17 +2423,19 @@ def pd_pool_prefixes(plan: FamilyPlan) -> list:
     return list(dict.fromkeys(networks))
 
 
-def reconcile_pd_pool_prefixes(server, plan: FamilyPlan, unobserved: set[Kind], summary: ImportSummary) -> None:
+def reconcile_pd_pool_prefixes(
+    server, plan: FamilyPlan, observed: Mapping[Kind, KindObservation], unobserved: set[Kind], summary: ImportSummary
+) -> None:
     """Link the Prefixes of every planned delegated-prefix Pool again, and drop the stale ``pd-pool`` links (ADR 0006).
 
     It runs after :func:`remove_stale_objects`: a removed PD Pool no longer uses its Prefix, so the cleanup can
-    deprecate it. Only a Complete observation of delegated-prefix Pools, with a cutoff, drops a link. A PD Pool that
-    Kea no longer reports and that is still in NetBox (*unobserved*) still uses its Prefixes, so the phase is then not
-    complete.
+    deprecate it. Only a Complete observation of delegated-prefix Pools (*observed*), with a cutoff, drops a link. A PD
+    Pool that Kea no longer reports and that is still in NetBox (*unobserved*) still uses its Prefixes, so the phase is
+    then not complete.
     """
     from ..ipam_reconciliation import PDPoolPhase, reconcile
 
-    complete = observations(plan)[Kind.PD_POOL].complete and Kind.PD_POOL not in unobserved
+    complete = observed[Kind.PD_POOL].complete and Kind.PD_POOL not in unobserved
     report = reconcile(server, plan.family, [PDPoolPhase(pd_pool_prefixes(plan), plan.cutoff, complete)])
     _record_report(summary, report)
 
@@ -2443,17 +2447,17 @@ def _record_report(summary: ImportSummary, report: SyncReport) -> None:
     summary.owner_disagreements += len(report.disagreements)
 
 
-def unobserved_kinds(server, plan: FamilyPlan) -> set[Kind]:
-    """Return the kinds that still have a mapped DHCP plugin row whose Kea source *plan* does not observe.
+def unobserved_kinds(judgment: StaleJudgment, removed: set[MappingSource]) -> set[Kind]:
+    """Return the kinds that still have a mapped DHCP plugin row whose Kea source the read does not observe.
 
-    After :func:`remove_stale_objects`, such a row stayed: its kind was not observed in full, its removal failed or
-    was blocked, another writer confirmed its mapping after the cutoff, or the plan has no cutoff.
+    *removed* holds the sources that :func:`remove_stale_objects` removed. Each other unobserved row stayed: its kind
+    was not observed in full, its removal failed or was blocked, another writer confirmed its mapping after the cutoff,
+    or the plan has no cutoff.
     """
-    observed = observations(plan)
     return {
         kind
-        for kind, rows in mapped_rows(server, plan.family).items()
-        if any(source not in observed[kind].sources for source in rows)
+        for kind, judged in judgment.kinds.items()
+        if judged.not_judged or judged.kept or judged.newer or judged.removable.keys() - removed
     }
 
 
@@ -2537,14 +2541,22 @@ def _option_goes_with(option, stale: dict, mapped_options: frozenset[tuple]) -> 
     return None if own in mapped_options else _owner_key(option)
 
 
-def _class_relation_rows(target) -> list:
-    """Return the DHCP plugin rows that name *target* in a many-to-many relation, such as ``client_classes``."""
-    rows: dict[tuple, Any] = {}
+def _class_relation_rows(targets: Iterable[tuple]) -> dict[tuple, list]:
+    """Return the DHCP plugin rows that name each row key of *targets* in a many-to-many relation, by row key.
+
+    A relation such as ``client_classes`` takes one query for all *targets*, whatever their number.
+    """
+    pks: dict[Any, list] = {}
+    for model, pk in targets:
+        pks.setdefault(model, []).append(pk)
+    rows: dict[tuple, dict[tuple, Any]] = {}
     for model in apps.get_app_config(PLUGIN_APP_LABEL).get_models():
         for relation in model._meta.many_to_many:
-            if relation.related_model is target._meta.concrete_model:
-                rows.update((_row_key(row), row) for row in model.objects.filter(**{relation.name: target}))
-    return list(rows.values())
+            if relation.related_model in pks:
+                named: Any = model.objects.filter(**{f"{relation.name}__in": pks[relation.related_model]})
+                for row in named.annotate(named_pk=F(relation.name)):
+                    rows.setdefault((relation.related_model, row.named_pk), {})[_row_key(row)] = row
+    return {key: list(each.values()) for key, each in rows.items()}
 
 
 @dataclass(frozen=True)
@@ -2562,13 +2574,14 @@ class _RemovalPlan:
     blocked: str = ""
 
 
-def _removal_plan(target, stale: dict, mapped_options: frozenset[tuple]) -> _RemovalPlan:
+def _removal_plan(target, stale: dict, mapped_options: frozenset[tuple], named_by: dict[tuple, list]) -> _RemovalPlan:
     """Plan the delete of the stale row *target* against every *stale* row of the run. It writes nothing.
 
     A row outside *stale* is kept: when the delete would remove it, when it uses a row that the delete removes, or when
     it names the row in a many-to-many relation (without it, that row would reach more clients), the row stays. Each
     stale row with such a part is evidence in ``relies_on``. A stale Option goes alone, and an unmapped Option goes with
-    the object that it is assigned to. A mapped Option of *mapped_options* outside *stale* is kept.
+    the object that it is assigned to. A mapped Option of *mapped_options* outside *stale* is kept. *named_by* gives the
+    rows that name each stale row in a many-to-many relation.
     """
     Option = _model("Option")
     own = _row_key(target)
@@ -2605,7 +2618,7 @@ def _removal_plan(target, stale: dict, mapped_options: frozenset[tuple]) -> _Rem
     cascaded = frozenset(_row_key(obj) for obj in rows if _row_key(obj) != own and _row_key(obj) in stale)
     relies_on = {*cascaded, *(_option_goes_with(obj, stale, mapped_options) for obj in first.values())}
     users = []
-    for obj in _class_relation_rows(target):
+    for obj in named_by.get(own, ()):
         goes_with = _option_goes_with(obj, stale, mapped_options) if isinstance(obj, Option) else _row_key(obj)
         if goes_with is not None and (goes_with in stale or goes_with in footprint):
             relies_on.add(goes_with)
@@ -2654,7 +2667,8 @@ def _removal_set(
     Return the plan of each row of that subset, and why each other stale row stays. Each plan is read once; a row that
     stays keeps every row that relies on it, through the reverse index.
     """
-    plans = {key: _removal_plan(row.target, stale, mapped_options) for key, row in stale.items()}
+    named_by = _class_relation_rows(stale)
+    plans = {key: _removal_plan(row.target, stale, mapped_options, named_by) for key, row in stale.items()}
     kept = {key: plan.blocked for key, plan in plans.items() if plan.blocked}
     alive = set(plans) - kept.keys()
     dependents = _dependents(plans)
@@ -2744,72 +2758,121 @@ def _delete_component(
     return gone, None
 
 
-def mapped_rows(server, family: int, confirmed_before: int | None = None) -> dict[Kind, dict[MappingSource, Any]]:
-    """Return the DHCP plugin row of each mapping of *family* whose kind a run can remove, by kind and Kea source.
+def _mapped_links(server, family: int) -> Iterator[tuple[MappingSource, Any]]:
+    """Yield the Kea source and the mapping of each mapped row of *family* whose kind a run can remove, in pk order.
 
-    A mapping whose row is gone has none. With *confirmed_before*, a cutoff of the confirmation sequence, only the
-    mappings confirmed with a lower number count.
+    A mapping whose row is gone has none, and is left out.
     """
     from ..models import KeaDhcpLink
 
-    rows: dict[Kind, dict[MappingSource, Any]] = {kind: {} for kind in mapped_kinds(family)}
-    links = KeaDhcpLink.objects.filter(server=server, family=family, kind__in=[kind.value for kind in rows])
-    if confirmed_before is not None:
-        links = links.filter(confirmation__lt=confirmed_before)
+    links = KeaDhcpLink.objects.filter(
+        server=server, family=family, kind__in=[kind.value for kind in mapped_kinds(family)]
+    )
     for link in links.prefetch_related("sys4_object").order_by("pk"):
         if link.sys4_object is not None:
-            source = MappingSource(Kind(link.kind), link.kea_subnet_id, link.kea_identity)
-            rows[source.kind][source] = link.sys4_object
+            yield MappingSource(Kind(link.kind), link.kea_subnet_id, link.kea_identity), link
+
+
+def mapped_rows(server, family: int) -> dict[Kind, dict[MappingSource, Any]]:
+    """Return the DHCP plugin row of each mapping of *family* whose kind a run can remove, by kind and Kea source."""
+    rows: dict[Kind, dict[MappingSource, Any]] = {kind: {} for kind in mapped_kinds(family)}
+    for source, link in _mapped_links(server, family):
+        rows[source.kind][source] = link.sys4_object
     return rows
 
 
-def _stale_rows(server, plan: FamilyPlan, observed) -> dict[Kind, list[_StaleRow]]:
-    """Return the mapped rows of each kind whose Kea source the plan does not observe.
+@dataclass(frozen=True)
+class KeptRow:
+    """A stale row that the run keeps, and why, in counts only: a viewer of the Server may not view the rows."""
+
+    # A DHCP plugin model instance; the plugin is optional, so its models have no static type here.
+    target: Any
+    reason: str
+
+
+@dataclass(frozen=True)
+class KindJudgment:
+    """How one read judges the mapped rows of one kind, each by its Kea source."""
+
+    # The rows whose source the read reports.
+    observed: dict[MappingSource, Any]
+    # The stale rows that the run removes.
+    removable: dict[MappingSource, Any]
+    # The stale rows that the run keeps, because a row that it keeps uses them.
+    kept: dict[MappingSource, KeptRow]
+    # The unobserved rows that a gap of the observation covers, and the gaps.
+    not_judged: dict[MappingSource, Any]
+    gaps: tuple[str, ...]
+    # The unobserved rows that the read cannot judge: confirmed at or after the cutoff, or every one without a cutoff.
+    newer: dict[MappingSource, Any]
+
+
+@dataclass(frozen=True)
+class StaleJudgment:
+    """The judgment of every mapped row of one family against one read, and the read-only plan of its removal."""
+
+    kinds: dict[Kind, KindJudgment]
+    # Each stale row by row key, children first: the order of the removal.
+    stale: dict[tuple, _StaleRow]
+    # The delete plan of each removable row, by row key.
+    plans: dict[tuple, _RemovalPlan]
+    # Why each kept row stays, by row key, in the order that the removal plan found it.
+    staying: dict[tuple, str]
+
+
+def stale_judgment(server, plan: FamilyPlan, observed: Mapping[Kind, KindObservation]) -> StaleJudgment:
+    """Judge each mapped row of the family of *plan* against the read that *observed* gives. It writes nothing.
 
     A mapping confirmed with a number at or above the cutoff of the plan belongs to a newer read, so it is never stale
     here. The import lock keeps two runs of one Server apart; the cutoff covers the other writers, such as an ADR 0008
-    merge or revert replay in main. A plan without a cutoff can judge no mapping.
+    merge or revert replay in main. A plan without a cutoff can judge no unobserved mapping. :func:`_removal_set` then
+    finds the stale rows whose deletion removes or changes no kept row, and no mapped Option that the run keeps.
     """
-    if plan.cutoff is None:
-        return {}
-    return {
-        kind: [_StaleRow(source, row) for source, row in rows.items() if source not in observed[kind].sources]
-        for kind, rows in mapped_rows(server, plan.family, confirmed_before=plan.cutoff).items()
+    family = plan.family
+    judged: dict[Kind, dict[MappingSource, Any]] = {kind: {} for kind in mapped_kinds(family)}
+    newer: dict[Kind, dict[MappingSource, Any]] = {kind: {} for kind in mapped_kinds(family)}
+    for source, link in _mapped_links(server, family):
+        unordered = plan.cutoff is None or link.confirmation >= plan.cutoff
+        rows = newer if unordered and source not in observed[source.kind].sources else judged
+        rows[source.kind][source] = link.sys4_object
+    splits = {kind: observed[kind].judge(rows, family) for kind, rows in judged.items()}
+    stale = {_row_key(row): _StaleRow(source, row) for split in splits.values() for source, row in split.stale.items()}
+    plans, staying = _removal_set(stale, _mapped_option_keys())
+    kinds = {
+        kind: KindJudgment(
+            observed=split.observed,
+            removable={source: row for source, row in split.stale.items() if _row_key(row) in plans},
+            kept={
+                source: KeptRow(row, staying[_row_key(row)])
+                for source, row in split.stale.items()
+                if _row_key(row) in staying
+            },
+            not_judged=split.not_judged,
+            gaps=split.gaps,
+            newer=newer[kind],
+        )
+        for kind, split in splits.items()
     }
+    return StaleJudgment(kinds, stale, plans, staying)
 
 
-def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> None:
-    """Remove each Stale DHCP Import Object of one family, children first, and report it.
+def remove_stale_objects(judgment: StaleJudgment, family: int, summary: ImportSummary) -> set[MappingSource]:
+    """Remove each removable Stale DHCP Import Object of *judgment*, children first, report it, and return its source.
 
-    An Incomplete observation keeps each row that it cannot judge (:meth:`KindObservation.gap`), with one entry for
-    each kind that says why. Before any write, :func:`_removal_set` finds the stale rows whose deletion removes or
-    changes no kept row, and no mapped Option that the run keeps; each other stale row is kept and reported. Rows that rely on each other form one component, which goes in one transaction, all or nothing,
+    Each kind with rows that its Incomplete observation cannot judge has one entry that says why, and each kept stale
+    row has its own. Rows that rely on each other form one component, which goes in one transaction, all or nothing,
     after every component that it relies on. When a component fails, every pending row that relies on it, directly or
     through other rows, is kept too. IPAM objects stay: the DHCP plugin rows only reference them.
     """
-    observed = observations(plan)
-    stale = _stale_rows(server, plan, observed)
-    removable: dict[tuple, _StaleRow] = {}
-    for kind in mapped_kinds(plan.family):
-        unjudged: list[_StaleRow] = []
-        reasons: list[str] = []
-        for row in stale.get(kind, []):
-            gap = observed[kind].gap(row.source, plan.family)
-            if gap:
-                unjudged.append(row)
-                reasons.extend(gap)
-            else:
-                removable[_row_key(row.target)] = row
-        if unjudged:
+    for kind, judged in judgment.kinds.items():
+        if judged.not_judged:
             label = KIND_LABELS[kind]
-            kept = counted(len(unjudged), f"mapped {label} row was", f"mapped {label} rows were")
-            detail = f"{' '.join(dict.fromkeys(reasons))} {kept} kept."
-            summary.record(
-                not_written(plan.family, kind, kind_path(plan.family, kind), Reason.INCOMPLETE_OBSERVATION, detail)
-            )
-    plans, staying = _removal_set(removable, _mapped_option_keys())
-    for key, detail in staying.items():
-        _record_kept(removable[key], detail, plan.family, summary)
+            kept = counted(len(judged.not_judged), f"mapped {label} row was", f"mapped {label} rows were")
+            detail = f"{' '.join(judged.gaps)} {kept} kept."
+            summary.record(not_written(family, kind, kind_path(family, kind), Reason.INCOMPLETE_OBSERVATION, detail))
+    removable, plans = judgment.stale, judgment.plans
+    for key, detail in judgment.staying.items():
+        _record_kept(removable[key], detail, family, summary)
     # A deleted instance has no pk, so every key comes from before the deletes.
     dependents = _dependents(plans)
     pending = set(plans)
@@ -2819,21 +2882,22 @@ def remove_stale_objects(server, plan: FamilyPlan, summary: ImportSummary) -> No
             # A failed component that it relies on keeps it.
             continue
         pending.difference_update(component)
-        gone, failed = _delete_component(component, plans, removable, removed, plan.family, summary)
+        gone, failed = _delete_component(component, plans, removable, removed, family, summary)
         if failed is None:
             removed.update(gone)
             for source in (removable[each].source for each in gone):
-                summary.record(written(plan.family, source.kind, source.path(plan.family), Outcome.REMOVED))
+                summary.record(written(family, source.kind, source.path(family), Outcome.REMOVED))
             continue
         together = _together_detail(removable[failed])
         for key in component:
             if key != failed:
-                _record_kept(removable[key], together, plan.family, summary)
+                _record_kept(removable[key], together, family, summary)
         relied_on: dict[tuple, str] = {}
         for key in component:
             detail = _relied_on_detail(removable[key], "failed" if key == failed else "is kept")
             for each in _keep_dependents(key, dependents, pending, relied_on, detail):
-                _record_kept(removable[each], detail, plan.family, summary)
+                _record_kept(removable[each], detail, family, summary)
+    return {removable[key].source for key in removed}
 
 
 def _together_detail(row: _StaleRow) -> str:
@@ -2985,12 +3049,13 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
     delegated_step = import_reservation_snapshot(
         scope, dhcp_server, plan.reservations, references, adoption_servers=adoption_servers, subnet_ids=subnet_ids
     )
-    remove_stale_objects(server, plan, summary)
-    unobserved = unobserved_kinds(server, plan)
+    observed = observations(plan)
+    judgment = stale_judgment(server, plan, observed)
+    unobserved = unobserved_kinds(judgment, remove_stale_objects(judgment, plan.family, summary))
     if delegated_step is not None:
         reconcile_delegated_prefixes(server, plan.family, delegated_step, unobserved, summary)
     if plan.family == 6:
-        reconcile_pd_pool_prefixes(server, plan, unobserved, summary)
+        reconcile_pd_pool_prefixes(server, plan, observed, unobserved, summary)
     if not plan.configuration_complete:
         summary.ownership.incomplete.update({"subnet", "pool"})
     if (
