@@ -713,6 +713,7 @@ class DriftPartialTest(TestCase):
         self.assertIn(("stale", "option", path), self._objects(page))
         legend = " ".join(page.select_one(".drift-legend").get_text().split())
         self.assertIn("A DHCP Option is not seen only when the read of its own entries or of its object", legend)
+        self.assertIn("no row that NetBox keeps uses it, so the next run tries to remove it.", legend)
 
     def test_a_pool_without_a_valid_range_keeps_the_mapped_pools_and_their_options_and_the_card_reports_them(self):
         self._import()

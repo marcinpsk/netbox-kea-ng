@@ -216,9 +216,9 @@ def family_drift(server: Server, family: Family, user) -> FamilyDrift:
     """Compare a live read of *family* with its DHCP Import Mappings, through the judgment that the removal uses.
 
     A missing object is in Kea without a mapping. A stale object has a mapping that the observation no longer reports
-    and that no gap of the observation covers. When no row that stays uses it now, the next run removes it. When a row
-    that stays uses it now, it is kept, with the reason of the removal. The card shows the rows as they are now: the
-    run updates the other rows first, so it removes a kept row when these updates remove its last use. An unobserved
+    and that no gap of the observation covers. When no row that stays uses it now, the next run tries to remove it. When
+    a row that stays uses it now, it is kept, with the reason of the removal. The card shows the rows as they are now:
+    the run updates the other rows first, so it removes a kept row when these updates remove its last use. An unobserved
     row that a gap covers is not seen, and a mapping confirmed after the read began is in step. A family that Kea did
     not give leaves every mapped row unknown. An object names its imported row only when *user* may view it.
     """
