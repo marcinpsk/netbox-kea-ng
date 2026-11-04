@@ -1,9 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-FileCopyrightText: 2023 Devon Mar <devon-mar@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
-from django.urls import include, path
+from django.urls import include, path, register_converter
 from utilities.urls import get_model_urls
 
+from .constants import Family, validate_family
 from .views import (
     combined,
     dhcp_control,
@@ -19,6 +20,23 @@ from .views import (
     sync_jobs,
     sync_views,
 )
+
+
+class FamilyConverter:
+    """Match the address family of a route, 4 or 6, as an int."""
+
+    regex = "[46]"
+
+    def to_python(self, value: str) -> Family:
+        """Return the family of the path text."""
+        return validate_family(int(value))
+
+    def to_url(self, value: int) -> str:
+        """Return the path text of the family, or refuse a value that is not a family."""
+        return str(validate_family(value))
+
+
+register_converter(FamilyConverter, "family")
 
 urlpatterns = (
     path("servers/<int:pk>/switch/", server_switch.ServerSwitchView.as_view(), name="server_switch"),
@@ -191,76 +209,6 @@ urlpatterns = (
         name="server_lease6_bulk_import",
     ),
     path(
-        "servers/<int:pk>/subnets4/<int:subnet_id>/pools/add/",
-        subnets.ServerSubnet4PoolAddView.as_view(),
-        name="server_subnet4_pool_add",
-    ),
-    path(
-        "servers/<int:pk>/subnets4/<int:subnet_id>/pools/<path:pool>/delete/",
-        subnets.ServerSubnet4PoolDeleteView.as_view(),
-        name="server_subnet4_pool_delete",
-    ),
-    path(
-        "servers/<int:pk>/subnets6/<int:subnet_id>/pools/add/",
-        subnets.ServerSubnet6PoolAddView.as_view(),
-        name="server_subnet6_pool_add",
-    ),
-    path(
-        "servers/<int:pk>/subnets6/<int:subnet_id>/pools/<path:pool>/delete/",
-        subnets.ServerSubnet6PoolDeleteView.as_view(),
-        name="server_subnet6_pool_delete",
-    ),
-    path(
-        "servers/<int:pk>/subnets4/add/",
-        subnets.ServerSubnet4AddView.as_view(),
-        name="server_subnet4_add",
-    ),
-    path(
-        "servers/<int:pk>/subnets4/<int:subnet_id>/edit/",
-        subnets.ServerSubnet4EditView.as_view(),
-        name="server_subnet4_edit",
-    ),
-    path(
-        "servers/<int:pk>/subnets4/<int:subnet_id>/delete/",
-        subnets.ServerSubnet4DeleteView.as_view(),
-        name="server_subnet4_delete",
-    ),
-    path(
-        "servers/<int:pk>/subnets4/<int:subnet_id>/wipe/",
-        subnets.ServerSubnet4WipeView.as_view(),
-        name="server_subnet4_wipe_leases",
-    ),
-    path(
-        "servers/<int:pk>/subnets6/add/",
-        subnets.ServerSubnet6AddView.as_view(),
-        name="server_subnet6_add",
-    ),
-    path(
-        "servers/<int:pk>/subnets6/<int:subnet_id>/edit/",
-        subnets.ServerSubnet6EditView.as_view(),
-        name="server_subnet6_edit",
-    ),
-    path(
-        "servers/<int:pk>/subnets6/<int:subnet_id>/delete/",
-        subnets.ServerSubnet6DeleteView.as_view(),
-        name="server_subnet6_delete",
-    ),
-    path(
-        "servers/<int:pk>/subnets6/<int:subnet_id>/wipe/",
-        subnets.ServerSubnet6WipeView.as_view(),
-        name="server_subnet6_wipe_leases",
-    ),
-    path(
-        "servers/<int:pk>/subnets4/<int:subnet_id>/options/",
-        options.ServerSubnet4OptionsEditView.as_view(),
-        name="server_subnet4_options_edit",
-    ),
-    path(
-        "servers/<int:pk>/subnets6/<int:subnet_id>/options/",
-        options.ServerSubnet6OptionsEditView.as_view(),
-        name="server_subnet6_options_edit",
-    ),
-    path(
         "servers/<int:pk>/dhcp4/enable/",
         dhcp_control.ServerDHCP4EnableView.as_view(),
         name="server_dhcp4_enable",
@@ -291,36 +239,6 @@ urlpatterns = (
         name="server_dhcp6_options_edit",
     ),
     path(
-        "servers/<int:pk>/shared-networks4/add/",
-        shared_networks.ServerSharedNetwork4AddView.as_view(),
-        name="server_shared_network4_add",
-    ),
-    path(
-        "servers/<int:pk>/shared-networks6/add/",
-        shared_networks.ServerSharedNetwork6AddView.as_view(),
-        name="server_shared_network6_add",
-    ),
-    path(
-        "servers/<int:pk>/shared-networks4/<str:network_name>/delete/",
-        shared_networks.ServerSharedNetwork4DeleteView.as_view(),
-        name="server_shared_network4_delete",
-    ),
-    path(
-        "servers/<int:pk>/shared-networks6/<str:network_name>/delete/",
-        shared_networks.ServerSharedNetwork6DeleteView.as_view(),
-        name="server_shared_network6_delete",
-    ),
-    path(
-        "servers/<int:pk>/shared-networks4/<str:network_name>/edit/",
-        shared_networks.ServerSharedNetwork4EditView.as_view(),
-        name="server_shared_network4_edit",
-    ),
-    path(
-        "servers/<int:pk>/shared-networks6/<str:network_name>/edit/",
-        shared_networks.ServerSharedNetwork6EditView.as_view(),
-        name="server_shared_network6_edit",
-    ),
-    path(
         "servers/<int:pk>/dhcp4/option-def/add/",
         options.ServerOptionDef4AddView.as_view(),
         name="server_option_def4_add",
@@ -339,6 +257,62 @@ urlpatterns = (
         "servers/<int:pk>/dhcp6/option-def/<int:code>/<str:space>/delete/",
         options.ServerOptionDef6DeleteView.as_view(),
         name="server_option_def6_delete",
+    ),
+    path("servers/<int:pk>/subnets<family:family>/", subnets.ServerSubnetsView.as_view(), name="server_subnets"),
+    path(
+        "servers/<int:pk>/subnets<family:family>/add/",
+        subnets.ServerSubnetAddView.as_view(),
+        name="server_subnet_add",
+    ),
+    path(
+        "servers/<int:pk>/subnets<family:family>/<int:subnet_id>/edit/",
+        subnets.ServerSubnetEditView.as_view(),
+        name="server_subnet_edit",
+    ),
+    path(
+        "servers/<int:pk>/subnets<family:family>/<int:subnet_id>/delete/",
+        subnets.ServerSubnetDeleteView.as_view(),
+        name="server_subnet_delete",
+    ),
+    path(
+        "servers/<int:pk>/subnets<family:family>/<int:subnet_id>/wipe/",
+        subnets.ServerSubnetWipeView.as_view(),
+        name="server_subnet_wipe_leases",
+    ),
+    path(
+        "servers/<int:pk>/subnets<family:family>/<int:subnet_id>/options/",
+        options.ServerSubnetOptionsEditView.as_view(),
+        name="server_subnet_options_edit",
+    ),
+    path(
+        "servers/<int:pk>/subnets<family:family>/<int:subnet_id>/pools/add/",
+        subnets.ServerSubnetPoolAddView.as_view(),
+        name="server_subnet_pool_add",
+    ),
+    path(
+        "servers/<int:pk>/subnets<family:family>/<int:subnet_id>/pools/<path:pool>/delete/",
+        subnets.ServerSubnetPoolDeleteView.as_view(),
+        name="server_subnet_pool_delete",
+    ),
+    path(
+        "servers/<int:pk>/shared_networks<family:family>/",
+        shared_networks.ServerSharedNetworksView.as_view(),
+        name="server_shared_networks",
+    ),
+    path(
+        "servers/<int:pk>/shared-networks<family:family>/add/",
+        shared_networks.ServerSharedNetworkAddView.as_view(),
+        name="server_shared_network_add",
+    ),
+    path(
+        "servers/<int:pk>/shared-networks<family:family>/<str:network_name>/edit/",
+        shared_networks.ServerSharedNetworkEditView.as_view(),
+        name="server_shared_network_edit",
+    ),
+    path(
+        "servers/<int:pk>/shared-networks<family:family>/<str:network_name>/delete/",
+        shared_networks.ServerSharedNetworkDeleteView.as_view(),
+        name="server_shared_network_delete",
     ),
     path("servers/<int:pk>/", include(get_model_urls("netbox_kea", "server"))),
     path(

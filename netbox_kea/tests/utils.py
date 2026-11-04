@@ -44,6 +44,45 @@ if TYPE_CHECKING:
     from django.test.client import _MonkeyPatchedWSGIResponse
 
 
+# Each route that still has one name per family; the folding commits empty it.
+_FAMILY_NAMES = {
+    "combined_configuration": "combined_configuration{family}",
+    "combined_leases": "combined_leases{family}",
+    "combined_overview": "combined_overview{family}",
+    "combined_reservations": "combined_reservations{family}",
+    "combined_shared_networks": "combined_shared_networks{family}",
+    "combined_subnets": "combined_subnets{family}",
+    "combined_sync": "combined_sync{family}",
+    "server_dhcp_disable": "server_dhcp{family}_disable",
+    "server_dhcp_enable": "server_dhcp{family}_enable",
+    "server_dhcp_options_edit": "server_dhcp{family}_options_edit",
+    "server_lease_add": "server_lease{family}_add",
+    "server_lease_bulk_import": "server_lease{family}_bulk_import",
+    "server_lease_edit": "server_lease{family}_edit",
+    "server_lease_sync": "server_lease{family}_sync",
+    "server_leases": "server_leases{family}",
+    "server_leases_delete": "server_leases{family}_delete",
+    "server_option_def": "server_option_def{family}",
+    "server_option_def_add": "server_option_def{family}_add",
+    "server_option_def_delete": "server_option_def{family}_delete",
+    "server_reservation_add": "server_reservation{family}_add",
+    "server_reservation_bulk_import": "server_reservation{family}_bulk_import",
+    "server_reservation_bulk_sync": "server_reservation{family}_bulk_sync",
+    "server_reservation_delete": "server_reservation{family}_delete",
+    "server_reservation_edit": "server_reservation{family}_edit",
+    "server_reservation_published_name": "server_reservation{family}_published_name",
+    "server_reservation_sync": "server_reservation{family}_sync",
+    "server_reservations": "server_reservations{family}",
+}
+
+
+def family_url(name: str, family: int, **kwargs) -> str:
+    """Reverse the plugin route *name* for one address family."""
+    if name in _FAMILY_NAMES:
+        return reverse(f"plugins:netbox_kea:{_FAMILY_NAMES[name].format(family=family)}", kwargs=kwargs)
+    return reverse(f"plugins:netbox_kea:{name}", kwargs={**kwargs, "family": family})
+
+
 class SettingsRowOverride(TestContextDecorator):
     """Set fields of a settings row for a block, a test method or each test of a class, and restore them after.
 

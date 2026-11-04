@@ -103,7 +103,7 @@ class TestDualURLSubnetViews(_DualURLBase):
 
     def test_subnets4_uses_dhcp4_url(self):
         """GET subnets4 → request POSTed to dhcp4_url."""
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -111,7 +111,7 @@ class TestDualURLSubnetViews(_DualURLBase):
 
     def test_subnets6_uses_dhcp6_url(self):
         """GET subnets6 → request POSTed to dhcp6_url."""
-        url = reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 6})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -209,7 +209,7 @@ class TestDualURLFallback(_DualURLBase):
     def test_v4_falls_back_to_server_url(self):
         """When dhcp4_url is empty, v4 views use ca_url."""
         server = _make_dual_url_server(name="v4-fallback", dhcp4_url="", dhcp6_url=_DHCP6_URL)
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": server.pk, "family": 4})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -218,7 +218,7 @@ class TestDualURLFallback(_DualURLBase):
     def test_v6_falls_back_to_server_url(self):
         """When dhcp6_url is empty, v6 views use ca_url."""
         server = _make_dual_url_server(name="v6-fallback", dhcp4_url=_DHCP4_URL, dhcp6_url="")
-        url = reverse("plugins:netbox_kea:server_subnets6", args=[server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": server.pk, "family": 6})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)

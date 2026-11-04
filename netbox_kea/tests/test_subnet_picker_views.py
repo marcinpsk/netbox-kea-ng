@@ -125,7 +125,7 @@ class TestSubnetPickerViews(_ViewTestBase):
             }
         ) as kea:
             created = self.client.post(
-                reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4}),
                 {
                     "subnet": "198.18.2.0/24",
                     "subnet_id": "2",

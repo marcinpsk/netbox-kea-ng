@@ -245,7 +245,11 @@ class TestSubnetEditNotices(_ViewTestBase):
                 "stat-lease4-get": {"result": 2, "text": "unknown command"},
             }
         ):
-            response = self.client.get(reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42]))
+            response = self.client.get(
+                reverse(
+                    "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
+                )
+            )
         self.assertEqual(response.status_code, 200)
         self.assertIn((django_messages.ERROR, _IDENTITY_UNAVAILABLE), _page_messages(response))
         self.assertNotIn((django_messages.WARNING, _IDENTITY_UNAVAILABLE), _page_messages(response))
@@ -429,15 +433,15 @@ class TestNoticeGapsFromReview(_ViewTestBase):
 
     # The Server tab lists, the Snapshot kind of each, and the detail of its unavailable Notice.
     _LISTS = (
-        ("server_subnets4", "catalogue", _IDENTITY_UNAVAILABLE),
-        ("server_shared_networks4", "configuration", _CONFIGURATION_UNAVAILABLE),
+        ("server_subnets", "catalogue", _IDENTITY_UNAVAILABLE),
+        ("server_shared_networks", "configuration", _CONFIGURATION_UNAVAILABLE),
     )
 
     def test_a_list_table_refresh_shows_the_notice_out_of_band_and_queues_no_message(self):
         # NetBox renders htmx/table.html without messages, so a queued one would surface on the next page.
         for route, kind, detail in self._LISTS:
             with self.subTest(route=route):
-                url = reverse(f"plugins:netbox_kea:{route}", args=[self.server.pk])
+                url = reverse(f"plugins:netbox_kea:{route}", kwargs={"pk": self.server.pk, "family": 4})
                 display_cache.rotate_configuration(self.server, 4)
                 with stub_kea(_UNAVAILABLE):
                     failed = self.client.get(url, HTTP_HX_REQUEST="true")
@@ -458,15 +462,20 @@ class TestNoticeGapsFromReview(_ViewTestBase):
             with self.subTest(route=route):
                 display_cache.rotate_configuration(self.server, 4)
                 with stub_kea(_UNAVAILABLE):
-                    response = self.client.get(reverse(f"plugins:netbox_kea:{route}", args=[self.server.pk]))
+                    response = self.client.get(
+                        reverse(f"plugins:netbox_kea:{route}", kwargs={"pk": self.server.pk, "family": 4})
+                    )
                 self.assertContains(response, '<div id="list-notice"></div>', html=True)
                 self.assertIn((django_messages.ERROR, HEADLINES[kind]), _page_messages(response))
 
     def test_the_pool_forms_warn_about_an_incomplete_catalogue(self):
         urls = (
-            reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 1]),
             reverse(
-                "plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 1, "198.18.0.10-198.18.0.20"]
+                "plugins:netbox_kea:server_subnet_pool_add", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+            ),
+            reverse(
+                "plugins:netbox_kea:server_subnet_pool_delete",
+                kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1, "pool": "198.18.0.10-198.18.0.20"},
             ),
         )
         for url in urls:

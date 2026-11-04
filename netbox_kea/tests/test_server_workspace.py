@@ -18,7 +18,12 @@ from netbox_kea.models import Server
 
 from .kea_stub import LeaseDaemon, _catalogue_responses_for_subnets, _res_page, stub_kea
 from .test_views_server import _status_stub
-from .utils import _make_db_server, _ViewTestBase, with_dhcp_integration_config
+from .utils import _make_db_server, _ViewTestBase, family_url, with_dhcp_integration_config
+
+
+def _url(route: str, pk: int, family: int | None = None) -> str:
+    """Reverse a Server route; a family route takes the family as a route parameter."""
+    return reverse(f"plugins:netbox_kea:{route}", args=[pk]) if family is None else family_url(route, family, pk=pk)
 
 
 class TestServerWorkspace(_ViewTestBase):
@@ -173,9 +178,14 @@ class TestServerWorkspace(_ViewTestBase):
         self.server.dhcp6 = False
         self.server.save()
         self.client.logout()
-        for route in ("server_subnets6", "server_leases6", "server_reservations6", "server_option_def6"):
+        for route, family in (
+            ("server_subnets", 6),
+            ("server_leases", 6),
+            ("server_reservations", 6),
+            ("server_option_def", 6),
+        ):
             with self.subTest(route=route), stub_kea({}) as kea:
-                response = self.client.get(reverse(f"plugins:netbox_kea:{route}", args=[self.server.pk]))
+                response = self.client.get(_url(route, self.server.pk, family))
                 self.assertContains(response, "Protocol not enabled")
                 self.assertEqual(kea.commands(), [])
 
@@ -296,21 +306,19 @@ class TestServerWorkspace(_ViewTestBase):
     def test_enabled_mutation_forms_render_the_parent_section_and_one_family_switch(self):
         for family in (4, 6):
             for route, section in (
-                ("lease{family}_add", "Leases"),
-                ("lease{family}_bulk_import", "Leases"),
-                ("reservation{family}_bulk_import", "Reservations"),
-                ("subnet{family}_add", "Subnets"),
-                ("shared_network{family}_add", "Subnets"),
-                ("dhcp{family}_enable", "Overview"),
-                ("dhcp{family}_disable", "Overview"),
-                ("dhcp{family}_options_edit", "Configuration"),
-                ("option_def{family}_add", "Configuration"),
+                ("lease_add", "Leases"),
+                ("lease_bulk_import", "Leases"),
+                ("reservation_bulk_import", "Reservations"),
+                ("subnet_add", "Subnets"),
+                ("shared_network_add", "Subnets"),
+                ("dhcp_enable", "Overview"),
+                ("dhcp_disable", "Overview"),
+                ("dhcp_options_edit", "Configuration"),
+                ("option_def_add", "Configuration"),
             ):
                 with self.subTest(family=family, route=route):
                     with stub_kea(_catalogue_responses_for_subnets(family, [])):
-                        response = self.client.get(
-                            reverse("plugins:netbox_kea:server_" + route.format(family=family), args=[self.server.pk])
-                        )
+                        response = self.client.get(family_url("server_" + route, family, pk=self.server.pk))
                     page = BeautifulSoup(response.content, "html.parser")
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(
@@ -374,7 +382,7 @@ class TestServerWorkspace(_ViewTestBase):
                 {"q": ["printer"], "scope": ["in-subnet"]},
             ),
             (
-                reverse("plugins:netbox_kea:server_subnets4", args=[pk]),
+                reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": pk, "family": 4}),
                 {"q": "198.18", "subnet_id": "7", "sort": "subnet"},
                 {"q": ["198.18"], "sort": ["subnet"]},
             ),
@@ -476,47 +484,44 @@ class TestServerWorkspace(_ViewTestBase):
 
     def test_disabled_family_refuses_sections_and_mutations_without_kea_requests(self):
         routes = (
-            ("leases{family}", {}),
-            ("reservations{family}", {}),
-            ("subnets{family}", {}),
-            ("shared_networks{family}", {}),
-            ("option_def{family}", {}),
-            ("lease{family}_add", {}),
-            ("lease{family}_edit", {"ip_address": "2001:db8::1"}),
-            ("leases{family}_delete", {}),
-            ("lease{family}_sync", {}),
-            ("lease{family}_bulk_import", {}),
-            ("reservation{family}_add", {}),
-            ("reservation{family}_edit", {"subnet_id": 7}),
-            ("reservation{family}_delete", {"subnet_id": 7}),
-            ("reservation{family}_sync", {"subnet_id": 7}),
-            ("reservation{family}_bulk_sync", {}),
-            ("reservation{family}_bulk_import", {}),
-            ("reservation{family}_published_name", {}),
-            ("subnet{family}_add", {}),
-            ("subnet{family}_edit", {"subnet_id": 7}),
-            ("subnet{family}_delete", {"subnet_id": 7}),
-            ("subnet{family}_wipe_leases", {"subnet_id": 7}),
-            ("subnet{family}_pool_add", {"subnet_id": 7}),
-            ("subnet{family}_pool_delete", {"subnet_id": 7, "pool": "2001:db8::/120"}),
-            ("subnet{family}_options_edit", {"subnet_id": 7}),
-            ("shared_network{family}_add", {}),
-            ("shared_network{family}_edit", {"network_name": "example-network"}),
-            ("shared_network{family}_delete", {"network_name": "example-network"}),
-            ("dhcp{family}_enable", {}),
-            ("dhcp{family}_disable", {}),
-            ("dhcp{family}_options_edit", {}),
-            ("option_def{family}_add", {}),
-            ("option_def{family}_delete", {"code": 222, "space": "example-space"}),
+            ("leases", {}),
+            ("reservations", {}),
+            ("subnets", {}),
+            ("shared_networks", {}),
+            ("option_def", {}),
+            ("lease_add", {}),
+            ("lease_edit", {"ip_address": "2001:db8::1"}),
+            ("leases_delete", {}),
+            ("lease_sync", {}),
+            ("lease_bulk_import", {}),
+            ("reservation_add", {}),
+            ("reservation_edit", {"subnet_id": 7}),
+            ("reservation_delete", {"subnet_id": 7}),
+            ("reservation_sync", {"subnet_id": 7}),
+            ("reservation_bulk_sync", {}),
+            ("reservation_bulk_import", {}),
+            ("reservation_published_name", {}),
+            ("subnet_add", {}),
+            ("subnet_edit", {"subnet_id": 7}),
+            ("subnet_delete", {"subnet_id": 7}),
+            ("subnet_wipe_leases", {"subnet_id": 7}),
+            ("subnet_pool_add", {"subnet_id": 7}),
+            ("subnet_pool_delete", {"subnet_id": 7, "pool": "2001:db8::/120"}),
+            ("subnet_options_edit", {"subnet_id": 7}),
+            ("shared_network_add", {}),
+            ("shared_network_edit", {"network_name": "example-network"}),
+            ("shared_network_delete", {"network_name": "example-network"}),
+            ("dhcp_enable", {}),
+            ("dhcp_disable", {}),
+            ("dhcp_options_edit", {}),
+            ("option_def_add", {}),
+            ("option_def_delete", {"code": 222, "space": "example-space"}),
         )
         for family in (4, 6):
             self.server.dhcp4, self.server.dhcp6 = family != 4, family != 6
             self.server.save()
             for name, arguments in routes:
-                url = reverse(
-                    "plugins:netbox_kea:server_" + name.format(family=family),
-                    kwargs={"pk": self.server.pk, **arguments},
-                )
+                url = family_url("server_" + name, family, pk=self.server.pk, **arguments)
                 for method in ("get", "post"):
                     with self.subTest(family=family, route=name, method=method), stub_kea({}) as kea:
                         response = getattr(self.client, method)(url)
@@ -626,45 +631,41 @@ class TestWorkspaceTabRow(_ViewTestBase):
         }
         pk = self.server.pk
         rows = {
-            "Subnets": (("Subnets", "server_subnets6"), ("Shared Networks", "server_shared_networks6")),
+            "Subnets": (("Subnets", "server_subnets", 6), ("Shared Networks", "server_shared_networks", 6)),
             "Configuration": (
-                ("Option Definitions", "server_option_def6"),
-                ("Server Options", "server_dhcp6_options_edit"),
+                ("Option Definitions", "server_option_def", 6),
+                ("Server Options", "server_dhcp_options_edit", 6),
             ),
         }
         for links in rows.values():
-            for _, route in links:
+            for _, route, family in links:
                 with self.subTest(route=route):
                     with stub_kea(replies):
-                        response = self.client.get(reverse(f"plugins:netbox_kea:{route}", args=[pk]))
+                        response = self.client.get(_url(route, pk, family))
                     self.assertEqual(response.status_code, 200)
                     row = BeautifulSoup(response.content, "html.parser").select_one("ul.nav-tabs.kea-tabs.mb-3")
                     shown = [(a.get_text(strip=True), urlsplit(a["href"]).path) for a in row.select("a.nav-link")]
-                    self.assertEqual(
-                        shown, [(label, reverse(f"plugins:netbox_kea:{name}", args=[pk])) for label, name in links]
-                    )
+                    self.assertEqual(shown, [(label, _url(name, pk, version)) for label, name, version in links])
                     current = row.select('[aria-current="page"]')
-                    self.assertEqual(
-                        [a["href"].split("?")[0] for a in current], [reverse(f"plugins:netbox_kea:{route}", args=[pk])]
-                    )
+                    self.assertEqual([a["href"].split("?")[0] for a in current], [_url(route, pk, family)])
 
     def test_every_tab_row_carries_the_active_tab_style_and_marks_one_tab_current(self):
         routes = (
-            ("server", "Overview"),
-            ("server_subnets4", "Subnets"),
-            ("server_shared_networks4", "Shared Networks"),
-            ("server_dhcp4_options_edit", "Server Options"),
-            ("server_option_def4", "Option Definitions"),
-            ("server_journal", "Journal"),
-            ("server_edit", "Edit"),
+            ("server", None, "Overview"),
+            ("server_subnets", 4, "Subnets"),
+            ("server_shared_networks", 4, "Shared Networks"),
+            ("server_dhcp_options_edit", 4, "Server Options"),
+            ("server_option_def", 4, "Option Definitions"),
+            ("server_journal", None, "Journal"),
+            ("server_edit", None, "Edit"),
         )
         replies = {
             **_catalogue_responses_for_subnets(4, []),
             "stat-lease4-get": {"result": 2, "text": "unknown command"},
         }
-        for route, label in routes:
+        for route, family, label in routes:
             with self.subTest(route=route), stub_kea(replies):
-                response = self.client.get(reverse(f"plugins:netbox_kea:{route}", args=[self.server.pk]))
+                response = self.client.get(_url(route, self.server.pk, family))
                 self.assertEqual(response.status_code, 200)
                 rows = BeautifulSoup(response.content, "html.parser").select(".nav-tabs")
                 self.assertTrue(rows)

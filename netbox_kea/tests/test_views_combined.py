@@ -35,7 +35,7 @@ from .kea_stub import (
     queued,
     stub_kea,
 )
-from .utils import _make_db_server, _ViewTestBase, with_display_cache_config, with_kea_client_config
+from .utils import _make_db_server, _ViewTestBase, family_url, with_display_cache_config, with_kea_client_config
 
 # ---------------------------------------------------------------------------
 # Lease Server chooser
@@ -205,8 +205,11 @@ class TestServerScope(_ViewTestBase):
         self.client.force_login(self.viewer)
 
     def _url(self, section="subnets", family=4):
-        name = "combined" if section == "overview" else f"combined_{section}{family}"
-        return reverse(f"plugins:netbox_kea:{name}")
+        return (
+            reverse("plugins:netbox_kea:combined")
+            if section == "overview"
+            else family_url(f"combined_{section}", family)
+        )
 
     def test_lease_chooser_lists_only_permitted_selected_servers_with_the_family(self):
         for family in (4, 6):
@@ -448,9 +451,7 @@ class TestServerScope(_ViewTestBase):
                     response = self.client.get(self._url(section, family), {"server": self.server.pk, **filters})
                     self.assertEqual(response.status_code, 302)
                     location = urlsplit(response["Location"])
-                    self.assertEqual(
-                        location.path, reverse(f"plugins:netbox_kea:server_{section}{family}", args=[self.server.pk])
-                    )
+                    self.assertEqual(location.path, family_url(f"server_{section}", family, pk=self.server.pk))
                     self.assertEqual(
                         parse_qs(location.query), {key: [filters[key]] for key in expected_filters[section]}
                     )
@@ -460,7 +461,7 @@ class TestServerScope(_ViewTestBase):
         response = self.client.get(self._url(), {"server": [str(self.server.pk), f"0{self.server.pk}"]})
         self.assertRedirects(
             response,
-            reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]),
+            reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4}),
             fetch_redirect_response=False,
         )
 
@@ -481,13 +482,13 @@ class TestServerScope(_ViewTestBase):
                     response = self.client.get(
                         self._url(section, family), {"server": self.server.pk}, HTTP_HX_REQUEST="true"
                     )
-                    target = "server" if section == "overview" else f"server_{section}{family}"
-                    self.assertEqual(response.status_code, 200)
-                    self.assertEqual(
-                        response["HX-Redirect"],
-                        reverse(f"plugins:netbox_kea:{target}", args=[self.server.pk])
-                        + (f"?family={family}" if section == "overview" else ""),
+                    target = (
+                        reverse("plugins:netbox_kea:server", args=[self.server.pk]) + f"?family={family}"
+                        if section == "overview"
+                        else family_url(f"server_{section}", family, pk=self.server.pk)
                     )
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response["HX-Redirect"], target)
                     self.assertEqual(response.content, b"")
                     self.assertEqual(kea.commands(), [])
 
@@ -596,7 +597,7 @@ class TestServerScope(_ViewTestBase):
                     self.assertContains(response, "Protocol not enabled")
                     self.assertEqual(
                         response.wsgi_request.path,
-                        reverse(f"plugins:netbox_kea:server_{section}{family}", args=[self.server.pk]),
+                        family_url(f"server_{section}", family, pk=self.server.pk),
                     )
                     self.assertEqual(kea.commands(), [])
 
@@ -649,7 +650,9 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
         self.assertEqual(response.status_code, 200)
         page = BeautifulSoup(response.content, "html.parser")
         for action in ("options_edit", "wipe_leases"):
-            url = reverse(f"plugins:netbox_kea:server_subnet4_{action}", args=[self.server.pk, 7])
+            url = reverse(
+                f"plugins:netbox_kea:server_subnet_{action}", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 7}
+            )
             links = [link for link in page.select("td a") if urlsplit(link["href"]).path == url]
             self.assertEqual(len(links), 1, f"Missing {action} action")
             self.assertEqual(
@@ -664,7 +667,9 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
         self.assertContains(response, "198.18.0.0/24")
         paths = {urlsplit(link["href"]).path for link in BeautifulSoup(response.content, "html.parser").select("td a")}
         for action in ("options_edit", "wipe_leases"):
-            url = reverse(f"plugins:netbox_kea:server_subnet4_{action}", args=[self.server.pk, 7])
+            url = reverse(
+                f"plugins:netbox_kea:server_subnet_{action}", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 7}
+            )
             self.assertNotIn(url, paths)
 
     def test_readonly_subnet_has_no_mutation_actions(self):
@@ -673,7 +678,9 @@ class TestCombinedSubnetDiagnostics(_ViewTestBase):
         self.assertContains(response, "198.18.0.0/24")
         paths = {urlsplit(link["href"]).path for link in BeautifulSoup(response.content, "html.parser").select("td a")}
         for action in ("options_edit", "wipe_leases"):
-            url = reverse(f"plugins:netbox_kea:server_subnet4_{action}", args=[self.server.pk, 7])
+            url = reverse(
+                f"plugins:netbox_kea:server_subnet_{action}", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 7}
+            )
             self.assertNotIn(url, paths)
 
     def test_complete_catalogue_is_reused_for_unchanged_requests(self):

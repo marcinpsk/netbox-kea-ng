@@ -37,7 +37,7 @@ from ._base import (
 )
 from .notices import notice, show_notices
 from .subnets import _NO_SUBNET_CIDR, _SUBNETS_TAB, _displayed_subnet
-from .workspace import WORKSPACE_SECTIONS, ServerFamilyMixin, subsection_nav
+from .workspace import WORKSPACE_SECTIONS, FamilyRouteMixin, ServerFamilyMixin, subsection_nav
 
 # One Config tab for both sections and both families; ServerOptionDef4View owns it.
 _CONFIG_TAB = OptionalViewTab(label="Config", weight=1050, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
@@ -69,12 +69,14 @@ def _run_option_change(
     return True
 
 
-class _BaseSubnetOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
-    """GET/POST view for editing the DHCP Options of one Subnet."""
+class ServerSubnetOptionsEditView(
+    FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View
+):
+    """Edit the DHCP Options of one Subnet."""
 
     workspace_section = "subnets"
 
-    dhcp_version: Family = 4
+    tab = _SUBNETS_TAB
 
     def _get_subnet_from_config(
         self, request: HttpRequest, server: Server, subnet_id: int
@@ -88,12 +90,13 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
         return matches[0]
 
     def get(self, request, pk: int, subnet_id: int):
+        """Render the DHCP Option form of the Subnet."""
         server = get_object_or_404(
             Server.objects.restrict(request.user, "change"),
             pk=pk,
         )
         return_url = _safe_return_url(
-            request, reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
+            request, reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": pk, "family": self.dhcp_version})
         )
         catalogue, verified = _displayed_subnet(request, server, self.dhcp_version, subnet_id)
         if verified is None:
@@ -140,12 +143,13 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
         )
 
     def post(self, request, pk: int, subnet_id: int):
+        """Write the DHCP Options of the Subnet."""
         server = get_object_or_404(
             Server.objects.restrict(request.user, "change"),
             pk=pk,
         )
         return_url = _safe_return_url(
-            request, reverse(f"plugins:netbox_kea:server_subnets{self.dhcp_version}", args=[pk])
+            request, reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": pk, "family": self.dhcp_version})
         )
         formset = forms.DHCPOptionRowFormSet(request.POST)
         form = forms.SubnetConfirmForm(request.POST, family=self.dhcp_version)
@@ -163,20 +167,6 @@ class _BaseSubnetOptionsEditView(_KeaChangeMixin, ServerFamilyMixin, Conditional
         ):
             return self._render(request, server, subnet_id, cidr, formset, form, return_url)
         return redirect(return_url)
-
-
-class ServerSubnet4OptionsEditView(_BaseSubnetOptionsEditView):
-    """Edit DHCP Options for a DHCPv4 Subnet."""
-
-    dhcp_version = 4
-    tab = _SUBNETS_TAB
-
-
-class ServerSubnet6OptionsEditView(_BaseSubnetOptionsEditView):
-    """Edit DHCP Options for a DHCPv6 Subnet."""
-
-    dhcp_version = 6
-    tab = _SUBNETS_TAB
 
 
 # ─────────────────────────────────────────────────────────────────────────────

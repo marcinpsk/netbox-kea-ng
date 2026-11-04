@@ -785,8 +785,7 @@ class TestCombinedSubnets4View(_CombinedViewBase):
             )
             response = self.client.get(url)
         edit_url = reverse(
-            "plugins:netbox_kea:server_subnet4_edit",
-            args=[self.v4_server.pk, 7],
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.v4_server.pk, "family": 4, "subnet_id": 7}
         )
         self.assertContains(response, "198.18.7.0/24")
         self.assertNotContains(response, edit_url)

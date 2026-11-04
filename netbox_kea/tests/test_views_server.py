@@ -725,7 +725,9 @@ class TestKeaChangeMixinPermission(_ViewTestBase):
         """User with no permissions gets 404 on a mutation view (pk lookup fails restrict check)."""
         no_perm = User.objects.create_user(username="noperm_mixin", password="pass")
         self.client.force_login(no_perm)
-        url = reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 42])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_pool_add", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
+        )
         response = self.client.get(url)
         self.assertEqual(response.status_code, 404)
 

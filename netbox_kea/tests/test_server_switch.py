@@ -152,7 +152,10 @@ class TestServerSwitch(_ViewTestBase):
         target = _make_db_server(name="second-server")
         with stub_kea({}):
             source = self.client.get(
-                reverse("plugins:netbox_kea:server_shared_network6_delete", args=[self.server.pk, "clients"])
+                reverse(
+                    "plugins:netbox_kea:server_shared_network_delete",
+                    kwargs={"pk": self.server.pk, "family": 6, "network_name": "clients"},
+                )
             )
         page = BeautifulSoup(source.content, "html.parser")
         link = next(
@@ -161,13 +164,39 @@ class TestServerSwitch(_ViewTestBase):
         with stub_kea({}) as kea:
             switched = self.client.get(link["href"])
         self.assertEqual(
-            urlsplit(switched.url).path, reverse("plugins:netbox_kea:server_shared_networks6", args=[target.pk])
+            urlsplit(switched.url).path,
+            reverse("plugins:netbox_kea:server_shared_networks", kwargs={"pk": target.pk, "family": 6}),
         )
         self.assertEqual(parse_qs(urlsplit(switched.url).query), {})
         self.assertTrue(
             any("Record selection dropped" in str(message) for message in get_messages(switched.wsgi_request))
         )
         self.assertEqual(kea.commands(), [])
+
+    def test_switching_from_a_family_page_does_not_report_a_record_selection(self):
+        target = _make_db_server(name="second-server")
+        replies = {
+            **_catalogue_responses_for_subnets(6, []),
+            "stat-lease6-get": {"result": 2, "text": "unknown command"},
+        }
+        with stub_kea(replies):
+            source = self.client.get(
+                reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 6})
+            )
+        page = BeautifulSoup(source.content, "html.parser")
+        link = next(
+            node for node in page.select('nav[aria-label="Switch Server"] a') if node.text.strip() == target.name
+        )
+        self.assertNotIn("record_selection", parse_qs(urlsplit(link["href"]).query))
+        with stub_kea({}):
+            switched = self.client.get(link["href"])
+        self.assertEqual(
+            urlsplit(switched.url).path,
+            reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": target.pk, "family": 6}),
+        )
+        self.assertFalse(
+            any("Record selection dropped" in str(message) for message in get_messages(switched.wsgi_request))
+        )
 
     def test_permitted_reservation_filters_and_previous_selection_survive_switching(self):
         target = _make_db_server(name="second-server", ca_url="http://target.example.invalid/")

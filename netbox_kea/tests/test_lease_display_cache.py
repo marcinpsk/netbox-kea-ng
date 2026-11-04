@@ -681,7 +681,7 @@ class StatusAndUtilizationCacheTest(_ViewTestBase):
 
     def test_a_second_subnets_render_within_the_ttl_sends_no_utilization_read(self):
         stats = _stats
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_catalogue_responses(4, 20, _CIDR), "stat-lease4-get": stats(25)}) as kea:
             first = self.client.get(url)
         self.assertEqual(kea.commands().count("stat-lease4-get"), 1)
@@ -697,7 +697,7 @@ class StatusAndUtilizationCacheTest(_ViewTestBase):
     def test_a_subnets_export_reads_utilization_live(self):
         other = _make_db_server(name="test-kea-other", ca_url="https://kea-other.example.com")
         pages = (
-            (reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]), {}, 1),
+            (reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4}), {}, 1),
             (reverse("plugins:netbox_kea:combined_subnets4"), {"server": [self.server.pk, other.pk]}, 2),
         )
         for url, query, servers in pages:

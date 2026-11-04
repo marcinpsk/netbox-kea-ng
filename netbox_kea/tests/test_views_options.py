@@ -152,12 +152,12 @@ def _written_config(kea):
 
 
 class TestSubnetOptionsView(_ViewTestBase):
-    """Tests for ServerSubnet4/6OptionsEditView (GET prefill + POST update)."""
+    """Tests for ServerSubnetOptionsEditView (GET prefill + POST update)."""
 
     def _url(self, version=4, subnet_id=42):
         return reverse(
-            f"plugins:netbox_kea:server_subnet{version}_options_edit",
-            args=[self.server.pk, subnet_id],
+            "plugins:netbox_kea:server_subnet_options_edit",
+            kwargs={"pk": self.server.pk, "family": version, "subnet_id": subnet_id},
         )
 
     def _post_data(self, name="routers", data="10.0.0.1", always_send="", delete="", cidr="10.0.0.0/24"):
@@ -174,12 +174,12 @@ class TestSubnetOptionsView(_ViewTestBase):
         }
 
     def test_url_registered_v4(self):
-        """URL server_subnet4_options_edit is registered."""
+        """The DHCPv4 path of server_subnet_options_edit is registered."""
         url = self._url(version=4)
         self.assertIn("options", url)
 
     def test_url_registered_v6(self):
-        """URL server_subnet6_options_edit is registered."""
+        """The DHCPv6 path of server_subnet_options_edit is registered."""
         url = self._url(version=6)
         self.assertIn("options", url)
 
@@ -235,7 +235,9 @@ class TestSubnetOptionsView(_ViewTestBase):
             response = self.client.get(self._url())
 
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+        self.assertEqual(
+            response.url, reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
+        )
         self.assertIn(
             (
                 django_messages.ERROR,
@@ -933,10 +935,13 @@ class TestServerOptionDef6DeleteView(_ViewTestBase):
 
 
 class TestSubnetOptionsPostInvalid(_ViewTestBase):
-    """_BaseSubnetOptionsEditView POST: formset invalid must re-render (200)."""
+    """ServerSubnetOptionsEditView POST: formset invalid must re-render (200)."""
 
     def _url(self, subnet_id=42):
-        return reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, subnet_id])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_options_edit",
+            kwargs={"pk": self.server.pk, "family": 4, "subnet_id": subnet_id},
+        )
 
     def test_post_invalid_formset_rerenders(self):
         """POST with an invalid formset must re-render 200 without mutating."""
@@ -1137,7 +1142,10 @@ class TestSubnetOptionsSharedNetwork(_ViewTestBase):
     """Subnet found inside a shared-network + invalid-POST re-render."""
 
     def _url(self, subnet_id=99):
-        return reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, subnet_id])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_options_edit",
+            kwargs={"pk": self.server.pk, "family": 4, "subnet_id": subnet_id},
+        )
 
     _SUBNET = {"id": 99, "subnet": "10.99.0.0/24", "option-data": []}
 
@@ -1185,7 +1193,9 @@ class TestSubnetOptionsGetClientError(_ViewTestBase):
     def test_get_client_value_error_redirects(self):
         """A get_client ValueError (cert-without-key) redirects with a generic message."""
         bad = _make_db_server(name="badtls-subnet", client_cert_path="/nonexistent/cert.pem")
-        url = reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[bad.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_options_edit", kwargs={"pk": bad.pk, "family": 4, "subnet_id": 1}
+        )
         with stub_kea({}):
             response = self.client.get(url, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -1632,7 +1642,10 @@ class TestConfigurationOptionIdentity(_ViewTestBase):
 
     def _url(self, scope):
         if scope == "subnet":
-            return reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 42])
+            return reverse(
+                "plugins:netbox_kea:server_subnet_options_edit",
+                kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42},
+            )
         return reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk])
 
     def _config(self, scope, options):
@@ -1754,7 +1767,10 @@ class TestOptionChangeMessages(_ReadModifyWriteMessages):
     def test_subnet_options(self):
         responses = {**_identities(_EMPTY_OPTIONS_CONFIG_GET), "config-get": _EMPTY_OPTIONS_CONFIG_GET}
         self._assert_one_message_per_case(
-            reverse("plugins:netbox_kea:server_subnet4_options_edit", args=[self.server.pk, 42]),
+            reverse(
+                "plugins:netbox_kea:server_subnet_options_edit",
+                kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42},
+            ),
             {**self._ROW, "subnet_cidr": "10.0.0.0/24"},
             responses,
             "Subnet 42 options updated.",
