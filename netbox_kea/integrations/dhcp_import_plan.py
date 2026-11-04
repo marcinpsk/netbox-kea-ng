@@ -751,6 +751,20 @@ def mapped_kinds(family: int) -> tuple[Kind, ...]:
 
 
 @dataclass(frozen=True)
+class KindSplit(Generic[T]):
+    """The mapped rows of one kind, by Kea source, split by one observation of the kind."""
+
+    # The rows whose source the read reports.
+    observed: dict[MappingSource, T]
+    # The rows whose source the read does not report, and that no gap covers.
+    stale: dict[MappingSource, T]
+    # The rows whose source the read does not report, and that a gap covers.
+    not_judged: dict[MappingSource, T]
+    # The gaps that cover the rows of not_judged, each once, in row order.
+    gaps: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class KindObservation:
     """The Kea sources of one mapped kind that a read reports, and why the observation is Incomplete.
 
@@ -776,6 +790,22 @@ class KindObservation:
         if self.option_gaps is None:
             return (self.incomplete,) if self.incomplete else ()
         return self.option_gaps[OptionKey.from_source(source, family).parent.kind]
+
+    def judge(self, rows: Mapping[MappingSource, T], family: int) -> KindSplit[T]:
+        """Split the mapped *rows* of the kind, by Kea source, into observed, stale and not judged rows of *family*."""
+        observed: dict[MappingSource, T] = {}
+        stale: dict[MappingSource, T] = {}
+        not_judged: dict[MappingSource, T] = {}
+        gaps: list[str] = []
+        for source, row in rows.items():
+            if source in self.sources:
+                observed[source] = row
+            elif gap := self.gap(source, family):
+                not_judged[source] = row
+                gaps.extend(gap)
+            else:
+                stale[source] = row
+        return KindSplit(observed, stale, not_judged, tuple(dict.fromkeys(gaps)))
 
 
 def _configuration_gaps(plan: FamilyPlan) -> dict[Kind, list[str]]:
