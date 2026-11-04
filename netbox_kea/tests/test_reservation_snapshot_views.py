@@ -43,7 +43,7 @@ def _return_url(url: str) -> list[str]:
 
 class TestPerServerReservationSnapshots(_ViewTestBase):
     def _url(self, version: int = 4) -> str:
-        return reverse(f"plugins:netbox_kea:server_reservations{version}", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": version})
 
     def _searched_row(self, url: str, query: dict) -> tuple[dict, str]:
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
@@ -95,7 +95,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         with stub_kea(responses):
             page = self.client.get(self._url(), {"q": "searched"})
         search = page.wsgi_request.get_full_path()
-        add = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        add = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4})
         self.assertContains(page, f'href="{add}?{urlencode({"return_url": search})}"')
 
     def test_a_refused_reservation_read_keeps_the_add_button(self):
@@ -828,7 +828,7 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
                 "reservation-get": reservation_responses,
             }
         )
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(responses):
             return self.client.get(url, {"by": "ip", "q": "198.18.0.20"}, HTTP_HX_REQUEST="true")
 
@@ -913,7 +913,7 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
                 ),
             }
         )
-        url = reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6})
         with stub_kea(responses):
             response = self.client.get(url, {"by": "ip", "q": "2001:db8:20::20"}, HTTP_HX_REQUEST="true")
 
@@ -1056,7 +1056,7 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
             "lease4-get": {"result": 0, "arguments": lease or self.lease},
             "reservation-get": reservation_get,
         }
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(responses):
             return self.client.get(url, {"by": "ip", "q": "198.18.0.20"}, HTTP_HX_REQUEST="true")
 
@@ -1072,7 +1072,7 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
             return {"result": 3, "text": "Lease not found."}
 
         responses = {**catalogue, "lease6-get": lease6_get, "reservation-get": reservation_get}
-        url = reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6})
         with stub_kea(responses):
             return self.client.get(url, {"by": "ip", "q": "2001:db8:100::"}, HTTP_HX_REQUEST="true")
 
@@ -1222,7 +1222,7 @@ class TestReservationIgnoredBadgeOnLeases(_ViewTestBase):
             "lease4-get": {"result": 0, "arguments": self.lease},
             "reservation-get": _hosts(host),
         }
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(responses):
             return self.client.get(url, {"by": "ip", "q": "198.18.0.20"}, HTTP_HX_REQUEST="true")
 
@@ -1291,7 +1291,7 @@ class TestWidenedReservationPage(_ViewTestBase):
         responses["reservation-get-page"] = _res_page([host])
         no_leases = {"result": 0, "arguments": {"leases": []}}
         responses.update({f"lease{family}-get-by-state": no_leases, f"lease{family}-get-all": no_leases})
-        url = reverse(f"plugins:netbox_kea:server_reservations{family}", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": family})
         with stub_kea(responses):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)

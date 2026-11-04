@@ -39,7 +39,7 @@ class TestReservationOwnershipBadge(_ViewTestBase):
 
     def _urls(self) -> dict[str, str]:
         return {
-            "per-server": reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]),
+            "per-server": reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4}),
             # A second selected Server keeps the combined page from redirecting to the Server tab.
             "combined": reverse("plugins:netbox_kea:combined_reservations4")
             + f"?server={self.server.pk}&server={self.v6_only.pk}",
@@ -74,7 +74,9 @@ class TestReservationOwnershipBadge(_ViewTestBase):
         url = self._urls()["per-server"]
         self.assertContains(self._get(url), "Not Synchronized 0/1")
 
-        sync = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
+        sync = reverse(
+            "plugins:netbox_kea:server_reservation_sync", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/24"), "reservation-get": _res_get(_host(5))}):
             response = self.client.post(f"{sync}?identifier_type=hw-address&identifier=aa%3Abb%3Acc%3A00%3A00%3A05")
         self.assertContains(response, "Synchronized 1/1")
@@ -91,7 +93,9 @@ class TestReservationOwnershipBadge(_ViewTestBase):
         other = _make_db_server(name="other-kea")
         ip = IPAddress.objects.create(address="10.0.0.5/24", status="reserved", description="[kea-sync: reservation]")
         ownership_link(ip, other)
-        sync = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
+        sync = reverse(
+            "plugins:netbox_kea:server_reservation_sync", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         # The Subnet gives prefix length 25, and the live link of the other Server stored 24.
         with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/25"), "reservation-get": _res_get(_host(5))}):
             reply = self.client.post(f"{sync}?identifier_type=hw-address&identifier=aa%3Abb%3Acc%3A00%3A00%3A05")
@@ -163,7 +167,7 @@ class TestReservationOwnershipBadge(_ViewTestBase):
                     address=f"{host['ip-address']}/24", vrf=server.sync_vrf, description="[kea-sync: reservation]"
                 )
                 ownership_link(ip, server)
-            url = reverse("plugins:netbox_kea:server_reservations4", args=[server.pk])
+            url = reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": server.pk, "family": 4})
             with stub_kea(_responses(*hosts)), CaptureQueriesContext(connection) as queries:
                 response = self.client.get(url)
             self.assertContains(response, "Synchronized 1/1", count=count)
@@ -231,7 +235,9 @@ class TestOwnershipReadFailures(_ViewTestBase):
 
         from django.db import DatabaseError
 
-        sync = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
+        sync = reverse(
+            "plugins:netbox_kea:server_reservation_sync", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         with (
             stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/24"), "reservation-get": _res_get(_host(5))}),
             patch(
@@ -255,6 +261,8 @@ class TestOwnershipReadFailures(_ViewTestBase):
             "lease6-get-all": _NO_LEASES,
         }
         with stub_kea(responses):
-            response = self.client.get(reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk]))
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 6})
+            )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(list(response.context["table"].rows), [])

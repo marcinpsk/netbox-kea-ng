@@ -55,7 +55,8 @@ class TestLeaseServerChooser(_ViewTestBase):
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(kea.commands(), [])
                     self.assertContains(
-                        response, reverse(f"plugins:netbox_kea:server_leases{family}", args=[self.server.pk])
+                        response,
+                        reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": family}),
                     )
 
     def test_search_state_is_explained_and_carried_to_each_server(self):
@@ -80,7 +81,8 @@ class TestLeaseServerChooser(_ViewTestBase):
                     for server, link in zip((second, self.server), links, strict=True):
                         target = urlsplit(link["href"])
                         self.assertEqual(
-                            target.path, reverse(f"plugins:netbox_kea:server_leases{family}", args=[server.pk])
+                            target.path,
+                            reverse("plugins:netbox_kea:server_leases", kwargs={"pk": server.pk, "family": family}),
                         )
                         query = parse_qs(target.query)
                         self.assertEqual(query.pop("return_url"), [response.wsgi_request.get_full_path()])
@@ -101,7 +103,8 @@ class TestLeaseServerChooser(_ViewTestBase):
                     self.assertEqual(response.status_code, 200 if htmx else 302)
                     target = urlsplit(response["HX-Redirect" if htmx else "Location"])
                     self.assertEqual(
-                        target.path, reverse(f"plugins:netbox_kea:server_leases{family}", args=[self.server.pk])
+                        target.path,
+                        reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": family}),
                     )
                     self.assertEqual(parse_qs(target.query), {key: [value] for key, value in search.items()})
                     self.assertEqual(kea.commands(), [])
@@ -239,7 +242,10 @@ class TestServerScope(_ViewTestBase):
                     )
                     self.assertEqual(
                         [urlsplit(link["href"]).path for link in links],
-                        [reverse(f"plugins:netbox_kea:server_leases{family}", args=[server.pk]) for server in expected],
+                        [
+                            reverse("plugins:netbox_kea:server_leases", kwargs={"pk": server.pk, "family": family})
+                            for server in expected
+                        ],
                     )
                     if not expected:
                         self.assertContains(response, "Invalid Server selection")
@@ -381,7 +387,9 @@ class TestServerScope(_ViewTestBase):
         response = self._apply(page, checked={self.server.pk})
         self.assertEqual(response.status_code, 302)
         location = urlsplit(response["Location"])
-        self.assertEqual(location.path, reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]))
+        self.assertEqual(
+            location.path, reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
+        )
         self.assertEqual(parse_qs(location.query), {"q": ["needle"], "by": ["hostname"], "state": ["0"]})
 
     def test_show_all_servers_in_the_selector_keeps_the_filters(self):
@@ -1078,7 +1086,9 @@ class TestCombinedReservationSyncControl(_ViewTestBase):
             response = self.client.get(self._url(4))
 
         body = response.content.decode()
-        sync_url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
+        sync_url = reverse(
+            "plugins:netbox_kea:server_reservation_sync", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         self.assertIn("Not Synchronized", body)
         self.assertIn(sync_url, body)
         self.assertIn("Sync all", body)

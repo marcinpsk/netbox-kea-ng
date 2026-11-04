@@ -256,8 +256,8 @@ class SubnetTable(GenericTable):
             record.get("record_url")
             or (
                 reverse(
-                    f"plugins:netbox_kea:server_leases{record['dhcp_version']}",
-                    args=[record["server_pk"]],
+                    "plugins:netbox_kea:server_leases",
+                    kwargs={"pk": record["server_pk"], "family": record["dhcp_version"]},
                 )
                 + "?"
                 + urlencode({"by": "subnet", "q": record["subnet"]})

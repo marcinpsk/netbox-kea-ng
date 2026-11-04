@@ -99,9 +99,9 @@ WORKSPACE_SECTIONS = {
         WorkspaceSection(
             "leases",
             "Leases",
-            "server_leases{family}",
+            "server_leases",
             "combined_leases{family}",
-            "leases4",
+            "leases_tab",
             {4: forms.Leases4SearchForm, 6: forms.Leases6SearchForm},
             subnet_search=_lease_subnet_search,
             paired_fields=frozenset(("q", "by")),
@@ -125,9 +125,9 @@ WORKSPACE_SECTIONS = {
         WorkspaceSection(
             "reservations",
             "Reservations",
-            "server_reservations{family}",
+            "server_reservations",
             "combined_reservations{family}",
-            "reservations4",
+            "reservations_tab",
             {4: forms.ReservationSearchForm, 6: forms.ReservationSearchForm},
             subnet_search=_subnet_id_search,
         ),

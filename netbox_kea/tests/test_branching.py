@@ -914,7 +914,7 @@ class BranchPageTest(_BranchReadTestCase):
 
     def test_the_ipaddress_panel_lists_mains_servers_without_reservation_links(self):
         page = reverse("ipam:ipaddress", args=[self.ip.pk])
-        add = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        add = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4})
 
         on_main = self.client.get(page)
         self.client.cookies[COOKIE_NAME] = self.branch.schema_id

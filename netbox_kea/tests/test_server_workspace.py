@@ -80,7 +80,9 @@ class TestServerWorkspace(_ViewTestBase):
 
     def test_native_object_tab_links_keep_family_through_the_leases_return_link(self):
         with stub_kea(_catalogue_responses_for_subnets(6, [])):
-            response = self.client.get(reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk]))
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6})
+            )
         page = BeautifulSoup(response.content, "html.parser")
         tabs = page.select('[aria-label="Server object tabs"] a')
         self.assertTrue(tabs)
@@ -98,7 +100,7 @@ class TestServerWorkspace(_ViewTestBase):
                     )
                     self.assertEqual(
                         urlsplit(leases["href"]).path,
-                        reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk]),
+                        reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6}),
                     )
                     self.assertEqual(kea.commands(), [])
                 with stub_kea(_catalogue_responses_for_subnets(6, [])):
@@ -129,7 +131,7 @@ class TestServerWorkspace(_ViewTestBase):
         }
         with stub_kea(responses):
             response = self.client.get(
-                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4}),
                 {"q": "printer", "by": "hostname"},
                 HTTP_HX_REQUEST="true",
             )
@@ -199,7 +201,7 @@ class TestServerWorkspace(_ViewTestBase):
             "preferred_lft": 1800,
             "type": "IA_NA",
         }
-        url = reverse("plugins:netbox_kea:server_lease6_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_lease_add", kwargs={"pk": self.server.pk, "family": 6})
         daemon = LeaseDaemon(6, subnet_id=7)
         responses = {
             **_catalogue_responses_for_subnets(6, [{"id": 7, "subnet": "2001:db8::/64"}]),
@@ -253,7 +255,9 @@ class TestServerWorkspace(_ViewTestBase):
 
     def test_native_edit_and_delete_links_keep_the_family_of_the_server_section(self):
         with stub_kea(_catalogue_responses_for_subnets(6, [])):
-            response = self.client.get(reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk]))
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6})
+            )
         page = BeautifulSoup(response.content, "html.parser")
         for action in ("edit", "delete"):
             path = reverse(f"plugins:netbox_kea:server_{action}", args=[self.server.pk])
@@ -290,15 +294,13 @@ class TestServerWorkspace(_ViewTestBase):
             permission.object_types.add(ContentType.objects.get_for_model(Server))
             permission.users.add(self.user)
         self.client.force_login(self.user)
-        for route, method in (("server_leases6", "get"), ("server_lease6_add", "get"), ("server_lease6_add", "post")):
+        for route, method in (("server_leases", "get"), ("server_lease_add", "get"), ("server_lease_add", "post")):
             with self.subTest(route=route, method=method), stub_kea({}) as kea:
-                forbidden = getattr(self.client, method)(reverse(f"plugins:netbox_kea:{route}", args=[hidden.pk]))
+                forbidden = getattr(self.client, method)(family_url(route, 6, pk=hidden.pk))
                 self.assertEqual(forbidden.status_code, 404)
                 self.assertNotIn(hidden.name, forbidden.content.decode())
                 if "add" in route:
-                    refusal = getattr(self.client, method)(
-                        reverse(f"plugins:netbox_kea:{route}", args=[self.server.pk])
-                    )
+                    refusal = getattr(self.client, method)(family_url(route, 6, pk=self.server.pk))
                     self.assertEqual(refusal.status_code, 403)
                     self.assertNotIn("Protocol not enabled", refusal.content.decode())
                 self.assertEqual(kea.commands(), [])
@@ -346,7 +348,7 @@ class TestServerWorkspace(_ViewTestBase):
     def test_family_switch_preserves_lease_filters_and_drops_cursor_and_exports(self):
         with stub_kea(_catalogue_responses_for_subnets(4, [])):
             response = self.client.get(
-                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4}),
                 {"q": "printer", "by": "hostname", "state": "0", "page": "2", "per_page": "25"},
             )
         page = BeautifulSoup(response.content, "html.parser")
@@ -367,17 +369,17 @@ class TestServerWorkspace(_ViewTestBase):
         pk = self.server.pk
         cases = (
             (
-                reverse("plugins:netbox_kea:server_leases4", args=[pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": pk, "family": 4}),
                 {"q": "7", "by": "subnet_id", "state": "0", "per_page": "25"},
                 {"state": ["0"], "per_page": ["25"]},
             ),
             (
-                reverse("plugins:netbox_kea:server_leases4", args=[pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": pk, "family": 4}),
                 {"q": "198.18.0.0/24", "by": "subnet", "state": "0"},
                 {"state": ["0"]},
             ),
             (
-                reverse("plugins:netbox_kea:server_reservations4", args=[pk]),
+                reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": pk, "family": 4}),
                 {"q": "printer", "subnet_id": "7", "scope": "in-subnet"},
                 {"q": ["printer"], "scope": ["in-subnet"]},
             ),
@@ -420,17 +422,17 @@ class TestServerWorkspace(_ViewTestBase):
         """A hardware address, client ID or DUID search exists in one family only, and an address has one family."""
         pk = self.server.pk
         cases = (
-            (4, "server_leases4", {"by": "hw", "q": "02:00:00:00:00:01", "state": "0"}),
-            (4, "server_leases4", {"by": "client_id", "q": "01:02:03", "state": "0"}),
-            (4, "server_leases4", {"by": "ip", "q": "192.0.2.10", "state": "0"}),
-            (6, "server_leases6", {"by": "duid", "q": "00:01:02:03:04:05:06:07", "state": "0"}),
-            (6, "server_leases6", {"by": "ip", "q": "2001:db8::10", "state": "0"}),
-            (4, "combined_leases4", {"by": "hw", "q": "02:00:00:00:00:01", "state": "0"}),
-            (6, "combined_leases6", {"by": "duid", "q": "00:01:02:03:04:05:06:07", "state": "0"}),
+            (4, "server_leases", {"by": "hw", "q": "02:00:00:00:00:01", "state": "0"}),
+            (4, "server_leases", {"by": "client_id", "q": "01:02:03", "state": "0"}),
+            (4, "server_leases", {"by": "ip", "q": "192.0.2.10", "state": "0"}),
+            (6, "server_leases", {"by": "duid", "q": "00:01:02:03:04:05:06:07", "state": "0"}),
+            (6, "server_leases", {"by": "ip", "q": "2001:db8::10", "state": "0"}),
+            (4, "combined_leases", {"by": "hw", "q": "02:00:00:00:00:01", "state": "0"}),
+            (6, "combined_leases", {"by": "duid", "q": "00:01:02:03:04:05:06:07", "state": "0"}),
         )
         for family, route, query in cases:
-            with self.subTest(route=route, query=query):
-                url = reverse(f"plugins:netbox_kea:{route}", args=[pk] if route.startswith("server") else [])
+            with self.subTest(route=route, family=family, query=query):
+                url = family_url(route, family, pk=pk) if route.startswith("server") else family_url(route, family)
                 with stub_kea(_catalogue_responses_for_subnets(family, [])):
                     response = self.client.get(url, query)
                 self.assertEqual(response.status_code, 200)
@@ -442,7 +444,9 @@ class TestServerWorkspace(_ViewTestBase):
     def test_family_switch_keeps_a_lease_search_that_both_families_accept(self):
         query = {"by": "hostname", "q": "printer", "state": "0"}
         with stub_kea(_catalogue_responses_for_subnets(4, [])):
-            response = self.client.get(reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]), query)
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4}), query
+            )
         target = BeautifulSoup(response.content, "html.parser").select('[aria-label="DHCP family"] a')[1]
         self.assertEqual(parse_qs(urlsplit(target["href"]).query), {key: [value] for key, value in query.items()})
 
@@ -473,11 +477,11 @@ class TestServerWorkspace(_ViewTestBase):
         permission.users.add(self.user)
         self.client.force_login(self.user)
         for name, data in (
-            ("server_leases6_delete", {}),
-            ("server_reservation6_bulk_sync", {}),
+            ("server_leases_delete", {}),
+            ("server_reservation_bulk_sync", {}),
         ):
             with self.subTest(name=name), stub_kea({}) as kea:
-                response = self.client.post(reverse(f"plugins:netbox_kea:{name}", args=[self.server.pk]), data)
+                response = self.client.post(family_url(name, 6, pk=self.server.pk), data)
                 self.assertEqual(response.status_code, 403)
                 self.assertNotContains(response, "Protocol not enabled", status_code=403)
                 self.assertEqual(kea.commands(), [])

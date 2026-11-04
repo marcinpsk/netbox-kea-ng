@@ -52,7 +52,8 @@ class PerRowLeaseCleanupTest(TestCase):
         self.assertFalse(Prefix.objects.exists())
         with stub_kea({**_catalogue_responses(4, 1, "198.18.0.0/24"), "lease4-get": {"result": 0, "arguments": lease}}):
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_lease4_sync", args=[first.pk]), {"ip_address": "198.18.0.10"}
+                reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": first.pk, "family": 4}),
+                {"ip_address": "198.18.0.10"},
             )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(IPAMOwnershipLink.objects.get(server=first).facts, {"hostname": "", "prefix_length": 24})
@@ -77,7 +78,8 @@ class PerRowLeaseCleanupTest(TestCase):
         lease = complete_lease({"ip-address": "198.18.0.10", "hostname": "host.example.com", "subnet-id": 1})
         with stub_kea({**_catalogue_responses(4, 1, "198.18.0.0/24"), "lease4-get": {"result": 0, "arguments": lease}}):
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_lease4_sync", args=[server.pk]), {"ip_address": "198.18.0.10"}
+                reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": server.pk, "family": 4}),
+                {"ip_address": "198.18.0.10"},
             )
         self.assertEqual(response.status_code, 200, response.content)
         self.assertTrue(IPAddress.objects.filter(address__net_host="198.18.0.10").exists())

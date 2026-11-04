@@ -12,6 +12,7 @@ from .views import (
     leases,
     options,
     reservation_mutations,
+    reservations,
     server,
     server_switch,
     settings_page,
@@ -104,109 +105,9 @@ urlpatterns = (
         name="server_bulk_import",
     ),
     path(
-        "servers/<int:pk>/leases6/delete/",
-        leases.ServerLeases6DeleteView.as_view(),
-        name="server_leases6_delete",
-    ),
-    path(
-        "servers/<int:pk>/leases4/delete/",
-        leases.ServerLeases4DeleteView.as_view(),
-        name="server_leases4_delete",
-    ),
-    path(
         "servers/<int:pk>/reservation/check-ip/",
         sync_views.ReservationCheckNetboxIPView.as_view(),
         name="reservation_check_ip",
-    ),
-    path(
-        "servers/<int:pk>/reservations4/add/",
-        reservation_mutations.ServerReservation4AddView.as_view(),
-        name="server_reservation4_add",
-    ),
-    path(
-        "servers/<int:pk>/reservations4/published-name/",
-        reservation_mutations.ServerReservation4PublishedNameView.as_view(),
-        name="server_reservation4_published_name",
-    ),
-    path(
-        "servers/<int:pk>/reservations4/<int:subnet_id>/edit/",
-        reservation_mutations.ServerReservation4EditView.as_view(),
-        name="server_reservation4_edit",
-    ),
-    path(
-        "servers/<int:pk>/reservations4/<int:subnet_id>/delete/",
-        reservation_mutations.ServerReservation4DeleteView.as_view(),
-        name="server_reservation4_delete",
-    ),
-    path(
-        "servers/<int:pk>/reservations6/add/",
-        reservation_mutations.ServerReservation6AddView.as_view(),
-        name="server_reservation6_add",
-    ),
-    path(
-        "servers/<int:pk>/reservations6/published-name/",
-        reservation_mutations.ServerReservation6PublishedNameView.as_view(),
-        name="server_reservation6_published_name",
-    ),
-    path(
-        "servers/<int:pk>/reservations6/<int:subnet_id>/edit/",
-        reservation_mutations.ServerReservation6EditView.as_view(),
-        name="server_reservation6_edit",
-    ),
-    path(
-        "servers/<int:pk>/reservations6/<int:subnet_id>/delete/",
-        reservation_mutations.ServerReservation6DeleteView.as_view(),
-        name="server_reservation6_delete",
-    ),
-    path(
-        "servers/<int:pk>/leases4/sync/",
-        sync_views.ServerLease4SyncView.as_view(),
-        name="server_lease4_sync",
-    ),
-    path(
-        "servers/<int:pk>/leases6/sync/",
-        sync_views.ServerLease6SyncView.as_view(),
-        name="server_lease6_sync",
-    ),
-    path(
-        "servers/<int:pk>/reservations4/<int:subnet_id>/sync/",
-        sync_views.ServerReservation4SyncView.as_view(),
-        name="server_reservation4_sync",
-    ),
-    path(
-        "servers/<int:pk>/reservations6/<int:subnet_id>/sync/",
-        sync_views.ServerReservation6SyncView.as_view(),
-        name="server_reservation6_sync",
-    ),
-    path(
-        "servers/<int:pk>/reservations4/bulk-sync/",
-        sync_views.ServerReservation4BulkSyncView.as_view(),
-        name="server_reservation4_bulk_sync",
-    ),
-    path(
-        "servers/<int:pk>/reservations6/bulk-sync/",
-        sync_views.ServerReservation6BulkSyncView.as_view(),
-        name="server_reservation6_bulk_sync",
-    ),
-    path(
-        "servers/<int:pk>/reservations4/import/",
-        sync_views.ServerReservation4BulkImportView.as_view(),
-        name="server_reservation4_bulk_import",
-    ),
-    path(
-        "servers/<int:pk>/reservations6/import/",
-        sync_views.ServerReservation6BulkImportView.as_view(),
-        name="server_reservation6_bulk_import",
-    ),
-    path(
-        "servers/<int:pk>/leases4/import/",
-        sync_views.ServerLease4BulkImportView.as_view(),
-        name="server_lease4_bulk_import",
-    ),
-    path(
-        "servers/<int:pk>/leases6/import/",
-        sync_views.ServerLease6BulkImportView.as_view(),
-        name="server_lease6_bulk_import",
     ),
     path(
         "servers/<int:pk>/dhcp4/enable/",
@@ -313,6 +214,76 @@ urlpatterns = (
         "servers/<int:pk>/shared-networks<family:family>/<str:network_name>/delete/",
         shared_networks.ServerSharedNetworkDeleteView.as_view(),
         name="server_shared_network_delete",
+    ),
+    path(
+        "servers/<int:pk>/leases<family:family>/",
+        leases.ServerLeasesView.as_view(),
+        name="server_leases",
+    ),
+    path(
+        "servers/<int:pk>/leases<family:family>/add/",
+        leases.ServerLeaseAddView.as_view(),
+        name="server_lease_add",
+    ),
+    path(
+        "servers/<int:pk>/leases<family:family>/delete/",
+        leases.ServerLeasesDeleteView.as_view(),
+        name="server_leases_delete",
+    ),
+    path(
+        "servers/<int:pk>/leases<family:family>/sync/",
+        sync_views.ServerLeaseSyncView.as_view(),
+        name="server_lease_sync",
+    ),
+    path(
+        "servers/<int:pk>/leases<family:family>/import/",
+        sync_views.ServerLeaseBulkImportView.as_view(),
+        name="server_lease_bulk_import",
+    ),
+    path(
+        "servers/<int:pk>/leases<family:family>/<path:ip_address>/edit/",
+        leases.ServerLeaseEditView.as_view(),
+        name="server_lease_edit",
+    ),
+    path(
+        "servers/<int:pk>/reservations<family:family>/",
+        reservations.ServerReservationsView.as_view(),
+        name="server_reservations",
+    ),
+    path(
+        "servers/<int:pk>/reservations<family:family>/add/",
+        reservation_mutations.ServerReservationAddView.as_view(),
+        name="server_reservation_add",
+    ),
+    path(
+        "servers/<int:pk>/reservations<family:family>/published-name/",
+        reservation_mutations.ServerReservationPublishedNameView.as_view(),
+        name="server_reservation_published_name",
+    ),
+    path(
+        "servers/<int:pk>/reservations<family:family>/bulk-sync/",
+        sync_views.ServerReservationBulkSyncView.as_view(),
+        name="server_reservation_bulk_sync",
+    ),
+    path(
+        "servers/<int:pk>/reservations<family:family>/import/",
+        sync_views.ServerReservationBulkImportView.as_view(),
+        name="server_reservation_bulk_import",
+    ),
+    path(
+        "servers/<int:pk>/reservations<family:family>/<int:subnet_id>/edit/",
+        reservation_mutations.ServerReservationEditView.as_view(),
+        name="server_reservation_edit",
+    ),
+    path(
+        "servers/<int:pk>/reservations<family:family>/<int:subnet_id>/delete/",
+        reservation_mutations.ServerReservationDeleteView.as_view(),
+        name="server_reservation_delete",
+    ),
+    path(
+        "servers/<int:pk>/reservations<family:family>/<int:subnet_id>/sync/",
+        sync_views.ServerReservationSyncView.as_view(),
+        name="server_reservation_sync",
     ),
     path("servers/<int:pk>/", include(get_model_urls("netbox_kea", "server"))),
     path(

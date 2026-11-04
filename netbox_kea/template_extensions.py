@@ -51,10 +51,8 @@ class IPAddressKeaPanel(PluginTemplateExtension):
         request = self.context["request"]
         if version == 4:
             servers = Server.objects.restrict(request.user, "view").filter(dhcp4=True)
-            add_url_name = "plugins:netbox_kea:server_reservation4_add"
         else:
             servers = Server.objects.restrict(request.user, "view").filter(dhcp6=True)
-            add_url_name = "plugins:netbox_kea:server_reservation6_add"
 
         # Server rows exist in main only, and a reservation add is refused in a branch.
         in_branch = branching.active_branch() is not None
@@ -64,7 +62,8 @@ class IPAddressKeaPanel(PluginTemplateExtension):
             if not in_branch:
                 ip_param = "ip_addresses" if version == 6 else "ip_address"
                 params = urlencode({ip_param: ip_str, "hostname": nb_ip.dns_name or ""})
-                url = f"{reverse(add_url_name, args=[server.pk])}?{params}"
+                add = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": server.pk, "family": version})
+                url = f"{add}?{params}"
             server_links.append({"server": server, "url": url})
 
         return self.render(

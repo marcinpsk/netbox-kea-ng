@@ -129,7 +129,7 @@ class TestDualURLLeaseViews(_DualURLBase):
 
     def test_leases4_uses_dhcp4_url(self):
         """Export leases4 → request POSTed to dhcp4_url."""
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with _dual_url_stub() as kea:
             response = self.client.get(url, {"export": "1", "by": "subnet", "q": "10.0.0.0/24"})
         self.assertIn(response.status_code, (200, 302))
@@ -137,7 +137,7 @@ class TestDualURLLeaseViews(_DualURLBase):
 
     def test_leases6_uses_dhcp6_url(self):
         """Export leases6 → request POSTed to dhcp6_url."""
-        url = reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6})
         with _dual_url_stub() as kea:
             response = self.client.get(url, {"export": "1", "by": "subnet", "q": "2001:db8::/64"})
         self.assertIn(response.status_code, (200, 302))
@@ -187,7 +187,7 @@ class TestDualURLReservationViews(_DualURLBase):
 
     def test_reservations4_uses_dhcp4_url(self):
         """GET reservations4 → request POSTed to dhcp4_url."""
-        url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -195,7 +195,7 @@ class TestDualURLReservationViews(_DualURLBase):
 
     def test_reservations6_uses_dhcp6_url(self):
         """GET reservations6 → request POSTed to dhcp6_url."""
-        url = reverse("plugins:netbox_kea:server_reservations6", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 6})
         with _dual_url_stub() as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)

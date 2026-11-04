@@ -469,7 +469,7 @@ class TestChooserWorkspaceOrigin(_ViewTestBase):
         setattr(self.server, f"dhcp{family}", False)
         self.server.save()
         source = reverse(f"plugins:netbox_kea:combined_leases{family}")
-        target = reverse(f"plugins:netbox_kea:server_leases{family}", args=[self.server.pk])
+        target = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": family})
         with stub_kea({}) as kea:
             response = self.client.get(source, {"server": self.server.pk})
             self.assertRedirects(response, target, fetch_redirect_response=False)
@@ -487,7 +487,7 @@ class TestChooserWorkspaceOrigin(_ViewTestBase):
 
     def test_one_enabled_server_uses_canonical_workspace(self):
         source = reverse("plugins:netbox_kea:combined_leases4")
-        target = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        target = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         response = self.client.get(source, {"server": self.server.pk})
         self.assertRedirects(response, target, fetch_redirect_response=False)
 

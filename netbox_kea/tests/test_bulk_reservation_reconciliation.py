@@ -30,7 +30,9 @@ def _responses(hosts=()):
 
 class TestBulkReservationOwnership(_SyncViewBase):
     def _url(self, family=4):
-        return reverse(f"plugins:netbox_kea:server_reservation{family}_bulk_sync", args=[self.server.pk])
+        return reverse(
+            "plugins:netbox_kea:server_reservation_bulk_sync", kwargs={"pk": self.server.pk, "family": family}
+        )
 
     def _post(self, responses, family=4):
         with stub_kea(responses):

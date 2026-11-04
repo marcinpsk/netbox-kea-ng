@@ -286,14 +286,12 @@ class IPAddressKeaReservationsView(ConditionalLoginRequiredMixin, View):
 
         if version == 4:
             servers = Server.objects.restrict(request.user, "change").filter(dhcp4=True)
-            add_url_name = "plugins:netbox_kea:server_reservation4_add"
         else:
             servers = Server.objects.restrict(request.user, "change").filter(dhcp6=True)
-            add_url_name = "plugins:netbox_kea:server_reservation6_add"
 
         server_links = []
         for server in servers:
-            base_url = reverse(add_url_name, args=[server.pk])
+            base_url = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": server.pk, "family": version})
             ip_param = "ip_addresses" if version == 6 else "ip_address"
             params = _urlencode(
                 {

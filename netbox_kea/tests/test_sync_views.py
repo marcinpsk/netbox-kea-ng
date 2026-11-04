@@ -3,10 +3,8 @@
 """View tests for Phase 3: NetBox IPAM sync endpoints.
 
 URL names (all registered in netbox_kea/urls.py):
-  server_lease4_sync       — POST /servers/<pk>/leases4/sync/
-  server_lease6_sync       — POST /servers/<pk>/leases6/sync/
-  server_reservation4_sync: POST /servers/<pk>/reservations4/<subnet-id>/sync/
-  server_reservation6_sync: POST /servers/<pk>/reservations6/<subnet-id>/sync/
+  server_lease_sync: POST /servers/<pk>/leases<family>/sync/
+  server_reservation_sync: POST /servers/<pk>/reservations<family>/<subnet-id>/sync/
 
 Lease endpoints accept POST with:
   ip_address   — host IP to sync
@@ -168,7 +166,9 @@ class TestMalformedLeaseSyncView(_SyncViewBase):
                     ),
                 ):
                     response = self.client.post(
-                        reverse(f"plugins:netbox_kea:server_lease{family}_sync", args=[self.server.pk]),
+                        reverse(
+                            "plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": family}
+                        ),
                         {"ip_address": address},
                     )
                     # A Lease record that cannot be read is a malformed reply of the exact load.
@@ -178,7 +178,7 @@ class TestMalformedLeaseSyncView(_SyncViewBase):
 
 
 class TestLease4SyncView(_SyncViewBase):
-    """POST to server_lease4_sync creates/updates a NetBox IPAddress."""
+    """POST to the DHCPv4 server_lease_sync creates/updates a NetBox IPAddress."""
 
     def test_failed_mac_update_keeps_the_lease_claim_and_rolls_back_only_the_mac(self):
         from dcim.models import MACAddress
@@ -283,7 +283,7 @@ class TestLease4SyncView(_SyncViewBase):
         NbIP.objects.create(address="198.18.0.10/32", description="[kea-sync: lease]")
         before = list(NbIP.objects.order_by("pk").values())
         response = self.client.post(
-            reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk]),
+            reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": 4}),
             {"ip_address": "198.18.0.10"},
         )
         # The claim ran, so the row shows the badge of its failed allocation.
@@ -301,7 +301,7 @@ class TestLease4SyncView(_SyncViewBase):
         )
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_returns_200_on_valid_post(self):
         response = self.client.post(self._url(), {"ip_address": "192.168.10.5", "hostname": "host-a"})
@@ -348,7 +348,7 @@ class TestLease4SyncView(_SyncViewBase):
         self.assertEqual(NbIP.objects.filter(address__net_host="192.168.10.20").count(), 1)
 
     def test_returns_404_for_nonexistent_server(self):
-        url = reverse("plugins:netbox_kea:server_lease4_sync", args=[99999])
+        url = reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": 99999, "family": 4})
         response = self.client.post(url, {"ip_address": "192.168.10.30", "hostname": "ghost"})
         self.assertEqual(response.status_code, 404)
 
@@ -365,7 +365,7 @@ class TestLease4SyncView(_SyncViewBase):
 
 
 class TestLease6SyncView(_SyncViewBase):
-    """POST to server_lease6_sync creates/updates a NetBox IPAddress for IPv6."""
+    """POST to the DHCPv6 server_lease_sync creates/updates a NetBox IPAddress for IPv6."""
 
     def setUp(self):
         super().setUp()
@@ -377,7 +377,7 @@ class TestLease6SyncView(_SyncViewBase):
         )
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_lease6_sync", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": 6})
 
     def test_returns_200_on_valid_post(self):
         response = self.client.post(
@@ -469,7 +469,7 @@ class TestLeaseSyncByKind(_SyncViewBase):
         SyncConfig.objects.filter(pk=1).update(**flags)
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_lease6_sync", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": 6})
 
     def _post(self, label: str, *records: dict, subnets=_PD_SUBNETS):
         responses = {**_catalogue_responses_for_subnets(6, subnets), "lease6-get": _lease6_get(*records)}
@@ -622,7 +622,7 @@ class TestLeaseSyncByKind(_SyncViewBase):
     def test_a_dhcpv4_lease_that_is_not_current_is_not_synchronized(self):
         import time
 
-        url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": 4})
         expired = {"cltt": int(time.time()) - 7200, "valid_lft": 3600}
         for case, changes in {"declined": {"state": 1}, "expired": expired}.items():
             with self.subTest(case=case):
@@ -686,7 +686,8 @@ class TestStaleLeaseSync(_SyncViewBase):
         }
         with stub_kea(responses), self.assertLogs("netbox_kea", level="WARNING") as logs:
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk]), {"ip_address": "198.18.0.10"}
+                reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": 4}),
+                {"ip_address": "198.18.0.10"},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -702,7 +703,7 @@ class TestStaleLeaseSync(_SyncViewBase):
 
 
 class TestReservation4SyncView(_SyncViewBase):
-    """POST to server_reservation4_sync creates/updates NetBox IP with status=reserved."""
+    """POST to the DHCPv4 server_reservation_sync creates/updates NetBox IP with status=reserved."""
 
     def setUp(self):
         super().setUp()
@@ -718,7 +719,9 @@ class TestReservation4SyncView(_SyncViewBase):
         )
 
     def _url(self, include_identity: bool = True):
-        url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_sync", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         return f"{url}?identifier_type=hw-address&identifier=aa%3Abb%3Acc%3A00%3A00%3A02" if include_identity else url
 
     def test_returns_200_on_valid_post(self):
@@ -802,7 +805,7 @@ class TestRowSyncReadFailures(_SyncViewBase):
     """A failed live read of a row Sync shows the shared headline and Kea's answer in the row, and claims nothing."""
 
     def test_a_failed_lease_read_shows_the_lease_notice(self):
-        url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": 4})
         for name, reply, line in READ_FAILURES:
             with self.subTest(name):
                 with stub_kea({**_catalogue_responses(4, 1, "198.18.0.0/24"), "lease4-get": reply}):
@@ -812,14 +815,16 @@ class TestRowSyncReadFailures(_SyncViewBase):
                 self.assertFalse(NbIP.objects.exists())
 
     def test_a_lease_gone_from_kea_is_not_a_read_failure(self):
-        url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_catalogue_responses(4, 1, "198.18.0.0/24"), "lease4-get": {"result": 3}}):
             response = self.client.post(url, {"ip_address": "198.18.0.10"})
         self.assertEqual(_row_badge(response), "The lease is no longer in Kea. Reload the lease list.")
         self.assertFalse(NbIP.objects.exists())
 
     def test_a_failed_subnet_list_read_shows_the_catalogue_notice(self):
-        url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_sync", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         url = f"{url}?identifier_type=hw-address&identifier=aa%3Abb%3Acc%3A00%3A00%3A02"
         for name, reply, _line in READ_FAILURES:
             responses = {**_catalogue_responses(4, 1, "10.0.0.0/24"), "subnet4-list": reply}
@@ -831,7 +836,9 @@ class TestRowSyncReadFailures(_SyncViewBase):
                 self.assertFalse(NbIP.objects.exists())
 
     def test_a_failed_reservation_read_shows_the_reservation_notice(self):
-        url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_sync", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         url = f"{url}?identifier_type=hw-address&identifier=aa%3Abb%3Acc%3A00%3A00%3A02"
         for name, reply, line in READ_FAILURES:
             with self.subTest(name):
@@ -848,7 +855,7 @@ class TestRowSyncReadFailures(_SyncViewBase):
 
 
 class TestReservation6SyncView(_SyncViewBase):
-    """POST to server_reservation6_sync creates/updates NetBox IP for IPv6 reservation."""
+    """POST to the DHCPv6 server_reservation_sync creates/updates NetBox IP for IPv6 reservation."""
 
     def setUp(self):
         super().setUp()
@@ -865,7 +872,9 @@ class TestReservation6SyncView(_SyncViewBase):
         )
 
     def _url(self):
-        url = reverse("plugins:netbox_kea:server_reservation6_sync", args=[self.server.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_sync", kwargs={"pk": self.server.pk, "family": 6, "subnet_id": 1}
+        )
         return f"{url}?identifier_type=duid&identifier=01%3A02%3A03%3A04"
 
     def test_returns_200_on_valid_post(self):
@@ -920,10 +929,10 @@ class TestReservation6SyncView(_SyncViewBase):
 
 
 class TestReservation4BulkSyncView(_SyncViewBase):
-    """POST to server_reservation4_bulk_sync syncs all reservations to NetBox."""
+    """POST to the DHCPv4 server_reservation_bulk_sync syncs all reservations to NetBox."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_reservation_bulk_sync", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_complete_sync_removes_only_its_stale_reservation_link(self):
         ip = NbIP.objects.create(
@@ -1050,7 +1059,7 @@ class TestReservation4BulkSyncView(_SyncViewBase):
 
         self.assertRedirects(
             response,
-            reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]),
+            reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4}),
         )
         self.assertContains(response, "Reservation phase incomplete; cleanup skipped")
         self.assertEqual(NbIP.objects.count(), 0)
@@ -1075,7 +1084,7 @@ class TestReservation4BulkSyncView(_SyncViewBase):
         self.assertIn("Reservation list was read only in part", message)
 
     def test_returns_404_for_nonexistent_server(self):
-        url = reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[99999])
+        url = reverse("plugins:netbox_kea:server_reservation_bulk_sync", kwargs={"pk": 99999, "family": 4})
         response = self.client.post(url)
         self.assertEqual(response.status_code, 404)
 
@@ -1108,13 +1117,15 @@ class TestSyncViewPermissionChecks(_SyncViewBase):
 
     def test_lease4_sync_requires_ipam_add_permission(self):
         self._login_limited()
-        url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": 4})
         response = self.client.post(url, {"ip_address": "192.168.99.1"})
         self.assertContains(response, _ROW_ERROR_BADGE)
 
     def test_reservation4_sync_requires_ipam_add_permission(self):
         self._login_limited()
-        url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_sync", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         response = self.client.post(url, {"ip_address": "192.168.99.2"})
         # The row button swaps the refusal into its cell, so the reason is a badge.
         self.assertContains(response, _ROW_ERROR_BADGE)
@@ -1122,7 +1133,7 @@ class TestSyncViewPermissionChecks(_SyncViewBase):
 
     def test_superuser_can_still_sync(self):
         # self.user is superuser — should succeed as before
-        url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": 4})
         stub = {
             **_catalogue_responses(4, 1, "192.168.99.0/24"),
             "lease4-get": _lease_get("mock-host.local", **{"hw-address": "aa:bb:cc:00:00:01", "valid-lft": 86400}),
@@ -1138,10 +1149,10 @@ class TestSyncViewPermissionChecks(_SyncViewBase):
 
 
 class TestReservation6BulkSyncView(_SyncViewBase):
-    """POST to server_reservation6_bulk_sync syncs all v6 reservations to NetBox."""
+    """POST to the DHCPv6 server_reservation_bulk_sync syncs all v6 reservations to NetBox."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_reservation6_bulk_sync", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_reservation_bulk_sync", kwargs={"pk": self.server.pk, "family": 6})
 
     def test_post_bulk_syncs_v6_reservations(self):
         """Bulk sync v6 reservation creates a reserved IPAddress masked by its catalogue Subnet."""
@@ -1166,7 +1177,7 @@ class TestReservation6BulkSyncView(_SyncViewBase):
         self.assertEqual(response.status_code, 302)
 
     def test_post_nonexistent_server_returns_404(self):
-        url = reverse("plugins:netbox_kea:server_reservation6_bulk_sync", args=[99999])
+        url = reverse("plugins:netbox_kea:server_reservation_bulk_sync", kwargs={"pk": 99999, "family": 6})
         response = self.client.post(url, content_type="application/json")
         self.assertEqual(response.status_code, 404)
 
@@ -1180,7 +1191,7 @@ class TestReservationBulkSyncConflictProtection(_SyncViewBase):
     """Bulk reservation sync must not overwrite foreign NetBox IPs; conflicts are counted."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_reservation_bulk_sync", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_foreign_ip_not_overwritten_and_counted(self):
         from django.contrib import messages as django_messages
@@ -1440,7 +1451,7 @@ class TestLeaseSyncEventDispatch(TransactionTestCase):
         self.client.force_login(User.objects.create_superuser(username="dispatch-user", password="dispatch-pass"))
         server = _make_server()
         responses = {**_catalogue_responses_for_subnets(6, _PD_SUBNETS), "lease6-get": _lease6_get(_pd_record())}
-        url = reverse("plugins:netbox_kea:server_lease6_sync", args=[server.pk])
+        url = reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": server.pk, "family": 6})
         with (
             override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_event_scope.fail_dispatch"]),
             stub_kea(responses),
@@ -1465,7 +1476,9 @@ class TestLeaseSyncEventDispatch(TransactionTestCase):
             **_catalogue_responses(4, 1, "10.0.0.0/24"),
             "reservation-get": _reservation_get("mock-res.local", "10.0.0.50", **{"hw-address": "aa:bb:cc:00:00:02"}),
         }
-        url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[server.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_sync", kwargs={"pk": server.pk, "family": 4, "subnet_id": 1}
+        )
         with (
             override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_event_scope.fail_dispatch"]),
             stub_kea(responses),
@@ -1508,7 +1521,9 @@ class TestLeaseSyncEventDispatch(TransactionTestCase):
             stub_kea(responses),
             self.assertLogs("netbox_kea.manual_sync", "ERROR") as logs,
         ):
-            response = self.client.post(reverse("plugins:netbox_kea:server_lease4_add", args=[server.pk]), data)
+            response = self.client.post(
+                reverse("plugins:netbox_kea:server_lease_add", kwargs={"pk": server.pk, "family": 4}), data
+            )
 
         self.assertEqual(response.status_code, 302)
         self.assertIsNotNone(daemon.lease("192.0.2.50"))

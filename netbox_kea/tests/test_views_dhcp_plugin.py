@@ -1085,7 +1085,7 @@ class ScheduledImportSyncHelpTest(_ViewTestBase):
         super().setUpClass()
 
     def _help_text(self) -> str:
-        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(_mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)

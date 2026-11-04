@@ -202,27 +202,30 @@ class TestServerLeases4View(_ViewTestBase):
 
     def test_get_returns_200(self):
         """Initial leases4 page renders without Kea API calls."""
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_shows_the_add_and_bulk_import_links(self):
-        response = self.client.get(reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]))
-        for name in ("server_lease4_add", "server_lease4_bulk_import"):
+        response = self.client.get(
+            reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
+        )
+        for name in ("server_lease_add", "server_lease_bulk_import"):
             with self.subTest(name):
-                self.assertContains(response, f'href="{reverse(f"plugins:netbox_kea:{name}", args=[self.server.pk])}"')
+                url = reverse(f"plugins:netbox_kea:{name}", kwargs={"pk": self.server.pk, "family": 4})
+                self.assertContains(response, f'href="{url}"')
 
     def test_get_with_dhcp4_disabled_shows_protocol_not_enabled(self):
         """A disabled DHCPv4 family shows the protocol-disabled state without a Kea read."""
         v6_only = _make_db_server(name="v6-only", dhcp4=False, dhcp6=True)
-        url = reverse("plugins:netbox_kea:server_leases4", args=[v6_only.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": v6_only.pk, "family": 4})
         with stub_kea({}) as kea:
             response = self.client.get(url)
         self.assertContains(response, "Protocol not enabled")
         self.assertEqual(kea.commands(), [])
 
     def test_get_nonexistent_returns_404(self):
-        url = reverse("plugins:netbox_kea:server_leases4", args=[99999])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": 99999, "family": 4})
         response = self.client.get(url)
         self.assertEqual(response.status_code, 404)
 
@@ -231,13 +234,13 @@ class TestServerLeases6View(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/leases6/"""
 
     def test_get_returns_200(self):
-        url = reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6})
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_get_with_dhcp6_disabled_shows_protocol_not_enabled(self):
         v4_only = _make_db_server(name="v4-only", dhcp4=True, dhcp6=False)
-        url = reverse("plugins:netbox_kea:server_leases6", args=[v4_only.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": v4_only.pk, "family": 6})
         with stub_kea({}) as kea:
             response = self.client.get(url)
         self.assertContains(response, "Protocol not enabled")
@@ -254,7 +257,7 @@ class TestServerLeases4DeleteView(_ViewTestBase):
 
     def test_get_redirects_to_server_not_none(self):
         """GET on a POST-only view must redirect back to the server (never to servers/None)."""
-        url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4})
         response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
@@ -262,14 +265,14 @@ class TestServerLeases4DeleteView(_ViewTestBase):
 
     def test_post_empty_form_redirects_not_none(self):
         """POST with invalid/empty lease list must redirect, not to servers/None."""
-        url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4})
         response = self.client.post(url, {})
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
 
     def test_post_htmx_single_lease_returns_hx_refresh(self):
         """An HTMX POST with a single IP and _confirm returns HX-Refresh: true instead of redirect."""
-        url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4})
         record = lease_record("192.0.2.1", subnet_id=1)
         with _lease_stub(LeaseDaemon(4, record).responses()) as kea:
             response = self.client.post(
@@ -290,7 +293,7 @@ class TestServerLeases6DeleteView(_ViewTestBase):
     """POST /plugins/kea/servers/<pk>/leases6/delete/"""
 
     def test_get_redirects_to_server_not_none(self):
-        url = reverse("plugins:netbox_kea:server_leases6_delete", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 6})
         response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
@@ -346,7 +349,7 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
 
     def test_reserved_badge_shown_when_reservation_exists(self):
         """When a lease IP has a corresponding reservation, the table cell shows 'Reserved'."""
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with _lease_stub(self._badge_responses(**{"reservation-get": {"result": 0, "arguments": self._RESERVATION4}})):
             response = self._htmx_get(url, {"by": "ip", "q": "192.168.1.100"})
 
@@ -358,7 +361,7 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         """The "table" export presents its rows as the page does, so the badge columns carry their state."""
         ip = NbIP.objects.create(address="192.168.1.100/24", status="dhcp", description="[kea-sync: lease]")
         ownership_link(ip, self.server, source="lease", allocation_kind="address")
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         # Only a Current Lease has a Lease Synchronization State.
         current = {"result": 0, "arguments": {**self._LEASE4, "cltt": int(time.time())}}
         reserved = {"result": 0, "arguments": self._RESERVATION4}
@@ -370,7 +373,7 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
         self.assertEqual([(row.get("Reserved"), row.get("NetBox IP")) for row in rows], [("Reserved", "Synchronized")])
 
     def test_the_table_export_shows_an_unknown_reservation_match_as_the_badge_does(self):
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         cases = (
             ("Unknown", {"result": 1, "text": "host database error"}, "Reservation Unknown"),
             # The control: an Unreserved row exports the text of its action badge.
@@ -387,7 +390,7 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
 
     def test_the_table_export_shows_an_ignored_reservation_as_the_badge_does(self):
         """Kea's default reservations-global is false, so it ignores a Global Reservation."""
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         global_ = {**self._RESERVATION4, "subnet-id": 0}
 
         def reservation_get(body):
@@ -404,7 +407,7 @@ class TestReservedBadgeOnLeases(_ViewTestBase):
 
     def test_no_reserved_badge_when_no_reservation(self):
         """When no reservation exists for the lease IP, no badge is rendered."""
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with _lease_stub(
             self._badge_responses(**{"reservation-get": {"result": 3}})  # not found
         ):
@@ -457,10 +460,10 @@ class TestLeaseSearchPaths(_ViewTestBase):
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
 
     def _url4(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     def _url6(self):
-        return reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6})
 
     def _multi(self, leases):
         """Multi-result lease-get response envelope (leases list + count)."""
@@ -688,7 +691,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
     def test_search_by_duid_v6_sends_correct_command(self):
         """BY_DUID on the v6 endpoint must call lease6-get-by-duid."""
         server6 = _make_db_server(name="kea-v6-search", ca_url="https://kea6.example.com", dhcp4=False, dhcp6=True)
-        url = reverse("plugins:netbox_kea:server_leases6", args=[server6.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": server6.pk, "family": 6})
         with _lease_stub(
             {
                 "subnet6-list": self._SUBNETS6,
@@ -704,7 +707,7 @@ class TestLeaseSearchPaths(_ViewTestBase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Phase 9B: CSV export — BaseServerLeasesView.get_export()
+# Phase 9B: CSV export — ServerLeasesView.get_export()
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -725,7 +728,7 @@ class TestLeaseExport(_ViewTestBase):
     _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_export_all_returns_csv_content_type(self):
         """?export=all must respond with text/csv Content-Type."""
@@ -816,7 +819,7 @@ class TestLeaseDeleteFullFlow(_ViewTestBase):
     """Full POST flow for lease bulk deletion: confirm page → confirmed delete → Kea error."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_post_with_ips_no_confirm_renders_confirmation_page(self):
         """POST with lease rows but no _confirm renders the bulk_delete confirmation template."""
@@ -940,7 +943,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
 
     def test_an_unexpected_lookup_failure_is_logged_and_every_row_shows_an_unknown_match_without_actions(self):
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with (
             _reservation_stub(
                 4,
@@ -970,7 +973,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         )
 
     def test_a_non_integer_subnet_id_excludes_the_lease_with_a_safe_diagnostic(self):
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         for subnet_id in (1.0, True):
             lease = {**self._LEASE4, "subnet-id": subnet_id}
             with self.subTest(subnet_id=subnet_id):
@@ -990,7 +993,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
                 self.assertContains(response, "1 lease record that could not be read")
 
     def test_unknown_subnet_id_keeps_reservation_dependent_actions_unavailable(self):
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         lease = {**self._LEASE4, "subnet-id": 99}
         with _reservation_stub(
             4,
@@ -1009,7 +1012,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
 
     def test_sync_url_set_when_no_netbox_ip(self):
         """When the lease IP is absent from NetBox, sync_url must be set on the lease dict."""
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with _reservation_stub(
             4,
             {
@@ -1055,7 +1058,7 @@ class TestEnrichLeasesErrorPaths(_ViewTestBase):
         )
         # Kea ignores a Global Reservation by default, so the Lease is dynamic and a Sync cannot contradict it.
         ignored = ("Ignored", kea_holding({"subnet-id": 0, "hw-address": mac, "ip-address": "10.0.0.6"}), True, {})
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         global_on = {"reservations-global": True}
         for label, reservation_get, offered, settings in (*((*case, global_on) for case in cases), ignored):
             with self.subTest(label):
@@ -1106,7 +1109,7 @@ class TestDelegatedPrefixSyncBadges(_ViewTestBase):
         }
 
     def _rows(self, **changes):
-        url = reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6})
         with stub_kea(self._responses(**changes)):
             response = self.client.get(url, {"by": "subnet_id", "q": "10"}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
@@ -1134,7 +1137,7 @@ class TestDelegatedPrefixSyncBadges(_ViewTestBase):
 
         self.assertEqual(
             rows["delegated-prefix"].get("sync_url"),
-            reverse("plugins:netbox_kea:server_lease6_sync", args=[self.server.pk]),
+            reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": 6}),
         )
         self.assertIsNone(rows["delegated-prefix"]["netbox_url"])
         posted = self._sync_values(response)
@@ -1279,7 +1282,7 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
 
     def test_stale_mac_badge_shows_specific_macs_in_title(self):
         """The ⚠ MAC? badge title must contain both lease MAC and reservation MAC."""
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with self._stub(self._RESERVATION):
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
@@ -1288,12 +1291,12 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
 
     def test_stale_mac_badge_renders_htmx_delete_button(self):
         """The stale-MAC badge must include an HTMX delete button (hx-post) for one-click removal."""
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with self._stub(self._RESERVATION):
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
         # hx-post must point to the delete endpoint (distinct from the bulk-delete form action)
-        delete_url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        delete_url = reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4})
         self.assertContains(response, f'hx-post="{delete_url}"')
         (button,) = re.findall(rf'<button[^>]*hx-post="{re.escape(delete_url)}"[^>]*>', response.content.decode())
         # The lease search container swaps itself and pushes its URL; the row button must do neither.
@@ -1304,7 +1307,7 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
     def test_a_refused_one_click_delete_reloads_the_search_to_show_why(self):
         from django.contrib.messages import get_messages
 
-        delete_url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        delete_url = reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4})
         response = self.client.post(delete_url, {"pk": "not-a-lease", "_confirm": "1"}, HTTP_HX_REQUEST="true")
 
         self.assertEqual(response.status_code, 200)
@@ -1314,7 +1317,7 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
     def test_a_one_click_delete_for_a_disabled_family_reloads_the_page(self):
         self.server.dhcp4 = False
         self.server.save()
-        delete_url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        delete_url = reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4})
 
         response = self.client.post(delete_url, {"pk": "not-a-lease", "_confirm": "1"}, HTTP_HX_REQUEST="true")
 
@@ -1322,14 +1325,14 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
         self.assertEqual(response.headers.get("HX-Refresh"), "true")
 
     def test_the_one_click_delete_posts_the_shown_facts_of_the_row(self):
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with self._stub(self._RESERVATION):
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
         (values,) = re.findall(r"hx-vals='(\{\"pk\"[^']+)'", response.content.decode())
         data = json.loads(html.unescape(values))
         self.assertEqual(data, {"pk": shown_token(self._LEASE4), "_confirm": "1"})
 
-        delete_url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        delete_url = reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4})
         with _lease_stub(LeaseDaemon(4, self._LEASE4).responses()) as kea:
             deleted = self.client.post(delete_url, data, HTTP_HX_REQUEST="true")
         self.assertEqual(deleted.headers.get("HX-Refresh"), "true")
@@ -1350,11 +1353,11 @@ class TestStaleMacBadgeEnrichment(_ViewTestBase):
         view_obj_perm.users.add(readonly_user)
         self.client.force_login(readonly_user)
 
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with self._stub(self._RESERVATION):
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
-        delete_url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        delete_url = reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4})
         self.assertNotContains(response, f'hx-post="{delete_url}"')
 
 
@@ -1378,10 +1381,10 @@ class TestLeaseExportAll(_ViewTestBase):
     )
 
     def _url4(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     def _url6(self):
-        return reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6})
 
     def test_a_failed_read_shows_the_lease_notice(self):
         """A Kea refusal, a transport failure and a malformed reply show the shared headline and Kea's answer."""
@@ -1487,10 +1490,13 @@ class TestLeaseEditReturnsToTheSearch(_ViewTestBase):
     """An edit starts from a lease search and returns to that search."""
 
     def _list_url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     def _edit_url(self, return_url=None):
-        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.100"])
+        url = reverse(
+            "plugins:netbox_kea:server_lease_edit",
+            kwargs={"pk": self.server.pk, "family": 4, "ip_address": "10.0.0.100"},
+        )
         return url if return_url is None else f"{url}?{urlencode({'return_url': return_url})}"
 
     def _post(self, url):
@@ -1512,7 +1518,10 @@ class TestLeaseEditReturnsToTheSearch(_ViewTestBase):
                 self._list_url(), {"by": "subnet_id", "q": "10", "state": ""}, HTTP_HX_REQUEST="true"
             )
 
-        edit_url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "192.0.2.10"])
+        edit_url = reverse(
+            "plugins:netbox_kea:server_lease_edit",
+            kwargs={"pk": self.server.pk, "family": 4, "ip_address": "192.0.2.10"},
+        )
         expected = f"{edit_url}?{urlencode({'return_url': f'{self._list_url()}?by=subnet_id&q=10'})}"
         self.assertEqual(next(iter(response.context["table"].rows)).record["edit_url"], expected)
         self.assertContains(response, f'href="{escape(expected)}"', count=1)
@@ -1573,18 +1582,17 @@ class TestLeaseEditView(_ViewTestBase):
 
     def _url(self, version=4, ip="10.0.0.100"):
         return reverse(
-            f"plugins:netbox_kea:server_lease{version}_edit",
-            args=[self.server.pk, ip],
+            "plugins:netbox_kea:server_lease_edit", kwargs={"pk": self.server.pk, "family": version, "ip_address": ip}
         )
 
     def test_url_registered_v4(self):
-        """URL server_lease4_edit is registered."""
+        """The DHCPv4 path of server_lease_edit is registered."""
         url = self._url(version=4)
         self.assertIn("leases", url)
         self.assertIn("edit", url)
 
     def test_url_registered_v6(self):
-        """URL server_lease6_edit is registered."""
+        """The DHCPv6 path of server_lease_edit is registered."""
         url = self._url(version=6, ip="2001:db8::100")
         self.assertIn("leases", url)
         self.assertIn("edit", url)
@@ -1737,7 +1745,7 @@ class TestLeaseStateFilter(_ViewTestBase):
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
 
     def _url4(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     # Subnet suggestions fetched via subnet4-list; reservation enrichment finds none.
     _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
@@ -1872,7 +1880,7 @@ class TestLeaseSearchHostBitsSubnet(_ViewTestBase):
             }
         ) as kea:
             response = self.client.get(
-                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4}),
                 {"by": "subnet", "q": "10.0.0.0/24"},
                 HTTP_HX_REQUEST="true",
             )
@@ -1891,7 +1899,7 @@ class TestLeaseSearchHostBitsSubnet(_ViewTestBase):
             }
         ) as kea:
             response = self.client.get(
-                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4}),
                 {"by": "subnet", "q": "198.18.1.0/24"},
                 HTTP_HX_REQUEST="true",
             )
@@ -1929,7 +1937,7 @@ class TestLeaseSearchSubnetCatalogue(_ViewTestBase):
         }
 
     def _url(self) -> str:
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     def _search(self, cidr: str):
         return self.client.get(self._url(), {"by": "subnet", "q": cidr}, HTTP_HX_REQUEST="true")
@@ -2031,10 +2039,10 @@ class TestLeaseSearchSubnetCatalogue(_ViewTestBase):
 
 @with_kea_client_config(lease_query_max_unpaged_leases=1000)
 class TestLeaseAddView(_ViewTestBase):
-    """Tests for ServerLease4AddView and ServerLease6AddView."""
+    """Tests for ServerLeaseAddView."""
 
     def _url(self, version=4):
-        return reverse(f"plugins:netbox_kea:server_lease{version}_add", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_lease_add", kwargs={"pk": self.server.pk, "family": version})
 
     def _valid_post4(self, **overrides):
         data = {
@@ -2060,13 +2068,13 @@ class TestLeaseAddView(_ViewTestBase):
         return data
 
     def test_url_registered_v4(self):
-        """URL server_lease4_add is registered and contains 'leases'."""
+        """The DHCPv4 path of server_lease_add is registered and contains 'leases'."""
         url = self._url(version=4)
         self.assertIn("leases", url)
         self.assertIn("add", url)
 
     def test_url_registered_v6(self):
-        """URL server_lease6_add is registered and contains 'leases'."""
+        """The DHCPv6 path of server_lease_add is registered and contains 'leases'."""
         url = self._url(version=6)
         self.assertIn("leases", url)
         self.assertIn("add", url)
@@ -2150,7 +2158,7 @@ class TestLeaseAddSyncToNetBox(_ViewTestBase):
     """Tests for the sync_to_netbox checkbox on ServerLease4/6AddView."""
 
     def _url(self, version=4):
-        return reverse(f"plugins:netbox_kea:server_lease{version}_add", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_lease_add", kwargs={"pk": self.server.pk, "family": version})
 
     def _post4(self, sync=False):
         data = {
@@ -2564,7 +2572,7 @@ class TestBulkLeaseImportView(_ViewTestBase):
     """Tests for ServerLease4/6BulkImportView."""
 
     def _url(self, version=4):
-        return reverse(f"plugins:netbox_kea:server_lease{version}_bulk_import", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_lease_bulk_import", kwargs={"pk": self.server.pk, "family": version})
 
     def _csv4(self, rows=None):
         header = "ip-address,hw-address,subnet-id,valid-lft,hostname\n"
@@ -2890,7 +2898,7 @@ class TestLeaseJournalEntries(_ViewTestBase):
         from django.contrib.contenttypes.models import ContentType
         from extras.models import JournalEntry
 
-        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_lease_add", kwargs={"pk": self.server.pk, "family": 4})
         server_ct = ContentType.objects.get_for_model(self.server)
         before = JournalEntry.objects.filter(
             assigned_object_id=self.server.pk,
@@ -2919,7 +2927,7 @@ class TestLeaseJournalEntries(_ViewTestBase):
         from django.contrib.contenttypes.models import ContentType
         from extras.models import JournalEntry
 
-        url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4})
         server_ct = ContentType.objects.get_for_model(self.server)
         before = JournalEntry.objects.filter(assigned_object_id=self.server.pk, assigned_object_type=server_ct).count()
         held, selected = _held4("10.0.0.5")
@@ -2958,7 +2966,7 @@ class TestJournalHelperEdgeCases(SimpleTestCase):
 
 
 # ---------------------------------------------------------------------------
-# HTMX exception handler in BaseServerLeasesView
+# HTMX exception handler in ServerLeasesView
 # ---------------------------------------------------------------------------
 
 
@@ -2968,7 +2976,7 @@ class TestHTMXExceptionHandler(_ViewTestBase):
     _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_htmx_exception_renders_lease_notice(self):
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get": requests.ConnectionError("boom")}):
@@ -2990,14 +2998,18 @@ class TestLeaseEditGet(_ViewTestBase):
     def test_get_kea_exception_redirects(self):
         """KeaException in lease4 GET redirects to leases page."""
         # result=1 makes lease4-get raise KeaException in the real client.
-        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        url = reverse(
+            "plugins:netbox_kea:server_lease_edit", kwargs={"pk": self.server.pk, "family": 4, "ip_address": "10.0.0.1"}
+        )
         with _lease_stub({"lease4-get": {"result": 1, "text": "err"}}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
 
     def test_a_failed_read_shows_the_lease_target_notice(self):
         """A Kea refusal, a transport failure and a malformed reply show the shared headline and Kea's answer."""
-        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        url = reverse(
+            "plugins:netbox_kea:server_lease_edit", kwargs={"pk": self.server.pk, "family": 4, "ip_address": "10.0.0.1"}
+        )
         for name, reply, line in READ_FAILURES:
             with self.subTest(name):
                 self._fresh_client()
@@ -3007,14 +3019,19 @@ class TestLeaseEditGet(_ViewTestBase):
                 self.assertEqual(_shown_messages(response), _notice_lines("lease_target", line))
 
     def test_a_lease_that_cannot_be_read_shows_the_lease_target_notice_and_its_reason(self):
-        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        url = reverse(
+            "plugins:netbox_kea:server_lease_edit", kwargs={"pk": self.server.pk, "family": 4, "ip_address": "10.0.0.1"}
+        )
         with _lease_stub({"lease4-get": {"result": 0, "arguments": {"hw-address": "aa:bb:cc:dd:ee:ff"}}}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
         self.assertEqual(_shown_messages(response), [HEADLINES["lease_target"], "A required lease field is missing."])
 
     def test_a_selection_that_is_not_a_lease_names_the_selection_and_reads_nothing(self):
-        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "not-an-address"])
+        url = reverse(
+            "plugins:netbox_kea:server_lease_edit",
+            kwargs={"pk": self.server.pk, "family": 4, "ip_address": "not-an-address"},
+        )
         with _lease_stub({}) as kea:
             response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
@@ -3025,7 +3042,9 @@ class TestLeaseEditGet(_ViewTestBase):
 
     def test_get_lease_not_found_redirects(self):
         """result=3 (not found) in lease4 GET redirects to leases page."""
-        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        url = reverse(
+            "plugins:netbox_kea:server_lease_edit", kwargs={"pk": self.server.pk, "family": 4, "ip_address": "10.0.0.1"}
+        )
         with _lease_stub({"lease4-get": {"result": 3, "arguments": None}}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
@@ -3033,7 +3052,9 @@ class TestLeaseEditGet(_ViewTestBase):
     def test_get_v6_lease_includes_duid(self):
         """v6 lease GET includes duid in form initial."""
         server6 = _make_db_server(name="kea6-only", ca_url="https://kea6.example.com", dhcp4=False, dhcp6=True)
-        url = reverse("plugins:netbox_kea:server_lease6_edit", args=[server6.pk, "2001:db8::1"])
+        url = reverse(
+            "plugins:netbox_kea:server_lease_edit", kwargs={"pk": server6.pk, "family": 6, "ip_address": "2001:db8::1"}
+        )
         with _lease_stub(
             {
                 "lease6-get": {
@@ -3063,7 +3084,9 @@ class TestLeaseEditPostInvalidForm(_ViewTestBase):
     """Lease edit POST with an invalid form re-renders with 200."""
 
     def test_post_invalid_form_rerenders(self):
-        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        url = reverse(
+            "plugins:netbox_kea:server_lease_edit", kwargs={"pk": self.server.pk, "family": 4, "ip_address": "10.0.0.1"}
+        )
         shown = shown_token(lease_record("10.0.0.1", subnet_id=1))
         # Invalid form re-renders before any Kea call — empty registry proves none is issued.
         with _lease_stub({}) as kea:
@@ -3073,7 +3096,9 @@ class TestLeaseEditPostInvalidForm(_ViewTestBase):
         self.assertIn("valid_lft", response.context["form"].errors)
 
     def test_a_post_without_the_shown_facts_sends_nothing(self):
-        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        url = reverse(
+            "plugins:netbox_kea:server_lease_edit", kwargs={"pk": self.server.pk, "family": 4, "ip_address": "10.0.0.1"}
+        )
         for shown in ("", "10.0.0.1", shown_token(lease_record("10.0.0.2", subnet_id=1))):
             with self.subTest(shown=shown):
                 with _lease_stub({}) as kea:
@@ -3091,7 +3116,7 @@ class TestLeaseAddGenericException(_ViewTestBase):
     """A transport error after the send of a lease add is unconfirmed, and its text stays out of the page."""
 
     def test_a_lost_reply_is_unconfirmed(self):
-        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_lease_add", kwargs={"pk": self.server.pk, "family": 4})
         with _lease_stub({"lease4-add": requests.RequestException("unexpected crash")}):
             response = self.client.post(
                 url,
@@ -3208,12 +3233,14 @@ class TestLeaseBulkImportEdgeCases(_ViewTestBase):
     """Lease CSV import: invalid form, parse error, and per-row errors."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_lease4_bulk_import", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_lease_bulk_import", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_the_import_is_served_at_one_url_per_family(self):
         for family in (4, 6):
             with self.subTest(family=family):
-                url = reverse(f"plugins:netbox_kea:server_lease{family}_bulk_import", args=[self.server.pk])
+                url = reverse(
+                    "plugins:netbox_kea:server_lease_bulk_import", kwargs={"pk": self.server.pk, "family": family}
+                )
                 self.assertTrue(url.endswith(f"/servers/{self.server.pk}/leases{family}/import/"))
                 self.assertEqual(self.client.get(url).status_code, 200)
                 duplicate = url.replace(f"/leases{family}/import/", f"/lease{family}_bulk_import/")
@@ -3345,10 +3372,10 @@ class TestGetLeasesPageAllLeasesMode(_ViewTestBase):
     _EMPTY_PAGE = {"result": 0, "arguments": {"count": 0, "leases": []}}
 
     def _url4(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     def _url6(self):
-        return reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6})
 
     def test_all_leases_v4_starts_from_zero_address(self):
         """``by=""`` on the v4 view must call lease4-get-page with ``from="0.0.0.0"``."""
@@ -3374,7 +3401,7 @@ class TestGetLeasesCoverage(_ViewTestBase):
     """Edge cases in the Lease fetch."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_invalid_by_raises_value_error(self):
         """An invalid search selector must fail before a Kea request."""
@@ -3404,7 +3431,7 @@ class TestGetExportCoverage(_ViewTestBase):
     """Edge cases in get_export() and get_export_all()."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_export_with_invalid_form_redirects(self):
         """Invalid form for export → messages.warning + redirect."""
@@ -3430,7 +3457,7 @@ class TestHTMXInvalidFormCoverage(_ViewTestBase):
 
     def test_htmx_invalid_form_returns_partial(self):
         """form.is_valid()==False for HTMX → renders server_dhcp_leases_htmx.html."""
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         subnets = _subnet_list(4, [])
         # 'by' has an invalid choice value → form.is_valid() returns False (no lease fetch).
         with _lease_stub({"subnet4-list": subnets}):
@@ -3453,8 +3480,8 @@ class TestLease6EditDuid(_ViewTestBase):
     def test_post_with_duid_calls_lease_update(self):
         """A changed DUID is written to the fresh lease body."""
         url = reverse(
-            "plugins:netbox_kea:server_lease6_edit",
-            args=[self.server.pk, "2001:db8::1"],
+            "plugins:netbox_kea:server_lease_edit",
+            kwargs={"pk": self.server.pk, "family": 6, "ip_address": "2001:db8::1"},
         )
         record = complete_lease({"ip-address": "2001:db8::1", "duid": "00:00:01", "valid-lft": 3600})
         with _lease_stub(LeaseDaemon(6, record).responses()) as kea:
@@ -3480,7 +3507,7 @@ class TestFetchOneEmptyLease(_ViewTestBase):
         subnets = _subnet_list(4, [])
         arguments = complete_lease({"ip-address": "10.0.0.1", "valid-lft": 3600, "state": 0, "hostname": "testhost"})
         del arguments["subnet-id"]
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with _lease_stub({"subnet4-list": subnets, "lease4-get": {"result": 0, "arguments": arguments}}) as kea:
             response = self.client.get(url, {"by": "ip", "q": "10.0.0.1"}, HTTP_HX_REQUEST="true")
         self.assertEqual(response.status_code, 200)
@@ -3497,7 +3524,7 @@ class TestLeasePartialDelete(_ViewTestBase):
     """A bulk delete sends one Runtime Change per Lease: a rejected row does not stop it, an unknown row does."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4})
 
     # A followed redirect lands on the leases page, which fetches the subnet quick-select.
     _SUBNETS4 = _subnet_list(4, [])
@@ -3573,7 +3600,7 @@ class TestLeaseExportAllExceptNarrowing(_ViewTestBase):
     """get_export_all() must not swallow local bugs via bare except Exception."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_attribute_error_propagates(self):
         """An AttributeError inside get_export_all must not be silently caught."""
@@ -3587,7 +3614,7 @@ class TestLeaseExportStateFilter(_ViewTestBase):
     """get_export() must honour the 'state' query parameter."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     # Unguarded on purpose: the export takes the same unpaged Subnet path, with no
     # stat-lease4-get preflight. State it here instead of inheriting it.
@@ -3634,7 +3661,7 @@ class TestHtmxHandlerExceptNarrowing(_ViewTestBase):
     """HTMX lease handler must not swallow programming errors via bare except Exception."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_attribute_error_not_swallowed_by_htmx_handler(self):
         """An AttributeError inside the HTMX handler must propagate (not be caught silently)."""
@@ -3656,7 +3683,7 @@ class TestLeaseDeleteLoopTransportErrors(_ViewTestBase):
     """A transport error after the send of one delete stops the loop; the error text never reaches the page."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_a_lost_or_unreadable_reply_stops_the_loop(self):
         for name, failure in (
@@ -3691,7 +3718,7 @@ class TestLeaseExportTransportErrors(_ViewTestBase):
     """get_export() must handle RequestException and ValueError gracefully."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     _SUBNETS4 = _subnet_list(4, [])
 
@@ -3716,7 +3743,9 @@ class TestSingleLeaseGetTransportErrors(_ViewTestBase):
 
     def test_request_exception_redirects(self):
         """requests.RequestException from lease-get must redirect with error message."""
-        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        url = reverse(
+            "plugins:netbox_kea:server_lease_edit", kwargs={"pk": self.server.pk, "family": 4, "ip_address": "10.0.0.1"}
+        )
         with _lease_stub({"lease4-get": requests.ConnectionError("down")}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
@@ -3734,7 +3763,9 @@ class TestLeaseEditPostTransportErrors(_ViewTestBase):
     _RECORD = lease_record("10.0.0.1", subnet_id=1, hostname="old")
 
     def _post(self, responses: dict):
-        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "10.0.0.1"])
+        url = reverse(
+            "plugins:netbox_kea:server_lease_edit", kwargs={"pk": self.server.pk, "family": 4, "ip_address": "10.0.0.1"}
+        )
         form = {"shown": shown_token(self._RECORD), "hostname": "host", "hw_address": "", "valid_lft": ""}
         with _lease_stub(responses):
             response = self.client.post(url, form)
@@ -3780,7 +3811,7 @@ class TestLeaseAddValueError(_ViewTestBase):
     def test_an_unreadable_reply_is_unconfirmed(self):
         from extras.models import JournalEntry
 
-        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_lease_add", kwargs={"pk": self.server.pk, "family": 4})
         for name, reply in (("not JSON", _raw_http_response(b"bad value")), ("malformed", ["ok"])):
             self._fresh_client()
             with self.subTest(name):
@@ -3804,7 +3835,7 @@ class TestLeaseJournalExceptionNarrowing(_ViewTestBase):
     """A database error of the journal entry after an applied Lease add does not fail the request."""
 
     def _post_with_failing_journal(self, error: Exception, address: str, hw_address: str):
-        url = reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_lease_add", kwargs={"pk": self.server.pk, "family": 4})
         with _failing_journal(error), _lease_stub(LeaseDaemon(4).responses()):
             return self.client.post(url, {"ip_address": address, "hw_address": hw_address})
 
@@ -3843,13 +3874,13 @@ class TestLeaseExportClientError(_ViewTestBase):
     """Cover error paths in get_export()."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_get_client_value_error_redirects(self):
         """ValueError from get_client in export redirects with error."""
         # A cert without a key makes the real KeaClient constructor raise ValueError.
         bad = _make_db_server(name="badtls-export", client_cert_path="/x/cert.pem")
-        url = reverse("plugins:netbox_kea:server_leases4", args=[bad.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": bad.pk, "family": 4})
         with _lease_stub({"subnet4-list": _subnet_list(4, [])}):
             response = self.client.get(url, {"export": "form", "by": "subnet", "q": "10.0.0.0/24"})
         self.assertIn(response.status_code, [200, 302])
@@ -3871,7 +3902,7 @@ class TestLeaseHtmxErrorHandler(_ViewTestBase):
     """Cover HTMX error rendering paths."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     _SUBNETS4 = _subnet_list(4, [])
 
@@ -3906,7 +3937,9 @@ class TestLeaseEditGetValidation(_ViewTestBase):
     """Cover lease edit GET validation paths."""
 
     def _url(self, ip="10.0.0.1"):
-        return reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, ip])
+        return reverse(
+            "plugins:netbox_kea:server_lease_edit", kwargs={"pk": self.server.pk, "family": 4, "ip_address": ip}
+        )
 
     _SUBNETS4 = _subnet_list(4, [])
 
@@ -3934,7 +3967,9 @@ class TestLeaseEditGetValidation(_ViewTestBase):
         """ValueError from get_client redirects with error."""
         # A cert without a key makes the real KeaClient constructor raise ValueError.
         bad = _make_db_server(name="badtls-edit", client_cert_path="/x/cert.pem")
-        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[bad.pk, "10.0.0.1"])
+        url = reverse(
+            "plugins:netbox_kea:server_lease_edit", kwargs={"pk": bad.pk, "family": 4, "ip_address": "10.0.0.1"}
+        )
         with _lease_stub({"subnet4-list": self._SUBNETS4}):
             response = self.client.get(url, follow=True)
         self.assertEqual(response.status_code, 200)
@@ -3954,7 +3989,7 @@ class TestLeaseAddPostErrors(_ViewTestBase):
     """Cover lease add POST error handling."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_lease_add", kwargs={"pk": self.server.pk, "family": 4})
 
     def _valid_form(self):
         return {"ip_address": "10.0.0.1", "subnet_id": "1", "hw_address": "aa:bb:cc:00:00:01", "valid_lft": "3600"}
@@ -3993,7 +4028,7 @@ class TestLeaseAddSideEffectErrors(_ViewTestBase):
     """Cover lease add post-creation side effect error paths."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_lease_add", kwargs={"pk": self.server.pk, "family": 4})
 
     def _valid_form(self):
         return {"ip_address": "10.0.0.1", "subnet_id": "1", "hw_address": "aa:bb:cc:00:00:01", "valid_lft": "3600"}
@@ -4022,7 +4057,7 @@ class TestGetLeasesPageDefensiveChecks(_ViewTestBase):
     _SUBNETS4 = _subnet_list(4, [])
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_non_list_leases_raises_runtime_error(self):
         """When Kea returns leases as non-list, the view catches the RuntimeError."""
@@ -4053,7 +4088,7 @@ class TestExportAllDefensiveChecks(_ViewTestBase):
     """Cover defensive branches in get_export_all()."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_non_list_leases_in_export_redirects(self):
         """When export_all gets non-list leases, it redirects with error."""
@@ -4109,7 +4144,7 @@ class TestGetLeasesPageMalformedResponse(_ViewTestBase):
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     _SUBNETS4 = _subnet_list(4, [])
 
@@ -4169,7 +4204,7 @@ class TestGetLeasesSingleResultValidation(_ViewTestBase):
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     _SUBNETS4 = _subnet_list(4, [])
 
@@ -4234,7 +4269,7 @@ class TestExportErrorPaths(_ViewTestBase):
     """Export must redirect with error messages when Kea calls fail."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     _SUBNETS4 = _subnet_list(4, [])
 
@@ -4264,7 +4299,7 @@ class TestExportErrorPaths(_ViewTestBase):
         """ValueError during get_client() for export must redirect with error message."""
         # A cert without a key makes the real KeaClient constructor raise ValueError.
         bad = _make_db_server(name="badtls-export2", client_cert_path="/x/cert.pem")
-        url = reverse("plugins:netbox_kea:server_leases4", args=[bad.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": bad.pk, "family": 4})
         with _lease_stub({"subnet4-list": self._SUBNETS4}):
             response = self.client.get(url, {"export": "all", "by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 302)
@@ -4281,7 +4316,7 @@ class TestLeaseDeletePartialFailure(_ViewTestBase):
     """Bulk delete must handle partial failures gracefully."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_a_lost_reply_after_an_applied_row_reports_both(self):
         """The applied row is reported and journaled; the unconfirmed row is reported without its error text."""
@@ -4366,7 +4401,7 @@ class TestFetchOneMacValueError(_ViewTestBase):
                 "cltt": 1_700_000_000,
             }
         )
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get": {"result": 0, "arguments": lease}}) as kea:
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.5"})
         self.assertEqual(response.status_code, 200)
@@ -4386,7 +4421,7 @@ class TestFetchOneMacValueError(_ViewTestBase):
                 "cltt": 1_700_000_000,
             }
         )
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with _lease_stub({"subnet4-list": self._SUBNETS4, "lease4-get": {"result": 0, "arguments": lease}}) as kea:
             response = self._htmx_get(url, {"by": "ip", "q": "10.0.0.6"})
         self.assertEqual(response.status_code, 200)
@@ -4401,7 +4436,7 @@ class TestGetLeasesPageGlobalEdgeCases(_ViewTestBase):
         return self.client.get(url, data=data, HTTP_HX_REQUEST="true")
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     _SUBNETS4 = _subnet_list(4, [])
 
@@ -4457,7 +4492,7 @@ class TestLeaseSearchSubnetDropdown(_ViewTestBase):
     _LISTING = _subnet_list(4, [{"id": 3, "subnet": "10.0.2.0/24"}, {"id": 2, "subnet": "10.0.1.0/24"}])
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
     def _search_value(self, response):
         return BeautifulSoup(response.content, "html.parser").select_one("#lease-search-value")
@@ -4580,7 +4615,7 @@ class TestLeaseSearchHeaderSort(_ViewTestBase):
         }
         with stub_kea(responses):
             return self.client.get(
-                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4}),
                 {"by": "subnet", "q": "10.0.0.0/24", **params},
                 HTTP_HX_REQUEST="true",
             )

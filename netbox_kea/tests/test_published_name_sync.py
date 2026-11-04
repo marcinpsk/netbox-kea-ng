@@ -131,7 +131,10 @@ class TestPerRowSyncPublishedName(_ChangeRecords):
         self.client.force_login(user)
 
     def _sync_reservation(self, family: int) -> None:
-        url = reverse(f"plugins:netbox_kea:server_reservation{family}_sync", args=[self.server.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_sync",
+            kwargs={"pk": self.server.pk, "family": family, "subnet_id": 1},
+        )
         query = urlencode({"identifier_type": "hw-address", "identifier": _HW})
         responses = {**_catalogue(family), "reservation-get": _res_get(_CASES[family]["reservation"])}
         with stub_kea(responses):
@@ -139,7 +142,7 @@ class TestPerRowSyncPublishedName(_ChangeRecords):
         self.assertNotContains(response, "text-bg-danger")
 
     def _sync_lease(self, family: int, hostname: str | None = None) -> None:
-        url = reverse(f"plugins:netbox_kea:server_lease{family}_sync", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": family})
         responses = {**_catalogue(family), f"lease{family}-get": {"result": 0, "arguments": _lease(family, hostname)}}
         with stub_kea(responses):
             response = self.client.post(url, {"ip_address": _CASES[family]["address"]})

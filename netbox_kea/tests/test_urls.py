@@ -7,7 +7,7 @@ from django.test import SimpleTestCase
 from django.urls import URLResolver, include, path, resolve, reverse
 
 from netbox_kea.urls import urlpatterns
-from netbox_kea.views.leases import ServerLease4AddView, ServerLease6AddView
+from netbox_kea.views.leases import ServerLeaseAddView
 
 
 def _registered_paths(patterns, prefix=""):
@@ -40,7 +40,7 @@ class TestPluginURLRegistration(SimpleTestCase):
         self.assertEqual(duplicates, {}, f"Duplicate plugin URL names: {duplicates}")
 
     def test_duplicate_guard_detects_an_explicit_path_repeated_in_an_include(self):
-        view = ServerLease4AddView.as_view()
+        view = ServerLeaseAddView.as_view()
         patterns = [
             path("servers/<int:pk>/leases4/add/", view, name="explicit_add"),
             path("servers/<int:pk>/", include([path("leases4/add/", view, name="registered_add")])),
@@ -49,7 +49,7 @@ class TestPluginURLRegistration(SimpleTestCase):
             self._assert_unique_paths(patterns)
 
     def test_duplicate_guard_accepts_the_same_leaf_under_distinct_parent_paths(self):
-        view = ServerLease4AddView.as_view()
+        view = ServerLeaseAddView.as_view()
         patterns = [
             path("servers/<int:pk>/", include([path("add/", view, name="server_add")])),
             path("combined/", include([path("add/", view, name="combined_add")])),
@@ -57,11 +57,11 @@ class TestPluginURLRegistration(SimpleTestCase):
         self._assert_unique_paths(patterns)
 
     def test_lease_add_names_reverse_and_resolve_to_the_registered_views(self):
-        for family, view in ((4, ServerLease4AddView), (6, ServerLease6AddView)):
+        for family in (4, 6):
             with self.subTest(family=family):
-                url = reverse(f"plugins:netbox_kea:server_lease{family}_add", kwargs={"pk": 1})
+                url = reverse("plugins:netbox_kea:server_lease_add", kwargs={"pk": 1, "family": family})
                 self.assertTrue(url.endswith(f"/servers/1/leases{family}/add/"), url)
                 match = resolve(url)
-                self.assertIs(match.func.view_class, view)
-                self.assertEqual(match.view_name, f"plugins:netbox_kea:server_lease{family}_add")
-                self.assertEqual(match.kwargs, {"pk": 1})
+                self.assertIs(match.func.view_class, ServerLeaseAddView)
+                self.assertEqual(match.view_name, "plugins:netbox_kea:server_lease_add")
+                self.assertEqual(match.kwargs, {"pk": 1, "family": family})

@@ -101,7 +101,7 @@ class LeaseBrowsingTest(_ViewTestBase):
     """Browsing shows valid siblings beside the safe reason for each excluded record."""
 
     def _url(self, family: int = 4) -> str:
-        return reverse(f"plugins:netbox_kea:server_leases{family}", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": family})
 
     def test_a_subnet_search_keeps_valid_siblings_and_shows_safe_reasons(self):
         records = [
@@ -161,12 +161,18 @@ class LeaseBrowsingTest(_ViewTestBase):
         rows = {row.record["kind"]: row.record for row in response.context["table"].rows}
         self.assertEqual(
             rows["address"]["edit_url"],
-            reverse("plugins:netbox_kea:server_lease6_edit", args=[self.server.pk, "2001:db8:1::10"])
+            reverse(
+                "plugins:netbox_kea:server_lease_edit",
+                kwargs={"pk": self.server.pk, "family": 6, "ip_address": "2001:db8:1::10"},
+            )
             + f"?{urlencode({'return_url': f'{self._url(6)}?by=subnet_id&q=10'})}",
         )
         self.assertEqual(
             rows["delegated-prefix"]["edit_url"],
-            reverse("plugins:netbox_kea:server_lease6_edit", args=[self.server.pk, "2001:db8:100:100::/56"])
+            reverse(
+                "plugins:netbox_kea:server_lease_edit",
+                kwargs={"pk": self.server.pk, "family": 6, "ip_address": "2001:db8:100:100::/56"},
+            )
             + f"?{urlencode({'return_url': f'{self._url(6)}?by=subnet_id&q=10'})}",
         )
         self.assertTrue(rows["address"].get("sync_url"))
@@ -283,7 +289,10 @@ class LeaseBrowsingTest(_ViewTestBase):
         self.assertEqual(labels["2001:db8:1::13"], "Expired")
 
     def test_a_malformed_exact_lease_cannot_be_edited_and_is_not_reported_as_absent(self):
-        url = reverse("plugins:netbox_kea:server_lease4_edit", args=[self.server.pk, "192.0.2.10"])
+        url = reverse(
+            "plugins:netbox_kea:server_lease_edit",
+            kwargs={"pk": self.server.pk, "family": 4, "ip_address": "192.0.2.10"},
+        )
         with stub_kea({"lease4-get": {"result": 0, "arguments": lease_record("192.0.2.10", drop=("state",))}}):
             response = self.client.get(url)
 
@@ -296,7 +305,7 @@ class LeaseDeleteTest(_ViewTestBase):
     """Bulk delete removes the selected allocation: real page, form, view and KeaClient; only HTTP is stubbed."""
 
     def _delete_url(self, family: int = 6) -> str:
-        return reverse(f"plugins:netbox_kea:server_leases{family}_delete", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": family})
 
     def test_a_selected_delegated_prefix_is_deleted_as_a_prefix(self):
         records = [
@@ -311,7 +320,7 @@ class LeaseDeleteTest(_ViewTestBase):
         }
         with stub_kea(responses):
             page = self.client.get(
-                reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6}),
                 {"by": "subnet_id", "q": "10"},
                 HTTP_HX_REQUEST="true",
             )
@@ -383,7 +392,7 @@ class LeaseExportTest(_ViewTestBase):
     """A complete export refuses an incomplete observation; a limited one says so."""
 
     def _url(self, family: int = 4) -> str:
-        return reverse(f"plugins:netbox_kea:server_leases{family}", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": family})
 
     def test_export_all_refuses_an_observation_with_a_malformed_record(self):
         records = [lease_record("192.0.2.10"), lease_record("192.0.2.11", valid_lft=True)]
