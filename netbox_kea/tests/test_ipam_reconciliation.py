@@ -1520,8 +1520,11 @@ def _import_reservations(server: Server, observation: ReservationObservation, su
     from netbox_kea import event_scope
     from netbox_kea.integrations.dhcp_import_networks import ClassReferences
     from netbox_kea.integrations.dhcp_import_options import CustomDefinitions, OptionReferences
+    from netbox_kea.integrations.dhcp_import_reservations import (
+        import_reservation_snapshot,
+        reconcile_delegated_prefixes,
+    )
     from netbox_kea.integrations.dhcp_import_write import WriteScope
-    from netbox_kea.integrations.dhcp_plugin import import_reservation_snapshot, reconcile_delegated_prefixes
     from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
     references = OptionReferences(CustomDefinitions({}, ()), ClassReferences(6, frozenset(), {}))

@@ -15,7 +15,7 @@ _FOLLOW_UP_FILES = frozenset(
     {
         "constants.py",
         "integrations/dhcp_import_options.py",
-        "integrations/dhcp_plugin.py",
+        "integrations/dhcp_import_reservations.py",
         "mappers/kea_to_dhcp.py",
         "models.py",
         "reservation_transfer.py",

@@ -67,7 +67,7 @@ rules:
     paths:
       include:
         - "netbox_kea/ipam_reconciliation.py"
-        - "netbox_kea/integrations/dhcp_plugin.py"
+        - "netbox_kea/integrations/dhcp_import_reservations.py"
         - "kea-sync-hostname-unpublished.py"
     patterns:
       # A reported name reaches the sync as a call argument or in a (hardware, hostname) pair.
