@@ -63,6 +63,36 @@ def good_local_function_in_attempt(server, family):
     return attempt("The read", read)
 
 
+def bad_change_client_assigned(server, family):
+    # ruleid: kea-client-outside-with
+    client = build_client(server, family)
+    return client.command(KeaCommand.CONFIG_GET, family)
+
+
+def bad_change_client_through_the_module(server, family):
+    # ruleid: kea-client-outside-with
+    return change_outcome.build_client(server, family).command(KeaCommand.CONFIG_GET, family)
+
+
+def bad_second_change_client_in_the_block(server):
+    with build_client(server, 4) as client:
+        # ruleid: kea-client-outside-with
+        other = build_client(server, 6)
+        return client.command(KeaCommand.CONFIG_GET, 4), other
+
+
+def good_change_client_with_the_lock(server, family):
+    # ok: kea-client-outside-with
+    with build_client(server, family) as client, _serialized(client, family):
+        return client.command(KeaCommand.CONFIG_GET, family)
+
+
+def good_change_client_through_the_module(server, family):
+    # ok: kea-client-outside-with
+    with change_outcome.build_client(server, family) as client:
+        return client.command(KeaCommand.CONFIG_GET, family)
+
+
 def build_client(server, family):
     # ok: kea-client-outside-with
     client = attempt("The client", lambda: server.get_client(version=family))
