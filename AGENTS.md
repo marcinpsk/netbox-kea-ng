@@ -319,8 +319,9 @@ URL request
   `settled` property is true (the `Cacheable` protocol). A failed read raises, so it is never stored. A Reservation
   entry (`reservation_reads.ReservationPage`) holds the page Snapshot and the Subnet Catalogue it was parsed against,
   so a hit sends no Catalogue read; it is settled only when both are. A Reservation walk that an error stopped
-  (`page-fetch-failed`, `pagination-stalled`) is not settled; a walk stopped at its limit is. A Lease entry (`LeaseRead`) holds the Snapshot, or the Catalogue that could not resolve a
-  Subnet search; the view shows its Notice. A Subnet search resolves its CIDR inside the cached read through a live Catalogue read, keyed by the
+  (`page-fetch-failed`, `pagination-stalled`) is not settled; a walk stopped at its limit is. A Lease entry
+  (`LeaseRead`) holds the Snapshot, or the Catalogue that could not resolve a Subnet search; the view shows its
+  Notice. A Subnet search resolves its CIDR inside the cached read through a live Catalogue read, keyed by the
   unresolved search, so a hit sends no Kea command; a result of a Catalogue that did not settle is not stored. A Lease
   search key holds the Attribute, the value and the state; a read of every Lease also holds the cursor and the page
   size. `LeaseSnapshot.settled` is always true: a failed Lease read raises, and each diagnostic excludes one record.

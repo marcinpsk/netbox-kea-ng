@@ -40,6 +40,23 @@ from ..reservations import _parse_reservation_page
 from netbox_kea.reservation_reads import read_snapshot as _read_snapshot
 
 # ok: kea-private-reservation-read-import
+from .reservation_reads import (read_page as
+    _read_page)
+
+# ok: kea-private-reservation-read-import
+from .reservation_reads import PAGE_SIZE  # public, _scope is private
+
+# ruleid: kea-private-reservation-read-import
+from .reservation_reads import (
+    PAGE_SIZE,  # size (100)
+    _scope,
+)
+
+# ruleid: kea-private-reservation-read-import
+from .reservation_reads import PAGE_SIZE, \
+    _scope
+
+# ok: kea-private-reservation-read-import
 from .reservation_reads import (
     PAGE_SIZE as _PAGE_SIZE,
     cached_page as _cached_page,  # a private alias of a public name

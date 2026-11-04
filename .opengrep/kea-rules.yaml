@@ -1277,18 +1277,27 @@ rules:
       netbox_kea/reservation_reads.py in another module, tests included. reservation_reads holds the Reservation read,
       and its public names are its interface. A private name can change without notice, so a caller that uses it
       breaks. Use a public name, or make the name public in its module.
-      Limits: the rule sees a from-import (absolute, or relative with one or more dots before views.reservations or
-      reservation_reads, also inside parentheses or with "as") and an attribute of the module name or of an alias
-      from "from ... import reservation_reads as x" or "from ...views import reservations as x". A
-      "from .reservations import" in views/ is rule kea-private-reservation-view-import. "import ... as x" of the
+      Limits: the rule sees a from-import of a private source name (absolute, or relative with one or two dots
+      before views.reservations or reservation_reads, in any layout, also with "as") and an attribute of the module
+      name or of an alias from "from ... import reservation_reads as x" or "from ...views import reservations as x".
+      A "from .reservations import" in views/ is rule kea-private-reservation-view-import. "import ... as x" of the
       full module path, getattr(), a mock.patch() target string and a re-export are not seen.
     metadata:
       category: maintainability
       confidence: HIGH
     pattern-either:
-      # A private name, not a private alias, imported from either module, also inside parentheses.
-      - pattern-regex: >-
-          from\s+(?:netbox_kea\.|\.+)(?:views\.reservations|reservation_reads)\s+import\s+(?:\(\s*(?:[^)]*?[,\n]\s*)?|(?:[^\n(]*?,\s*)?)_\w
+      # A private source name imported from either module; the import pattern sees through aliases and comments.
+      - patterns:
+          - pattern-either:
+              - pattern: from netbox_kea.views.reservations import $NAME
+              - pattern: from netbox_kea.reservation_reads import $NAME
+              - pattern: from .views.reservations import $NAME
+              - pattern: from ..views.reservations import $NAME
+              - pattern: from .reservation_reads import $NAME
+              - pattern: from ..reservation_reads import $NAME
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^_
       - patterns:
           - pattern-either:
               - pattern: netbox_kea.views.reservations.$NAME
@@ -1336,7 +1345,11 @@ rules:
         - "**/views/**"
         - "kea-private-reservation-view-import.py"
     pattern-either:
-      - pattern-regex: from\s+\.reservations\s+import\s+(?:\(\s*(?:[^)]*?[,\n]\s*)?|(?:[^\n(]*?,\s*)?)_\w
+      - patterns:
+          - pattern: from .reservations import $NAME
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^_
       - patterns:
           - pattern-inside: |
               from . import reservations as $ALIAS
