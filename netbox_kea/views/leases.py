@@ -61,7 +61,7 @@ from ..leases import (
 )
 from ..models import Server
 from ..published_name import lease_published_name
-from ..read_failure import ReadFailure, attempt
+from ..read_failure import ReadFailure, attempt, client_settings_message
 from ..reservations import (
     GlobalReservationScope,
     HostOnlyReservation,
@@ -958,7 +958,7 @@ _NO_RESERVATION_FIELDS: dict[str, Any] = {
 _LOOKUPS_FAILED_REASON = "The Reservation lookups failed."
 
 
-def _unknown_badge_title(reason: UnknownReservationMatch) -> str:
+def _unknown_badge_title(reason: UnknownReservationMatch, server: Server) -> str:
     """Return the title of the Reservation Unknown badge, or an empty string for the reason that the page shows."""
     match reason:
         case UnknownReservationMatch.UNVERIFIED_SUBNET:
@@ -968,7 +968,7 @@ def _unknown_badge_title(reason: UnknownReservationMatch) -> str:
         case UnknownReservationMatch.MALFORMED_REPLY:
             return "Kea returned a Reservation lookup reply that cannot be read."
         case UnknownReservationMatch.INVALID_READ:
-            return "The Kea client settings of the Server are not valid."
+            return client_settings_message(server)
         case UnknownReservationMatch.FOREIGN_IDENTIFIER:
             return "No Reservation matched, and this lease carries a client identifier that no Reservation can hold."
         case UnknownReservationMatch.UNKNOWN_SHARED_NETWORK:
@@ -1047,7 +1047,7 @@ def _link_reservation(
 def _set_reservation_fields(
     row: dict[str, Any],
     match: ReservationMatch,
-    server_pk: int,
+    server: Server,
     version: Family,
     can_change: bool,
     return_url: str,
@@ -1059,40 +1059,40 @@ def _set_reservation_fields(
     row.update(_NO_RESERVATION_FIELDS)
     match match:
         case ReservationMatchUnknown(reason=reason):
-            row["reservation_unknown_reason"] = _unknown_badge_title(reason)
+            row["reservation_unknown_reason"] = _unknown_badge_title(reason, server)
             return False
         case Unreserved(subnet=subnet):
             if can_change:
-                row["create_reservation_url"] = _create_reservation_url(row, subnet, server_pk, version, return_url)
+                row["create_reservation_url"] = _create_reservation_url(row, subnet, server.pk, version, return_url)
             return True
         case Reserved(reservation=reservation):
-            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            _link_reservation(row, reservation, server.pk, can_change, return_url)
             row["is_reserved"] = True
             return True
         case StaleMac(reservation=reservation, lease_mac=lease_mac):
-            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            _link_reservation(row, reservation, server.pk, can_change, return_url)
             row["is_reserved"] = True
             row["stale_mac"] = True
             row["stale_lease_mac"] = lease_mac
             row["reservation_mac"] = reservation.identity.value
-            row["delete_lease_url"] = reverse(f"plugins:netbox_kea:server_leases{version}_delete", args=[server_pk])
+            row["delete_lease_url"] = reverse(f"plugins:netbox_kea:server_leases{version}_delete", args=[server.pk])
             return False
         case PendingAddressChange(reservation=reservation, reserved=reserved):
-            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            _link_reservation(row, reservation, server.pk, can_change, return_url)
             row["pending_ip_change"] = True
             row["pending_reservation_ip"] = ", ".join(str(item) for item in reserved)
             return False
         case HostOnlyReservation(reservation=reservation):
-            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            _link_reservation(row, reservation, server.pk, can_change, return_url)
             row["host_reservation"] = True
             return True
         case OtherKindReservation(reservation=reservation):
-            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            _link_reservation(row, reservation, server.pk, can_change, return_url)
             row["other_kind_reservation"] = True
             return True
         # Kea does not apply the Reservation, so the Lease is dynamic and a Sync cannot contradict it.
         case IgnoredReservation(reservation=reservation, reason=reason):
-            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            _link_reservation(row, reservation, server.pk, can_change, return_url)
             row["reservation_ignored_reason"] = _ignored_badge_title(reason)
             return True
         case _:
@@ -1210,7 +1210,7 @@ def _enrich_leases_with_badges(
     else:
         hook_unavailable = ReservationMatchUnknown(UnknownReservationMatch.RESERVATION_HOOK_UNAVAILABLE) in matches
         offers_sync = [
-            _set_reservation_fields(row, match, server.pk, version, can_change, return_url)
+            _set_reservation_fields(row, match, server, version, can_change, return_url)
             for row, match in zip(leases, matches, strict=True)
         ]
 

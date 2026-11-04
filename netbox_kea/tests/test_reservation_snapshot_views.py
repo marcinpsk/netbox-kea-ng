@@ -10,7 +10,8 @@ from bs4 import BeautifulSoup
 from django.contrib import messages as django_messages
 from django.urls import reverse
 
-from netbox_kea import display_cache
+from netbox_kea import display_cache, lease_reads, subnet_catalogue
+from netbox_kea.lease_reads import LeaseSearch
 from netbox_kea.reservation_reads import PAGE_SIZE as RESERVATION_PAGE_SIZE
 from netbox_kea.views.notices import HEADLINES, Notice
 
@@ -21,12 +22,19 @@ from .kea_stub import (
     _res_get,
     _res_page,
     complete_lease,
+    kea_client,
     lease_record,
     queued,
     recorded_host,
     stub_kea,
 )
-from .utils import _make_db_server, _ViewTestBase, record_kea_clients, with_display_cache_config
+from .utils import (
+    _make_db_server,
+    _ViewTestBase,
+    record_kea_clients,
+    save_key_without_certificate,
+    with_display_cache_config,
+)
 
 
 def _return_url(url: str) -> list[str]:
@@ -1163,6 +1171,25 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
                 self.assertIsNone(row["create_reservation_url"])
                 self.assertIsNone(row.get("sync_url"))
                 self.assertNotContains(response, _HOOK_NOTICE)
+
+    def test_a_lookup_client_that_the_settings_cannot_build_names_the_client_settings_in_the_badge(self):
+        """The Lease and the Catalogue are display cache entries, so only the client of the lookup fails to build."""
+        with stub_kea(_catalogue_responses(4, 20, "198.18.0.0/24")):
+            catalogue = subnet_catalogue.display(self.server, 4)
+        expected = save_key_without_certificate(self.server)
+        self.server.refresh_from_db()
+        with with_display_cache_config(leases_ttl=300, configuration_ttl=300):
+            display_cache.cached(self.server, 4, "catalogue", lambda: catalogue)
+            with (
+                stub_kea({"lease4-get": {"result": 0, "arguments": self.lease}}),
+                kea_client(self.server.ca_url) as kea,
+            ):
+                lease_reads.cached_read(self.server, 4, LeaseSearch("ip", "198.18.0.20"), lambda: kea)
+            response = self._get({"result": 3})
+
+        self.assertEqual(response.status_code, 200)
+        [badge] = _reserved_badges(response)
+        self.assertEqual((badge.get_text(strip=True), badge["title"]), ("Reservation Unknown", expected))
 
     def test_a_missing_host_cmds_hook_shows_one_page_notice_and_no_row_badge(self):
         response = self._get({"result": 2, "text": "unknown command 'reservation-get'"})
