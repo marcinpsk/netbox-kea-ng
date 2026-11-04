@@ -88,13 +88,13 @@ class ServerSyncStatusView(ServerFamilyMixin, generic.ObjectView):
             "latest_result": read(latest_job).get(instance.pk) if latest_job is not None else None,
             "jobs_list_url": jobs_list_url,
             "can_change_server": Server.objects.restrict(request.user, "change").filter(pk=instance.pk).exists(),
-            "server_edit_url": server_family_url(request, instance, self, "server_edit"),
-            "sync_toggle_url": server_family_url(request, instance, self, "server_sync_toggle"),
-            "sync_now_url": server_family_url(request, instance, self, "server_sync_now"),
+            "server_edit_url": server_family_url(request, instance, "server_edit"),
+            "sync_toggle_url": server_family_url(request, instance, "server_sync_toggle"),
+            "sync_now_url": server_family_url(request, instance, "server_sync_now"),
             "sync_cfg": sync_cfg,
             "type_badges": type_badges,
             "sync_settings_url": section_url(request.user, SyncConfig),
-            **sync_nav_context(request, instance, self, "ipam", integration_runs=dhcp_plugin.runs_for(instance)),
+            **sync_nav_context(request, instance, "ipam", integration_runs=dhcp_plugin.runs_for(instance)),
         }
 
 
@@ -112,7 +112,7 @@ class ServerSyncNowView(LoginRequiredMixin, View):
         except Exception:
             logger.exception("Failed to enqueue sync job for server %s", server.name)
             messages.error(request, "An internal error occurred when enqueuing the sync job.")
-        return HttpResponseRedirect(server_family_url(request, server, self, "server_sync_status"))
+        return HttpResponseRedirect(server_family_url(request, server, "server_sync_status"))
 
 
 class ServerSyncToggleView(LoginRequiredMixin, View):
@@ -130,10 +130,10 @@ class ServerSyncToggleView(LoginRequiredMixin, View):
         except Exception:
             logger.exception("Failed to toggle sync for server %s", server.name)
             messages.error(request, "An internal error occurred when toggling sync.")
-            return HttpResponseRedirect(server_family_url(request, server, self, "server_sync_status"))
+            return HttpResponseRedirect(server_family_url(request, server, "server_sync_status"))
         state = "enabled" if server.sync_enabled else "disabled"
         messages.success(request, f"IPAM sync {state} for {server.name}.")
-        return HttpResponseRedirect(server_family_url(request, server, self, "server_sync_status"))
+        return HttpResponseRedirect(server_family_url(request, server, "server_sync_status"))
 
 
 def _replace_auto_jobs_view(model, replacement_view) -> None:

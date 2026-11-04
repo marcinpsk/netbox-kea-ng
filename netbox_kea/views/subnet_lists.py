@@ -168,7 +168,7 @@ def fetch_shared_networks(server: Server, family: Family) -> SharedNetworkRead:
 def _shared_network_row(
     network: SharedNetwork, server: Server, family: Family, *, writable: bool, return_url: str
 ) -> dict[str, Any]:
-    leases = reverse(f"plugins:netbox_kea:server_leases{family}", args=[server.pk])
+    leases = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": server.pk, "family": family})
     subnet_links = [
         {"cidr": cidr, "url": f"{leases}?{urlencode({'by': 'subnet', 'q': cidr})}"} for cidr in network.member_cidrs
     ]

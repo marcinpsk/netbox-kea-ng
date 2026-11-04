@@ -62,7 +62,7 @@ class _LeasePage(_ViewTestBase):
         return {**responses, "reservation-get": {"result": 3}}
 
     def _url(self) -> str:
-        return reverse(f"plugins:netbox_kea:server_leases{self.family}", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": self.family})
 
     def _get(self, *records: dict, **params: str):
         with stub_kea(self._responses(*records)):

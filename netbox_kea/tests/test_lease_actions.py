@@ -92,7 +92,10 @@ class LeaseEditTest(_ViewTestBase):
     """Edit derives the written fields from the shown values and checks a fresh read before it writes."""
 
     def _url(self, family: int, target: str) -> str:
-        return reverse(f"plugins:netbox_kea:server_lease{family}_edit", args=[self.server.pk, target])
+        return reverse(
+            "plugins:netbox_kea:server_lease_edit",
+            kwargs={"pk": self.server.pk, "family": family, "ip_address": target},
+        )
 
     def _shown(self, daemon: LeaseDaemon, family: int, target: str) -> dict[str, list[str]]:
         with stub_kea(daemon.responses()):
@@ -296,7 +299,7 @@ class LeaseDeleteTest(_ViewTestBase):
         }
         with stub_kea(responses):
             page = self.client.get(
-                reverse(f"plugins:netbox_kea:server_leases{family}", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": family}),
                 {"by": "ip", "q": address},
                 HTTP_HX_REQUEST="true",
             )
@@ -306,7 +309,10 @@ class LeaseDeleteTest(_ViewTestBase):
         data = {"pk": selected, **({"_confirm": "1"} if confirm else {})}
         with stub_kea(daemon.responses()) as kea:
             response = self.client.post(
-                reverse(f"plugins:netbox_kea:server_leases{daemon.family}_delete", args=[self.server.pk]), data
+                reverse(
+                    "plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": daemon.family}
+                ),
+                data,
             )
         return kea, response
 
@@ -406,7 +412,7 @@ class LeaseAddTest(_ViewTestBase):
     """Creation sends a typed request and reports what Kea confirmed and what a fresh read observed."""
 
     def _url(self, family: int = 4) -> str:
-        return reverse(f"plugins:netbox_kea:server_lease{family}_add", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_lease_add", kwargs={"pk": self.server.pk, "family": family})
 
     def test_a_creation_signal_carries_the_request_and_the_observed_lease(self):
         received = _Received(self, signals.lease_added)
@@ -465,7 +471,7 @@ class LeaseAddTest(_ViewTestBase):
         received = _Received(self, signals.leases_deleted)
         daemon = LeaseDaemon(4, _address4())
         token = shown_token(_address4())
-        url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(daemon.responses()) as kea:
             response = self.client.post(url, {"pk": [token], "_confirm": "1"})
 
@@ -494,7 +500,7 @@ class LeaseAddTest(_ViewTestBase):
         received = _Received(self, signals.leases_deleted)
         daemon = LeaseDaemon(4, _address4(), _address4_other())
         tokens = [shown_token(_address4()), shown_token(_address4_other())]
-        url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(daemon.responses()), self.assertLogs("netbox_kea.after_apply", "ERROR") as logs:
             response = self.client.post(url, {"pk": tokens, "_confirm": "1"})
 
@@ -642,7 +648,7 @@ class LeaseReserveTest(_ViewTestBase):
         }
         with stub_kea(responses):
             response = self.client.get(
-                reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6}),
                 {"by": "subnet_id", "q": "10"},
                 HTTP_HX_REQUEST="true",
             )
@@ -657,13 +663,16 @@ class LeaseReserveTest(_ViewTestBase):
         self.assertNotIn("ip_addresses", query)
         self.assertEqual(
             rows["delegated-prefix"]["edit_url"],
-            reverse("plugins:netbox_kea:server_lease6_edit", args=[self.server.pk, f"{_PREFIX}/56"])
+            reverse(
+                "plugins:netbox_kea:server_lease_edit",
+                kwargs={"pk": self.server.pk, "family": 6, "ip_address": f"{_PREFIX}/56"},
+            )
             + "?"
             + urlencode({"return_url": self.last_response.wsgi_request.get_full_path()}),
         )
         self.assertEqual(
             rows["delegated-prefix"].get("sync_url"),
-            reverse("plugins:netbox_kea:server_lease6_sync", args=[self.server.pk]),
+            reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": 6}),
         )
         self.assertEqual(
             parse_qs(urlsplit(rows["address"]["create_reservation_url"]).query)["ip_addresses"], ["2001:db8:1::10"]
@@ -723,7 +732,7 @@ class LeaseAfterApplyEventsTest(TransactionTestCase):
             stub_kea(daemon.responses()),
         ):
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_lease_add", kwargs={"pk": self.server.pk, "family": 4}),
                 {"ip_address": "192.0.2.50", "hw_address": "aa:bb:cc:00:00:50"},
             )
 
@@ -742,7 +751,7 @@ class LeaseAfterApplyEventsTest(TransactionTestCase):
     def test_a_delete_whose_journal_events_fail_is_still_reported_as_deleted(self):
         received = _Received(self, signals.leases_deleted)
         daemon = LeaseDaemon(4, _address4())
-        url = reverse("plugins:netbox_kea:server_leases4_delete", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 4})
         with (
             override_settings(EVENTS_PIPELINE=[_FAIL_JOURNAL_DISPATCH]),
             stub_kea(daemon.responses()),

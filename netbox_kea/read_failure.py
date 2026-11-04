@@ -11,12 +11,15 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal, TypeVar
+from typing import TYPE_CHECKING, Literal, TypeVar
 
 import requests
 
 from .kea import KeaClientSettingsError, KeaException, kea_error_message
 from .malformed import MalformedKeaReply
+
+if TYPE_CHECKING:
+    from .models import Server
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,11 @@ class ReadFailure:
     label: str
     #: Kea's answer with operator guidance (``kea_error_message()``) for ``unsupported`` and ``refused``, else empty.
     reply: str = ""
+
+
+def client_settings_message(server: Server) -> str:
+    """Return the one message of client settings that cannot build a Kea client, as in a ``misconfigured`` read."""
+    return f"The Kea client settings of Server {server.name} are invalid. Check the client certificate and key."
 
 
 def attempt(label: str, read: Callable[[], T]) -> T | ReadFailure:

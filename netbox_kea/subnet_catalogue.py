@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Set
-from contextlib import AbstractContextManager
+from collections.abc import Iterator, Set
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Protocol, TypeVar
@@ -589,35 +589,40 @@ def _observe_once(
     return _read_identity(client, family), server_configuration.for_verification(server, family)
 
 
-def _catalogue_client(server: Server, family: Family) -> KeaClient | None:
+@contextmanager
+def _catalogue_client(server: Server, family: Family) -> Iterator[KeaClient | None]:
+    """Give the client of a Catalogue read and close it at the end of the block, or give None for invalid settings."""
     client = attempt(
         f"The DHCPv{family} Subnet Catalogue client of Server {server.pk}", lambda: server.get_client(version=family)
     )
-    return None if isinstance(client, ReadFailure) else client
+    if isinstance(client, ReadFailure):
+        yield None
+        return
+    with client:
+        yield client
 
 
 def _observe(
     server: Server, family: Family
 ) -> tuple[_IdentityObservation, _ConfigurationObservation, str | None, ServerConfigurationSnapshot | None]:
     """Read both sources, once more when they disagree. Also return the configuration snapshot that was read."""
-    client = _catalogue_client(server, family)
-    if client is None:
-        return (
-            _unavailable_identity("identity-unavailable", "Kea subnet identity facts are unavailable."),
-            _unavailable_configuration(
-                "configuration-unavailable",
-                "Kea Subnet configuration facts are unavailable.",
-            ),
-            None,
-            None,
-        )
-
-    identity, source = _observe_once(server, client, family)
-    configuration = _configuration_observation(source)
-    if not _observations_disagree(identity, configuration):
-        return identity, configuration, None, source
-    first_hash = configuration.configuration_hash
-    identity, source = _observe_once(server, client, family)
+    with _catalogue_client(server, family) as client:
+        if client is None:
+            return (
+                _unavailable_identity("identity-unavailable", "Kea subnet identity facts are unavailable."),
+                _unavailable_configuration(
+                    "configuration-unavailable",
+                    "Kea Subnet configuration facts are unavailable.",
+                ),
+                None,
+                None,
+            )
+        identity, source = _observe_once(server, client, family)
+        configuration = _configuration_observation(source)
+        if not _observations_disagree(identity, configuration):
+            return identity, configuration, None, source
+        first_hash = configuration.configuration_hash
+        identity, source = _observe_once(server, client, family)
     configuration = _configuration_observation(source)
     return identity, configuration, _disagreement_after_retry(first_hash, identity, configuration), source
 
@@ -982,12 +987,12 @@ def read_identity(server: Server, family: int) -> IdentityRead:
     """Send one ``subnet{v}-list`` read, for a check after a change. It uses no cache and sends no config-get."""
     validated_family = validate_family(family)
     require_persisted_server(server)
-    client = _catalogue_client(server, validated_family)
-    identity = (
-        _unavailable_identity("identity-unavailable", "Kea subnet identity facts are unavailable.")
-        if client is None
-        else _read_identity(client, validated_family)
-    )
+    with _catalogue_client(server, validated_family) as client:
+        identity = (
+            _unavailable_identity("identity-unavailable", "Kea subnet identity facts are unavailable.")
+            if client is None
+            else _read_identity(client, validated_family)
+        )
     return IdentityRead(_reconcile(server, validated_family, identity, _CONFIGURATION_NOT_READ, None))
 
 

@@ -46,14 +46,14 @@ logger = logging.getLogger(__name__)
 
 
 def sync_nav_context(
-    request: HttpRequest, server: Server, view: object, subsection: str, *, integration_runs: bool
+    request: HttpRequest, server: Server, subsection: str, *, integration_runs: bool
 ) -> dict[str, Any]:
     """Return the Sync subsections, IPAM and DHCP Plugin, or none when the integration does not run for *server*."""
     if not integration_runs:
         return {"sync_subsections": []}
     return {
         "sync_subsections": [
-            (key, label, server_family_url(request, server, view, name), key == subsection)
+            (key, label, server_family_url(request, server, name), key == subsection)
             for key, label, name in (
                 ("ipam", "IPAM", "server_sync_status"),
                 ("dhcp_plugin", "DHCP Plugin", "server_dhcp_plugin"),
@@ -377,7 +377,7 @@ class ServerDhcpPluginView(generic.ObjectView):
             "mapping_unavailable": _mapping_unavailable() if not refusal else None,
             "sync_refusal": _sync_refusal(request.user, instance),
             **latest_run_context(request, instance),
-            **sync_nav_context(request, instance, self, "dhcp_plugin", integration_runs=not refusal),
+            **sync_nav_context(request, instance, "dhcp_plugin", integration_runs=not refusal),
         }
 
 

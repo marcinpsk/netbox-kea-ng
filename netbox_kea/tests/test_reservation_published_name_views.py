@@ -77,7 +77,10 @@ class _PublishedNameViewTest(_ViewTestBase):
             display_cache.rotate_configuration(self.server, family)
 
     def _url(self, family: int, subnet_id: int) -> str:
-        url = reverse(f"plugins:netbox_kea:server_reservation{family}_edit", args=[self.server.pk, subnet_id])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_edit",
+            kwargs={"pk": self.server.pk, "family": family, "subnet_id": subnet_id},
+        )
         return f"{url}?{urlencode({'identifier_type': 'hw-address', 'identifier': _HW})}"
 
     def _open(self, family: int, subnet_id: int, stored: str):
@@ -108,7 +111,7 @@ class TestReservationAddPublishedName(_PublishedNameViewTest):
             }
         ) as kea:
             response = self.client.post(
-                reverse(f"plugins:netbox_kea:server_reservation{family}_add", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": family}),
                 self._form_data(family, subnet_id, hostname, address),
             )
         return response, kea
@@ -198,7 +201,9 @@ class TestReservationEditPublishedName(_PublishedNameViewTest):
             " ".join(response.context["form"].non_field_errors()),
         )
         self.assertContains(response, "The qualifying suffix differs from the one shown")
-        preview_url = reverse("plugins:netbox_kea:server_reservation4_published_name", args=[self.server.pk])
+        preview_url = reverse(
+            "plugins:netbox_kea:server_reservation_published_name", kwargs={"pk": self.server.pk, "family": 4}
+        )
         with stub_kea({**_recorded(4), "config-get": changed}):
             preview = self.client.get(
                 preview_url, {"subnet_cidr": _SUBNETS[4][21], "ip_address": _ADDRESSES[4][21], "hostname": "host"}
@@ -293,7 +298,9 @@ class TestPublishedNamePreview(_PublishedNameViewTest):
     """The preview endpoint renders the name that Kea publishes, from the cached Subnet Catalogue."""
 
     def _preview(self, family: int, **params: str):
-        url = reverse(f"plugins:netbox_kea:server_reservation{family}_published_name", args=[self.server.pk])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_published_name", kwargs={"pk": self.server.pk, "family": family}
+        )
         return self.client.get(url, params, headers={"HX-Request": "true"})
 
     def _subnet(self, family: int, subnet_id: int, address: str | None = None) -> dict[str, str]:
@@ -374,9 +381,13 @@ class TestPublishedNamePreview(_PublishedNameViewTest):
         self.assertEqual(kea.commands(), [])
 
     def test_the_forms_request_the_preview(self):
-        preview = reverse("plugins:netbox_kea:server_reservation4_published_name", args=[self.server.pk])
+        preview = reverse(
+            "plugins:netbox_kea:server_reservation_published_name", kwargs={"pk": self.server.pk, "family": 4}
+        )
         with stub_kea(_recorded(4)):
-            add = self.client.get(reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]))
+            add = self.client.get(
+                reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4})
+            )
         self.assertContains(add, f'hx-get="{preview}"')
         self.assertContains(add, 'hx-include="#id_hostname, #id_subnet_cidr, #id_ip_address"')
         edit = self._open(4, 21, "host")

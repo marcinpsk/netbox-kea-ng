@@ -234,18 +234,14 @@ class ServerStatusView(generic.ObjectView):
         statuses = self._get_statuses(instance)
 
         service_urls: dict[str, dict[str, str]] = {}
-        if instance.dhcp4:
-            service_urls["DHCPv4"] = {
-                "enable_url": reverse("plugins:netbox_kea:server_dhcp4_enable", args=[instance.pk]),
-                "disable_url": reverse("plugins:netbox_kea:server_dhcp4_disable", args=[instance.pk]),
-                "options_url": reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[instance.pk]),
-            }
-        if instance.dhcp6:
-            service_urls["DHCPv6"] = {
-                "enable_url": reverse("plugins:netbox_kea:server_dhcp6_enable", args=[instance.pk]),
-                "disable_url": reverse("plugins:netbox_kea:server_dhcp6_disable", args=[instance.pk]),
-                "options_url": reverse("plugins:netbox_kea:server_dhcp6_options_edit", args=[instance.pk]),
-            }
+        for family in (4, 6):
+            if instance.dhcp4 if family == 4 else instance.dhcp6:
+                route = {"pk": instance.pk, "family": family}
+                service_urls[f"DHCPv{family}"] = {
+                    "enable_url": reverse("plugins:netbox_kea:server_dhcp_enable", kwargs=route),
+                    "disable_url": reverse("plugins:netbox_kea:server_dhcp_disable", kwargs=route),
+                    "options_url": reverse("plugins:netbox_kea:server_dhcp_options_edit", kwargs=route),
+                }
 
         # Build the services list from the configured service URLs (config-driven),
         # not from live status data. This ensures enable/disable buttons always render

@@ -2,11 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 import logging
 import uuid
-from abc import ABCMeta
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Generic, Literal, TypeVar, assert_never
+from typing import Any, Literal, TypeVar, assert_never
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 from urllib.parse import urlencode as _urlencode
 
@@ -61,7 +60,7 @@ from ..leases import (
 )
 from ..models import Server
 from ..published_name import lease_published_name
-from ..read_failure import ReadFailure, attempt
+from ..read_failure import ReadFailure, attempt, client_settings_message
 from ..reservations import (
     GlobalReservationScope,
     HostOnlyReservation,
@@ -106,7 +105,7 @@ from .manual_sync_presenter import manual_sync_lines, show_manual_sync
 from .notices import Notice, load_snapshot, load_target, notice, show_notices
 from .read_age import read_age_context, refresh_requested
 from .reservations import empty_text
-from .workspace import ServerFamilyMixin
+from .workspace import FamilyRouteMixin, ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
 
@@ -266,16 +265,31 @@ def present(
     return PresentedLeases(table, can_delete, return_url, reservation_hook_unavailable)
 
 
-class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
-    """Generic base view for DHCP lease search tabs; specialised by IP version."""
+# One Leases tab for both families; ServerLeasesView owns it.
+_LEASES_TAB = OptionalViewTab(label="Leases", weight=1010, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
+
+
+@register_model_view(Server, "leases_tab", path="leases4", kwargs={"family": 4})
+class ServerLeasesView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectView):
+    """The Lease search tab of one family."""
 
     workspace_section = "leases"
 
     template_name = "netbox_kea/server_dhcp_leases.html"
     queryset = Server.objects.all()
-    table: type[T]
+    tab = _LEASES_TAB
 
-    def get_table(self, data: list[dict[str, Any]], request: HttpRequest) -> T:
+    @property
+    def table(self) -> type[tables.LeaseTable4] | type[tables.LeaseTable6]:
+        """Return the Lease table of the route family."""
+        return {4: tables.LeaseTable4, 6: tables.LeaseTable6}[self.dhcp_version]
+
+    @property
+    def form(self) -> type[forms.BaseLeasesSarchForm]:
+        """Return the Lease search form of the route family."""
+        return {4: forms.Leases4SearchForm, 6: forms.Leases6SearchForm}[self.dhcp_version]
+
+    def get_table(self, data: list[dict[str, Any]], request: HttpRequest) -> tables.LeaseTable4 | tables.LeaseTable6:
         """Build and configure the lease table for *request*."""
         table = self.table(data, user=request.user)
         table.configure(request)
@@ -315,12 +329,10 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
         }
         if can_change:
             ctx["add_url"] = reverse(
-                f"plugins:netbox_kea:server_lease{self.dhcp_version}_add",
-                args=[instance.pk],
+                "plugins:netbox_kea:server_lease_add", kwargs={"pk": instance.pk, "family": self.dhcp_version}
             )
             ctx["bulk_import_url"] = reverse(
-                f"plugins:netbox_kea:server_lease{self.dhcp_version}_bulk_import",
-                args=[instance.pk],
+                "plugins:netbox_kea:server_lease_bulk_import", kwargs={"pk": instance.pk, "family": self.dhcp_version}
             )
         return ctx
 
@@ -338,21 +350,23 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             return redirect(request.path)
 
         state_filter: LeaseState | None = form.cleaned_data.get("state")
-        client = _client_or_refusal(instance, self.dhcp_version)
-        if isinstance(client, str):
-            messages.error(request, client)
-            return redirect(request.path)
         search = LeaseSearch(by, form.cleaned_data["q"], state_filter)
-        try:
-            # An export reads the Leases live.
-            loaded = load_snapshot(instance, "lease", lambda: read_leases(client, instance, self.dhcp_version, search))
-        except LeaseQueryGuardError as exc:
-            messages.warning(request, lease_query_guard_message(exc, state_filter))
-            return redirect(request.path)
-        except ValueError:
-            logger.exception("The lease export search of server %s is not valid", instance.pk)
-            messages.error(request, "The lease search is not valid, so it was not exported.")
-            return redirect(request.path)
+        with _client_or_refusal(instance, self.dhcp_version) as client:
+            if isinstance(client, str):
+                messages.error(request, client)
+                return redirect(request.path)
+            try:
+                # An export reads the Leases live.
+                loaded = load_snapshot(
+                    instance, "lease", lambda: read_leases(client, instance, self.dhcp_version, search)
+                )
+            except LeaseQueryGuardError as exc:
+                messages.warning(request, lease_query_guard_message(exc, state_filter))
+                return redirect(request.path)
+            except ValueError:
+                logger.exception("The lease export search of server %s is not valid", instance.pk)
+                messages.error(request, "The lease search is not valid, so it was not exported.")
+                return redirect(request.path)
         if isinstance(loaded, Notice):
             show_notices(request, loaded)
             return redirect(request.path)
@@ -386,17 +400,17 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
 
         per_page = 1000
 
-        client = _client_or_refusal(instance, self.dhcp_version)
-        if isinstance(client, str):
-            messages.error(request, client)
-            return redirect(request.path)
-        loaded = load_snapshot(
-            instance,
-            "lease",
-            lambda: client.lease_get_all(
-                self.dhcp_version, per_page=per_page, max_leases=_LEASE_EXPORT_MAX_LEASES, server_id=instance.pk
-            ),
-        )
+        with _client_or_refusal(instance, self.dhcp_version) as client:
+            if isinstance(client, str):
+                messages.error(request, client)
+                return redirect(request.path)
+            loaded = load_snapshot(
+                instance,
+                "lease",
+                lambda: client.lease_get_all(
+                    self.dhcp_version, per_page=per_page, max_leases=_LEASE_EXPORT_MAX_LEASES, server_id=instance.pk
+                ),
+            )
         if isinstance(loaded, Notice):
             show_notices(request, loaded)
             return redirect(request.path)
@@ -507,8 +521,8 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
                     "object": instance,
                     "delete_action": (
                         reverse(
-                            f"plugins:netbox_kea:server_leases{self.dhcp_version}_delete",
-                            args=[instance.pk],
+                            "plugins:netbox_kea:server_leases_delete",
+                            kwargs={"pk": instance.pk, "family": self.dhcp_version},
                         )
                         + "?"
                         + _urlencode({"return_url": presented.return_url})
@@ -542,39 +556,6 @@ class BaseServerLeasesView(ServerFamilyMixin, generic.ObjectView, Generic[T]):
             return response
 
 
-# Single consolidated "Leases" tab shared by the v4 and v6 leases views. Only
-# ServerLeases4View carries it as a class attribute (so exactly one tab entry is
-# generated); ServerLeases6View injects it via get_extra_context so the same tab
-# stays highlighted when viewing v6. An in-page v4/v6 toggle (template) switches
-# between the two underlying URLs, which are unchanged.
-_LEASES_TAB = OptionalViewTab(label="Leases", weight=1010, is_enabled=lambda s: s.dhcp4 or s.dhcp6)
-
-
-@register_model_view(Server, "leases6")
-class ServerLeases6View(BaseServerLeasesView[tables.LeaseTable6]):
-    """DHCPv6 leases view (rendered under the shared Leases tab)."""
-
-    form = forms.Leases6SearchForm
-    table = tables.LeaseTable6
-    dhcp_version = 6
-
-    def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
-        """Highlight the shared Leases tab (this view has no class-level tab of its own)."""
-        ctx = super().get_extra_context(request, instance)
-        ctx["tab"] = _LEASES_TAB
-        return ctx
-
-
-@register_model_view(Server, "leases4")
-class ServerLeases4View(BaseServerLeasesView[tables.LeaseTable4]):
-    """DHCPv4 leases view; owns the shared Leases tab."""
-
-    tab = _LEASES_TAB
-    form = forms.Leases4SearchForm
-    table = tables.LeaseTable4
-    dhcp_version = 4
-
-
 class FakeLeaseModelMeta:
     """Minimal ``_meta`` shim so bulk_delete.html can introspect the lease pseudo-model."""
 
@@ -590,10 +571,16 @@ class FakeLeaseModel:
     _meta = FakeLeaseModelMeta
 
 
-class BaseServerLeasesDeleteView(ServerFamilyMixin, GetReturnURLMixin, generic.ObjectView, metaclass=ABCMeta):
-    """Base view for confirming and processing bulk deletion of DHCP leases."""
+class ServerLeasesDeleteView(FamilyRouteMixin, ServerFamilyMixin, GetReturnURLMixin, generic.ObjectView):
+    """Confirm and process the bulk deletion of DHCP leases."""
 
     workspace_section = "leases"
+    tab = _LEASES_TAB
+
+    @property
+    def form(self) -> type[forms.BaseLeaseDeleteForm]:
+        """Return the Lease delete form of the route family."""
+        return {4: forms.Lease4DeleteForm, 6: forms.Lease6DeleteForm}[self.dhcp_version]
 
     queryset = Server.objects.all()
     default_return_url = "plugins:netbox_kea:server_list"
@@ -669,22 +656,6 @@ def _after_lease_delete(request: HttpRequest, return_url: str) -> HttpResponse:
     return redirect(return_url)
 
 
-class ServerLeases6DeleteView(BaseServerLeasesDeleteView):
-    """Bulk-delete view for DHCPv6 leases."""
-
-    form = forms.Lease6DeleteForm
-    dhcp_version = 6
-    tab = _LEASES_TAB
-
-
-class ServerLeases4DeleteView(BaseServerLeasesDeleteView):
-    """Bulk-delete view for DHCPv4 leases."""
-
-    form = forms.Lease4DeleteForm
-    dhcp_version = 4
-    tab = _LEASES_TAB
-
-
 _KIND_LABELS = {"address": "Address", "delegated-prefix": "Delegated prefix"}
 
 
@@ -707,18 +678,21 @@ def _shown_row(shown: ShownLease) -> dict[str, Any]:
     }
 
 
-class _BaseLeaseEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
-    """Base view for editing a single Lease via ``lease{v}-update``.
+class ServerLeaseEditView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
+    """Edit a single Lease via ``lease{v}-update``.
 
     The route target is the address, or ``address/length`` for a delegated prefix. The page carries the
     shown Lease facts, and the save writes only the fields that differ from them.
-    Subclasses must set ``dhcp_version`` and ``form_class``.
     """
 
     workspace_section = "leases"
 
-    dhcp_version: Family
-    form_class: type[forms._LeaseEditForm]
+    tab = _LEASES_TAB
+
+    @property
+    def form_class(self) -> type[forms._LeaseEditForm]:
+        """Return the Lease edit form of the route family."""
+        return {4: forms.Lease4EditForm, 6: forms.Lease6EditForm}[self.dhcp_version]
 
     def _get_server(self, pk: int) -> Server:
         return get_object_or_404(Server.objects.restrict(self.request.user, "view"), pk=pk)
@@ -726,7 +700,8 @@ class _BaseLeaseEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginReq
     def _leases_url(self, server: Server) -> str:
         """Return the lease search that linked here, else the lease list."""
         return _safe_return_url(
-            self.request, reverse(f"plugins:netbox_kea:server_leases{self.dhcp_version}", kwargs={"pk": server.pk})
+            self.request,
+            reverse("plugins:netbox_kea:server_leases", kwargs={"pk": server.pk, "family": self.dhcp_version}),
         )
 
     def _render(self, request: HttpRequest, server: Server, form: forms._LeaseEditForm, shown: ShownLease):
@@ -749,18 +724,18 @@ class _BaseLeaseEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginReq
         """Render the edit form pre-filled with the current lease values and the shown facts."""
         server = self._get_server(pk)
 
-        client = _client_or_refusal(server, self.dhcp_version)
-        if isinstance(client, str):
-            messages.error(request, client)
-            return redirect(self._leases_url(server))
-        try:
-            label, identity = parse_selection(self.dhcp_version, ip_address)
-        except ValueError:
-            messages.error(
-                request, f"{ip_address} is not a DHCPv{self.dhcp_version} lease address or delegated prefix."
-            )
-            return redirect(self._leases_url(server))
-        result = load_target(server, "lease_target", lambda: client.lease_get(identity))
+        with _client_or_refusal(server, self.dhcp_version) as client:
+            if isinstance(client, str):
+                messages.error(request, client)
+                return redirect(self._leases_url(server))
+            try:
+                label, identity = parse_selection(self.dhcp_version, ip_address)
+            except ValueError:
+                messages.error(
+                    request, f"{ip_address} is not a DHCPv{self.dhcp_version} lease address or delegated prefix."
+                )
+                return redirect(self._leases_url(server))
+            result = load_target(server, "lease_target", lambda: client.lease_get(identity))
         if isinstance(result, Notice):
             show_notices(request, result)
             return redirect(self._leases_url(server))
@@ -810,40 +785,22 @@ class _BaseLeaseEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginReq
         return redirect(self._leases_url(server))
 
 
-@register_model_view(Server, "lease4_edit", path="leases4/<path:ip_address>/edit")
-class ServerLease4EditView(_BaseLeaseEditView):
-    """Edit a single DHCPv4 lease."""
-
-    dhcp_version = 4
-    form_class = forms.Lease4EditForm
-    tab = _LEASES_TAB
-
-
-@register_model_view(Server, "lease6_edit", path="leases6/<path:ip_address>/edit")
-class ServerLease6EditView(_BaseLeaseEditView):
-    """Edit a single DHCPv6 lease or delegated prefix."""
-
-    dhcp_version = 6
-    form_class = forms.Lease6EditForm
-    tab = _LEASES_TAB
-
-
-class _BaseLeaseAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
-    """Base view for creating a new lease via ``lease{v}-add``."""
+class ServerLeaseAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
+    """Create a new lease via ``lease{v}-add``."""
 
     workspace_section = "leases"
 
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_lease_add.html"
-    dhcp_version: Family
-    form_class: type[forms._LeaseAddForm]
-    # Use _active_tab (not `tab`) so model_view_tabs does not register this as a
-    # duplicate navigation entry — the add view URL resolves with pk-only, which
-    # would cause the parent list tab to appear twice in the tab bar.
-    _active_tab: OptionalViewTab
+    tab = _LEASES_TAB
+
+    @property
+    def form_class(self) -> type[forms._LeaseAddForm]:
+        """Return the Lease add form of the route family."""
+        return {4: forms.Lease4AddForm, 6: forms.Lease6AddForm}[self.dhcp_version]
 
     def _leases_url(self, server: Server) -> str:
-        return reverse(f"plugins:netbox_kea:server_leases{self.dhcp_version}", args=[server.pk])
+        return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": server.pk, "family": self.dhcp_version})
 
     def _form(self, server: Server, gate: SyncGate, data: QueryDict | None = None) -> forms._LeaseAddForm:
         """Build the form with the user's manual Sync rule and the Server's automatic IPAM sync."""
@@ -862,7 +819,7 @@ class _BaseLeaseAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
                 "form": form,
                 "dhcp_version": self.dhcp_version,
                 "cancel_url": self._leases_url(server),
-                "tab": self._active_tab,
+                "tab": self.tab,
             },
         )
 
@@ -905,32 +862,14 @@ class _BaseLeaseAddView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
         show_lease_side_effects(request, facts, subject=f"Lease {creation.address}")
 
 
-@register_model_view(Server, "lease4_add", path="leases4/add")
-class ServerLease4AddView(_BaseLeaseAddView):
-    """Create a new DHCPv4 lease."""
-
-    dhcp_version = 4
-    form_class = forms.Lease4AddForm
-    _active_tab = _LEASES_TAB
-
-
-@register_model_view(Server, "lease6_add", path="leases6/add")
-class ServerLease6AddView(_BaseLeaseAddView):
-    """Create a new DHCPv6 lease."""
-
-    dhcp_version = 6
-    form_class = forms.Lease6AddForm
-    _active_tab = _LEASES_TAB
-
-
 def _canonical_reservation_url(server_pk: int, reservation: Reservation, return_url: str) -> str | None:
     if isinstance(reservation.scope, GlobalReservationScope):
         return None
     params = {"identifier_type": reservation.identity.identifier_type, "identifier": reservation.identity.value}
     query = _urlencode({**params, "return_url": return_url} if return_url else params)
     base = reverse(
-        f"plugins:netbox_kea:server_reservation{reservation.family}_edit",
-        args=[server_pk, reservation.scope.subnet.subnet_id],
+        "plugins:netbox_kea:server_reservation_edit",
+        kwargs={"pk": server_pk, "family": reservation.family, "subnet_id": reservation.scope.subnet.subnet_id},
     )
     return f"{base}?{query}"
 
@@ -956,7 +895,7 @@ _NO_RESERVATION_FIELDS: dict[str, Any] = {
 _LOOKUPS_FAILED_REASON = "The Reservation lookups failed."
 
 
-def _unknown_badge_title(reason: UnknownReservationMatch) -> str:
+def _unknown_badge_title(reason: UnknownReservationMatch, server: Server) -> str:
     """Return the title of the Reservation Unknown badge, or an empty string for the reason that the page shows."""
     match reason:
         case UnknownReservationMatch.UNVERIFIED_SUBNET:
@@ -966,7 +905,7 @@ def _unknown_badge_title(reason: UnknownReservationMatch) -> str:
         case UnknownReservationMatch.MALFORMED_REPLY:
             return "Kea returned a Reservation lookup reply that cannot be read."
         case UnknownReservationMatch.INVALID_READ:
-            return "The Kea client settings of the Server are not valid."
+            return client_settings_message(server)
         case UnknownReservationMatch.FOREIGN_IDENTIFIER:
             return "No Reservation matched, and this lease carries a client identifier that no Reservation can hold."
         case UnknownReservationMatch.UNKNOWN_SHARED_NETWORK:
@@ -1030,7 +969,7 @@ def _create_reservation_url(
     if identities:
         params["identifier_type"] = identities[0].identifier_type
         params["identifier"] = identities[0].value
-    base = reverse(f"plugins:netbox_kea:server_reservation{version}_add", args=[server_pk])
+    base = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": server_pk, "family": version})
     return f"{base}?{_urlencode({key: value for key, value in params.items() if value})}"
 
 
@@ -1045,7 +984,7 @@ def _link_reservation(
 def _set_reservation_fields(
     row: dict[str, Any],
     match: ReservationMatch,
-    server_pk: int,
+    server: Server,
     version: Family,
     can_change: bool,
     return_url: str,
@@ -1057,40 +996,42 @@ def _set_reservation_fields(
     row.update(_NO_RESERVATION_FIELDS)
     match match:
         case ReservationMatchUnknown(reason=reason):
-            row["reservation_unknown_reason"] = _unknown_badge_title(reason)
+            row["reservation_unknown_reason"] = _unknown_badge_title(reason, server)
             return False
         case Unreserved(subnet=subnet):
             if can_change:
-                row["create_reservation_url"] = _create_reservation_url(row, subnet, server_pk, version, return_url)
+                row["create_reservation_url"] = _create_reservation_url(row, subnet, server.pk, version, return_url)
             return True
         case Reserved(reservation=reservation):
-            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            _link_reservation(row, reservation, server.pk, can_change, return_url)
             row["is_reserved"] = True
             return True
         case StaleMac(reservation=reservation, lease_mac=lease_mac):
-            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            _link_reservation(row, reservation, server.pk, can_change, return_url)
             row["is_reserved"] = True
             row["stale_mac"] = True
             row["stale_lease_mac"] = lease_mac
             row["reservation_mac"] = reservation.identity.value
-            row["delete_lease_url"] = reverse(f"plugins:netbox_kea:server_leases{version}_delete", args=[server_pk])
+            row["delete_lease_url"] = reverse(
+                "plugins:netbox_kea:server_leases_delete", kwargs={"pk": server.pk, "family": version}
+            )
             return False
         case PendingAddressChange(reservation=reservation, reserved=reserved):
-            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            _link_reservation(row, reservation, server.pk, can_change, return_url)
             row["pending_ip_change"] = True
             row["pending_reservation_ip"] = ", ".join(str(item) for item in reserved)
             return False
         case HostOnlyReservation(reservation=reservation):
-            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            _link_reservation(row, reservation, server.pk, can_change, return_url)
             row["host_reservation"] = True
             return True
         case OtherKindReservation(reservation=reservation):
-            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            _link_reservation(row, reservation, server.pk, can_change, return_url)
             row["other_kind_reservation"] = True
             return True
         # Kea does not apply the Reservation, so the Lease is dynamic and a Sync cannot contradict it.
         case IgnoredReservation(reservation=reservation, reason=reason):
-            _link_reservation(row, reservation, server_pk, can_change, return_url)
+            _link_reservation(row, reservation, server.pk, can_change, return_url)
             row["reservation_ignored_reason"] = _ignored_badge_title(reason)
             return True
         case _:
@@ -1208,12 +1149,11 @@ def _enrich_leases_with_badges(
     else:
         hook_unavailable = ReservationMatchUnknown(UnknownReservationMatch.RESERVATION_HOOK_UNAVAILABLE) in matches
         offers_sync = [
-            _set_reservation_fields(row, match, server.pk, version, can_change, return_url)
+            _set_reservation_fields(row, match, server, version, can_change, return_url)
             for row, match in zip(leases, matches, strict=True)
         ]
 
-    sync_url = reverse(f"plugins:netbox_kea:server_lease{version}_sync", args=[server.pk])
-    edit_url_name = f"plugins:netbox_kea:server_lease{version}_edit"
+    sync_url = reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": server.pk, "family": version})
     edit_query = f"?{_urlencode({'return_url': return_url})}" if return_url else ""
     ownership = _read_ownership(server, version, [lease["lease"] for lease in leases], user)
     for lease, sync_allowed in zip(leases, offers_sync, strict=True):
@@ -1228,7 +1168,8 @@ def _enrich_leases_with_badges(
             else:
                 lease["sync_refusal"] = gate.reason
         if can_change:
-            lease["edit_url"] = reverse(edit_url_name, args=[server.pk, lease["label"]]) + edit_query
+            target = {"pk": server.pk, "family": version, "ip_address": lease["label"]}
+            lease["edit_url"] = reverse("plugins:netbox_kea:server_lease_edit", kwargs=target) + edit_query
         lease["can_delete"] = can_delete
         lease["can_change"] = can_change
     return hook_unavailable

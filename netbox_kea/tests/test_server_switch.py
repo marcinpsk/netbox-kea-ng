@@ -21,7 +21,7 @@ from .utils import _make_db_server, _ViewTestBase
 
 class TestServerSwitch(_ViewTestBase):
     def test_failed_automatic_lease_search_also_replaces_history(self):
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(_catalogue_responses_for_subnets(4, [])):
             full_page = self.client.get(url, {"state": "0"})
         form = BeautifulSoup(full_page.content, "html.parser").select_one("#lease-search form")
@@ -46,7 +46,7 @@ class TestServerSwitch(_ViewTestBase):
         self.assertNotIn("HX-Push-Url", response.headers)
 
     def test_state_only_lease_auto_load_replaces_history_after_a_subnet_filter_is_dropped(self):
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(_catalogue_responses_for_subnets(4, [])):
             full_page = self.client.get(url, {"state": "0"})
         form = BeautifulSoup(full_page.content, "html.parser").select_one("#lease-search form")
@@ -86,7 +86,9 @@ class TestServerSwitch(_ViewTestBase):
             permission.users.add(self.user)
         self.client.force_login(self.user)
         with stub_kea(_catalogue_responses_for_subnets(4, [])):
-            source = self.client.get(reverse("plugins:netbox_kea:server_dhcp4_options_edit", args=[self.server.pk]))
+            source = self.client.get(
+                reverse("plugins:netbox_kea:server_dhcp_options_edit", kwargs={"pk": self.server.pk, "family": 4})
+            )
         self.assertEqual(source.status_code, 200)
         page = BeautifulSoup(source.content, "html.parser")
         link = next(
@@ -96,7 +98,8 @@ class TestServerSwitch(_ViewTestBase):
             destination = self.client.get(link["href"], follow=True)
         self.assertEqual(destination.status_code, 200)
         self.assertEqual(
-            destination.redirect_chain[0][0], reverse("plugins:netbox_kea:server_option_def4", args=[target.pk])
+            destination.redirect_chain[0][0],
+            reverse("plugins:netbox_kea:server_option_def", kwargs={"pk": target.pk, "family": 4}),
         )
         self.assertEqual(
             BeautifulSoup(destination.content, "html.parser")
@@ -105,7 +108,9 @@ class TestServerSwitch(_ViewTestBase):
             "Configuration",
         )
         with stub_kea(_catalogue_responses_for_subnets(6, [])):
-            source6 = self.client.get(reverse("plugins:netbox_kea:server_dhcp6_options_edit", args=[self.server.pk]))
+            source6 = self.client.get(
+                reverse("plugins:netbox_kea:server_dhcp_options_edit", kwargs={"pk": self.server.pk, "family": 6})
+            )
             page6 = BeautifulSoup(source6.content, "html.parser")
             link6 = next(
                 node for node in page6.select('nav[aria-label="Switch Server"] a') if node.text.strip() == target.name
@@ -116,7 +121,7 @@ class TestServerSwitch(_ViewTestBase):
         self.assertEqual(kea.commands(), [])
 
     def test_automatic_lease_search_replaces_the_current_history_entry(self):
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         responses = {
             **_catalogue_responses_for_subnets(4, []),
             "lease4-get-by-hostname": {"result": 0, "arguments": {"leases": []}},
@@ -136,14 +141,16 @@ class TestServerSwitch(_ViewTestBase):
     def test_all_servers_link_keeps_the_section_family_and_search(self):
         with stub_kea(_catalogue_responses_for_subnets(6, [])):
             response = self.client.get(
-                reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6}),
                 {"q": "printer", "by": "hostname", "state": "0", "page": "2"},
             )
         page = BeautifulSoup(response.content, "html.parser")
         all_servers = next(
             link for link in page.select('nav[aria-label="Switch Server"] a') if link.text == "All Servers"
         )
-        self.assertEqual(urlsplit(all_servers["href"]).path, reverse("plugins:netbox_kea:combined_leases6"))
+        self.assertEqual(
+            urlsplit(all_servers["href"]).path, reverse("plugins:netbox_kea:combined_leases", kwargs={"family": 6})
+        )
         self.assertEqual(
             parse_qs(urlsplit(all_servers["href"]).query), {"q": ["printer"], "by": ["hostname"], "state": ["0"]}
         )
@@ -152,7 +159,10 @@ class TestServerSwitch(_ViewTestBase):
         target = _make_db_server(name="second-server")
         with stub_kea({}):
             source = self.client.get(
-                reverse("plugins:netbox_kea:server_shared_network6_delete", args=[self.server.pk, "clients"])
+                reverse(
+                    "plugins:netbox_kea:server_shared_network_delete",
+                    kwargs={"pk": self.server.pk, "family": 6, "network_name": "clients"},
+                )
             )
         page = BeautifulSoup(source.content, "html.parser")
         link = next(
@@ -161,7 +171,8 @@ class TestServerSwitch(_ViewTestBase):
         with stub_kea({}) as kea:
             switched = self.client.get(link["href"])
         self.assertEqual(
-            urlsplit(switched.url).path, reverse("plugins:netbox_kea:server_shared_networks6", args=[target.pk])
+            urlsplit(switched.url).path,
+            reverse("plugins:netbox_kea:server_shared_networks", kwargs={"pk": target.pk, "family": 6}),
         )
         self.assertEqual(parse_qs(urlsplit(switched.url).query), {})
         self.assertTrue(
@@ -169,10 +180,35 @@ class TestServerSwitch(_ViewTestBase):
         )
         self.assertEqual(kea.commands(), [])
 
+    def test_switching_from_a_family_page_does_not_report_a_record_selection(self):
+        target = _make_db_server(name="second-server")
+        replies = {
+            **_catalogue_responses_for_subnets(6, []),
+            "stat-lease6-get": {"result": 2, "text": "unknown command"},
+        }
+        with stub_kea(replies):
+            source = self.client.get(
+                reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 6})
+            )
+        page = BeautifulSoup(source.content, "html.parser")
+        link = next(
+            node for node in page.select('nav[aria-label="Switch Server"] a') if node.text.strip() == target.name
+        )
+        self.assertNotIn("record_selection", parse_qs(urlsplit(link["href"]).query))
+        with stub_kea({}):
+            switched = self.client.get(link["href"])
+        self.assertEqual(
+            urlsplit(switched.url).path,
+            reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": target.pk, "family": 6}),
+        )
+        self.assertFalse(
+            any("Record selection dropped" in str(message) for message in get_messages(switched.wsgi_request))
+        )
+
     def test_permitted_reservation_filters_and_previous_selection_survive_switching(self):
         target = _make_db_server(name="second-server", ca_url="http://target.example.invalid/")
         previous = (
-            reverse("plugins:netbox_kea:combined_reservations6")
+            reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 6})
             + f"?server={self.server.pk}&server={target.pk}&q=printer"
         )
         url = reverse("plugins:netbox_kea:server_switch", args=[self.server.pk])
@@ -196,7 +232,7 @@ class TestServerSwitch(_ViewTestBase):
                     )
                 self.assertEqual(
                     urlsplit(response.url).path,
-                    reverse(f"plugins:netbox_kea:server_reservations{family}", args=[target.pk]),
+                    reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": target.pk, "family": family}),
                 )
                 self.assertEqual(
                     parse_qs(urlsplit(response.url).query),
@@ -345,7 +381,7 @@ class TestServerSwitch(_ViewTestBase):
         responses = _catalogue_responses_for_subnets(4, [])
         with stub_kea(responses):
             source = self.client.get(
-                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4}),
                 {"q": "printer", "by": "hostname", "state": "0", "page": "2", "per_page": "50"},
             )
         page = BeautifulSoup(source.content, "html.parser")
@@ -355,7 +391,10 @@ class TestServerSwitch(_ViewTestBase):
         with stub_kea({}) as kea:
             switched = self.client.get(link["href"])
         self.assertEqual(switched.status_code, 302)
-        self.assertEqual(urlsplit(switched.url).path, reverse("plugins:netbox_kea:server_leases4", args=[target.pk]))
+        self.assertEqual(
+            urlsplit(switched.url).path,
+            reverse("plugins:netbox_kea:server_leases", kwargs={"pk": target.pk, "family": 4}),
+        )
         self.assertEqual(
             parse_qs(urlsplit(switched.url).query),
             {"q": ["printer"], "by": ["hostname"], "state": ["0"], "per_page": ["50"]},

@@ -47,6 +47,7 @@ from .utils import (
     _page_data,
     _ReadModifyWriteMessages,
     _ViewTestBase,
+    invalid_server_settings,
     with_kea_client_config,
 )
 
@@ -151,7 +152,7 @@ class TestServerSharedNetworks4View(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/shared_networks4/"""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_shared_networks4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_shared_networks", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_get_returns_200(self):
         with stub_kea({"config-get": _SHARED_NETWORKS_CONFIG_V4}) as kea:
@@ -162,7 +163,7 @@ class TestServerSharedNetworks4View(_ViewTestBase):
     def test_shows_the_add_shared_network_link(self):
         with stub_kea({"config-get": _SHARED_NETWORKS_CONFIG_V4}):
             response = self.client.get(self._url())
-        add_url = reverse("plugins:netbox_kea:server_shared_network4_add", args=[self.server.pk])
+        add_url = reverse("plugins:netbox_kea:server_shared_network_add", kwargs={"pk": self.server.pk, "family": 4})
         self.assertContains(response, f'href="{add_url}"')
 
     def test_shows_shared_network_name(self):
@@ -218,8 +219,12 @@ class TestServerSharedNetworks4View(_ViewTestBase):
 
         with stub_kea(responses) as kea:
             server_list = self.client.get(self._url())
-            combined_list = self.client.get(reverse("plugins:netbox_kea:combined_shared_networks4"))
-            subnet_add = self.client.get(reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk]))
+            combined_list = self.client.get(
+                reverse("plugins:netbox_kea:combined_shared_networks", kwargs={"family": 4})
+            )
+            subnet_add = self.client.get(
+                reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
+            )
 
         self.assertContains(server_list, "empty-clients")
         self.assertContains(combined_list, "empty-clients")
@@ -260,7 +265,7 @@ class TestServerSharedNetworks4View(_ViewTestBase):
 
     def test_get_with_dhcp4_disabled_shows_protocol_not_enabled(self):
         v6_only = _make_db_server(name="v6-only-sn", dhcp4=False, dhcp6=True)
-        url = reverse("plugins:netbox_kea:server_shared_networks4", args=[v6_only.pk])
+        url = reverse("plugins:netbox_kea:server_shared_networks", kwargs={"pk": v6_only.pk, "family": 4})
         # A disabled protocol shows the explicit state before any client is built.
         with stub_kea({}) as kea:
             response = self.client.get(url)
@@ -281,7 +286,7 @@ class TestServerSharedNetworks6View(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/shared_networks6/"""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_shared_networks6", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_shared_networks", kwargs={"pk": self.server.pk, "family": 6})
 
     def test_get_returns_200(self):
         with stub_kea({"config-get": _SHARED_NETWORKS_CONFIG_V6}) as kea:
@@ -322,10 +327,10 @@ class TestServerSharedNetworks6View(_ViewTestBase):
 
 
 class TestServerSharedNetwork4AddView(_ViewTestBase):
-    """Tests for ServerSharedNetwork4AddView: GET form + POST create."""
+    """Tests for ServerSharedNetworkAddView: GET form + POST create."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_shared_network4_add", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_shared_network_add", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_get_returns_200_with_form(self):
         """GET must render the add-network form with status 200 (no Kea traffic)."""
@@ -371,10 +376,10 @@ class TestServerSharedNetwork4AddView(_ViewTestBase):
 
 
 class TestServerSharedNetwork6AddView(_ViewTestBase):
-    """Tests for ServerSharedNetwork6AddView — verifies v6 variant uses the dhcp6 service."""
+    """Tests for ServerSharedNetworkAddView — verifies v6 variant uses the dhcp6 service."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_shared_network6_add", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_shared_network_add", kwargs={"pk": self.server.pk, "family": 6})
 
     def test_get_returns_200(self):
         """GET must render the add-network form with status 200."""
@@ -391,10 +396,13 @@ class TestServerSharedNetwork6AddView(_ViewTestBase):
 
 
 class TestServerSharedNetwork4DeleteView(_ViewTestBase):
-    """Tests for ServerSharedNetwork4DeleteView: GET confirm + POST delete."""
+    """Tests for ServerSharedNetworkDeleteView: GET confirm + POST delete."""
 
     def _url(self, name="net-alpha"):
-        return reverse("plugins:netbox_kea:server_shared_network4_delete", args=[self.server.pk, name])
+        return reverse(
+            "plugins:netbox_kea:server_shared_network_delete",
+            kwargs={"pk": self.server.pk, "family": 4, "network_name": name},
+        )
 
     def test_get_returns_200_with_confirmation_page(self):
         """GET must render a confirmation page mentioning the network name (no Kea)."""
@@ -434,10 +442,13 @@ class TestServerSharedNetwork4DeleteView(_ViewTestBase):
 
 
 class TestServerSharedNetwork6DeleteView(_ViewTestBase):
-    """Tests for ServerSharedNetwork6DeleteView — verifies v6 variant uses the dhcp6 service."""
+    """Tests for ServerSharedNetworkDeleteView — verifies v6 variant uses the dhcp6 service."""
 
     def _url(self, name="net-beta"):
-        return reverse("plugins:netbox_kea:server_shared_network6_delete", args=[self.server.pk, name])
+        return reverse(
+            "plugins:netbox_kea:server_shared_network_delete",
+            kwargs={"pk": self.server.pk, "family": 6, "network_name": name},
+        )
 
     def test_get_returns_200(self):
         """GET must render confirmation page with status 200."""
@@ -588,15 +599,7 @@ class _SharedNetworkChangeMessages:
         messages, commands = self._post(self._stub(), client_cert_path="/etc/kea/client.pem")
         self.assertEqual(
             messages,
-            [
-                (
-                    django_messages.ERROR,
-                    (
-                        "The change was not sent to Kea, because the Server settings are not valid. "
-                        "NetBox could not build a Kea client from the Server connection settings."
-                    ),
-                )
-            ],
+            [(django_messages.ERROR, invalid_server_settings(self.server))],
         )
         self.assertEqual(commands, [])
 
@@ -607,7 +610,7 @@ class TestSharedNetworkAddMessages(_SharedNetworkChangeMessages, _ViewTestBase):
     not_sent = "Shared Network 'net-prod' already exists."
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_shared_network4_add", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_shared_network_add", kwargs={"pk": self.server.pk, "family": 4})
 
     def _stub(self, reply=_CONFIG_OK, **overrides):
         return _add_stub("net-prod", reply, **overrides)
@@ -625,7 +628,10 @@ class TestSharedNetworkDeleteMessages(_SharedNetworkChangeMessages, _ViewTestBas
     not_sent = "Shared Network 'net-prod' not found."
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_shared_network4_delete", args=[self.server.pk, "net-prod"])
+        return reverse(
+            "plugins:netbox_kea:server_shared_network_delete",
+            kwargs={"pk": self.server.pk, "family": 4, "network_name": "net-prod"},
+        )
 
     def _stub(self, reply=_CONFIG_OK, **overrides):
         return _delete_stub("net-prod", reply, **overrides)
@@ -643,10 +649,13 @@ class TestSharedNetworkDeleteMessages(_SharedNetworkChangeMessages, _ViewTestBas
 
 
 class TestServerSharedNetwork4EditView(_ViewTestBase):
-    """Tests for ServerSharedNetwork4EditView: GET form + POST update."""
+    """Tests for ServerSharedNetworkEditView: GET form + POST update."""
 
     def _url(self, name="prod-net"):
-        return reverse("plugins:netbox_kea:server_shared_network4_edit", args=[self.server.pk, name])
+        return reverse(
+            "plugins:netbox_kea:server_shared_network_edit",
+            kwargs={"pk": self.server.pk, "family": 4, "network_name": name},
+        )
 
     def _post_data(self, **overrides):
         data = {
@@ -680,7 +689,9 @@ class TestServerSharedNetwork4EditView(_ViewTestBase):
         )
 
         with stub_kea(responses) as kea:
-            self.client.get(reverse("plugins:netbox_kea:server_shared_networks4", args=[self.server.pk]))
+            self.client.get(
+                reverse("plugins:netbox_kea:server_shared_networks", kwargs={"pk": self.server.pk, "family": 4})
+            )
             first = self.client.get(self._url())
             second = self.client.get(self._url())
 
@@ -913,7 +924,10 @@ class TestSharedNetworkEditWritesOnlyChangedFields(_ViewTestBase):
 
     def _save(self, version, **changes):
         """Open the edit page of the live Shared Network, post it with *changes*, and return what config-set sent."""
-        url = reverse(f"plugins:netbox_kea:server_shared_network{version}_edit", args=[self.server.pk, "prod-net"])
+        url = reverse(
+            "plugins:netbox_kea:server_shared_network_edit",
+            kwargs={"pk": self.server.pk, "family": version, "network_name": "prod-net"},
+        )
         config = _catalogue_responses_for_subnets(version, [], shared_networks=[self._LIVE[version]])["config-get"]
         with _edit_stub(config) as kea:
             page = self.client.get(url)
@@ -935,7 +949,10 @@ class TestSharedNetworkEditWritesOnlyChangedFields(_ViewTestBase):
 
     def test_a_live_change_after_the_page_was_shown_is_still_refused(self):
         for version in (4, 6):
-            url = reverse(f"plugins:netbox_kea:server_shared_network{version}_edit", args=[self.server.pk, "prod-net"])
+            url = reverse(
+                "plugins:netbox_kea:server_shared_network_edit",
+                kwargs={"pk": self.server.pk, "family": version, "network_name": "prod-net"},
+            )
             changed = {**self._LIVE[version], "interface": "eth9"}
             shown, live = (
                 _catalogue_responses_for_subnets(version, [], shared_networks=[network])["config-get"]
@@ -967,10 +984,13 @@ class TestSharedNetworkEditWritesOnlyChangedFields(_ViewTestBase):
 
 
 class TestServerSharedNetwork6EditView(_ViewTestBase):
-    """Tests for ServerSharedNetwork6EditView — verifies the dhcp6 service."""
+    """Tests for ServerSharedNetworkEditView — verifies the dhcp6 service."""
 
     def _url(self, name="prod-net6"):
-        return reverse("plugins:netbox_kea:server_shared_network6_edit", args=[self.server.pk, name])
+        return reverse(
+            "plugins:netbox_kea:server_shared_network_edit",
+            kwargs={"pk": self.server.pk, "family": 6, "network_name": name},
+        )
 
     def test_get_returns_200(self):
         """GET returns 200 for DHCPv6 edit view."""
@@ -1044,7 +1064,10 @@ class TestSharedNetworkEditStaleValues(_ViewTestBase):
             daemon = _RunningConfiguration(
                 _sn_config(version, "prod-net", description="Old", option_data=[{"name": name, "data": old}])
             )
-            url = reverse(f"plugins:netbox_kea:server_shared_network{version}_edit", args=[self.server.pk, "prod-net"])
+            url = reverse(
+                "plugins:netbox_kea:server_shared_network_edit",
+                kwargs={"pk": self.server.pk, "family": version, "network_name": "prod-net"},
+            )
             with self.subTest(version=version), stub_kea(daemon.responses()) as kea:
                 self._fresh_client()
                 first = _page_data(self.client.get(url))
@@ -1078,7 +1101,10 @@ class TestSharedNetworkEditMessages(_ReadModifyWriteMessages):
 
     def test_edit(self):
         self._assert_one_message_per_case(
-            reverse("plugins:netbox_kea:server_shared_network4_edit", args=[self.server.pk, "prod-net"]),
+            reverse(
+                "plugins:netbox_kea:server_shared_network_edit",
+                kwargs={"pk": self.server.pk, "family": 4, "network_name": "prod-net"},
+            ),
             {"name": "prod-net", "description": "x"},
             {"config-get": _sn_config(4, "prod-net")},
             "Shared network 'prod-net' updated.",
@@ -1100,7 +1126,8 @@ class TestSharedNetworkEditAmbiguousWrite(_ViewTestBase):
             ):
                 with self.subTest(version=version, response=repr(error)):
                     url = reverse(
-                        f"plugins:netbox_kea:server_shared_network{version}_edit", args=[self.server.pk, "clients"]
+                        "plugins:netbox_kea:server_shared_network_edit",
+                        kwargs={"pk": self.server.pk, "family": version, "network_name": "clients"},
                     )
                     with _edit_stub(_sn_config(version, "clients"), **{"config-set": error}) as kea:
                         response = self.client.post(
@@ -1141,7 +1168,8 @@ class TestSharedNetworkEditAmbiguousWrite(_ViewTestBase):
                 for payload in ([], [{}], [None], [{"result": 2}, {"result": 0}], [{"result": False}]):
                     with self.subTest(version=version, phase=phase, payload=repr(payload)):
                         url = reverse(
-                            f"plugins:netbox_kea:server_shared_network{version}_edit", args=[self.server.pk, "clients"]
+                            "plugins:netbox_kea:server_shared_network_edit",
+                            kwargs={"pk": self.server.pk, "family": version, "network_name": "clients"},
                         )
                         with _edit_stub(_sn_config(version, "clients"), **{phase: payload}) as kea:
                             response = self.client.post(url, {"name": "clients", "description": "Updated"}, follow=True)
@@ -1173,7 +1201,10 @@ class TestSharedNetworkEditAmbiguousWrite(_ViewTestBase):
             for phase in ("config-test", "config-write"):
                 for payload in ([], [{}], [None], [{"result": 2}, {"result": 0}], [{"result": False}]):
                     with self.subTest(version=version, phase=phase, payload=repr(payload)):
-                        url = reverse(f"plugins:netbox_kea:server_shared_network{version}_add", args=[self.server.pk])
+                        url = reverse(
+                            "plugins:netbox_kea:server_shared_network_add",
+                            kwargs={"pk": self.server.pk, "family": version},
+                        )
                         with _add_stub("clients", version=version, **{phase: payload}) as kea:
                             response = self.client.post(url, {"name": "clients"}, follow=True)
                         self.assertEqual(response.status_code, 200)
@@ -1192,7 +1223,10 @@ class TestSharedNetworkOptionDataPreservation(_ViewTestBase):
     """Verify non-DNS/NTP option-data entries are preserved on shared network save."""
 
     def _url(self, name="prod-net"):
-        return reverse("plugins:netbox_kea:server_shared_network4_edit", args=[self.server.pk, name])
+        return reverse(
+            "plugins:netbox_kea:server_shared_network_edit",
+            kwargs={"pk": self.server.pk, "family": 4, "network_name": name},
+        )
 
     def test_post_preserves_non_dns_options(self):
         """config-set receives non-DNS/NTP option-data that was fetched from Kea."""
@@ -1232,7 +1266,10 @@ class TestSharedNetworkEditSnapshotFailures(_ViewTestBase):
     """Server Configuration failure paths for GET display and POST verification."""
 
     def _url(self, name="prod-net"):
-        return reverse("plugins:netbox_kea:server_shared_network4_edit", args=[self.server.pk, name])
+        return reverse(
+            "plugins:netbox_kea:server_shared_network_edit",
+            kwargs={"pk": self.server.pk, "family": 4, "network_name": name},
+        )
 
     def _post_data(self, **overrides):
         data = {
@@ -1336,7 +1373,7 @@ class TestSharedNetworkListEdgeCases(_ViewTestBase):
     def test_dhcp4_disabled_shows_protocol_not_enabled(self):
         """A disabled DHCPv4 family shows the protocol-disabled state without a Kea read."""
         server_no4 = _make_db_server(name="no-dhcp4", ca_url="https://kea.example.com", dhcp4=False, dhcp6=True)
-        url = reverse("plugins:netbox_kea:server_shared_networks4", args=[server_no4.pk])
+        url = reverse("plugins:netbox_kea:server_shared_networks", kwargs={"pk": server_no4.pk, "family": 4})
         with stub_kea({}) as kea:
             response = self.client.get(url)
         self.assertContains(response, "Protocol not enabled")
@@ -1360,7 +1397,10 @@ class TestSharedNetworkEditOptionParsing(_ViewTestBase):
                 {"name": "ntp-servers", "data": "192.0.2.1"},
             ],
         )
-        url = reverse("plugins:netbox_kea:server_shared_network4_edit", args=[self.server.pk, "prod-net"])
+        url = reverse(
+            "plugins:netbox_kea:server_shared_network_edit",
+            kwargs={"pk": self.server.pk, "family": 4, "network_name": "prod-net"},
+        )
         with stub_kea({"config-get": config}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)

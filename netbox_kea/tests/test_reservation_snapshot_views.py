@@ -10,9 +10,10 @@ from bs4 import BeautifulSoup
 from django.contrib import messages as django_messages
 from django.urls import reverse
 
-from netbox_kea import display_cache
+from netbox_kea import display_cache, lease_reads, subnet_catalogue
+from netbox_kea.lease_reads import LeaseSearch
+from netbox_kea.reservation_reads import PAGE_SIZE as RESERVATION_PAGE_SIZE
 from netbox_kea.views.notices import HEADLINES, Notice
-from netbox_kea.views.reservations import _RESERVATION_PAGE_SIZE
 
 from .kea_stub import (
     READ_FAILURES,
@@ -21,12 +22,19 @@ from .kea_stub import (
     _res_get,
     _res_page,
     complete_lease,
+    kea_client,
     lease_record,
     queued,
     recorded_host,
     stub_kea,
 )
-from .utils import _make_db_server, _ViewTestBase, with_display_cache_config
+from .utils import (
+    _make_db_server,
+    _ViewTestBase,
+    record_kea_clients,
+    save_key_without_certificate,
+    with_display_cache_config,
+)
 
 
 def _return_url(url: str) -> list[str]:
@@ -35,7 +43,7 @@ def _return_url(url: str) -> list[str]:
 
 class TestPerServerReservationSnapshots(_ViewTestBase):
     def _url(self, version: int = 4) -> str:
-        return reverse(f"plugins:netbox_kea:server_reservations{version}", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": version})
 
     def _searched_row(self, url: str, query: dict) -> tuple[dict, str]:
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
@@ -87,7 +95,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         with stub_kea(responses):
             page = self.client.get(self._url(), {"q": "searched"})
         search = page.wsgi_request.get_full_path()
-        add = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        add = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4})
         self.assertContains(page, f'href="{add}?{urlencode({"return_url": search})}"')
 
     def test_a_refused_reservation_read_keeps_the_add_button(self):
@@ -105,7 +113,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertNotContains(page, "Reservation mutation controls are unavailable")
 
     def test_combined_row_actions_return_to_the_combined_search(self):
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
         other = _make_db_server(name="search-other", dhcp4=False)
         row, search = self._searched_row(url, {"server": [self.server.pk, other.pk], "q": "searched"})
         self.assertEqual(_return_url(row["edit_url"]), [search])
@@ -123,6 +131,11 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
         self.assertEqual(kea.commands(), [])
         self.assertContains(response, HEADLINES["reservation"])
         self.assertNotIn(HEADLINES["reservation"], [str(message) for message in response.context["messages"]])
+        self.assertEqual(
+            response.context["reservation_notice"].details,
+            ("The Kea client settings of Server test-kea are invalid. Check the client certificate and key.",),
+        )
+        self.assertContains(response, "The Kea client settings of Server test-kea are invalid.")
         self.assertTrue(response.context["reservation_notice"].unavailable)
         self.assertFalse(response.context["snapshot_complete"])
         self.assertEqual(response.context["table"].data.data, [])
@@ -131,9 +144,26 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
             "Reservation mutation capabilities could not be confirmed.",
         )
 
+    def test_a_reservation_page_closes_each_kea_client(self):
+        responses = _catalogue_responses(4, 20, "198.18.0.0/24")
+        host = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "closed.example.invalid"}
+        responses.update(
+            {
+                "reservation-get-page": _res_page([host]),
+                "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
+            }
+        )
+        for query in ({}, {"q": "closed"}, {"export": "yaml"}):
+            with self.subTest(query=query):
+                display_cache.rotate_configuration(self.server, 4)
+                with stub_kea(responses), record_kea_clients() as clients:
+                    response = self.client.get(self._url(), query)
+                self.assertContains(response, "closed.example.invalid")
+                clients.assert_all_closed(self)
+
     def test_the_tab_and_the_combined_view_present_the_same_row(self):
         tab_row, _ = self._searched_row(self._url(), {})
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
         combined_row, _ = self._searched_row(url, {})
 
         # The same domain facts have page-specific navigation targets.
@@ -248,7 +278,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
                 "option-data": [{"name": "domain-name-servers", "data": "198.18.0.53"}],
             },
             {"subnet-id": 20, "remote-id": "private rejected value"},
-            *[{"subnet-id": 20, "flex-id": f"page-filler-{index}"} for index in range(_RESERVATION_PAGE_SIZE - 3)],
+            *[{"subnet-id": 20, "flex-id": f"page-filler-{index}"} for index in range(RESERVATION_PAGE_SIZE - 3)],
         ]
         responses.update(
             {
@@ -319,7 +349,7 @@ class TestPerServerReservationSnapshots(_ViewTestBase):
                 "hw-address": f"aa:bb:cc:00:{index // 256:02x}:{index % 256:02x}",
                 "ip-address": f"198.18.0.{index + 1}",
             }
-            for index in range(_RESERVATION_PAGE_SIZE)
+            for index in range(RESERVATION_PAGE_SIZE)
         ]
         responses = _catalogue_responses(4, 20, "198.18.0.0/24")
         responses.update(
@@ -637,7 +667,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
             }
         )
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
 
         with stub_kea(responses):
             response = self.client.get(url)
@@ -659,7 +689,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
                 "ip-addresses": ["2001:db8::20", "2001:db8::21"],
                 "prefixes": ["2001:db8:100::/56"],
             },
-            *[{"subnet-id": 30, "flex-id": f"page-filler-{index}"} for index in range(_RESERVATION_PAGE_SIZE - 1)],
+            *[{"subnet-id": 30, "flex-id": f"page-filler-{index}"} for index in range(RESERVATION_PAGE_SIZE - 1)],
         ]
         responses["reservation-get-page"] = _res_page(
             hosts,
@@ -667,7 +697,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
             next_source=1,
         )
         responses["lease6-get-by-state"] = {"result": 0, "arguments": {"leases": []}}
-        url = reverse("plugins:netbox_kea:combined_reservations6")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 6})
 
         with stub_kea(responses) as kea:
             response = self.client.get(url)
@@ -697,7 +727,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
                 "config-get": queued(responses["config-get"], requests.ConnectionError("capability discovery failed")),
             }
         )
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
 
         with stub_kea(responses) as kea:
             response = self.client.get(url)
@@ -728,7 +758,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
                 "lease4-get-by-state": {"result": 0, "arguments": {"leases": []}},
             }
         )
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
 
         with stub_kea(responses):
             other = _make_db_server(name="scope-only-other", dhcp4=False)
@@ -750,7 +780,7 @@ class TestCombinedReservationSnapshots(_ViewTestBase):
             ),
             _res_page([{"subnet-id": 20, "flex-id": "second-page", "hostname": "second.example.invalid"}]),
         )
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
 
         with stub_kea(responses) as kea:
             response = self.client.get(url, {"export": "json"})
@@ -798,7 +828,7 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
                 "reservation-get": reservation_responses,
             }
         )
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(responses):
             return self.client.get(url, {"by": "ip", "q": "198.18.0.20"}, HTTP_HX_REQUEST="true")
 
@@ -883,7 +913,7 @@ class TestLeaseReservationIdentityMatching(_ViewTestBase):
                 ),
             }
         )
-        url = reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6})
         with stub_kea(responses):
             response = self.client.get(url, {"by": "ip", "q": "2001:db8:20::20"}, HTTP_HX_REQUEST="true")
 
@@ -1026,7 +1056,7 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
             "lease4-get": {"result": 0, "arguments": lease or self.lease},
             "reservation-get": reservation_get,
         }
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(responses):
             return self.client.get(url, {"by": "ip", "q": "198.18.0.20"}, HTTP_HX_REQUEST="true")
 
@@ -1042,7 +1072,7 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
             return {"result": 3, "text": "Lease not found."}
 
         responses = {**catalogue, "lease6-get": lease6_get, "reservation-get": reservation_get}
-        url = reverse("plugins:netbox_kea:server_leases6", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 6})
         with stub_kea(responses):
             return self.client.get(url, {"by": "ip", "q": "2001:db8:100::"}, HTTP_HX_REQUEST="true")
 
@@ -1142,6 +1172,25 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
                 self.assertIsNone(row.get("sync_url"))
                 self.assertNotContains(response, _HOOK_NOTICE)
 
+    def test_a_lookup_client_that_the_settings_cannot_build_names_the_client_settings_in_the_badge(self):
+        """The Lease and the Catalogue are display cache entries, so only the client of the lookup fails to build."""
+        with stub_kea(_catalogue_responses(4, 20, "198.18.0.0/24")):
+            catalogue = subnet_catalogue.display(self.server, 4)
+        expected = save_key_without_certificate(self.server)
+        self.server.refresh_from_db()
+        with with_display_cache_config(leases_ttl=300, configuration_ttl=300):
+            display_cache.cached(self.server, 4, "catalogue", lambda: catalogue)
+            with (
+                stub_kea({"lease4-get": {"result": 0, "arguments": self.lease}}),
+                kea_client(self.server.ca_url) as kea,
+            ):
+                lease_reads.cached_read(self.server, 4, LeaseSearch("ip", "198.18.0.20"), lambda: kea)
+            response = self._get({"result": 3})
+
+        self.assertEqual(response.status_code, 200)
+        [badge] = _reserved_badges(response)
+        self.assertEqual((badge.get_text(strip=True), badge["title"]), ("Reservation Unknown", expected))
+
     def test_a_missing_host_cmds_hook_shows_one_page_notice_and_no_row_badge(self):
         response = self._get({"result": 2, "text": "unknown command 'reservation-get'"})
 
@@ -1173,7 +1222,7 @@ class TestReservationIgnoredBadgeOnLeases(_ViewTestBase):
             "lease4-get": {"result": 0, "arguments": self.lease},
             "reservation-get": _hosts(host),
         }
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(responses):
             return self.client.get(url, {"by": "ip", "q": "198.18.0.20"}, HTTP_HX_REQUEST="true")
 
@@ -1242,7 +1291,7 @@ class TestWidenedReservationPage(_ViewTestBase):
         responses["reservation-get-page"] = _res_page([host])
         no_leases = {"result": 0, "arguments": {"leases": []}}
         responses.update({f"lease{family}-get-by-state": no_leases, f"lease{family}-get-all": no_leases})
-        url = reverse(f"plugins:netbox_kea:server_reservations{family}", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": family})
         with stub_kea(responses):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)

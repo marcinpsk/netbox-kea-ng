@@ -10,10 +10,8 @@ from django.urls import reverse
 from django.views import View
 from netbox.views import generic
 from utilities.htmx import htmx_partial
-from utilities.views import register_model_view
 
 from .. import config_write, forms, managed_fields, server_configuration, tables
-from ..constants import Family
 from ..models import Server
 from ..utilities import export_table
 from ._base import (
@@ -26,14 +24,14 @@ from .notices import notice, show_notices
 from .server_scope import writable_servers
 from .subnet_lists import fetch_shared_networks, present_shared_networks
 from .subnets import _SUBNETS_TAB, subnets_nav_context
-from .workspace import ServerFamilyMixin
+from .workspace import FamilyRouteMixin, ServerFamilyMixin
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared Networks views
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-class BaseServerSharedNetworksView(ServerFamilyMixin, generic.ObjectChildrenView):
+class ServerSharedNetworksView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectChildrenView):
     """Read-only tab listing shared networks from the Kea config."""
 
     workspace_section = "subnets"
@@ -42,7 +40,6 @@ class BaseServerSharedNetworksView(ServerFamilyMixin, generic.ObjectChildrenView
     table = tables.SharedNetworkTable
     queryset = Server.objects.all()
     template_name = "netbox_kea/server_shared_networks.html"
-    dhcp_version: Family
 
     def get(self, request: HttpRequest, **kwargs: Any) -> HttpResponse:
         """Render the Shared Network table, or export it."""
@@ -81,41 +78,28 @@ class BaseServerSharedNetworksView(ServerFamilyMixin, generic.ObjectChildrenView
                 "table_config": f"{table.name}_config",
                 "return_url": request.get_full_path(),
                 "add_url": reverse(
-                    f"plugins:netbox_kea:server_shared_network{self.dhcp_version}_add",
-                    args=[instance.pk],
+                    "plugins:netbox_kea:server_shared_network_add",
+                    kwargs={"pk": instance.pk, "family": self.dhcp_version},
                 ),
                 **subnets_nav_context(instance.pk, "shared_networks", self.dhcp_version),
             },
         )
 
 
-@register_model_view(Server, "shared_networks6")
-class ServerSharedNetworks6View(BaseServerSharedNetworksView):
-    """DHCPv6 shared networks view (rendered under the shared Subnets tab)."""
-
-    dhcp_version = 6
-
-
-@register_model_view(Server, "shared_networks4")
-class ServerSharedNetworks4View(BaseServerSharedNetworksView):
-    """DHCPv4 shared networks view (rendered under the shared Subnets tab)."""
-
-    dhcp_version = 4
-
-
-class BaseServerSharedNetworkAddView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
-    """Add a new shared network to a Kea server.
-
-    Subclasses set ``dhcp_version`` to 4 or 6.
-    """
+class ServerSharedNetworkAddView(
+    FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View
+):
+    """Add a new shared network to a Kea server."""
 
     workspace_section = "subnets"
     workspace_subsection = "shared_networks"
 
-    dhcp_version: Family
+    tab = _SUBNETS_TAB
 
     def _success_url(self, server: Server) -> str:
-        return reverse(f"plugins:netbox_kea:server_shared_networks{self.dhcp_version}", args=[server.pk])
+        return reverse(
+            "plugins:netbox_kea:server_shared_networks", kwargs={"pk": server.pk, "family": self.dhcp_version}
+        )
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
         """Render the add-network form."""
@@ -160,21 +144,9 @@ class BaseServerSharedNetworkAddView(_KeaChangeMixin, ServerFamilyMixin, Conditi
         return redirect(_safe_return_url(request, self._success_url(server)))
 
 
-class ServerSharedNetwork6AddView(BaseServerSharedNetworkAddView):
-    """Add a new DHCPv6 shared network."""
-
-    dhcp_version = 6
-    tab = _SUBNETS_TAB
-
-
-class ServerSharedNetwork4AddView(BaseServerSharedNetworkAddView):
-    """Add a new DHCPv4 shared network."""
-
-    dhcp_version = 4
-    tab = _SUBNETS_TAB
-
-
-class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
+class ServerSharedNetworkDeleteView(
+    FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View
+):
     """Delete a shared network from a Kea server.
 
     The network name is passed as a URL kwarg ``network_name``.  Subnets that
@@ -184,10 +156,12 @@ class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ServerFamilyMixin, Cond
     workspace_section = "subnets"
     workspace_subsection = "shared_networks"
 
-    dhcp_version: Family
+    tab = _SUBNETS_TAB
 
     def _success_url(self, server: Server) -> str:
-        return reverse(f"plugins:netbox_kea:server_shared_networks{self.dhcp_version}", args=[server.pk])
+        return reverse(
+            "plugins:netbox_kea:server_shared_networks", kwargs={"pk": server.pk, "family": self.dhcp_version}
+        )
 
     def get(self, request: HttpRequest, pk: int, network_name: str) -> HttpResponse:
         """Render the delete-confirmation page."""
@@ -216,30 +190,20 @@ class BaseServerSharedNetworkDeleteView(_KeaChangeMixin, ServerFamilyMixin, Cond
         return redirect(_safe_return_url(request, self._success_url(server)))
 
 
-class ServerSharedNetwork6DeleteView(BaseServerSharedNetworkDeleteView):
-    """Delete a DHCPv6 shared network."""
-
-    dhcp_version = 6
-    tab = _SUBNETS_TAB
-
-
-class ServerSharedNetwork4DeleteView(BaseServerSharedNetworkDeleteView):
-    """Delete a DHCPv4 shared network."""
-
-    dhcp_version = 4
-    tab = _SUBNETS_TAB
-
-
-class BaseServerSharedNetworkEditView(_KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View):
+class ServerSharedNetworkEditView(
+    FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, ConditionalLoginRequiredMixin, View
+):
     """Edit a Shared Network's managed configuration fields."""
 
     workspace_section = "subnets"
     workspace_subsection = "shared_networks"
 
-    dhcp_version: Family
+    tab = _SUBNETS_TAB
 
     def _success_url(self, server: Server) -> str:
-        return reverse(f"plugins:netbox_kea:server_shared_networks{self.dhcp_version}", args=[server.pk])
+        return reverse(
+            "plugins:netbox_kea:server_shared_networks", kwargs={"pk": server.pk, "family": self.dhcp_version}
+        )
 
     def get(self, request: HttpRequest, pk: int, network_name: str) -> HttpResponse:
         """Render the edit form pre-populated with current values."""
@@ -293,17 +257,3 @@ class BaseServerSharedNetworkEditView(_KeaChangeMixin, ServerFamilyMixin, Condit
             lambda: config_write.edit_shared_network(server, self.dhcp_version, network_name, edit, shown=shown),
         )
         return redirect(_safe_return_url(request, self._success_url(server)))
-
-
-class ServerSharedNetwork6EditView(BaseServerSharedNetworkEditView):
-    """Edit a DHCPv6 shared network."""
-
-    dhcp_version = 6
-    tab = _SUBNETS_TAB
-
-
-class ServerSharedNetwork4EditView(BaseServerSharedNetworkEditView):
-    """Edit a DHCPv4 shared network."""
-
-    dhcp_version = 4
-    tab = _SUBNETS_TAB

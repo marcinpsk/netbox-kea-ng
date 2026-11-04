@@ -7,13 +7,13 @@ from netbox_kea import runtime_change
 
 
 def bad_view_enables_dhcp(instance, family):
-    client = instance.get_client(version=family)
-    # ruleid: kea-runtime-write-outside-runtime-change
-    client.dhcp_enable(family)
+    with instance.get_client(version=family) as client:
+        # ruleid: kea-runtime-write-outside-runtime-change
+        client.dhcp_enable(family)
 
 
 def bad_view_disables_dhcp_on_a_chained_client(instance):
-    # ruleid: kea-runtime-write-outside-runtime-change
+    # ruleid: kea-runtime-write-outside-runtime-change, kea-client-outside-with
     instance.get_client(version=4).dhcp_disable(4, max_period=300)
 
 
@@ -62,5 +62,5 @@ def ok_view_reads_the_daemon_status(client):
 # A data migration is not exempt. `opengrep test` does not apply path filters, so a directory scan proves the path.
 def bad_migration_wipes_the_leases(apps, schema_editor):
     server = apps.get_model("netbox_kea", "Server").objects.first()
-    # ruleid: kea-runtime-write-outside-runtime-change
+    # ruleid: kea-runtime-write-outside-runtime-change, kea-client-outside-with
     server.get_client(version=4).lease_wipe(4, 1)

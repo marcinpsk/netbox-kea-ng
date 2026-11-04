@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Test fixtures for kea-snapshot-read-without-notice. Intentionally
 # contains rule-violating code; excluded from ruff (see pyproject exclude).
-from netbox_kea import server_configuration, subnet_catalogue
+from netbox_kea import reservation_reads, server_configuration, subnet_catalogue
 from netbox_kea.views.notices import ServerNotices, load_snapshot, notice, show_notices
 
 
@@ -64,18 +64,23 @@ class GoodSubnetsView:
 
 def bad_reservation_tab_reads_without_the_loader(server, query):
     # ruleid: kea-snapshot-read-without-notice
-    snapshot = _read_reservations(server, 4, query)
-    return snapshot.records
+    page = reservation_reads.cached_page(server, 4, query)
+    return page.snapshot.records
+
+
+def bad_reservation_export_reads_without_the_loader(server):
+    # ruleid: kea-snapshot-read-without-notice
+    return reservation_reads.read_snapshot(server, 4).records
 
 
 def fetch(server, family, query):
     # ok: kea-snapshot-read-without-notice
-    return load_snapshot(server, "reservation", lambda: _read_reservations(server, family, query))
+    return load_snapshot(server, "reservation", lambda: reservation_reads.cached_page(server, family, query))
 
 
-def _read_reservations(server, family, query):
+def good_query_is_not_a_read(request):
     # ok: kea-snapshot-read-without-notice
-    return server.get_client(version=family).reservation_snapshot(family, None)
+    return reservation_reads.ReservationQuery(q=request.GET.get("q", ""))
 
 
 def good_form_carries_the_notice(server):
@@ -119,17 +124,6 @@ def good_exact_and_synchronization_reads(client, server, identity):
     return found, catalogue
 
 
-def _display_capabilities(server, family):
+def good_capabilities_gate_the_mutation_controls(server, family):
     # ok: kea-snapshot-read-without-notice
-    return server_configuration.reservation_capabilities(server_configuration.display(server, family))
-
-
-def _live_capabilities(server, family):
-    # ok: kea-snapshot-read-without-notice
-    return server_configuration.reservation_capabilities(server_configuration.for_verification(server, family))
-
-
-def _read_reservation_page(server, version, query):
-    catalogue = subnet_catalogue.display(server, version)
-    # ok: kea-snapshot-read-without-notice
-    return _read_reservations(server, version, query, catalogue)
+    return server_configuration.display_capabilities(server, family)
