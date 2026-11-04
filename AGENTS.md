@@ -622,6 +622,9 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
   settings and sends no request. Build it inside the read that `attempt()` runs (kind `misconfigured`), or in a view
   through `_client_or_refusal()` in `views/_base.py`, which names the client settings and never reports a
   connection failure. Never build it at module/class level.
+- **A Kea client lives for one operation.** Build it as the item of a `with`, or through a holder that closes it
+  (`build_client()` in a `with`, `LazyClient`, `WorkerClients`, `_client_or_refusal()`, `_catalogue_client()`).
+  A failed close is logged (`KeaClient.__exit__`). OpenGrep `kea-client-outside-with` refuses any other call.
 - **Validate Kea response shape before indexing.** After `client.command()`, check
   `resp` is a non-empty list and `resp[0]` is a dict before reading
   `resp[0]["arguments"]`; check nested keys (`"leases"`, `"subnet4"`, …) are lists
