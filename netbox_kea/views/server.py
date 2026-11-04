@@ -20,7 +20,7 @@ from ..filtersets import ServerFilterSet
 from ..kea import DaemonStatus, DaemonVersion
 from ..models import Server
 from ..read_failure import ReadFailure, attempt
-from ..server_connection import connection_values, validate_connection_change
+from ..server_connection import service_connections, validate_connection_change
 from ..utilities import (
     format_duration,
 )
@@ -173,7 +173,7 @@ class ServerBulkEditView(generic.BulkEditView):
     def _update_objects(self, form, request):
         """Check native updated candidates inside the bulk transaction and permission scope."""
         before = {
-            server.pk: connection_values(server) for server in self.queryset.filter(pk__in=form.cleaned_data["pk"])
+            server.pk: service_connections(server) for server in self.queryset.filter(pk__in=form.cleaned_data["pk"])
         }
         updated = super()._update_objects(form, request)
         if self.queryset.filter(pk__in=[server.pk for server in updated]).count() != len(updated):
