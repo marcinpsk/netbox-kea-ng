@@ -68,7 +68,7 @@ class ServerReservationPageCacheTest(_ViewTestBase):
     """The Reservations tab of one Server."""
 
     def _url(self) -> str:
-        return reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
 
     def _render(self, *pages: object, query: dict | None = None):
         with stub_kea(_responses(*pages)) as kea:
@@ -88,7 +88,9 @@ class ServerReservationPageCacheTest(_ViewTestBase):
         _, reads = self._render(_res_page([_OLD]))
         self.assertEqual(reads, 1)
         with stub_kea(_responses(_res_page([]))):
-            leases = self.client.get(reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]))
+            leases = self.client.get(
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
+            )
         self.assertEqual(leases.status_code, 200)
 
         response, reads = self._render(_res_page([_NEW]))
@@ -108,7 +110,7 @@ class ServerReservationPageCacheTest(_ViewTestBase):
         responses.update({"reservation-add": {"result": 0}, "reservation-get": _res_get(_NEW)})
         with stub_kea(responses) as kea:
             added = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}),
                 {
                     "subnet_cidr": _CIDR,
                     "ip_address": "198.18.0.22",
@@ -126,7 +128,9 @@ class ServerReservationPageCacheTest(_ViewTestBase):
 
     def test_a_reservation_edited_through_the_plugin_shows_on_the_next_render(self):
         self._assert_warm()
-        edit = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
+        edit = reverse(
+            "plugins:netbox_kea:server_reservation_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
         edit += "?identifier_type=hw-address&identifier=aa:bb:cc:dd:ee:01"
         responses = {**_catalogue_responses(4, 20, _CIDR), **_PERSIST}
         changed = {**_OLD, "hostname": "renamed"}
@@ -358,7 +362,9 @@ class CombinedReservationPageCacheTest(_ViewTestBase):
     def _render(self, *pages: object, headers: dict | None = None, url: str | None = None):
         with stub_kea(_responses(*pages)) as kea:
             if url is None:
-                response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"), self.query)
+                response = self.client.get(
+                    reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4}), self.query
+                )
             else:
                 response = self.client.get(url, headers=headers)
         self.assertEqual(response.status_code, 200)
@@ -410,7 +416,8 @@ class CombinedReservationPageCacheTest(_ViewTestBase):
 
         with stub_kea(_responses(_res_page([_NEW]))) as kea:
             response = self.client.get(
-                reverse("plugins:netbox_kea:combined_reservations4"), {**self.query, "export": "json"}
+                reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4}),
+                {**self.query, "export": "json"},
             )
 
         self.assertEqual(response.status_code, 200)

@@ -42,7 +42,7 @@ from ._base import (
 from .manual_sync_presenter import manual_sync_lines, show_manual_sync
 from .notices import Notice, failed_load, load_target, notice, show_notices
 from .reservations import RESERVATIONS_TAB
-from .workspace import ServerFamilyMixin
+from .workspace import FamilyRouteMixin, ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
 
@@ -257,14 +257,13 @@ def _published_name_preview(
     }
 
 
-class _ReservationPublishedNameView(_KeaChangeMixin, ServerFamilyMixin, View):
+class ServerReservationPublishedNameView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, View):
     """Render the name that Kea publishes for the hostname in the Reservation form, from the cached catalogue."""
 
     workspace_section = "reservations"
 
-    dhcp_version: Family
-
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Render the published name of the hostname in the form."""
         server = get_object_or_404(Server.objects.restrict(request.user, "change"), pk=pk)
         hostname = request.GET.get("hostname", "").strip()
         context: dict[str, Any] = {"hostname": hostname}
@@ -282,19 +281,23 @@ class _ReservationPublishedNameView(_KeaChangeMixin, ServerFamilyMixin, View):
         return render(request, "netbox_kea/inc/reservation_published_name.html", context)
 
 
-class _ReservationMutationView(_KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
+class _ReservationMutationView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, generic.ObjectView):
     workspace_section = "reservations"
     queryset = Server.objects.all()
     tab = RESERVATIONS_TAB
     template_name = "netbox_kea/server_reservation_form.html"
-    dhcp_version: Family
-    form_class: type[forms.Reservation4Form] | type[forms.Reservation6Form]
     form_action: str
+
+    @property
+    def form_class(self) -> type[forms._ReservationForm]:
+        """Return the Reservation form of the route family."""
+        return {4: forms.Reservation4Form, 6: forms.Reservation6Form}[self.dhcp_version]
 
     def _return_url(self, server: Server) -> str:
         """Return the Reservation search that linked here, else the Reservation list."""
         return _safe_return_url(
-            self.request, reverse(f"plugins:netbox_kea:server_reservations{self.dhcp_version}", args=[server.pk])
+            self.request,
+            reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": server.pk, "family": self.dhcp_version}),
         )
 
     def _form(self, server: Server, capabilities: ReservationCapabilities | None, **kwargs: Any):
@@ -330,7 +333,8 @@ class _ReservationMutationView(_KeaChangeMixin, ServerFamilyMixin, generic.Objec
         user_context: Any = None,
     ) -> dict[str, Any]:
         preview_url = reverse(
-            f"plugins:netbox_kea:server_reservation{self.dhcp_version}_published_name", args=[server.pk]
+            "plugins:netbox_kea:server_reservation_published_name",
+            kwargs={"pk": server.pk, "family": self.dhcp_version},
         )
         return {
             "object": server,
@@ -363,10 +367,13 @@ class _ReservationMutationView(_KeaChangeMixin, ServerFamilyMixin, generic.Objec
         )
 
 
-class _ReservationAddView(_ReservationMutationView):
+class ServerReservationAddView(_ReservationMutationView):
+    """Create one typed In-Subnet Reservation."""
+
     form_action = "Add"
 
     def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Render the empty Reservation form."""
         server = self.get_object(pk=pk)
         capabilities = None
         if refusal := _client_settings_refusal(server, self.dhcp_version):
@@ -393,6 +400,7 @@ class _ReservationAddView(_ReservationMutationView):
         )
 
     def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Create the Reservation."""
         server = self.get_object(pk=pk)
         capabilities = self._mutation_capabilities(request, server)
         if isinstance(capabilities, HttpResponse):
@@ -444,7 +452,9 @@ class _ReservationAddView(_ReservationMutationView):
         )
 
 
-class _ReservationEditView(_ReservationMutationView):
+class ServerReservationEditView(_ReservationMutationView):
+    """Edit one Reservation by immutable Scope and Identity."""
+
     form_action = "Edit"
 
     def _render(
@@ -463,6 +473,7 @@ class _ReservationEditView(_ReservationMutationView):
         )
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        """Render the edit form with the live Reservation facts."""
         server = self.get_object(pk=pk)
         if refusal := _client_settings_refusal(server, self.dhcp_version):
             messages.error(request, refusal)
@@ -489,6 +500,7 @@ class _ReservationEditView(_ReservationMutationView):
         )
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        """Write the changed Reservation fields."""
         server = self.get_object(pk=pk)
         identity = reservation_identity_from_request(request, self.dhcp_version)
         return_url = self._return_url(server)
@@ -572,11 +584,14 @@ class _ReservationEditView(_ReservationMutationView):
         return form
 
 
-class _ReservationDeleteView(_ReservationMutationView):
+class ServerReservationDeleteView(_ReservationMutationView):
+    """Delete one Reservation by immutable Scope and Identity."""
+
     template_name = "netbox_kea/server_reservation_delete.html"
     form_action = "Delete"
 
     def get(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        """Render the confirmation page of the Reservation delete."""
         server = self.get_object(pk=pk)
         if refusal := _client_settings_refusal(server, self.dhcp_version):
             messages.error(request, refusal)
@@ -601,6 +616,7 @@ class _ReservationDeleteView(_ReservationMutationView):
         )
 
     def post(self, request: HttpRequest, pk: int, subnet_id: int) -> HttpResponse:
+        """Delete the Reservation."""
         server = self.get_object(pk=pk)
         identity = reservation_identity_from_request(request, self.dhcp_version)
         return_url = self._return_url(server)
@@ -618,57 +634,3 @@ class _ReservationDeleteView(_ReservationMutationView):
             show_reservation_side_effects(request, facts)
             _show_applied_details(request, outcome)
         return redirect(return_url)
-
-
-class ServerReservation4AddView(_ReservationAddView):
-    """Create one typed DHCPv4 In-Subnet Reservation."""
-
-    dhcp_version = 4
-    form_class = forms.Reservation4Form
-
-
-class ServerReservation6AddView(_ReservationAddView):
-    """Create one typed DHCPv6 In-Subnet Reservation."""
-
-    dhcp_version = 6
-    form_class = forms.Reservation6Form
-
-
-class ServerReservation4EditView(_ReservationEditView):
-    """Edit one DHCPv4 Reservation by immutable Scope and Identity."""
-
-    dhcp_version = 4
-    form_class = forms.Reservation4Form
-
-
-class ServerReservation6EditView(_ReservationEditView):
-    """Edit one DHCPv6 Reservation by immutable Scope and Identity."""
-
-    dhcp_version = 6
-    form_class = forms.Reservation6Form
-
-
-class ServerReservation4PublishedNameView(_ReservationPublishedNameView):
-    """Preview the name that Kea publishes for a DHCPv4 Reservation hostname."""
-
-    dhcp_version = 4
-
-
-class ServerReservation6PublishedNameView(_ReservationPublishedNameView):
-    """Preview the name that Kea publishes for a DHCPv6 Reservation hostname."""
-
-    dhcp_version = 6
-
-
-class ServerReservation4DeleteView(_ReservationDeleteView):
-    """Delete one DHCPv4 Reservation by immutable Scope and Identity."""
-
-    dhcp_version = 4
-    form_class = forms.Reservation4Form
-
-
-class ServerReservation6DeleteView(_ReservationDeleteView):
-    """Delete one DHCPv6 Reservation by immutable Scope and Identity."""
-
-    dhcp_version = 6
-    form_class = forms.Reservation6Form

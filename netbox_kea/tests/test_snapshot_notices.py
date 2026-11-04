@@ -245,7 +245,11 @@ class TestSubnetEditNotices(_ViewTestBase):
                 "stat-lease4-get": {"result": 2, "text": "unknown command"},
             }
         ):
-            response = self.client.get(reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42]))
+            response = self.client.get(
+                reverse(
+                    "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
+                )
+            )
         self.assertEqual(response.status_code, 200)
         self.assertIn((django_messages.ERROR, _IDENTITY_UNAVAILABLE), _page_messages(response))
         self.assertNotIn((django_messages.WARNING, _IDENTITY_UNAVAILABLE), _page_messages(response))
@@ -270,7 +274,7 @@ class TestLeaseSearchFormNotice(_ViewTestBase):
     """The lease search form shows the Catalogue Notice inline, also in the htmx partial."""
 
     def test_an_unavailable_catalogue_is_an_inline_error(self):
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_UNAVAILABLE, "lease4-get-page": lease_page()}):
             page = self.client.get(url)
             partial = self.client.get(url, {"q": "", "by": ""}, HTTP_HX_REQUEST="true")
@@ -285,7 +289,9 @@ class TestLeaseSearchFormNotice(_ViewTestBase):
     def test_an_incomplete_catalogue_is_an_inline_warning_without_a_headline(self):
         display_cache.rotate_configuration(self.server, 4)
         with stub_kea(_INCOMPLETE):
-            response = self.client.get(reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]))
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
+            )
         self.assertContains(response, 'class="alert alert-warning py-2 px-3 mb-3 small"', count=1)
         self.assertContains(response, f"<li>{_INVALID_POOLS}</li>", html=True)
         self.assertNotContains(response, HEADLINES["catalogue"])
@@ -297,7 +303,9 @@ class TestRecordPagesShowAFailedReadThroughTheLoader(_ViewTestBase):
     def test_the_reservation_page_shows_the_headline_once_in_its_record_list(self):
         responses = {**_catalogue_responses(4, 20, "198.18.0.0/24"), "reservation-get-page": ["not", "entries"]}
         with stub_kea(responses):
-            response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
+            )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(_page_messages(response), [])
         self.assertEqual(_danger_alerts(response), [(HEADLINES["reservation"], [])])
@@ -308,7 +316,7 @@ class TestRecordPagesShowAFailedReadThroughTheLoader(_ViewTestBase):
     def test_the_lease_search_partial_shows_the_headline_inline(self):
         with stub_kea({**_COMPLETE, "lease4-get-by-hw-address": requests.ConnectionError("unreachable")}):
             response = self.client.get(
-                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4}),
                 {"by": "hw", "q": "aa:bb:cc:dd:ee:ff"},
                 HTTP_HX_REQUEST="true",
             )
@@ -320,7 +328,9 @@ class TestRecordPagesShowAFailedReadThroughTheLoader(_ViewTestBase):
         refusal = {"result": 1, "text": "the host backend is down"}
         responses = {**_catalogue_responses(4, 20, "198.18.0.0/24"), "reservation-get-page": refusal}
         with stub_kea(responses):
-            response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
+            )
         self.assertEqual(
             _danger_alerts(response), [(HEADLINES["reservation"], ["Kea replied: the host backend is down"])]
         )
@@ -331,7 +341,9 @@ class TestRecordPagesShowAFailedReadThroughTheLoader(_ViewTestBase):
         # The configuration loads no hook, so the mutation capabilities name the missing host_cmds hook too.
         responses["config-get"]["arguments"]["Dhcp4"]["hooks-libraries"] = []
         with stub_kea(responses):
-            response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
+            )
         self.assertContains(response, "hook library is not loaded on this Kea server", count=1)
         self.assertContains(response, "host_cmds", count=1)
         self.assertNotContains(response, "The required hook library may not be loaded")
@@ -341,7 +353,7 @@ class TestRecordPagesShowAFailedReadThroughTheLoader(_ViewTestBase):
     def test_a_refused_lease_query_keeps_its_own_message(self):
         with stub_kea({**_COMPLETE, "stat-lease4-get": {"result": 2, "text": "unknown command"}}):
             response = self.client.get(
-                reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4}),
                 {"by": "subnet_id", "q": "1"},
                 HTTP_HX_REQUEST="true",
             )
@@ -356,7 +368,7 @@ class TestCombinedPagesKeepANoticePerServer(_ViewTestBase):
     def test_two_servers_that_report_one_diagnostic_show_it_under_each(self):
         other = type(self.server).objects.create(name="other-kea", ca_url="https://other.example.com", dhcp4=True)
         with stub_kea({**_INCOMPLETE, "stat-lease4-get": {"result": 2, "text": "unknown command"}}):
-            response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"))
+            response = self.client.get(reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4}))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.context["errors"], [])
         self.assertCountEqual(
@@ -368,7 +380,7 @@ class TestCombinedPagesKeepANoticePerServer(_ViewTestBase):
         refusal = {"result": 1, "text": "the host backend is down"}
         responses = {**_catalogue_responses(4, 20, "198.18.0.0/24"), "reservation-get-page": refusal}
         with stub_kea(responses):
-            response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"))
+            response = self.client.get(reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4}))
         self.assertEqual(response.status_code, 200)
         reply = "Kea replied: the host backend is down"
         self.assertEqual(
@@ -383,7 +395,7 @@ class TestCombinedPagesKeepANoticePerServer(_ViewTestBase):
             client_key_path="/tls/client.key", client_cert_path=""
         )
         with stub_kea({}) as kea:
-            reservations = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"))
+            reservations = self.client.get(reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4}))
         self.assertEqual(kea.commands(), [])
         settings = "The Kea client settings of Server test-kea are invalid. Check the client certificate and key."
         self.assertEqual(
@@ -396,7 +408,9 @@ class TestReservationEditNotice(_ViewTestBase):
     """The Reservation edit page reads the displayed Catalogue for its hostname suffix, so it shows its Notice."""
 
     def _edit(self, responses: dict):
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
         current = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff"}
         with stub_kea({**responses, "reservation-get": _res_get(current)}):
             return self.client.get(url, {"identifier_type": "hw-address", "identifier": "aa:bb:cc:dd:ee:ff"})
@@ -429,15 +443,15 @@ class TestNoticeGapsFromReview(_ViewTestBase):
 
     # The Server tab lists, the Snapshot kind of each, and the detail of its unavailable Notice.
     _LISTS = (
-        ("server_subnets4", "catalogue", _IDENTITY_UNAVAILABLE),
-        ("server_shared_networks4", "configuration", _CONFIGURATION_UNAVAILABLE),
+        ("server_subnets", "catalogue", _IDENTITY_UNAVAILABLE),
+        ("server_shared_networks", "configuration", _CONFIGURATION_UNAVAILABLE),
     )
 
     def test_a_list_table_refresh_shows_the_notice_out_of_band_and_queues_no_message(self):
         # NetBox renders htmx/table.html without messages, so a queued one would surface on the next page.
         for route, kind, detail in self._LISTS:
             with self.subTest(route=route):
-                url = reverse(f"plugins:netbox_kea:{route}", args=[self.server.pk])
+                url = reverse(f"plugins:netbox_kea:{route}", kwargs={"pk": self.server.pk, "family": 4})
                 display_cache.rotate_configuration(self.server, 4)
                 with stub_kea(_UNAVAILABLE):
                     failed = self.client.get(url, HTTP_HX_REQUEST="true")
@@ -458,15 +472,20 @@ class TestNoticeGapsFromReview(_ViewTestBase):
             with self.subTest(route=route):
                 display_cache.rotate_configuration(self.server, 4)
                 with stub_kea(_UNAVAILABLE):
-                    response = self.client.get(reverse(f"plugins:netbox_kea:{route}", args=[self.server.pk]))
+                    response = self.client.get(
+                        reverse(f"plugins:netbox_kea:{route}", kwargs={"pk": self.server.pk, "family": 4})
+                    )
                 self.assertContains(response, '<div id="list-notice"></div>', html=True)
                 self.assertIn((django_messages.ERROR, HEADLINES[kind]), _page_messages(response))
 
     def test_the_pool_forms_warn_about_an_incomplete_catalogue(self):
         urls = (
-            reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 1]),
             reverse(
-                "plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 1, "198.18.0.10-198.18.0.20"]
+                "plugins:netbox_kea:server_subnet_pool_add", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+            ),
+            reverse(
+                "plugins:netbox_kea:server_subnet_pool_delete",
+                kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1, "pool": "198.18.0.10-198.18.0.20"},
             ),
         )
         for url in urls:

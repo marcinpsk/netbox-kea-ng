@@ -90,7 +90,10 @@ class TestReservationMutationViews(_ViewTestBase):
                     display_cache.rotate_configuration(self.server, version)
                     responses = _mutation_responses(version, 20, cidr, [identifier_type])
                     responses["reservation-get"] = _res_get({"subnet-id": 20, identifier_type: identifier})
-                    url = reverse(f"plugins:netbox_kea:server_reservation{version}_{action}", args=[self.server.pk, 20])
+                    url = reverse(
+                        f"plugins:netbox_kea:server_reservation_{action}",
+                        kwargs={"pk": self.server.pk, "family": version, "subnet_id": 20},
+                    )
                     with stub_kea(responses) as kea:
                         configuration = server_configuration.display(self.server, version)
                         catalogue = display(self.server, version)
@@ -111,7 +114,10 @@ class TestReservationMutationViews(_ViewTestBase):
                     display_cache.rotate_configuration(self.server, version)
                     current = {"subnet-id": 20, identifier_type: identifier, "hostname": "old.example.invalid"}
                     responses = _mutation_responses(version, 20, cidr, [identifier_type])
-                    url = reverse(f"plugins:netbox_kea:server_reservation{version}_{action}", args=[self.server.pk, 20])
+                    url = reverse(
+                        f"plugins:netbox_kea:server_reservation_{action}",
+                        kwargs={"pk": self.server.pk, "family": version, "subnet_id": 20},
+                    )
                     url = f"{url}?{_identity_query(identifier, identifier_type)}"
                     with stub_kea({**responses, "reservation-get": _res_get(current)}):
                         form_page = self.client.get(url)
@@ -140,7 +146,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
     def test_add_form_uses_live_identifier_choices_and_explains_relay_remote_id(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address", "flex-id"])
-        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4})
 
         with stub_kea(responses):
             response = self.client.get(url)
@@ -157,7 +163,7 @@ class TestReservationMutationViews(_ViewTestBase):
         from django.contrib.messages import get_messages
 
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
-        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(responses):
             self.assertTrue(self.client.get(url).context["mutation_available"])
         # Kea no longer loads host_cmds; only the cached Server Configuration still shows it.
@@ -180,7 +186,7 @@ class TestReservationMutationViews(_ViewTestBase):
             "config-get": requests.ConnectionError("configuration read failed"),
             "subnet4-list": _subnet_list(4, [{"id": 20, "subnet": "198.18.0.0/24"}]),
         }
-        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4})
 
         with stub_kea(responses):
             response = self.client.get(url)
@@ -196,7 +202,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
     def test_live_capabilities_leave_the_save_control_enabled(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
-        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4})
 
         with stub_kea(responses):
             response = self.client.get(url)
@@ -215,7 +221,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
         with stub_kea(responses):
             response = self.client.get(
-                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}),
             )
 
         self.assertEqual(response.status_code, 200)
@@ -234,7 +240,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
         with stub_kea(responses) as kea:
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}),
                 {
                     "subnet_cidr": "198.18.0.0/24",
                     "ip_address": raw["ip-address"],
@@ -266,7 +272,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
         with stub_kea(responses) as kea:
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}),
                 {"subnet_cidr": "198.18.0.0/24", "identifier_type": "hw-address", "identifier": "AA-BB-CC-DD-EE-FF"},
             )
 
@@ -285,7 +291,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
         with stub_kea(responses) as kea:
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}),
                 {"subnet_cidr": "198.18.0.0/24", "identifier_type": "hw-address", "identifier": "a:b:c:d:e:f"},
             )
 
@@ -300,7 +306,9 @@ class TestReservationMutationViews(_ViewTestBase):
                 responses["reservation-add"] = {"result": 0}
                 with stub_kea(responses) as kea:
                     response = self.client.post(
-                        reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                        reverse(
+                            "plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}
+                        ),
                         {"subnet_cidr": "198.18.0.0/24", "identifier_type": "hw-address", "identifier": identifier},
                     )
 
@@ -336,7 +344,7 @@ class TestReservationMutationViews(_ViewTestBase):
         try:
             with stub_kea(responses) as kea:
                 response = self.client.post(
-                    reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                    reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}),
                     {
                         "subnet_cidr": "198.18.0.0/24",
                         "ip_address": "198.18.0.20",
@@ -385,7 +393,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
         with stub_kea(responses) as kea:
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}),
                 {
                     "subnet_cidr": "198.18.0.0/24",
                     "ip_address": "198.18.0.20",
@@ -417,7 +425,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
         with stub_kea(responses) as kea:
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}),
                 {
                     "subnet_cidr": "198.18.0.0/24",
                     "ip_address": "198.18.0.20",
@@ -452,7 +460,9 @@ class TestReservationMutationViews(_ViewTestBase):
                 responses.update({"reservation-add": {"result": 0}, "reservation-get": _res_get(raw)})
                 with stub_kea(responses), self.assertNoLogs("netbox_kea.views.reservation_mutations", "ERROR"):
                     response = self.client.post(
-                        reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                        reverse(
+                            "plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}
+                        ),
                         {
                             "subnet_cidr": "198.18.0.0/24",
                             "ip_address": "198.18.0.20",
@@ -494,7 +504,7 @@ class TestReservationMutationViews(_ViewTestBase):
         try:
             with stub_kea(responses) as kea:
                 response = self.client.post(
-                    reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                    reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}),
                     {
                         "subnet_cidr": "198.18.0.0/24",
                         "ip_address": "198.18.0.20",
@@ -540,7 +550,7 @@ class TestReservationMutationViews(_ViewTestBase):
         try:
             with stub_kea(responses) as kea:
                 response = self.client.post(
-                    reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                    reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}),
                     {
                         "subnet_cidr": "198.18.0.0/24",
                         "ip_address": "198.18.0.20",
@@ -593,7 +603,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
         with stub_kea(responses) as kea:
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}),
                 {
                     "subnet_cidr": "198.18.0.0/24",
                     "ip_address": "198.18.0.20",
@@ -633,7 +643,7 @@ class TestReservationMutationViews(_ViewTestBase):
         try:
             with stub_kea(responses) as kea:
                 response = self.client.post(
-                    reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                    reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}),
                     {
                         "subnet_cidr": "198.18.0.0/24",
                         "ip_address": "198.18.0.20",
@@ -675,7 +685,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
         with stub_kea(responses) as kea:
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}),
                 {
                     "subnet_cidr": "198.18.0.0/24",
                     "ip_address": "198.18.0.20",
@@ -703,8 +713,7 @@ class TestReservationMutationViews(_ViewTestBase):
         }
         changed = {**original, "hostname": "changed.example.invalid"}
         url = reverse(
-            "plugins:netbox_kea:server_reservation4_edit",
-            args=[self.server.pk, 20],
+            "plugins:netbox_kea:server_reservation_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
         )
         query = _identity_query()
 
@@ -737,7 +746,9 @@ class TestReservationMutationViews(_ViewTestBase):
             "hostname": "old.example.invalid",
         }
         intended = {**current, "hostname": "new.example.invalid"}
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
         query = _identity_query()
 
         with stub_kea({**responses, "reservation-get": _res_get(current)}):
@@ -776,7 +787,9 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertEqual(kea.commands().count("config-get"), 5, kea.commands())
 
     def test_canonical_identity_route_rejects_missing_unsupported_and_malformed_identity(self):
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
         queries = (
             "",
             "identifier_type=remote-id&identifier=relay",
@@ -790,7 +803,9 @@ class TestReservationMutationViews(_ViewTestBase):
         self.assertEqual(kea.commands(), [])
 
     def test_edit_returns_not_found_for_an_unknown_subnet_or_identity(self):
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
         query = _identity_query()
         no_subnet = _mutation_responses(4, 21, "198.18.1.0/24", ["hw-address"])
         with stub_kea(no_subnet):
@@ -822,7 +837,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
         with stub_kea(responses) as kea:
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation6_add", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 6}),
                 {
                     "subnet_cidr": "2001:db8::/64",
                     "ip_addresses": "2001:db8::20,2001:db8::21",
@@ -864,7 +879,7 @@ class TestReservationMutationViews(_ViewTestBase):
         }
         with stub_kea({**responses, "reservation-add": {"result": 0}}) as kea:
             refused = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]), add
+                reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}), add
             )
         self.assertEqual(refused.status_code, 200)
         self.assertEqual(
@@ -875,7 +890,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
         option = {"name": "domain-name", "data": "lab.example.org", "client-classes": ["a,b"]}
         current = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "option-data": [option]}
-        url = f"{reverse('plugins:netbox_kea:server_reservation4_edit', args=[self.server.pk, 20])}?{_identity_query()}"
+        url = f"{reverse('plugins:netbox_kea:server_reservation_edit', kwargs={'pk': self.server.pk, 'family': 4, 'subnet_id': 20})}?{_identity_query()}"
         with stub_kea({**responses, "reservation-get": _res_get(current)}):
             page = self.client.get(url)
         edit = {
@@ -901,7 +916,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
         with stub_kea(responses) as kea:
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}),
                 {
                     "subnet_cidr": "198.18.0.0/24",
                     "ip_address": "198.18.0.20",
@@ -987,10 +1002,14 @@ class TestReservationMutationViews(_ViewTestBase):
         }
         if sync:
             data["sync_to_netbox"] = "on"
-        return self.client.post(reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk]), data)
+        return self.client.post(
+            reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4}), data
+        )
 
     def _post_edit(self, _responses, current, *, sync=False):
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
         url = f"{url}?{_identity_query()}"
         form_page = self.client.get(url)
         data = {
@@ -1003,7 +1022,9 @@ class TestReservationMutationViews(_ViewTestBase):
         return self.client.post(url, data)
 
     def _post_delete(self, _responses, _current, *, sync=False):
-        url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_delete", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
         return self.client.post(f"{url}?{_identity_query()}")
 
     def test_result_3_on_a_delete_changed_nothing_and_records_nothing(self):
@@ -1047,7 +1068,9 @@ class TestReservationMutationViews(_ViewTestBase):
             "prefixes": ["2001:db8:200::/56"],
             "hostname": "new6.example.invalid",
         }
-        url = reverse("plugins:netbox_kea:server_reservation6_edit", args=[self.server.pk, 10])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_edit", kwargs={"pk": self.server.pk, "family": 6, "subnet_id": 10}
+        )
         query = _identity_query("00:01:02:03", "duid")
         with stub_kea({**responses, "reservation-get": _res_get(current)}):
             form_page = self.client.get(f"{url}?{query}")
@@ -1109,7 +1132,9 @@ class TestReservationMutationViews(_ViewTestBase):
             "option-data": [option],
         }
         intended = {**current, "hostname": "new.example.invalid"}
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
         query = _identity_query()
         with stub_kea({**responses, "reservation-get": _res_get(current)}):
             form_page = self.client.get(f"{url}?{query}")
@@ -1157,7 +1182,9 @@ class TestReservationMutationViews(_ViewTestBase):
             "ip-address": "198.18.0.20",
         }
         responses["reservation-get"] = _res_get(current)
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
         query = _identity_query()
 
         with stub_kea(responses) as kea:
@@ -1183,7 +1210,9 @@ class TestReservationMutationViews(_ViewTestBase):
             "hw-address": "aa:bb:cc:dd:ee:ff",
             "ip-address": "198.18.0.20",
         }
-        url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_delete", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
         query = _identity_query()
 
         with stub_kea({**responses, "reservation-get": _res_get(raw)}):
@@ -1223,8 +1252,10 @@ class TestReservationMutationViews(_ViewTestBase):
     def test_delete_returns_to_the_reservation_search(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         raw = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
-        url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
-        reservations = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_delete", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
+        reservations = reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
         search = f"{reservations}?q=aa%3Abb&cursor=next"
 
         def target(return_url):
@@ -1252,7 +1283,9 @@ class TestReservationMutationViews(_ViewTestBase):
             "hw-address": "aa:bb:cc:dd:ee:ff",
             "hostname": "old.example.invalid",
         }
-        url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_delete", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
         query = _identity_query()
         reservation_reads = 0
 
@@ -1280,7 +1313,9 @@ class TestReservationMutationViews(_ViewTestBase):
     def test_delete_confirmation_redirects_when_kea_is_unreachable(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         responses["subnet4-list"] = requests.ConnectionError("Kea unavailable")
-        url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_delete", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
         query = _identity_query()
 
         with stub_kea(responses):
@@ -1288,14 +1323,16 @@ class TestReservationMutationViews(_ViewTestBase):
 
         self.assertRedirects(
             response,
-            reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]),
+            reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4}),
             fetch_redirect_response=False,
         )
 
     def test_delete_confirmation_returns_not_found_for_an_unknown_identity(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         responses["reservation-get"] = {"result": 3}
-        url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_delete", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
         query = _identity_query()
 
         with stub_kea(responses):
@@ -1306,7 +1343,9 @@ class TestReservationMutationViews(_ViewTestBase):
     def test_delete_fails_closed_when_mutation_capabilities_are_incomplete(self):
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         responses["config-get"]["arguments"]["Dhcp4"]["hooks-libraries"] = []
-        url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_delete", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
         query = _identity_query()
 
         with stub_kea(responses) as kea:
@@ -1331,7 +1370,10 @@ class TestReservationMutationViews(_ViewTestBase):
                 "option-data": [duplicate, {"name": name, "data": "old"}, duplicate],
             }
             url = (
-                reverse(f"plugins:netbox_kea:server_reservation{family}_edit", args=[self.server.pk, 20])
+                reverse(
+                    "plugins:netbox_kea:server_reservation_edit",
+                    kwargs={"pk": self.server.pk, "family": family, "subnet_id": 20},
+                )
                 + "?"
                 + _identity_query()
             )
@@ -1384,7 +1426,7 @@ class TestReservationMutationViews(_ViewTestBase):
 
 class TestReservationDocumentImport(_ViewTestBase):
     def _url(self):
-        return reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_reservation_bulk_import", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_import_reports_one_capped_pool_warning_by_reservation_identity(self):
         reservations = {}
@@ -1523,7 +1565,9 @@ class TestReservationDocumentImport(_ViewTestBase):
         }
         with stub_kea(responses):
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation6_bulk_import", args=[self.server.pk]),
+                reverse(
+                    "plugins:netbox_kea:server_reservation_bulk_import", kwargs={"pk": self.server.pk, "family": 6}
+                ),
                 {
                     "format": "json",
                     "document": json.dumps({"version": 1, "reservations": [entry]}),
@@ -1613,7 +1657,9 @@ class TestReservationDocumentImport(_ViewTestBase):
 
     def test_the_import_page_selects_the_reservations_tab(self):
         for version in (4, 6):
-            url = reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_import", args=[self.server.pk])
+            url = reverse(
+                "plugins:netbox_kea:server_reservation_bulk_import", kwargs={"pk": self.server.pk, "family": version}
+            )
             with self.subTest(version=version, method="GET"):
                 self.assertEqual(active_tabs(self.client.get(url)), ["Reservations"])
             with self.subTest(version=version, method="POST"), stub_kea({}):
@@ -1950,7 +1996,10 @@ class TestReservationTargetReadFailures(_ViewTestBase):
     _CURRENT = {"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff", "hostname": "old.example.invalid"}
 
     def _url(self, action: str) -> str:
-        url = reverse(f"plugins:netbox_kea:server_reservation4_{action}", args=[self.server.pk, 20])
+        url = reverse(
+            f"plugins:netbox_kea:server_reservation_{action}",
+            kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20},
+        )
         return f"{url}?{_identity_query()}"
 
     def _messages(self, response) -> list[str]:
@@ -2019,7 +2068,7 @@ class TestReservationImportReadFailures(_ViewTestBase):
     """The live reads that validate an import show the shared Notice as form errors."""
 
     def _post(self, responses: dict):
-        url = reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservation_bulk_import", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(responses) as kea:
             response = self.client.post(url, {"format": "yaml", "document": _IMPORT_DOCUMENT})
         self.assertEqual(response.status_code, 200)
@@ -2074,8 +2123,8 @@ class TestMutationCapabilityGate(_ViewTestBase):
         }
 
     def test_add_post_is_rejected_without_mutation_capabilities(self):
-        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
-        return_url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4})
+        return_url = reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
 
         with stub_kea(self._responses_without_mutation()) as kea:
             response = self.client.post(url, self._add_payload(), follow=True)
@@ -2085,8 +2134,8 @@ class TestMutationCapabilityGate(_ViewTestBase):
         self.assertContains(response, "Reservation mutation capabilities are unavailable.")
 
     def test_add_post_is_rejected_when_the_capability_read_fails(self):
-        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
-        return_url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4})
+        return_url = reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         responses.update(
             {
@@ -2104,8 +2153,10 @@ class TestMutationCapabilityGate(_ViewTestBase):
         self.assertContains(response, "Reservation mutation capabilities are unavailable.")
 
     def test_edit_post_is_rejected_without_mutation_capabilities(self):
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
-        return_url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
+        return_url = reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
         query = _identity_query()
         responses = self._responses_without_mutation()
         good = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
@@ -2136,7 +2187,9 @@ class TestMutationCapabilityGate(_ViewTestBase):
         self.assertContains(response, "Reservation mutation capabilities are unavailable.")
 
     def test_delete_post_stays_rejected_without_mutation_capabilities(self):
-        url = reverse("plugins:netbox_kea:server_reservation4_delete", args=[self.server.pk, 20])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_delete", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
         query = _identity_query()
 
         with stub_kea(self._responses_without_mutation()) as kea:
@@ -2151,7 +2204,7 @@ class TestReservationFormFieldHelp(_ViewTestBase):
     """The Reservation form explains identifiers and IPAM sync in field help, not in alert boxes."""
 
     def _add_page(self, identifiers: list[str]) -> BeautifulSoup:
-        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(_mutation_responses(4, 20, "198.18.0.0/24", identifiers)):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -2274,7 +2327,7 @@ class TestReservationSideEffectAfterApplied(TransactionTestCase):
                 stub_kea(responses) as kea,
             ):
                 response = self.client.post(
-                    reverse("plugins:netbox_kea:server_reservation6_bulk_import", args=[server.pk]),
+                    reverse("plugins:netbox_kea:server_reservation_bulk_import", kwargs={"pk": server.pk, "family": 6}),
                     {
                         "format": "json",
                         "document": json.dumps({"version": 1, "reservations": entries}),
@@ -2332,7 +2385,7 @@ class TestReservationSideEffectAfterApplied(TransactionTestCase):
             stub_kea(responses) as kea,
         ):
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation4_bulk_import", args=[server.pk]),
+                reverse("plugins:netbox_kea:server_reservation_bulk_import", kwargs={"pk": server.pk, "family": 4}),
                 {"format": "yaml", "document": _document(2), "sync_to_netbox": "on"},
             )
         self.assertEqual(kea.commands().count("reservation-add"), 2)
@@ -2377,7 +2430,7 @@ class TestReservationSideEffectAfterApplied(TransactionTestCase):
             self.assertLogs("netbox_kea.manual_sync", "ERROR") as logs,
         ):
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation6_add", args=[server.pk]),
+                reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": server.pk, "family": 6}),
                 {
                     "subnet_cidr": "2001:db8::/64",
                     "ip_addresses": "2001:db8::20,2001:db8::21",
@@ -2429,7 +2482,7 @@ class TestReservationSideEffectAfterApplied(TransactionTestCase):
             stub_kea(responses),
         ):
             response = self.client.post(
-                reverse("plugins:netbox_kea:server_reservation4_add", args=[server.pk]),
+                reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": server.pk, "family": 4}),
                 {
                     "subnet_cidr": "198.18.0.0/24",
                     "ip_address": "198.18.0.20",
@@ -2488,7 +2541,10 @@ class TestWidenedReservationForms(_ViewTestBase):
         return responses
 
     def _edit_url(self, family):
-        url = reverse(f"plugins:netbox_kea:server_reservation{family}_edit", args=[self.server.pk, 20])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_edit",
+            kwargs={"pk": self.server.pk, "family": family, "subnet_id": 20},
+        )
         identifier = _WIDENED[family][_WIDENED_IDENTIFIER[family]]
         return f"{url}?{_identity_query(identifier, _WIDENED_IDENTIFIER[family])}"
 
@@ -2673,7 +2729,10 @@ class TestWidenedReservationForms(_ViewTestBase):
             with self.subTest(family=family):
                 with stub_kea(self._responses(family, expected)) as kea:
                     response = self.client.post(
-                        reverse(f"plugins:netbox_kea:server_reservation{family}_add", args=[self.server.pk]), data
+                        reverse(
+                            "plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": family}
+                        ),
+                        data,
                     )
                 self.assertEqual(response.status_code, 302)
                 self.assertEqual(kea.bodies("reservation-add")[0]["arguments"]["reservation"], expected)
@@ -2698,7 +2757,10 @@ class TestWidenedReservationForms(_ViewTestBase):
             }
             with self.subTest(field=field, submitted=submitted), stub_kea(self._responses(family)) as kea:
                 response = self.client.post(
-                    reverse(f"plugins:netbox_kea:server_reservation{family}_add", args=[self.server.pk]), data
+                    reverse(
+                        "plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": family}
+                    ),
+                    data,
                 )
                 self.assertEqual(response.status_code, 200)
                 self.assertTrue(response.context["form"].errors.get(field), response.context["form"].errors)

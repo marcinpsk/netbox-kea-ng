@@ -129,25 +129,29 @@ class TestServerSubnets4View(_ViewTestBase):
         """A Subnet options change needs a Verified Subnet, which Kea cannot confirm without subnet_cmds."""
         config = {"result": 0, "arguments": {"Dhcp4": {"subnet4": [{"id": 7, "subnet": "198.18.0.0/24"}]}}}
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config}):
-            response = self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
+            )
         self.assertContains(response, "198.18.0.0/24")
         self.assertNotContains(response, "Edit options")
         for action in ("options_edit", "wipe_leases"):
-            url = reverse(f"plugins:netbox_kea:server_subnet4_{action}", args=[self.server.pk, 7])
+            url = reverse(
+                f"plugins:netbox_kea:server_subnet_{action}", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 7}
+            )
             self.assertNotContains(response, f'href="{url}"')
 
     def test_get_returns_200(self):
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_page_controls_render_outside_the_bulk_action_container(self):
         """NetBox renders its bulk-action container only for a view with bulk actions (netbox#23240)."""
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
             response = self.client.get(url)
-        add_url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        add_url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
         self.assertContains(response, f'href="{add_url}"')
         self.assertContains(response, 'href="?export"')
         content = response.content.decode()
@@ -158,17 +162,17 @@ class TestServerSubnets4View(_ViewTestBase):
 
     def test_get_sets_tab_in_context(self):
         """F2: GET response must include 'tab' in context for tab bar highlighting."""
-        from netbox_kea.views.subnets import ServerDHCP4SubnetsView
+        from netbox_kea.views.subnets import ServerSubnetsView
 
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4, "stat-lease4-get": _STAT_ABSENT4}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-        self.assertIs(response.context["tab"], ServerDHCP4SubnetsView.tab)
+        self.assertIs(response.context["tab"], ServerSubnetsView.tab)
 
     def test_get_with_dhcp4_disabled_shows_protocol_not_enabled(self):
         v6_only = _make_db_server(name="v6-only-subnets", dhcp4=False, dhcp6=True)
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[v6_only.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": v6_only.pk, "family": 4})
         response = self.client.get(url)
         self.assertContains(response, "Protocol not enabled")
 
@@ -177,7 +181,7 @@ class TestServerSubnets6View(_ViewTestBase):
     """GET /plugins/kea/servers/<pk>/subnets6/"""
 
     def test_get_returns_200(self):
-        url = reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 6})
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG6, "stat-lease6-get": _STAT_ABSENT6}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -185,16 +189,15 @@ class TestServerSubnets6View(_ViewTestBase):
     def test_get_sets_tab_in_context(self):
         """F2: GET response must include 'tab' in context for tab bar highlighting.
 
-        v4 and v6 subnets now render under the single shared 'Subnets' tab
-        (owned by ServerDHCP4SubnetsView); the v6 view injects it via context.
+        v4 and v6 subnets render under the single shared 'Subnets' tab of ServerSubnetsView.
         """
-        from netbox_kea.views.subnets import ServerDHCP4SubnetsView
+        from netbox_kea.views.subnets import ServerSubnetsView
 
-        url = reverse("plugins:netbox_kea:server_subnets6", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 6})
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG6, "stat-lease6-get": _STAT_ABSENT6}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
-        self.assertIs(response.context["tab"], ServerDHCP4SubnetsView.tab)
+        self.assertIs(response.context["tab"], ServerSubnetsView.tab)
 
 
 class TestServerSubnetsSearch(_ViewTestBase):
@@ -214,7 +217,7 @@ class TestServerSubnetsSearch(_ViewTestBase):
         }
         with stub_kea(responses):
             return self.client.get(
-                reverse(f"plugins:netbox_kea:server_subnets{family}", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": family}),
                 query,
                 headers={"HX-Request": "true"} if htmx else {},
             )
@@ -278,8 +281,10 @@ class TestSubnetEnrichment(_ViewTestBase):
             "stat-lease4-get": _STAT_ABSENT4,
         }
         with stub_kea({**_ABSENT_READ_HOOKS, **responses}):
-            tab_response = self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
-            combined_response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"))
+            tab_response = self.client.get(
+                reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
+            )
+            combined_response = self.client.get(reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4}))
 
         self.assertEqual(tab_response.status_code, 200)
         self.assertEqual(combined_response.status_code, 200)
@@ -318,7 +323,7 @@ class TestSubnetEnrichment(_ViewTestBase):
 
     def test_subnet_table_includes_options_data(self):
         """Each subnet dict in the table must carry parsed option-data."""
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with self._stub():
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -327,7 +332,7 @@ class TestSubnetEnrichment(_ViewTestBase):
 
     def test_subnet_table_includes_pool_ranges(self):
         """Each subnet dict must carry pool range data."""
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with self._stub():
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -337,7 +342,7 @@ class TestSubnetEnrichment(_ViewTestBase):
         """F1: each subnet dict must have an integer _subnet_sort_key for numeric sort."""
         import ipaddress
 
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with self._stub():
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -359,7 +364,9 @@ class TestSubnetOptionsColumn(_ViewTestBase):
         subnet = {"id": 1, "subnet": cidr, "option-data": list(options)}
         config = {"result": 0, "arguments": {f"Dhcp{version}": {f"subnet{version}": [subnet]}}}
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config}):
-            response = self.client.get(reverse(f"plugins:netbox_kea:server_subnets{version}", args=[self.server.pk]))
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": version})
+            )
         self.assertEqual(response.status_code, 200)
         return response.content.decode()
 
@@ -382,8 +389,14 @@ class TestSubnetOptionsColumn(_ViewTestBase):
         ]
         daemon = SubnetDaemon(4, [{"id": 42, "subnet": "192.0.2.0/24", "pools": [], "option-data": options}])
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}):
-            table = self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
-            form = self.client.get(reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42]))
+            table = self.client.get(
+                reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
+            )
+            form = self.client.get(
+                reverse(
+                    "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
+                )
+            )
 
         initial = form.context["form"].initial
         (row,) = table.context["table"].data
@@ -395,7 +408,11 @@ class TestSubnetOptionsColumn(_ViewTestBase):
     def test_the_edit_form_help_renders_its_code_markup(self):
         daemon = SubnetDaemon(4, [{"id": 42, "subnet": "192.0.2.0/24", "pools": [], "option-data": []}])
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}):
-            response = self.client.get(reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42]))
+            response = self.client.get(
+                reverse(
+                    "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
+                )
+            )
 
         content = response.content.decode()
         self.assertIn("<code>10.0.0.100-10.0.0.200</code>", content)
@@ -451,7 +468,9 @@ class TestSubnetSnapshotDiagnostics(_ViewTestBase):
                 "stat-lease4-get": _STAT_ABSENT4,
             }
         ):
-            response = self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
+            )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(list(response.context["table"].data), [])
         self.assertTrue(any(message.level == django_messages.ERROR for message in response.context["messages"]))
@@ -469,7 +488,9 @@ class TestSubnetSnapshotDiagnostics(_ViewTestBase):
                 "stat-lease4-get": _STAT_ABSENT4,
             }
         ):
-            response = self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
+            )
         self.assertContains(response, "198.18.0.0/24")
         self.assertContains(response, "Kea returned a non-list Pool collection.")
         levels = [message.level for message in response.context["messages"]]
@@ -536,7 +557,7 @@ class TestSubnetUtilizationStats(_ViewTestBase):
 
     def test_utilization_percentage_shown_in_table(self):
         """25/100 addresses → '25%' utilization shown in subnets4 table."""
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(
             {
                 **_ABSENT_READ_HOOKS,
@@ -550,7 +571,7 @@ class TestSubnetUtilizationStats(_ViewTestBase):
 
     def test_no_crash_when_stat_cmds_unavailable(self):
         """When stat_cmds hook is not loaded, subnets page must still render (200)."""
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(
             {**_ABSENT_READ_HOOKS, "config-get": _config_with_one_subnet()[0], "stat-lease4-get": _STAT_ABSENT4}
         ):
@@ -559,7 +580,7 @@ class TestSubnetUtilizationStats(_ViewTestBase):
 
     def test_zero_percent_when_no_leases_assigned(self):
         """0 assigned / 100 total → '0%' utilization."""
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(
             {**_ABSENT_READ_HOOKS, "config-get": _config_with_one_subnet()[0], "stat-lease4-get": self._stat(0)}
         ):
@@ -569,7 +590,7 @@ class TestSubnetUtilizationStats(_ViewTestBase):
 
     def test_hundred_percent_when_fully_utilized(self):
         """All addresses assigned → '100%' utilization."""
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(
             {
                 **_ABSENT_READ_HOOKS,
@@ -583,15 +604,18 @@ class TestSubnetUtilizationStats(_ViewTestBase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Feature 3.2: Subnet Lease Wipe — _BaseSubnetWipeView
+# Feature 3.2: Subnet Lease Wipe — ServerSubnetWipeView
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class TestServerSubnet4WipeView(_ViewTestBase):
-    """Tests for ServerSubnet4WipeView (GET confirmation + POST wipe)."""
+    """Tests for ServerSubnetWipeView (GET confirmation + POST wipe)."""
 
     def _url(self, subnet_id=42):
-        return reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[self.server.pk, subnet_id])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_wipe_leases",
+            kwargs={"pk": self.server.pk, "family": 4, "subnet_id": subnet_id},
+        )
 
     def test_get_returns_confirmation_page(self):
         """GET must show the wipe confirmation page with subnet info."""
@@ -607,7 +631,7 @@ class TestServerSubnet4WipeView(_ViewTestBase):
         cached = {"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24"}]}}
         live = {"result": 0, "arguments": {"subnet4": [{"id": 42, "subnet": "10.9.0.0/24"}]}}
         with stub_kea({**_ABSENT_READ_HOOKS, **_edit_responses(4, cached, _EMPTY_CONFIG4)}):
-            self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+            self.client.get(reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4}))
         with stub_kea(_edit_responses(4, live, _EMPTY_CONFIG4)):
             response = self.client.get(self._url())
         self.assertContains(response, "10.9.0.0/24")
@@ -687,10 +711,13 @@ class TestServerSubnet4WipeView(_ViewTestBase):
 
 
 class TestServerSubnet6WipeView(_ViewTestBase):
-    """Tests for ServerSubnet6WipeView — verifies v6 variant uses correct Kea commands."""
+    """Tests for ServerSubnetWipeView — verifies v6 variant uses correct Kea commands."""
 
     def _url(self, subnet_id=7):
-        return reverse("plugins:netbox_kea:server_subnet6_wipe_leases", args=[self.server.pk, subnet_id])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_wipe_leases",
+            kwargs={"pk": self.server.pk, "family": 6, "subnet_id": subnet_id},
+        )
 
     def test_get_returns_200(self):
         subnet = {"result": 0, "arguments": {"subnet6": [{"id": 7, "subnet": "2001:db8::/32"}]}}
@@ -751,13 +778,15 @@ _SUBNET6_GET_FULL = [
 
 
 class TestServerSubnet4EditView(_ViewTestBase):
-    """Tests for ServerSubnet4EditView (GET prefill + POST update)."""
+    """Tests for ServerSubnetEditView (GET prefill + POST update)."""
 
     # The update merges the form onto the live Subnet, so the daemon holds one to merge onto.
     _LIVE_SUBNET4 = {"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}
 
     def _url(self, subnet_id=42):
-        return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": subnet_id}
+        )
 
     def _get_stub(self, subnet=None, config=None):
         return stub_kea(
@@ -867,7 +896,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
     def test_get_prefills_membership_from_the_live_declaration_when_the_catalogue_is_stale(self):
         """A Subnet added after the catalogue was cached must not render as global."""
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4}):
-            self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+            self.client.get(reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4}))
         member = {
             "result": 0,
             "arguments": {
@@ -905,7 +934,7 @@ class TestServerSubnet4EditView(_ViewTestBase):
     def test_get_prefills_membership_from_the_live_declaration_when_the_target_is_incomplete(self):
         """An incomplete live declaration still decides membership; the cached catalogue never does."""
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _CONFIG4_NO_NETWORKS[0]}):
-            self.client.get(reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]))
+            self.client.get(reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4}))
         target = {"id": 42, "subnet": "10.0.0.0/24", "pools": [{"pool": "invalid"}]}
         live = {"result": 0, "arguments": {"subnet4": [{**target, "pools": []}]}}
         member = {
@@ -1223,13 +1252,15 @@ class TestServerSubnet4EditView(_ViewTestBase):
 
 
 class TestServerSubnet6EditView(_ViewTestBase):
-    """Tests for ServerSubnet6EditView — verifies v6 variant uses correct version."""
+    """Tests for ServerSubnetEditView — verifies v6 variant uses correct version."""
 
     # The update merges the form onto the live Subnet, so the daemon holds one to merge onto.
     _LIVE_SUBNET6 = {"id": 7, "subnet": "2001:db8::/48", "pools": [], "option-data": []}
 
     def _url(self, subnet_id=7):
-        return reverse("plugins:netbox_kea:server_subnet6_edit", args=[self.server.pk, subnet_id])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 6, "subnet_id": subnet_id}
+        )
 
     def _get_stub(self, subnet=None, config=None):
         return stub_kea(
@@ -1358,7 +1389,9 @@ class TestSubnetEditWritesOnlyChangedFields(_ViewTestBase):
 
     def _save(self, version: Family, **changes: str) -> dict:
         """Open the edit page of the live Subnet, post it with *changes*, and return the Subnet that Kea received."""
-        url = reverse(f"plugins:netbox_kea:server_subnet{version}_edit", args=[self.server.pk, 42])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": version, "subnet_id": 42}
+        )
         daemon = SubnetDaemon(version, [self._LIVE[version]])
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
             page = self.client.get(url)
@@ -1387,7 +1420,10 @@ class TestSubnetEditWritesOnlyChangedFields(_ViewTestBase):
 
     def test_a_live_change_after_the_page_was_shown_is_still_refused(self):
         for version in (4, 6):
-            url = reverse(f"plugins:netbox_kea:server_subnet{version}_edit", args=[self.server.pk, 42])
+            url = reverse(
+                "plugins:netbox_kea:server_subnet_edit",
+                kwargs={"pk": self.server.pk, "family": version, "subnet_id": 42},
+            )
             daemon = SubnetDaemon(version, [self._LIVE[version]])
             with self.subTest(version=version), stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
                 page = self.client.get(url)
@@ -1427,10 +1463,12 @@ class TestSubnetEditWritesOnlyChangedFields(_ViewTestBase):
 
 
 class TestServerSubnet4EditViewNetworkAssignment(_ViewTestBase):
-    """Tests for shared-network assignment in ServerSubnet4EditView."""
+    """Tests for shared-network assignment in ServerSubnetEditView."""
 
     def _url(self, subnet_id=42):
-        return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": subnet_id}
+        )
 
     def _get_stub(self, config):
         return stub_kea(_edit_responses(4, _SUBNET4_GET_FULL[0], config))
@@ -1486,7 +1524,7 @@ class TestServerSubnet4AddViewSharedNetwork(_ViewTestBase):
     """GET/POST /plugins/kea/servers/<pk>/subnets4/add/ — shared_network field."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
 
     def _stub(self):
         return stub_kea({**_ABSENT_READ_HOOKS, **SubnetDaemon(4, networks=("net-alpha", "net-beta")).responses()})
@@ -1521,7 +1559,9 @@ class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
     """Subnet facts prefill the edit form when Server Configuration is unavailable."""
 
     def _url(self, subnet_id=42):
-        return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": subnet_id}
+        )
 
     def test_get_rejects_malformed_subnet_response(self):
         payloads = (
@@ -1545,7 +1585,7 @@ class TestSubnetEditNetworkChoicesNoneArguments(_ViewTestBase):
                 response = self.client.get(self._url())
                 self.assertRedirects(
                     response,
-                    reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk]),
+                    reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4}),
                     fetch_redirect_response=False,
                 )
                 shown = [(message.level, str(message)) for message in get_messages(response.wsgi_request)]
@@ -1625,7 +1665,9 @@ class TestSubnetEditZeroTimers(_ViewTestBase):
     """Renew/rebind timer value of 0 must round-trip through subnet edit GET."""
 
     def _url(self, subnet_id=42):
-        return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": subnet_id}
+        )
 
     def _stub(self):
         """The Server Configuration declares zero-valued Subnet timers."""
@@ -1656,7 +1698,7 @@ class TestSubnetEditZeroTimers(_ViewTestBase):
 
 
 class TestPoolDeleteExceptions(_ViewTestBase):
-    """_BasePoolDeleteView checks the Pool text in the URL."""
+    """ServerSubnetPoolDeleteView checks the Pool text in the URL."""
 
     _SPACED = "192.0.2.10 - 192.0.2.20"
 
@@ -1674,26 +1716,38 @@ class TestPoolDeleteExceptions(_ViewTestBase):
 
     def test_get_invalid_pool_format_returns_400(self):
         """GET with invalid pool string must return 400 (before any Kea call)."""
-        url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 42, "not_a_pool_format!!"])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_pool_delete",
+            kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42, "pool": "not_a_pool_format!!"},
+        )
         response = self.client.get(url)
         self.assertEqual(response.status_code, 400)
 
     def test_get_range_pool_with_spaces_returns_200(self):
         """GET with a Kea range pool string like '192.0.2.10 - 192.0.2.20' must not return 400."""
-        url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 42, self._SPACED])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_pool_delete",
+            kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42, "pool": self._SPACED},
+        )
         with self._stub():
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_post_invalid_pool_format_returns_400(self):
         """POST with invalid pool string must return 400 (before any Kea call)."""
-        url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 42, "not_a_pool_format!!"])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_pool_delete",
+            kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42, "pool": "not_a_pool_format!!"},
+        )
         response = self.client.post(url)
         self.assertEqual(response.status_code, 400)
 
     def test_post_range_pool_with_spaces_sends_the_normalized_range(self):
         """POST with a Kea range pool string like '192.0.2.10 - 192.0.2.20' deletes that Pool."""
-        url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 42, self._SPACED])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_pool_delete",
+            kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42, "pool": self._SPACED},
+        )
         with self._stub() as kea:
             response = self.client.post(url, {"subnet_cidr": "192.0.2.0/24"})
         self.assertEqual(response.status_code, 302)
@@ -1707,7 +1761,7 @@ class TestSubnetAddAllocatesThroughCatalogue(_ViewTestBase):
     """The add view takes each new Subnet identity from a live Subnet Catalogue observation."""
 
     def _post(self, daemon: SubnetDaemon, **data):
-        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
         self.client.cookies.pop("messages", None)
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
             response = self.client.post(url, {**_SUBNET_ADD_POST, **data})
@@ -1867,10 +1921,10 @@ def _incomplete_networks(*members: dict) -> dict:
 
 
 class TestSubnetAddExceptionPaths(_ViewTestBase):
-    """_BaseSubnetAddView GET/POST paths around the change."""
+    """ServerSubnetAddView GET/POST paths around the change."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_get_falls_back_when_network_choices_raise(self):
         """GET must render the form with fallback choices when config-get fails (result 1 → KeaException)."""
@@ -1901,7 +1955,7 @@ class TestSubnetAddExceptionPaths(_ViewTestBase):
 
     def test_post_with_an_unusable_client_configuration_sends_nothing(self):
         bad_server = _make_db_server(name="bad-cert", client_cert_path="/nonexistent/cert.pem")
-        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[bad_server.pk])
+        url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": bad_server.pk, "family": 4})
         with stub_kea(SubnetDaemon(4).responses()) as kea:
             response = self.client.post(url, _SUBNET_ADD_POST)
         self.assertEqual(response.status_code, 200)
@@ -1970,7 +2024,7 @@ class TestSubnetAddPayload(_ViewTestBase):
 
     def _sent(self, version: Family, data: dict) -> dict:
         """POST the add form of *version* with *data*, and return the one Subnet entry that subnet{v}-add sent."""
-        url = reverse(f"plugins:netbox_kea:server_subnet{version}_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": version})
         daemon = SubnetDaemon(version)
         post = {**_SUBNET_ADD_POST, "ddns_qualifying_suffix": "", **data}
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
@@ -2027,7 +2081,7 @@ class TestSubnetAddMessages(_ViewTestBase):
         return SubnetDaemon(4, [{"id": 3, "subnet": "10.1.0.0/24"}], networks=("alpha",))
 
     def _post(self, daemon: SubnetDaemon, **data):
-        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
             response = self.client.post(url, {**_SUBNET_ADD_POST, **data})
         messages = [(m.level, str(m)) for m in get_messages(response.wsgi_request)]
@@ -2182,7 +2236,7 @@ class TestSubnetAddMessages(_ViewTestBase):
         """The page disables the select, and a browser posts no disabled field: the save must not pick no network."""
         daemon = self._daemon()
         daemon.script("config-get", _incomplete_networks())
-        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
             page = self.client.get(url)
             self.assertTrue(page.context["form"].fields["shared_network"].disabled)
@@ -2198,7 +2252,7 @@ class TestSubnetAddMessages(_ViewTestBase):
         daemon = self._daemon()
         # The read that shows the refused form again returns an incomplete Shared Network list.
         daemon.script("config-get", _incomplete_networks())
-        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
             refused = self.client.post(url, {**_SUBNET_ADD_POST, "ntp_servers": "ntp.example.com"})
             self.assertTrue(refused.context["form"].fields["shared_network"].disabled)
@@ -2227,7 +2281,7 @@ class TestSubnetAddMessages(_ViewTestBase):
     def test_a_shared_network_that_the_cached_list_does_not_hold_stays_selectable(self):
         """The cached snapshot can miss a Shared Network that Kea has. config_write, not the cache, decides."""
         daemon = self._daemon()
-        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
             page = self.client.get(url)
             daemon.networks.append("beta")
@@ -2272,7 +2326,9 @@ class TestSubnetEditMessages(_ViewTestBase):
         )
 
     def _post(self, daemon: SubnetDaemon, **data):
-        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
+        )
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
             response = self.client.post(
                 url, {"subnet_cidr": "10.0.0.0/24", "shared_network": "alpha", **_shown("alpha"), **data}
@@ -2424,7 +2480,9 @@ class TestSubnetEditMessages(_ViewTestBase):
     def test_a_membership_that_changed_after_the_page_was_shown_is_not_sent(self):
         """Another writer moves the Subnet after the GET, so a save of the fields must not move it back."""
         daemon = self._daemon()
-        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
+        )
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
             page = self.client.get(url)
             self.assertEqual(page.context["form"].initial["shared_network"], "alpha")
@@ -2462,7 +2520,9 @@ class TestSubnetEditMessages(_ViewTestBase):
             networks=("alpha",),
             members={42: "alpha"},
         )
-        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
+        )
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
             first = _page_data(self.client.get(url))
             second = _page_data(self.client.get(url))
@@ -2488,7 +2548,9 @@ class TestSubnetEditMessages(_ViewTestBase):
             networks=("alpha",),
             members={42: "alpha"},
         )
-        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
+        )
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
             page = self.client.get(url)
             self.assertEqual(
@@ -2512,7 +2574,9 @@ class TestSubnetEditMessages(_ViewTestBase):
         failed = {"result": 1, "text": "config-get failed"}
         # The two configuration reads of the GET fail, and the reads of the POST succeed.
         daemon.script("config-get", failed, failed)
-        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
+        )
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
             page = self.client.get(url)
             self.assertEqual(page.context["form"].initial["shared_network"], "")
@@ -2532,7 +2596,9 @@ class TestSubnetEditMessages(_ViewTestBase):
         member = {"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}
         # The two configuration reads of the GET return an incomplete Shared Network list.
         daemon.script("config-get", _incomplete_networks(member), _incomplete_networks(member))
-        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
+        )
         with stub_kea({**_ABSENT_READ_HOOKS, **daemon.responses()}) as kea:
             page = self.client.get(url)
             self.assertEqual(page.context["form"].initial["original_network"], "alpha")
@@ -2577,10 +2643,12 @@ _SUBNET4_EDIT_POST = {
 
 
 class TestSubnetEditPostExceptions(_ViewTestBase):
-    """_BaseSubnetEditView POST with Pools and Subnet facts that Kea declares in unusual ways."""
+    """ServerSubnetEditView POST with Pools and Subnet facts that Kea declares in unusual ways."""
 
     def _url(self, subnet_id=42):
-        return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": subnet_id}
+        )
 
     def test_a_pool_outside_the_subnet_is_a_form_error_without_a_kea_write(self):
         target = {"id": 42, "subnet": "198.18.0.5/24", "pools": []}
@@ -2707,7 +2775,7 @@ class TestSubnetListViewEdgeCases(_ViewTestBase):
     """Subnet list view: null config, CSV export, and the HTMX partial."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_null_config_arguments_raises(self):
         """Null config-get arguments returns an empty table (degraded 200 state)."""
@@ -2778,7 +2846,7 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
         return (
             (
                 "subnet delete",
-                reverse("plugins:netbox_kea:server_subnet4_delete", args=[pk, 1]),
+                reverse("plugins:netbox_kea:server_subnet_delete", kwargs={"pk": pk, "family": 4, "subnet_id": 1}),
                 {"subnet_cidr": _SEEN},
                 "subnet4-del",
                 0,
@@ -2786,7 +2854,7 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
             ),
             (
                 "pool add",
-                reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[pk, 1]),
+                reverse("plugins:netbox_kea:server_subnet_pool_add", kwargs={"pk": pk, "family": 4, "subnet_id": 1}),
                 {"subnet_cidr": _SEEN, "pool": _NEW_POOL},
                 "subnet4-delta-add",
                 # The form reads the Subnet Catalogue before the operation opens its scope.
@@ -2795,7 +2863,10 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
             ),
             (
                 "pool delete",
-                reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[pk, 1, _OLD_POOL]),
+                reverse(
+                    "plugins:netbox_kea:server_subnet_pool_delete",
+                    kwargs={"pk": pk, "family": 4, "subnet_id": 1, "pool": _OLD_POOL},
+                ),
                 {"subnet_cidr": _SEEN},
                 "subnet4-delta-del",
                 0,
@@ -2813,7 +2884,9 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
 
     def test_an_id_that_now_names_another_cidr_is_not_deleted(self):
         """The red test of #204: the delete POST names an ID that now belongs to another CIDR."""
-        url = reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_delete", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         messages, kea = self._post(url, {"subnet_cidr": _SEEN}, _change_responses(_subnet_1("10.0.1.0/24")))
         self.assertEqual(kea.commands(), ["subnet4-list", "config-get"])
         self.assertEqual(
@@ -2957,7 +3030,9 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
                 self.assertEqual(messages, [(django_messages.ERROR, _NO_SUBNET_CIDR)])
 
     def test_a_pool_add_without_the_cidr_is_a_form_error(self):
-        url = reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_pool_add", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         with stub_kea(_change_responses(_subnet_1())) as kea:
             response = self.client.post(url, {"pool": _NEW_POOL})
         self.assertEqual(response.status_code, 200)
@@ -2976,7 +3051,10 @@ class TestSubnetAndPoolChangesRequireTheVerifiedSubnet(_ViewTestBase):
                 self.assertEqual(messages, [(django_messages.ERROR, invalid_server_settings(bad))])
 
     def test_a_pool_delete_whose_pool_is_outside_the_cidr_sends_nothing(self):
-        url = reverse("plugins:netbox_kea:server_subnet4_pool_delete", args=[self.server.pk, 1, "10.0.1.10-10.0.1.20"])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_pool_delete",
+            kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1, "pool": "10.0.1.10-10.0.1.20"},
+        )
         messages, kea = self._post(url, {"subnet_cidr": _SEEN}, _change_responses(_subnet_1()))
         self.assertEqual(kea.commands(), [])
         self.assertEqual(
@@ -2994,7 +3072,10 @@ class TestSubnetDeleteExceptionPaths(_ViewTestBase):
     """Subnet delete GET when the configuration read fails."""
 
     def _url(self, subnet_id=42):
-        return reverse("plugins:netbox_kea:server_subnet4_delete", args=[self.server.pk, subnet_id])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_delete",
+            kwargs={"pk": self.server.pk, "family": 4, "subnet_id": subnet_id},
+        )
 
     def test_get_exception_redirects_with_an_error(self):
         """A failed configuration read leaves no CIDR for the confirm form, so the GET redirects."""
@@ -3016,7 +3097,7 @@ class TestFetchSubnetsFromServer(_ViewTestBase):
     def _run(self, responses):
         """Render the combined Subnet table through its public HTTP view."""
         with stub_kea({**_ABSENT_READ_HOOKS, **responses}):
-            response = self.client.get(reverse("plugins:netbox_kea:combined_subnets4"))
+            response = self.client.get(reverse("plugins:netbox_kea:combined_subnets", kwargs={"family": 4}))
         self.assertEqual(response.status_code, 200)
         return list(response.context["table"].data)
 
@@ -3179,7 +3260,9 @@ class TestSubnetEditNonCanonicalCidr(_ViewTestBase):
     _CIDR = "10.0.0.5/24"
 
     def _url(self, subnet_id=42):
-        return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": subnet_id}
+        )
 
     def _stub(self, cidr: str = _CIDR):
         live = {"id": 42, "subnet": cidr, "pools": [], "option-data": []}
@@ -3242,7 +3325,9 @@ class TestSubnetEditFormInitialFields(_ViewTestBase):
     """SubnetEditForm.initial_for fills the NTP and lease time fields."""
 
     def _url(self, subnet_id=42):
-        return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": subnet_id}
+        )
 
     def test_get_populates_ntp_and_lease_times(self):
         """The edit GET fills ntp-servers, min-valid-lft, max-valid-lft, renew/rebind-timer."""
@@ -3304,7 +3389,9 @@ class TestGetNetworkDataUnnamedNetwork(_ViewTestBase):
             "result": 0,
             "arguments": {"subnet4": [{"id": 42, "subnet": "10.0.0.0/24", "pools": [], "option-data": []}]},
         }
-        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
+        )
         with stub_kea(_edit_responses(4, subnet_resp, config_resp)):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -3324,8 +3411,8 @@ class TestFetchNetworkNonDictArgs(_ViewTestBase):
     def test_get_non_dict_args_redirects(self):
         """config-get returning arguments=None is an unavailable snapshot, so GET redirects."""
         url = reverse(
-            "plugins:netbox_kea:server_shared_network4_edit",
-            args=[self.server.pk, "test-net"],
+            "plugins:netbox_kea:server_shared_network_edit",
+            kwargs={"pk": self.server.pk, "family": 4, "network_name": "test-net"},
         )
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": {"result": 0, "arguments": None}}):
             response = self.client.get(url)
@@ -3344,7 +3431,7 @@ class TestGetNetworkChoicesKeaException(_ViewTestBase):
 
     def test_kea_exception_returns_global_pool_only(self):
         """config-get failing (result 1 → KeaException) → the add form falls back to global-pool only."""
-        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": {"result": 1, "text": "error"}}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -3377,7 +3464,9 @@ class TestGetInheritedOptionsParseOpts(_ViewTestBase):
                 }
             },
         }
-        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
+        )
         with stub_kea(_edit_responses(4, subnet_resp, config_resp)):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -3396,7 +3485,7 @@ class TestSubnetAddNetworkChoicesError(_ViewTestBase):
     """The add GET disables the Shared Network field and warns when config-get is unusable."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_invalid_shared_networks_disables_choices(self):
         config = {"result": 0, "arguments": {"Dhcp4": {"shared-networks": "invalid"}}}
@@ -3451,7 +3540,9 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
         }
 
     def _assert_unreadable_shared_networks_hide_hints(self, networks):
-        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         with stub_kea(self._shared_network_responses(networks)):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -3496,8 +3587,10 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
             ],
         )
         responses["subnet4-add"] = {"result": 0, "arguments": {"subnets": [{"id": 3}]}}
-        edit_url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
-        add_url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        edit_url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
+        add_url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
         with self.subTest(operation="inherited hints"), stub_kea(responses):
             response = self.client.get(edit_url)
             self.assertEqual(response.status_code, 200)
@@ -3538,7 +3631,9 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
         )
 
     def test_empty_shared_network_is_selectable_and_edit_proceeds(self):
-        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         with stub_kea(self._shared_network_responses([{"name": "clients", "subnet4": []}])) as kea:
             response = self.client.get(url)
             self.assertEqual(response.status_code, 200)
@@ -3552,7 +3647,9 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
         self.assertIn("network4-subnet-add", kea.commands())
 
     def test_invalid_shared_networks_preserves_edit_display(self):
-        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         live_subnet = {"result": 0, "arguments": {"subnet4": [{"id": 1, "subnet": "198.18.0.0/24"}]}}
         with stub_kea(
             {
@@ -3577,7 +3674,9 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
 
     def test_transport_error_renders_edit_form_with_warning(self):
         """A requests.RequestException on config-get must not cause a 500 in the edit view."""
-        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         with stub_kea(
             {**_ABSENT_READ_HOOKS, "subnet4-get": self._LIVE_SUBNET, "config-get": requests.ConnectionError("down")}
         ):
@@ -3588,7 +3687,9 @@ class TestSubnetEditNetworkDataErrors(_ViewTestBase):
 
     def test_a_config_get_body_that_is_not_json_renders_edit_form_with_warning(self):
         """A config-get reply that is not JSON must not cause a 500 in the edit view."""
-        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         with stub_kea(
             {**_ABSENT_READ_HOOKS, "subnet4-get": self._LIVE_SUBNET, "config-get": _raw_http_response(b"bad response")}
         ):
@@ -3608,7 +3709,7 @@ class TestSubnetDeleteClientError(_ViewTestBase):
     def test_get_with_get_client_failure_redirects(self):
         """A real get_client() failure in delete GET redirects with an error, not 500."""
         bad = _make_db_server(name="bad-cert-del-get", client_cert_path="/nonexistent/cert.pem")
-        url = reverse("plugins:netbox_kea:server_subnet4_delete", args=[bad.pk, 1])
+        url = reverse("plugins:netbox_kea:server_subnet_delete", kwargs={"pk": bad.pk, "family": 4, "subnet_id": 1})
         response = self.client.get(url)
         self.assertEqual(response.status_code, 302)
 
@@ -3619,14 +3720,18 @@ class TestSubnetWipeClientError(_ViewTestBase):
     def test_post_with_get_client_failure_redirects(self):
         """A real get_client() failure (cert without key → ValueError) in wipe POST must redirect."""
         bad = _make_db_server(name="bad-cert-wipe-post", client_cert_path="/nonexistent/cert.pem")
-        url = reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[bad.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_wipe_leases", kwargs={"pk": bad.pk, "family": 4, "subnet_id": 1}
+        )
         response = self.client.post(url, {"confirm": "1"})
         self.assertIn(response.status_code, [200, 302])
 
     def test_get_with_get_client_failure_renders(self):
         """A real get_client() failure in wipe GET must still render the confirm page, not 500."""
         bad = _make_db_server(name="bad-cert-wipe-get", client_cert_path="/nonexistent/cert.pem")
-        url = reverse("plugins:netbox_kea:server_subnet4_wipe_leases", args=[bad.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_wipe_leases", kwargs={"pk": bad.pk, "family": 4, "subnet_id": 1}
+        )
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
@@ -3641,7 +3746,7 @@ class TestGetSubnetsConfigShapeGuard(_ViewTestBase):
 
     def test_non_dict_arguments_returns_empty_list(self):
         """Non-dict (string) arguments in config-get must yield an empty subnet list, not a 500."""
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(
             {
                 **_ABSENT_READ_HOOKS,
@@ -3654,7 +3759,7 @@ class TestGetSubnetsConfigShapeGuard(_ViewTestBase):
 
     def test_integer_arguments_returns_empty_list(self):
         """Integer arguments in config-get must yield an empty subnet list, not a 500."""
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(
             {**_ABSENT_READ_HOOKS, "config-get": {"result": 0, "arguments": 42}, "stat-lease4-get": _STAT_ABSENT4}
         ):
@@ -3690,7 +3795,9 @@ class TestPoolDeltaHostBitsSubnet(_ViewTestBase):
         )
 
     def test_pool_add_sends_the_declared_ipv4_prefix(self):
-        url = reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_pool_add", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         with self._stub(4, "198.18.1.5/24", "subnet4-delta-add") as kea:
             response = self.client.post(url, {"subnet_cidr": "198.18.1.0/24", "pool": "198.18.1.100-198.18.1.110"})
         self.assertEqual(response.status_code, 302)
@@ -3703,7 +3810,10 @@ class TestPoolDeltaHostBitsSubnet(_ViewTestBase):
 
     def test_pool_delete_sends_the_declared_ipv6_prefix(self):
         pool = "2001:db8:1::100-2001:db8:1::1ff"
-        url = reverse("plugins:netbox_kea:server_subnet6_pool_delete", args=[self.server.pk, 1, pool])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_pool_delete",
+            kwargs={"pk": self.server.pk, "family": 6, "subnet_id": 1, "pool": pool},
+        )
         with self._stub(6, "2001:db8:1::5/64", "subnet6-delta-del", pools=(pool,)) as kea:
             response = self.client.post(url, {"subnet_cidr": "2001:db8:1::/64"})
         self.assertEqual(response.status_code, 302)
@@ -3719,7 +3829,10 @@ class TestPoolAddPostErrors(_ViewTestBase):
     """Cover pool add POST error handling."""
 
     def _url(self, subnet_id=1):
-        return reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, subnet_id])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_pool_add",
+            kwargs={"pk": self.server.pk, "family": 4, "subnet_id": subnet_id},
+        )
 
     def _pool_add_stub(self, **overrides):
         """Pool add chain: Subnet Catalogue reads, reservation overlap probe, subnet4-delta-add, persist.
@@ -3802,7 +3915,10 @@ class TestPoolAddChecksTheVerifiedSubnet(_ViewTestBase):
     """The Pool add form parses the Pool against the Verified Subnet before Kea sees it."""
 
     def _url(self, subnet_id=1):
-        return reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, subnet_id])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_pool_add",
+            kwargs={"pk": self.server.pk, "family": 4, "subnet_id": subnet_id},
+        )
 
     def _post(self, pool, *, subnet_id=1, **stub_overrides):
         with stub_kea({**_ABSENT_READ_HOOKS, **_pool_add_catalogue(), **stub_overrides}) as kea:
@@ -3951,14 +4067,14 @@ class TestSubnetAddGetClientError(_ViewTestBase):
     def test_get_client_error_disables_network_field(self):
         """A real get_client() failure (cert without key → ValueError) in GET disables the network field."""
         bad = _make_db_server(name="bad-cert-add-get", client_cert_path="/nonexistent/cert.pem")
-        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[bad.pk])
+        url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": bad.pk, "family": 4})
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
 
     def test_post_client_error_rerenders(self):
         """A real get_client() failure in POST re-renders the form with an error, no 500."""
         bad = _make_db_server(name="bad-cert-add-post", client_cert_path="/nonexistent/cert.pem")
-        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[bad.pk])
+        url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": bad.pk, "family": 4})
         response = self.client.post(
             url,
             {
@@ -3983,7 +4099,7 @@ class TestGetSubnetsError(_ViewTestBase):
 
     def test_a_config_get_body_that_is_not_json_shows_empty(self):
         """A config-get reply that is not JSON shows an empty subnet list with an error message, no 500."""
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(
             {**_ABSENT_READ_HOOKS, "config-get": _raw_http_response(b"bad JSON"), "stat-lease4-get": _STAT_ABSENT4}
         ):
@@ -4010,7 +4126,7 @@ class TestSubnetListNonDictItems(_ViewTestBase):
                 }
             },
         }
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config, "stat-lease4-get": _STAT_ABSENT4}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -4030,7 +4146,7 @@ class TestSubnetListNonDictItems(_ViewTestBase):
                 }
             },
         }
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config, "stat-lease4-get": _STAT_ABSENT4}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -4049,7 +4165,7 @@ class TestSubnetListNonDictItems(_ViewTestBase):
                 }
             },
         }
-        url = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": config, "stat-lease4-get": _STAT_ABSENT4}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -4078,7 +4194,9 @@ class TestGetNetworkDataNonDictSubnet(_ViewTestBase):
                 }
             },
         }
-        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, 42])
+        url = reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
+        )
         with stub_kea(_edit_responses(4, subnet_get_resp, config_get_resp)):
             response = self.client.get(url)
         # The malformed member makes membership unknown, so the view renders or redirects, never 500.
@@ -4094,7 +4212,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
     """Edge cases of the Subnet list, edit, and pool add views."""
 
     def _subnets4_url(self):
-        return reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
 
     def _list_stub(self, config, stat=None):
         """Subnets-list GET chain: config-get (subnets) + stat-lease4-get (utilisation)."""
@@ -4250,7 +4368,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
     def test_subnet_edit_post_client_creation_failure_sends_nothing(self):
         """A real get_client() failure (cert without key → ValueError) stops the change before a Kea command."""
         bad = _make_db_server(name="bad-cert-edit-cov", client_cert_path="/nonexistent/cert.pem")
-        url = reverse("plugins:netbox_kea:server_subnet4_edit", args=[bad.pk, 42])
+        url = reverse("plugins:netbox_kea:server_subnet_edit", kwargs={"pk": bad.pk, "family": 4, "subnet_id": 42})
         with stub_kea({}) as kea:
             response = self.client.post(url, {**_shown(), "subnet_cidr": "10.0.0.0/24"})
         self.assertEqual(response.status_code, 200)
@@ -4260,7 +4378,9 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
     # ── 6. Pool add with reservation overlap warning ────
 
     def _pool_add_url(self):
-        return reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[self.server.pk, 42])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_pool_add", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 42}
+        )
 
     def test_pool_add_reservation_lookup_failure_is_one_warning_after_the_success(self):
         """The Pool is added, so the failed advisory read is one warning: no check ran, with the Notice text."""
@@ -4283,7 +4403,7 @@ class TestSubnetViewCoverageGaps(_ViewTestBase):
     def test_pool_add_client_creation_failure_shows_an_error(self):
         """A real get_client() failure (cert without key → ValueError) leaves no Subnet to add the Pool to."""
         bad = _make_db_server(name="bad-cert-pooladd-cov", client_cert_path="/nonexistent/cert.pem")
-        url = reverse("plugins:netbox_kea:server_subnet4_pool_add", args=[bad.pk, 42])
+        url = reverse("plugins:netbox_kea:server_subnet_pool_add", kwargs={"pk": bad.pk, "family": 4, "subnet_id": 42})
         response = self.client.post(url, {"subnet_cidr": "10.0.0.0/24", "pool": "10.0.0.100-10.0.0.200"})
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "NetBox could not confirm Kea&#x27;s Subnet list")
@@ -4296,7 +4416,7 @@ class TestPersistConfigBanner(_ViewTestBase):
 
     def test_banner_absent_when_persist_config_true(self):
         """No warning banner on subnet add when persist_config=True (default)."""
-        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -4305,7 +4425,7 @@ class TestPersistConfigBanner(_ViewTestBase):
     def test_banner_present_when_persist_config_false(self):
         """Warning banner appears on subnet add page when persist_config=False."""
         server = _make_db_server(name="no-persist", persist_config=False)
-        url = reverse("plugins:netbox_kea:server_subnet4_add", args=[server.pk])
+        url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": server.pk, "family": 4})
         with stub_kea({**_ABSENT_READ_HOOKS, "config-get": _EMPTY_CONFIG4}):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
@@ -4342,7 +4462,9 @@ class TestSubnetLifetimeKeaParameterNames(_ViewTestBase):
     """The subnet edit path must use Kea's subnet lifetime parameter names."""
 
     def _url(self, subnet_id=42):
-        return reverse("plugins:netbox_kea:server_subnet4_edit", args=[self.server.pk, subnet_id])
+        return reverse(
+            "plugins:netbox_kea:server_subnet_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": subnet_id}
+        )
 
     def test_post_sends_kea_subnet_lifetime_parameter_names(self):
         """subnet4-update must carry valid-lifetime, never the valid-lft lease field."""

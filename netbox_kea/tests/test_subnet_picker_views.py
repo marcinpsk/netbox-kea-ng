@@ -7,32 +7,32 @@ from django.contrib import messages
 from django.urls import reverse
 
 from .kea_stub import _catalogue_responses_for_subnets, stub_kea
-from .utils import _ViewTestBase
+from .utils import _ViewTestBase, family_url
 
 _DISAGREEMENT = "Kea subnet identity and configuration facts disagree after a fresh retry."
 
 
-def _picker_url(view_name: str, pk: int, by: str = "subnet") -> str:
+def _picker_url(view_name: str, pk: int, family: int, by: str = "subnet") -> str:
     """Return the page that shows the Subnet dropdown: a lease search shows it for a Subnet Attribute only."""
-    url = reverse(f"plugins:netbox_kea:{view_name}", args=[pk])
-    return f"{url}?by={by}" if "_leases" in view_name else url
+    url = family_url(view_name, family, pk=pk)
+    return f"{url}?by={by}" if view_name == "server_leases" else url
 
 
 class TestSubnetPickerViews(_ViewTestBase):
     def test_lease_picker_refreshes_after_subnet_creation(self):
-        self._assert_refreshes_after_subnet_creation("server_leases4")
+        self._assert_refreshes_after_subnet_creation("server_leases")
 
     def test_reservation_picker_refreshes_after_subnet_creation(self):
-        self._assert_refreshes_after_subnet_creation("server_reservation4_add")
+        self._assert_refreshes_after_subnet_creation("server_reservation_add")
 
     def test_configured_choices_render_without_subnet_commands(self):
         for family, cidr in ((4, "198.18.1.0/24"), (6, "2001:db8:1::/64")):
-            for view_name in (f"server_leases{family}", f"server_reservation{family}_add"):
+            for view_name in ("server_leases", "server_reservation_add"):
                 with self.subTest(family=family, view=view_name):
                     responses = _catalogue_responses_for_subnets(family, [{"id": 1, "subnet": cidr}])
                     responses[f"subnet{family}-list"] = {"result": 2, "text": "Command not supported"}
                     with stub_kea(responses):
-                        response = self.client.get(_picker_url(view_name, self.server.pk))
+                        response = self.client.get(_picker_url(view_name, self.server.pk, family))
                     self.assertContains(response, f'<option value="{cidr}">{cidr} (ID 1)</option>', html=True)
                     self.assertContains(response, "hook library is not loaded")
                     self.assertContains(response, "The subnet list comes from the running configuration.")
@@ -51,14 +51,16 @@ class TestSubnetPickerViews(_ViewTestBase):
                 responses = _catalogue_responses_for_subnets(family, [{"id": 1, "subnet": cidr}])
                 with stub_kea(responses):
                     response = self.client.post(
-                        reverse(f"plugins:netbox_kea:server_reservation{family}_add", args=[self.server.pk]),
+                        reverse(
+                            "plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": family}
+                        ),
                         {},
                     )
                 self.assertContains(response, f'value="{cidr}"')
 
     def test_lease_picker_shows_catalogue_diagnostics_inline(self):
         for family, responses, listed, configured in self._disagreeing_catalogues():
-            url = reverse(f"plugins:netbox_kea:server_leases{family}", args=[self.server.pk])
+            url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": family})
             for label, headers in (("page", {}), ("htmx", {"HTTP_HX_REQUEST": "true"})):
                 with self.subTest(family=family, request=label), stub_kea(responses):
                     response = self.client.get(url, {"by": "ip", "q": ""}, **headers)
@@ -70,7 +72,7 @@ class TestSubnetPickerViews(_ViewTestBase):
 
     def test_reservation_picker_shows_catalogue_diagnostics(self):
         for family, responses, listed, configured in self._disagreeing_catalogues():
-            url = reverse(f"plugins:netbox_kea:server_reservation{family}_add", args=[self.server.pk])
+            url = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": family})
             for method in ("get", "post"):
                 with self.subTest(family=family, method=method), stub_kea(responses):
                     response = self.client.get(url) if method == "get" else self.client.post(url, {})
@@ -92,13 +94,13 @@ class TestSubnetPickerViews(_ViewTestBase):
     def test_ipv6_pickers_keep_network_order_and_subnet_ids(self):
         subnets = [{"id": 10, "subnet": "2001:db8:10::/64"}, {"id": 2, "subnet": "2001:db8:2::/64"}]
         with stub_kea(_catalogue_responses_for_subnets(6, subnets)) as kea:
-            for view_name in ("server_leases6", "server_reservation6_add"):
-                response = self.client.get(_picker_url(view_name, self.server.pk))
+            for view_name in ("server_leases", "server_reservation_add"):
+                response = self.client.get(_picker_url(view_name, self.server.pk, 6))
                 self.assertContains(response, 'value="2001:db8:2::/64"')
                 body = response.content.decode()
                 self.assertLess(body.index('value="2001:db8:2::/64"'), body.index('value="2001:db8:10::/64"'))
             page = BeautifulSoup(
-                self.client.get(_picker_url("server_leases6", self.server.pk, "subnet_id")).content, "html.parser"
+                self.client.get(_picker_url("server_leases", self.server.pk, 6, "subnet_id")).content, "html.parser"
             )
             self.assertEqual(
                 [option.get_text() for option in page.select("#id_q option")],
@@ -108,7 +110,7 @@ class TestSubnetPickerViews(_ViewTestBase):
             self.assertEqual(kea.bodies("subnet6-list")[0]["service"], ["dhcp6"])
 
     def _assert_refreshes_after_subnet_creation(self, view_name):
-        url = _picker_url(view_name, self.server.pk)
+        url = _picker_url(view_name, self.server.pk, 4)
         subnets = [{"id": 1, "subnet": "198.18.1.0/24"}]
         responses = _catalogue_responses_for_subnets(4, subnets)
         with stub_kea(responses) as kea:
@@ -125,7 +127,7 @@ class TestSubnetPickerViews(_ViewTestBase):
             }
         ) as kea:
             created = self.client.post(
-                reverse("plugins:netbox_kea:server_subnet4_add", args=[self.server.pk]),
+                reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": 4}),
                 {
                     "subnet": "198.18.2.0/24",
                     "subnet_id": "2",

@@ -169,7 +169,8 @@ uv run python scripts/check_docs_media.py site docs/guide/assets
   any read. Guard 1 in `test_branching.py`
   sends GET, HEAD, OPTIONS, POST, PUT, PATCH and DELETE to every netbox_kea URL in a provisioned
   branch, API action routes included; a new route with a parameter the guard cannot build fails
-  by name, so teach `_route_arguments` the object.
+  by name, so teach `_route_arguments` the object. A route with a `family` parameter is checked
+  once for each family.
   DHCP Import Mappings follow their imported target (one netbox_dhcp model for each kind in
   `MAPPING_KINDS`, `models.py`) through native squash merge and revert. `dhcp_mapping_lifecycle.py` owns their history and writer boundaries.
   Before changing mapping writes, target deletion or branch replay, read ADR 0008 and
@@ -791,10 +792,17 @@ resort, reserved for true external boundaries you cannot run locally.
   reservations, subnets, shared-networks, options, DHCP control) are declared
   explicitly before the `include()`. Custom tabs use `OptionalViewTab` (a `ViewTab`
   accepting `is_enabled: Callable[[Server], bool]`).
-- **Generic views with TypeVar**: `BaseServerLeasesView` is `generic.ObjectView,
-  Generic[T]` (T bound to `BaseTable`); concrete subclasses declare `table_class`,
-  `form_class`, `dhcp_version`, `lease_service`. The base handles pagination, HTMX,
-  search, export, delete routing.
+- **Address family routing**: a page of one address family has one class and one route. The route
+  takes the family as the `family` path parameter (`leases<family:family>/`, converter in `urls.py`),
+  its name has no family digit (`server_leases`), and `FamilyRouteMixin` gives the class the validated
+  family as `dhcp_version`. Never add a v4/v6 class pair or a name with a family digit; `test_urls.py`
+  refuses both. The REST actions `leases4/6` and `reservations4/6` are the exception. NetBox reverses
+  a Server tab with `pk` only, so each of the Leases, Subnets, Reservations and Config tabs keeps a
+  `<x>_tab` registration with the v4 path and `kwargs={"family": 4}`, which only gives NetBox the
+  tab link; the family route in `urls.py` comes first and serves the page.
+- **Lease search view**: `ServerLeasesView` is a `generic.ObjectView`; its `table` and `form`
+  properties pick the v4 or v6 class from the route family. It handles pagination, HTMX, search,
+  export and delete routing.
 - **FakeLeaseModel**: leases aren't a real model, so `FakeLeaseModel` /
   `FakeLeaseModelMeta` provide `app_label`/`model_name` so `GetReturnURLMixin`
   resolves in delete views.

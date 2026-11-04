@@ -54,7 +54,7 @@ from ..utilities import OptionalViewTab
 from ._base import IPAM_UNREADABLE, _client_settings_refusal, _safe_return_url, sync_title
 from .notices import HEADLINES, Notice, load_snapshot, notice
 from .read_age import read_age_context, refresh_requested
-from .workspace import ServerFamilyMixin
+from .workspace import FamilyRouteMixin, ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ def _lease_search_url(
         selector, value = constants.BY_SUBNET, reservation.scope.subnet.cidr
     else:
         return None
-    base = reverse(f"plugins:netbox_kea:server_leases{version}", args=[server_pk])
+    base = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": server_pk, "family": version})
     return f"{base}?{urlencode({'by': selector, 'q': value})}"
 
 
@@ -331,9 +331,9 @@ def _attach_reservation_action_urls(
             {"identifier_type": row["identifier_type"], "identifier": row["identifier"], "return_url": return_url}
         )
         try:
-            args = [server_pk, row["subnet_id"]]
-            edit = reverse(f"plugins:netbox_kea:server_reservation{version}_edit", args=args)
-            delete = reverse(f"plugins:netbox_kea:server_reservation{version}_delete", args=args)
+            target = {"pk": server_pk, "family": version, "subnet_id": row["subnet_id"]}
+            edit = reverse("plugins:netbox_kea:server_reservation_edit", kwargs=target)
+            delete = reverse("plugins:netbox_kea:server_reservation_delete", kwargs=target)
         except NoReverseMatch:
             logger.debug("No Reservation action URL for Subnet ID %r", row["subnet_id"])
             continue
@@ -387,8 +387,8 @@ def _enrich_reservations_with_badges(
                     }
                 )
                 base = reverse(
-                    f"plugins:netbox_kea:server_reservation{version}_sync",
-                    args=[server.pk, reservation.scope.subnet.subnet_id],
+                    "plugins:netbox_kea:server_reservation_sync",
+                    kwargs={"pk": server.pk, "family": version, "subnet_id": reservation.scope.subnet.subnet_id},
                 )
                 row["sync_url"] = f"{base}?{query}"
             else:
@@ -474,15 +474,19 @@ def _reservation_list_context(
         # The host_cmds panel already says why Reservations cannot change, so one cause shows one banner.
         "mutation_unavailable": hook_available and bool(presented.mutation_unavailable_reason),
         "mutation_unavailable_reason": presented.mutation_unavailable_reason,
-        "add_url": reverse(f"plugins:netbox_kea:server_reservation{version}_add", args=[server.pk])
+        "add_url": reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": server.pk, "family": version})
         + f"?{urlencode({'return_url': _safe_return_url(request, request.get_full_path())})}"
         if presented.can_mutate
         else None,
-        "bulk_sync_url": reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_sync", args=[server.pk])
+        "bulk_sync_url": reverse(
+            "plugins:netbox_kea:server_reservation_bulk_sync", kwargs={"pk": server.pk, "family": version}
+        )
         if bulk_sync.allowed
         else None,
         "bulk_sync_refusal": bulk_sync.reason,
-        "import_url": reverse(f"plugins:netbox_kea:server_reservation{version}_bulk_import", args=[server.pk])
+        "import_url": reverse(
+            "plugins:netbox_kea:server_reservation_bulk_import", kwargs={"pk": server.pk, "family": version}
+        )
         if presented.can_mutate
         else None,
     }
@@ -515,12 +519,11 @@ RESERVATIONS_TAB = OptionalViewTab(
 )
 
 
-@register_model_view(Server, "reservations4")
-class ServerReservations4View(ServerFamilyMixin, generic.ObjectView):
-    """Show bounded DHCPv4 Reservation Snapshots."""
+@register_model_view(Server, "reservations_tab", path="reservations4", kwargs={"family": 4})
+class ServerReservationsView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectView):
+    """Show bounded Reservation Snapshots of one family."""
 
     workspace_section = "reservations"
-    dhcp_version = 4
 
     queryset = Server.objects.all()
     tab = RESERVATIONS_TAB
@@ -530,31 +533,9 @@ class ServerReservations4View(ServerFamilyMixin, generic.ObjectView):
         """Redirect v6-only servers, export, or render the list."""
         instance = self.get_object(**kwargs)
         if "export" in request.GET:
-            return _reservation_export_response(request, instance, 4)
+            return _reservation_export_response(request, instance, self.dhcp_version)
         return super().get(request, **kwargs)
 
     def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
-        """Return the DHCPv4 typed list context."""
-        return _reservation_list_context(request, instance, 4)
-
-
-@register_model_view(Server, "reservations6")
-class ServerReservations6View(ServerFamilyMixin, generic.ObjectView):
-    """Show bounded DHCPv6 Reservation Snapshots."""
-
-    workspace_section = "reservations"
-    dhcp_version = 6
-
-    queryset = Server.objects.all()
-    template_name = "netbox_kea/server_reservations.html"
-
-    def get(self, request: HttpRequest, **kwargs) -> HttpResponse:
-        """Export or render the DHCPv6 list."""
-        instance = self.get_object(**kwargs)
-        if "export" in request.GET:
-            return _reservation_export_response(request, instance, 6)
-        return super().get(request, **kwargs)
-
-    def get_extra_context(self, request: HttpRequest, instance: Server) -> dict[str, Any]:
-        """Return the DHCPv6 typed list context and shared tab."""
-        return {**_reservation_list_context(request, instance, 6), "tab": RESERVATIONS_TAB}
+        """Return the typed list context of the route family."""
+        return _reservation_list_context(request, instance, self.dhcp_version)

@@ -67,7 +67,7 @@ class ServerSaveCacheTest(_ViewTestBase):
         self.assertEqual(set(kea.urls()), {_NEW_URL})
 
     def test_a_url_edit_makes_the_subnets_page_show_the_subnets_of_the_new_daemon(self):
-        page = reverse("plugins:netbox_kea:server_subnets4", args=[self.server.pk])
+        page = reverse("plugins:netbox_kea:server_subnets", kwargs={"pk": self.server.pk, "family": 4})
         old_daemon = {**self.responses, **_NO_STAT_HOOK}
         new_daemon = {
             **old_daemon,

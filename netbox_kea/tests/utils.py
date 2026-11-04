@@ -44,6 +44,11 @@ if TYPE_CHECKING:
     from django.test.client import _MonkeyPatchedWSGIResponse
 
 
+def family_url(name: str, family: int, **kwargs) -> str:
+    """Reverse the plugin route *name* for one address family."""
+    return reverse(f"plugins:netbox_kea:{name}", kwargs={**kwargs, "family": family})
+
+
 class SettingsRowOverride(TestContextDecorator):
     """Set fields of a settings row for a block, a test method or each test of a class, and restore them after.
 

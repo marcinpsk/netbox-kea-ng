@@ -39,7 +39,7 @@ class TestReservationSubnetIdFilter(_ViewTestBase):
     _SUBNETS = [{"id": 7, "subnet": "198.18.7.0/24"}, {"id": 2, "subnet": "198.18.2.0/24"}]
 
     def _get(self, query: dict, responses: dict | None = None):
-        url = reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
         with stub_kea(responses or _list_responses(4, self._SUBNETS)):
             response = self.client.get(url, query)
         self.assertEqual(response.status_code, 200)
@@ -72,7 +72,9 @@ class TestReservationSubnetIdFilter(_ViewTestBase):
             "reservation-get-page": requests.ConnectionError,
         }
         with stub_kea(responses) as kea:
-            response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
+            )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(kea.commands().count("config-get"), 1)
         control = BeautifulSoup(response.content, "html.parser").select_one("#id_subnet_id")
@@ -93,7 +95,7 @@ class TestCombinedReservationSubnetIdFilter(_ViewTestBase):
         ):
             with stub_kea(_catalogue_responses_for_subnets(4, subnets)):
                 subnet_catalogue.display(server, 4)
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
         responses = {
             "reservation-get-page": _res_page([]),
             # The mutation capability read takes the configuration; the Catalogue needs no new read.
@@ -134,7 +136,7 @@ class TestCombinedReservationSubnetIdFilter(_ViewTestBase):
             f"reservation_cursor_{second.pk}": "WzEsNV0",
         }
         with stub_kea(responses) as kea:
-            response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"), query)
+            response = self.client.get(reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4}), query)
         self.assertEqual(response.status_code, 200)
         # Page 2 reads the Reservations of kea-b only.
         self.assertEqual(len(kea.bodies("reservation-get-page")), 1)
@@ -184,7 +186,9 @@ class TestCombinedReservationSubnetIdFilter(_ViewTestBase):
                 return answered(session, url, **kwargs)
 
             with patch("netbox_kea.kea.requests.Session.post", new=post):
-                response = self.client.get(reverse("plugins:netbox_kea:combined_reservations4"), query)
+                response = self.client.get(
+                    reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4}), query
+                )
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("reservation-get-page", sent_to_a)
         return response, kea, unanswered
@@ -229,7 +233,9 @@ class TestReservationFormSubnetDropdown(_ViewTestBase):
     def test_the_add_form_offers_the_subnets_and_submits_the_cidr(self):
         for family, cidr in ((4, "198.18.0.0/24"), (6, "2001:db8::/64")):
             with self.subTest(family=family):
-                url = reverse(f"plugins:netbox_kea:server_reservation{family}_add", args=[self.server.pk])
+                url = reverse(
+                    "plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": family}
+                )
                 with stub_kea(_mutation_responses(family, 20, cidr, ["hw-address", "duid"])):
                     response = self.client.get(url, {"subnet_cidr": cidr})
                 self.assertEqual(
@@ -245,7 +251,7 @@ class TestReservationFormSubnetDropdown(_ViewTestBase):
                 self.assertIn("change from:#id_subnet_cidr", preview["hx-trigger"])
 
     def test_without_catalogue_subnets_the_add_form_keeps_the_text_input(self):
-        url = reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4})
         responses = {
             **_catalogue_responses_for_subnets(4, []),
         }
@@ -255,7 +261,9 @@ class TestReservationFormSubnetDropdown(_ViewTestBase):
         self.assertEqual((control.name, control["type"]), ("input", "text"))
 
     def test_the_edit_form_shows_the_subnet_disabled_with_its_label(self):
-        url = reverse("plugins:netbox_kea:server_reservation4_edit", args=[self.server.pk, 20])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_edit", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 20}
+        )
         responses = _mutation_responses(4, 20, "198.18.0.0/24", ["hw-address"])
         responses["reservation-get"] = _res_get({"subnet-id": 20, "hw-address": "aa:bb:cc:dd:ee:ff"})
         with stub_kea(responses):

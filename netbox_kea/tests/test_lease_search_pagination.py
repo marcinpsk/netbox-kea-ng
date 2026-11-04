@@ -26,7 +26,7 @@ class TestLeaseSearchPagination(_ViewTestBase):
             "lease4-get-by-hostname": {"result": 0, "arguments": {"leases": leases}},
             "reservation-get": {"result": 3},
         }
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
         with stub_kea(responses):
             response = self.client.get(

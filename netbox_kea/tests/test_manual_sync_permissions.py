@@ -115,7 +115,7 @@ class TestLeaseRowSync(_RowSyncTestBase):
     """The lease row Sync claims one lease: an IP address and its MAC address."""
 
     def _post(self):
-        url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": 4})
         stub = {
             **_catalogue_responses(4, 1, "192.168.99.0/24"),
             "lease4-get": _lease_get("host.example", **{"hw-address": "aa:bb:cc:00:00:01"}),
@@ -205,7 +205,7 @@ class TestLeaseSyncControls(_PermissionTestBase):
     _LEASE4 = complete_lease({"ip-address": "10.0.0.5", "hw-address": "aa:bb:cc:dd:ee:ff", "subnet-id": 1})
 
     def _search(self):
-        url = reverse("plugins:netbox_kea:server_leases4", args=[self.server.pk])
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
         responses = {
             "subnet4-list": _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}]),
             "lease4-get": {"result": 0, "arguments": dict(self._LEASE4)},
@@ -218,7 +218,7 @@ class TestLeaseSyncControls(_PermissionTestBase):
         self._grant_address_writes(user=self.user, constraints=_CONSTRAINT)
         response = self._search()
         self.assertEqual(response.status_code, 200)
-        sync_url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+        sync_url = reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": 4})
         self.assertNotContains(response, f'hx-post="{sync_url}"')
         self.assertContains(response, f'title="{_reason(_ADDRESS_WRITES)}"')
         self.assertRegex(response.content.decode(), r'<button[^>]*\bdisabled\b[^>]*>\s*<i class="mdi mdi-sync"')
@@ -226,7 +226,7 @@ class TestLeaseSyncControls(_PermissionTestBase):
     def test_an_unconstrained_user_sees_the_sync_button(self):
         self._grant_address_writes(user=self.user)
         response = self._search()
-        sync_url = reverse("plugins:netbox_kea:server_lease4_sync", args=[self.server.pk])
+        sync_url = reverse("plugins:netbox_kea:server_lease_sync", kwargs={"pk": self.server.pk, "family": 4})
         self.assertContains(response, f'hx-post="{sync_url}"')
         self.assertNotContains(response, "Manual Sync needs")
 
@@ -237,7 +237,7 @@ class TestLeaseAddSync(_PermissionTestBase):
     _SUBNETS4 = _subnet_list(4, [{"id": 1, "subnet": "10.0.0.0/24"}])
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_lease4_add", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_lease_add", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_the_form_shows_the_checkbox_disabled_with_the_reason(self):
         self._grant_address_writes(user=self.user, constraints=_CONSTRAINT)
@@ -307,7 +307,9 @@ class TestReservationRowSync(_RowSyncTestBase):
     """The Reservation row Sync all claims each address of one Reservation and its MAC address."""
 
     def _post(self):
-        url = reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
+        url = reverse(
+            "plugins:netbox_kea:server_reservation_sync", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+        )
         stub = {
             **_catalogue_responses(4, 1, "10.0.0.0/24"),
             "reservation-get": _res_get({"subnet-id": 1, "ip-address": "10.0.0.50", "hw-address": "aa:bb:cc:00:00:02"}),
@@ -341,7 +343,9 @@ class TestReservationSyncControls(_PermissionTestBase):
     def test_the_server_tab_shows_disabled_controls_with_the_reason(self):
         self._grant_address_writes(user=self.user, constraints=_CONSTRAINT)
         with stub_kea(self._responses()):
-            response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
+            )
         self.assertEqual(response.status_code, 200)
         row = response.context["table"].data.data[0]
         self.assertIsNone(row["sync_url"])
@@ -351,23 +355,30 @@ class TestReservationSyncControls(_PermissionTestBase):
         body = response.content.decode()
         self.assertEqual(body.count(f'title="{_reason(_ADDRESS_WRITES)}"'), 2)
         self.assertIn("Sync All to NetBox", body)
-        self.assertNotIn(reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk]), body)
+        self.assertNotIn(
+            reverse("plugins:netbox_kea:server_reservation_bulk_sync", kwargs={"pk": self.server.pk, "family": 4}), body
+        )
 
     def test_the_combined_tab_shows_a_disabled_sync_with_the_reason(self):
         self._grant_address_writes(user=self.user, constraints=_CONSTRAINT)
-        url = reverse("plugins:netbox_kea:combined_reservations4")
+        url = reverse("plugins:netbox_kea:combined_reservations", kwargs={"family": 4})
         with stub_kea(self._responses()):
             response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, f'title="{_reason(_ADDRESS_WRITES)}"')
         self.assertNotContains(
-            response, reverse("plugins:netbox_kea:server_reservation4_sync", args=[self.server.pk, 1])
+            response,
+            reverse(
+                "plugins:netbox_kea:server_reservation_sync", kwargs={"pk": self.server.pk, "family": 4, "subnet_id": 1}
+            ),
         )
 
     def test_an_unconstrained_user_sees_both_sync_controls(self):
         self._grant_address_writes(user=self.user)
         with stub_kea(self._responses()):
-            response = self.client.get(reverse("plugins:netbox_kea:server_reservations4", args=[self.server.pk]))
+            response = self.client.get(
+                reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": self.server.pk, "family": 4})
+            )
         self.assertIsNotNone(response.context["table"].data.data[0]["sync_url"])
         self.assertIsNotNone(response.context["bulk_sync_url"])
         self.assertNotContains(response, "Manual Sync needs")
@@ -377,7 +388,7 @@ class TestReservationAddSync(_PermissionTestBase):
     """The Reservation add form syncs the new Reservation only for a user that the rule allows."""
 
     def _url(self):
-        return reverse("plugins:netbox_kea:server_reservation4_add", args=[self.server.pk])
+        return reverse("plugins:netbox_kea:server_reservation_add", kwargs={"pk": self.server.pk, "family": 4})
 
     def test_the_form_shows_the_checkbox_disabled_with_the_reason(self):
         self._grant_address_writes(user=self.user, constraints=_CONSTRAINT)
@@ -417,7 +428,9 @@ class TestBulkReservationSync(_PermissionTestBase):
     def _post(self):
         hosts = [{"ip-address": "10.0.11.1", "hostname": "bulk-1", "subnet-id": 1, "hw-address": "aa:bb:cc:00:11:01"}]
         with stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}):
-            return self.client.post(reverse("plugins:netbox_kea:server_reservation4_bulk_sync", args=[self.server.pk]))
+            return self.client.post(
+                reverse("plugins:netbox_kea:server_reservation_bulk_sync", kwargs={"pk": self.server.pk, "family": 4})
+            )
 
     def test_a_constrained_grant_is_refused_with_the_reason(self):
         self._grant_address_writes(user=self.user, constraints=_CONSTRAINT)
