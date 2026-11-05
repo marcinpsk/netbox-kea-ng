@@ -23,7 +23,6 @@ SPDX-License-Identifier = "Apache-2.0"
 # Generated files, JSON data, and Kea configurations that scripts/record_kea_config_get.py reads as JSON.
 path = [
     "CHANGELOG.md",
-    "mypy-baseline.txt",
     "netbox_kea/tests/query_counts.json",
     "netbox_kea/tests/kea_recordings/**",
 ]

@@ -151,22 +151,27 @@ LEASE_ACTIONS = """<span class="btn-group dropdown">
 """
 
 
+def _duration_text(value: int) -> str | None:
+    """Return *value* seconds as ``HH:MM:SS``; Kea's infinite lifetime renders as such."""
+    if value == INFINITE_LIFETIME:
+        return "infinite"
+    return format_duration(value)
+
+
 class DurationColumn(tables.Column):
     """Table column that renders integer seconds as ``HH:MM:SS``."""
 
     def render(self, value: int):
-        """Value is in seconds; Kea's infinite lifetime renders as such."""
-        if value == INFINITE_LIFETIME:
-            return "infinite"
-        return format_duration(value)
+        """Return the duration text of *value* seconds."""
+        return _duration_text(value)
 
 
-class ExpiryDurationColumn(DurationColumn):
-    """DurationColumn that applies an expiry CSS class from ``record['expiry_class']``."""
+class ExpiryDurationColumn(tables.Column):
+    """Duration column that applies an expiry CSS class from ``record['expiry_class']``."""
 
     def render(self, value: int, record: dict):
         """Wrap the duration text in a <span> with the expiry CSS class when set."""
-        text = super().render(value)
+        text = _duration_text(value)
         cls = record.get("expiry_class", "")
         if cls:
             return format_html('<span class="{}">{}</span>', cls, text)
@@ -320,8 +325,8 @@ class SubnetTable(GenericTable):
 
     class Meta(GenericTable.Meta):
         empty_text = "No subnets"
-        fields = ("id", "subnet", "pools", "utilization", "options", "shared_network", "actions")
-        default_columns = ("id", "subnet", "pools", "utilization", "options", "shared_network")
+        fields: tuple[str, ...] = ("id", "subnet", "pools", "utilization", "options", "shared_network", "actions")
+        default_columns: tuple[str, ...] = ("id", "subnet", "pools", "utilization", "options", "shared_network")
 
 
 _HOST_RESERVATION_TITLE = (
@@ -917,8 +922,8 @@ class SharedNetworkTable(GenericTable):
 
     class Meta(GenericTable.Meta):
         empty_text = "No shared networks configured."
-        fields = ("name", "description", "subnet_count", "subnets", "actions")
-        default_columns = ("name", "description", "subnet_count", "subnets", "actions")
+        fields: tuple[str, ...] = ("name", "description", "subnet_count", "subnets", "actions")
+        default_columns: tuple[str, ...] = ("name", "description", "subnet_count", "subnets", "actions")
 
 
 class GlobalSharedNetworkTable(SharedNetworkTable):

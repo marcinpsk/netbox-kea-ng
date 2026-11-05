@@ -16,7 +16,7 @@ from .reservations import GlobalReservationScope, Reservation, ReservationSynchr
 logger = logging.getLogger(__name__)
 
 
-def _update_mac_description(mac_obj: object, hostname: str) -> bool:
+def _update_mac_description(mac_obj: MACAddress, hostname: str) -> bool:
     """Annotate a MACAddress object's description with a ``dhcp_hostname:`` token.
 
     Behaviour:
