@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-"""Tests for the mypy gate (``scripts/mypy-gate.sh`` plus ``[tool.mypy]``).
+"""Tests for the mypy gate (plain ``mypy`` over ``[tool.mypy]``, in CI and the pre-push hook).
 
 The gate exists to catch annotation drift between a producer and its consumer, the class
 of defect that reached review as ``list[dict | Reservation]`` passed to a
@@ -11,20 +11,15 @@ silently retiring the gate.
 
 from __future__ import annotations
 
-import os
 import re
-import shutil
-import stat
-import subprocess
-import tempfile
 import tomllib
 from pathlib import Path
 
 import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-BASELINE = REPOSITORY_ROOT / "mypy-baseline.txt"
-GATE = REPOSITORY_ROOT / "scripts/mypy-gate.sh"
+#: The one gate command. A clean tree is the only accepted state: there is no baseline of known errors.
+GATE_COMMAND = "uv run mypy"
 
 DRIFTING_MODULE = '''
 class Reservation:
@@ -165,151 +160,80 @@ def test_a_netaddr_value_cannot_pass_as_a_stdlib_address(tmp_path):
     assert "[arg-type]" in stdout, stdout
 
 
-def test_the_baseline_records_only_pre_existing_errors():
-    """Every baseline line is a real mypy finding, so the file cannot mute new codes."""
-    # No lower bound on the count: test_resolving_every_baseline_error_passes_the_gate
-    # requires that fixing the last error still builds, which leaves the baseline empty.
-    entries = [line for line in BASELINE.read_text().splitlines() if line.strip()]
-    for entry in entries:
-        assert re.match(r"^netbox_kea/[\w/.]+:\d+: (error|note): .+", entry), f"Malformed baseline entry: {entry}"
+def test_no_baseline_can_mute_an_error():
+    """The tree is clean, so the gate fails on every error; a baseline file would let one stay."""
+    assert not (REPOSITORY_ROOT / "mypy-baseline.txt").exists()
+    assert not _declares_package(_dev_group_requirements(REPOSITORY_ROOT / "pyproject.toml"), "mypy-baseline")
+
+
+def test_the_contributor_docs_describe_no_baseline_gate():
+    """A guide that still names the removed gate sends a contributor to a script and flags that do not exist."""
+    removed = ("mypy-gate.sh", "mypy-baseline", "--allow-unsynced", "baseline error")
+    for name in ("AGENTS.md", "README.md", "CONTRIBUTING.md"):
+        path = REPOSITORY_ROOT / name
+        if not path.exists():
+            continue
+        text = path.read_text()
+        assert not [term for term in removed if term in text], f"{name} still describes the removed baseline gate."
+
+
+def _gate_hooks() -> list[dict]:
+    """Return each pre-commit hook that runs mypy."""
+    import yaml
+
+    hooks = yaml.safe_load((REPOSITORY_ROOT / ".pre-commit-config.yaml").read_text())
+    return [hook for repository in hooks["repos"] for hook in repository["hooks"] if "mypy" in hook.get("entry", "")]
 
 
 def test_the_lint_job_and_the_pre_push_hook_share_the_gate():
     """CI and the local hook must run one command, or the two gates drift apart.
 
-    Naming the same script is not enough. The gate resolves ``mypy`` from PATH, so a hook
-    that skips ``uv run`` type-checks against whatever interpreter the push shell exposes.
-    Without ``django-stubs`` from the locked dev group that report differs from CI.
+    The hook must use ``uv run``: a bare ``mypy`` type-checks against whatever interpreter
+    the push shell exposes, and without ``django-stubs`` from the locked dev group that
+    report differs from CI.
     """
-    import yaml
-
     workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
-    hooks = yaml.safe_load((REPOSITORY_ROOT / ".pre-commit-config.yaml").read_text())
-
     ci_commands = [
-        line.split("run:", 1)[1].strip() for line in workflow.splitlines() if re.search(r"run:.*mypy-gate\.sh", line)
+        line.split("run:", 1)[1].strip() for line in workflow.splitlines() if re.search(r"run:.*\bmypy\b", line)
     ]
-    hook_entries = [
-        # A host behind a TLS-intercepting proxy needs --system-certs; the CI runners do not.
-        hook["entry"].replace(" --system-certs", "")
-        for repository in hooks["repos"]
-        for hook in repository["hooks"]
-        if "mypy-gate.sh" in hook.get("entry", "")
-    ]
+    # A host behind a TLS-intercepting proxy needs --system-certs; the CI runners do not.
+    hook_entries = [hook["entry"].replace(" --system-certs", "") for hook in _gate_hooks()]
 
-    assert ci_commands, "The lint job no longer runs the mypy gate."
-    assert hook_entries, "The pre-push hook no longer runs the mypy gate."
-    assert set(ci_commands) == set(hook_entries), (
-        f"CI runs {ci_commands} while the hook runs {hook_entries}; both must run one command."
-    )
-    assert GATE.stat().st_mode & 0o111, "scripts/mypy-gate.sh is not executable."
+    assert ci_commands == [GATE_COMMAND], f"The lint job runs {ci_commands}, not {GATE_COMMAND}."
+    assert hook_entries == [GATE_COMMAND], f"The pre-push hook runs {hook_entries}, not {GATE_COMMAND}."
 
 
 def test_the_pre_push_gate_cannot_be_skipped_by_file_type():
     """The gate reads the whole package, so no changed-file filter may gate it.
 
-    A push that touches only mypy-baseline.txt, pyproject.toml or the gate script
-    changes what the gate reports while matching no Python file.
+    A push that touches only pyproject.toml changes what the gate reports while matching no Python file.
     """
-    import yaml
-
-    hooks = yaml.safe_load((REPOSITORY_ROOT / ".pre-commit-config.yaml").read_text())
-    gate = [
-        hook for repository in hooks["repos"] for hook in repository["hooks"] if "mypy-gate.sh" in hook.get("entry", "")
-    ]
+    gate = _gate_hooks()
 
     assert len(gate) == 1, f"Expected one mypy gate hook, found {len(gate)}."
     hook = gate[0]
     filters = {key: hook[key] for key in ("types", "types_or", "files") if key in hook}
     assert hook.get("always_run") or not filters, (
         f"The gate hook is filtered by {filters} and is not always_run, so a push that "
-        "changes only the baseline or the mypy config skips it."
+        "changes only the mypy config skips it."
     )
+    assert hook.get("pass_filenames") is False, "mypy must read [tool.mypy] files, not the pushed file list."
 
 
-def _fake_tools(*, mypy_stdout: str, mypy_status: int):
-    """Put a stub ``mypy`` on PATH so the gate's own control flow can be exercised.
+def test_the_gate_skips_untyped_function_bodies(tmp_path):
+    """`check_untyped_defs` is off, so mypy reads no call site inside an unannotated function."""
+    api = pytest.importorskip("mypy.api", reason="mypy is a dev dependency")
+    module = tmp_path / "untyped.py"
+    module.write_text(DRIFTING_MODULE.replace("def produce() -> None:", "def produce():"))
 
-    The real ``mypy-baseline`` stays in play, so the baseline comparison is genuine; only
-    the type-checker is replaced, because these cases (a crash, a fully clean tree) cannot
-    be produced on demand from the real source tree.
-    """
-    bin_dir = Path(tempfile.mkdtemp()) / "bin"
-    bin_dir.mkdir()
-    fake = bin_dir / "mypy"
-    fake.write_text(f"#!/usr/bin/env bash\ncat <<'REPORT'\n{mypy_stdout}\nREPORT\nexit {mypy_status}\n")
-    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
-    environment = dict(os.environ)
-    environment.pop("MYPY_BIN", None)
-    environment.pop("MYPY_BASELINE_BIN", None)
-    environment["PATH"] = f"{bin_dir}{os.pathsep}{environment['PATH']}"
-    return environment
+    stdout, _stderr, status = api.run(["--config-file", str(REPOSITORY_ROOT / "pyproject.toml"), str(module)])
+
+    assert status == 0, f"mypy now checks untyped bodies; update the gate description:\n{stdout}"
 
 
-def _run_gate(environment):
-    return subprocess.run(
-        [str(GATE)], cwd=REPOSITORY_ROOT, env=environment, capture_output=True, text=True, check=False, timeout=30
-    )
-
-
-# The gate shells out to the real mypy-baseline, so these cases need the dev group.
-# CI installs it system-wide in the unit-test job; a bare checkout may not have it.
-requires_baseline_tool = pytest.mark.skipif(
-    shutil.which("mypy-baseline") is None, reason="mypy-baseline is a dev dependency"
-)
-
-
-@requires_baseline_tool
-def test_a_crash_fails_the_gate_instead_of_reporting_success():
-    """An empty report filters to "no new errors", so the exit status must be read."""
-    result = _run_gate(_fake_tools(mypy_stdout="", mypy_status=2))
-
-    assert result.returncode != 0, f"the gate passed while nothing was checked:\n{result.stdout}"
-    assert "nothing was type-checked" in result.stderr, result.stderr
-
-
-@requires_baseline_tool
-def test_resolving_every_baseline_error_passes_the_gate():
-    """Fixing type errors is an improvement and must not break the build."""
-    result = _run_gate(_fake_tools(mypy_stdout="", mypy_status=0))
-
-    assert result.returncode == 0, f"the gate failed for a clean tree:\n{result.stdout}{result.stderr}"
-
-
-@requires_baseline_tool
-def test_an_unbaselined_error_fails_the_gate():
-    """A finding absent from the baseline is new work and must fail."""
-    unknown = "netbox_kea/jobs.py:1: error: Nonexistent baseline finding for the gate test  [arg-type]"
-    result = _run_gate(_fake_tools(mypy_stdout=unknown, mypy_status=1))
-
-    assert result.returncode != 0, f"the gate accepted an unbaselined error:\n{result.stdout}"
-    assert "Nonexistent baseline finding" in result.stdout, result.stdout
-
-
-@requires_baseline_tool
-def test_a_baselined_error_passes_the_gate():
-    """A finding already recorded in the baseline is known debt, not a new failure."""
-    # test_resolving_every_baseline_error_passes_the_gate accepts an empty baseline, so
-    # indexing the first entry unconditionally would report an error on a clean tree.
-    entries = [line for line in BASELINE.read_text().splitlines() if line.strip()]
-    if not entries:
-        pytest.skip("The baseline is empty, so there is no recorded finding to replay.")
-    known = entries[0].replace(":0:", ":1:", 1)
-    result = _run_gate(_fake_tools(mypy_stdout=known, mypy_status=1))
-
-    assert result.returncode == 0, f"the gate rejected a baselined error:\n{result.stdout}{result.stderr}"
-
-
-@requires_baseline_tool
-def test_the_path_stub_wins_over_an_exported_mypy_override(tmp_path, monkeypatch):
-    """The fake-tool environment must not inherit a caller's mypy override."""
-    override = tmp_path / "override-mypy"
-    override.write_text("#!/usr/bin/env bash\nexit 0\n")
-    override.chmod(override.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setenv("MYPY_BIN", str(override))
-    unknown = "netbox_kea/jobs.py:1: error: Stub-controlled gate finding  [arg-type]"
-
-    result = _run_gate(_fake_tools(mypy_stdout=unknown, mypy_status=1))
-
-    assert result.returncode != 0, f"the exported override bypassed the PATH stub:\n{result.stdout}{result.stderr}"
-    assert "Stub-controlled gate finding" in result.stdout, result.stdout
+def test_the_gate_description_names_the_untyped_body_gap():
+    """A guide that says every call site is checked hides the untyped bodies that mypy skips."""
+    for name in ("AGENTS.md", "pyproject.toml"):
+        text = (REPOSITORY_ROOT / name).read_text()
+        assert "every first-party signature and call site" not in text, f"{name} overstates the gate coverage."
+        assert "untyped function bodies" in " ".join(text.replace("#", " ").split()), f"{name} omits the gap."

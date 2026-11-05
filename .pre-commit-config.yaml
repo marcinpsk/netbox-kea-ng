@@ -80,19 +80,18 @@ repos:
         pass_filenames: false
         files: (^netbox_kea/tests/.*\.py$|^\.pre-commit-config\.yaml$)
 
-  # Type-check netbox_kea and fail only on errors absent from mypy-baseline.txt.
-  # Runs on pre-push (not every commit) because a cold mypy cache takes ~20s. CI runs
-  # the same script in the lint job, so both gates share one definition.
+  # Type-check netbox_kea; any error fails. Runs on pre-push (not every commit) because a cold
+  # mypy cache takes ~20s. CI runs the same command in the lint job.
   - repo: local
     hooks:
-      - id: mypy-gate
-        name: mypy (new type errors only)
-        entry: uv run --system-certs scripts/mypy-gate.sh
+      - id: mypy
+        name: mypy
+        entry: uv run --system-certs mypy
         language: system
         pass_filenames: false
         stages: [pre-push]
         # No types filter: the gate reads the whole package, so a push that changes only
-        # mypy-baseline.txt or the mypy config must still run it.
+        # the mypy config must still run it.
         always_run: true
 
   # Conventional commit message validation

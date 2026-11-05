@@ -5,11 +5,12 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, TypeVar, assert_never
+from typing import Any, Literal, TypeVar, assert_never, cast
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 from urllib.parse import urlencode as _urlencode
 
 from django.contrib import messages
+from django.contrib.auth.models import PermissionsMixin
 from django.db import DatabaseError
 from django.http import HttpResponse, HttpResponseForbidden
 from django.http.request import HttpRequest, QueryDict
@@ -582,7 +583,7 @@ class ServerLeasesDeleteView(FamilyRouteMixin, ServerFamilyMixin, GetReturnURLMi
 
     def disabled_family_access(self, request: HttpRequest, server: Server) -> HttpResponse | None:
         """Preserve the Lease deletion permission on a disabled family."""
-        if not request.user.has_perm("netbox_kea.bulk_delete_lease_from_server", obj=server):
+        if not cast(PermissionsMixin, request.user).has_perm("netbox_kea.bulk_delete_lease_from_server", obj=server):
             return HttpResponseForbidden("This user does not have permission to delete DHCP leases.")
         return None
 

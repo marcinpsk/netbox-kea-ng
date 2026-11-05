@@ -1722,7 +1722,8 @@ class DHCPOptionRowForm(forms.Form):
         # options are suggested while free-form names remain allowed.
         widget=forms.TextInput(attrs={"list": "kea-option-names", "autocomplete": "off"}),
     )
-    data = forms.CharField(
+    # Kea's option key. The form metaclass moves declared fields off the class, so BaseForm.data stays the bound data.
+    data = forms.CharField(  # type: ignore[assignment]
         max_length=512,
         required=False,
         strip=False,

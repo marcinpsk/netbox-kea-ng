@@ -138,3 +138,25 @@ class TestReservationSyncCell(TestCase):
         state = ReservationSynchronizationState.from_counts(1, 1)
 
         self.assertIn("1", self._render(state, column="subnet_id"))
+
+
+class TestLeaseDurationCells(TestCase):
+    """Lease lifetimes render as ``HH:MM:SS``, and Kea's infinite lifetime renders as ``infinite``."""
+
+    def _cell(self, column: str, seconds: int) -> str:
+        from netbox_kea.tables import LeaseTable6
+
+        row = {"valid_lft": seconds, "preferred_lft": seconds, "expires_in": seconds, "expiry_class": ""}
+        return str(LeaseTable6([row]).rows[0].get_cell(column))
+
+    def test_every_lifetime_column_renders_seconds_as_hours_minutes_seconds(self):
+        for column in ("valid_lft", "preferred_lft", "expires_in"):
+            with self.subTest(column=column):
+                self.assertEqual(self._cell(column, 3725), "01:02:05")
+
+    def test_every_lifetime_column_renders_the_infinite_lifetime_as_infinite(self):
+        from netbox_kea.constants import INFINITE_LIFETIME
+
+        for column in ("valid_lft", "preferred_lft", "expires_in"):
+            with self.subTest(column=column):
+                self.assertEqual(self._cell(column, INFINITE_LIFETIME), "infinite")

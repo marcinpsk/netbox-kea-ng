@@ -28,3 +28,11 @@ updates:
       pre-commit:
         patterns:
           - "*"
+
+  # Only the CI pins of the optional plugins in .github/requirements-*.txt.
+  - package-ecosystem: pip
+    directory: /.github
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

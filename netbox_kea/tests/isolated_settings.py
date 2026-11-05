@@ -45,5 +45,6 @@ _netbox_configuration.PLUGINS_CONFIG = {
 _netbox_configuration.API_TOKEN_PEPPERS = {0: "a" * 64}
 
 from netbox.settings import *  # noqa: E402, F403
+from netbox.settings import DATABASES  # noqa: E402
 
-DATABASES["default"].setdefault("TEST", {})["NAME"] = _test_database_name  # noqa: F405
+DATABASES["default"].setdefault("TEST", {})["NAME"] = _test_database_name
