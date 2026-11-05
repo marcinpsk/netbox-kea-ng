@@ -1450,6 +1450,44 @@ class TestReservationPrefixSourceMigration(_MigrationTestCase):
 
         self.assertEqual(self._stored(server, prefixes), released)
 
+    def test_0032_keeps_malformed_receipts_forward_and_back(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        completed_at = timezone.now().isoformat()
+        malformed = {
+            "not a mapping": ["job"],
+            "receipt not a mapping": {"job": "done"},
+            "no sources": {"job": {"completed_at": completed_at}},
+            "sources not a list": {"job": {"sources": "delegated-prefix", "completed_at": completed_at}},
+            "pair of three": {"job": {"sources": [[6, "delegated-prefix", 1]], "completed_at": completed_at}},
+        }
+        servers = {name: _make_db_server(name=name) for name in malformed}
+        current = self._migrate_to(self._PREVIOUS)
+        historical = MigrationExecutor(connection).loader.project_state(("netbox_kea", self._PREVIOUS)).apps
+        for name, value in malformed.items():
+            historical.get_model("netbox_kea", "Server").objects.filter(pk=servers[name].pk).update(
+                ipam_initial_observations=value
+            )
+
+        def stored(server):
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT ipam_initial_observations FROM netbox_kea_server WHERE id = %s", [server.pk])
+                (value,) = cursor.fetchone()
+            return json.loads(value) if isinstance(value, str) else value
+
+        forward = MigrationExecutor(connection)
+        forward.loader.build_graph()
+        forward.migrate(current)
+        for name, value in malformed.items():
+            with self.subTest(direction="forward", shape=name):
+                self.assertEqual(stored(servers[name]), value)
+
+        MigrationExecutor(connection).migrate([("netbox_kea", self._PREVIOUS)])
+        for name, value in malformed.items():
+            with self.subTest(direction="back", shape=name):
+                self.assertEqual(stored(servers[name]), value)
+
     def test_0032_reverses_with_a_mapping_that_0031_holds(self):
         from django.db import connection
         from django.db.migrations.executor import MigrationExecutor

@@ -8,6 +8,19 @@ OLD = "delegated-prefix"
 NEW = "reservation-prefix"
 
 
+def _renamed(observations, old, new):
+    """Return *observations* with the source *old* renamed to *new*, or ``None`` when it is not a receipt mapping."""
+    if not isinstance(observations, dict):
+        return None
+    renamed = {}
+    for workflow, receipt in observations.items():
+        sources = receipt.get("sources") if isinstance(receipt, dict) else None
+        if not isinstance(sources, list) or any(not isinstance(pair, list) or len(pair) != 2 for pair in sources):
+            return None
+        renamed[workflow] = {**receipt, "sources": [[family, new if src == old else src] for family, src in sources]}
+    return renamed
+
+
 def _rename(apps, schema_editor, old, new):
     """Rename the source *old* to *new* in each link and each completion receipt, without an ObjectChange."""
     alias = schema_editor.connection.alias
@@ -15,14 +28,9 @@ def _rename(apps, schema_editor, old, new):
     servers = apps.get_model("netbox_kea", "Server").objects.using(alias)
     stored = servers.exclude(ipam_initial_observations={}).values_list("pk", "ipam_initial_observations")
     for pk, observations in stored:
-        renamed = {
-            workflow: {
-                **receipt,
-                "sources": [[family, new if source == old else source] for family, source in receipt["sources"]],
-            }
-            for workflow, receipt in observations.items()
-        }
-        if renamed != observations:
+        # The receipt reader refuses a malformed value and fails closed, so the rename leaves it as it is.
+        renamed = _renamed(observations, old, new)
+        if renamed is not None and renamed != observations:
             servers.filter(pk=pk).update(ipam_initial_observations=renamed)
 
 
