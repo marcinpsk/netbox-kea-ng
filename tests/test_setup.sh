@@ -44,6 +44,8 @@ if [ "${#wheels[@]}" -ne 1 ]; then
 fi
 WHL_FILE=$(basename "${wheels[0]}")
 cp "./dist/$WHL_FILE" ./tests/docker/
+# The branching variant installs this pin (docker-compose.branching.yml), and .github is outside the build context.
+cp ./.github/requirements-branching.txt ./tests/docker/
 
 # buildx 0.37.2 refuses a build secret read from outside the project without --allow=fs.read.
 cp "${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt}" ./tests/docker/host_ca.crt

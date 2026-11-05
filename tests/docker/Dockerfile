@@ -9,7 +9,9 @@ ARG WHL_FILE
 ARG EXTRA_REQUIREMENTS=""
 COPY ${WHL_FILE} /opt/netbox/dist/
 # Both branches need the mounted CA: uv reads SSL_CERT_FILE, pip reads PIP_CERT.
+# Mount only the file that tests/test_setup.sh copies: the certificates it regenerates would void the cache.
 RUN --mount=type=secret,id=host_ca,required=false \
+    --mount=type=bind,source=requirements-branching.txt,target=/tmp/build-context/requirements-branching.txt \
     if [ -f "/run/secrets/host_ca" ]; then \
         export SSL_CERT_FILE=/run/secrets/host_ca PIP_CERT=/run/secrets/host_ca; \
     fi; \

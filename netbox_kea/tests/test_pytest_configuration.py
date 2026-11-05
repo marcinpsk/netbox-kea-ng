@@ -813,9 +813,8 @@ def test_branching_job_cannot_pass_with_the_branching_tests_skipped():
     )
     optional_step = next(step for step in test_steps if "::OptionalMappingReplayTest" in step["run"])
 
-    assert re.fullmatch(r"\d+\.\d+\.\d+", str(yaml.safe_load(workflow)["env"]["NETBOX_BRANCHING_VERSION"]))
-    assert '"netboxlabs-netbox-branching==${NETBOX_BRANCHING_VERSION}"' in install
-    assert '"netbox-plugin-dhcp==0.2.0"' in install
+    assert "-r .github/requirements-dhcp.txt" in install
+    assert "-r .github/requirements-branching.txt" in install
     assert len(test_steps) == 2
     assert all(step["env"]["NETBOX_KEA_REQUIRE_BRANCHING"] == "1" for step in test_steps)
     assert test_step["env"]["TEST_DB_NAME"] != optional_step["env"]["TEST_DB_NAME"]
@@ -828,17 +827,63 @@ def test_branching_job_cannot_pass_with_the_branching_tests_skipped():
     assert 'raise RuntimeError(f"{_REQUIRE_BRANCHING}=1, but netbox_branching is not an installed app")' in source
 
 
-def test_the_branching_browser_job_reads_both_pins_from_the_workflow_env():
-    """The job runs the netbox-branching harness variant on the unit-test NetBox release, pinned once each."""
+def test_the_branching_browser_job_reads_both_pins_once():
+    """The job runs the netbox-branching harness variant on the unit-test NetBox release and the pin file."""
     workflow = yaml.safe_load((REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text())
     job = workflow["jobs"]["branching-browser-test"]
     setup = next(step for step in job["steps"] if step.get("run") == "./tests/test_setup.sh")
-    variant = (REPOSITORY_ROOT / "tests/docker/docker-compose.branching.yml").read_text()
+    variant = yaml.safe_load((REPOSITORY_ROOT / "tests/docker/docker-compose.branching.yml").read_text())
+    dockerfile = (REPOSITORY_ROOT / "tests/docker/Dockerfile").read_text()
 
     assert job["env"]["COMPOSE_FILE"].split(":")[-1] == "docker-compose.branching.yml"
     assert setup["env"]["NETBOX_CONTAINER_TAG"] == "${{ env.NETBOX_RELEASE }}"
-    assert "netboxlabs-netbox-branching==${NETBOX_BRANCHING_VERSION:?" in variant
-    assert "NETBOX_BRANCHING_VERSION" in workflow["env"]
+    assert variant["x-branching"]["build"]["args"]["EXTRA_REQUIREMENTS"] == (
+        "-r /tmp/build-context/requirements-branching.txt"
+    )
+    # A bind of the whole context hashes the certificates that every setup regenerates, so the install reruns.
+    assert re.findall(r"--mount=type=bind,\S+", dockerfile) == [
+        "--mount=type=bind,source=requirements-branching.txt,target=/tmp/build-context/requirements-branching.txt"
+    ]
+
+
+#: Each optional plugin that CI installs, by the file in .github that pins it for Dependabot.
+_PLUGIN_PINS = {
+    "requirements-dhcp.txt": "netbox-plugin-dhcp",
+    "requirements-branching.txt": "netboxlabs-netbox-branching",
+}
+
+
+def test_each_optional_plugin_has_one_exact_pin_that_dependabot_updates():
+    """A version written into a workflow is invisible to Dependabot, so a new plugin release went untested."""
+    dependabot = yaml.safe_load((REPOSITORY_ROOT / ".github/dependabot.yml").read_text())
+
+    for name, package in _PLUGIN_PINS.items():
+        lines = (REPOSITORY_ROOT / ".github" / name).read_text().splitlines()
+        pins = [line for line in lines if line and not line.startswith("#")]
+        assert len(pins) == 1 and re.fullmatch(rf"{re.escape(package)}==\d+\.\d+\.\d+", pins[0]), (name, pins)
+    assert {"package-ecosystem": "pip", "directory": "/.github"}.items() <= next(
+        update for update in dependabot["updates"] if update["package-ecosystem"] == "pip"
+    ).items()
+
+
+def test_no_ci_file_repeats_an_optional_plugin_pin():
+    """The pin files are the one source, so a second version cannot stay behind after a Dependabot bump."""
+    readers = [
+        ".github/workflows/ci.yml",
+        "tests/docker/Dockerfile",
+        "tests/docker/docker-compose.branching.yml",
+        "tests/test_setup.sh",
+        "AGENTS.md",
+    ]
+    dhcp_job = _workflow_job((REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text(), "dhcp-plugin-test")
+
+    assert "-r .github/requirements-dhcp.txt" in dhcp_job
+    assert "requirements-branching.txt" not in dhcp_job
+    for reader in readers:
+        text = (REPOSITORY_ROOT / reader).read_text()
+        for package in _PLUGIN_PINS.values():
+            assert f"{package}==" not in text, f"{reader} pins {package}; read it from .github instead."
+        assert "NETBOX_BRANCHING_VERSION" not in text, reader
 
 
 def test_worker_settings_are_read_as_whole_tokens():
@@ -3021,6 +3066,8 @@ def _run_setup_script(
     """Run the real ``tests/test_setup.sh`` in *sandbox* with every external tool stubbed."""
     (sandbox / "tests" / "docker").mkdir(parents=True, exist_ok=True)
     (sandbox / "tests" / "test_setup.sh").write_bytes((REPOSITORY_ROOT / "tests/test_setup.sh").read_bytes())
+    (sandbox / ".github").mkdir(exist_ok=True)
+    (sandbox / ".github/requirements-branching.txt").write_text("netboxlabs-netbox-branching==9.9.9\n")
     dist = sandbox / "dist"
     dist.mkdir(exist_ok=True)
     for name in wheel_names:
@@ -3112,6 +3159,18 @@ def test_the_setup_script_copies_the_ca_bundle_into_the_build_project():
 
         assert result.returncode == 0, result.stderr
         assert (sandbox / "tests/docker/host_ca.crt").read_text() == bundle.read_text()
+
+
+def test_the_setup_script_copies_the_branching_pin_into_the_build_project():
+    """The branching variant installs the pin of .github, which is outside the build context."""
+    with tempfile.TemporaryDirectory() as directory:
+        sandbox = Path(directory)
+
+        result = _run_setup_script(sandbox, ("netbox_kea_ng-1.9.0-py3-none-any.whl",))
+
+        assert result.returncode == 0, result.stderr
+        copied = sandbox / "tests/docker/requirements-branching.txt"
+        assert copied.read_text() == "netboxlabs-netbox-branching==9.9.9\n"
 
 
 def _compose_build_args(sandbox: Path) -> list[str]:
