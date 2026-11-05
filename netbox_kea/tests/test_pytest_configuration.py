@@ -840,7 +840,10 @@ def test_the_branching_browser_job_reads_both_pins_once():
     assert variant["x-branching"]["build"]["args"]["EXTRA_REQUIREMENTS"] == (
         "-r /tmp/build-context/requirements-branching.txt"
     )
-    assert "--mount=type=bind,target=/tmp/build-context" in dockerfile
+    # A bind of the whole context hashes the certificates that every setup regenerates, so the install reruns.
+    assert re.findall(r"--mount=type=bind,\S+", dockerfile) == [
+        "--mount=type=bind,source=requirements-branching.txt,target=/tmp/build-context/requirements-branching.txt"
+    ]
 
 
 #: Each optional plugin that CI installs, by the file in .github that pins it for Dependabot.
