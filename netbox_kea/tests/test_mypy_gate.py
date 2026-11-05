@@ -218,3 +218,22 @@ def test_the_pre_push_gate_cannot_be_skipped_by_file_type():
         "changes only the mypy config skips it."
     )
     assert hook.get("pass_filenames") is False, "mypy must read [tool.mypy] files, not the pushed file list."
+
+
+def test_the_gate_skips_untyped_function_bodies(tmp_path):
+    """`check_untyped_defs` is off, so mypy reads no call site inside an unannotated function."""
+    api = pytest.importorskip("mypy.api", reason="mypy is a dev dependency")
+    module = tmp_path / "untyped.py"
+    module.write_text(DRIFTING_MODULE.replace("def produce() -> None:", "def produce():"))
+
+    stdout, _stderr, status = api.run(["--config-file", str(REPOSITORY_ROOT / "pyproject.toml"), str(module)])
+
+    assert status == 0, f"mypy now checks untyped bodies; update the gate description:\n{stdout}"
+
+
+def test_the_gate_description_names_the_untyped_body_gap():
+    """A guide that says every call site is checked hides the untyped bodies that mypy skips."""
+    for name in ("AGENTS.md", "pyproject.toml"):
+        text = (REPOSITORY_ROOT / name).read_text()
+        assert "every first-party signature and call site" not in text, f"{name} overstates the gate coverage."
+        assert "untyped function bodies" in " ".join(text.replace("#", " ").split()), f"{name} omits the gap."

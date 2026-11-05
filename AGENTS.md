@@ -712,8 +712,9 @@ resort, reserved for true external boundaries you cannot run locally.
   annotation drift between a producer and its consumer: a `list[dict | Reservation]` passed
   to a `list[Reservation]` parameter is an error because `list` is invariant, and that
   reached review once already. NetBox is deliberately **not** installed for this gate, so
-  NetBox objects are `Any`; every first-party signature and call site is still checked,
-  and no upstream NetBox release can break the gate. There is no baseline: fix a new error,
+  NetBox objects are `Any`, and no upstream NetBox release can break the gate. mypy checks
+  every first-party signature and each call site in a typed function; it skips untyped
+  function bodies, because `check_untyped_defs` is off. There is no baseline: fix a new error,
   or add a `# type: ignore[<code>]` with a one-line reason only where the error comes from
   an untyped upstream class.
   **Always run the gate through `uv run`**, so the locked dev group is active. `django-stubs`
