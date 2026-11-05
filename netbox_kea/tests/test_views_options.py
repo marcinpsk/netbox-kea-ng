@@ -30,13 +30,15 @@ import re
 
 import requests
 from django.contrib import messages as django_messages
+from django.contrib.auth import get_user_model
 from django.urls import reverse
 
 from netbox_kea import display_cache
+from netbox_kea.models import Server
 from netbox_kea.views.notices import HEADLINES
 
 from .kea_stub import _catalogue_responses_for_subnets, _subnet_list, stub_kea
-from .utils import _make_db_server, _ReadModifyWriteMessages, _ViewTestBase, with_kea_client_config
+from .utils import _grant, _make_db_server, _ReadModifyWriteMessages, _ViewTestBase, with_kea_client_config
 
 # ---------------------------------------------------------------------------
 # config-get fixtures (read by the read-modify-write mutations and GET prefill)
@@ -717,6 +719,44 @@ class TestServerOptionDef4ListView(_ViewTestBase):
             response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertIs(response.context["tab"], ServerOptionDefView.tab)
+
+
+class TestServerOptionDefChangeLinks(_ViewTestBase):
+    """The Option Definition tab offers add and delete only to a user who can change this Server."""
+
+    def setUp(self):
+        super().setUp()
+        self.user = get_user_model().objects.create_user(username="option-def-viewer")
+        self._fresh_client()
+        _grant([Server], ["view"], user=self.user)
+
+    def _get(self):
+        with stub_kea({"config-get": _option_def_config(_OPTION_DEF_LIST_V4)}):
+            return self.client.get(
+                reverse("plugins:netbox_kea:server_option_def", kwargs={"pk": self.server.pk, "family": 4})
+            )
+
+    def _change_urls(self) -> tuple[str, str]:
+        return (
+            reverse("plugins:netbox_kea:server_option_def_add", kwargs={"pk": self.server.pk, "family": 4}),
+            reverse(
+                "plugins:netbox_kea:server_option_def_delete",
+                kwargs={"pk": self.server.pk, "family": 4, "code": 200, "space": "dhcp4"},
+            ),
+        )
+
+    def test_a_change_grant_on_another_server_shows_no_add_or_delete_link(self):
+        _grant([Server], ["change"], user=self.user, constraints={"name": "another-kea"})
+        response = self._get()
+        self.assertEqual(response.status_code, 200)
+        for url in self._change_urls():
+            self.assertNotContains(response, url)
+
+    def test_a_change_grant_on_this_server_shows_the_add_and_delete_links(self):
+        _grant([Server], ["change"], user=self.user, constraints={"name": self.server.name})
+        response = self._get()
+        for url in self._change_urls():
+            self.assertContains(response, url)
 
 
 class TestServerOptionDef6ListView(_ViewTestBase):

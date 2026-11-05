@@ -1,11 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any
 from urllib.parse import urlencode as _urlencode
 
 from django.contrib import messages
-from django.contrib.auth.models import PermissionsMixin
 from django.http import HttpResponse
 from django.http.request import HttpRequest
 from django.shortcuts import get_object_or_404, redirect, render
@@ -362,7 +361,7 @@ class ServerOptionDefView(FamilyRouteMixin, ServerFamilyMixin, ConditionalLoginR
         snapshot = server_configuration.display(server, self.dhcp_version)
         show_notices(request, notice(snapshot))
         # Add delete URLs here because templates do not construct dynamic URL names.
-        can_change = cast(PermissionsMixin, request.user).has_perm("netbox_kea.change_server")
+        can_change = Server.objects.restrict(request.user, "change").filter(pk=server.pk).exists()
         enriched_defs = []
         for opt in snapshot.option_definitions:
             entry = {
