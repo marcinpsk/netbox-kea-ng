@@ -1438,7 +1438,7 @@ class TestLeaseSyncByKindWithAutomaticSync(TestLeaseSyncByKind):
 
 
 @with_kea_client_config(lease_query_max_unpaged_leases=0)
-class TestLeaseSyncEventDispatch(TransactionTestCase):
+class TestSyncEventDispatch(TransactionTestCase):
     """A claim row is a unit at the top level of the request, so its events dispatch after its own commit."""
 
     def test_a_committed_lease_claim_whose_events_fail_gives_the_claim_result_and_a_separate_error(self):
@@ -1539,7 +1539,7 @@ class TestLeaseSyncEventDispatch(TransactionTestCase):
         self.assertIn("ClaimEventsFailed", "\n".join(logs.output))
 
     def test_a_bulk_reservation_sync_whose_events_fail_stops_and_reports_it(self):
-        """The bulk Sync stops at the row whose events failed, keeps that committed row, and redirects with a warning."""
+        """The bulk Sync stops at the row whose events failed, keeps that committed row, and redirects with an error."""
         from netbox_kea.event_scope import _NESTED_TRACKING
 
         if not _NESTED_TRACKING:
@@ -1559,7 +1559,7 @@ class TestLeaseSyncEventDispatch(TransactionTestCase):
         with (
             override_settings(EVENTS_PIPELINE=["netbox_kea.tests.test_sync_views.fail_ip_address_dispatch"]),
             stub_kea({**_catalogue_responses(4, 1, "10.0.0.0/8"), "reservation-get-page": _res_page(hosts)}),
-            self.assertLogs("netbox_kea", "ERROR"),
+            self.assertLogs("netbox_kea", "ERROR") as logs,
         ):
             response = self.client.post(url)
 
@@ -1574,7 +1574,8 @@ class TestLeaseSyncEventDispatch(TransactionTestCase):
         )
         self.assertEqual(
             [(message.level, str(message)) for message in django_messages.get_messages(response.wsgi_request)],
-            [(django_messages.WARNING, stopped)],
+            [(django_messages.ERROR, stopped)],
         )
         saved = [host for host in ("10.0.10.1", "10.0.10.2") if NbIP.objects.filter(address__net_host=host).exists()]
         self.assertEqual(len(saved), 1)
+        self.assertIn("EventDispatchError", "\n".join(logs.output))

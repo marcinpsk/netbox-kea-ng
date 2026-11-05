@@ -22,7 +22,7 @@ family then sends no event for the changes that it reverted. This has these cons
   changes in one transaction.
 - When the dispatch fails after a COMMIT (for example, the events pipeline cannot reach Redis), the operation
   stops and the committed rows stay. The IPAM sync job stops with an error, so it does not sync the servers after
-  that one. The bulk Reservation Sync stops and shows a warning on the Reservations tab. A row Sync button shows the
+  that one. The bulk Reservation Sync stops and shows an error on the Reservations tab. A row Sync button shows the
   sync result and a separate error.
 
 The sync refuses a Reservation row before its first IP address or MAC address write when a hardware address

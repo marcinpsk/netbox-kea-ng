@@ -219,7 +219,7 @@ class ServerReservationBulkSyncView(FamilyRouteMixin, ServerFamilyMixin, Conditi
             logger.exception(
                 "Server %s: the bulk Reservation Sync committed, but NetBox did not dispatch its events", pk
             )
-            messages.warning(request, _BULK_SYNC_EVENTS_FAILED)
+            messages.error(request, _BULK_SYNC_EVENTS_FAILED)
             return HttpResponseRedirect(redirect_url)
         summary = (
             f"Bulk sync: {report.created} created, {report.updated} updated, "
