@@ -105,7 +105,7 @@ class TestLeaseSearchValidation(TestCase):
         with stub_kea({}) as kea:
             response = view._lease_search(_make_request({}), version=4)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("required", response.data["detail"])
+        self.assertIn("exactly one", response.data["detail"])
         self.assertEqual(kea.commands(), [])
 
     def test_no_params_v6_includes_duid_in_message(self):

@@ -11,12 +11,12 @@ from django.test import SimpleTestCase
 
 from netbox_kea.reservations import (
     CurrentLeaseFacts,
+    CurrentLeasesQuery,
     IdentityLeases,
     InSubnetReservationScope,
     LeaseAbsent,
     LeasePresenceUnknown,
     LeasePresent,
-    LeaseQuery,
     Reservation,
     ReservationIdentity,
     SubnetLeases,
@@ -34,11 +34,11 @@ _MAC = ReservationIdentity("hw-address", "aa:bb:cc:dd:ee:ff")
 class FakeCurrentLeases:
     """A ``CurrentLeases`` that returns the facts that a test gives for each query, and records each one."""
 
-    def __init__(self, facts: Mapping[LeaseQuery, CurrentLeaseFacts]) -> None:
+    def __init__(self, facts: Mapping[CurrentLeasesQuery, CurrentLeaseFacts]) -> None:
         self._facts = dict(facts)
-        self.calls: list[LeaseQuery] = []
+        self.calls: list[CurrentLeasesQuery] = []
 
-    def current_leases(self, query: LeaseQuery) -> CurrentLeaseFacts:
+    def current_leases(self, query: CurrentLeasesQuery) -> CurrentLeaseFacts:
         self.calls.append(query)
         return self._facts[query]
 
@@ -50,7 +50,7 @@ class _ReadFailed(Exception):
 class FailingCurrentLeases:
     """A ``CurrentLeases`` whose every read fails."""
 
-    def current_leases(self, query: LeaseQuery) -> CurrentLeaseFacts:
+    def current_leases(self, query: CurrentLeasesQuery) -> CurrentLeaseFacts:
         raise _ReadFailed(query)
 
 
@@ -72,7 +72,7 @@ def _presence(raw: dict, facts: CurrentLeaseFacts) -> LeasePresenceUnknown | Lea
     """Return the presence of the Reservation *raw* when its Lease query finds *facts*."""
     reservation = _typed_reservation(raw)
     if isinstance(reservation.scope, InSubnetReservationScope):
-        query: LeaseQuery = _subnet_leases(reservation)
+        query: CurrentLeasesQuery = _subnet_leases(reservation)
     else:
         query = IdentityLeases(reservation.identity)
     return current_lease_presence(reservation, FakeCurrentLeases({query: facts}))

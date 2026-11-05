@@ -5,29 +5,26 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import cast
 
 from . import constants, display_cache, subnet_catalogue
-from .constants import Family, LeaseState
+from .constants import Family
 from .kea import KeaClient, LeaseQueryUnknownSubnet
-from .leases import LeaseSnapshot
+from .leases import ALL_LEASES, LeaseQuery, LeaseSnapshot
 from .models import Server
-from .subnet_catalogue import CatalogueSnapshot
+from .subnet_catalogue import CatalogueSnapshot, SubnetIdentity
 
 
 @dataclass(frozen=True)
 class LeaseSearch:
-    """What one Lease read asks of a Server.
+    """What one Lease read asks of a Server: its Lease Query and, for a read of every Lease, the page to read.
 
-    A selector *by* searches by the value *q*. Without one, the read covers every Lease: the page of *per_page*
-    Leases after *cursor*.
+    A read of every Lease reads the page of *per_page* Leases after *cursor*. A search reads its whole scope.
     """
 
-    by: str = ""
-    q: Any = None
-    state: LeaseState | None = None
+    query: LeaseQuery
     cursor: str | None = None
     per_page: int = 250
 
@@ -37,10 +34,10 @@ class LeaseSearch:
 
         A search reads its whole scope, so only a read of every Lease holds the cursor and the page size.
         """
-        q = self.q if self.q is None or isinstance(self.q, int) else str(self.q)
-        if self.by:
-            return (self.by, q, self.state)
-        return (self.by, q, self.state, self.cursor, self.per_page)
+        query = self.query
+        if query.selector != ALL_LEASES:
+            return (query.selector, query.value, query.state)
+        return (query.selector, query.value, query.state, self.cursor, self.per_page)
 
 
 @dataclass(frozen=True)
@@ -57,8 +54,8 @@ class LeaseRead:
         return isinstance(self.loaded, LeaseSnapshot) and self.catalogue_settled
 
 
-def _resolved_search(catalogue: CatalogueSnapshot, search: LeaseSearch) -> LeaseSearch | CatalogueSnapshot:
-    """Resolve the CIDR of a Subnet search to its Subnet Identity in *catalogue*.
+def _resolved_subnet(catalogue: CatalogueSnapshot, query: LeaseQuery) -> SubnetIdentity | CatalogueSnapshot:
+    """Resolve the CIDR of a Subnet query to its Subnet Identity in *catalogue*.
 
     Return *catalogue* when it is unavailable, or when it shows no Subnet with the CIDR and it has diagnostics and
     incomplete configuration facts. A view shows its Notice.
@@ -69,9 +66,9 @@ def _resolved_search(catalogue: CatalogueSnapshot, search: LeaseSearch) -> Lease
     """
     if catalogue.unavailable:
         return catalogue
-    subnet = catalogue.find_by_cidr(str(search.q.cidr))
+    subnet = catalogue.find_by_cidr(cast(str, query.value))
     if subnet is not None:
-        return replace(search, q=subnet.identity)
+        return subnet.identity
     if catalogue.diagnostics and not catalogue.configuration_confirms_absence:
         return catalogue
     raise LeaseQueryUnknownSubnet
@@ -89,20 +86,20 @@ def read_leases(client: KeaClient, server: Server, family: Family, search: Lease
         ValueError: If the search is not valid.
 
     """
-    resolved, catalogue_settled = search, True
-    if search.by == constants.BY_SUBNET:
+    query = search.query
+    if query.selector == constants.BY_SUBNET:
         catalogue = subnet_catalogue.for_verification(server, family)
-        found = _resolved_search(catalogue, search)
+        found = _resolved_subnet(catalogue, query)
         if isinstance(found, CatalogueSnapshot):
             return LeaseRead(found, catalogue.settled)
-        resolved, catalogue_settled = found, catalogue.settled
-    if resolved.by:
-        snapshot = client.lease_search(family, resolved.by, resolved.q, state=resolved.state, server_id=server.pk)
-    else:
+        return LeaseRead(client.lease_search(query, server_id=server.pk, subnet=found), catalogue.settled)
+    if query.selector == ALL_LEASES:
         snapshot = client.lease_get_page(
-            family, limit=resolved.per_page, cursor=resolved.cursor, state=resolved.state, server_id=server.pk
+            family, limit=search.per_page, cursor=search.cursor, state=query.state, server_id=server.pk
         )
-    return LeaseRead(snapshot, catalogue_settled)
+    else:
+        snapshot = client.lease_search(query, server_id=server.pk)
+    return LeaseRead(snapshot)
 
 
 def cached_read(

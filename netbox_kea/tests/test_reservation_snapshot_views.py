@@ -12,6 +12,7 @@ from django.urls import reverse
 
 from netbox_kea import display_cache, lease_reads, subnet_catalogue
 from netbox_kea.lease_reads import LeaseSearch
+from netbox_kea.leases import LeaseQuery
 from netbox_kea.reservation_reads import PAGE_SIZE as RESERVATION_PAGE_SIZE
 from netbox_kea.views.notices import HEADLINES, Notice
 
@@ -1177,7 +1178,9 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
                 stub_kea({"lease4-get": {"result": 0, "arguments": self.lease}}),
                 kea_client(self.server.ca_url) as kea,
             ):
-                lease_reads.cached_read(self.server, 4, LeaseSearch("ip", "198.18.0.20"), lambda: kea)
+                lease_reads.cached_read(
+                    self.server, 4, LeaseSearch(LeaseQuery(family=4, selector="ip", value="198.18.0.20")), lambda: kea
+                )
             response = self._get({"result": 3})
 
         self.assertEqual(response.status_code, 200)
