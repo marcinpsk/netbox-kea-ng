@@ -4,6 +4,7 @@
 
 {% block content %}
 {% include "netbox_kea/inc/subsection_nav.html" %}
+{% if can_change %}
 <div class="row mb-3">
   <div class="col text-end">
     <a href="{{ add_url }}" class="btn btn-primary btn-sm">
@@ -12,6 +13,7 @@
     </a>
   </div>
 </div>
+{% endif %}
 
 <div class="card">
   <h5 class="card-header">
@@ -28,7 +30,7 @@
           <th>Type</th>
           <th>Space</th>
           <th>Array</th>
-          <th>Actions</th>
+          {% if can_change %}<th>Actions</th>{% endif %}
         </tr>
       </thead>
       <tbody>
@@ -39,6 +41,7 @@
           <td><code>{{ opt.type }}</code></td>
           <td>{{ opt.space }}</td>
           <td>{% if opt.array %}<i class="mdi mdi-check text-success"></i>{% else %}—{% endif %}</td>
+          {% if can_change %}
           <td>
             <a href="{{ opt.delete_url }}"
                class="btn btn-sm btn-danger">
@@ -46,6 +49,7 @@
               Delete
             </a>
           </td>
+          {% endif %}
         </tr>
         {% endfor %}
       </tbody>
