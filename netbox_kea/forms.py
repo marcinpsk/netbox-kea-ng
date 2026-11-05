@@ -13,7 +13,7 @@ from django.forms.renderers import BaseRenderer
 from django.utils.html import format_html
 from django.utils.safestring import SafeString
 from ipam.models import VRF
-from netaddr import AddrFormatError, IPAddress, IPNetwork
+from netaddr import AddrFormatError, IPAddress
 from netbox.forms import NetBoxModelBulkEditForm, NetBoxModelFilterSetForm, NetBoxModelForm, NetBoxModelImportForm
 from pydantic import ValidationError as PydanticValidationError
 from utilities.forms import BOOLEAN_WITH_BLANK_CHOICES
@@ -27,13 +27,16 @@ from .decimal_text import parse_decimal
 from .dhcp_options import InvalidAddress, OptionRow, address_list, parse_dhcp_option
 from .kea import subnet_network
 from .leases import (
-    IDENTIFIER_SELECTORS,
+    ALL_LEASES,
     DHCPv4LeaseRequest,
     DHCPv6LeaseRequest,
     LeaseIdentity,
+    LeaseQuery,
+    LeaseQueryError,
     ShownLease,
     lease_client_identifier,
     lease_edit,
+    parse_lease_query,
     request_errors,
 )
 from .managed_fields import SharedNetworkEdit, SubnetEdit, SubnetFields, description_as_shown
@@ -610,39 +613,17 @@ class BaseLeasesSarchForm(forms.Form):
         if by and not q:
             raise ValidationError({"q": "Search value is empty."})
 
-        if by == constants.BY_SUBNET:
-            try:
-                if "/" not in q:
-                    raise ValidationError({"q": "CIDR mask is required"})
-                net = IPNetwork(q, version=ip_version)
-                if net.ip != net.cidr.ip:
-                    raise ValidationError({"q": f"{net} is not a valid prefix. Did you mean {net.cidr}?"})
-                cleaned_data["q"] = net
-            except (AddrFormatError, TypeError, ValueError) as e:
-                raise ValidationError({"q": f"Invalid IPv{ip_version} subnet."}) from e
-        elif by == constants.BY_SUBNET_ID:
-            try:
-                i = parse_decimal(q)
-                if not MIN_SUBNET_ID <= i <= MAX_SUBNET_ID:
-                    raise ValidationError({"q": "Invalid subnet ID."})
-                cleaned_data["q"] = i
-            except ValueError as e:
-                raise ValidationError({"q": "Subnet ID must be an integer."}) from e
-        elif by == constants.BY_IP:
-            try:
-                # use IPAddress to normalize values
-                cleaned_data["q"] = str(IPAddress(q, version=ip_version))
-            except (AddrFormatError, TypeError, ValueError) as e:
-                raise ValidationError({"q": f"Invalid IPv{ip_version} address."}) from e
-        elif by in IDENTIFIER_SELECTORS:
-            try:
-                cleaned_data["q"] = _clean_lease_identifier(q, by)
-            except ValidationError as e:
-                raise ValidationError({"q": e.messages}) from e
-
-        # The choice value is the Kea state code; the view takes the state name.
+        # The choice value is the Kea state code; the Lease Query takes the state name.
         state_str = cleaned_data.get("state", "")
-        cleaned_data["state"] = constants.LEASE_STATES[parse_decimal(state_str)] if state_str != "" else None
+        state = constants.LEASE_STATES[parse_decimal(state_str)] if state_str != "" else None
+        try:
+            cleaned_data["query"] = (
+                parse_lease_query(ip_version, by, q, state)
+                if by
+                else LeaseQuery(family=ip_version, selector=ALL_LEASES, state=state)
+            )
+        except LeaseQueryError as e:
+            raise ValidationError({"q" if e.field == "value" else "state": str(e)}) from e
 
         page = cleaned_data["page"]
         if page:

@@ -22,15 +22,15 @@ from . import constants, display_cache, subnet_catalogue
 from .constants import Family
 from .kea import KeaClient, LeaseQueryGuardError, close_quietly
 from .lease_reads import LeaseSearch, cached_read
-from .leases import Lease, LeaseSnapshot
+from .leases import Lease, LeaseQuery, LeaseSnapshot
 from .models import DisplayCacheConfig, KeaClientConfig, PinnedSettings, Server
 from .read_failure import ReadFailure, ReadFailureKind, attempt
 from .reservations import (
     CurrentLeaseFacts,
     CurrentLeasePresence,
+    CurrentLeasesQuery,
     InSubnetReservationScope,
     LeasePresenceUnknown,
-    LeaseQuery,
     Reservation,
     ReservationIdentity,
     ReservationKey,
@@ -174,7 +174,7 @@ class _KeaCurrentLeases:
             f"The Lease lookup of Server {server.pk}"
         )
 
-    def current_leases(self, query: LeaseQuery) -> CurrentLeaseFacts:
+    def current_leases(self, query: CurrentLeasesQuery) -> CurrentLeaseFacts:
         """Return the Current Leases that *query* finds, from the display cache entry of its Lease search or from Kea.
 
         Raises:
@@ -191,15 +191,22 @@ class _KeaCurrentLeases:
             raise _FailedLeaseLookup(facts)
         return facts
 
-    def _search(self, query: LeaseQuery) -> LeaseSearch:
+    def _search(self, query: CurrentLeasesQuery) -> LeaseSearch:
         """Return the Lease search that sends *query* to Kea."""
         if isinstance(query, SubnetLeases):
-            return LeaseSearch(constants.BY_SUBNET_ID, query.subnet.subnet_id, query.state)
+            return LeaseSearch(
+                LeaseQuery(
+                    family=self._family,
+                    selector=constants.BY_SUBNET_ID,
+                    value=query.subnet.subnet_id,
+                    state=query.state,
+                )
+            )
         identity = query.identity
         selector = constants.LEASE_SELECTOR_BY_IDENTIFIER[self._family].get(identity.identifier_type)
         if selector is None:
             raise ValueError(f"Kea has no DHCPv{self._family} Lease query for a {identity.identifier_type}.")
-        return LeaseSearch(selector, identity.value)
+        return LeaseSearch(LeaseQuery(family=self._family, selector=selector, value=identity.value))
 
     def _read(self, search: LeaseSearch) -> CurrentLeaseFacts | UnknownLeasePresence:
         """Return the Current Leases of *search*, or ``QUERY_GUARD`` when the Lease query guard refuses it."""

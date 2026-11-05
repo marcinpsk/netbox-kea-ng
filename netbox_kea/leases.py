@@ -48,6 +48,7 @@ from .constants import (
     IPAddressValue,
     LeaseState,
 )
+from .decimal_text import parse_decimal
 from .identifiers import LEASE_OCTETS, ClientIdentifierKind, normalize_hex, octets_message
 from .malformed import MalformedKeaReply
 
@@ -67,7 +68,6 @@ _IDENTIFIER_KINDS: dict[str, ClientIdentifierKind] = {
     for selectors in LEASE_SELECTOR_BY_IDENTIFIER.values()
     for kind, selector in selectors.items()
 }
-IDENTIFIER_SELECTORS = frozenset(_IDENTIFIER_KINDS)
 
 _INACTIVE_STATES: frozenset[str] = frozenset({"declined", "expired-reclaimed", "released"})
 AllocationKind = Literal["address", "delegated-prefix"]
@@ -409,6 +409,69 @@ class LeaseQuery(_Value):
         if self.state is not None and self.selector in _SUBNET_SELECTORS and self.state not in LEASE_QUERY_STATES:
             raise ValueError("A Subnet query can filter only by a state that Kea can count.")
         return self
+
+
+class LeaseQueryError(ValueError):
+    """A Lease search value or state that does not parse; ``field`` names it and the message says what to enter."""
+
+    def __init__(self, field: Literal["value", "state"], message: str) -> None:
+        super().__init__(message)
+        self.field = field
+
+
+_NOT_MEASURABLE = "Kea cannot safely measure this lease state. Use an exact IP or client identifier search."
+
+
+def parse_lease_query(family: Family, selector: str, text: str, state: LeaseState | None = None) -> LeaseQuery:
+    """Return the Lease Query of one search: *text* is the value of *selector*, normalized here.
+
+    Raises:
+        LeaseQueryError: If the value or the state does not fit the selector.
+        ValueError: If *selector* is not a search selector of *family*.
+
+    """
+    if selector == ALL_LEASES or selector not in _QUERY_SELECTORS[family]:
+        raise ValueError(f"Lease selector {selector!r} is not supported for DHCPv{family}.")
+    if state is not None and selector in _SUBNET_SELECTORS and state not in LEASE_QUERY_STATES:
+        raise LeaseQueryError("state", _NOT_MEASURABLE)
+    return LeaseQuery(family=family, selector=selector, value=_query_value(family, selector, text), state=state)
+
+
+def _query_value(family: Family, selector: str, text: str) -> int | str:
+    if selector in _IDENTIFIER_KINDS:
+        try:
+            return lease_client_identifier(selector, text)
+        except ValueError as exc:
+            raise LeaseQueryError("value", str(exc)) from None
+    if selector == BY_HOSTNAME:
+        if not text:
+            raise LeaseQueryError("value", "Enter a hostname.")
+        return text
+    if selector == BY_SUBNET_ID:
+        try:
+            subnet_id: int | None = parse_decimal(text)
+        except ValueError:
+            subnet_id = None
+        if subnet_id is None or not MIN_SUBNET_ID <= subnet_id <= MAX_SUBNET_ID:
+            raise LeaseQueryError("value", f"Enter a Subnet ID from {MIN_SUBNET_ID} to {MAX_SUBNET_ID}.")
+        return subnet_id
+    if selector == BY_IP:
+        try:
+            address = ipaddress.ip_address(text)
+        except ValueError:
+            address = None
+        if address is None or address.version != family:
+            raise LeaseQueryError("value", f"Enter an IPv{family} address.")
+        return str(address)
+    try:
+        network = ipaddress.ip_network(text, strict=False) if "/" in text else None
+    except ValueError:
+        network = None
+    if network is None or network.version != family:
+        raise LeaseQueryError("value", f"Enter an IPv{family} Subnet in CIDR notation.")
+    if ipaddress.ip_address(text.split("/", 1)[0]) != network.network_address:
+        raise LeaseQueryError("value", f"{text} is not a valid prefix. Did you mean {network}?")
+    return str(network)
 
 
 LeaseCoverage = Literal["page", "exhaustive"]

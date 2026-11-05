@@ -190,13 +190,13 @@ class IdentityLeases:
 
 
 #: The Kea Lease query whose Leases can show whether the client of a Reservation holds a Current Lease.
-LeaseQuery = SubnetLeases | IdentityLeases
+CurrentLeasesQuery = SubnetLeases | IdentityLeases
 
 
 class CurrentLeases(Protocol):
     """The Current Leases that one Lease query finds in Kea."""
 
-    def current_leases(self, query: LeaseQuery) -> CurrentLeaseFacts:
+    def current_leases(self, query: CurrentLeasesQuery) -> CurrentLeaseFacts:
         """Return the Current Leases that *query* finds. A failed read raises the exception of the implementation."""
         ...
 
@@ -214,7 +214,7 @@ def current_lease_presence(reservation: Reservation, leases: CurrentLeases) -> C
     return _presence(reservation, leases.current_leases(query))
 
 
-def _lease_query(reservation: Reservation) -> LeaseQuery | None:
+def _lease_query(reservation: Reservation) -> CurrentLeasesQuery | None:
     """Return the Lease query that shows the client of *reservation*, or ``None`` when Kea has none."""
     if isinstance(reservation.scope, InSubnetReservationScope):
         # DHCPv6 registered leases are current too, and only an unfiltered Subnet query returns them.

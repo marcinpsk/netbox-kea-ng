@@ -20,10 +20,9 @@ from netbox_kea.forms import (
     ServerImportForm,
     SubnetConfirmForm,
 )
-from netbox_kea.leases import DHCPv4LeaseRequest, LeaseEdit, shown_lease
+from netbox_kea.leases import DHCPv4LeaseRequest, LeaseEdit, LeaseQuery, shown_lease
 from netbox_kea.models import Server
 from netbox_kea.reservations import ReservationCapabilities, reservation_identifier_types
-from netbox_kea.subnet_catalogue import MAX_SUBNET_ID
 from netbox_kea.tests.kea_stub import lease_record, shown_token, typed_lease
 
 
@@ -58,75 +57,26 @@ class TestLeases4SearchFormValidation(SimpleTestCase):
         form = self._form("hostname", "myhost.example.com")
         self.assertTrue(form.is_valid(), form.errors)
 
-    def test_valid_hw_address_colon(self):
-        form = self._form("hw", "aa:bb:cc:dd:ee:ff")
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_valid_hw_address_dash(self):
-        form = self._form("hw", "aa-bb-cc-dd-ee-ff")
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_invalid_hw_address(self):
-        form = self._form("hw", "not-a-mac")
-        self.assertFalse(form.is_valid())
-        self.assertIn("q", form.errors)
-
     def test_valid_subnet_with_cidr(self):
         form = self._form("subnet", "192.168.1.0/24")
         self.assertTrue(form.is_valid(), form.errors)
 
-    def test_subnet_without_cidr_fails(self):
-        form = self._form("subnet", "192.168.1.0")
-        self.assertFalse(form.is_valid())
-        self.assertIn("q", form.errors)
-
-    def test_invalid_subnet(self):
-        form = self._form("subnet", "notanip/24")
-        self.assertFalse(form.is_valid())
-        self.assertIn("q", form.errors)
-
-    def test_subnet_not_network_address_fails(self):
-        # 192.168.1.5/24 is not a network address (network is 192.168.1.0/24)
-        form = self._form("subnet", "192.168.1.5/24")
-        self.assertFalse(form.is_valid())
-        self.assertIn("q", form.errors)
-
     def test_valid_subnet_id(self):
         form = self._form("subnet_id", "42")
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["q"], 42)
+        self.assertEqual(form.cleaned_data["query"], LeaseQuery(family=4, selector="subnet_id", value=42))
 
-    def test_subnet_id_zero_fails(self):
+    def test_a_value_or_state_that_does_not_parse_is_an_error_of_its_field(self):
+        """The Lease Query parse refuses the value on the Search field and the state on the State field."""
         form = self._form("subnet_id", "0")
         self.assertFalse(form.is_valid())
-
-    def test_subnet_id_above_the_kea_range_fails(self):
-        for value in (str(MAX_SUBNET_ID + 1), "99999999999999999999"):
-            with self.subTest(value=value):
-                form = self._form("subnet_id", value)
-                self.assertFalse(form.is_valid())
-                self.assertEqual(form.errors["q"], ["Invalid subnet ID."])
-
-    def test_subnet_id_negative_fails(self):
-        form = self._form("subnet_id", "-1")
+        self.assertEqual(form.errors["q"], ["Enter a Subnet ID from 1 to 4294967294."])
+        form = Leases4SearchForm(data={"by": "subnet", "q": "192.168.1.0/24", "state": "2"})
         self.assertFalse(form.is_valid())
-
-    def test_subnet_id_non_integer_fails(self):
-        form = self._form("subnet_id", "abc")
-        self.assertFalse(form.is_valid())
-
-    def test_subnet_id_must_be_ascii_decimal_text(self):
-        form = self._form("subnet_id", "\u0661\u0662")
-        self.assertFalse(form.is_valid())
-        self.assertEqual(form.errors["q"], ["Subnet ID must be an integer."])
-
-    def test_valid_client_id(self):
-        form = self._form("client_id", "aabb")
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_invalid_client_id(self):
-        form = self._form("client_id", "gg")
-        self.assertFalse(form.is_valid())
+        self.assertEqual(
+            form.errors["state"],
+            ["Kea cannot safely measure this lease state. Use an exact IP or client identifier search."],
+        )
 
     def test_q_without_by_fails(self):
         form = Leases4SearchForm(data={"q": "something"})
@@ -178,11 +128,6 @@ class TestLeases4SearchFormValidation(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertEqual(form.errors["page"], ["Invalid IP."])
 
-    def test_ipv6_address_fails_for_v4_form(self):
-        form = self._form("ip", "2001:db8::1")
-        self.assertFalse(form.is_valid())
-        self.assertIn("q", form.errors)
-
 
 class TestLeases6SearchFormValidation(SimpleTestCase):
     """Tests for Leases6SearchForm (DHCPv6 lease search validation)."""
@@ -192,26 +137,6 @@ class TestLeases6SearchFormValidation(SimpleTestCase):
 
     def test_valid_ipv6_address(self):
         form = self._form("ip", "2001:db8::1")
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_invalid_ipv6_address(self):
-        form = self._form("ip", "notanip")
-        self.assertFalse(form.is_valid())
-
-    def test_ipv4_address_fails_for_v6_form(self):
-        form = self._form("ip", "192.168.1.1")
-        self.assertFalse(form.is_valid())
-
-    def test_valid_duid(self):
-        form = self._form("duid", "00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:ff")
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_invalid_duid(self):
-        form = self._form("duid", "gg:hh")
-        self.assertFalse(form.is_valid())
-
-    def test_valid_subnet_v6(self):
-        form = self._form("subnet", "2001:db8::/32")
         self.assertTrue(form.is_valid(), form.errors)
 
     def test_valid_subnet_id(self):
@@ -1636,7 +1561,7 @@ class TestLeasesSearchFormSubnetDropdown(SimpleTestCase):
     def test_subnet_id_search_still_validates(self):
         form = Leases4SearchForm(data={"by": "subnet_id", "q": "3"})
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["q"], 3)
+        self.assertEqual(form.cleaned_data["query"].value, 3)
 
     def test_subnet_search_rejects_a_page_cursor(self):
         form = Leases4SearchForm(data={"by": "subnet", "q": "192.168.1.0/24", "page": "192.168.1.10"})

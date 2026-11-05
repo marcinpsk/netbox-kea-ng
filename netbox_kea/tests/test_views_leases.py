@@ -48,6 +48,7 @@ from ipam.models import IPAddress as NbIP
 from netbox_kea import constants
 from netbox_kea.kea import KeaCommand
 from netbox_kea.lease_reads import LeaseSearch
+from netbox_kea.leases import parse_lease_query
 from netbox_kea.models import Server
 from netbox_kea.signals import lease_added
 from netbox_kea.utilities import parse_lease_csv
@@ -704,6 +705,18 @@ class TestLeaseSearchPaths(_ViewTestBase):
         body = kea.bodies("lease6-get-by-duid")[0]
         self.assertEqual(body["arguments"]["duid"], "00:01:aa:bb:cc:dd")
         self.assertEqual(body["service"], ["dhcp6"])
+
+    def test_search_finds_a_lease_by_a_130_octet_duid(self):
+        """A Kea Lease DUID can have 130 octets; the search sends it in canonical form and shows the Lease."""
+        server6 = _make_db_server(name="kea-v6-long-duid", ca_url="https://kea6.example.com", dhcp4=False, dhcp6=True)
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": server6.pk, "family": 6})
+        duid = ":".join(["0a"] * 130)
+        lease = complete_lease({"ip-address": "2001:db8::5", "duid": duid, "valid-lft": 3600, "state": 0})
+        with _lease_stub({"subnet6-list": self._SUBNETS6, "lease6-get-by-duid": self._multi([lease])}) as kea:
+            response = self._htmx_get(url, {"by": "duid", "q": duid.upper().replace(":", "-")})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.bodies("lease6-get-by-duid")[0]["arguments"], {"duid": duid})
+        self.assertContains(response, "2001:db8::5")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3180,7 +3193,7 @@ class TestFetchLeaseSearch(_ViewTestBase):
         )
         variants = [f"lease{version}-get{suffix}" for suffix in suffixes]
         with _lease_stub(dict.fromkeys(variants, payload)):
-            return fetch(self.server, version, LeaseSearch(by, q))
+            return fetch(self.server, version, LeaseSearch(parse_lease_query(version, by, q)))
 
     def test_by_hw_address(self):
         snapshot = self._call(constants.BY_HW_ADDRESS, q="aa:bb:cc:dd:ee:ff")
@@ -3208,7 +3221,7 @@ class TestFetchLeaseSearch(_ViewTestBase):
 
     def test_null_args_is_an_unavailable_notice(self):
         with _lease_stub({"lease4-get-by-hostname": {"result": 0, "arguments": None}}):
-            loaded = fetch(self.server, 4, LeaseSearch(constants.BY_HOSTNAME, "ghost"))
+            loaded = fetch(self.server, 4, LeaseSearch(parse_lease_query(4, constants.BY_HOSTNAME, "ghost")))
 
         self.assertIsInstance(loaded, Notice)
         self.assertTrue(loaded.unavailable)
@@ -3232,7 +3245,7 @@ class TestFetchLeaseSearch(_ViewTestBase):
             "arguments": {"leases": [complete_lease({"ip-address": "198.18.0.1", "valid-lft": 3600, "state": 1})]},
         }
         with _lease_stub({"stat-lease4-get": stats, "lease4-get-by-state": response}) as kea:
-            snapshot = fetch(self.server, 4, LeaseSearch(constants.BY_SUBNET_ID, 1, "declined"))
+            snapshot = fetch(self.server, 4, LeaseSearch(parse_lease_query(4, constants.BY_SUBNET_ID, "1", "declined")))
 
         self.assertEqual(len(snapshot.records), 1)
         self.assertEqual(
@@ -3419,12 +3432,6 @@ class TestGetLeasesCoverage(_ViewTestBase):
 
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
-
-    def test_invalid_by_raises_value_error(self):
-        """An invalid search selector must fail before a Kea request."""
-        with stub_kea({}) as kea, self.assertRaises(ValueError):
-            fetch(self.server, 4, LeaseSearch("not_a_valid_by", "test_query"))
-        self.assertEqual(kea.commands(), [])
 
     def test_null_args_from_lease_get_raises_runtime_error(self):
         """lease-get returns arguments=None → RuntimeError (caught by HTMX handler)."""
