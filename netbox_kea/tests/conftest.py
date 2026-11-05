@@ -304,7 +304,7 @@ def _one_entry_per_import_fact():
 
     The check runs at teardown, because the import catches broad exceptions around its writes.
     """
-    from netbox_kea.integrations.dhcp_plugin import ImportSummary
+    from netbox_kea.integrations.dhcp_import_summary import ImportSummary
 
     record = ImportSummary.record
     repeated = []

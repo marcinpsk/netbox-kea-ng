@@ -135,11 +135,11 @@ def take_reservation_name(subnet_name: str, duid: str):
     """Create an unmapped Reservation that holds the name the import gives *duid* in a Subnet, so that write fails."""
     from django.apps import apps
 
-    from netbox_kea.integrations.dhcp_plugin import _synthesized_name
+    from netbox_kea.integrations.dhcp_import_server import synthesized_name
 
     holder = apps.get_model("netbox_dhcp", "DHCPServer").objects.create(name=f"name holder {duid[-8:]}")
     return apps.get_model("netbox_dhcp", "HostReservation").objects.create(
-        name=_synthesized_name(subnet_name, f" duid:{duid}"), dhcp_server=holder, duid="00:00:00:01"
+        name=synthesized_name(subnet_name, f" duid:{duid}"), dhcp_server=holder, duid="00:00:00:01"
     )
 
 

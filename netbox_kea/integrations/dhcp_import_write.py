@@ -8,7 +8,7 @@ observes the mapping. It records the entry of the object. When it does not write
 each descendant in the planned subtree of the object too, and returns why (:class:`NotWritten`). Only this module
 decides how a failed write is reported (the failure table of :func:`write_row`). :func:`adopt_options` maps the
 unmapped DHCP Options of one parent before any Option write. The DHCPServer is the root of a run, and its failure
-ends the run, so ``upsert_dhcp_server`` and ``_apply_global_settings`` in :mod:`.dhcp_plugin` write it themselves.
+ends the run, so ``upsert_dhcp_server`` and ``apply_global_settings`` in :mod:`.dhcp_import_server` write it themselves.
 """
 
 from __future__ import annotations
@@ -21,14 +21,14 @@ from typing import TYPE_CHECKING, Any, NamedTuple, Protocol
 from django.core.exceptions import ValidationError
 
 from .. import event_scope
-from ..dhcp_mapping_lifecycle import mapped_target, mark_options_mapped, observe_mapping
 from .dhcp_import_fields import managed_fields
+from .dhcp_import_mappings import mapped_target, mark_options_mapped, observe_mapping
 from .dhcp_import_report import REASON_OUTCOME, Capability, ImportEntry, Kind, Outcome, Reason, written
 
 if TYPE_CHECKING:
     from ..models import Server
     from .dhcp_import_plan import MappingSource
-    from .dhcp_plugin import ImportSummary
+    from .dhcp_import_summary import ImportSummary
     from .dhcp_plugin_capabilities import PluginCapabilities
 
 logger = logging.getLogger(__name__)

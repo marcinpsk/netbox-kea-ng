@@ -57,7 +57,7 @@ class NetBoxKeaConfig(PluginConfig):
         warn_removed_settings()
         branching.register()
         from .dhcp_mapping_lifecycle import register as register_mapping_lifecycle
-        from .integrations.dhcp_plugin import register_link_cleanup
+        from .integrations.dhcp_import_mappings import register_link_cleanup
 
         register_link_cleanup()
         register_mapping_lifecycle()

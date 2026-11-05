@@ -22,7 +22,11 @@ from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 
 from netbox_kea.integrations import dhcp_plugin
+from netbox_kea.integrations.dhcp_import_networks import ClassReferences
+from netbox_kea.integrations.dhcp_import_options import CustomDefinitions, OptionReferences
 from netbox_kea.integrations.dhcp_import_report import Kind, Outcome, Reason
+from netbox_kea.integrations.dhcp_import_reservations import import_reservation_snapshot, reconcile_delegated_prefixes
+from netbox_kea.integrations.dhcp_import_summary import ImportSummary
 from netbox_kea.integrations.dhcp_import_write import WriteScope
 from netbox_kea.integrations.dhcp_plugin_capabilities import probe
 from netbox_kea.ipam_reconciliation import (
@@ -68,7 +72,7 @@ class ImportOwnershipTest(TestCase):
         self.assertIn("import", self.server.ipam_initial_observations)
 
     def test_a_mapping_confirmed_after_the_cutoff_by_a_slower_clock_is_not_stale(self):
-        from netbox_kea.dhcp_mapping_lifecycle import observe_mapping
+        from netbox_kea.integrations.dhcp_import_mappings import observe_mapping
         from netbox_kea.integrations.dhcp_import_plan import MappingSource
 
         with stub_kea(_sync_responses({6: self.config}, {6: []})):
@@ -588,13 +592,11 @@ class ImportOwnershipTest(TestCase):
         before = IPAMOwnershipLink.objects.values().get(prefix=self.delegated())
         conf = {"subnet6": [{"id": 9, "subnet": "2001:db8:9::/64"}]}
         observation = _reservation_snapshot(conf, 6, [{**self.identity, "subnet-id": 9}])
-        summary = dhcp_plugin.ImportSummary()
-        references = dhcp_plugin.OptionReferences(
-            dhcp_plugin.CustomDefinitions({}, ()), dhcp_plugin.ClassReferences(6, frozenset(), {})
-        )
+        summary = ImportSummary()
+        references = OptionReferences(CustomDefinitions({}, ()), ClassReferences(6, frozenset(), {}))
         scope = WriteScope(self.server, 6, summary, probe())
-        step = dhcp_plugin.import_reservation_snapshot(scope, None, observation, references, adoption_servers=())
-        dhcp_plugin.reconcile_delegated_prefixes(self.server, 6, step, set(), summary)
+        step = import_reservation_snapshot(scope, None, observation, references, adoption_servers=())
+        reconcile_delegated_prefixes(self.server, 6, step, set(), summary)
         self.assertEqual(summary.reservations_skipped, 1)
         self.assertIn("reservation-prefix", summary.ownership.incomplete)
         self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix=self.delegated()), before)
@@ -1296,9 +1298,11 @@ class PDPoolOwnershipTest(TestCase):
 
 class AdapterOwnershipBoundaryTest(SimpleTestCase):
     def test_adapter_imports_no_private_sync_helpers(self):
-        source = Path(dhcp_plugin.__file__).read_text()
+        # The adapter is dhcp_plugin.py and the modules of the DHCP Import next to it.
+        sources = [path.read_text() for path in Path(dhcp_plugin.__file__).parent.glob("*.py")]
         imported = [
             alias.name
+            for source in sources
             for node in ast.walk(ast.parse(source))
             if isinstance(node, ast.ImportFrom) and node.module is not None and node.module.split(".")[-1] == "sync"
             for alias in node.names

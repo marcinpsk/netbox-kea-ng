@@ -27,7 +27,7 @@ from netbox.context_managers import event_tracking
 from netbox.jobs import JobRunner, system_job
 
 if TYPE_CHECKING:
-    from .integrations.dhcp_plugin import ImportSummary
+    from .integrations.dhcp_import_summary import ImportSummary
     from .models import Server
 
 # Runtime imports: get_type_hints() resolves this module's annotations, so a
@@ -490,7 +490,7 @@ class KeaIpamSyncJob(JobRunner):
             run_dhcp_plugin_import,
         )
         from .integrations.dhcp_import_report import Outcome
-        from .integrations.dhcp_plugin import ImportSummary
+        from .integrations.dhcp_import_summary import ImportSummary
         from .models import DhcpImportTrigger
 
         run = f"Scheduled DHCP Import of Server {server.name}"

@@ -17,6 +17,7 @@ import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from django.apps import apps
 from django.core.exceptions import FieldDoesNotExist, ValidationError
@@ -27,6 +28,13 @@ from ..reservations import FLEX_ID
 from .dhcp_import_report import Capability
 
 PLUGIN_APP_LABEL = "netbox_dhcp"
+
+
+# The plugin is optional, so its models have no static type here.
+def plugin_model(name: str) -> type[Any]:
+    """Return a ``netbox_dhcp`` model class by name (lazy; plugin must be installed)."""
+    return apps.get_model(PLUGIN_APP_LABEL, name)
+
 
 logger = logging.getLogger(__name__)
 
@@ -319,16 +327,12 @@ class PluginCapabilities:
         return self.has(Capability.OPTION_SPACES) or space in self.option_spaces
 
 
-def _plugin_model(name: str) -> type[models.Model]:
-    return apps.get_model(PLUGIN_APP_LABEL, name)
-
-
 def _space_choices(model: ModelLookup) -> frozenset[str]:
     field = _field(model("OptionDefinition"), "space")
     return frozenset(_choice_values(field)) if field is not None and field.choices else frozenset()
 
 
-def probe(model: ModelLookup = _plugin_model, data_rule: DataRule | None = None) -> PluginCapabilities:
+def probe(model: ModelLookup = plugin_model, data_rule: DataRule | None = None) -> PluginCapabilities:
     """Return the capabilities of the plugin models that *model* looks up and of the data check *data_rule*.
 
     By default, both come from the installed netbox_dhcp.

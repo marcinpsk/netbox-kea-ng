@@ -90,9 +90,13 @@ are used as the default for all connections.
 
 ## Server connection validation
 
-- Creating a Server or changing connection values checks every enabled DHCP service.
-- Connection values include URLs, credentials, TLS settings, Control Agent routing and enabled DHCP families.
-- Metadata changes, such as names, tags and sync settings, work while Kea is unavailable. Submitting unchanged connection values sends no connectivity request.
+- Creating a Server checks every enabled DHCP service.
+- Changing a Server checks each enabled DHCP service whose effective connection changed. The effective connection
+  of a service is the URL, credentials, TLS settings and Control Agent routing that NetBox uses to reach it.
+- Enabling a DHCP service checks that service. Disabling a DHCP service checks nothing.
+- A change with no effect checks nothing. For example, a change of `dhcp6_url` while DHCPv6 is off, a change of
+  `ca_url` when both services have their own URL, or a change of `dhcp4_username` when `dhcp4_url` is empty.
+- Metadata changes, such as names, tags and sync settings, work while Kea is unavailable.
 - Bulk edits reject the entire batch if one changed connection fails its check.
 
 ## Per-server IPAM sync settings
