@@ -6,7 +6,6 @@ import csv
 import io
 import ipaddress
 import logging
-import re
 from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime
 from typing import Any, Protocol
@@ -169,15 +168,6 @@ def export_table(
         exclude_columns=exclude_columns,
     )
     return exporter.response(filename=filename)
-
-
-def is_hex_string(s: str, min_octets: int, max_octets: int):
-    """Return True if *s* is a colon/dash-delimited hex string within the given octet length bounds."""
-    if not re.match(constants.HEX_STRING_REGEX, s):
-        return False
-
-    octets = len(s.replace(":", "").replace("-", "")) / 2
-    return octets >= min_octets and octets <= max_octets
 
 
 #: Bounds on a DHCPv6 reservation's delegated-prefix list.  Kea imposes no count

@@ -15,7 +15,6 @@ from netbox_kea.leases import DHCPv4LeaseRequest, DHCPv6LeaseRequest
 from netbox_kea.tests.kea_stub import lease_record, typed_lease
 from netbox_kea.utilities import (
     format_duration,
-    is_hex_string,
     lease_rows,
 )
 
@@ -128,41 +127,6 @@ class TestLeaseRows(TestCase):
         for cltt, state, expected in cases:
             with self.subTest(cltt=cltt, state=state):
                 self.assertIs(_row(cltt=cltt, valid_lft=3600, state=state)["current"], expected)
-
-
-class TestIsHexString(TestCase):
-    """Tests for is_hex_string()."""
-
-    def test_valid_mac_address(self):
-        self.assertTrue(is_hex_string("aa:bb:cc:dd:ee:ff", 6, 6))
-
-    def test_valid_mac_with_dashes(self):
-        self.assertTrue(is_hex_string("aa-bb-cc-dd-ee-ff", 6, 6))
-
-    def test_valid_without_separators(self):
-        self.assertTrue(is_hex_string("aabbccddeeff", 6, 6))
-
-    def test_too_short(self):
-        self.assertFalse(is_hex_string("aa:bb", 6, 6))
-
-    def test_too_long(self):
-        self.assertFalse(is_hex_string("aa:bb:cc:dd:ee:ff:00", 6, 6))
-
-    def test_invalid_characters(self):
-        self.assertFalse(is_hex_string("zz:bb:cc:dd:ee:ff", 6, 6))
-
-    def test_empty_string(self):
-        self.assertFalse(is_hex_string("", 1, 128))
-
-    def test_single_byte_within_bounds(self):
-        self.assertTrue(is_hex_string("ff", 1, 128))
-
-    def test_duid_min_one_byte(self):
-        # DUID min is 1 octet
-        self.assertTrue(is_hex_string("ab", 1, 128))
-
-    def test_mixed_case_accepted(self):
-        self.assertTrue(is_hex_string("AA:BB:CC:DD:EE:FF", 6, 6))
 
 
 # ---------------------------------------------------------------------------

@@ -54,7 +54,6 @@ from .kea_stub import (
 from .test_reservation_match import (
     _DUID,
     _GLOBAL_RESERVATIONS,
-    _LONG_CLIENT_ID,
     _MAC,
     _PREFIX,
     _SUBNETS,
@@ -169,23 +168,10 @@ class LeasePresenceTest(_ViewTestBase):
 
     def test_a_global_identity_lookup_that_cannot_confirm_a_missing_lease_is_unknown(self):
         reservation = {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:ff"}
-        for broken, reason in (
-            (_lease4("198.18.1.30", subnet_id=21, state=99), UnknownLeasePresence.INCOMPLETE_SNAPSHOT),
-            (
-                _lease4("198.18.1.30", subnet_id=21, hw_address="", client_id=_LONG_CLIENT_ID),
-                UnknownLeasePresence.FOREIGN_IDENTIFIER,
-            ),
-        ):
-            with self.subTest(reason=reason), with_display_cache_config(leases_ttl=0):
-                presences, _kea = self._presence([reservation], {"lease4-get-by-hw-address": lease_reply(broken)})
-                self.assertEqual(presences, (_unknown(reason),))
-
-    def test_a_current_lease_with_an_identifier_no_reservation_can_hold_is_unknown(self):
-        lease = _lease4("198.18.0.60", hw_address="", client_id=_LONG_CLIENT_ID)
-
-        presences, _kea = self._presence([_RESERVED], {"lease4-get-by-state": _leases_per_subnet({20: [lease]})})
-
-        self.assertEqual(presences, (_unknown(UnknownLeasePresence.FOREIGN_IDENTIFIER),))
+        broken = _lease4("198.18.1.30", subnet_id=21, state=99)
+        with with_display_cache_config(leases_ttl=0):
+            presences, _kea = self._presence([reservation], {"lease4-get-by-hw-address": lease_reply(broken)})
+        self.assertEqual(presences, (_unknown(UnknownLeasePresence.INCOMPLETE_SNAPSHOT),))
 
     @with_kea_client_config(lease_query_max_unpaged_leases=2)
     def test_a_subnet_lookup_that_the_query_guard_refuses_is_unknown(self):

@@ -37,6 +37,7 @@ _OWNERS = frozenset(
         "reservations.py",
         "dhcp_options.py",
         "leases.py",
+        "identifiers.py",
         "subnet_settings.py",
         "managed_fields.py",
     }

@@ -902,8 +902,6 @@ def _unknown_badge_title(reason: UnknownReservationMatch, server: Server) -> str
             return "Kea returned a Reservation lookup reply that cannot be read."
         case UnknownReservationMatch.INVALID_READ:
             return client_settings_message(server)
-        case UnknownReservationMatch.FOREIGN_IDENTIFIER:
-            return "No Reservation matched, and this lease carries a client identifier that no Reservation can hold."
         case UnknownReservationMatch.UNKNOWN_SHARED_NETWORK:
             return (
                 "Kea can give this client an allocation of another Subnet in the Shared Network,"
@@ -961,7 +959,7 @@ def _create_reservation_url(
         "hostname": lease_published_name(observed.hostname),
         "return_url": return_url,
     }
-    identities = lease_identities(observed).identities
+    identities = lease_identities(observed)
     if identities:
         params["identifier_type"] = identities[0].identifier_type
         params["identifier"] = identities[0].value
