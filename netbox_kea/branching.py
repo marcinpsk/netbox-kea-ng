@@ -400,7 +400,7 @@ _UNUSABLE_TEXT = (
 
 
 def _refused_text(branch: Any) -> str:
-    # netbox-branching 1.2.1 activates its own 400 response as the branch for an unready API branch header.
+    # netbox-branching before 1.2.2 activates its own 400 response as the branch for an unready API branch header.
     return _UNUSABLE_TEXT if isinstance(branch, HttpResponse) else _branch_refused_text(branch)
 
 
@@ -526,7 +526,7 @@ class BranchRefusalMiddleware:
             return None
         branch = active_branch()
         if isinstance(branch, HttpResponse):
-            # netbox-branching 1.2.1 activates its own 400 as the branch when an API header names an unready branch.
+            # netbox-branching before 1.2.2 activates its own 400 as the branch when an API header names an unready branch.
             return branch
         if not unsafe_plugin_request(view_func, request.method):
             return None
