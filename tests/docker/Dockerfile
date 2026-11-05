@@ -9,7 +9,8 @@ ARG WHL_FILE
 ARG EXTRA_REQUIREMENTS=""
 COPY ${WHL_FILE} /opt/netbox/dist/
 # Both branches need the mounted CA: uv reads SSL_CERT_FILE, pip reads PIP_CERT.
-RUN --mount=type=secret,id=host_ca,required=false \
+# The build context is mounted, so a variant can name a requirements file that tests/test_setup.sh copied into it.
+RUN --mount=type=secret,id=host_ca,required=false --mount=type=bind,target=/tmp/build-context \
     if [ -f "/run/secrets/host_ca" ]; then \
         export SSL_CERT_FILE=/run/secrets/host_ca PIP_CERT=/run/secrets/host_ca; \
     fi; \

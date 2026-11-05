@@ -1,0 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+# The DHCP plugin and branching jobs in ci.yml install this pin. Dependabot updates it.
+netbox-plugin-dhcp==0.2.0

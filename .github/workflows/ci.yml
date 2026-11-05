@@ -20,8 +20,6 @@ env:
   NETBOX_RELEASE: v4.7.0
   # The supported floor, for the event-rollback job only. It runs no query-count assertion.
   NETBOX_FLOOR_RELEASE: v4.3.7
-  # The netbox-branching release of the branching jobs; tests/docker/docker-compose.branching.yml reads it.
-  NETBOX_BRANCHING_VERSION: 1.2.1
 
 jobs:
   unit-test:
@@ -188,7 +186,7 @@ jobs:
           uv export --frozen --only-group dev --no-emit-project --format requirements-txt | \
             uv pip install --system -r /dev/stdin
           uv pip install --system -r netbox/requirements.txt
-          uv pip install --system -e . "netbox-plugin-dhcp==0.2.0"
+          uv pip install --system -e . -r .github/requirements-dhcp.txt
 
       - name: Set up NetBox configuration
         working-directory: netbox/netbox
@@ -248,7 +246,7 @@ jobs:
             uv pip install --system -r /dev/stdin
           uv pip install --system -r netbox/requirements.txt
           uv pip install --system -e . \
-            "netbox-plugin-dhcp==0.2.0" "netboxlabs-netbox-branching==${NETBOX_BRANCHING_VERSION}"
+            -r .github/requirements-dhcp.txt -r .github/requirements-branching.txt
 
       - name: Verify native replay without the DHCP plugin
         working-directory: netbox/netbox
