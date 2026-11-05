@@ -383,6 +383,7 @@ class ServerOptionDefView(FamilyRouteMixin, ServerFamilyMixin, ConditionalLoginR
             "object": server,
             "server": server,
             "option_defs": enriched_defs,
+            "can_change": can_change,
             # An unavailable Snapshot shows its error instead of an empty list.
             "definitions_known": not snapshot.unavailable,
             **config_nav_context(server.pk, "configuration", self.dhcp_version),

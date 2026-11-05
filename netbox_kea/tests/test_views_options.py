@@ -736,27 +736,27 @@ class TestServerOptionDefChangeLinks(_ViewTestBase):
                 reverse("plugins:netbox_kea:server_option_def", kwargs={"pk": self.server.pk, "family": 4})
             )
 
-    def _change_urls(self) -> tuple[str, str]:
-        return (
-            reverse("plugins:netbox_kea:server_option_def_add", kwargs={"pk": self.server.pk, "family": 4}),
-            reverse(
-                "plugins:netbox_kea:server_option_def_delete",
-                kwargs={"pk": self.server.pk, "family": 4, "code": 200, "space": "dhcp4"},
-            ),
+    def _change_affordances(self) -> tuple[str, ...]:
+        add_url = reverse("plugins:netbox_kea:server_option_def_add", kwargs={"pk": self.server.pk, "family": 4})
+        delete_url = reverse(
+            "plugins:netbox_kea:server_option_def_delete",
+            kwargs={"pk": self.server.pk, "family": 4, "code": 200, "space": "dhcp4"},
         )
+        return (add_url, delete_url, "Add DHCPv4 Option Definition", "mdi-delete", "<th>Actions</th>")
 
-    def test_a_change_grant_on_another_server_shows_no_add_or_delete_link(self):
-        _grant([Server], ["change"], user=self.user, constraints={"name": "another-kea"})
+    def test_a_change_grant_on_another_server_shows_no_add_or_delete_button(self):
+        other = _make_db_server(name="another-kea", ca_url="https://other-kea.example.com")
+        _grant([Server], ["change"], user=self.user, constraints={"name": other.name})
         response = self._get()
-        self.assertEqual(response.status_code, 200)
-        for url in self._change_urls():
-            self.assertNotContains(response, url)
+        self.assertContains(response, "my-opt")
+        for affordance in self._change_affordances():
+            self.assertNotContains(response, affordance)
 
-    def test_a_change_grant_on_this_server_shows_the_add_and_delete_links(self):
+    def test_a_change_grant_on_this_server_shows_the_add_and_delete_buttons(self):
         _grant([Server], ["change"], user=self.user, constraints={"name": self.server.name})
         response = self._get()
-        for url in self._change_urls():
-            self.assertContains(response, url)
+        for affordance in self._change_affordances():
+            self.assertContains(response, affordance)
 
 
 class TestServerOptionDef6ListView(_ViewTestBase):
