@@ -3,61 +3,43 @@
 """Validate live connectivity when a submission creates or changes a Server connection."""
 
 from functools import partial
-from typing import TYPE_CHECKING
 
 from django.core.exceptions import ValidationError
 
 from .constants import Family
 from .kea import KeaCommand
+from .models import KeaConnection, Server
 from .read_failure import ReadFailure, attempt
 
-if TYPE_CHECKING:
-    from .models import Server
-
-CONNECTION_FIELDS = (
-    "ca_url",
-    "ca_username",
-    "ca_password",
-    "dhcp4_url",
-    "dhcp4_username",
-    "dhcp4_password",
-    "dhcp6_url",
-    "dhcp6_username",
-    "dhcp6_password",
-    "ssl_verify",
-    "ca_file_path",
-    "client_cert_path",
-    "client_key_path",
-    "has_control_agent",
-    "dhcp4",
-    "dhcp6",
-)
-ConnectionValues = tuple[str | bool, ...]
+#: The effective connection of each DHCP family, in probe order, or None when the family is disabled.
+ServiceConnections = dict[Family, KeaConnection | None]
+#: The Server field that enables each DHCP family, in probe order. A probe error goes on this field.
+_SERVICE_FIELDS: dict[Family, str] = {6: "dhcp6", 4: "dhcp4"}
 
 
-def connection_values(server: "Server") -> ConnectionValues:
-    """Capture the normalized connection values before native submission validation mutates the Server."""
-    return tuple(getattr(server, field) for field in CONNECTION_FIELDS)
+def service_connections(server: Server) -> ServiceConnections:
+    """Capture the effective connections before native submission validation mutates the Server."""
+    return {
+        family: server.kea_connection(family) if getattr(server, field) else None
+        for family, field in _SERVICE_FIELDS.items()
+    }
 
 
-def _version_get(server: "Server", family: Family) -> object:
+def _version_get(server: Server, family: Family) -> object:
     """Send ``version-get`` to the DHCP daemon of *family*."""
     with server.get_client(version=family) as client:
         return client.command(KeaCommand.VERSION_GET, family)
 
 
-def validate_connection_change(server: "Server", before: ConnectionValues | None) -> None:
-    """Probe enabled services on creation or an actual connection change. None means creation."""
-    if before is not None and connection_values(server) == before:
-        return
-    services: tuple[tuple[str, Family], ...] = (("dhcp6", 6), ("dhcp4", 4))
-    for field, family in services:
-        if not getattr(server, field):
+def validate_connection_change(server: Server, before: ServiceConnections | None) -> None:
+    """Probe each enabled family on creation, else each enabled family whose connection changed. None means creation."""
+    for family, connection in service_connections(server).items():
+        if connection is None or (before is not None and before[family] == connection):
             continue
         checked = attempt(
             f"The DHCPv{family} connectivity check of a Server submission", partial(_version_get, server, family)
         )
         if isinstance(checked, ReadFailure):
             if checked.kind == "malformed":
-                raise ValidationError({field: "An internal error occurred."})
-            raise ValidationError({field: f"Unable to reach the Kea DHCPv{family} service."})
+                raise ValidationError({_SERVICE_FIELDS[family]: "An internal error occurred."})
+            raise ValidationError({_SERVICE_FIELDS[family]: f"Unable to reach the Kea DHCPv{family} service."})

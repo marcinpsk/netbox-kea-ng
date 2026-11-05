@@ -18,7 +18,8 @@ from netbox.context_managers import event_tracking
 
 from netbox_kea import config_write, event_scope, reservation_edit
 from netbox_kea.event_scope import _NESTED_TRACKING
-from netbox_kea.ipam_reconciliation import RESERVATION, ClaimResult, claim_permissions
+from netbox_kea.ipam_reconciliation import ClaimResult, claim_permissions
+from netbox_kea.ipam_sources import RESERVATION
 from netbox_kea.manual_sync import NotRun, Ran
 from netbox_kea.reservation_transfer import ReservationImportProposal
 from netbox_kea.reservations import ReservationChange, ReservationIdentity, SetValue, reservation_fingerprint

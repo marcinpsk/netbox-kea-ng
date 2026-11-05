@@ -27,7 +27,7 @@ from netbox.context_managers import event_tracking
 from netbox.jobs import JobRunner, system_job
 
 if TYPE_CHECKING:
-    from .integrations.dhcp_plugin import ImportSummary
+    from .integrations.dhcp_import_summary import ImportSummary
     from .models import Server
 
 # Runtime imports: get_type_hints() resolves this module's annotations, so a
@@ -35,18 +35,10 @@ if TYPE_CHECKING:
 from . import branching, event_scope
 from .constants import Family
 from .dhcp_mapping_lifecycle import ensure_boundaries
-from .ipam_reconciliation import SyncReport, complete_job_observation, upgrade_counts
-from .sync_plan import (
-    LEASE,
-    LEASE_PREFIX,
-    POOL,
-    RESERVATION,
-    SUBNET,
-    SyncPlan,
-    any_source_enabled,
-    server_sync_enabled,
-    sync_plan,
-)
+from .ipam_reconciliation import SyncReport
+from .ipam_sources import LEASE, LEASE_PREFIX, POOL, RESERVATION, SUBNET
+from .ipam_upgrade_barrier import complete_job_observation, upgrade_counts
+from .sync_plan import SyncPlan, any_source_enabled, server_sync_enabled, sync_plan
 from .sync_run_result import CONFLICT_SAMPLE_SIZE, SyncRunResult, SyncRunState, store
 
 logger = logging.getLogger(__name__)
@@ -451,14 +443,12 @@ class KeaIpamSyncJob(JobRunner):
             results.append(SyncRunResult.synced(server.pk, server.name, report))
 
         counts = upgrade_counts()
-        total.unowned_objects = counts.unowned_objects
-        total.waiting_objects = counts.waiting_objects
         self.logger.info(
             f"Kea IPAM sync complete — servers={len(results)}"
             f" created={total.created} updated={total.updated}"
             f" errors={total.errors} prefix_errors={total.prefix_errors}"
             f" conflicts={total_conflicts} disagreements={total_disagreements} skipped={len(total.skipped_reservations)}"
-            f" unowned={total.unowned} waiting={total.waiting} unclassified={total.unclassified}"
+            f" unowned={counts.unowned} waiting={counts.waiting} unclassified={total.unclassified}"
         )
         return total.errors > 0 or total.prefix_errors > 0
 
@@ -500,7 +490,7 @@ class KeaIpamSyncJob(JobRunner):
             run_dhcp_plugin_import,
         )
         from .integrations.dhcp_import_report import Outcome
-        from .integrations.dhcp_plugin import ImportSummary
+        from .integrations.dhcp_import_summary import ImportSummary
         from .models import DhcpImportTrigger
 
         run = f"Scheduled DHCP Import of Server {server.name}"

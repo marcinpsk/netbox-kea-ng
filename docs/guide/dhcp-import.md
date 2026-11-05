@@ -85,9 +85,9 @@ Reservation. A DHCPv4 Reservation also gives its boot fields `next-server`, `ser
 A boot field that Kea does not set has no value. The delegated prefixes of
 a DHCPv6 Reservation and the prefix that Kea excludes from each of them (`excluded-prefixes`) are NetBox Prefixes in
 the Server's `sync_vrf`, linked as `ipv6_prefixes` and `excluded_ipv6_prefixes`. The import creates or links both
-under the IPAM source `delegated-prefix` and the marker `[kea-sync: delegated prefix]`. When the claim of one of these
+under the IPAM source `reservation-prefix` and the marker `[kea-sync: delegated prefix]`. When the claim of one of these
 Prefixes fails, the Host Reservation keeps the Prefixes that it had. After the run removes the stale Reservations, it
-drops the `delegated-prefix` link of each Prefix that no imported Reservation reports, and deprecates the Prefix when
+drops the `reservation-prefix` link of each Prefix that no imported Reservation reports, and deprecates the Prefix when
 the Server opts in (see [IPAM sync](ipam-sync.md)). When a Reservation that Kea no longer reports stays in NetBox,
 the run drops no such link.
 

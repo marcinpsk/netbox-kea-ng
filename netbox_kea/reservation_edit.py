@@ -32,7 +32,8 @@ from .dhcp_options import (
     parse_dhcp_options,
     posted_snapshot,
 )
-from .ipam_reconciliation import RESERVATION, claim_permissions
+from .ipam_reconciliation import claim_permissions
+from .ipam_sources import RESERVATION
 from .manual_sync import ManualSyncOutcome, NotRun, sync_reservation
 from .pools import Pool, addresses_in_pools
 from .published_name import published_name, stored_hostname

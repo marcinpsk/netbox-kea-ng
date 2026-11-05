@@ -465,10 +465,10 @@ class EntryVocabularyTest(SimpleTestCase):
                 self.assertTrue(kea_paths.is_setting(path))
 
     def test_every_object_counter_excludes_setting_entries(self):
-        from netbox_kea.integrations.dhcp_plugin import ImportSummary, _Count
+        from netbox_kea.integrations.dhcp_import_summary import Count, ImportSummary
 
         for name, counter in vars(ImportSummary).items():
-            if not isinstance(counter, _Count):
+            if not isinstance(counter, Count):
                 continue
             match = counter.matches[0]
             path = kea_paths.setting(kea_paths.daemon(4), "metadata")
@@ -627,12 +627,12 @@ class StoppedRunTest(_ImportRunTestCase):
     """A run that stops part way still stores the entries it has, and an entry for the family that stopped."""
 
     def test_a_run_refused_by_the_mapping_lock_stores_its_result(self):
-        from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK
+        from netbox_kea.dhcp_mapping_lifecycle import METADATA_LOCK
 
         holder = connection.Database.connect(**connection.get_connection_params())
         try:
             with holder.cursor() as cursor:
-                cursor.execute("SELECT pg_advisory_lock(%s, %s)", _METADATA_LOCK)
+                cursor.execute("SELECT pg_advisory_lock(%s, %s)", METADATA_LOCK)
             response = self._run()
         finally:
             holder.close()

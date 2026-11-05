@@ -17,9 +17,10 @@ from netbox.views import generic
 from utilities.views import ViewTab, register_model_view
 
 from ..integrations import dhcp_plugin
+from ..ipam_sources import LEASE, POOL, RESERVATION, SUBNET
 from ..jobs import KeaIpamSyncJob
 from ..models import Server, SyncConfig
-from ..sync_plan import LEASE, POOL, RESERVATION, SUBNET, SYNC_SOURCES, global_source_enabled, source_sync_enabled
+from ..sync_plan import SYNC_SOURCES, global_source_enabled, source_sync_enabled
 from ..sync_run_result import jobs_of, latest, read
 from .dhcp_plugin_sync import sync_nav_context
 from .settings_page import section_url, visible_sections

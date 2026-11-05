@@ -17,7 +17,8 @@ from typing import TYPE_CHECKING
 from core.exceptions import JobFailed
 from core.models import Job
 from django.db import connection, connections
-from django.test import TestCase, TransactionTestCase
+from django.db.models import BooleanField
+from django.test import SimpleTestCase, TestCase, TransactionTestCase
 from django.utils import timezone
 from ipam.models import VRF, Prefix
 from ipam.models import IPAddress as NbIP
@@ -32,10 +33,14 @@ from netbox_kea.ipam_reconciliation import (
     claim,
     reconcile,
 )
+from netbox_kea.ipam_sources import SOURCES
 from netbox_kea.jobs import KeaIpamSyncJob
 from netbox_kea.models import (
     CONFIRMATION_SEQUENCE,
     IPAMOwnershipLink,
+    IPAMOwnershipSource,
+    Server,
+    SyncConfig,
     next_confirmation_number,
 )
 from netbox_kea.sync_run_result import SyncCounts
@@ -50,9 +55,8 @@ from netbox_kea.tests.test_jobs import _lease_page, _make_job, _patch_kea
 from netbox_kea.tests.utils import _make_db_server, lease_phase, run_counts, with_sync_config
 
 if TYPE_CHECKING:
-    from netbox_kea.integrations.dhcp_plugin import ImportSummary
+    from netbox_kea.integrations.dhcp_import_summary import ImportSummary
     from netbox_kea.ipam_reconciliation import ReservationObservation
-    from netbox_kea.models import Server
 
 ADDRESS = "10.0.0.5"
 SUBNET = {"id": 1, "subnet": "10.0.0.0/24"}
@@ -139,6 +143,21 @@ def _run_job(server, leases: list[dict], reservations: list[dict] | None = None)
     with _patch_kea(leases4=leases, reservations=reservations), suppress(JobFailed):
         KeaIpamSyncJob(job).run(server_pk=server.pk)
     return run_counts(job)[0]
+
+
+class OwnershipSourceTableTest(SimpleTestCase):
+    """The source table has one row for each stored source, and each type flag names a field of both settings rows."""
+
+    def test_the_table_has_one_row_for_each_source(self):
+        self.assertCountEqual(SOURCES, IPAMOwnershipSource.values)
+
+    def test_each_type_flag_is_a_field_of_the_sync_settings_and_the_server(self):
+        flags = [row.type_flag for row in SOURCES.values() if row.type_flag is not None]
+        self.assertEqual(len(flags), 4)
+        for flag in flags:
+            with self.subTest(flag=flag):
+                self.assertIsInstance(SyncConfig._meta.get_field(flag), BooleanField)
+                self.assertIsInstance(Server._meta.get_field(flag), BooleanField)
 
 
 @with_sync_config(stale_ip_cleanup="remove")
@@ -1499,14 +1518,13 @@ class ConcurrencyHarness(TransactionTestCase):
 def _import_reservations(server: Server, observation: ReservationObservation, summary: ImportSummary) -> None:
     """Run the Reservation step, then the delegated-prefix cleanup of a DHCPv6 import, in one transaction."""
     from netbox_kea import event_scope
-    from netbox_kea.integrations.dhcp_import_write import WriteScope
-    from netbox_kea.integrations.dhcp_plugin import (
-        ClassReferences,
-        CustomDefinitions,
-        OptionReferences,
+    from netbox_kea.integrations.dhcp_import_networks import ClassReferences
+    from netbox_kea.integrations.dhcp_import_options import CustomDefinitions, OptionReferences
+    from netbox_kea.integrations.dhcp_import_reservations import (
         import_reservation_snapshot,
         reconcile_delegated_prefixes,
     )
+    from netbox_kea.integrations.dhcp_import_write import WriteScope
     from netbox_kea.integrations.dhcp_plugin_capabilities import PluginCapabilities
 
     references = OptionReferences(CustomDefinitions({}, ()), ClassReferences(6, frozenset(), {}))
@@ -1521,7 +1539,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
     """Concurrent runs, row locks and operator edits, each on its own connection, in a fixed order."""
 
     def test_source_enabled_while_cleanup_waits_preserves_the_adopted_address(self):
-        from netbox_kea.ipam_reconciliation import upgrade_counts
+        from netbox_kea.ipam_upgrade_barrier import upgrade_counts
 
         for index, mode in enumerate(("remove", "deprecate", "none"), start=1):
             with self.subTest(mode=mode), with_sync_config(stale_ip_cleanup=mode):
@@ -1828,7 +1846,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
     def test_import_retains_policy_locks_without_deadlocking_a_later_marker_release(self):
         from django.db import DatabaseError
 
-        from netbox_kea.integrations.dhcp_plugin import ImportSummary
+        from netbox_kea.integrations.dhcp_import_summary import ImportSummary
         from netbox_kea.ipam_reconciliation import ReservationObservation
         from netbox_kea.models import Server
         from netbox_kea.reservations import ReservationSnapshot
@@ -1842,7 +1860,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
                 server=server,
                 prefix=prefix,
                 family=6,
-                source="delegated-prefix",
+                source="reservation-prefix",
                 adopted=True,
                 facts={"prefix_length": 64},
                 confirmation=next_confirmation_number(),
@@ -1911,7 +1929,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         from django.db import DatabaseError
         from netaddr import IPNetwork
 
-        from netbox_kea.integrations.dhcp_plugin import ImportSummary
+        from netbox_kea.integrations.dhcp_import_summary import ImportSummary
         from netbox_kea.ipam_reconciliation import ReservationObservation, SubnetClaim
         from netbox_kea.models import Server
         from netbox_kea.reservations import ReservationSnapshot
@@ -1921,8 +1939,8 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         first = Prefix.objects.create(prefix="2001:db8::/64", description="[kea-sync: delegated prefix]")
         second = Prefix.objects.create(prefix="2001:db8:1::/64", description="[kea-sync: delegated prefix]")
         for server, prefix, source in (
-            (owner, first, "delegated-prefix"),
-            (owner, second, "delegated-prefix"),
+            (owner, first, "reservation-prefix"),
+            (owner, second, "reservation-prefix"),
             (sibling, second, "subnet"),
         ):
             IPAMOwnershipLink.objects.create(
@@ -2004,7 +2022,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
     def test_receipt_completion_does_not_block_an_ownership_foreign_key_at_commit(self):
         from django.db import transaction
 
-        from netbox_kea.ipam_reconciliation import complete_job_observation
+        from netbox_kea.ipam_upgrade_barrier import complete_job_observation
 
         owner = _server(
             "owner", sync_reservations_enabled=False, sync_prefixes_enabled=False, sync_ip_ranges_enabled=False
@@ -2353,7 +2371,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
     def test_subnet_and_delegated_prefix_claims_share_one_identity_lock(self):
         import ipaddress
 
-        from netbox_kea.ipam_reconciliation import DelegatedPrefixPhase, SubnetClaim
+        from netbox_kea.ipam_reconciliation import ReservationPrefixPhase, SubnetClaim
         from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
 
         first, second = _server("subnet-owner"), _server("delegated-owner")
@@ -2366,7 +2384,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         self._start(
             "delegated",
             lambda: reconcile(
-                second, 6, [DelegatedPrefixPhase(observation.snapshot.records, observation.cutoff, True)]
+                second, 6, [ReservationPrefixPhase(observation.snapshot.records, observation.cutoff, True)]
             ),
         )
         self._wait_for_lock_waits(2)
@@ -2375,7 +2393,7 @@ class IPAMPhaseConcurrencyTest(ConcurrencyHarness):
         prefix = Prefix.objects.get(prefix=str(network))
         self.assertEqual(
             set(IPAMOwnershipLink.objects.filter(prefix=prefix).values_list("source", flat=True)),
-            {"subnet", "delegated-prefix"},
+            {"subnet", "reservation-prefix"},
         )
         self.assertEqual(self._report("delegated").errors, 0)
         self.assertIn(self._claim_result("subnet").prefixes[str(network)].outcome, {"created", "updated", "unchanged"})

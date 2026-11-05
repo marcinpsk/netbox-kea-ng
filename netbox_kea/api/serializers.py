@@ -7,7 +7,7 @@ from netbox.api.serializers import BaseModelSerializer, NetBoxModelSerializer
 from rest_framework import serializers
 
 from ..models import DhcpIntegrationConfig, DisplayCacheConfig, KeaClientConfig, KeaDhcpLink, Server, SyncConfig
-from ..server_connection import CONNECTION_FIELDS, connection_values, validate_connection_change
+from ..server_connection import service_connections, validate_connection_change
 
 #: Columns migration 0016 moved from NULL-or-blank to blank only. Every released
 #: version answered GET with null for these when unset.
@@ -50,12 +50,13 @@ class ServerSerializer(NetBoxModelSerializer):
 
     def validate(self, data):
         """Check changed connections after native local and related-object validation."""
-        before = connection_values(self.instance) if self.instance is not None else None
+        before = service_connections(self.instance) if self.instance is not None else None
         validated = super().validate(data)
         if not self.nested:
             candidate = self.instance
             if candidate is None:
-                candidate = Server(**{field: validated[field] for field in CONNECTION_FIELDS if field in validated})
+                fields = {field.name for field in Server._meta.concrete_fields}
+                candidate = Server(**{name: value for name, value in validated.items() if name in fields})
             validate_connection_change(candidate, before)
         return validated
 

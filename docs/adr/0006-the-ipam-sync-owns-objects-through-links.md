@@ -35,11 +35,12 @@ DHCP plugin import. Each one applies its own cleanup policy.
 
 A new link model records IPAM Ownership: `(server, family, source, object)`. The object is exactly one of three
 nullable foreign keys, `ip_address`, `prefix` or `ip_range`, each with `on_delete=CASCADE`. A check constraint
-requires exactly one. The source is `lease`, `lease-prefix`, `reservation`, `subnet`, `pool`, `delegated-prefix` or
+requires exactly one. The source is `lease`, `lease-prefix`, `reservation`, `subnet`, `pool`, `reservation-prefix` or
 `pd-pool`.
+The source `reservation-prefix` was named `delegated-prefix` until marcinpsk/netbox-kea-ng#243.
 `lease` owns the IP address of a Current address Lease, and `lease-prefix` owns the Prefix of a Current DHCPv6
 delegated-prefix Lease. The DHCP plugin import owns the delegated prefixes of Reservations through
-`delegated-prefix`, so the live and the imported delegated prefix never clean up each other. It owns the prefix and
+`reservation-prefix`, so the live and the imported delegated prefix never clean up each other. It owns the prefix and
 the excluded prefix of each DHCPv6 delegated-prefix Pool through `pd-pool` (see "Delegated-prefix Pools"). The link is
 unique per `(server, family, source, object)`. Each link also stores the facts that its owner last reported for
 the object.
@@ -137,7 +138,7 @@ A complete lease phase alone can then remove its last lease link. This exception
 Reservation toggle or to an unavailable `host_cmds` hook. Config-file Reservations can still exist without the
 hook, so that Reservation phase stays incomplete and the last link stays. A failed or truncated lease snapshot
 keeps every stale lease link. Otherwise the link stays and a later run decides. A Prefix is the exception: the job reports it from the
-Subnet and `lease-prefix` phases and the DHCP plugin import from the `delegated-prefix` and `pd-pool` phases, so each
+Subnet and `lease-prefix` phases and the DHCP plugin import from the `reservation-prefix` and `pd-pool` phases, so each
 of these phases counts alone. A Prefix is never removed, so the worst case is an opt-in deprecation that the next Subnet
 run reverts when it links the Prefix. A bulk Reservation Sync has no complete lease phase,
 so it never removes the last link of its Server, even when that Server disables Reservation sync. A failed phase does not block the
@@ -175,7 +176,7 @@ This section was added for marcinpsk/netbox-kea-ng#101. The DHCP plugin import w
 Pool (`pd-pools`) with a NetBox Prefix for its prefix and one for its excluded prefix. It owns both through the source
 `pd-pool`, with the marker kind `pd pool`. The job reads no delegated-prefix Pool, so no job phase reports these
 Prefixes. With the source `subnet`, each complete Subnet phase of the job would drop their links, and the next
-import would link them again. With the source `delegated-prefix`, their cleanup would depend on the Reservation
+import would link them again. With the source `reservation-prefix`, their cleanup would depend on the Reservation
 Snapshot, and a failed Reservation read would keep the stale links of the configuration. The `pd-pool` phase takes
 its cutoff before the import reads the configuration, and it is complete only when that read is Complete for
 delegated-prefix Pools. The import runs the phase after it removes the Stale DHCP Import Objects, so the DHCP plugin
@@ -189,7 +190,7 @@ When a Prefix has more than one live source, the `subnet` marker wins over `pd p
 
 This section was added for marcinpsk/netbox-kea-ng#150. The Reservation step of the DHCP plugin import claims the
 delegated and excluded prefixes of the imported Reservations with `claim`, and attaches them in the same transaction.
-The `delegated-prefix` phase runs after the import removes the Stale DHCP Import Objects, the same as the `pd-pool`
+The `reservation-prefix` phase runs after the import removes the Stale DHCP Import Objects, the same as the `pd-pool`
 phase. Before, the phase ran in the Reservation step. A stale Reservation then still referenced its Prefixes, so the
 DHCP plugin reference guard dropped their links without deprecation, and the next step removed the Reservation. The
 Prefix stayed active, with no link that a later run could find. After the removal, the import reads which mapped
@@ -238,7 +239,7 @@ claim(server, family, records, force) -> ClaimResult  # one or more records, lin
 
 The job and the bulk views call `reconcile`. The per-row Sync, lease add and the DHCP plugin import call `claim`.
 The records of one `claim` call count as one phase for the fact comparison, so the DHCP plugin import passes all
-records of one snapshot in one call. The DHCP plugin import also calls `reconcile` for its `delegated-prefix` and
+records of one snapshot in one call. The DHCP plugin import also calls `reconcile` for its `reservation-prefix` and
 `pd-pool` phases, after it removes the Stale DHCP Import Objects. The job reads one Lease Snapshot per family, with
 one cutoff, for its `lease` and `lease-prefix` phases.
 

@@ -25,12 +25,14 @@ from packaging.version import InvalidVersion, Version
 from .. import event_scope, kea_paths, server_configuration
 from ..constants import Family
 from ..dhcp_mapping_lifecycle import ImportEventsNotDispatched, MetadataBusy
-from ..ipam_reconciliation import complete_import_observation
+from ..ipam_upgrade_barrier import complete_import_observation
 from ..mappers.kea_to_dhcp import ServerConfigIntent, parse_dhcp_config
 from ..read_failure import ReadFailure, attempt
 from ..server_configuration import ServerConfigurationSnapshot
 from . import dhcp_plugin
 from .dhcp_import_report import ImportEntry, Kind, Reason, not_written
+from .dhcp_import_summary import ImportSummary
+from .dhcp_plugin_capabilities import PLUGIN_APP_LABEL
 
 if TYPE_CHECKING:
     from netbox.plugins import PluginConfig
@@ -72,7 +74,7 @@ class UnsupportedPluginVersion(Exception):
 
 def supported_plugin_installed() -> bool:
     """Return whether the installed netbox-plugin-dhcp has a valid version of at least :data:`REQUIRED_PLUGIN_VERSION`."""
-    plugin: PluginConfig = apps.get_app_config(dhcp_plugin.PLUGIN_APP_LABEL)
+    plugin: PluginConfig = apps.get_app_config(PLUGIN_APP_LABEL)
     try:
         return Version(plugin.version) >= Version(REQUIRED_PLUGIN_VERSION)
     except (InvalidVersion, TypeError):
@@ -82,7 +84,7 @@ def supported_plugin_installed() -> bool:
 def require_supported_plugin() -> None:
     """Raise :class:`UnsupportedPluginVersion` when the installed netbox-plugin-dhcp is too old or has no valid version."""
     if not supported_plugin_installed():
-        plugin: PluginConfig = apps.get_app_config(dhcp_plugin.PLUGIN_APP_LABEL)
+        plugin: PluginConfig = apps.get_app_config(PLUGIN_APP_LABEL)
         raise UnsupportedPluginVersion(str(plugin.version))
 
 
@@ -199,9 +201,7 @@ def _server_import_lock(server: Server) -> Iterator[None]:
                 logger.error("DHCP-plugin sync: the import lock of %s was not held at release", server.name)
 
 
-def run_dhcp_plugin_import(
-    server: Server, trigger: DhcpImportTrigger
-) -> list[tuple[Family, dhcp_plugin.ImportSummary | Notice]]:
+def run_dhcp_plugin_import(server: Server, trigger: DhcpImportTrigger) -> list[tuple[Family, ImportSummary | Notice]]:
     """Import every enabled version's live Kea config into the DHCP plugin, and store the result of the run.
 
     Returns ``(version, ImportSummary)`` for each version that was imported, and ``(version, Notice)`` for each
@@ -222,10 +222,10 @@ def run_dhcp_plugin_import(
         return _run_locked(server, trigger)
 
 
-def _run_locked(server: Server, trigger: DhcpImportTrigger) -> list[tuple[Family, dhcp_plugin.ImportSummary | Notice]]:
+def _run_locked(server: Server, trigger: DhcpImportTrigger) -> list[tuple[Family, ImportSummary | Notice]]:
     """Run the import of every enabled family of *server* while the run holds the import lock of the Server."""
     started = timezone.now()
-    results: list[tuple[Family, dhcp_plugin.ImportSummary | Notice]] = []
+    results: list[tuple[Family, ImportSummary | Notice]] = []
     entries: list[ImportEntry] = []
     reads = [(version, read_family(server, version)) for version in enabled_versions(server)]
     for version, read in reads:
@@ -255,11 +255,7 @@ def _run_locked(server: Server, trigger: DhcpImportTrigger) -> list[tuple[Family
     try:
         complete_import_observation(
             server,
-            {
-                family: summary.ownership
-                for family, summary in results
-                if isinstance(summary, dhcp_plugin.ImportSummary)
-            },
+            {family: summary.ownership for family, summary in results if isinstance(summary, ImportSummary)},
         )
     finally:
         # Every family has committed, so the run is stored even when the receipt fails.

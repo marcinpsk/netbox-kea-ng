@@ -15,7 +15,7 @@ from django.urls import reverse
 from ipam.models import VRF, IPAddress, Prefix
 from users.models import ObjectPermission
 
-from netbox_kea.ipam_reconciliation import OwnershipState
+from netbox_kea.ipam_ownership import OwnershipState
 from netbox_kea.models import IPAMOwnershipLink, Server
 from netbox_kea.views.leases import _LEASE_SYNC_LABELS
 

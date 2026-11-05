@@ -18,7 +18,8 @@ from .. import config_write, forms, reservation_edit, server_configuration, subn
 from ..config_write import ReservationChangeOutcome
 from ..constants import Family, IPAddressValue
 from ..integrations import dhcp_plugin
-from ..ipam_reconciliation import RESERVATION, claim_permissions
+from ..ipam_reconciliation import claim_permissions
+from ..ipam_sources import RESERVATION
 from ..models import Server
 from ..published_name import published_name, stored_hostname
 from ..reservations import (

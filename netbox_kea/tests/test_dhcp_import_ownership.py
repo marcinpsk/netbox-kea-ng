@@ -22,12 +22,16 @@ from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 
 from netbox_kea.integrations import dhcp_plugin
+from netbox_kea.integrations.dhcp_import_networks import ClassReferences
+from netbox_kea.integrations.dhcp_import_options import CustomDefinitions, OptionReferences
 from netbox_kea.integrations.dhcp_import_report import Kind, Outcome, Reason
+from netbox_kea.integrations.dhcp_import_reservations import import_reservation_snapshot, reconcile_delegated_prefixes
+from netbox_kea.integrations.dhcp_import_summary import ImportSummary
 from netbox_kea.integrations.dhcp_import_write import WriteScope
 from netbox_kea.integrations.dhcp_plugin_capabilities import probe
 from netbox_kea.ipam_reconciliation import (
-    DelegatedPrefixPhase,
     PoolClaim,
+    ReservationPrefixPhase,
     SubnetClaim,
     claim,
     reconcile,
@@ -68,7 +72,7 @@ class ImportOwnershipTest(TestCase):
         self.assertIn("import", self.server.ipam_initial_observations)
 
     def test_a_mapping_confirmed_after_the_cutoff_by_a_slower_clock_is_not_stale(self):
-        from netbox_kea.dhcp_mapping_lifecycle import observe_mapping
+        from netbox_kea.integrations.dhcp_import_mappings import observe_mapping
         from netbox_kea.integrations.dhcp_import_plan import MappingSource
 
         with stub_kea(_sync_responses({6: self.config}, {6: []})):
@@ -444,7 +448,7 @@ class ImportOwnershipTest(TestCase):
         self.assertEqual(prefix.description, "[kea-sync: subnet]")
         self.assertEqual(
             set(IPAMOwnershipLink.objects.filter(prefix=prefix).values_list("source", flat=True)),
-            {"subnet", "delegated-prefix"},
+            {"subnet", "reservation-prefix"},
         )
         before = Prefix.objects.values().get(pk=prefix.pk)
         second = self.import_hosts(hosts)
@@ -540,7 +544,7 @@ class ImportOwnershipTest(TestCase):
         self.server.save()
         first = self.import_hosts([{**self.identity, "prefixes": [self.network]}])
         prefix = self.delegated()
-        link = IPAMOwnershipLink.objects.get(prefix=prefix, source="delegated-prefix")
+        link = IPAMOwnershipLink.objects.get(prefix=prefix, source="reservation-prefix")
         self.assertEqual(link.server, self.server)
         self.assertEqual(first.errors, 0)
         second = self.import_hosts([self.identity])
@@ -557,7 +561,7 @@ class ImportOwnershipTest(TestCase):
         self.import_hosts([self.identity])
         prefix.refresh_from_db()
         self.assertEqual(prefix.status, "active")
-        self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=prefix, source="delegated-prefix").exists())
+        self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=prefix, source="reservation-prefix").exists())
 
     def test_incomplete_snapshot_preserves_dropped_prefix_link(self):
         self.server.sync_deprecate_prefixes_and_ranges = True
@@ -588,15 +592,13 @@ class ImportOwnershipTest(TestCase):
         before = IPAMOwnershipLink.objects.values().get(prefix=self.delegated())
         conf = {"subnet6": [{"id": 9, "subnet": "2001:db8:9::/64"}]}
         observation = _reservation_snapshot(conf, 6, [{**self.identity, "subnet-id": 9}])
-        summary = dhcp_plugin.ImportSummary()
-        references = dhcp_plugin.OptionReferences(
-            dhcp_plugin.CustomDefinitions({}, ()), dhcp_plugin.ClassReferences(6, frozenset(), {})
-        )
+        summary = ImportSummary()
+        references = OptionReferences(CustomDefinitions({}, ()), ClassReferences(6, frozenset(), {}))
         scope = WriteScope(self.server, 6, summary, probe())
-        step = dhcp_plugin.import_reservation_snapshot(scope, None, observation, references, adoption_servers=())
-        dhcp_plugin.reconcile_delegated_prefixes(self.server, 6, step, set(), summary)
+        step = import_reservation_snapshot(scope, None, observation, references, adoption_servers=())
+        reconcile_delegated_prefixes(self.server, 6, step, set(), summary)
         self.assertEqual(summary.reservations_skipped, 1)
-        self.assertIn("delegated-prefix", summary.ownership.incomplete)
+        self.assertIn("reservation-prefix", summary.ownership.incomplete)
         self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix=self.delegated()), before)
 
     def test_foreign_dhcp_reference_prevents_delegated_deprecation(self):
@@ -611,7 +613,7 @@ class ImportOwnershipTest(TestCase):
         self.import_hosts([self.identity])
         prefix.refresh_from_db()
         self.assertEqual(prefix.status, "active")
-        self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=prefix, source="delegated-prefix").exists())
+        self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=prefix, source="reservation-prefix").exists())
         self.assertTrue(other.ipv6_prefixes.filter(pk=prefix.pk).exists())
 
     def test_failed_delegated_claim_preserves_attachment_and_imports_healthy_sibling(self):
@@ -640,7 +642,7 @@ class ImportOwnershipTest(TestCase):
         sibling = HostReservation.objects.get(hostname="healthy.example")
         self.assertEqual([str(prefix.prefix) for prefix in sibling.ipv6_prefixes.all()], [healthy_prefix])
         self.assertTrue(
-            IPAMOwnershipLink.objects.filter(prefix__prefix=healthy_prefix, source="delegated-prefix").exists()
+            IPAMOwnershipLink.objects.filter(prefix__prefix=healthy_prefix, source="reservation-prefix").exists()
         )
 
     def test_complete_delegated_phase_deprecates_an_excluded_prefix_only_after_dropped_reference(self):
@@ -649,7 +651,7 @@ class ImportOwnershipTest(TestCase):
         excluded = "2001:db8:100:ff::/64"
         first = self.import_hosts([{**self.identity, "prefixes": [self.network], "excluded-prefixes": [excluded]}])
         prefix = Prefix.objects.get(prefix=excluded)
-        link = IPAMOwnershipLink.objects.get(prefix=prefix, source="delegated-prefix")
+        link = IPAMOwnershipLink.objects.get(prefix=prefix, source="reservation-prefix")
         self.assertEqual((first.errors, link.server), (0, self.server))
 
         second = self.import_hosts([{**self.identity, "prefixes": [self.network]}])
@@ -679,10 +681,10 @@ class ImportOwnershipTest(TestCase):
                 self.assertEqual(summary.errors, 0, summary.warnings)
                 self.assertEqual(summary.removed, 1)
                 self.assertFalse(HostReservation.objects.exists())
-                self.assertTrue({"reservation", "delegated-prefix"} <= summary.ownership.completed_sources)
+                self.assertTrue({"reservation", "reservation-prefix"} <= summary.ownership.completed_sources)
                 for prefix in prefixes:
                     prefix.refresh_from_db()
-                    links = IPAMOwnershipLink.objects.filter(prefix=prefix, source="delegated-prefix")
+                    links = IPAMOwnershipLink.objects.filter(prefix=prefix, source="reservation-prefix")
                     if deprecate:
                         self.assertEqual(prefix.status, "deprecated")
                         self.assertIsNotNone(links.get().stale_mark)
@@ -705,7 +707,7 @@ class ImportOwnershipTest(TestCase):
 
         self.assertEqual(summary.errors, 1, summary.warnings)
         self.assertTrue(HostReservation.objects.filter(pk=stale.pk).exists())
-        self.assertIn("delegated-prefix", summary.ownership.incomplete)
+        self.assertIn("reservation-prefix", summary.ownership.incomplete)
         self.assertEqual(list(IPAMOwnershipLink.objects.filter(prefix__in=prefixes).order_by("pk").values()), before)
         for prefix in prefixes:
             prefix.refresh_from_db()
@@ -758,7 +760,7 @@ class ImportOwnershipTest(TestCase):
                     summary = run()
 
                 self.assertTrue(HostReservation.objects.exists())
-                self.assertIn("delegated-prefix", summary.ownership.incomplete)
+                self.assertIn("reservation-prefix", summary.ownership.incomplete)
                 self.assertEqual(IPAMOwnershipLink.objects.values().get(prefix=self.delegated()), before)
                 self.assertEqual(self.delegated().status, "active")
 
@@ -784,7 +786,7 @@ class ImportOwnershipTest(TestCase):
 
                 self.assertEqual(len(refused), refusals)
                 self.assertEqual(summary.errors, 1, summary.warnings)
-                self.assertIn("delegated-prefix", summary.ownership.incomplete)
+                self.assertIn("reservation-prefix", summary.ownership.incomplete)
                 self.assertFalse(HostReservation.objects.get().ipv6_prefixes.filter(prefix=self.network).exists())
 
     def test_failed_excluded_claim_preserves_both_prefix_attachments(self):
@@ -849,7 +851,9 @@ class ImportOwnershipTest(TestCase):
 
         def confirm(body):
             report = reconcile(
-                self.server, 6, [DelegatedPrefixPhase(observation.snapshot.records, next_confirmation_number(), False)]
+                self.server,
+                6,
+                [ReservationPrefixPhase(observation.snapshot.records, next_confirmation_number(), False)],
             )
             self.assertEqual(report.errors, 0)
             confirmations.append(IPAMOwnershipLink.objects.get(prefix=prefix).confirmation)
@@ -1075,7 +1079,7 @@ class TypedNetworkClaimTest(TestCase):
         duplicate = "2001:db8:200::/56"
         valid = "2001:db8:300::/56"
         initial = _reservation_snapshot({"subnet6": []}, 6, [{"subnet-id": 0, "duid": "01:02:03", "prefixes": [stale]}])
-        control = reconcile(server, 6, [DelegatedPrefixPhase(initial.snapshot.records, initial.cutoff, True)])
+        control = reconcile(server, 6, [ReservationPrefixPhase(initial.snapshot.records, initial.cutoff, True)])
         self.assertTrue(control.complete)
         self.assertEqual(control.prefixes[stale].outcome, "created")
         before = IPAMOwnershipLink.objects.values().get(prefix__prefix=stale)
@@ -1086,10 +1090,10 @@ class TypedNetworkClaimTest(TestCase):
             {"subnet6": []}, 6, [{"subnet-id": 0, "duid": "01:02:03", "prefixes": [duplicate, valid]}]
         )
 
-        report = reconcile(server, 6, [DelegatedPrefixPhase(observation.snapshot.records, observation.cutoff, True)])
+        report = reconcile(server, 6, [ReservationPrefixPhase(observation.snapshot.records, observation.cutoff, True)])
 
         self.assertEqual((report.errors, report.prefix_errors), (0, 1))
-        self.assertEqual(report.incomplete, {"delegated-prefix"})
+        self.assertEqual(report.incomplete, {"reservation-prefix"})
         self.assertEqual(report.prefixes[duplicate].outcome, "error")
         self.assertEqual(report.prefixes[valid].outcome, "created")
         self.assertEqual(list(Prefix.objects.filter(prefix=duplicate).order_by("pk").values()), duplicates_before)
@@ -1148,7 +1152,7 @@ class TypedNetworkClaimTest(TestCase):
             {"subnet6": []}, 6, [{"subnet-id": 0, "duid": "01:02:03", "prefixes": ["2001:db8:100::/56"]}]
         )
         with self.assertRaisesMessage(ValueError, "Reservation does not match"):
-            reconcile(server, 4, [DelegatedPrefixPhase(observation.snapshot.records, observation.cutoff, True)])
+            reconcile(server, 4, [ReservationPrefixPhase(observation.snapshot.records, observation.cutoff, True)])
         self.assertFalse(Prefix.objects.exists())
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
@@ -1278,7 +1282,7 @@ class PDPoolOwnershipTest(TestCase):
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 
     def test_a_dhcpv6_import_owns_the_pd_pool_source(self):
-        from netbox_kea.ipam_reconciliation import effective_sources
+        from netbox_kea.ipam_upgrade_barrier import effective_sources
 
         if not dhcp_plugin.is_available():
             self.skipTest("The import scope needs netbox_dhcp")
@@ -1294,9 +1298,11 @@ class PDPoolOwnershipTest(TestCase):
 
 class AdapterOwnershipBoundaryTest(SimpleTestCase):
     def test_adapter_imports_no_private_sync_helpers(self):
-        source = Path(dhcp_plugin.__file__).read_text()
+        # The adapter is dhcp_plugin.py and the modules of the DHCP Import next to it.
+        sources = [path.read_text() for path in Path(dhcp_plugin.__file__).parent.glob("*.py")]
         imported = [
             alias.name
+            for source in sources
             for node in ast.walk(ast.parse(source))
             if isinstance(node, ast.ImportFrom) and node.module is not None and node.module.split(".")[-1] == "sync"
             for alias in node.names
