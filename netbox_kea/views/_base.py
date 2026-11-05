@@ -29,7 +29,7 @@ from ..read_failure import ReadFailure, attempt, client_settings_message
 from ..runtime_change import RuntimeChangeOutcome
 
 if TYPE_CHECKING:
-    from ..ipam_reconciliation import OwnershipState
+    from ..ipam_ownership import OwnershipState
 
 try:
     from utilities.views import ConditionalLoginRequiredMixin

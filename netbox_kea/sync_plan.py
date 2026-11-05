@@ -12,23 +12,12 @@ from dataclasses import dataclass
 from typing import cast
 
 from .constants import Family
-from .models import IPAMOwnershipSource, Server, SyncConfig
-
-# The type check sees a TextChoices member as its (value, label) tuple; at runtime it is the str value.
-LEASE = cast("str", IPAMOwnershipSource.LEASE)
-RESERVATION = cast("str", IPAMOwnershipSource.RESERVATION)
-SUBNET = cast("str", IPAMOwnershipSource.SUBNET)
-POOL = cast("str", IPAMOwnershipSource.POOL)
-LEASE_PREFIX = cast("str", IPAMOwnershipSource.LEASE_PREFIX)
+from .ipam_sources import LEASE, LEASE_PREFIX, SOURCES, SUBNET
+from .models import Server, SyncConfig
 
 SourceScope = frozenset[tuple[Family, str]]
 
-_SOURCE_FLAGS = {
-    LEASE: "sync_leases_enabled",
-    RESERVATION: "sync_reservations_enabled",
-    SUBNET: "sync_prefixes_enabled",
-    POOL: "sync_ip_ranges_enabled",
-}
+_SOURCE_FLAGS = {source: row.type_flag for source, row in SOURCES.items() if row.type_flag is not None}
 
 #: Every source that has its own type flags, in display order.
 SYNC_SOURCES: tuple[str, ...] = tuple(_SOURCE_FLAGS)

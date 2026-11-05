@@ -15,13 +15,10 @@ import ipaddress
 import logging
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast, overload
 
 from dcim.models import MACAddress
 from django.db import DatabaseError, connection
-from django.db.models import Exists, OuterRef, QuerySet
-from django.utils import timezone
 from ipam.models import IPAddress, IPRange, Prefix
 from netaddr import AddrFormatError, IPNetwork
 
@@ -32,17 +29,27 @@ from .integrations import dhcp_plugin
 from .ipam_marker import (
     Marker,
     MarkerKind,
-    marked_description_q,
     parse_marker,
     render_marker,
     rewrite_marker,
     status_kind,
 )
+from .ipam_ownership import host_text
+from .ipam_sources import (
+    LEASE,
+    LEASE_PREFIX,
+    PD_POOL,
+    POOL,
+    RESERVATION,
+    RESERVATION_PREFIX,
+    SOURCES,
+    SUBNET,
+    ObjectField,
+)
+from .ipam_upgrade_barrier import adoption_waits
 from .leases import LEASE_VARIANTS, AllocationKind, DHCPv6PrefixLease, Lease, LeaseSnapshot
 from .models import (
-    DhcpIntegrationConfig,
     IPAMOwnershipLink,
-    IPAMOwnershipSource,
     Server,
     SyncConfig,
     next_confirmation_number,
@@ -53,7 +60,6 @@ from .read_failure import ReadFailure, attempt
 from .reservations import TRAVERSAL_DIAGNOSTIC_CODES, InSubnetReservationScope, Reservation, ReservationSnapshot
 from .subnet_catalogue import CatalogueUnavailable
 from .sync import normalized_mac, sync_mac_address
-from .sync_plan import LEASE, LEASE_PREFIX, POOL, RESERVATION, SUBNET, SourceScope, served_families, sync_plan
 
 if TYPE_CHECKING:
     from .subnet_catalogue import CatalogueSnapshot, CompleteCatalogueSnapshot
@@ -125,10 +131,8 @@ def _single_match(queryset, kea_object: str, list_filter: dict[str, str]):
 T = TypeVar("T")
 R = TypeVar("R")
 
-# The type check sees a TextChoices member as its (value, label) tuple; at runtime it is the str value.
-PD_POOL = cast("str", IPAMOwnershipSource.PD_POOL)
 # The sources that own Prefixes and IP Ranges; their failures count as prefix errors.
-_NETWORK_SOURCES = frozenset({"subnet", "pool", "delegated-prefix", LEASE_PREFIX, PD_POOL})
+_NETWORK_SOURCES = frozenset(source for source, row in SOURCES.items() if row.object_field != "ip_address")
 
 # The status of an IP address from the sources of its live links.
 _STATUSES: dict[frozenset[str], str] = {
@@ -261,13 +265,13 @@ class ReservationObservation:
 
 
 @dataclass(frozen=True)
-class DelegatedPrefixPhase:
+class ReservationPrefixPhase:
     """Successfully imported Reservations with their original read cutoff: their delegated and excluded prefixes."""
 
     records: Sequence[Reservation]
     cutoff: int
     complete: bool
-    source: ClassVar[str] = "delegated-prefix"
+    source: ClassVar[str] = RESERVATION_PREFIX
 
 
 @dataclass(frozen=True)
@@ -283,20 +287,17 @@ class PDPoolPhase:
     source: ClassVar[str] = PD_POOL
 
 
-Phase = LeasePhase | LeasePrefixPhase | ReservationPhase | SubnetPhase | PoolPhase | DelegatedPrefixPhase | PDPoolPhase
+Phase = (
+    LeasePhase | LeasePrefixPhase | ReservationPhase | SubnetPhase | PoolPhase | ReservationPrefixPhase | PDPoolPhase
+)
 
-# The NetBox permissions that a claim of each source uses. An address claim also writes the MAC address rows.
-_ADDRESS_WRITES = ("ipam.add_ipaddress", "ipam.change_ipaddress", "dcim.add_macaddress", "dcim.change_macaddress")
-_PREFIX_WRITES = ("ipam.add_prefix", "ipam.change_prefix")
-_CLAIM_PERMISSIONS: dict[str, tuple[str, ...]] = {
-    LEASE: _ADDRESS_WRITES,
-    LEASE_PREFIX: _PREFIX_WRITES,
-    RESERVATION: _ADDRESS_WRITES,
-    SubnetPhase.source: _PREFIX_WRITES,
-    PoolPhase.source: ("ipam.add_iprange", "ipam.change_iprange"),
-    DelegatedPrefixPhase.source: _PREFIX_WRITES,
-    PDPoolPhase.source: _PREFIX_WRITES,
+# The NetBox permissions that a claim of each object kind uses. An address claim also writes the MAC address rows.
+_OBJECT_WRITES: dict[ObjectField, tuple[str, ...]] = {
+    "ip_address": ("ipam.add_ipaddress", "ipam.change_ipaddress", "dcim.add_macaddress", "dcim.change_macaddress"),
+    "prefix": ("ipam.add_prefix", "ipam.change_prefix"),
+    "ip_range": ("ipam.add_iprange", "ipam.change_iprange"),
 }
+_CLAIM_PERMISSIONS = {source: _OBJECT_WRITES[row.object_field] for source, row in SOURCES.items()}
 
 
 def claim_permissions(*sources: str) -> tuple[str, ...]:
@@ -327,7 +328,6 @@ class SyncReport:
 
     completed_sources: set[str] = field(default_factory=set)
     waiting_objects: set[tuple[str, int]] = field(default_factory=set)
-    unowned_objects: set[tuple[str, int]] = field(default_factory=set)
     # IP addresses whose stale DHCPv6 lease link has no known allocation kind, so the cleanup keeps it.
     unclassified_objects: set[tuple[str, int]] = field(default_factory=set)
     created: int = 0
@@ -362,7 +362,6 @@ class SyncReport:
         self.reservation_traversal_truncated |= other.reservation_traversal_truncated
         self.completed_sources.update(other.completed_sources)
         self.waiting_objects.update(other.waiting_objects)
-        self.unowned_objects.update(other.unowned_objects)
         self.unclassified_objects.update(other.unclassified_objects)
         self.conflicts.update(other.conflicts)
         self.disagreements.update(other.disagreements)
@@ -375,11 +374,6 @@ class SyncReport:
     def waiting(self) -> int:
         """Count distinct objects protected by the upgrade barrier."""
         return len(self.waiting_objects)
-
-    @property
-    def unowned(self) -> int:
-        """Count distinct marker objects with no ownership link."""
-        return len(self.unowned_objects)
 
     @property
     def unclassified(self) -> int:
@@ -419,134 +413,14 @@ class SyncReport:
             logger.warning("Further row failures of this reconciliation are not logged; see the error count.")
 
 
-Workflow = Literal["job", "import"]
-
-
-def effective_sources(server: Server) -> dict[Workflow, SourceScope]:
-    """Return current potential owners, shared by workflow completion and the upgrade barrier."""
-    return _effective_sources(server, SyncConfig.get())
-
-
-def _effective_sources(
-    server: Server, config: SyncConfig, switch: DhcpIntegrationConfig | None = None
-) -> dict[Workflow, SourceScope]:
-    families = served_families(server)
-    imported: SourceScope = frozenset()
-    if dhcp_plugin.runs_for(server, switch):
-        imported = frozenset(
-            (family, source)
-            for family in families
-            for source in ("reservation", "subnet", "pool", "delegated-prefix", PD_POOL)
-            if source not in ("delegated-prefix", PD_POOL) or family == 6
-        )
-    return {"job": sync_plan(server, config).sources, "import": imported}
-
-
-@dataclass(frozen=True)
-class _ObservationReceipt:
-    """One successful whole workflow; the serializer owns its persisted shape."""
-
-    sources: SourceScope
-    completed_at: datetime
-
-    def stored(self) -> dict[str, Any]:
-        return {"sources": [list(pair) for pair in sorted(self.sources)], "completed_at": self.completed_at.isoformat()}
-
-    @classmethod
-    def read(cls, value: Any) -> _ObservationReceipt:
-        if not isinstance(value, dict) or set(value) != {"sources", "completed_at"}:
-            raise ValueError("Malformed IPAM observation receipt")
-        sources = value["sources"]
-        if not isinstance(sources, list) or any(
-            not isinstance(pair, list)
-            or len(pair) != 2
-            or type(pair[0]) is not int
-            or pair[0] not in (4, 6)
-            or pair[1] not in IPAMOwnershipSource.values
-            for pair in sources
-        ):
-            raise ValueError("Malformed IPAM observation source scope")
-        completed_at = datetime.fromisoformat(value["completed_at"])
-        if timezone.is_naive(completed_at):
-            raise ValueError("An IPAM observation timestamp must be timezone aware")
-        return cls(frozenset((cast("Family", pair[0]), pair[1]) for pair in sources), completed_at)
-
-
-def _receipts(server: Server) -> dict[Workflow, _ObservationReceipt]:
-    value = server.ipam_initial_observations
-    if not isinstance(value, dict) or set(value) - {"job", "import"}:
-        raise ValueError("Malformed IPAM initial observations")
-    return {cast("Workflow", key): _ObservationReceipt.read(receipt) for key, receipt in value.items()}
-
-
-def complete_job_observation(server: Server, reports: Mapping[Family, SyncReport]) -> None:
-    """Publish only a whole job whose actual successful phase coverage satisfies current configuration."""
-    if not reports or any(not report.complete or report.errors or report.prefix_errors for report in reports.values()):
-        return
-    scope = frozenset((family, source) for family, report in reports.items() for source in report.completed_sources)
-    _complete_observation(server, "job", scope)
-
-
-def complete_import_observation(server: Server, reports: Mapping[Family, SyncReport]) -> None:
-    """Publish a whole import after successful ownership work and committed delegated attachments."""
-    if not reports or any(not report.complete or report.errors or report.prefix_errors for report in reports.values()):
-        return
-    scope = frozenset((family, source) for family, report in reports.items() for source in report.completed_sources)
-    _complete_observation(server, "import", scope)
-
-
-def _complete_observation(server: Server, workflow: Workflow, observed: SourceScope) -> None:
-    with event_scope.atomic():
-        current = Server.objects.select_for_update(no_key=True).get(pk=server.pk)
-        required = effective_sources(current)
-        if not required[workflow] or not required[workflow] <= observed:
-            return
-        receipts = _receipts(current)
-        receipts[workflow] = _ObservationReceipt(observed, timezone.now())
-        current.snapshot()
-        current.ipam_initial_observations = {key: receipt.stored() for key, receipt in receipts.items()}
-        if current.ipam_first_complete_at is None and all(
-            not scope or (key in receipts and scope <= receipts[key].sources) for key, scope in required.items()
-        ):
-            current.ipam_first_complete_at = timezone.now()
-        current.save(update_fields=["ipam_initial_observations", "ipam_first_complete_at"])
-        server.ipam_initial_observations = current.ipam_initial_observations
-        server.ipam_first_complete_at = current.ipam_first_complete_at
-
-
-def _pending_adoptions() -> set[tuple[Family, str]]:
-    """Read potential owners for the current policy or one count snapshot."""
-    pending: set[tuple[Family, str]] = set()
-    fields = {
-        "lease": "ip_address",
-        "reservation": "ip_address",
-        "subnet": "prefix",
-        "delegated-prefix": "prefix",
-        LEASE_PREFIX: "prefix",
-        PD_POOL: "prefix",
-        "pool": "ip_range",
-    }
-    config, switch = SyncConfig.get(), DhcpIntegrationConfig.get()
-    for server in Server.objects.all():
-        receipts = _receipts(server)
-        for workflow, scope in _effective_sources(server, config, switch).items():
-            observed = receipts[workflow].sources if workflow in receipts else frozenset()
-            pending.update((family, fields[source]) for family, source in scope - observed)
-    return pending
-
-
-def _adoption_waits(link: IPAMOwnershipLink, object_field: str, pending: set[tuple[Family, str]]) -> bool:
-    return link.adopted and (link.family, object_field) in pending
-
-
-def _cleanup_adoption_waits(link: IPAMOwnershipLink, object_field: str) -> bool:
+def _cleanup_adoption_waits(link: IPAMOwnershipLink, object_field: ObjectField) -> bool:
     """Freeze policy for a final adopted link whose row the cleanup already locked."""
     if not link.adopted:
         return False
     with connection.cursor() as cursor:
         # Table locks also cover new Servers and bulk configuration updates.
         cursor.execute(f"LOCK TABLE {', '.join(POLICY_TABLES)} IN SHARE MODE NOWAIT")
-    return _adoption_waits(link, object_field, _pending_adoptions())
+    return adoption_waits(link, object_field)
 
 
 def _cleanup_links(obj: IPAddress | Prefix | IPRange) -> list[IPAMOwnershipLink]:
@@ -554,25 +428,6 @@ def _cleanup_links(obj: IPAddress | Prefix | IPRange) -> list[IPAMOwnershipLink]
     return list(
         IPAMOwnershipLink.objects.select_for_update(nowait=True).filter(**{_object_field(obj): obj}).order_by("pk")
     )
-
-
-def upgrade_counts() -> SyncReport:
-    """Count distinct unowned marker objects and marked objects held by the current upgrade barrier."""
-    report = SyncReport()
-    pending = _pending_adoptions()
-    for object_field, model in (("ip_address", IPAddress), ("prefix", Prefix), ("ip_range", IPRange)):
-        for obj in model.objects.filter(marked_description_q(), kea_ownership_links__isnull=True).only(
-            "pk", "description"
-        ):
-            if _is_owned_description(obj.description):
-                report.unowned_objects.add((object_field, obj.pk))
-        for link in IPAMOwnershipLink.objects.filter(adopted=True, **{f"{object_field}__isnull": False}).select_related(
-            object_field
-        ):
-            obj = getattr(link, object_field)
-            if _is_owned_description(obj.description) and _adoption_waits(link, object_field, pending):
-                report.waiting_objects.add((object_field, obj.pk))
-    return report
 
 
 @dataclass(frozen=True)
@@ -648,20 +503,20 @@ class PDPoolClaim:
 
 
 @dataclass(frozen=True)
-class DelegatedPrefixClaim:
+class ReservationPrefixClaim:
     """A delegated or excluded prefix of an imported Reservation, to claim without cleanup."""
 
     prefix: IPNetworkValue
 
 
-_NetworkClaim = SubnetClaim | PoolClaim | PDPoolClaim | DelegatedPrefixClaim
+_NetworkClaim = SubnetClaim | PoolClaim | PDPoolClaim | ReservationPrefixClaim
 
 # The source of each network record that a claim takes.
 _NETWORK_CLAIM_SOURCES: dict[type[_NetworkClaim], str] = {
-    SubnetClaim: "subnet",
-    PoolClaim: "pool",
+    SubnetClaim: SUBNET,
+    PoolClaim: POOL,
     PDPoolClaim: PD_POOL,
-    DelegatedPrefixClaim: DelegatedPrefixPhase.source,
+    ReservationPrefixClaim: RESERVATION_PREFIX,
 }
 
 
@@ -712,100 +567,6 @@ class ClaimEventsFailed(event_scope.EventDispatchError):
         self.result = result
 
 
-# The Synchronization State terms of CONTEXT.md; "hidden" is the Unknown of an object the user may not view.
-OwnershipState = Literal["synchronized", "not-synchronized", "unmarked", "not-in-netbox", "hidden"]
-
-
-@dataclass(frozen=True)
-class Ownership:
-    """The IPAM Ownership of one IP address or Prefix in the sync VRF for one source, as one user may see it.
-
-    ``obj`` is the object the user may view; it is ``None`` when the state is ``not-in-netbox`` or ``hidden``.
-    """
-
-    state: OwnershipState
-    obj: IPAddress | Prefix | None = None
-
-    def __post_init__(self) -> None:
-        if (self.obj is None) != (self.state in ("not-in-netbox", "hidden")):
-            raise ValueError(f"An ownership state {self.state!r} with obj={self.obj!r} is not valid.")
-
-
-def address_ownership(
-    server: Server, family: Family, source: str, addresses: Collection[str], user: Any
-) -> dict[str, Ownership]:
-    """Return the ownership of the IP address of each address by *source* of *server* and *family*.
-
-    The rules are those of :func:`_ownership`. Each key is the canonical text of an address.
-    """
-    parsed = [ipaddress.ip_address(address) for address in addresses]
-    if any(getattr(address, "scope_id", None) for address in parsed):
-        raise ValueError("A NetBox IP address has no IPv6 scope zone.")
-    hosts = {str(address) for address in parsed}
-    rows = IPAddress.objects.filter(vrf_id=server.sync_vrf_id, address__net_in=sorted(hosts))
-    return _ownership(server, family, source, user, rows, hosts, lambda ip: _host(ip.address))
-
-
-def prefix_ownership(
-    server: Server, family: Family, source: str, networks: Collection[str], user: Any
-) -> dict[str, Ownership]:
-    """Return the ownership of the Prefix of each network by *source* of *server* and *family*.
-
-    Only a Prefix of the same network and length counts. The rules are those of :func:`_ownership`. Each key is the
-    canonical text of a network.
-    """
-    keys = {str(ipaddress.ip_network(network)) for network in networks}
-    rows = Prefix.objects.filter(vrf_id=server.sync_vrf_id, prefix__in=sorted(keys))
-    return _ownership(server, family, source, user, rows, keys, _network)
-
-
-#: The link field of each model that an ownership read takes.
-_LINK_FIELDS: dict[type, str] = {IPAddress: "ip_address", Prefix: "prefix"}
-
-
-def _ownership(
-    server: Server,
-    family: Family,
-    source: str,
-    user: Any,
-    rows: QuerySet[IPAddress] | QuerySet[Prefix],
-    keys: Collection[str],
-    key_of: Callable[[Any], str],
-) -> dict[str, Ownership]:
-    """Return the ownership of the object of each key among *rows* by *source* of *server* and *family*, in two queries.
-
-    An object is ``synchronized`` when it has a marker and a link of this Server, family and source; any link counts,
-    adopted and stale-marked included. A marker without such a link is ``not-synchronized``, and no marker is
-    ``unmarked``. A key with an object that *user* may not view is ``hidden``, also when it has duplicate rows that the
-    user may view. Else the first duplicate row by pk decides, as in a claim.
-    """
-    if not keys:
-        return {}
-    own_link = IPAMOwnershipLink.objects.filter(
-        **{_LINK_FIELDS[rows.model]: OuterRef("pk")}, server=server, family=family, source=source
-    )
-    found_rows = list(rows.annotate(linked=Exists(own_link)).order_by("pk"))
-    visible = set(
-        rows.model.objects.restrict(user, "view")
-        .filter(pk__in=[row.pk for row in found_rows])
-        .values_list("pk", flat=True)
-    )
-    found: dict[str, Ownership] = {}
-    for row in found_rows:
-        key = key_of(row)
-        if row.pk not in visible:
-            found[key] = Ownership("hidden")
-        elif key not in found:
-            found[key] = Ownership(_ownership_state(row), row)
-    return {key: found.get(key, Ownership("not-in-netbox")) for key in keys}
-
-
-def _ownership_state(row: IPAddress | Prefix) -> OwnershipState:
-    if not _is_owned_description(row.description):
-        return "unmarked"
-    return "synchronized" if row.linked else "not-synchronized"
-
-
 @overload
 def claim(
     server: Server, family: Family, records: Sequence[Reservation], force: bool, *, catalogue: CatalogueSnapshot
@@ -820,7 +581,7 @@ def claim(
     | Sequence[SubnetClaim]
     | Sequence[PoolClaim]
     | Sequence[PDPoolClaim]
-    | Sequence[DelegatedPrefixClaim],
+    | Sequence[ReservationPrefixClaim],
     force: bool,
 ) -> ClaimResult: ...
 
@@ -833,7 +594,7 @@ def claim(
     | Sequence[SubnetClaim]
     | Sequence[PoolClaim]
     | Sequence[PDPoolClaim]
-    | Sequence[DelegatedPrefixClaim],
+    | Sequence[ReservationPrefixClaim],
     force: bool,
     *,
     catalogue: CatalogueSnapshot | None = None,
@@ -909,7 +670,7 @@ def claim(
             )
         )
         if row.facts is None and not row.disagreement and outcome == "unchanged":
-            if ip is not None and not _is_owned_description(ip.description):
+            if ip is not None and parse_marker(ip.description) is None:
                 return AddressClaim(row.address, "conflict", ip)
             return AddressClaim(row.address, "not-applicable", ip)
         return AddressClaim(row.address, outcome, ip, resolved_macs)
@@ -1099,7 +860,7 @@ def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncRe
     for source, cutoff in cutoffs.items():
         if cutoff is None:
             continue
-        if source in {LEASE, RESERVATION}:
+        if SOURCES[source].object_field == "ip_address":
             _remove_stale_links(server, family, source, cutoff, mode, last_links_go, report)
         else:
             _remove_stale_network_links(server, family, source, cutoff, report)
@@ -1152,7 +913,7 @@ def _run_phase(server: Server, family: Family, phase: Phase, report: SyncReport)
 
     The cutoff number comes before the snapshot request, so a claim that confirms a link after it keeps the link.
     """
-    if isinstance(phase, (DelegatedPrefixPhase, PDPoolPhase)):
+    if isinstance(phase, (ReservationPrefixPhase, PDPoolPhase)):
         return _run_imported_prefix_phase(server, family, phase, report)
     if isinstance(phase, LeasePrefixPhase):
         return _run_lease_prefix_phase(server, family, phase, report)
@@ -1327,20 +1088,6 @@ def _count(report: SyncReport, address: str, outcome: _Outcome) -> None:
         report.disagreements.add(address)
 
 
-def _host(address: Any) -> str:
-    """Return the canonical host text of a NetBox address, the same text as a phase report's address."""
-    return str(ipaddress.ip_address(str(address.ip)))
-
-
-def _network(prefix: Prefix) -> str:
-    """Return the canonical network text of a NetBox Prefix, the same text as a network report's address."""
-    return str(ipaddress.ip_network(str(prefix.prefix)))
-
-
-def _is_owned_description(description: str) -> bool:
-    return parse_marker(description) is not None
-
-
 def _claim(
     server: Server,
     family: Family,
@@ -1372,7 +1119,7 @@ def _claim(
         )
         eligible = (
             len(legacy) == 1
-            and _is_owned_description(legacy[0].description)
+            and parse_marker(legacy[0].description) is not None
             and not IPAMOwnershipLink.objects.filter(ip_address=legacy[0]).exists()
             and not Server.objects.exclude(sync_vrf_id=vrf_id).exists()
         )
@@ -1408,7 +1155,7 @@ def _claim(
 
     ip = rows[0]
     links = list(IPAMOwnershipLink.objects.filter(ip_address=ip))
-    if not _is_owned_description(ip.description):
+    if parse_marker(ip.description) is None:
         # A blank or curated description: the object is not owned, and an operator edit released it.
         IPAMOwnershipLink.objects.filter(pk__in=[link.pk for link in links]).delete()
         if report.disagreement:
@@ -1431,7 +1178,7 @@ def _apply_claim(
 ) -> _Outcome:
     """Compare owners before applying facts or an explicit takeover to the locked row."""
     facts = report.facts
-    adopted = (not links and _is_owned_description(ip.description)) or any(link.adopted for link in links)
+    adopted = (not links and parse_marker(ip.description) is not None) or any(link.adopted for link in links)
     own = next((link for link in links if _is_own_link(link, server, family, source)), None)
     others = _drop_superseded_stale_links([link for link in links if link is not own])
     if report.disagreement:
@@ -1650,7 +1397,7 @@ def _remove_stale_links(
     The last link of the Server to an object goes only when *last_links_go*. The last link of an object follows *mode*.
     """
     candidates = [
-        _StaleLink(pk, ip_pk, vrf_id, _host(address))
+        _StaleLink(pk, ip_pk, vrf_id, host_text(address))
         for pk, ip_pk, vrf_id, address in IPAMOwnershipLink.objects.filter(
             server=server, family=family, source=source, confirmation__lt=cutoff
         ).values_list("pk", "ip_address", "ip_address__vrf", "ip_address__address")
@@ -1701,9 +1448,9 @@ def _remove_stale_link(
     link = next((link for link in links if link.pk == stale.pk), None)
     if link is None or link.confirmation >= cutoff:
         return "kept"
-    if (ip.vrf_id, _host(ip.address)) != (stale.vrf_id, stale.address):
+    if (ip.vrf_id, host_text(ip.address)) != (stale.vrf_id, stale.address):
         raise _RowRefused(f"the address of IP address {ip.pk} changed while the cleanup read it")
-    if not _is_owned_description(ip.description):
+    if parse_marker(ip.description) is None:
         IPAMOwnershipLink.objects.filter(ip_address=ip).delete()
         return "conflict"
     if _unclassified(link):
@@ -1759,7 +1506,8 @@ def _object_field(obj: IPAddress | Prefix | IPRange) -> str:
 
 
 def _lock_network(vrf_id: int | None, source: str, address: str, *, nowait: bool = False) -> None:
-    kind = "ip-range" if source == "pool" else "prefix"
+    # The lock kind is the object field in the form of the address lock: prefix or ip-range.
+    kind = SOURCES[source].object_field.replace("_", "-")
     _lock_key(f"{kind} {vrf_id} {address}", nowait=nowait)
 
 
@@ -1768,7 +1516,7 @@ def _run_network_phase(
 ) -> int | None:
     catalogue = phase.observation.catalogue
     if catalogue is None:
-        if not report.incomplete.intersection({"subnet", "pool"}):
+        if not report.incomplete.intersection({SUBNET, POOL}):
             report.fail_snapshot(phase.source, "the Subnet Catalogue", CatalogueUnavailable("No complete catalogue."))
         report.incomplete.add(phase.source)
         return None
@@ -1800,19 +1548,19 @@ def _run_network_phase(
 
 
 def _network_marker_kind(sources: Collection[str]) -> MarkerKind:
-    """Prefer the Subnet marker, then the delegated-prefix Pool marker, when a Prefix has several live sources."""
-    if "pool" in sources:
-        return "pool"
-    if "subnet" in sources:
-        return "subnet"
-    return "pd pool" if PD_POOL in sources else "delegated prefix"
+    """Return the marker kind of the first of *sources* in the source table.
+
+    On a Prefix with several live sources, the Subnet marker wins, then the delegated-prefix Pool marker, then the
+    delegated prefix marker.
+    """
+    return next(row.marker_kind for source, row in SOURCES.items() if source in sources)
 
 
 def _claim_network(
     server: Server, family: Family, source: str, row: _NetworkReport, *, force: bool = False
 ) -> _Outcome:
     _lock_network(server.sync_vrf_id, source, row.address)
-    if source != "pool":
+    if SOURCES[source].object_field == "prefix":
         query = Prefix.objects.select_for_update().filter(vrf_id=server.sync_vrf_id, prefix=row.address)
         filters = {"prefix": row.address, "vrf_id": server.sync_vrf_id or "null"}
         fields: dict[str, Any] = {"prefix": IPNetwork(row.address)}
@@ -1872,7 +1620,7 @@ def _claim_network(
 
 def _remove_stale_network_links(server: Server, family: Family, source: str, cutoff: int, report: SyncReport) -> None:
     """Drop the stale links of a complete Subnet or Pool phase. These objects are never removed."""
-    field_name = "ip_range" if source == "pool" else "prefix"
+    field_name = SOURCES[source].object_field
     links = IPAMOwnershipLink.objects.filter(server=server, family=family, source=source, confirmation__lt=cutoff)
     # A marked link still needs the release check: an operator may have removed its object's marker.
     candidates = list(links.select_related(field_name))
@@ -1893,13 +1641,19 @@ def _remove_stale_network_links(server: Server, family: Family, source: str, cut
         elif outcome == "conflict":
             obj = getattr(link, field_name)
             report.conflicts.add(
-                str(obj.prefix) if field_name == "prefix" else f"{_host(obj.start_address)} - {_host(obj.end_address)}"
+                str(obj.prefix)
+                if field_name == "prefix"
+                else f"{host_text(obj.start_address)} - {host_text(obj.end_address)}"
             )
 
 
-def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cutoff: int, *, nowait: bool) -> str:
+def _remove_stale_network_link(
+    candidate: IPAMOwnershipLink, field_name: ObjectField, cutoff: int, *, nowait: bool
+) -> str:
     obj = getattr(candidate, field_name)
-    address = str(obj.prefix) if field_name == "prefix" else f"{_host(obj.start_address)} - {_host(obj.end_address)}"
+    address = (
+        str(obj.prefix) if field_name == "prefix" else f"{host_text(obj.start_address)} - {host_text(obj.end_address)}"
+    )
     _lock_network(obj.vrf_id, candidate.source, address, nowait=nowait)
     locked = type(obj).objects.select_for_update(nowait=nowait).filter(pk=obj.pk).first()
     if locked is None:
@@ -1909,7 +1663,9 @@ def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cu
     if link is None or link.confirmation >= cutoff:
         return "kept"
     current_address = (
-        str(locked.prefix) if field_name == "prefix" else f"{_host(locked.start_address)} - {_host(locked.end_address)}"
+        str(locked.prefix)
+        if field_name == "prefix"
+        else f"{host_text(locked.start_address)} - {host_text(locked.end_address)}"
     )
     if (locked.vrf_id, current_address) != (obj.vrf_id, address):
         raise _RowRefused(f"the identity of {field_name} {obj.pk} changed during cleanup")
@@ -1957,7 +1713,7 @@ def _remove_stale_network_link(candidate: IPAMOwnershipLink, field_name: str, cu
 
 def _network_result(server: Server, source: str, row: _NetworkReport, outcome: _Outcome) -> PrefixClaim | RangeClaim:
     """Return the object while its identity lock is held by the current savepoint."""
-    if source == "pool":
+    if SOURCES[source].object_field == "ip_range":
         obj = IPRange.objects.filter(
             vrf_id=server.sync_vrf_id, start_address__net_host=row.start, end_address__net_host=row.end
         ).first()
@@ -1980,7 +1736,7 @@ def _claim_network_records(
     for record in records:
         if type(record) is not expected or not isinstance(record, tuple(_NETWORK_CLAIM_SOURCES)):
             raise ValueError("A claim takes one homogeneous source")
-        network = record.prefix if isinstance(record, (PDPoolClaim, DelegatedPrefixClaim)) else record.network
+        network = record.prefix if isinstance(record, (PDPoolClaim, ReservationPrefixClaim)) else record.network
         if network.version != family:
             raise ValueError("The network does not match the claim family")
         if not isinstance(record, PoolClaim):
@@ -2011,7 +1767,7 @@ def _claim_network_reports(
     """Use the same network ownership policy as complete reconciliation phases."""
     result = ClaimResult()
     for address in reports:
-        if source == "pool":
+        if SOURCES[source].object_field == "ip_range":
             result.ranges[address] = RangeClaim("error")
         else:
             result.prefixes[address] = PrefixClaim("error")
@@ -2030,7 +1786,7 @@ def _claim_network_reports(
     return result
 
 
-def _imported_prefixes(family: Family, phase: DelegatedPrefixPhase | PDPoolPhase) -> list[IPNetworkValue]:
+def _imported_prefixes(family: Family, phase: ReservationPrefixPhase | PDPoolPhase) -> list[IPNetworkValue]:
     """Return the Prefixes that an import phase reports, after a check of their family before any write."""
     if isinstance(phase, PDPoolPhase):
         if any(prefix.version != family for prefix in phase.prefixes):
@@ -2046,7 +1802,7 @@ def _imported_prefixes(family: Family, phase: DelegatedPrefixPhase | PDPoolPhase
 
 
 def _run_imported_prefix_phase(
-    server: Server, family: Family, phase: DelegatedPrefixPhase | PDPoolPhase, report: SyncReport
+    server: Server, family: Family, phase: ReservationPrefixPhase | PDPoolPhase, report: SyncReport
 ) -> int | None:
     """Claim the Prefixes of an import phase (Reservation delegated and excluded prefixes, or PD Pools) before cleanup."""
     reports = {
@@ -2075,7 +1831,7 @@ def _run_lease_prefix_phase(server: Server, family: Family, phase: LeasePrefixPh
             return None
     catalogue = phase.catalogue
     if catalogue is None:
-        if not report.incomplete.intersection({"subnet", "pool"}):
+        if not report.incomplete.intersection({SUBNET, POOL}):
             report.fail_snapshot(LEASE_PREFIX, "the Subnet Catalogue", CatalogueUnavailable("No complete catalogue."))
         report.incomplete.add(LEASE_PREFIX)
         return None
@@ -2116,7 +1872,7 @@ def _classify(
     """Classify the Server's unclassified lease links at each of *addresses*, one row each."""
     # A new lease link always has a kind, so this set only shrinks; usually it is empty.
     pending = {
-        _host(address)
+        host_text(address)
         for address in IPAMOwnershipLink.objects.filter(
             server=server, family=family, source=LEASE, allocation_kind=""
         ).values_list("ip_address__address", flat=True)
@@ -2150,7 +1906,7 @@ def _classify_links(server: Server, family: Family, address: str, kind: Allocati
         # The row lock waits for an operator edit of the address, so the check below sees the committed address.
         ip = IPAddress.objects.select_for_update().filter(pk=ip_pk).first()
         link = IPAMOwnershipLink.objects.select_for_update().filter(pk=pk, allocation_kind="").first()
-        if ip is None or link is None or (ip.vrf_id, _host(ip.address)) != (vrf_id, address):
+        if ip is None or link is None or (ip.vrf_id, host_text(ip.address)) != (vrf_id, address):
             continue
         link.allocation_kind = kind
         link.save(update_fields=["allocation_kind"])

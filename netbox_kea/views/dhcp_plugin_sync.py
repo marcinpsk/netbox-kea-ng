@@ -34,8 +34,10 @@ from ..integrations.dhcp_import import (
     read_family,
     run_dhcp_plugin_import,
 )
+from ..integrations.dhcp_import_mappings import mapped_rows
 from ..integrations.dhcp_import_plan import MappingSource, mapped_kinds, observations, plan_family
 from ..integrations.dhcp_import_report import KIND_LABELS, OUTCOME_LABELS, Kind, Outcome
+from ..integrations.dhcp_import_stale import stale_judgment
 from ..models import DhcpImportTrigger, Server
 from ..sync_permissions import sync_gate
 from ..tables import DhcpImportEntryTable
@@ -226,13 +228,13 @@ def family_drift(server: Server, family: Family, user) -> FamilyDrift:
     read = read_family(server, family)
     if not isinstance(read, FamilyRead):
         drift.notice, drift.unparsable = read, read is None
-        for kind, rows in dhcp_plugin.mapped_rows(server, family).items():
+        for kind, rows in mapped_rows(server, family).items():
             drift.show(_drift_objects(family, kind, rows, DriftState.UNKNOWN))
         drift.objects = _viewable_targets(drift.objects, user)
         return drift
     plan = plan_family(read.config, read.reservations)
     observed = observations(plan)
-    judgment = dhcp_plugin.stale_judgment(server, plan, observed)
+    judgment = stale_judgment(server, plan, observed)
     for kind in mapped_kinds(family):
         observation, judged = observed[kind], judgment.kinds[kind]
         missing = dict.fromkeys(observation.sources - judged.observed.keys())

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 from collections.abc import Mapping
 from contextvars import Context, ContextVar, copy_context
-from dataclasses import astuple, dataclass
+from dataclasses import asdict, astuple, dataclass
 from dataclasses import field as dataclass_field
 from functools import partial, reduce
 from operator import or_
@@ -323,16 +323,11 @@ class Server(JobsMixin, NetBoxModel):
 
         connection = self.kea_connection(version)
         config = KeaClientConfig.get()
+        # The KeaConnection field names are KeaClient keywords.
         return KeaClient(
-            url=connection.url,
-            username=connection.username,
-            password=connection.password,
-            verify=connection.verify,
-            client_cert=connection.client_cert,
-            client_key=connection.client_key,
+            **asdict(connection),
             timeout=config.kea_timeout,
             persist_config=self.persist_config,
-            send_service=connection.send_service,
             max_unpaged_leases=config.lease_query_max_unpaged_leases or None,
             write_guard=branching.bind(),
             on_write=partial(display_cache.rotate_after_write, self),
@@ -653,6 +648,18 @@ def exact_source(server, family: int, kind: str, kea_subnet_id: int | None, kea_
     return columns & shape & models.Q(digest, kea_identity=kea_identity)
 
 
+# The source of a mapping identifies it; with the target, it is the semantic identity of the association.
+MAPPING_SOURCE_FIELDS = ("server", "family", "kind", "kea_subnet_id", "kea_identity")
+MAPPING_IDENTITY_FIELDS = (*MAPPING_SOURCE_FIELDS, "object_type", "object_id")
+
+
+def mapping_identity(mapping) -> tuple:
+    """Read the shared semantic identity from a mapping instance or native history payload."""
+    if isinstance(mapping, dict):
+        return tuple(mapping.get(name) for name in MAPPING_IDENTITY_FIELDS)
+    return tuple(getattr(mapping, mapping._meta.get_field(name).attname) for name in MAPPING_IDENTITY_FIELDS)
+
+
 #: Each DHCP Import Mapping kind: the netbox_dhcp model it points at, and the identity columns it sets.
 MAPPING_KINDS: dict[Kind, tuple[str, models.Q]] = {
     # The global configuration of one family: one DHCPServer per Server and family.
@@ -858,7 +865,7 @@ class IPAMOwnershipSource(models.TextChoices):
     RESERVATION = "reservation", "Reservation"
     SUBNET = "subnet", "Subnet"
     POOL = "pool", "Pool"
-    DELEGATED_PREFIX = "delegated-prefix", "Delegated prefix"
+    RESERVATION_PREFIX = "reservation-prefix", "Reservation delegated prefix"
     LEASE_PREFIX = "lease-prefix", "Delegated-prefix lease"
     PD_POOL = "pd-pool", "Delegated-prefix Pool"
 
@@ -886,7 +893,9 @@ class IPAMOwnershipLink(models.Model):
     family: models.PositiveSmallIntegerField = models.PositiveSmallIntegerField(
         choices=[(family, f"IPv{family}") for family in get_args(Family)]
     )
-    source: models.CharField = models.CharField(max_length=16, choices=IPAMOwnershipSource.choices)
+    source: models.CharField = models.CharField(
+        max_length=max(map(len, IPAMOwnershipSource.values)), choices=IPAMOwnershipSource.choices
+    )
     ip_address: models.ForeignKey = models.ForeignKey(
         to="ipam.IPAddress",
         on_delete=models.CASCADE,

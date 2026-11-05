@@ -25,7 +25,7 @@ from users.models import Group
 
 from netbox_kea import ipam_reconciliation
 from netbox_kea.integrations.dhcp_plugin import import_permissions
-from netbox_kea.ipam_reconciliation import LEASE, RESERVATION
+from netbox_kea.ipam_sources import LEASE, RESERVATION
 from netbox_kea.models import Server
 from netbox_kea.sync_permissions import sync_gate
 from netbox_kea.views import dhcp_plugin_sync as dps

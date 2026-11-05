@@ -17,7 +17,8 @@ from ipam.models import IPAddress
 from users.models import ObjectPermission
 
 from netbox_kea import reservation_edit
-from netbox_kea.ipam_reconciliation import RESERVATION, ClaimResult, claim_permissions
+from netbox_kea.ipam_reconciliation import ClaimResult, claim_permissions
+from netbox_kea.ipam_sources import RESERVATION
 from netbox_kea.manual_sync import Ran
 from netbox_kea.reservation_transfer import (
     ReservationImportProposal,

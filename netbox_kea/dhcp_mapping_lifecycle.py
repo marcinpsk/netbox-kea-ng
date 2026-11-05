@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import datetime
 from functools import cache, wraps
-from typing import TYPE_CHECKING
 
 from asgiref.sync import sync_to_async
 from django.apps import apps
@@ -23,14 +22,9 @@ from django.utils.dateparse import parse_datetime
 from utilities.exceptions import AbortRequest
 
 from . import branching, event_scope
+from .models import MAPPING_IDENTITY_FIELDS, MAPPING_SOURCE_FIELDS, mapping_identity
 
-if TYPE_CHECKING:
-    from .integrations.dhcp_import_plan import MappingSource
-
-# The source of a mapping identifies it; with the target, it is the semantic identity of the association.
-MAPPING_SOURCE_FIELDS = ("server", "family", "kind", "kea_subnet_id", "kea_identity")
-MAPPING_IDENTITY_FIELDS = (*MAPPING_SOURCE_FIELDS, "object_type", "object_id")
-_METADATA_LOCK = (0x4B4541, 0x44484350)
+METADATA_LOCK = (0x4B4541, 0x44484350)
 _TAG_INSTRUCTION = (
     "Apply Tag changes separately on main or in a Tag-only branch. Create a fresh branch for DHCP changes."
 )
@@ -133,7 +127,7 @@ def metadata_scope(using: str = "default"):
     with _lock_boundary(using):
         with connections[using].cursor() as cursor:
             function = "pg_try_advisory_xact_lock" if transactional else "pg_advisory_xact_lock"
-            cursor.execute(f"SELECT {function}(%s, %s)", _METADATA_LOCK)
+            cursor.execute(f"SELECT {function}(%s, %s)", METADATA_LOCK)
             if transactional and not cursor.fetchone()[0]:
                 raise MetadataBusy(_CONTENTION)
         token = _held.set(_held.get() | {using})
@@ -166,7 +160,7 @@ def _holds_key(using: str) -> bool:
         cursor.execute(
             "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid() "
             "AND granted AND classid = %s AND objid = %s AND objsubid = 2)",
-            _METADATA_LOCK,
+            METADATA_LOCK,
         )
         return cursor.fetchone()[0]
 
@@ -206,77 +200,6 @@ def action_scope(branch, action: str):
     finally:
         _replay_operation.reset(token)
         _signals_received.pre_delete = previous
-
-
-def mapping_identity(mapping) -> tuple:
-    """Read the shared semantic identity from a mapping instance or native history payload."""
-    if isinstance(mapping, dict):
-        return tuple(mapping.get(name) for name in MAPPING_IDENTITY_FIELDS)
-    return tuple(getattr(mapping, mapping._meta.get_field(name).attname) for name in MAPPING_IDENTITY_FIELDS)
-
-
-def _source_columns(server, family: int, source: MappingSource) -> dict:
-    """Return the source columns of the mapping of *source*, for a write."""
-    return {"server": server, "family": family, **source.columns()}
-
-
-def _source_mapping(server, family: int, source: MappingSource):
-    """Return the mappings of *source*: at most one row, found through its unique index."""
-    from .models import KeaDhcpLink, exact_source
-
-    lookup = exact_source(server, family, **source.columns())
-    return KeaDhcpLink.objects.filter(lookup)
-
-
-def mapped_target(server, family: int, source: MappingSource):
-    """Return the target that *source* maps to, or ``None`` when it has no mapping or its target is gone."""
-    mapping = _source_mapping(server, family, source).first()
-    return mapping.sys4_object if mapping is not None else None
-
-
-def observe_mapping(server, family: int, target, source: MappingSource):
-    """Record a source association, or refresh its observation without a semantic history change.
-
-    Each call confirms the mapping with a new number of the confirmation sequence (ADR 0006).
-    """
-    from django.contrib.contenttypes.models import ContentType
-
-    from .models import KeaDhcpLink, next_confirmation_number
-
-    association = {
-        **_source_columns(server, family, source),
-        "object_type": ContentType.objects.get_for_model(target),
-        "object_id": target.pk,
-    }
-    with metadata_scope():
-        mapping = _source_mapping(server, family, source).first()
-        desired = KeaDhcpLink(**association, confirmation=next_confirmation_number())
-        if mapping is None:
-            desired.save()
-            return desired
-        if mapping_identity(mapping) == mapping_identity(desired):
-            mapping.confirmation = desired.confirmation
-            KeaDhcpLink.objects.filter(pk=mapping.pk).update(confirmation=mapping.confirmation)
-            return mapping
-        mapping.snapshot()
-        if (mapping.object_type_id, mapping.object_id) != (desired.object_type_id, desired.object_id):
-            # The new target has not adopted its Options yet.
-            mapping.options_mapped = False
-        for name, value in association.items():
-            setattr(mapping, name, value)
-        mapping.confirmation = desired.confirmation
-        mapping.save()
-        return mapping
-
-
-def options_mapped(server, family: int, source: MappingSource) -> bool:
-    """Return whether the import has mapped the DHCP Options of the object of *source*. It must have a mapping."""
-    return _source_mapping(server, family, source).values_list("options_mapped", flat=True).get()
-
-
-def mark_options_mapped(server, family: int, source: MappingSource) -> None:
-    """Record that the import has mapped the DHCP Options of the object of *source*, without a history change."""
-    _source_mapping(server, family, source).filter(options_mapped=False).update(options_mapped=True)
 
 
 class MappingUnavailable(AbortRequest):

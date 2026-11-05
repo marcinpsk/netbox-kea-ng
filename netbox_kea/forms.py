@@ -47,7 +47,7 @@ from .reservations import (
     reservation_identifier_choices,
     reservation_identifier_types,
 )
-from .server_connection import connection_values, validate_connection_change
+from .server_connection import service_connections, validate_connection_change
 from .subnet_catalogue import VerifiedSubnet
 from .utilities import MAX_PREFIX_INPUT_LENGTH, is_hex_string, parse_delegated_prefixes
 
@@ -194,7 +194,7 @@ class _ServerConnectionFormMixin:
     """Check the effective connection after native local model validation."""
 
     def _post_clean(self):
-        before = None if self.instance._state.adding else connection_values(self.instance)
+        before = None if self.instance._state.adding else service_connections(self.instance)
         super()._post_clean()
         if not self.errors:
             try:

@@ -10,11 +10,12 @@ import pytest
 
 from netbox_kea.tests import kea_wire_discipline as wd
 
-# This is the frozen follow-up brief. Files may leave but must not be added.
+# This is the frozen follow-up brief. Files may leave but must not be added; a moved function takes its entry along.
 _FOLLOW_UP_FILES = frozenset(
     {
         "constants.py",
-        "integrations/dhcp_plugin.py",
+        "integrations/dhcp_import_options.py",
+        "integrations/dhcp_import_reservations.py",
         "mappers/kea_to_dhcp.py",
         "models.py",
         "reservation_transfer.py",
@@ -38,7 +39,7 @@ _NON_WIRE_HYPHENATED = {
     "catalogue-identity-collision": "Catalogue validation diagnostic",
     "configuration-changed-during-retry": "Catalogue retry diagnostic",
     "configuration-unavailable": "Configuration snapshot diagnostic",
-    "delegated-prefix": "IPAM Ownership source (ADR 0006)",
+    "delegated-prefix": "Lease allocation kind",
     "dhcpv4-address": "Lease variant discriminator",
     "dhcpv6-address": "Lease variant discriminator",
     "dhcpv6-delegated-prefix": "Lease variant discriminator",
@@ -91,6 +92,7 @@ _NON_WIRE_HYPHENATED = {
     "invalid-version": "Transfer validation diagnostic",
     "lease-prefix": "IPAM Ownership source (ADR 0006)",
     "pd-pool": "IPAM Ownership source (ADR 0006)",
+    "reservation-prefix": "IPAM Ownership source (ADR 0006)",
     "kea-modal-workspace-shell": "Server delete modal HTML element ID",
     "lease-search": "Leases section HTML element ID",
     "malformed-configuration-response": "Configuration snapshot diagnostic",

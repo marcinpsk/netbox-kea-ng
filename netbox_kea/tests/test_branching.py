@@ -484,7 +484,7 @@ class BranchConnectionCleanupTest(TransactionTestCase):
 
 class OptionalMappingReplayTest(TransactionTestCase):
     def test_native_merge_and_revert_do_not_acquire_the_mapping_lock_without_dhcp(self):
-        from netbox_kea.dhcp_mapping_lifecycle import _METADATA_LOCK
+        from netbox_kea.dhcp_mapping_lifecycle import METADATA_LOCK
 
         if apps.is_installed("netbox_dhcp"):
             self.skipTest("This profile verifies native replay without DHCP targets")
@@ -503,10 +503,10 @@ class OptionalMappingReplayTest(TransactionTestCase):
                 holder = connection.Database.connect(**connection.get_connection_params())
                 try:
                     with holder.cursor() as cursor:
-                        cursor.execute("SELECT pg_advisory_lock(%s, %s)", _METADATA_LOCK)
+                        cursor.execute("SELECT pg_advisory_lock(%s, %s)", METADATA_LOCK)
                     with transaction.atomic():
                         with connection.cursor() as cursor:
-                            cursor.execute("SELECT pg_try_advisory_xact_lock(%s, %s)", _METADATA_LOCK)
+                            cursor.execute("SELECT pg_try_advisory_xact_lock(%s, %s)", METADATA_LOCK)
                             self.assertFalse(cursor.fetchone()[0])
                         branch.merge(user=user)
                         vrf.refresh_from_db()

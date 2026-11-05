@@ -67,7 +67,7 @@ rules:
     paths:
       include:
         - "netbox_kea/ipam_reconciliation.py"
-        - "netbox_kea/integrations/dhcp_plugin.py"
+        - "netbox_kea/integrations/dhcp_import_reservations.py"
         - "kea-sync-hostname-unpublished.py"
     patterns:
       # A reported name reaches the sync as a call argument or in a (hardware, hostname) pair.
@@ -1523,7 +1523,7 @@ rules:
       that it does not write. A writer with its own observe_mapping() or its own "except
       event_scope.EventDispatchError: raise" and "except ManagedFieldsMismatch: raise" pair repeats that protocol and
       drifts from it. Only the DHCPServer, the root of a run, writes itself: upsert_dhcp_server() and
-      _apply_global_settings() are exempt by name.
+      apply_global_settings() are exempt by name.
       Limits: the rule sees netbox_kea/integrations/; a writer that bypasses the protocol without calling
       observe_mapping() or opening the re-raise pair is not caught, and a call through a module attribute or an
       aliased import is not seen. The pair matches in this handler order only: EventDispatchError, then
@@ -1554,5 +1554,70 @@ rules:
           def upsert_dhcp_server(...):
               ...
       - pattern-not-inside: |
-          def _apply_global_settings(...):
+          def apply_global_settings(...):
               ...
+
+  - id: kea-ownership-source-literal
+    languages: [python]
+    severity: ERROR
+    message: >-
+      An IPAM Ownership source is compared with a string literal. Compare it with a constant of
+      netbox_kea/ipam_sources.py, or read the per-source fact from its SOURCES row, so the source table stays the one
+      place that knows each source.
+      Limits: the rule matches only a name or an attribute called "source", compared by ==, != or (not) in a literal
+      tuple, list or set. A literal in another collection ("pool" in sources), a renamed variable and a literal key of
+      a mapping are not seen.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/migrations/**"
+    patterns:
+      - pattern-either:
+          - pattern: $S == "..."
+          - pattern: '"..." == $S'
+          - pattern: $S != "..."
+          - pattern: '"..." != $S'
+          - pattern: $S in (..., "...", ...)
+          - pattern: $S in [..., "...", ...]
+          - pattern: $S in {..., "...", ...}
+          - pattern: $S not in (..., "...", ...)
+          - pattern: $S not in [..., "...", ...]
+          - pattern: $S not in {..., "...", ...}
+      - metavariable-regex:
+          metavariable: $S
+          regex: ^([\w.]+\.)?source$
+
+  - id: kea-dhcp-mapping-query-outside-store
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Read and write DHCP Import Mappings through netbox_kea/integrations/dhcp_import_mappings.py, the Mapping store.
+      It holds every KeaDhcpLink query of the DHCP Import, so each lookup of a source goes through its unique index
+      (exact_source) and each write takes the mapping lock of ADR 0008. Add a function there and call it.
+      Exempt: the ADR 0008 coordination in dhcp_mapping_lifecycle.py, models.py, the REST API, GraphQL, the
+      migrations and the tests.
+      Limits: the rule sees KeaDhcpLink.objects, KeaDhcpLink._base_manager and a KeaDhcpLink(...) call by that name. An
+      alias of the class, a model from apps.get_model(), a related manager (server.dhcp_plugin_links) and a raw SQL
+      query are not seen.
+    metadata:
+      category: maintainability
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/**"
+        - "kea-dhcp-mapping-query-outside-store.py"
+      exclude:
+        - "netbox_kea/integrations/dhcp_import_mappings.py"
+        - "netbox_kea/dhcp_mapping_lifecycle.py"
+        - "netbox_kea/models.py"
+        - "netbox_kea/api/**"
+        - "netbox_kea/graphql.py"
+        - "**/migrations/**"
+        - "**/tests/**"
+    pattern-either:
+      - pattern: KeaDhcpLink.objects
+      - pattern: KeaDhcpLink._base_manager
+      - pattern: KeaDhcpLink(...)

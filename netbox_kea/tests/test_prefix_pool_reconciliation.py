@@ -171,7 +171,7 @@ class PrefixPoolJobTest(TestCase):
         IPAMOwnershipLink.objects.create(
             server=other,
             family=4,
-            source="delegated-prefix",
+            source="reservation-prefix",
             prefix=prefix,
             facts={"prefix_length": 24},
             confirmation=next_confirmation_number(),
@@ -243,7 +243,7 @@ class PrefixPoolJobTest(TestCase):
 
         from django.urls import reverse
 
-        from netbox_kea.ipam_reconciliation import DelegatedPrefixPhase, reconcile
+        from netbox_kea.ipam_reconciliation import ReservationPrefixPhase, reconcile
         from netbox_kea.reservations import GlobalReservationScope, IPv6Reservation, ReservationIdentity
 
         vrf = VRF.objects.create(name="delegated-prefixes")
@@ -258,16 +258,16 @@ class PrefixPoolJobTest(TestCase):
             addresses=(),
             delegated_prefixes=networks,
         )
-        phase = DelegatedPrefixPhase((reservation,), next_confirmation_number(), True)
+        phase = ReservationPrefixPhase((reservation,), next_confirmation_number(), True)
 
         with self.assertLogs("netbox_kea.ipam_reconciliation", level="WARNING") as logs:
             report = reconcile(server, 6, [phase])
 
         self.assertEqual((report.prefix_errors, report.errors, report.created), (11, 0, 1))
-        self.assertEqual(report.incomplete, {"delegated-prefix"})
+        self.assertEqual(report.incomplete, {"reservation-prefix"})
         self.assertEqual(len(report.duplicates), 11)
         for network, duplicate in zip(networks[:-1], report.duplicates, strict=True):
-            self.assertEqual(duplicate.kea_object, f"delegated-prefix {network}")
+            self.assertEqual(duplicate.kea_object, f"reservation-prefix {network}")
             self.assertEqual(duplicate.pks, duplicates[str(network)])
             url = urlsplit(duplicate.list_url)
             self.assertEqual(url.path, reverse("ipam:prefix_list"))
@@ -281,7 +281,7 @@ class PrefixPoolJobTest(TestCase):
                     "prefix__prefix", "source"
                 )
             ],
-            [(str(networks[-1]), "delegated-prefix")],
+            [(str(networks[-1]), "reservation-prefix")],
         )
         self.assertEqual(sum("IPAM reconciliation of" in message for message in logs.output), 10)
         self.assertEqual(sum("Further row failures" in message for message in logs.output), 1)
@@ -438,7 +438,7 @@ class PrefixPoolJobTest(TestCase):
         opposing = IPAMOwnershipLink.objects.create(
             server=other,
             family=4,
-            source="delegated-prefix",
+            source="reservation-prefix",
             prefix=prefix,
             facts={"prefix_length": 25},
             confirmation=next_confirmation_number(),
@@ -471,7 +471,7 @@ class PrefixPoolJobTest(TestCase):
         IPAMOwnershipLink.objects.create(
             server=other,
             family=4,
-            source="delegated-prefix",
+            source="reservation-prefix",
             prefix=prefix,
             facts={"prefix_length": 24},
             confirmation=next_confirmation_number(),

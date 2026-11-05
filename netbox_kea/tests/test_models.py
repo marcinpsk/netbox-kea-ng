@@ -818,7 +818,8 @@ class TestMigrationState(TestCase):
     def test_ownership_schema_drift_is_detected(self):
         loader = MigrationLoader(None)
         changed = ProjectState.from_apps(apps)
-        changed.models["netbox_kea", "ipamownershiplink"].fields["source"].max_length += 1
+        wider = apps.get_model("netbox_kea", "IPAMOwnershipLink")._meta.get_field("source").max_length + 1
+        changed.models["netbox_kea", "ipamownershiplink"].fields["source"].max_length = wider
 
         changes = MigrationAutodetector(loader.project_state(), changed).changes(
             graph=loader.graph, trim_to_apps={"netbox_kea"}
@@ -827,7 +828,7 @@ class TestMigrationState(TestCase):
 
         self.assertEqual(len(operations), 1)
         self.assertEqual(operations[0].describe(), "Alter field source on ipamownershiplink")
-        self.assertEqual(operations[0].field.max_length, 17)
+        self.assertEqual(operations[0].field.max_length, wider)
 
 
 class _MigrationTestCase(TransactionTestCase):
@@ -844,6 +845,24 @@ class _MigrationTestCase(TransactionTestCase):
                 reset_sequences=False,
                 allow_cascade=True,
             )
+
+    def _migrate_to(self, name):
+        """Move the netbox_kea schema to *name*, and back to the newest migration at cleanup."""
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        executor = MigrationExecutor(connection)
+        current = executor.loader.graph.leaf_nodes("netbox_kea")
+        self.assertEqual(len(current), 1, f"netbox_kea migrations must have one leaf, found {current}.")
+
+        def restore_migration_state():
+            restore = MigrationExecutor(connection)
+            restore.loader.build_graph()
+            restore.migrate(current)
+
+        self.addCleanup(restore_migration_state)
+        executor.migrate([("netbox_kea", name)])
+        return current
 
 
 class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
@@ -972,24 +991,6 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         link = KeaDhcpLink.objects.get(server=server)
         self.assertEqual((link.kind, link.kea_subnet_id, link.kea_identity), ("subnet", 7, None))
 
-    def _migrate_to(self, name):
-        """Move the netbox_kea schema to *name*, and back to the newest migration at cleanup."""
-        from django.db import connection
-        from django.db.migrations.executor import MigrationExecutor
-
-        executor = MigrationExecutor(connection)
-        current = executor.loader.graph.leaf_nodes("netbox_kea")
-        self.assertEqual(len(current), 1, f"netbox_kea migrations must have one leaf, found {current}.")
-
-        def restore_migration_state():
-            restore = MigrationExecutor(connection)
-            restore.loader.build_graph()
-            restore.migrate(current)
-
-        self.addCleanup(restore_migration_state)
-        executor.migrate([("netbox_kea", name)])
-        return current
-
     def test_0028_gives_each_released_mapping_the_kind_of_its_source(self):
         from django.db import connection
         from django.db.migrations.executor import MigrationExecutor
@@ -1105,6 +1106,8 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
             prefixes.append((prefix.pk, prefix.description, prefix.status))
             IPAMOwnershipLink.objects.create(server=server, family=6, source=source, prefix=prefix, confirmation=1)
         held_sources = set(IPAMOwnershipSource.values) - {IPAMOwnershipSource.PD_POOL}
+        # The reverse of 0032 gives the Reservation delegated prefix source its name before 0032.
+        released = {"delegated-prefix" if s == IPAMOwnershipSource.RESERVATION_PREFIX else s for s in held_sources}
         completed_at = timezone.now().isoformat()
         Server.objects.filter(pk=server.pk).update(
             ipam_initial_observations={
@@ -1122,14 +1125,14 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
             )
             self.assertCountEqual(cursor.fetchall(), expected_mappings)
             cursor.execute("SELECT source FROM netbox_kea_ipamownershiplink WHERE server_id = %s", [server.pk])
-            self.assertEqual({row[0] for row in cursor.fetchall()}, held_sources)
+            self.assertEqual({row[0] for row in cursor.fetchall()}, released)
             cursor.execute("SELECT ipam_initial_observations FROM netbox_kea_server WHERE id = %s", [server.pk])
             (observations,) = cursor.fetchone()
             if isinstance(observations, str):
                 observations = json.loads(observations)
             self.assertEqual(
                 {workflow: {tuple(pair) for pair in receipt["sources"]} for workflow, receipt in observations.items()},
-                {workflow: {(6, source) for source in held_sources} for workflow in ("job", "import")},
+                {workflow: {(6, source) for source in released} for workflow in ("job", "import")},
             )
             cursor.execute(
                 "SELECT id, description, status FROM ipam_prefix WHERE id = ANY(%s)", [[p[0] for p in prefixes]]
@@ -1255,8 +1258,9 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         )
         executor = MigrationExecutor(connection)
         current = executor.loader.graph.leaf_nodes("netbox_kea")
-        after_0029 = [
-            key for key in executor.loader.graph.forwards_plan(current[0]) if key[0] == "netbox_kea" and key[1] > "0029"
+        released_together = [
+            ("netbox_kea", "0030_keadhcplink_unbounded_identity"),
+            ("netbox_kea", "0031_keadhcplink_wide_subnet_id"),
         ]
 
         def restore_migration_state():
@@ -1269,9 +1273,9 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
         with self.assertRaisesRegex(IrreversibleError, r"longer than 517 characters \(1 in all\)"):
             executor.migrate([("netbox_kea", "0029_dhcp_import_option_mappings")])
 
-        # The refusal comes before every later migration reverses, so nothing changed.
+        # The refusal comes before 0031 and 0030 reverse (one release holds both), so their schema stays.
         applied = MigrationRecorder(connection).applied_migrations()
-        self.assertEqual([key for key in after_0029 if key not in applied], [])
+        self.assertEqual([key for key in released_together if key not in applied], [])
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT data_type FROM information_schema.columns "
@@ -1371,6 +1375,156 @@ class TestKeaDhcpLinkConstraintMigration(_MigrationTestCase):
 
         self.assertFalse(KeaDhcpLink.objects.filter(server=server).exists())
         self.assertTrue(Server.objects.filter(pk=server.pk).exists())
+
+
+class TestReservationPrefixSourceMigration(_MigrationTestCase):
+    """Migration 0032 renames the Reservation delegated prefix source in each link and each receipt."""
+
+    _PREVIOUS = "0031_keadhcplink_wide_subnet_id"
+
+    def _stored(self, server, prefixes):
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT prefix_id, source FROM netbox_kea_ipamownershiplink WHERE server_id = %s", [server.pk]
+            )
+            links = dict(cursor.fetchall())
+            cursor.execute("SELECT ipam_initial_observations FROM netbox_kea_server WHERE id = %s", [server.pk])
+            (observations,) = cursor.fetchone()
+        if isinstance(observations, str):
+            observations = json.loads(observations)
+        receipts = {workflow: sorted(map(tuple, receipt["sources"])) for workflow, receipt in observations.items()}
+        return {network: links[prefix.pk] for network, prefix in prefixes.items()}, receipts
+
+    def test_0032_renames_the_source_forward_and_back(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+        from ipam.models import Prefix
+
+        from netbox_kea.ipam_upgrade_barrier import _receipts
+
+        server = _make_db_server(name="reservation-prefix-owner")
+        prefixes = {
+            network: Prefix.objects.create(prefix=network, description="[kea-sync: delegated prefix]")
+            for network in ("2001:db8:1::/64", "2001:db8:2::/64")
+        }
+        current = self._migrate_to(self._PREVIOUS)
+        historical = MigrationExecutor(connection).loader.project_state(("netbox_kea", self._PREVIOUS)).apps
+        for prefix, source in zip(prefixes.values(), ("delegated-prefix", "subnet"), strict=True):
+            historical.get_model("netbox_kea", "IPAMOwnershipLink").objects.create(
+                server_id=server.pk, family=6, source=source, prefix_id=prefix.pk, confirmation=1
+            )
+        completed_at = timezone.now().isoformat()
+        historical.get_model("netbox_kea", "Server").objects.filter(pk=server.pk).update(
+            ipam_initial_observations={
+                "job": {"sources": [[6, "subnet"]], "completed_at": completed_at},
+                "import": {"sources": [[4, "subnet"], [6, "delegated-prefix"]], "completed_at": completed_at},
+            }
+        )
+        released = (
+            {"2001:db8:1::/64": "delegated-prefix", "2001:db8:2::/64": "subnet"},
+            {"job": [(6, "subnet")], "import": [(4, "subnet"), (6, "delegated-prefix")]},
+        )
+        self.assertEqual(self._stored(server, prefixes), released)
+
+        forward = MigrationExecutor(connection)
+        forward.loader.build_graph()
+        forward.migrate(current)
+
+        self.assertEqual(
+            self._stored(server, prefixes),
+            (
+                {"2001:db8:1::/64": "reservation-prefix", "2001:db8:2::/64": "subnet"},
+                {"job": [(6, "subnet")], "import": [(4, "subnet"), (6, "reservation-prefix")]},
+            ),
+        )
+        # The receipt reader of this release accepts the rewritten receipt.
+        self.assertEqual(
+            _receipts(Server.objects.get(pk=server.pk))["import"].sources,
+            {(4, "subnet"), (6, IPAMOwnershipSource.RESERVATION_PREFIX)},
+        )
+
+        backward = MigrationExecutor(connection)
+        backward.migrate([("netbox_kea", self._PREVIOUS)])
+
+        self.assertEqual(self._stored(server, prefixes), released)
+
+    def test_0032_keeps_malformed_receipts_forward_and_back(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+
+        completed_at = timezone.now().isoformat()
+        malformed = {
+            "not a mapping": ["job"],
+            "receipt not a mapping": {"job": "done"},
+            "no sources": {"job": {"completed_at": completed_at}},
+            "sources not a list": {"job": {"sources": "delegated-prefix", "completed_at": completed_at}},
+            "pair of three": {"job": {"sources": [[6, "delegated-prefix", 1]], "completed_at": completed_at}},
+        }
+        servers = {name: _make_db_server(name=name) for name in malformed}
+        current = self._migrate_to(self._PREVIOUS)
+        historical = MigrationExecutor(connection).loader.project_state(("netbox_kea", self._PREVIOUS)).apps
+        for name, value in malformed.items():
+            historical.get_model("netbox_kea", "Server").objects.filter(pk=servers[name].pk).update(
+                ipam_initial_observations=value
+            )
+
+        def stored(server):
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT ipam_initial_observations FROM netbox_kea_server WHERE id = %s", [server.pk])
+                (value,) = cursor.fetchone()
+            return json.loads(value) if isinstance(value, str) else value
+
+        forward = MigrationExecutor(connection)
+        forward.loader.build_graph()
+        forward.migrate(current)
+        for name, value in malformed.items():
+            with self.subTest(direction="forward", shape=name):
+                self.assertEqual(stored(servers[name]), value)
+
+        MigrationExecutor(connection).migrate([("netbox_kea", self._PREVIOUS)])
+        for name, value in malformed.items():
+            with self.subTest(direction="back", shape=name):
+                self.assertEqual(stored(servers[name]), value)
+
+    def test_0032_reverses_with_a_mapping_that_0031_holds(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+        from django.db.migrations.recorder import MigrationRecorder
+
+        from netbox_kea.constants import MAX_SUBNET_ID
+
+        server = _make_db_server(name="released-mappings")
+        object_type = ContentType.objects.get_for_model(Server)
+        wide = KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
+            server=server,
+            family=4,
+            kind="subnet",
+            kea_subnet_id=MAX_SUBNET_ID,
+            object_type=object_type,
+            object_id=1,
+        )
+        long = KeaDhcpLink.objects.create(
+            confirmation=next_confirmation_number(),
+            server=server,
+            family=4,
+            kind="option",
+            kea_identity="o" * 518,
+            object_type=object_type,
+            object_id=2,
+        )
+        current = MigrationExecutor(connection).loader.graph.leaf_nodes("netbox_kea")
+
+        # A release ends at 0031, and its columns hold a wide subnet ID and a long identity.
+        self._migrate_to(self._PREVIOUS)
+
+        applied = MigrationRecorder(connection).applied_migrations()
+        self.assertIn(("netbox_kea", self._PREVIOUS), applied)
+        self.assertNotIn(current[0], applied)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=wide.pk).kea_subnet_id, MAX_SUBNET_ID)
+        self.assertEqual(KeaDhcpLink.objects.get(pk=long.pk).kea_identity, "o" * 518)
 
 
 class TestNoModelAdvertisesDocsItDoesNotShip(SimpleTestCase):

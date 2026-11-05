@@ -145,7 +145,7 @@ class LivePrefixLeaseJobTest(TestCase):
                 self.assertEqual(bool(_sources(prefix)), opt_in)
 
     def test_live_and_imported_delegated_prefix_owners_never_clean_up_each_other(self):
-        from netbox_kea.ipam_reconciliation import DelegatedPrefixPhase
+        from netbox_kea.ipam_reconciliation import ReservationPrefixPhase
 
         server = _server(sync_deprecate_prefixes_and_ranges=True)
         _run_job(server, [_pd()])
@@ -153,7 +153,7 @@ class LivePrefixLeaseJobTest(TestCase):
         IPAMOwnershipLink.objects.create(
             server=server,
             family=6,
-            source="delegated-prefix",
+            source="reservation-prefix",
             prefix=prefix,
             facts={"prefix_length": 56},
             confirmation=next_confirmation_number(),
@@ -161,11 +161,11 @@ class LivePrefixLeaseJobTest(TestCase):
 
         _run_job(server, [])
         prefix.refresh_from_db()
-        self.assertEqual(_sources(prefix), {("owner", "delegated-prefix")})
+        self.assertEqual(_sources(prefix), {("owner", "reservation-prefix")})
         self.assertEqual(prefix.status, "active")
 
         _run_job(server, [_pd()])
-        report = reconcile(server, 6, [DelegatedPrefixPhase([], next_confirmation_number(), complete=True)])
+        report = reconcile(server, 6, [ReservationPrefixPhase([], next_confirmation_number(), complete=True)])
         self.assertEqual(report.errors + report.prefix_errors, 0)
         self.assertEqual(_sources(prefix), {("owner", "lease-prefix")})
         self.assertTrue(Prefix.objects.filter(pk=prefix.pk).exists())
@@ -437,7 +437,7 @@ class LivePrefixConcurrencyTest(ConcurrencyHarness):
         return [LeasePhase(leases, {1: 64}), LeasePrefixPhase(leases, catalogue)]
 
     def test_live_and_imported_delegated_prefix_claims_create_one_shared_prefix(self):
-        from netbox_kea.ipam_reconciliation import DelegatedPrefixPhase
+        from netbox_kea.ipam_reconciliation import ReservationPrefixPhase
         from netbox_kea.tests.test_integration_dhcp_plugin import _reservation_snapshot
 
         live, imported = _server("live-owner"), _server("import-owner")
@@ -450,7 +450,7 @@ class LivePrefixConcurrencyTest(ConcurrencyHarness):
             self._start(
                 "import",
                 lambda: reconcile(
-                    imported, 6, [DelegatedPrefixPhase(observation.snapshot.records, observation.cutoff, True)]
+                    imported, 6, [ReservationPrefixPhase(observation.snapshot.records, observation.cutoff, True)]
                 ),
             )
             self._wait_for_lock_waits(2)
@@ -458,7 +458,7 @@ class LivePrefixConcurrencyTest(ConcurrencyHarness):
             self._join()
 
         prefix = Prefix.objects.get(prefix=PD_NETWORK)
-        self.assertEqual(_sources(prefix), {("live-owner", "lease-prefix"), ("import-owner", "delegated-prefix")})
+        self.assertEqual(_sources(prefix), {("live-owner", "lease-prefix"), ("import-owner", "reservation-prefix")})
         self.assertEqual(self._report("live").prefix_errors + self._report("import").prefix_errors, 0)
 
     def test_an_operator_who_moves_the_legacy_address_during_the_repair_keeps_the_moved_row(self):

@@ -38,9 +38,9 @@ class SaveSite:
 
 
 SITES = (
-    SaveSite("dhcp_mapping_lifecycle.py", "observe_mapping", "desired", "create"),
-    SaveSite("dhcp_mapping_lifecycle.py", "observe_mapping", "mapping", "loaded"),
-    SaveSite("ipam_reconciliation.py", "_complete_observation", "current", "loaded"),
+    SaveSite("integrations/dhcp_import_mappings.py", "observe_mapping", "desired", "create"),
+    SaveSite("integrations/dhcp_import_mappings.py", "observe_mapping", "mapping", "loaded"),
+    SaveSite("ipam_upgrade_barrier.py", "_complete_observation", "current", "loaded"),
     SaveSite("ipam_reconciliation.py", "_claim", "legacy[0]", "loaded"),
     SaveSite("ipam_reconciliation.py", "_apply_claim", "ip", "loaded"),
     SaveSite("ipam_reconciliation.py", "_restatus", "ip", "loaded"),
@@ -51,10 +51,10 @@ SITES = (
     SaveSite("views/sync_jobs.py", "ServerSyncToggleView.post", "server", "loaded"),
     SaveSite("views/settings_page.py", "SettingsSectionView.post", "instance", "loaded"),
     SaveSite("integrations/dhcp_import_write.py", "save_changes", "obj", "loaded"),
-    SaveSite("integrations/dhcp_plugin.py", "_move_family_options", "option", "loaded"),
-    SaveSite("integrations/dhcp_plugin.py", "_move_subnet_ids", "row", "loaded"),
+    SaveSite("integrations/dhcp_import_server.py", "_move_family_options", "option", "loaded"),
+    SaveSite("integrations/dhcp_import_networks.py", "_move_subnet_ids", "row", "loaded"),
     SaveSite("integrations/dhcp_import_write.py", "_create_row", "obj", "create"),
-    SaveSite("integrations/dhcp_plugin.py", "upsert_dhcp_server", "dhcp_server", "create"),
+    SaveSite("integrations/dhcp_import_server.py", "upsert_dhcp_server", "dhcp_server", "create"),
     SaveSite("ipam_reconciliation.py", "_claim", "ip", "create"),
     SaveSite("ipam_reconciliation.py", "_store_link", "link", "plain"),
     SaveSite("ipam_reconciliation.py", "_remove_stale_link", "link", "plain"),

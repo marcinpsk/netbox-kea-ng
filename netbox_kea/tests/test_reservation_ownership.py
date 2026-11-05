@@ -9,7 +9,7 @@ from django.urls import reverse
 from ipam.models import VRF, IPAddress
 from users.models import ObjectPermission
 
-from netbox_kea.ipam_reconciliation import Ownership, address_ownership
+from netbox_kea.ipam_ownership import Ownership, address_ownership
 from netbox_kea.models import IPAMOwnershipLink, Server, next_confirmation_number
 
 from .kea_stub import _catalogue_responses, _res_get, _res_page, stub_kea

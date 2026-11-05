@@ -24,14 +24,9 @@ from utilities.views import register_model_view
 
 from .. import constants, forms, reservation_reads, server_configuration, tables
 from ..constants import Family
-from ..ipam_reconciliation import (
-    RESERVATION,
-    Ownership,
-    ReservationPhase,
-    address_ownership,
-    claim_permissions,
-    reconcile_permissions,
-)
+from ..ipam_ownership import Ownership, address_ownership
+from ..ipam_reconciliation import ReservationPhase, claim_permissions, reconcile_permissions
+from ..ipam_sources import RESERVATION
 from ..lease_reservation_reads import lease_presence
 from ..models import Server
 from ..reservation_reads import ReservationQuery
