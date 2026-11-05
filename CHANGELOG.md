@@ -13,6 +13,97 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.13.0 (2026-11-05)
+
+### Bug Fixes
+
+- **migrations**: Keep a malformed IPAM observation receipt in migration 0032
+  ([`53b1ce0`](https://github.com/marcinpsk/netbox-kea-ng/commit/53b1ce0862528adff516cad601873b51b954bcdf))
+
+- **migrations**: Let 0032 reverse to 0031 with any Mapping that 0031 holds
+  ([`dd3c80f`](https://github.com/marcinpsk/netbox-kea-ng/commit/dd3c80f7bdc07afeb19988cb1a307ac7a54744d1))
+
+### Chores
+
+- **deps**: Bump https://github.com/compilerla/conventional-pre-commit
+  ([`fceed84`](https://github.com/marcinpsk/netbox-kea-ng/commit/fceed8444218a204587d950703eeafec3f4087a6))
+
+- **deps**: Bump pydantic from 2.14.1 to 2.14.2
+  ([`3f1e130`](https://github.com/marcinpsk/netbox-kea-ng/commit/3f1e13048b9408c08729e8a87ea746d1f1e194b2))
+
+- **deps-dev**: Bump mypy from 2.3.1 to 2.4.1
+  ([`ab392a3`](https://github.com/marcinpsk/netbox-kea-ng/commit/ab392a3785219f76c5d30c186fdb35270db0a8f9))
+
+- **deps-dev**: Bump pre-commit from 4.6.2 to 4.7.0
+  ([`a66a6d6`](https://github.com/marcinpsk/netbox-kea-ng/commit/a66a6d654562b6cdda2f479ea187fca1c7502ec7))
+
+- **deps-dev**: Bump pynetbox from 7.8.0 to 7.9.0
+  ([`eef9552`](https://github.com/marcinpsk/netbox-kea-ng/commit/eef95525c08d4de16fb76d02f335dcf1fe8bec6d))
+
+- **deps-dev**: Bump types-requests
+  ([`2f46d45`](https://github.com/marcinpsk/netbox-kea-ng/commit/2f46d451a62c38264ffcb92d1dea61645ac71017))
+
+### Features
+
+- **server**: Probe only the DHCP services whose connection changed
+  ([`f548161`](https://github.com/marcinpsk/netbox-kea-ng/commit/f548161ca4bbdb7064dc385d464d43363fd74c19))
+
+### Refactoring
+
+- **dhcp-import**: Add a public plugin_model lookup
+  ([`7171e0c`](https://github.com/marcinpsk/netbox-kea-ng/commit/7171e0cddc7740926a81ee4224801a1885a788c5))
+
+- **dhcp-import**: Give the DHCP Import Mapping store one home
+  ([`e512951`](https://github.com/marcinpsk/netbox-kea-ng/commit/e512951f470cc3342e8f8a596edc85bc9469242e))
+
+- **dhcp-import**: List the modules of the apply step in AGENTS.md
+  ([`e5bcfdb`](https://github.com/marcinpsk/netbox-kea-ng/commit/e5bcfdb69c36d50e8f1df14a5a2ac66659ea13a3))
+
+- **dhcp-import**: Make the mapping lock key public
+  ([`3e0894a`](https://github.com/marcinpsk/netbox-kea-ng/commit/3e0894a3d9ec751db68715da045397c48db986f5))
+
+- **dhcp-import**: Move classes, networks and pools to dhcp_import_networks
+  ([`1d50c67`](https://github.com/marcinpsk/netbox-kea-ng/commit/1d50c67bdd6358973ee64b47ff51b245aee8402f))
+
+- **dhcp-import**: Move ImportSummary to dhcp_import_summary
+  ([`36959ee`](https://github.com/marcinpsk/netbox-kea-ng/commit/36959ee44a41ab626f702feaefb4a494261af509))
+
+- **dhcp-import**: Move Option Definitions and Options to dhcp_import_options
+  ([`9c91559`](https://github.com/marcinpsk/netbox-kea-ng/commit/9c91559df48c134f79424dc6199cc23cefa5ff87))
+
+- **dhcp-import**: Move Reservations to dhcp_import_reservations
+  ([`481dc1e`](https://github.com/marcinpsk/netbox-kea-ng/commit/481dc1efad0ced29a56bc25f4089248303846d1d))
+
+- **dhcp-import**: Move the DHCPServer to dhcp_import_server
+  ([`4ae17a6`](https://github.com/marcinpsk/netbox-kea-ng/commit/4ae17a69f3aa7c6233e8ed8f38751f6a3b6fdc74))
+
+- **dhcp-import**: Move the planned settings values to dhcp_import_values
+  ([`22029b3`](https://github.com/marcinpsk/netbox-kea-ng/commit/22029b3a4105998fefcb40a9ccb7bdfb9b6b78c3))
+
+- **dhcp-import**: Move the Stale judgment and removal to dhcp_import_stale
+  ([`c520fab`](https://github.com/marcinpsk/netbox-kea-ng/commit/c520fab71904512cf8b77c14c0f8da2ad5f6b949))
+
+- **ipam**: Move the completion receipts and the upgrade barrier out
+  ([`da4306c`](https://github.com/marcinpsk/netbox-kea-ng/commit/da4306c44cfb6616bd466528a0a391ebcc59df28))
+
+- **ipam**: Move the IPAM Ownership reads out of ipam_reconciliation
+  ([`a414269`](https://github.com/marcinpsk/netbox-kea-ng/commit/a414269d8ad0a5cfb584c71c8f6c63a52c6b5b5f))
+
+- **ipam**: One table of IPAM Ownership sources
+  ([`5df132f`](https://github.com/marcinpsk/netbox-kea-ng/commit/5df132fead906db189f8831b8cc326d1cae47289))
+
+- **ipam**: Rename the Reservation delegated prefix source
+  ([`5a86539`](https://github.com/marcinpsk/netbox-kea-ng/commit/5a86539c3a2b2f9c253de3506a5cbeeffd72a87c))
+
+- **server**: Build the Kea client from the connection as one unit
+  ([`83813f7`](https://github.com/marcinpsk/netbox-kea-ng/commit/83813f734a4f3b495e6288b2a0211de5d3a38542))
+
+### Testing
+
+- **server**: Require each Server field to be a connection field or listed
+  ([`ce3ed09`](https://github.com/marcinpsk/netbox-kea-ng/commit/ce3ed0948293c02c433fe5ad028c0d566080ee50))
+
+
 ## v3.12.1 (2026-11-04)
 
 ### Bug Fixes
