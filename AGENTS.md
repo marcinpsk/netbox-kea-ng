@@ -710,17 +710,14 @@ resort, reserved for true external boundaries you cannot run locally.
   the CI `lint` job) type-checks `netbox_kea/` and fails on any error. It exists to catch
   annotation drift between a producer and its consumer: a `list[dict | Reservation]` passed
   to a `list[Reservation]` parameter is an error because `list` is invariant, and that
-  reached review once already. NetBox is
-  deliberately **not** installed for this gate, so NetBox objects are `Any`; every
-  first-party signature and call site is still checked, and no upstream NetBox release
-  can break the gate. There is no baseline: fix a new error, or add a `# type: ignore[<code>]`
-  with a one-line reason only where the error comes from an untyped upstream class.
+  reached review once already. NetBox is deliberately **not** installed for this gate, so
+  NetBox objects are `Any`; every first-party signature and call site is still checked,
+  and no upstream NetBox release can break the gate. There is no baseline: fix a new error,
+  or add a `# type: ignore[<code>]` with a one-line reason only where the error comes from
+  an untyped upstream class.
   **Always run the gate through `uv run`**, so the locked dev group is active. `django-stubs`
   is a dev dependency, and mypy resolves Django imports through its stubs only when it is
-  installed; a baseline generated without it misses ~95 findings and CI then fails on a
-  clean checkout. A resolved baseline error does not fail the gate (`--allow-unsynced`),
-  so fixing types never breaks the build, and a mypy exit status above 1 fails loudly
-  rather than filtering an empty report into a false pass.
+  installed; a run without it misses about 95 findings that CI then reports.
 
 - **Mock-discipline gate.** `netbox_kea/tests/mock_discipline.py` (+
   `test_mock_discipline.py`, a pre-commit hook) flags new spec-less

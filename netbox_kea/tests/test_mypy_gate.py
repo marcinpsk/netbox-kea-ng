@@ -166,6 +166,17 @@ def test_no_baseline_can_mute_an_error():
     assert not _declares_package(_dev_group_requirements(REPOSITORY_ROOT / "pyproject.toml"), "mypy-baseline")
 
 
+def test_the_contributor_docs_describe_no_baseline_gate():
+    """A guide that still names the removed gate sends a contributor to a script and flags that do not exist."""
+    removed = ("mypy-gate.sh", "mypy-baseline", "--allow-unsynced", "baseline error")
+    for name in ("AGENTS.md", "README.md", "CONTRIBUTING.md"):
+        path = REPOSITORY_ROOT / name
+        if not path.exists():
+            continue
+        text = path.read_text()
+        assert not [term for term in removed if term in text], f"{name} still describes the removed baseline gate."
+
+
 def _gate_hooks() -> list[dict]:
     """Return each pre-commit hook that runs mypy."""
     import yaml
