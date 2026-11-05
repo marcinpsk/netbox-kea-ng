@@ -11,7 +11,6 @@ from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase
 
-from netbox_kea import constants
 from netbox_kea.forms import (
     Leases4SearchForm,
     Leases6SearchForm,
@@ -571,17 +570,13 @@ class TestReservationForm4(SimpleTestCase):
             ["Reservation identifier value must not exceed 255 characters."],
         )
 
-    def test_max_octet_client_id_is_accepted(self):
-        """A 128-octet client-id is 383 characters delimited — past the opaque 255-char cap."""
-        identifier = ":".join(["ab"] * constants.CLIENT_ID_MAX_OCTETS)
-        form = self._form(self._valid_data(identifier_type="client-id", identifier=identifier))
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_client_id_past_its_octet_limit_is_rejected(self):
-        identifier = ":".join(["ab"] * (constants.CLIENT_ID_MAX_OCTETS + 1))
-        form = self._form(self._valid_data(identifier_type="client-id", identifier=identifier))
-        self.assertFalse(form.is_valid())
-        self.assertIn("identifier", form.errors)
+    def test_client_id_takes_the_octet_range_that_kea_takes_for_a_reservation(self):
+        """Kea 3.2.0 takes a Reservation client-id of 1 to 255 octets."""
+        for octets, valid in ((1, True), (255, True), (256, False)):
+            with self.subTest(octets=octets):
+                identifier = ":".join(["ab"] * octets)
+                form = self._form(self._valid_data(identifier_type="client-id", identifier=identifier))
+                self.assertEqual(form.is_valid(), valid, form.errors)
 
     def test_opaque_identifier_is_preserved_exactly(self):
         form = self._form(self._valid_data(identifier_type="flex-id", identifier="a" * 255))
@@ -762,17 +757,12 @@ class TestReservationForm6(SimpleTestCase):
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["prefixes"], "2001:db8::/48")
 
-    def test_max_octet_duid_is_accepted(self):
-        """A 128-octet DUID is 383 characters delimited — past the opaque 255-char cap."""
-        identifier = ":".join(["ab"] * constants.DUID_MAX_OCTETS)
-        form = self._form(self._valid_data(identifier=identifier))
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_duid_past_its_octet_limit_is_rejected(self):
-        identifier = ":".join(["ab"] * (constants.DUID_MAX_OCTETS + 1))
-        form = self._form(self._valid_data(identifier=identifier))
-        self.assertFalse(form.is_valid())
-        self.assertIn("identifier", form.errors)
+    def test_duid_takes_the_octet_range_that_kea_takes_for_a_reservation(self):
+        """Kea 3.2.0 takes a Reservation DUID of 3 to 130 octets."""
+        for octets, valid in ((2, False), (3, True), (130, True), (131, False)):
+            with self.subTest(octets=octets):
+                form = self._form(self._valid_data(identifier=":".join(["ab"] * octets)))
+                self.assertEqual(form.is_valid(), valid, form.errors)
 
     def test_missing_identifier_type_fails(self):
         data = self._valid_data()
@@ -1030,6 +1020,17 @@ class TestLease4AddForm(SimpleTestCase):
         form = self._form({"ip_address": "10.0.0.100"})
         self.assertFalse(form.is_valid())
         self.assertIn("hw_address", form.errors)
+
+    def test_a_hardware_address_takes_the_octet_range_of_a_kea_lease(self):
+        """A Kea Lease hardware address has 1 to 20 octets, so it need not be a MAC address."""
+        for octets in (1, 20):
+            with self.subTest(octets=octets):
+                form = self._form(self._valid_data(hw_address="AB" * octets))
+                self.assertTrue(form.is_valid(), form.errors)
+                self.assertEqual(form.cleaned_data["request"].hw_address, ":".join(["ab"] * octets))
+        form = self._form(self._valid_data(hw_address="ab" * 21))
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["hw_address"], ["Enter a hardware address of 1 to 20 hexadecimal octets."])
 
     def test_valid_with_all_fields(self):
         """Form is valid when all optional fields are provided."""

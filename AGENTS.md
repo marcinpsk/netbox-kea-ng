@@ -737,7 +737,7 @@ resort, reserved for true external boundaries you cannot run locally.
   configuration keys or service names. String templates (f-strings, `.format`, `%`, `+`)
   count when they can build a wire literal. Wire owners are `kea.py`, `kea_paths.py`,
   `integrations/dhcp_import_ledger.py`, `integrations/dhcp_import_fields.py`, `server_configuration.py`, `subnet_catalogue.py`, `reservations.py`,
-  `dhcp_options.py`, `leases.py`, `subnet_settings.py`, and `managed_fields.py`, relative to `netbox_kea/`. The vocabulary of hyphenated
+  `dhcp_options.py`, `leases.py`, `identifiers.py`, `subnet_settings.py`, and `managed_fields.py`, relative to `netbox_kea/`. The vocabulary of hyphenated
   keys includes every key in `accepted-keys.json`.
   The checker excludes these exact modules, tests, and migrations. The transport stub
   `tests/kea_stub.py` may also use wire literals to model Kea responses.

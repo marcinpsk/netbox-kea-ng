@@ -1088,7 +1088,6 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
             members={20: "shared", 21: "shared"},
             global_settings=global_on,
         )
-        foreign = complete_lease({**self.lease, "hw-address": "", "client-id": ":".join(["01"] * 129)})
         cases = (
             (
                 "unverified Subnet",
@@ -1113,12 +1112,6 @@ class TestReservationUnknownBadgeOnLeases(_ViewTestBase):
                 _res_get({"subnet-id": 21, "hw-address": self._MAC, "ip-address": "198.18.0.20"}),
                 {},
                 "Kea returned a Reservation lookup reply that cannot be read.",
-            ),
-            (
-                "foreign identifier",
-                {"result": 3},
-                {"lease": foreign},
-                "No Reservation matched, and this lease carries a client identifier that no Reservation can hold.",
             ),
             (
                 "Shared Network",

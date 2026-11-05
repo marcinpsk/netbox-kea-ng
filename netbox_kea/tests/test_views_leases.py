@@ -1637,6 +1637,23 @@ class TestLeaseEditView(_ViewTestBase):
         self.assertEqual(update_args["hw-address"], "11:22:33:44:55:66")
         self.assertEqual(update_args["valid-lft"], 7200)
 
+    def test_post_saves_the_20_octet_hardware_address_that_the_form_filled_in(self):
+        """A Kea Lease hardware address can have 20 octets, so the form takes back the value it showed."""
+        hw_address = ":".join(["ab"] * 20)
+        record = {**_LEASE4_GET_RESP[0]["arguments"], "hw-address": hw_address}
+        with _lease_stub({"lease4-get": {"result": 0, "arguments": record}}):
+            shown = self.client.get(self._url())
+        self.assertContains(shown, f'value="{hw_address}"')
+        with _lease_stub(LeaseDaemon(4, record).responses()) as kea:
+            response = self.client.post(
+                self._url(),
+                {"shown": shown_token(record), "hostname": "newhost.example.com", "hw_address": hw_address},
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands(), ["lease4-get", "lease4-update"])
+        update_args = kea.bodies("lease4-update")[0]["arguments"]
+        self.assertEqual((update_args["hostname"], update_args["hw-address"]), ("newhost.example.com", hw_address))
+
     def test_post_kea_exception_redirects_with_error(self):
         """POST that raises KeaException shows error and redirects."""
         record = _LEASE4_GET_RESP[0]["arguments"]
@@ -3492,6 +3509,19 @@ class TestLease6EditDuid(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands(), ["lease6-get", "lease6-update"])
         self.assertEqual(kea.bodies("lease6-update")[0]["arguments"]["duid"], "01:02:03:04")
+
+    def test_post_writes_a_130_octet_duid(self):
+        """A Kea Lease DUID can have 130 octets."""
+        url = reverse(
+            "plugins:netbox_kea:server_lease_edit",
+            kwargs={"pk": self.server.pk, "family": 6, "ip_address": "2001:db8::1"},
+        )
+        record = complete_lease({"ip-address": "2001:db8::1", "duid": "00:00:01", "valid-lft": 3600})
+        duid = ":".join(["0a"] * 130)
+        with _lease_stub(LeaseDaemon(6, record).responses()) as kea:
+            response = self.client.post(url, {"shown": shown_token(record), "duid": duid.upper(), "hostname": ""})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.bodies("lease6-update")[0]["arguments"]["duid"], duid)
 
 
 # ---------------------------------------------------------------------------
