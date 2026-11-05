@@ -28,6 +28,7 @@ in depth; the tests here cover one message per outcome and per rejection.
 """
 
 import copy
+from typing import Any
 
 import requests
 from django.contrib import messages as django_messages
@@ -92,7 +93,13 @@ _EMPTY_SN_CONFIG_V4 = _catalogue_responses_for_subnets(4, [])["config-get"]
 # ---------------------------------------------------------------------------
 
 
-def _sn_config(version=4, name="prod-net", description="", option_data=None, subnets=None):
+def _sn_config(
+    version: int = 4,
+    name: str = "prod-net",
+    description: str = "",
+    option_data: list[dict[str, Any]] | None = None,
+    subnets: list[dict[str, Any]] | None = None,
+) -> Any:
     """config-get payload exposing a single shared network under ``Dhcp{version}``."""
     subnet_key = f"subnet{version}"
     network: dict = {"name": name, subnet_key: list(subnets or [])}

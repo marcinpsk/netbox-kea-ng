@@ -326,7 +326,7 @@ def test_concurrent_requests_are_all_recorded():
     assert stub.commands().count("version-get") == 50
 
 
-def test_queue_dispatch_is_thread_safe():
+def test_queue_dispatch_is_thread_safe() -> None:
     """Each queued response is consumed exactly once across concurrent callers.
 
     Without the dispatch lock, the non-atomic length-check-then-pop would let two

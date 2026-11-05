@@ -892,15 +892,6 @@ wheels = [
 ]
 
 [[package]]
-name = "mypy-baseline"
-version = "0.7.4"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/08/7e/484e07e1b27f9999f5f3f5097f0dfbb1ba756b0a2ed14acca764abad6cc8/mypy_baseline-0.7.4.tar.gz", hash = "sha256:c69d9964ebb2922f53245336bc506d9d277c8a35349a60ce50cff0c48a8702cc", size = 319098, upload-time = "2026-04-13T08:01:54.239Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/9e/77/3dee0c8f219cc5e68e7d84abc1ecc315856104c459658890bd9ecce17815/mypy_baseline-0.7.4-py3-none-any.whl", hash = "sha256:012c5f2f2bf9770b0e846d22580a72b9d43bdfe04148fee10a8af47b5bdd35c7", size = 17853, upload-time = "2026-04-13T08:01:52.444Z" },
-]
-
-[[package]]
 name = "mypy-extensions"
 version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -938,7 +929,6 @@ dev = [
     { name = "imageio-ffmpeg" },
     { name = "markdown-it-py" },
     { name = "mypy" },
-    { name = "mypy-baseline" },
     { name = "playwright" },
     { name = "pre-commit" },
     { name = "pynetbox" },
@@ -978,7 +968,6 @@ dev = [
     { name = "imageio-ffmpeg", specifier = ">=0.6.0,<1.0.0" },
     { name = "markdown-it-py", specifier = ">=4.0.0,<5.0.0" },
     { name = "mypy", specifier = ">=1.14.0,<2.4.0" },
-    { name = "mypy-baseline", specifier = ">=0.7.0,<1.0.0" },
     { name = "playwright", specifier = ">=1.62.0,<2.0.0" },
     { name = "pre-commit" },
     { name = "pynetbox", specifier = ">=7.3.0,<7.9.0" },

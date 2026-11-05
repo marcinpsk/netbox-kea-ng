@@ -37,8 +37,7 @@ uv run --group docs zensical build --strict  # documentation site: mkdocs.yml, p
 uv run --system-certs pre-commit install --install-hooks  # install configured hook types
 ./scripts/opengrep-scan.sh                 # custom opengrep ruleset gate (pre-commit only)
 ./scripts/opengrep-test.sh                 # opengrep rule tests
-uv run ./scripts/mypy-gate.sh              # type check, new errors only (pre-push + CI)
-uv run ./scripts/mypy-gate.sh --sync       # rewrite mypy-baseline.txt after fixing errors
+uv run mypy                                # type check, any error fails (pre-push + CI)
 ```
 
 ### Unit tests (`netbox_kea/tests/`)
@@ -708,23 +707,18 @@ resort, reserved for true external boundaries you cannot run locally.
   Never add a command name by hand. The black-box test `tests/test_kea_commands.py` compares the live harness daemons with the
   recording in CI. When you change `KEA_VERSION` or the harness hook libraries, run the
   script again.
-- **Type-check gate.** `scripts/mypy-gate.sh` (+ `test_mypy_gate.py`, a pre-push hook,
-  the CI `lint` job) type-checks `netbox_kea/` and fails only on errors that are absent
-  from `mypy-baseline.txt`. It exists to catch annotation drift between a producer and
-  its consumer: a `list[dict | Reservation]` passed to a `list[Reservation]` parameter is
-  an error because `list` is invariant, and that reached review once already. NetBox is
-  deliberately **not** installed for this gate, so NetBox objects are `Any`; every
-  first-party signature and call site is still checked, and no upstream NetBox release
-  can break the gate. Unlike the mock-discipline baseline, `mypy-baseline.txt` is **not**
-  empty: it records the errors that already existed when the gate was added. Fix one and
-  run `--sync` to shrink it; never `--sync` to silence a new error. The baseline matches
-  on error text, not line number, so edits above an error do not force a resync.
+- **Type-check gate.** `uv run mypy` (+ `test_mypy_gate.py`, a pre-push hook,
+  the CI `lint` job) type-checks `netbox_kea/` and fails on any error. It exists to catch
+  annotation drift between a producer and its consumer: a `list[dict | Reservation]` passed
+  to a `list[Reservation]` parameter is an error because `list` is invariant, and that
+  reached review once already. NetBox is deliberately **not** installed for this gate, so
+  NetBox objects are `Any`; every first-party signature and call site is still checked,
+  and no upstream NetBox release can break the gate. There is no baseline: fix a new error,
+  or add a `# type: ignore[<code>]` with a one-line reason only where the error comes from
+  an untyped upstream class.
   **Always run the gate through `uv run`**, so the locked dev group is active. `django-stubs`
   is a dev dependency, and mypy resolves Django imports through its stubs only when it is
-  installed; a baseline generated without it misses ~95 findings and CI then fails on a
-  clean checkout. A resolved baseline error does not fail the gate (`--allow-unsynced`),
-  so fixing types never breaks the build, and a mypy exit status above 1 fails loudly
-  rather than filtering an empty report into a false pass.
+  installed; a run without it misses about 95 findings that CI then reports.
 
 - **Mock-discipline gate.** `netbox_kea/tests/mock_discipline.py` (+
   `test_mock_discipline.py`, a pre-commit hook) flags new spec-less

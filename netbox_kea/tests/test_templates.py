@@ -74,7 +74,7 @@ class TestTemplateComments(SimpleTestCase):
         """
         self.assertEqual(_multiline_comment_lines("{# ok #} {# broken\nmore #}\n"), [1])
 
-    def test_no_multiline_comments_in_plugin_templates(self):
+    def test_no_multiline_comments_in_plugin_templates(self) -> None:
         """No shipped template may contain a multi-line ``{# #}`` comment."""
         offenders: list[str] = []
         templates = sorted(_TEMPLATES_DIR.rglob("*.html"))

@@ -56,97 +56,97 @@ class KeaConnection:
 class Server(JobsMixin, NetBoxModel):
     """A Kea DHCP server instance managed through the Kea Control API."""
 
-    name = models.CharField(unique=True, max_length=255)
-    ca_url = models.CharField(
+    name: models.CharField = models.CharField(unique=True, max_length=255)
+    ca_url: models.CharField = models.CharField(
         verbose_name="CA / Server URL",
         max_length=255,
         help_text="Default endpoint URL (Kea Control Agent or single DHCP daemon).",
     )
-    ca_username = models.CharField(
+    ca_username: models.CharField = models.CharField(
         blank=True,
         default="",
         max_length=255,
         verbose_name="CA Username",
         help_text="Username for the Kea Control Agent (or default for all daemons).",
     )
-    ca_password = models.CharField(
+    ca_password: models.CharField = models.CharField(
         blank=True,
         default="",
         max_length=255,
         verbose_name="CA Password",
         help_text="Password for the Kea Control Agent (or default for all daemons).",
     )
-    dhcp4_username = models.CharField(
+    dhcp4_username: models.CharField = models.CharField(
         blank=True,
         default="",
         max_length=255,
         verbose_name="DHCPv4 Username",
         help_text="Username for the DHCPv4 daemon. Only used when DHCPv4 URL is configured; falls back to CA credentials otherwise.",
     )
-    dhcp4_password = models.CharField(
+    dhcp4_password: models.CharField = models.CharField(
         blank=True,
         default="",
         max_length=255,
         verbose_name="DHCPv4 Password",
         help_text="Password for the DHCPv4 daemon. Only used when DHCPv4 URL is configured; falls back to CA credentials otherwise.",
     )
-    dhcp6_username = models.CharField(
+    dhcp6_username: models.CharField = models.CharField(
         blank=True,
         default="",
         max_length=255,
         verbose_name="DHCPv6 Username",
         help_text="Username for the DHCPv6 daemon. Only used when DHCPv6 URL is configured; falls back to CA credentials otherwise.",
     )
-    dhcp6_password = models.CharField(
+    dhcp6_password: models.CharField = models.CharField(
         blank=True,
         default="",
         max_length=255,
         verbose_name="DHCPv6 Password",
         help_text="Password for the DHCPv6 daemon. Only used when DHCPv6 URL is configured; falls back to CA credentials otherwise.",
     )
-    ssl_verify = models.BooleanField(
+    ssl_verify: models.BooleanField = models.BooleanField(
         default=True,
         verbose_name="SSL Verification",
         help_text="Enable SSL certificate verification. Disable with caution!",
     )
-    client_cert_path = models.CharField(
+    client_cert_path: models.CharField = models.CharField(
         max_length=4096,
         blank=True,
         default="",
         verbose_name="Client Certificate",
         help_text="Optional client certificate.",
     )
-    client_key_path = models.CharField(
+    client_key_path: models.CharField = models.CharField(
         max_length=4096,
         blank=True,
         default="",
         verbose_name="Private Key",
         help_text="Optional client key.",
     )
-    ca_file_path = models.CharField(
+    ca_file_path: models.CharField = models.CharField(
         max_length=4096,
         blank=True,
         default="",
         verbose_name="CA File Path",
         help_text="The specific CA certificate file to use for SSL verification.",
     )
-    dhcp6 = models.BooleanField(verbose_name="DHCPv6", default=True)
-    dhcp4 = models.BooleanField(verbose_name="DHCPv4", default=True)
-    dhcp4_url = models.CharField(
+    dhcp6: models.BooleanField = models.BooleanField(verbose_name="DHCPv6", default=True)
+    dhcp4: models.BooleanField = models.BooleanField(verbose_name="DHCPv4", default=True)
+    dhcp4_url: models.CharField = models.CharField(
         verbose_name="DHCPv4 URL",
         max_length=255,
         blank=True,
         default="",
         help_text="Direct URL for the DHCPv4 daemon. Overrides Server URL for DHCPv4 connections.",
     )
-    dhcp6_url = models.CharField(
+    dhcp6_url: models.CharField = models.CharField(
         verbose_name="DHCPv6 URL",
         max_length=255,
         blank=True,
         default="",
         help_text="Direct URL for the DHCPv6 daemon. Overrides Server URL for DHCPv6 connections.",
     )
-    has_control_agent = models.BooleanField(
+    has_control_agent: models.BooleanField = models.BooleanField(
         verbose_name="Has Control Agent",
         default=True,
         help_text=(
@@ -161,12 +161,12 @@ class Server(JobsMixin, NetBoxModel):
     )
     ipam_initial_observations: models.JSONField = models.JSONField(default=dict, editable=False)
 
-    sync_enabled = models.BooleanField(
+    sync_enabled: models.BooleanField = models.BooleanField(
         verbose_name="IPAM Sync Enabled",
         default=True,
         help_text="Include this server in the periodic Kea→NetBox IPAM sync job.",
     )
-    sync_leases_enabled = models.BooleanField(
+    sync_leases_enabled: models.BooleanField = models.BooleanField(
         verbose_name="Sync Leases",
         default=True,
         help_text=(
@@ -174,12 +174,12 @@ class Server(JobsMixin, NetBoxModel):
             " sync current DHCPv6 delegated-prefix leases as NetBox Prefixes."
         ),
     )
-    sync_reservations_enabled = models.BooleanField(
+    sync_reservations_enabled: models.BooleanField = models.BooleanField(
         verbose_name="Sync Reservations",
         default=True,
         help_text="Sync DHCP reservations as NetBox IP Addresses for this server.",
     )
-    sync_prefixes_enabled = models.BooleanField(
+    sync_prefixes_enabled: models.BooleanField = models.BooleanField(
         verbose_name="Sync Prefixes",
         default=True,
         help_text=(
@@ -187,7 +187,7 @@ class Server(JobsMixin, NetBoxModel):
             " sync current DHCPv6 delegated-prefix leases as NetBox Prefixes."
         ),
     )
-    sync_ip_ranges_enabled = models.BooleanField(
+    sync_ip_ranges_enabled: models.BooleanField = models.BooleanField(
         verbose_name="Sync IP Ranges",
         default=True,
         help_text="Sync Kea pools as NetBox IP Ranges for this server.",
@@ -197,7 +197,7 @@ class Server(JobsMixin, NetBoxModel):
         default=False,
         help_text="Deprecate an owned Prefix or IP Range when this server drops its last ownership link as stale. Never delete it.",
     )
-    sync_dhcp_plugin_enabled = models.BooleanField(
+    sync_dhcp_plugin_enabled: models.BooleanField = models.BooleanField(
         verbose_name="Sync to DHCP plugin",
         default=False,
         help_text=(
@@ -208,7 +208,7 @@ class Server(JobsMixin, NetBoxModel):
             "Has no effect if the plugin is absent or the global DHCP Plugin Integration switch is off."
         ),
     )
-    persist_config = models.BooleanField(
+    persist_config: models.BooleanField = models.BooleanField(
         verbose_name="Persist configuration",
         default=True,
         help_text=(
@@ -218,7 +218,7 @@ class Server(JobsMixin, NetBoxModel):
             "(e.g. Ansible, Puppet) or if you manage persistence manually."
         ),
     )
-    sync_vrf = models.ForeignKey(
+    sync_vrf: models.ForeignKey = models.ForeignKey(
         to="ipam.VRF",
         # PROTECT, not SET_NULL: from a branch, SET_NULL would null main's row (ADR 0007).
         on_delete=models.PROTECT,
@@ -425,7 +425,7 @@ class SettingsSingleton(ChangeLoggingMixin):
 class SyncConfig(SettingsSingleton):
     """Singleton configuration for the Kea→NetBox IPAM sync job."""
 
-    interval_minutes = models.PositiveIntegerField(
+    interval_minutes: models.PositiveIntegerField = models.PositiveIntegerField(
         verbose_name="Sync Interval (minutes)",
         default=5,
         validators=[MinValueValidator(1), MaxValueValidator(1440)],
@@ -433,7 +433,7 @@ class SyncConfig(SettingsSingleton):
             "How often the background sync job runs (minutes). Range 1–1440. A change applies after the next run."
         ),
     )
-    sync_enabled = models.BooleanField(
+    sync_enabled: models.BooleanField = models.BooleanField(
         verbose_name="Sync Enabled (global)",
         default=True,
         help_text="Global switch. Clear it to stop the sync for all Servers, whatever the Server setting.",
@@ -453,7 +453,7 @@ class SyncConfig(SettingsSingleton):
             " Remove deletes it, Deprecate sets its status to Deprecated, None keeps it."
         ),
     )
-    sync_leases_enabled = models.BooleanField(
+    sync_leases_enabled: models.BooleanField = models.BooleanField(
         verbose_name="Sync Leases",
         default=True,
         help_text=(
@@ -461,12 +461,12 @@ class SyncConfig(SettingsSingleton):
             " sync current DHCPv6 delegated-prefix leases as Prefixes."
         ),
     )
-    sync_reservations_enabled = models.BooleanField(
+    sync_reservations_enabled: models.BooleanField = models.BooleanField(
         verbose_name="Sync Reservations",
         default=True,
         help_text="Sync Kea reservations to NetBox IPAM as reserved IP addresses.",
     )
-    sync_prefixes_enabled = models.BooleanField(
+    sync_prefixes_enabled: models.BooleanField = models.BooleanField(
         verbose_name="Sync Prefixes",
         default=True,
         help_text=(
@@ -474,7 +474,7 @@ class SyncConfig(SettingsSingleton):
             " sync current DHCPv6 delegated-prefix leases as Prefixes."
         ),
     )
-    sync_ip_ranges_enabled = models.BooleanField(
+    sync_ip_ranges_enabled: models.BooleanField = models.BooleanField(
         verbose_name="Sync IP Ranges",
         default=True,
         help_text="Sync Kea pools to NetBox IPAM as IP Ranges.",
@@ -692,12 +692,12 @@ class KeaDhcpLink(ChangeLoggingMixin):
     constraint on non-null columns, so no row escapes uniqueness through a NULL.
     """
 
-    server = models.ForeignKey(
+    server: models.ForeignKey = models.ForeignKey(
         to="netbox_kea.Server",
         on_delete=models.CASCADE,
         related_name="dhcp_plugin_links",
     )
-    family = models.PositiveSmallIntegerField(
+    family: models.PositiveSmallIntegerField = models.PositiveSmallIntegerField(
         help_text="IP family of the linked object (4 or 6).",
     )
     kind: models.CharField = models.CharField(
@@ -705,30 +705,30 @@ class KeaDhcpLink(ChangeLoggingMixin):
         choices=choices({kind: KIND_LABELS[kind] for kind in MAPPING_KINDS}),
         help_text="The kind of the Kea source object.",
     )
-    kea_subnet_id = models.PositiveBigIntegerField(
+    kea_subnet_id: models.PositiveBigIntegerField = models.PositiveBigIntegerField(
         null=True,
         blank=True,
         help_text="Kea subnet-id of the source object or of its Subnet; null for a global source.",
     )
     # NULL is a distinct state here, not "empty": it means a Subnet or family source, and keadhcplink_kind_identity
     # refuses "" for every kind. Do not collapse it to a blank default.
-    kea_identity = models.TextField(  # noqa: DJ001
+    kea_identity: models.TextField = models.TextField(  # noqa: DJ001
         null=True,
         blank=True,
         help_text="Identity of the source object in its Subnet or globally; null for a Subnet or family source.",
     )
-    object_type = models.ForeignKey(
+    object_type: models.ForeignKey = models.ForeignKey(
         to="contenttypes.ContentType",
         on_delete=models.CASCADE,
         related_name="+",
     )
-    object_id = models.PositiveBigIntegerField()
+    object_id: models.PositiveBigIntegerField = models.PositiveBigIntegerField()
     sys4_object = GenericForeignKey("object_type", "object_id")
     options_mapped: models.BooleanField = models.BooleanField(
         default=False,
         help_text="Whether the import has mapped the DHCP Options of the object; until then it adopts unmapped ones.",
     )
-    created = models.DateTimeField(auto_now_add=True)
+    created: models.DateTimeField = models.DateTimeField(auto_now_add=True)
     # blank, but no default: a replayed payload has no number and validates, and the replay stamps one before the
     # insert; a writer that does not stamp fails on NOT NULL.
     confirmation: models.BigIntegerField = models.BigIntegerField(
