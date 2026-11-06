@@ -51,7 +51,7 @@ from netbox_kea.integrations.dhcp_import_plan import MappingSource
 from netbox_kea.integrations.dhcp_import_report import Kind, Reason
 from netbox_kea.integrations.dhcp_plugin import import_server_config
 from netbox_kea.mappers.kea_to_dhcp import parse_dhcp_config
-from netbox_kea.models import DhcpImportTrigger, KeaDhcpLink, Server, next_confirmation_number
+from netbox_kea.models import DhcpImportTrigger, IPAMOwnershipLink, KeaDhcpLink, Server, next_confirmation_number
 from netbox_kea.tests.kea_stub import _res_page, _sync_responses, stub_kea
 from netbox_kea.tests.test_branching import (
     _KEA_OBJECTS,
@@ -219,8 +219,6 @@ class DhcpMappingRecoveryTest(TransactionTestCase):
     def test_squash_deletes_subnet_before_its_protected_prefix(self):
         from ipam.models import Prefix
         from netbox_dhcp.models import DHCPServer, Subnet
-
-        from netbox_kea.models import IPAMOwnershipLink
 
         for mapped in (False, True):
             with self.subTest(mapped=mapped):
@@ -4234,7 +4232,7 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
         self.assertEqual((report.removed, report.errors), (1, 0))
         self.assertFalse(IPAddress.objects.filter(pk=stale.pk).exists())
 
-    def test_relevant_stale_ip_delete_is_a_row_failure_during_import(self):
+    def test_stale_ip_that_gains_a_reference_during_import_is_unlinked_not_deleted(self):
         from ipam.models import IPAddress
         from netbox_dhcp.models import DHCPServer, HostReservation
 
@@ -4268,10 +4266,12 @@ class DhcpMappingLockScopeTest(TransactionTestCase):
             finally:
                 pre_delete.disconnect(reference_the_other_address, sender=IPAddress)
         paused.finish()
-        self.assertEqual((report.removed, report.errors), (1, 1))
-        self.assertIn("lease", report.incomplete)
+        # The cleanup reads the reference under the row lock, so it never sends the delete that the import refuses.
+        self.assertEqual((report.removed, report.errors), (1, 0))
+        self.assertNotIn("lease", report.incomplete)
         self.assertTrue(IPAddress.objects.filter(pk=referenced[0].pk).exists())
         self.assertTrue(HostReservation.objects.filter(ipv4_address=referenced[0]).exists())
+        self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=referenced[0]).exists())
 
     def test_ip_delete_whose_only_dhcp_effect_is_an_empty_set_null_update_completes_during_import(self):
         from ipam.models import IPAddress
