@@ -288,7 +288,7 @@ _REFERENCES: dict[ObjectField, tuple[tuple[str, str], ...]] = {
 }
 
 
-def references(object_field: ObjectField, pk: int) -> bool:
+def is_referenced(object_field: ObjectField, pk: int) -> bool:
     """Return whether a DHCP plugin row references the IP address, Prefix or IP Range *pk* of *object_field*."""
     if not is_available():
         return False

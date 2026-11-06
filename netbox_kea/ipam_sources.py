@@ -77,9 +77,14 @@ def network_text(prefix: Prefix) -> str:
     return str(ipaddress.ip_network(str(prefix.prefix)))
 
 
+def range_key(start: Any, end: Any) -> str:
+    """Return the report key of a Pool from its canonical first and last address."""
+    return f"{start} - {end}"
+
+
 def range_text(ip_range: IPRange) -> str:
     """Return the canonical text of a NetBox IP Range, the same text as a Pool report's address."""
-    return f"{host_text(ip_range.start_address)} - {host_text(ip_range.end_address)}"
+    return range_key(host_text(ip_range.start_address), host_text(ip_range.end_address))
 
 
 @dataclass(frozen=True)

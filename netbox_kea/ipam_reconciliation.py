@@ -49,6 +49,7 @@ from .ipam_sources import (
     ObjectField,
     host_text,
     object_field,
+    range_key,
 )
 from .ipam_upgrade_barrier import adoption_waits
 from .leases import LEASE_VARIANTS, AllocationKind, DHCPv6PrefixLease, Lease, LeaseSnapshot
@@ -1098,7 +1099,7 @@ def _claim(
 
     *before_write* runs once, immediately before the first write of an owned object; a row that writes none skips it.
     """
-    kind = _KINDS[SOURCES[source].object_field]
+    kind = _kind_of(source)
     write = _Once(before_write)
     obj = kind.locked_row(server, source, report, conflicts, write)
     facts = report.facts
@@ -1330,7 +1331,7 @@ def _remove_stale_links(
     The last link of the Server to an IP address goes only when *last_links_go*. The last link of an object follows
     the stale action of its kind for *mode*.
     """
-    kind = _KINDS[SOURCES[source].object_field]
+    kind = _kind_of(source)
     links = IPAMOwnershipLink.objects.filter(server=server, family=family, source=source, confirmation__lt=cutoff)
     # A marked link still needs the release check: an operator may have removed its object's marker.
     candidates = [
@@ -1341,13 +1342,12 @@ def _remove_stale_links(
     if not candidates:
         return
     keeps_last = kind.guards_last_link and not last_links_go
-    action = kind.stale_action(server, mode)
     nowait = connection.in_atomic_block
     rows = _each_row(
         candidates,
         report,
         source,
-        lambda stale: _remove_stale_link(kind, stale, cutoff, action, keeps_last, nowait=nowait),
+        lambda stale: _remove_stale_link(kind, stale, cutoff, mode, keeps_last, nowait=nowait),
         lambda stale: f"stale {source} link of {stale.identity} of Server {server.name}",
     )
     for stale, outcome in rows:
@@ -1371,7 +1371,7 @@ def _remove_stale_link(
     kind: _Kind[Any, Any],
     stale: _StaleLink,
     cutoff: int,
-    action: StaleCleanupMode,
+    mode: StaleCleanupMode,
     keeps_last: bool,
     *,
     nowait: bool,
@@ -1408,8 +1408,9 @@ def _remove_stale_link(
         return outcome
     if _cleanup_adoption_waits(link, kind.field):
         return "waiting"
+    action = kind.stale_action(link, mode)
     # The reference read runs under the row lock, so a DHCP plugin row cannot add a reference before the delete.
-    if action == "none" or dhcp_plugin.references(kind.field, obj.pk):
+    if action == "none" or dhcp_plugin.is_referenced(kind.field, obj.pk):
         link.delete()
         return "unlinked"
     if action == "remove":
@@ -1523,8 +1524,8 @@ class _Kind(ABC, Generic[ReportT, ObjectT]):
         """Give an owned object the fields of its remaining *others* after a stale link goes."""
 
     @abstractmethod
-    def stale_action(self, server: Server, mode: StaleCleanupMode) -> StaleCleanupMode:
-        """Return what the cleanup does with the object when the last link goes: unlink, deprecate or remove."""
+    def stale_action(self, link: IPAMOwnershipLink, mode: StaleCleanupMode) -> StaleCleanupMode:
+        """Return what the cleanup does with the object when its last *link* goes: unlink, deprecate or remove."""
 
 
 class _AddressKind(_Kind[_Report, IPAddress]):
@@ -1600,7 +1601,7 @@ class _AddressKind(_Kind[_Report, IPAddress]):
     def restatus(self, obj: IPAddress, marker: Marker, others: Sequence[IPAMOwnershipLink]) -> _Outcome:
         return _restatus(obj, others)
 
-    def stale_action(self, server: Server, mode: StaleCleanupMode) -> StaleCleanupMode:
+    def stale_action(self, link: IPAMOwnershipLink, mode: StaleCleanupMode) -> StaleCleanupMode:
         return mode
 
 
@@ -1646,9 +1647,9 @@ class _NetworkKind(_Kind[_NetworkReport, ObjectT]):
         obj.save()
         return "updated"
 
-    def stale_action(self, server: Server, mode: StaleCleanupMode) -> StaleCleanupMode:
-        # The field of the Server whose phase dropped the last link applies.
-        return "deprecate" if server.sync_deprecate_prefixes_and_ranges else "none"
+    def stale_action(self, link: IPAMOwnershipLink, mode: StaleCleanupMode) -> StaleCleanupMode:
+        # The current field of the Server whose phase drops the last link applies, not the field the run loaded.
+        return "deprecate" if link.server.sync_deprecate_prefixes_and_ranges else "none"
 
 
 class _PrefixKind(_NetworkKind[Prefix]):
@@ -1675,6 +1676,12 @@ class _RangeKind(_NetworkKind[IPRange]):
     def list_filter(self, report: _NetworkReport) -> dict[str, str]:
         return {"start_address": report.start, "end_address": report.end}
 
+    def pool_report(self, pool: Pool, prefix_length: int) -> _NetworkReport | None:
+        """Return the report of a Pool, or None when the Pool is too large for an IP Range."""
+        if int(pool.end) - int(pool.start) + 1 > IP_RANGE_MAX_SIZE:
+            return None
+        return _NetworkReport(range_key(pool.start, pool.end), prefix_length, str(pool.start), str(pool.end))
+
     def identity_fields(self, report: _NetworkReport) -> dict[str, IPNetwork]:
         return {
             "start_address": IPNetwork(f"{report.start}/{report.prefix_length}"),
@@ -1683,7 +1690,13 @@ class _RangeKind(_NetworkKind[IPRange]):
 
 
 _ADDRESS = _AddressKind()
-_KINDS: dict[ObjectField, _Kind[Any, Any]] = {kind.field: kind for kind in (_ADDRESS, _PrefixKind(), _RangeKind())}
+_RANGE = _RangeKind()
+_KINDS: dict[ObjectField, _Kind[Any, Any]] = {kind.field: kind for kind in (_ADDRESS, _PrefixKind(), _RANGE)}
+
+
+def _kind_of(source: str) -> _Kind[Any, Any]:
+    """Return the adapter of the object kind that *source* owns."""
+    return _KINDS[SOURCES[source].object_field]
 
 
 def _run_network_phase(
@@ -1703,10 +1716,10 @@ def _run_network_phase(
             if subnet.configuration is None:
                 raise ValueError("A complete catalogue must include every Subnet configuration.")
             for pool in subnet.configuration.pools:
-                if int(pool.end) - int(pool.start) + 1 > IP_RANGE_MAX_SIZE:
+                row = _RANGE.pool_report(pool, subnet.network.prefixlen)
+                if row is None:
                     continue
-                address = f"{pool.start} - {pool.end}"
-                row = _NetworkReport(address, subnet.network.prefixlen, str(pool.start), str(pool.end))
+                address = row.address
                 earlier = reports.get(address)
                 if earlier is not None and (earlier.disagreement or earlier.prefix_length != row.prefix_length):
                     row = replace(earlier, disagreement=True)
@@ -1733,9 +1746,9 @@ def _network_marker_kind(sources: Collection[str]) -> MarkerKind:
 
 def _network_result(server: Server, source: str, row: _NetworkReport, outcome: _Outcome) -> PrefixClaim | RangeClaim:
     """Return the object while its identity lock is held by the current savepoint."""
-    field_name = SOURCES[source].object_field
-    obj = _KINDS[field_name].rows(server.sync_vrf_id, row).first()
-    return RangeClaim(outcome, obj) if field_name == "ip_range" else PrefixClaim(outcome, obj)
+    kind = _kind_of(source)
+    obj = kind.rows(server.sync_vrf_id, row).first()
+    return RangeClaim(outcome, obj) if kind is _RANGE else PrefixClaim(outcome, obj)
 
 
 def _claim_network_records(
@@ -1755,15 +1768,16 @@ def _claim_network_records(
         network = record.prefix if isinstance(record, (PDPoolClaim, ReservationPrefixClaim)) else record.network
         if network.version != family:
             raise ValueError("The network does not match the claim family")
+        row: _NetworkReport | None
         if not isinstance(record, PoolClaim):
             row = _NetworkReport(str(network), network.prefixlen)
         else:
             pool = record.pool
             if pool.start not in record.network or pool.end not in record.network or int(pool.end) < int(pool.start):
                 raise ValueError("The Pool must be contained by its Subnet")
-            if int(pool.end) - int(pool.start) + 1 > IP_RANGE_MAX_SIZE:
-                continue
-            row = _NetworkReport(f"{pool.start} - {pool.end}", record.network.prefixlen, str(pool.start), str(pool.end))
+            row = _RANGE.pool_report(pool, record.network.prefixlen)
+        if row is None:
+            continue
         earlier = reports.get(row.address)
         if earlier is not None and (earlier.disagreement or earlier.prefix_length != row.prefix_length):
             row = replace(earlier, disagreement=True)

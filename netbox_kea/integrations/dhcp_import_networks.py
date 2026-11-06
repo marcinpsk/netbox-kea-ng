@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 from django.db.models import Q
 
 from .. import event_scope, kea_paths
+from ..ipam_sources import range_key
 from ..kea import subnet_network
 from ..mappers.kea_to_dhcp import OptionDefIntent, PDPoolIntent, PoolIntent
 from .dhcp_import_fields import (
@@ -684,7 +685,7 @@ class _PoolAdapter(RowAdapter):
         if not isinstance(self.key, PoolKey):
             return None
         pool = self.key.range
-        return self.claims.ranges.get(f"{pool.start} - {pool.end}")
+        return self.claims.ranges.get(range_key(pool.start, pool.end))
 
     def blocked(self) -> NotWritten | None:
         """Return why the Pool has no IP Range to attach. A failed claim raises: the write fails."""
