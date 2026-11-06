@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-FileCopyrightText: 2023 Devon Mar <devon-mar@users.noreply.github.com>
 # SPDX-License-Identifier: Apache-2.0
-import ipaddress
 import logging
 from typing import cast
 
@@ -15,7 +14,7 @@ from .. import constants, filtersets, models, reservation_reads
 from ..constants import Family, LeaseState
 from ..decimal_text import parse_decimal
 from ..kea import LeaseQueryGuardError, lease_query_guard_message
-from ..leases import LeaseSnapshot, lease_record_data
+from ..leases import LeaseQuery, LeaseQueryError, LeaseSnapshot, lease_record_data, parse_lease_query
 from ..read_failure import ReadFailure, ReadFailureKind, attempt
 from ..reservations import (
     Reservation,
@@ -110,33 +109,51 @@ def _parse_lease_state(raw_state) -> tuple[LeaseState | None, str | None]:
         return None, f"state must be a Kea lease state code from 0 to {len(constants.LEASE_STATES) - 1}."
 
 
-def _lease_parameter_error(params, version: int) -> str | None:
-    """Return why the lease search parameters are invalid, or ``None``."""
-    ip_address = params.get("ip_address")
-    subnet_id = params.get("subnet_id")
-    if not any(params.get(name) for name in ("ip_address", "hw_address", "hostname", "subnet_id", "duid")):
-        return "At least one filter parameter is required: ip_address, hw_address, hostname, subnet_id" + (
-            ", duid" if version == 6 else ""
-        )
-    if params.get("duid") and version != 6:
-        return "duid is only supported for DHCPv6."
-    if params.get("hw_address") and version != 4:
-        return "hw_address is only supported for DHCPv4."
-    if ip_address:
-        try:
-            parsed_address = ipaddress.ip_address(ip_address)
-        except ValueError:
-            return "ip_address must be an IP address."
-        if parsed_address.version != version:
-            return f"ip_address must be an IPv{version} address."
-    if subnet_id:
-        try:
-            parsed_subnet_id = parse_decimal(subnet_id)
-        except ValueError:
-            return "subnet_id must be an integer."
-        if not constants.MIN_SUBNET_ID <= parsed_subnet_id <= constants.MAX_SUBNET_ID:
-            return f"subnet_id must be from {constants.MIN_SUBNET_ID} to {constants.MAX_SUBNET_ID}."
-    return None
+# The REST Lease search parameters of each family, with their Lease Query selectors.
+_LEASE_SELECTORS: dict[Family, dict[str, str]] = {
+    4: {
+        "ip_address": constants.BY_IP,
+        "hw_address": constants.BY_HW_ADDRESS,
+        "client_id": constants.BY_CLIENT_ID,
+        "hostname": constants.BY_HOSTNAME,
+        "subnet_id": constants.BY_SUBNET_ID,
+    },
+    6: {
+        "ip_address": constants.BY_IP,
+        "duid": constants.BY_DUID,
+        "hostname": constants.BY_HOSTNAME,
+        "subnet_id": constants.BY_SUBNET_ID,
+    },
+}
+
+
+class _LeaseParameterError(ValueError):
+    """The REST Lease search parameters do not give exactly one valid selector and a valid state."""
+
+
+def _lease_query(params, version: Family) -> LeaseQuery:
+    """Return the Lease Query of the REST Lease search parameters.
+
+    Raises:
+        _LeaseParameterError: If the parameters are refused; the message says why.
+
+    """
+    selectors = _LEASE_SELECTORS[version]
+    other: Family = 6 if version == 4 else 4
+    for name in _LEASE_SELECTORS[other].keys() - selectors.keys():
+        if params.get(name):
+            raise _LeaseParameterError(f"{name} is only supported for DHCPv{other}.")
+    given = [name for name in selectors if params.get(name)]
+    if len(given) != 1:
+        raise _LeaseParameterError(f"Give exactly one of these parameters: {', '.join(selectors)}.")
+    lease_state, state_error = _parse_lease_state(params.get("state"))
+    if state_error is not None:
+        raise _LeaseParameterError(state_error)
+    name = given[0]
+    try:
+        return parse_lease_query(version, selectors[name], params[name], lease_state)
+    except LeaseQueryError as exc:
+        raise _LeaseParameterError(f"{'state' if exc.field == 'state' else name}: {exc}") from exc
 
 
 class ServerViewSet(NetBoxModelViewSet):
@@ -154,9 +171,10 @@ class ServerViewSet(NetBoxModelViewSet):
     def leases4(self, request, pk=None, format=None):  # noqa: A002 - DRF format-suffix keyword
         """Search DHCPv4 leases on this server.
 
-        Query parameters (at least one required):
+        Query parameters (exactly one of the first five):
         - ``ip_address``: exact IP lookup
-        - ``hw_address``: lookup by MAC address (requires lease_cmds hook)
+        - ``hw_address``: lookup by hardware address (requires lease_cmds hook)
+        - ``client_id``: lookup by client ID (requires lease_cmds hook)
         - ``hostname``: lookup by hostname (requires lease_cmds hook)
         - ``subnet_id``: lookup all leases in a subnet (requires lease_cmds hook)
         - ``state``: keep only the leases in this Kea state code; a subnet lookup takes only 0 or 1
@@ -169,7 +187,7 @@ class ServerViewSet(NetBoxModelViewSet):
     def leases6(self, request, pk=None, format=None):  # noqa: A002 - DRF format-suffix keyword
         """Search DHCPv6 leases on this server.
 
-        Query parameters (at least one required):
+        Query parameters (exactly one of the first four):
         - ``ip_address``: exact IP lookup
         - ``duid``: lookup by DUID (requires lease_cmds hook)
         - ``hostname``: lookup by hostname (requires lease_cmds hook)
@@ -180,43 +198,24 @@ class ServerViewSet(NetBoxModelViewSet):
         """
         return self._lease_search(request, version=6)
 
-    def _lease_search(self, request, version: int) -> Response:
+    def _lease_search(self, request, version: Family) -> Response:
         """Dispatch a lease search to Kea and return its normalized Lease Snapshot."""
         server = self.get_object()
-        params = request.query_params
-
-        ip_address = params.get("ip_address")
-        hw_address = params.get("hw_address")
-        hostname = params.get("hostname")
-        subnet_id = params.get("subnet_id")
-        raw_state = params.get("state")
-        duid = params.get("duid")  # v6 only
-
-        if (error := _lease_parameter_error(params, version)) is not None:
-            return Response({"detail": error}, status=status.HTTP_400_BAD_REQUEST)
-
-        queries = (
-            (constants.BY_IP, ip_address),
-            (constants.BY_HW_ADDRESS, hw_address),
-            (constants.BY_DUID, duid),
-            (constants.BY_HOSTNAME, hostname),
-            (constants.BY_SUBNET_ID, subnet_id),
-        )
-        selector, value = next((query for query in queries if query[1]), (None, None))
-        lease_state, state_error = _parse_lease_state(raw_state)
-        if state_error is not None:
-            return Response({"detail": state_error}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            query = _lease_query(request.query_params, version)
+        except _LeaseParameterError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         def lease_search() -> LeaseSnapshot:
             with server.get_client(version=version) as client:
-                return client.lease_search(version, selector, value, state=lease_state, server_id=server.pk)
+                return client.lease_search(query, server_id=server.pk)
 
         try:
             snapshot = attempt(f"The DHCPv{version} Lease API search of Server {server.pk}", lease_search)
         except LeaseQueryGuardError as exc:
             logger.info("Rejected unsafe Subnet lease API query on server %s", server.name)
             return Response(
-                {"detail": lease_query_guard_message(exc, lease_state)},
+                {"detail": lease_query_guard_message(exc, query.state)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except Exception:

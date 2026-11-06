@@ -22,6 +22,13 @@ Match and the choice of the Leases that show the Current Lease Presence. They re
 `ReservationLookup.find(scope, key)` and `CurrentLeases.current_leases(query)`, and
 `lease_reservation_reads.py` holds the cached Kea adapters of both._
 
+_Amended 2026-11-05 (marcinpsk/netbox-kea-ng#272): the canonical identifier rule is also the rule for a Lease Client
+Identifier. `identifiers.py` holds its one grammar and two octet bounds tables, one for a Lease and one for a
+Reservation, both pinned to Kea 3.2.0. A Reservation takes a hardware address of 1 to 20 octets, a DUID of 3 to 130
+and a client identifier of 1 to 255. One parse in `leases.py` turns a Lease search into a Lease Query for the search
+forms and the REST Lease search, and the REST Lease search takes exactly one selector, as the REST Reservation search
+does._
+
 ## Context
 
 The repository interprets raw Kea host reservation dictionaries in views, forms, REST actions, synchronization,

@@ -20,7 +20,7 @@ from .dhcp_options import (
     option_matches_intent,
     parse_dhcp_options,
 )
-from .identifiers import normalize_hex
+from .identifiers import RESERVATION_OCTETS, ClientIdentifierKind, normalize_hex
 from .leases import DHCPv4AddressLease, DHCPv6PrefixLease, Lease, LeaseSnapshot
 from .malformed import MalformedKeaReply
 
@@ -48,12 +48,7 @@ _IDENTIFIER_LABELS: dict[IdentifierType, str] = {
     "circuit-id": "Circuit ID",
     "flex-id": "Flex ID",
 }
-_HEX_IDENTIFIER_OCTETS: dict[IdentifierType, tuple[int, int]] = {
-    "hw-address": (1, 20),
-    "duid": (1, 128),
-    "client-id": (2, 128),
-}
-_HEX_IDENTIFIERS = frozenset(_HEX_IDENTIFIER_OCTETS)
+_HEX_IDENTIFIERS = frozenset(RESERVATION_OCTETS)
 _MAX_OPAQUE_IDENTIFIER_LENGTH = 255
 _QUERY_PARAMETERS_BY_MODE: dict[ReservationQueryMode, frozenset[str]] = {
     "page": frozenset({"page", "limit", "cursor"}),
@@ -70,20 +65,9 @@ _QUERY_SELECTORS_BY_MODE: dict[ReservationQueryMode, frozenset[str]] = {
 _QUERY_PARAMETERS = frozenset().union(*_QUERY_PARAMETERS_BY_MODE.values())
 
 
-def _max_identifier_length(identifier_type: IdentifierType) -> int:
-    """Return the longest normalized value one identifier type can hold."""
-    octets = _HEX_IDENTIFIER_OCTETS.get(identifier_type)
-    # Normalized hex is colon-separated octet pairs: three characters per octet, less one.
-    return octets[1] * 3 - 1 if octets else _MAX_OPAQUE_IDENTIFIER_LENGTH
-
-
 def identity_text(identifier_type: IdentifierType, value: str) -> str:
     """Return the ``identifier-type:value`` text of one Reservation identifier."""
     return f"{identifier_type}:{value}"
-
-
-#: Longest :func:`identity_text` any Reservation Identity can produce.
-MAX_IDENTITY_LENGTH = max(len(identity_text(name, "x" * _max_identifier_length(name))) for name in _IDENTIFIER_LABELS)
 
 
 def reservation_query_mode(parameter_names: Collection[str]) -> ReservationQueryMode:
@@ -119,27 +103,12 @@ def _lease_identifiers(lease: Lease) -> tuple[tuple[IdentifierType, str | None],
     return (("duid", lease.duid), ("hw-address", lease.hw_address))
 
 
-@dataclass(frozen=True)
-class LeaseIdentities:
-    """The Reservation Identities that one Lease carries, in match order."""
+def lease_identities(lease: Lease) -> tuple[ReservationIdentity, ...]:
+    """Return the normalized Reservation Identities that one typed Lease carries, in match order.
 
-    identities: tuple[ReservationIdentity, ...]
-    #: The Lease also carries an identifier that no Reservation can hold, so no match proves "no Reservation".
-    foreign: bool
-
-
-def lease_identities(lease: Lease) -> LeaseIdentities:
-    """Return the normalized Reservation Identities that one typed Lease carries, in match order."""
-    identities: list[ReservationIdentity] = []
-    foreign = False
-    for identifier_type, value in _lease_identifiers(lease):
-        if value is None:
-            continue
-        try:
-            identities.append(ReservationIdentity(identifier_type, value))
-        except ValueError:
-            foreign = True
-    return LeaseIdentities(tuple(identities), foreign)
+    The Lease octet bounds lie within the Reservation bounds, so a Reservation can hold every Lease Client Identifier.
+    """
+    return tuple(ReservationIdentity(kind, value) for kind, value in _lease_identifiers(lease) if value is not None)
 
 
 class UnknownLeasePresence(Enum):
@@ -147,8 +116,6 @@ class UnknownLeasePresence(Enum):
 
     #: The Lease Snapshot excluded a record, so a missing Lease cannot be confirmed.
     INCOMPLETE_SNAPSHOT = auto()
-    #: A Current Lease carries an identifier that no Reservation can hold.
-    FOREIGN_IDENTIFIER = auto()
     #: The Lease query guard refused the query.
     QUERY_GUARD = auto()
     #: Kea returned a failure result, or the transport failed.
@@ -199,21 +166,10 @@ class CurrentLeaseFacts:
 def current_lease_facts(snapshot: LeaseSnapshot) -> CurrentLeaseFacts:
     """Return the Current Leases of *snapshot*; only they are live evidence of a relationship."""
     current = snapshot.current_records
-    identities: set[ReservationIdentity] = set()
-    foreign = False
-    for lease in current:
-        carried = lease_identities(lease)
-        identities.update(carried.identities)
-        foreign = foreign or carried.foreign
-    gap = None
-    if not snapshot.complete:
-        gap = UnknownLeasePresence.INCOMPLETE_SNAPSHOT
-    elif foreign:
-        gap = UnknownLeasePresence.FOREIGN_IDENTIFIER
     return CurrentLeaseFacts(
         addresses=frozenset(lease.identity.address for lease in current if lease.kind == "address"),
-        identities=frozenset(identities),
-        gap=gap,
+        identities=frozenset(identity for lease in current for identity in lease_identities(lease)),
+        gap=None if snapshot.complete else UnknownLeasePresence.INCOMPLETE_SNAPSHOT,
     )
 
 
@@ -234,13 +190,13 @@ class IdentityLeases:
 
 
 #: The Kea Lease query whose Leases can show whether the client of a Reservation holds a Current Lease.
-LeaseQuery = SubnetLeases | IdentityLeases
+CurrentLeasesQuery = SubnetLeases | IdentityLeases
 
 
 class CurrentLeases(Protocol):
     """The Current Leases that one Lease query finds in Kea."""
 
-    def current_leases(self, query: LeaseQuery) -> CurrentLeaseFacts:
+    def current_leases(self, query: CurrentLeasesQuery) -> CurrentLeaseFacts:
         """Return the Current Leases that *query* finds. A failed read raises the exception of the implementation."""
         ...
 
@@ -258,7 +214,7 @@ def current_lease_presence(reservation: Reservation, leases: CurrentLeases) -> C
     return _presence(reservation, leases.current_leases(query))
 
 
-def _lease_query(reservation: Reservation) -> LeaseQuery | None:
+def _lease_query(reservation: Reservation) -> CurrentLeasesQuery | None:
     """Return the Lease query that shows the client of *reservation*, or ``None`` when Kea has none."""
     if isinstance(reservation.scope, InSubnetReservationScope):
         # DHCPv6 registered leases are current too, and only an unfiltered Subnet query returns them.
@@ -296,8 +252,6 @@ class UnknownReservationMatch(Enum):
     MALFORMED_REPLY = auto()
     #: The client settings of the Server were not valid, so nothing was sent.
     INVALID_READ = auto()
-    #: No Reservation matched, and the Lease carries an identifier that no Reservation can hold.
-    FOREIGN_IDENTIFIER = auto()
     #: Kea does not know a Reservation command, so no Lease of the Server has a known match.
     RESERVATION_HOOK_UNAVAILABLE = auto()
     #: Kea can give an allocation of another Subnet of the Shared Network, which changes the match, or not.
@@ -438,7 +392,7 @@ def _first_found(lease: Lease, scope: ReservationScope, lookup: ReservationLooku
     keys: list[ReservationKey] = []
     if isinstance(scope, InSubnetReservationScope):
         keys.append(lease.prefix if isinstance(lease, DHCPv6PrefixLease) else lease.address)
-    keys.extend(lease_identities(lease).identities)
+    keys.extend(lease_identities(lease))
     for key in keys:
         found = lookup.find(scope, key)
         if found is not None:
@@ -467,8 +421,6 @@ def _match(
     address. The match is Unknown when a fact that the configuration does not show changes it.
     """
     if reservation is None:
-        if lease_identities(lease).foreign:
-            return ReservationMatchUnknown(UnknownReservationMatch.FOREIGN_IDENTIFIER)
         return Unreserved(subnet)
     flags = subnet.reservation_flags
     if flags is None:
@@ -688,9 +640,7 @@ def _allocation_match(
     if target not in reserved:
         return PendingAddressChange(reservation, reserved)
     reserved_mac = reservation.identity.hardware_address
-    lease_mac = next(
-        (mac for identity in lease_identities(lease).identities if (mac := identity.hardware_address)), None
-    )
+    lease_mac = next((mac for identity in lease_identities(lease) if (mac := identity.hardware_address)), None)
     if reserved_mac is not None and lease_mac is not None and lease_mac != reserved_mac:
         return StaleMac(reservation, lease_mac)
     return Reserved(reservation)
@@ -1294,7 +1244,7 @@ def _normalize_hex(value: Any, identifier_type: IdentifierType) -> str:
     try:
         if not isinstance(value, str):
             raise ValueError("The identifier is not a string.")
-        return normalize_hex(value, _HEX_IDENTIFIER_OCTETS[identifier_type])
+        return normalize_hex(value, RESERVATION_OCTETS[cast(ClientIdentifierKind, identifier_type)])
     except ValueError as exc:
         raise MalformedReservation(
             RESERVATION_INVALID_IDENTIFIER,

@@ -13,7 +13,7 @@ from django.forms.renderers import BaseRenderer
 from django.utils.html import format_html
 from django.utils.safestring import SafeString
 from ipam.models import VRF
-from netaddr import EUI, AddrFormatError, IPAddress, IPNetwork, mac_unix_expanded
+from netaddr import AddrFormatError, IPAddress
 from netbox.forms import NetBoxModelBulkEditForm, NetBoxModelFilterSetForm, NetBoxModelForm, NetBoxModelImportForm
 from pydantic import ValidationError as PydanticValidationError
 from utilities.forms import BOOLEAN_WITH_BLANK_CHOICES
@@ -27,11 +27,16 @@ from .decimal_text import parse_decimal
 from .dhcp_options import InvalidAddress, OptionRow, address_list, parse_dhcp_option
 from .kea import subnet_network
 from .leases import (
+    ALL_LEASES,
     DHCPv4LeaseRequest,
     DHCPv6LeaseRequest,
     LeaseIdentity,
+    LeaseQuery,
+    LeaseQueryError,
     ShownLease,
+    lease_client_identifier,
     lease_edit,
+    parse_lease_query,
     request_errors,
 )
 from .managed_fields import SharedNetworkEdit, SubnetEdit, SubnetFields, description_as_shown
@@ -49,7 +54,7 @@ from .reservations import (
 )
 from .server_connection import service_connections, validate_connection_change
 from .subnet_catalogue import VerifiedSubnet
-from .utilities import MAX_PREFIX_INPUT_LENGTH, is_hex_string, parse_delegated_prefixes
+from .utilities import MAX_PREFIX_INPUT_LENGTH, parse_delegated_prefixes
 
 if TYPE_CHECKING:
     from .views.notices import Notice
@@ -608,47 +613,17 @@ class BaseLeasesSarchForm(forms.Form):
         if by and not q:
             raise ValidationError({"q": "Search value is empty."})
 
-        if by == constants.BY_SUBNET:
-            try:
-                if "/" not in q:
-                    raise ValidationError({"q": "CIDR mask is required"})
-                net = IPNetwork(q, version=ip_version)
-                if net.ip != net.cidr.ip:
-                    raise ValidationError({"q": f"{net} is not a valid prefix. Did you mean {net.cidr}?"})
-                cleaned_data["q"] = net
-            except (AddrFormatError, TypeError, ValueError) as e:
-                raise ValidationError({"q": f"Invalid IPv{ip_version} subnet."}) from e
-        elif by == constants.BY_SUBNET_ID:
-            try:
-                i = parse_decimal(q)
-                if not MIN_SUBNET_ID <= i <= MAX_SUBNET_ID:
-                    raise ValidationError({"q": "Invalid subnet ID."})
-                cleaned_data["q"] = i
-            except ValueError as e:
-                raise ValidationError({"q": "Subnet ID must be an integer."}) from e
-        elif by == constants.BY_IP:
-            try:
-                # use IPAddress to normalize values
-                cleaned_data["q"] = str(IPAddress(q, version=ip_version))
-            except (AddrFormatError, TypeError, ValueError) as e:
-                raise ValidationError({"q": f"Invalid IPv{ip_version} address."}) from e
-        elif by == constants.BY_HW_ADDRESS:
-            try:
-                cleaned_data["q"] = str(EUI(q, version=48, dialect=mac_unix_expanded))
-            except (AddrFormatError, TypeError, ValueError) as e:
-                raise ValidationError({"q": "Invalid hardware address."}) from e
-        elif by == constants.BY_DUID:
-            if not is_hex_string(q, constants.DUID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
-                raise ValidationError({"q": "Invalid DUID."})
-            cleaned_data["q"] = q.replace("-", "")
-        elif by == constants.BY_CLIENT_ID:
-            if not is_hex_string(q, constants.CLIENT_ID_MIN_OCTETS, constants.CLIENT_ID_MAX_OCTETS):
-                raise ValidationError({"q": "Invalid client ID."})
-            cleaned_data["q"] = q.replace("-", "")
-
-        # The choice value is the Kea state code; the view takes the state name.
+        # The choice value is the Kea state code; the Lease Query takes the state name.
         state_str = cleaned_data.get("state", "")
-        cleaned_data["state"] = constants.LEASE_STATES[parse_decimal(state_str)] if state_str != "" else None
+        state = constants.LEASE_STATES[parse_decimal(state_str)] if state_str != "" else None
+        try:
+            cleaned_data["query"] = (
+                parse_lease_query(ip_version, by, q, state)
+                if by
+                else LeaseQuery(family=ip_version, selector=ALL_LEASES, state=state)
+            )
+        except LeaseQueryError as e:
+            raise ValidationError({"q" if e.field == "value" else "state": str(e)}) from e
 
         page = cleaned_data["page"]
         if page:
@@ -1787,23 +1762,15 @@ def option_rows(formset: forms.BaseFormSet) -> tuple[OptionRow, ...]:
     return tuple(rows)
 
 
-def _clean_mac(value: str) -> str:
-    """Return a submitted MAC address, or refuse one that is not a MAC address; blank stays blank."""
+def _clean_lease_identifier(value: str, selector: str) -> str:
+    """Return a submitted Client Identifier of the Lease *selector* in canonical form; blank stays blank."""
     value = value.strip()
-    if value:
-        try:
-            EUI(value, version=48)
-        except (AddrFormatError, ValueError) as exc:
-            raise ValidationError("Enter a valid MAC address (e.g. aa:bb:cc:dd:ee:ff).") from exc
-    return value
-
-
-def _clean_duid(value: str) -> str:
-    """Return a submitted DUID, or refuse one that is not colon-separated hex; blank stays blank."""
-    value = value.strip()
-    if value and not is_hex_string(value, constants.DUID_MIN_OCTETS, constants.DUID_MAX_OCTETS):
-        raise ValidationError("Enter a valid DUID as colon-separated hex octets.")
-    return value
+    if not value:
+        return value
+    try:
+        return lease_client_identifier(selector, value)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
 
 
 _KEEP = "Leave blank to keep the current value."
@@ -1856,14 +1823,13 @@ class Lease4EditForm(_LeaseEditForm):
     field_order = ("hostname", "hw_address", "valid_lft")
 
     hw_address = forms.CharField(
-        max_length=17,
         required=False,
         label="Hardware address",
-        help_text=f"MAC address in xx:xx:xx:xx:xx:xx format. {_KEEP}",
+        help_text=f"Hexadecimal octets, for example aa:bb:cc:dd:ee:ff. {_KEEP}",
     )
 
     def clean_hw_address(self) -> str:  # noqa: D102
-        return _clean_mac(self.cleaned_data.get("hw_address", ""))
+        return _clean_lease_identifier(self.cleaned_data.get("hw_address", ""), constants.BY_HW_ADDRESS)
 
 
 class Lease6EditForm(_LeaseEditForm):
@@ -1874,14 +1840,13 @@ class Lease6EditForm(_LeaseEditForm):
     field_order = ("hostname", "duid", "valid_lft")
 
     duid = forms.CharField(
-        max_length=3 * constants.DUID_MAX_OCTETS - 1,
         required=False,
         label="DUID",
-        help_text=f"Client DUID in hex. {_KEEP}",
+        help_text=f"Client DUID in hexadecimal octets. {_KEEP}",
     )
 
     def clean_duid(self) -> str:  # noqa: D102
-        return _clean_duid(self.cleaned_data.get("duid", ""))
+        return _clean_lease_identifier(self.cleaned_data.get("duid", ""), constants.BY_DUID)
 
 
 # The form field of each creation request field.
@@ -1949,9 +1914,8 @@ class Lease4AddForm(_LeaseAddForm):
         help_text="IPv4 address to assign.",
     )
     hw_address = forms.CharField(
-        max_length=17,
         label="Hardware address",
-        help_text="Client MAC address in xx:xx:xx:xx:xx:xx format. Kea requires it for a DHCPv4 lease.",
+        help_text="Client hardware address in hexadecimal octets, for example aa:bb:cc:dd:ee:ff. Kea requires it.",
     )
 
     def clean_ip_address(self) -> str:
@@ -1959,7 +1923,7 @@ class Lease4AddForm(_LeaseAddForm):
         return _validate_ip(self.cleaned_data["ip_address"], version=4)
 
     def clean_hw_address(self) -> str:  # noqa: D102
-        return _clean_mac(self.cleaned_data.get("hw_address", ""))
+        return _clean_lease_identifier(self.cleaned_data.get("hw_address", ""), constants.BY_HW_ADDRESS)
 
     def _request(self, data: dict[str, Any]) -> DHCPv4LeaseRequest:
         return DHCPv4LeaseRequest(
@@ -1981,9 +1945,8 @@ class Lease6AddForm(_LeaseAddForm):
         help_text="IPv6 address to assign.",
     )
     duid = forms.CharField(
-        max_length=3 * constants.DUID_MAX_OCTETS - 1,
         label="DUID",
-        help_text="Client DUID in colon-separated hex (e.g. 00:01:02:03).",
+        help_text="Client DUID in hexadecimal octets, for example 00:01:02:03.",
     )
     iaid = forms.IntegerField(
         label="IAID",
@@ -1997,7 +1960,7 @@ class Lease6AddForm(_LeaseAddForm):
         return _validate_ip(self.cleaned_data["ip_address"], version=6)
 
     def clean_duid(self) -> str:  # noqa: D102
-        return _clean_duid(self.cleaned_data.get("duid", ""))
+        return _clean_lease_identifier(self.cleaned_data.get("duid", ""), constants.BY_DUID)
 
     def _request(self, data: dict[str, Any]) -> DHCPv6LeaseRequest:
         return DHCPv6LeaseRequest(
