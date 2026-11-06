@@ -122,6 +122,28 @@ class PrefixPoolJobTest(TestCase):
         self.assertEqual((report.cleaned, report.removed, report.deprecated), (2, 0, 0))
         self.assertFalse(IPAMOwnershipLink.objects.filter(server=server).exists())
 
+    def test_cleanup_reads_the_deprecation_field_that_the_server_has_when_it_drops_the_last_link(self):
+        from netbox_kea.ipam_reconciliation import SubnetPhase, read_catalogue, reconcile
+        from netbox_kea.models import Server
+
+        server = _make_db_server(
+            dhcp6=False,
+            sync_leases_enabled=False,
+            sync_reservations_enabled=False,
+            sync_ip_ranges_enabled=False,
+            sync_deprecate_prefixes_and_ranges=True,
+        )
+        run_job(server)
+        # An operator turns deprecation off while the run holds the Server that it loaded before.
+        Server.objects.filter(pk=server.pk).update(sync_deprecate_prefixes_and_ranges=False)
+
+        with stub_kea(_catalogue_responses_for_subnets(4, [])):
+            report = reconcile(server, 4, [SubnetPhase(read_catalogue(server, 4))])
+
+        prefix = Prefix.objects.get()
+        self.assertEqual((prefix.status, report.deprecated, report.cleaned), ("active", 0, 1))
+        self.assertFalse(IPAMOwnershipLink.objects.filter(prefix=prefix).exists())
+
     def test_conflicting_pool_masks_create_no_range_or_ownership_link(self):
         server = _make_db_server(
             dhcp6=False, sync_leases_enabled=False, sync_reservations_enabled=False, sync_prefixes_enabled=False

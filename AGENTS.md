@@ -417,7 +417,7 @@ URL request
   instead of raising it. The rows are main-only (ADR 0007) and not change-logged.
   The apply step has one module for each concept in `integrations/`; a concept module never imports `dhcp_plugin.py`:
   - **`dhcp_plugin.py`**: the integration rule, the permissions, `import_server_config`, `apply_plan` and
-    `references` (whether a DHCP plugin row references one owned object; the stale cleanup reads it under the row lock).
+    `is_referenced` (whether a DHCP plugin row references one owned object; the stale cleanup reads it under the row lock).
   - **`dhcp_import_mappings.py`**: the Mapping store, the only `KeaDhcpLink` query of the import (OpenGrep
     `kea-dhcp-mapping-query-outside-store`); `mapping_identity` is in `models.py`.
   - **`dhcp_import_summary.py`**: `ImportSummary`, the entries, ownership outcomes and warnings of one run.
