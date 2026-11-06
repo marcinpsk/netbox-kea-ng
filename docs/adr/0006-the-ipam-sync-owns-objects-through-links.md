@@ -10,6 +10,13 @@ SPDX-License-Identifier: Apache-2.0
 
 # The IPAM synchronization owns NetBox objects through links
 
+_Amended 2026-11-06 (marcinpsk/netbox-kea-ng#274): one claim procedure and one stale cleanup procedure serve IP
+addresses, Prefixes and IP Ranges. A small adapter for each kind holds only the steps of that kind. Two rules are now
+the same for every kind. A release comes before an owner disagreement: when an operator removed the marker, the run
+drops the links and reports a conflict, also when the phase reports the object twice with different facts. The DHCP
+plugin reference guard reads, under the row lock, whether a DHCP plugin row references that one object, so a
+reference added during the cleanup keeps the object._
+
 ## Context
 
 The IPAM synchronization treats a NetBox IP address as its own when the description starts with

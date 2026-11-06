@@ -14,13 +14,12 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from django.utils import timezone
-from ipam.models import IPAddress, IPRange, Prefix
 
 from . import event_scope
 from .constants import Family
 from .integrations import dhcp_plugin
 from .ipam_marker import marked_description_q, parse_marker
-from .ipam_sources import SOURCES, ObjectField, Workflow
+from .ipam_sources import OWNED_KINDS, SOURCES, ObjectField, Workflow
 from .models import DhcpIntegrationConfig, IPAMOwnershipLink, IPAMOwnershipSource, Server, SyncConfig
 from .sync_plan import SourceScope, served_families, sync_plan
 
@@ -164,13 +163,8 @@ def upgrade_counts() -> UpgradeCounts:
     waiting: set[tuple[ObjectField, int]] = set()
     unowned: set[tuple[ObjectField, int]] = set()
     pending = _pending_adoptions()
-    fields: tuple[tuple[ObjectField, type[IPAddress | Prefix | IPRange]], ...] = (
-        ("ip_address", IPAddress),
-        ("prefix", Prefix),
-        ("ip_range", IPRange),
-    )
-    for object_field, model in fields:
-        for obj in model.objects.filter(marked_description_q(), kea_ownership_links__isnull=True).only(
+    for object_field, kind in OWNED_KINDS.items():
+        for obj in kind.model.objects.filter(marked_description_q(), kea_ownership_links__isnull=True).only(
             "pk", "description"
         ):
             if parse_marker(obj.description) is not None:
