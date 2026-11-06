@@ -90,6 +90,38 @@ class PrefixPoolJobTest(TestCase):
         self.assertEqual((pool.status, link.stale_mark, link.facts), ("deprecated", mark, facts))
         self.assertGreater(link.confirmation, mark)
 
+    def test_removing_the_marker_wins_over_a_pool_mask_disagreement(self):
+        from netbox_kea.ipam_reconciliation import PoolPhase, read_catalogue, reconcile
+
+        server = _make_db_server(
+            dhcp6=False, sync_leases_enabled=False, sync_reservations_enabled=False, sync_prefixes_enabled=False
+        )
+        run_job(server)
+        pool = IPRange.objects.get()
+        pool.description = "Lab pool"
+        pool.save()
+        overlapping = [SUBNET, {**SUBNET, "id": 2, "subnet": "198.18.0.0/25"}]
+
+        with stub_kea(_catalogue_responses_for_subnets(4, overlapping)):
+            report = reconcile(server, 4, [PoolPhase(read_catalogue(server, 4))])
+
+        self.assertEqual((report.conflicts, report.disagreements), ({"198.18.0.10 - 198.18.0.20"}, set()))
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
+
+    def test_cleanup_counts_each_unlinked_prefix_and_pool_as_a_cleaned_stale_link(self):
+        from netbox_kea.ipam_reconciliation import PoolPhase, SubnetPhase, read_catalogue, reconcile
+
+        server = _make_db_server(dhcp6=False, sync_leases_enabled=False, sync_reservations_enabled=False)
+        run_job(server)
+
+        with stub_kea(_catalogue_responses_for_subnets(4, [])):
+            report = reconcile(
+                server, 4, [SubnetPhase(read_catalogue(server, 4)), PoolPhase(read_catalogue(server, 4))]
+            )
+
+        self.assertEqual((report.cleaned, report.removed, report.deprecated), (2, 0, 0))
+        self.assertFalse(IPAMOwnershipLink.objects.filter(server=server).exists())
+
     def test_conflicting_pool_masks_create_no_range_or_ownership_link(self):
         server = _make_db_server(
             dhcp6=False, sync_leases_enabled=False, sync_reservations_enabled=False, sync_prefixes_enabled=False

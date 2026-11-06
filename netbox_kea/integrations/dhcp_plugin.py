@@ -62,6 +62,7 @@ from .dhcp_plugin_capabilities import PLUGIN_APP_LABEL, PluginCapabilities, plug
 
 if TYPE_CHECKING:
     from ..ipam_reconciliation import ReservationObservation
+    from ..ipam_sources import ObjectField
     from ..models import DhcpIntegrationConfig, Server
     from .dhcp_import_plan import FamilyPlan
 
@@ -272,42 +273,23 @@ def apply_plan(server, plan: FamilyPlan, capabilities: PluginCapabilities) -> Im
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def sys4_referenced_ip_ids() -> set[int]:
-    """PKs of ``ipam.IPAddress`` rows referenced by any DHCP-plugin reservation."""
+# The DHCP plugin model fields that reference each kind of owned object.
+_REFERENCES: dict[ObjectField, tuple[tuple[str, str], ...]] = {
+    "ip_address": (("HostReservation", "ipv4_address"), ("HostReservation", "ipv6_addresses")),
+    "prefix": (
+        ("Subnet", "prefix"),
+        ("SharedNetwork", "prefix"),
+        ("PDPool", "prefix"),
+        ("PDPool", "excluded_prefix"),
+        ("HostReservation", "ipv6_prefixes"),
+        ("HostReservation", "excluded_ipv6_prefixes"),
+    ),
+    "ip_range": (("Pool", "ip_range"),),
+}
+
+
+def references(object_field: ObjectField, pk: int) -> bool:
+    """Return whether a DHCP plugin row references the IP address, Prefix or IP Range *pk* of *object_field*."""
     if not is_available():
-        return set()
-    HostReservation = plugin_model("HostReservation")
-    ids: set[int] = set()
-    ids.update(HostReservation.objects.exclude(ipv4_address__isnull=True).values_list("ipv4_address_id", flat=True))
-    ids.update(HostReservation.objects.values_list("ipv6_addresses__id", flat=True))
-    ids.discard(None)
-    return ids
-
-
-def sys4_referenced_prefix_ids() -> set[int]:
-    """PKs of ``ipam.Prefix`` rows referenced by DHCP-plugin subnets/shared-networks/PD pools/reservations."""
-    if not is_available():
-        return set()
-    Subnet = plugin_model("Subnet")
-    SharedNetwork = plugin_model("SharedNetwork")
-    PDPool = plugin_model("PDPool")
-    HostReservation = plugin_model("HostReservation")
-    ids: set[int] = set()
-    ids.update(Subnet.objects.values_list("prefix_id", flat=True))
-    ids.update(SharedNetwork.objects.values_list("prefix_id", flat=True))
-    ids.update(PDPool.objects.values_list("prefix_id", flat=True))
-    ids.update(PDPool.objects.values_list("excluded_prefix_id", flat=True))
-    ids.update(HostReservation.objects.values_list("ipv6_prefixes__id", flat=True))
-    ids.update(HostReservation.objects.values_list("excluded_ipv6_prefixes__id", flat=True))
-    ids.discard(None)
-    return ids
-
-
-def sys4_referenced_iprange_ids() -> set[int]:
-    """PKs of ``ipam.IPRange`` rows referenced by any DHCP-plugin pool."""
-    if not is_available():
-        return set()
-    Pool = plugin_model("Pool")
-    ids = set(Pool.objects.values_list("ip_range_id", flat=True))
-    ids.discard(None)
-    return ids
+        return False
+    return any(plugin_model(model).objects.filter(**{name: pk}).exists() for model, name in _REFERENCES[object_field])

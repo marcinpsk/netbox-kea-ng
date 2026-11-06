@@ -250,14 +250,14 @@ class ClaimOwnershipTest(TestCase):
                 claim(self.server, family, [reservation], force=True, catalogue=_catalogue({}, 4))
         self.assertFalse(IPAddress.objects.exists())
 
-    def test_same_call_disagreement_never_forces_a_foreign_row(self):
+    def test_same_call_disagreement_never_forces_a_foreign_row_and_is_a_conflict(self):
         from netbox_kea.ipam_reconciliation import claim
         from netbox_kea.models import IPAMOwnershipLink
 
         ip = IPAddress.objects.create(address="198.18.0.10/24", description="Operator row")
         before = IPAddress.objects.values().get(pk=ip.pk)
         result = claim(self.server, 4, [self.lease, _typed(hostname="other.example.com")], force=True)
-        self.assertEqual(result.addresses["198.18.0.10"].outcome, "disagreement")
+        self.assertEqual(result.addresses["198.18.0.10"].outcome, "conflict")
         self.assertEqual(IPAddress.objects.values().get(pk=ip.pk), before)
         self.assertFalse(IPAMOwnershipLink.objects.exists())
 

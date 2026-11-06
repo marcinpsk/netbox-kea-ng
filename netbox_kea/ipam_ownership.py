@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The IPAM Ownership reads (ADR 0006): the Synchronization State of an IP address or a Prefix for one source.
 
-The Lease and Reservation views read the ownership of the objects that their rows show. The module also holds the
-canonical text of a NetBox address and network, which the claim code shares as a report key.
+The Lease and Reservation views read the ownership of the objects that their rows show.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ from ipam.models import IPAddress, Prefix
 
 from .constants import Family
 from .ipam_marker import parse_marker
+from .ipam_sources import host_text, network_text, object_field
 from .models import IPAMOwnershipLink, Server
 
 # The Synchronization State terms of CONTEXT.md; "hidden" is the Unknown of an object the user may not view.
@@ -67,10 +67,6 @@ def prefix_ownership(
     return _ownership(server, family, source, user, rows, keys, network_text)
 
 
-#: The link field of each model that an ownership read takes.
-_LINK_FIELDS: dict[type, str] = {IPAddress: "ip_address", Prefix: "prefix"}
-
-
 def _ownership(
     server: Server,
     family: Family,
@@ -90,7 +86,7 @@ def _ownership(
     if not keys:
         return {}
     own_link = IPAMOwnershipLink.objects.filter(
-        **{_LINK_FIELDS[rows.model]: OuterRef("pk")}, server=server, family=family, source=source
+        **{object_field(rows.model): OuterRef("pk")}, server=server, family=family, source=source
     )
     found_rows = list(rows.annotate(linked=Exists(own_link)).order_by("pk"))
     visible = set(
@@ -112,13 +108,3 @@ def _ownership_state(row: IPAddress | Prefix) -> OwnershipState:
     if parse_marker(row.description) is None:
         return "unmarked"
     return "synchronized" if row.linked else "not-synchronized"
-
-
-def host_text(address: Any) -> str:
-    """Return the canonical host text of a NetBox address, the same text as a phase report's address."""
-    return str(ipaddress.ip_address(str(address.ip)))
-
-
-def network_text(prefix: Prefix) -> str:
-    """Return the canonical network text of a NetBox Prefix, the same text as a network report's address."""
-    return str(ipaddress.ip_network(str(prefix.prefix)))
