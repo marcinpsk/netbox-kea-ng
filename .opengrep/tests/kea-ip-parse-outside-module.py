@@ -85,9 +85,12 @@ def good_int_literal():
     return ipaddress.IPv4Address(0), IPv4Address(4294967295)
 
 
-def good_address_and_length(address, length):
-    # ok: kea-ip-parse-outside-module
-    return ipaddress.IPv6Network((address, length))
+def bad_address_and_length(address, length):
+    # ruleid: kea-ip-parse-outside-module
+    zoned = ipaddress.IPv6Network(("fe80::%eth0", 64))
+    # ruleid: kea-ip-parse-outside-module
+    pair = ipaddress.IPv6Network((address, length))
+    return zoned, pair
 
 
 def good_type_use(value):

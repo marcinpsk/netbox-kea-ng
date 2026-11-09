@@ -950,7 +950,7 @@ def _wire_prefix(raw: dict[str, Any], address: Any) -> ipaddress.IPv6Network:
     if not 1 <= length <= 128:
         raise _Rejected([("out-of-range", "prefix-len")], ("delegated-prefix",))
     try:
-        return ipaddress.IPv6Network((address, length))
+        return ip_parse.ipv6_network(f"{address}/{length}")
     except ValueError:
         raise _Rejected([("invalid-prefix", "ip-address")], ("delegated-prefix",)) from None
 

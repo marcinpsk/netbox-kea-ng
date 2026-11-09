@@ -264,6 +264,7 @@ def test_recorded_refusals_ground_the_value_rules():
         (6, "2001:db8:100:100::", {"prefix-len": 0}, ("out-of-range", "prefix-len")),
         (6, "2001:db8:100:100::", {"prefix-len": 129}, ("out-of-range", "prefix-len")),
         (6, "2001:db8:100:100::", {"prefix-len": "56"}, ("invalid-type", "prefix-len")),
+        (6, "2001:db8:100:100::", {"ip-address": "fe80::%eth0"}, ("invalid-address", "ip-address")),
     ],
 )
 def test_a_malformed_field_gives_one_stable_diagnostic(family, address, change, expected):
