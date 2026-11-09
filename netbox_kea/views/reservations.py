@@ -58,9 +58,6 @@ MUTATION_UNCONFIRMED = "Reservation mutation capabilities could not be confirmed
 
 #: The title of the Lease Unknown badge, for each reason that shows one.
 _PARTIAL_LEASE_REASON = "Kea returned lease records that could not be read, so a missing Lease cannot be confirmed."
-_FOREIGN_IDENTIFIER_REASON = (
-    "A current lease carries a client identifier that no Reservation can hold, so a missing Lease cannot be confirmed."
-)
 
 
 def _unknown_badge_title(reason: UnknownLeasePresence) -> str:
@@ -68,8 +65,6 @@ def _unknown_badge_title(reason: UnknownLeasePresence) -> str:
     match reason:
         case UnknownLeasePresence.INCOMPLETE_SNAPSHOT:
             return _PARTIAL_LEASE_REASON
-        case UnknownLeasePresence.FOREIGN_IDENTIFIER:
-            return _FOREIGN_IDENTIFIER_REASON
         case (
             UnknownLeasePresence.QUERY_GUARD
             | UnknownLeasePresence.KEA_ERROR

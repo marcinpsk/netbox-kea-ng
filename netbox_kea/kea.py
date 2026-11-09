@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Literal, NamedTuple, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, TypedDict, cast
 
 import requests
 from requests.models import HTTPBasicAuth
@@ -21,7 +21,6 @@ from urllib3.exceptions import SSLError as Urllib3SSLError
 
 from . import constants
 from .constants import Family, IPAddressValue, IPNetworkValue, LeaseState, Persistence
-from .decimal_text import parse_decimal
 from .dhcp_options import (
     DHCPOptionEdit,
     OptionDefinition,
@@ -74,6 +73,9 @@ from .reservations import (
     apply_reservation_change,
     reservation_identifier_types,
 )
+
+if TYPE_CHECKING:
+    from .subnet_catalogue import SubnetIdentity  # subnet_catalogue imports this module
 
 logger = logging.getLogger(__name__)
 
@@ -348,14 +350,6 @@ class LeaseQueryTooBroad(LeaseQueryGuardError):
         super().__init__(f"The Subnet has at least {observed_leases} leases; the unpaged query limit is {max_leases}.")
 
 
-class LeaseQueryNotMeasurable(LeaseQueryGuardError):
-    """Raised when Kea cannot count a requested Subnet lease category."""
-
-    def __init__(self, state: LeaseState) -> None:
-        self.state = state
-        super().__init__(f"Kea cannot measure Subnet lease state {state} before an unpaged query.")
-
-
 class LeaseQueryPreflightUnavailable(LeaseQueryGuardError):
     """Raised when Kea cannot provide a capability required for a safe query."""
 
@@ -373,8 +367,6 @@ def lease_query_guard_message(exc: LeaseQueryGuardError, state: LeaseState | Non
     if isinstance(exc, LeaseQueryUnknownSubnet):
         # Kea can hold leases under a Subnet ID that its configuration no longer has.
         return "This Subnet CIDR is not configured on the Kea server. Search by Subnet ID instead."
-    if isinstance(exc, LeaseQueryNotMeasurable):
-        return "Kea cannot safely measure this lease state. Use an exact IP or client identifier search."
     if isinstance(exc, LeaseQueryPreflightUnavailable):
         if exc.reason == "state-command":
             return (
@@ -548,19 +540,6 @@ def _lease_cursor(version: int, cursor: str | None) -> IPAddressValue | None:
     if parsed.version != version:
         raise ValueError(f"Lease cursor family IPv{parsed.version} does not match DHCPv{version}.")
     return parsed
-
-
-def _subnet_id_value(value: Any) -> int:
-    """Return the Subnet ID in the Kea range of a lease query value, an integer or its decimal text."""
-    if isinstance(value, bool) or not isinstance(value, (int, str)):
-        raise ValueError("subnet_id must be a positive integer.")
-    try:
-        subnet_id = value if isinstance(value, int) else parse_decimal(value)
-    except ValueError as exc:
-        raise ValueError("subnet_id must be a positive integer.") from exc
-    if not constants.MIN_SUBNET_ID <= subnet_id <= constants.MAX_SUBNET_ID:
-        raise ValueError(f"subnet_id must be from {constants.MIN_SUBNET_ID} to {constants.MAX_SUBNET_ID}.")
-    return subnet_id
 
 
 def _lease_snapshot(
@@ -1526,21 +1505,15 @@ class KeaClient:
         return read_lease_change([reply], refused=3)
 
     def lease_search(
-        self,
-        version: Family,
-        selector: str,
-        value: Any,
-        *,
-        state: LeaseState | None = None,
-        server_id: int,
+        self, query: LeaseQuery, *, server_id: int, subnet: "SubnetIdentity | None" = None
     ) -> LeaseSnapshot:
-        """Return the Lease Snapshot of one supported selector; it covers the query scope, never the whole daemon.
+        """Return the Lease Snapshot of *query*; it covers the query scope, never the whole daemon.
 
-        A Subnet query takes the Subnet Identity that the caller resolved. A *state* keeps only the Leases in that
-        state. Kea filters a Subnet query; the client filters every other one.
+        A Subnet query by CIDR takes the *subnet* Identity that the caller resolved for it. Kea filters a Subnet query
+        by state; the client filters every other one.
 
         Raises:
-            ValueError: If the selector, value or state does not fit the family.
+            ValueError: If *query* reads every Lease, or a Subnet query by CIDR has no *subnet* for its CIDR.
             LeaseQueryGuardError: If a Subnet query is unsafe or cannot be measured.
             KeaException: If Kea returns a failure result.
             MalformedLeaseResponse: If the reply envelope is unusable.
@@ -1552,56 +1525,37 @@ class KeaClient:
             constants.BY_CLIENT_ID: (LEASE_GET_BY_CLIENT_ID, "client-id"),
             constants.BY_DUID: (LEASE_GET_BY_DUID, "duid"),
         }
-        if version not in (4, 6):
-            raise ValueError(f"version must be 4 or 6, got {version!r}")
+        version, selector, value = query.family, query.selector, query.value
         started = _now()
         if selector == constants.BY_IP:
-            return self._exact_lease_snapshot(version, value, state=state, started=started, server_id=server_id)
-        if selector in (constants.BY_SUBNET, constants.BY_SUBNET_ID):
-            if state is not None and state not in constants.LEASE_QUERY_STATES:
-                raise LeaseQueryNotMeasurable(state)
-            if selector == constants.BY_SUBNET:
-                from .subnet_catalogue import SubnetIdentity  # subnet_catalogue imports this module
-
-                if not isinstance(value, SubnetIdentity) or value.network.version != version:
-                    raise ValueError(f"A Subnet query takes the Subnet Identity of a DHCPv{version} Subnet.")
-                query = self._lease_query(version, selector, value.cidr, state)
-                subnet_id = value.subnet_id
-            else:
-                subnet_id = _subnet_id_value(value)
-                query = self._lease_query(version, selector, subnet_id, state)
-            command, arguments = self._subnet_lease_search_spec(version, subnet_id, state)
+            return self._exact_lease_snapshot(query, started=started, server_id=server_id)
+        if selector == ALL_LEASES:
+            raise ValueError("A read of every Lease goes through lease_get_page().")
+        if selector == constants.BY_SUBNET:
+            if subnet is None or subnet.cidr != value:
+                raise ValueError("A Subnet query by CIDR takes the Subnet Identity of its CIDR.")
+            command, arguments = self._subnet_lease_search_spec(version, subnet.subnet_id, query.state)
+        elif selector == constants.BY_SUBNET_ID:
+            command, arguments = self._subnet_lease_search_spec(version, cast(int, value), query.state)
         else:
-            spec = selector_specs.get(selector)
-            if spec is None or version not in spec[0]:
-                raise ValueError(f"Lease selector {selector!r} is not supported for DHCPv{version}.")
-            if not isinstance(value, str) or not value:
-                raise ValueError(f"{selector} must be a non-empty string.")
-            query = self._lease_query(version, selector, value, state)
-            command, arguments = spec[0][version], {spec[1]: value}
+            commands, key = selector_specs[selector]
+            command, arguments = commands[version], {key: value}
 
         response = self._lease_search_response(version, command, arguments)
         read = read_lease_collection(response, family=version)
         # Kea's statistics do not count every state, so the measured size can be smaller than the reply.
-        subnet_query = query.selector in (constants.BY_SUBNET, constants.BY_SUBNET_ID)
+        subnet_query = selector in (constants.BY_SUBNET, constants.BY_SUBNET_ID)
         if subnet_query and self.max_unpaged_leases is not None and read.raw_count > self.max_unpaged_leases:
             raise LeaseQueryTooBroad(read.raw_count, self.max_unpaged_leases)
         return _lease_snapshot(server_id, query, started, read, coverage="exhaustive")
 
-    @staticmethod
-    def _lease_query(version: Family, selector: str, value: Any, state: LeaseState | None) -> LeaseQuery:
-        return LeaseQuery(family=version, selector=selector, value=value, state=state)
-
-    def _exact_lease_snapshot(
-        self, version: Family, value: Any, *, state: LeaseState | None, started: datetime, server_id: int
-    ) -> LeaseSnapshot:
+    def _exact_lease_snapshot(self, query: LeaseQuery, *, started: datetime, server_id: int) -> LeaseSnapshot:
         """Return the Snapshot of every allocation at one address: each kind is read on its own.
 
         A malformed record is a diagnostic, so absence is complete only when Kea confirms it for every kind.
         """
-        if not isinstance(value, str) or not value:
-            raise ValueError("ip must be a non-empty string.")
-        results = [self.lease_get(identity) for identity in allocation_identities(version, value)]
+        version = query.family
+        results = [self.lease_get(identity) for identity in allocation_identities(version, cast(str, query.value))]
         records = tuple(result.lease for result in results if isinstance(result, LeaseFound))
         diagnostics = tuple(
             diagnostic
@@ -1612,9 +1566,6 @@ class KeaClient:
         raw_count = sum(not isinstance(result, LeaseAbsent) for result in results)
         read = LeaseRead(
             family=version, records=records, diagnostics=diagnostics, raw_count=raw_count, next_cursor=None
-        )
-        query = LeaseQuery(
-            family=version, selector=constants.BY_IP, value=str(ipaddress.ip_address(value)), state=state
         )
         return _lease_snapshot(server_id, query, started, read, coverage="exhaustive")
 

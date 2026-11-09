@@ -44,7 +44,6 @@ _SUBNETS = {4: [{"id": 20, "subnet": "198.18.0.0/24"}], 6: [{"id": 30, "subnet":
 _MAC = "aa:bb:cc:dd:ee:ff"
 _DUID = "00:01:02:03:04:05"
 _PREFIX = "2001:db8:100::/56"
-_LONG_CLIENT_ID = ":".join(["01"] * 129)
 #: The global flag that lets each Subnet apply Global Reservations; Kea's default is false.
 _GLOBAL_RESERVATIONS = {"reservations-global": True}
 
@@ -601,16 +600,6 @@ class ReservationMatchTest(TestCase):
         self.assertIsInstance(match, Unreserved)
         assert isinstance(match, Unreserved)
         self.assertEqual((match.subnet.subnet_id, match.subnet.cidr), (20, "198.18.0.0/24"))
-
-    def test_a_lease_with_an_identifier_no_reservation_can_hold_is_unknown_only_without_a_match(self):
-        foreign = _address_lease(hw_address="", client_id=_LONG_CLIENT_ID)
-        host = {"subnet-id": 20, "flex-id": "port-7", "ip-address": "198.18.0.20"}
-        for hosts, expected in (
-            ((), ReservationMatchUnknown(UnknownReservationMatch.FOREIGN_IDENTIFIER)),
-            ((host,), Reserved(_typed_reservation(host))),
-        ):
-            with self.subTest(expected=expected):
-                self.assertEqual(self._match(foreign, *hosts), expected)
 
     def test_the_walk_tries_the_scopes_that_the_flags_enable_first(self):
         in_subnet_lookups = [(20, "198.18.0.20"), (20, "hw-address")]
