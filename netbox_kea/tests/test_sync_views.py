@@ -1569,8 +1569,8 @@ class TestSyncEventDispatch(TransactionTestCase):
             fetch_redirect_response=False,
         )
         stopped = (
-            "Bulk sync stopped: NetBox saved the changes made so far but could not dispatch their events;"
-            " see server logs. Check the addresses before you sync again."
+            "Bulk sync stopped: NetBox saved the changes made so far, but an event dispatch failed, and some events"
+            " may already have been sent; see server logs. Check the addresses before you sync again."
         )
         self.assertEqual(
             [(message.level, str(message)) for message in django_messages.get_messages(response.wsgi_request)],

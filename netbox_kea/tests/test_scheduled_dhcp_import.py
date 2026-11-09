@@ -553,8 +553,8 @@ class ScheduledImportEventsTest(TransactionTestCase):
         self.assertFalse(DhcpImportRun.objects.filter(server=second).exists())
         self.assertEqual(
             _scheduled_lines(job)[-1],
-            "Scheduled DHCP Import of Server a-first saved its changes, but NetBox could not dispatch their events."
-            " The job stops.",
+            "Scheduled DHCP Import of Server a-first saved its changes, but an event dispatch failed, and some events"
+            " may already have been sent. The job stops.",
         )
 
     @with_sync_config(interval_minutes=23)

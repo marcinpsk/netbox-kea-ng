@@ -75,8 +75,8 @@ from .workspace import FamilyRouteMixin, ServerFamilyMixin
 logger = logging.getLogger(__name__)
 
 _BULK_SYNC_EVENTS_FAILED = (
-    "Bulk sync stopped: NetBox saved the changes made so far but could not dispatch their events; see server logs."
-    " Check the addresses before you sync again."
+    "Bulk sync stopped: NetBox saved the changes made so far, but an event dispatch failed, and some events may"
+    " already have been sent; see server logs. Check the addresses before you sync again."
 )
 
 
@@ -217,7 +217,8 @@ class ServerReservationBulkSyncView(FamilyRouteMixin, ServerFamilyMixin, Conditi
             report = reconcile(server, self.dhcp_version, [ReservationPhase(catalogue)])
         except event_scope.EventDispatchError:
             logger.exception(
-                "Server %s: the bulk Reservation Sync committed, but NetBox did not dispatch its events", pk
+                "Server %s: the bulk Reservation Sync stopped; an event dispatch failed and some events may have been sent",
+                pk,
             )
             messages.error(request, _BULK_SYNC_EVENTS_FAILED)
             return HttpResponseRedirect(redirect_url)

@@ -438,8 +438,8 @@ class DhcpImportEventTest(_Recorded, TransactionTestCase):
             [str(message) for message in get_messages(response.wsgi_request)],
             [
                 (
-                    "The DHCP-plugin import saved its changes, but NetBox could not dispatch their events, "
-                    "and the import stopped. See the server logs."
+                    "The DHCP-plugin import saved its changes, but an event dispatch failed, and some events "
+                    "may already have been sent. The import stopped. See the server logs."
                 )
             ],
         )
