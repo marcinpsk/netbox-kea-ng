@@ -610,7 +610,8 @@ rules:
       Parse IP address and network text with netbox_kea/ip_parse.py. ipaddress accepts an IPv6 scope
       zone (fe80::1%eth0) and keeps it in the value, and Kea and NetBox IPAM cannot use it. ip_parse
       refuses the zone with netaddr. An int literal or an (address, length) tuple is not text, so the
-      rule permits it.
+      rule permits it. Limit: netaddr.IPNetwork is not matched, because the IPAM writes build it from
+      parsed values.
     metadata:
       category: correctness
       confidence: HIGH
@@ -624,15 +625,18 @@ rules:
         - "netbox_kea/migrations/**"
     patterns:
       - pattern-either:
-          - pattern: ipaddress.$PARSE($VALUE, ...)
-          - pattern: ipaddress.$PARSE(..., address=$VALUE, ...)
-      - metavariable-regex:
-          metavariable: $PARSE
-          regex: ^(ip_address|ip_network|ip_interface|IPv4Address|IPv6Address|IPv4Network|IPv6Network|IPv4Interface|IPv6Interface)$
+          - patterns:
+              - pattern-either:
+                  - pattern: ipaddress.$PARSE($VALUE, ...)
+                  - pattern: ipaddress.$PARSE(..., address=$VALUE, ...)
+              - metavariable-regex:
+                  metavariable: $PARSE
+                  regex: ^(ip_address|ip_network|ip_interface|IPv4Address|IPv6Address|IPv4Network|IPv6Network|IPv4Interface|IPv6Interface)$
+              - pattern-not: ipaddress.$PARSE(($ADDRESS, $LENGTH), ...)
+          - pattern: netaddr.IPAddress($VALUE, ...)
       - metavariable-regex:
           metavariable: $VALUE
           regex: ^(?!\d+$)
-      - pattern-not: ipaddress.$PARSE(($ADDRESS, $LENGTH), ...)
 
   - id: kea-mac-sync-write-without-savepoint
     languages: [python]

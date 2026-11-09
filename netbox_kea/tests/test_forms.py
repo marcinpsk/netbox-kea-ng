@@ -148,6 +148,16 @@ class TestLeases6SearchFormValidation(SimpleTestCase):
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["page"], 3)
 
+    def test_page_address_is_one_ipv6_address_without_a_scope_zone(self):
+        form = self._form("", "", page="2001:DB8::A")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["page"], "2001:db8::a")
+        for page in ("fe80::1%eth0", "192.0.2.1"):
+            with self.subTest(page=page):
+                form = self._form("", "", page=page)
+                self.assertFalse(form.is_valid())
+                self.assertEqual(form.errors["page"], ["Invalid IP."])
+
 
 class TestLeaseSelectionField(SimpleTestCase):
     """LeaseSelectionField reads the shown facts that each selected lease row carries."""
@@ -638,6 +648,19 @@ class TestReservationForm6(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("ip_addresses", form.errors)
 
+    def test_ip_addresses_messages_and_canonical_text(self):
+        form = self._form(self._valid_data(ip_addresses="2001:DB8::A, 2001:db8::b"))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["ip_addresses"], "2001:db8::a,2001:db8::b")
+        for entries, message in (
+            ("2001:db8::1,fe80::1%eth0", "'fe80::1%eth0' is not a valid IP address."),
+            ("2001:db8::1,192.0.2.1", "'192.0.2.1' is not a valid IPv6 address."),
+        ):
+            with self.subTest(entries=entries):
+                form = self._form(self._valid_data(ip_addresses=entries))
+                self.assertFalse(form.is_valid())
+                self.assertEqual(form.errors["ip_addresses"], [message])
+
     def test_delegated_prefixes_are_canonicalised_and_deduplicated(self):
         data = self._valid_data()
         data["prefixes"] = "2001:db8:1::/64, 2001:0db8:1::/64 ,2001:db8:2::/64"
@@ -1039,6 +1062,19 @@ class TestLease6AddForm(SimpleTestCase):
         form = self._form(self._valid_data(ip_address="10.0.0.1"))
         self.assertFalse(form.is_valid())
         self.assertIn("ip_address", form.errors)
+
+    def test_ip_address_messages_and_canonical_text(self):
+        form = self._form(self._valid_data(ip_address="2001:DB8::A"))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["ip_address"], "2001:db8::a")
+        for address, message in (
+            ("fe80::1%eth0", "Enter a valid IPv6 address."),
+            ("10.0.0.1", "Must be an IPv6 address."),
+        ):
+            with self.subTest(address=address):
+                form = self._form(self._valid_data(ip_address=address))
+                self.assertFalse(form.is_valid())
+                self.assertEqual(form.errors["ip_address"], [message])
 
     def test_invalid_ip_address_rejected(self):
         """Non-IP string in ip_address causes form error."""

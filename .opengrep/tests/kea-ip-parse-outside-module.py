@@ -6,6 +6,10 @@ import ipaddress
 import ipaddress as ip
 from ipaddress import IPv4Address, IPv6Network, ip_address
 
+import netaddr
+from ipam.models import IPAddress as IPAddressModel
+from netaddr import IPAddress, IPNetwork
+
 from netbox_kea import ip_parse
 
 
@@ -56,6 +60,19 @@ def bad_aliases(text):
     # ruleid: kea-ip-parse-outside-module
     other = ip.ip_network(text)
     return address, network, other
+
+
+def bad_netaddr(text, version):
+    # ruleid: kea-ip-parse-outside-module
+    address = netaddr.IPAddress(text)
+    # ruleid: kea-ip-parse-outside-module
+    page = IPAddress(text, version=version)
+    return address, page
+
+
+def good_netaddr_values(address, length):
+    # ok: kea-ip-parse-outside-module
+    return netaddr.IPAddress(0), IPNetwork(f"{address}/{length}"), IPAddressModel(address=IPNetwork(address))
 
 
 def good_parse(text):

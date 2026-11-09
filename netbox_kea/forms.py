@@ -12,7 +12,6 @@ from django.forms.renderers import BaseRenderer
 from django.utils.html import format_html
 from django.utils.safestring import SafeString
 from ipam.models import VRF
-from netaddr import AddrFormatError, IPAddress
 from netbox.forms import NetBoxModelBulkEditForm, NetBoxModelFilterSetForm, NetBoxModelForm, NetBoxModelImportForm
 from pydantic import ValidationError as PydanticValidationError
 from utilities.forms import BOOLEAN_WITH_BLANK_CHOICES
@@ -186,8 +185,8 @@ def _validate_subnet_cidr(value: str, *, strict: bool) -> str:
 def _validate_ip(value: str, version: Family) -> str:
     """Validate that *value* is a single IP address matching *version* (4 or 6)."""
     try:
-        addr = IPAddress(value)
-    except (AddrFormatError, ValueError) as exc:
+        addr = ip_parse.ip_address(value)
+    except ValueError as exc:
         raise ValidationError(f"Enter a valid IPv{version} address.") from exc
     if addr.version != version:
         raise ValidationError(f"Must be an IPv{version} address.")
@@ -628,9 +627,9 @@ class BaseLeasesSarchForm(forms.Form):
         if page:
             if by == "":
                 try:
-                    page_ip = IPAddress(page, version=ip_version)
+                    page_ip = ip_parse.ipv4_address(page) if ip_version == 4 else ip_parse.ipv6_address(page)
                     cleaned_data["page"] = str(page_ip)
-                except (AddrFormatError, TypeError, ValueError) as e:
+                except (TypeError, ValueError) as e:
                     raise ValidationError({"page": "Invalid IP."}) from e
             else:
                 try:
@@ -1087,8 +1086,8 @@ class Reservation6Form(_ReservationForm):
             if not raw:
                 continue
             try:
-                addr = IPAddress(raw)
-            except (AddrFormatError, ValueError) as exc:
+                addr = ip_parse.ip_address(raw)
+            except ValueError as exc:
                 raise ValidationError(f"'{raw}' is not a valid IP address.") from exc
             if addr.version != 6:
                 raise ValidationError(f"'{raw}' is not a valid IPv6 address.")
