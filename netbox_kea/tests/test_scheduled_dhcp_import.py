@@ -364,6 +364,35 @@ class ScheduledImportTest(_ScheduledImportTestCase):
         self.assertTrue(any(_FAILED_FAMILY.search(line) for line in lines), lines)
         self.assertEqual(lines[-1], "Scheduled DHCP Import complete: servers=1 failed=1")
 
+    def test_a_client_id_too_long_for_the_dhcp_plugin_is_unsupported_and_the_job_does_not_fail(self):
+        server = _server("long-client-id")
+        # The plugin field holds 255 characters: 85 octets fit (254), 128 octets (383) do not.
+        fits, too_long = ":".join(["01"] * 85), ":".join(["02"] * 128)
+        config = {"subnet4": [{"id": 1, "subnet": "198.18.1.0/24"}]}
+        hosts = [
+            {"subnet-id": 1, "client-id": fits, "ip-address": "198.18.1.10"},
+            {"subnet-id": 1, "client-id": too_long, "ip-address": "198.18.1.11"},
+        ]
+        job = _make_job()
+
+        with stub_kea(_sync_responses({4: config}, {4: hosts})):
+            KeaIpamSyncJob(job).run()
+
+        entries = {
+            path: (outcome, reason)
+            for path, outcome, reason in DhcpImportRun.objects.get(server=server)
+            .entries.filter(kind="reservation")
+            .values_list("kea_path", "outcome", "reason")
+        }
+        self.assertEqual(
+            entries,
+            {
+                f"Dhcp4/subnet4[id=1]/reservations[client-id={fits}]": ("created", ""),
+                f"Dhcp4/subnet4[id=1]/reservations[client-id={too_long}]": ("unsupported", "plugin_gap"),
+            },
+        )
+        self.assertEqual(_scheduled_lines(job)[-1], "Scheduled DHCP Import complete: servers=1 failed=0")
+
     def test_an_option_definition_write_failure_fails_the_server_and_the_job(self):
         server = _server("clash")
         dhcp_server = apps.get_model(DHCP_PLUGIN, "DHCPServer").objects.create(name=server.name)
@@ -553,8 +582,8 @@ class ScheduledImportEventsTest(TransactionTestCase):
         self.assertFalse(DhcpImportRun.objects.filter(server=second).exists())
         self.assertEqual(
             _scheduled_lines(job)[-1],
-            "Scheduled DHCP Import of Server a-first saved its changes, but NetBox could not dispatch their events."
-            " The job stops.",
+            "Scheduled DHCP Import of Server a-first saved its changes, but an event dispatch failed, and some events"
+            " may already have been sent. The job stops.",
         )
 
     @with_sync_config(interval_minutes=23)

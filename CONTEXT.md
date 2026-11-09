@@ -121,6 +121,17 @@ A time-bounded observation of Leases for one Server, address family and requeste
 Snapshot preserves valid Leases with diagnostics and cannot establish the absence of a Lease.
 _Avoid_: Lease response, lease collection
 
+**Lease Query**:
+The scope of one Lease Snapshot: the address family, exactly one selector with its value (an address, a Subnet, a
+Client Identifier or a hostname), and an optional Lease state.
+_Avoid_: Lease search parameters, lease filter
+
+**Client Identifier**:
+The hardware address, DUID or client-id with which Kea names a DHCP client in a Lease or a Reservation, in canonical
+lowercase colon-separated octets. Kea limits its octet count per kind and per record; Circuit ID and Flex ID are
+opaque Reservation identifiers, not Client Identifiers.
+_Avoid_: MAC address (a hardware address need not be one), client ID (one kind only)
+
 **Reservation**:
 A Kea host-specific DHCP configuration for exactly one Reservation Identity. It can reserve no address, one IPv4 address, or multiple IPv6 addresses and delegated prefixes.
 _Avoid_: Host record, static lease

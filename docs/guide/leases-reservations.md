@@ -90,9 +90,13 @@ Edit a lease from the row menu of a lease search: change the hostname and save. 
   DHCPv6 address, whose valid lifetime has not ended. An infinite lifetime never ends. The
   Reservation **Lease** column shows *No Lease* only when the lease query of that Reservation is
   complete; otherwise it shows *Lease Unknown* with the reason.
-- The lease REST actions (`/api/plugins/kea/servers/<pk>/leases4/` and `leases6/`) take one filter:
-  `ip_address`, `hw_address` (DHCPv4), `duid` (DHCPv6), `hostname` or `subnet_id`. When a request
-  gives more than one, the first in that order is used. `state` keeps only the leases in one Kea state
+- The lease REST actions (`/api/plugins/kea/servers/<pk>/leases4/` and `leases6/`) take exactly one
+  filter: `ip_address`, `hw_address` (DHCPv4), `client_id` (DHCPv4), `duid` (DHCPv6), `hostname` or
+  `subnet_id`. A request with no filter or with more than one gets HTTP 400. A value that does not fit
+  its filter also gets HTTP 400, and the reply names the parameter. A hardware address takes 1 to 20
+  hexadecimal octets, a client ID 2 to 255 and a DUID 3 to 130, as Kea does for a lease. Before
+  this release, the actions used the first filter in that order and ignored the others, and they
+  sent a bad `hw_address` or `duid` to Kea. `state` keeps only the leases in one Kea state
   code (`0` assigned to `4` registered) for every filter. A `subnet_id` search takes only `0` (assigned)
   or `1` (declined), because Kea counts only those states for the query guard.
   They return one normalized observation: `count`, `results`, `diagnostics`, `complete`, `next_cursor`,

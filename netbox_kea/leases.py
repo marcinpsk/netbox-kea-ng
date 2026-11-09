@@ -15,7 +15,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, NamedTuple, TypeAlias, get_args
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal, NamedTuple, TypeAlias, cast, get_args
 
 from pydantic import (
     AwareDatetime,
@@ -29,6 +29,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
+from . import ip_parse
 from .constants import (
     BY_CLIENT_ID,
     BY_DUID,
@@ -38,10 +39,8 @@ from .constants import (
     BY_SUBNET,
     BY_SUBNET_ID,
     INFINITE_LIFETIME,
-    LEASE_CLIENT_ID_OCTETS,
-    LEASE_DUID_OCTETS,
-    LEASE_HW_ADDRESS_OCTETS,
     LEASE_QUERY_STATES,
+    LEASE_SELECTOR_BY_IDENTIFIER,
     LEASE_STATES,
     MAX_SUBNET_ID,
     MIN_SUBNET_ID,
@@ -50,7 +49,8 @@ from .constants import (
     IPAddressValue,
     LeaseState,
 )
-from .identifiers import normalize_hex
+from .decimal_text import parse_decimal
+from .identifiers import LEASE_OCTETS, ClientIdentifierKind, normalize_hex, octets_message
 from .malformed import MalformedKeaReply
 
 # The last second that an aware datetime can hold.
@@ -63,6 +63,12 @@ _QUERY_SELECTORS: dict[int, frozenset[str]] = {
     6: frozenset({ALL_LEASES, BY_IP, BY_HOSTNAME, BY_DUID, BY_SUBNET, BY_SUBNET_ID}),
 }
 _SUBNET_SELECTORS = frozenset({BY_SUBNET, BY_SUBNET_ID})
+# The selectors that take a Client Identifier, with its kind.
+_IDENTIFIER_KINDS: dict[str, ClientIdentifierKind] = {
+    selector: cast(ClientIdentifierKind, kind)
+    for selectors in LEASE_SELECTOR_BY_IDENTIFIER.values()
+    for kind, selector in selectors.items()
+}
 
 _INACTIVE_STATES: frozenset[str] = frozenset({"declined", "expired-reclaimed", "released"})
 AllocationKind = Literal["address", "delegated-prefix"]
@@ -129,9 +135,9 @@ def _hex_identifier(octets: tuple[int, int]) -> BeforeValidator:
     return BeforeValidator(normalize)
 
 
-HardwareAddress = Annotated[str, _hex_identifier(LEASE_HW_ADDRESS_OCTETS)]
-ClientIdentifier = Annotated[str, _hex_identifier(LEASE_CLIENT_ID_OCTETS)]
-Duid = Annotated[str, _hex_identifier(LEASE_DUID_OCTETS)]
+HardwareAddress = Annotated[str, _hex_identifier(LEASE_OCTETS["hw-address"])]
+ClientIdentifier = Annotated[str, _hex_identifier(LEASE_OCTETS["client-id"])]
+Duid = Annotated[str, _hex_identifier(LEASE_OCTETS["duid"])]
 Uint32 = Annotated[int, Field(ge=0, le=UINT32_MAX)]
 PositiveUint32 = Annotated[int, Field(ge=1, le=UINT32_MAX)]
 SubnetId = Annotated[int, Field(ge=MIN_SUBNET_ID, le=MAX_SUBNET_ID)]
@@ -153,7 +159,7 @@ class LeaseIdentity(_Value):
 
     family: Family
     kind: AllocationKind
-    address: IPAddressValue
+    address: ip_parse.IPAddressField
 
     @model_validator(mode="after")
     def _consistent(self) -> LeaseIdentity:
@@ -171,7 +177,7 @@ def address_identity(family: Family, address: str) -> LeaseIdentity:
         ValueError: If *address* is not an address of *family*.
 
     """
-    return LeaseIdentity(family=family, kind="address", address=ipaddress.ip_address(address))
+    return LeaseIdentity(family=family, kind="address", address=ip_parse.ip_address(address))
 
 
 def allocation_identities(family: Family, address: str) -> tuple[LeaseIdentity, ...]:
@@ -182,7 +188,7 @@ def allocation_identities(family: Family, address: str) -> tuple[LeaseIdentity, 
 
     """
     kinds = _EVERY_KIND if family == 6 else ("address",)
-    return tuple(LeaseIdentity(family=family, kind=kind, address=ipaddress.ip_address(address)) for kind in kinds)
+    return tuple(LeaseIdentity(family=family, kind=kind, address=ip_parse.ip_address(address)) for kind in kinds)
 
 
 def parse_selection(family: Family, label: str) -> tuple[str, LeaseIdentity]:
@@ -195,7 +201,7 @@ def parse_selection(family: Family, label: str) -> tuple[str, LeaseIdentity]:
     if "/" not in label:
         identity = address_identity(family, label)
         return str(identity.address), identity
-    prefix = ipaddress.ip_network(label)
+    prefix = ip_parse.ip_network(label)
     return str(prefix), LeaseIdentity(family=family, kind="delegated-prefix", address=prefix.network_address)
 
 
@@ -279,7 +285,7 @@ class DHCPv4AddressLease(_AddressAllocation, _Lease):
 
     family: ClassVar[Family] = 4
     variant: Literal["dhcpv4-address"] = "dhcpv4-address"
-    address: ipaddress.IPv4Address
+    address: ip_parse.IPv4AddressField
     # A declined lease keeps Kea's empty hardware address, and a client ID can replace it.
     hw_address: HardwareAddress | None
     client_id: ClientIdentifier | None = None
@@ -322,7 +328,7 @@ class DHCPv6AddressLease(_AddressAllocation, _DHCPv6Lease):
     """One DHCPv6 address (IA_NA) Lease."""
 
     variant: Literal["dhcpv6-address"] = "dhcpv6-address"
-    address: ipaddress.IPv6Address
+    address: ip_parse.IPv6AddressField
 
 
 class DHCPv6PrefixLease(_DHCPv6Lease):
@@ -330,7 +336,7 @@ class DHCPv6PrefixLease(_DHCPv6Lease):
 
     kind: ClassVar[AllocationKind] = "delegated-prefix"
     variant: Literal["dhcpv6-delegated-prefix"] = "dhcpv6-delegated-prefix"
-    prefix: ipaddress.IPv6Network
+    prefix: ip_parse.IPv6NetworkField
 
     @property
     def prefix_length(self) -> int:
@@ -378,7 +384,7 @@ class LeaseRead(_Value):
     records: tuple[Lease, ...]
     diagnostics: tuple[LeaseDiagnostic, ...]
     raw_count: Annotated[int, Field(ge=0)]
-    next_cursor: IPAddressValue | None
+    next_cursor: ip_parse.IPAddressField | None
 
 
 class LeaseQuery(_Value):
@@ -406,6 +412,69 @@ class LeaseQuery(_Value):
         return self
 
 
+class LeaseQueryError(ValueError):
+    """A Lease search value or state that does not parse; ``field`` names it and the message says what to enter."""
+
+    def __init__(self, field: Literal["value", "state"], message: str) -> None:
+        super().__init__(message)
+        self.field = field
+
+
+_NOT_MEASURABLE = "Kea cannot safely measure this lease state. Use an exact IP or client identifier search."
+
+
+def parse_lease_query(family: Family, selector: str, text: str, state: LeaseState | None = None) -> LeaseQuery:
+    """Return the Lease Query of one search: *text* is the value of *selector*, normalized here.
+
+    Raises:
+        LeaseQueryError: If the value or the state does not fit the selector.
+        ValueError: If *selector* is not a search selector of *family*.
+
+    """
+    if selector == ALL_LEASES or selector not in _QUERY_SELECTORS[family]:
+        raise ValueError(f"Lease selector {selector!r} is not supported for DHCPv{family}.")
+    if state is not None and selector in _SUBNET_SELECTORS and state not in LEASE_QUERY_STATES:
+        raise LeaseQueryError("state", _NOT_MEASURABLE)
+    return LeaseQuery(family=family, selector=selector, value=_query_value(family, selector, text), state=state)
+
+
+def _query_value(family: Family, selector: str, text: str) -> int | str:
+    if selector in _IDENTIFIER_KINDS:
+        try:
+            return lease_client_identifier(selector, text)
+        except ValueError as exc:
+            raise LeaseQueryError("value", str(exc)) from None
+    if selector == BY_HOSTNAME:
+        if not text:
+            raise LeaseQueryError("value", "Enter a hostname.")
+        return text
+    if selector == BY_SUBNET_ID:
+        try:
+            subnet_id: int | None = parse_decimal(text)
+        except ValueError:
+            subnet_id = None
+        if subnet_id is None or not MIN_SUBNET_ID <= subnet_id <= MAX_SUBNET_ID:
+            raise LeaseQueryError("value", f"Enter a Subnet ID from {MIN_SUBNET_ID} to {MAX_SUBNET_ID}.")
+        return subnet_id
+    if selector == BY_IP:
+        try:
+            address = ip_parse.ip_address(text)
+        except ValueError:
+            address = None
+        if address is None or address.version != family:
+            raise LeaseQueryError("value", f"Enter an IPv{family} address.")
+        return str(address)
+    try:
+        network = ip_parse.ip_network(text, strict=False) if "/" in text else None
+    except ValueError:
+        network = None
+    if network is None or network.version != family:
+        raise LeaseQueryError("value", f"Enter an IPv{family} Subnet in CIDR notation.")
+    if ip_parse.ip_address(text.split("/", 1)[0]) != network.network_address:
+        raise LeaseQueryError("value", f"{text} is not a valid prefix. Did you mean {network}?")
+    return str(network)
+
+
 LeaseCoverage = Literal["page", "exhaustive"]
 
 
@@ -423,7 +492,7 @@ class LeaseSnapshot(_Value):
     records: tuple[Lease, ...]
     diagnostics: tuple[LeaseDiagnostic, ...]
     coverage: LeaseCoverage
-    next_cursor: IPAddressValue | None
+    next_cursor: ip_parse.IPAddressField | None
     _identities: frozenset[LeaseIdentity] = PrivateAttr(default=frozenset())
 
     @model_validator(mode="after")
@@ -577,7 +646,7 @@ class DHCPv4LeaseRequest(_Value):
 
     family: ClassVar[Family] = 4
     variant: Literal["dhcpv4-address"] = "dhcpv4-address"
-    address: ipaddress.IPv4Address
+    address: ip_parse.IPv4AddressField
     # lease4-add requires it.
     hw_address: HardwareAddress
     # None lets Kea select the Subnet and take its valid lifetime.
@@ -592,7 +661,7 @@ class DHCPv6LeaseRequest(_Value):
 
     family: ClassVar[Family] = 6
     variant: Literal["dhcpv6-address"] = "dhcpv6-address"
-    address: ipaddress.IPv6Address
+    address: ip_parse.IPv6AddressField
     duid: Duid
     iaid: Uint32
     subnet_id: SubnetId | None = None
@@ -690,9 +759,23 @@ def shown_lease(lease: Lease) -> ShownLease:
     )
 
 
+def lease_client_identifier(selector: str, text: str) -> str:
+    """Return *text* as the canonical Client Identifier that the Lease *selector* takes.
+
+    Raises:
+        ValueError: If *text* is not hexadecimal octets in the Lease range; the message gives the range.
+
+    """
+    kind = _IDENTIFIER_KINDS[selector]
+    try:
+        return normalize_hex(text, LEASE_OCTETS[kind])
+    except ValueError:
+        raise ValueError(octets_message(kind, LEASE_OCTETS[kind])) from None
+
+
 def _client_identifier(value: str, family: int) -> str:
     """Return a submitted client identifier in Kea's form, or raise ValueError."""
-    normalized = normalize_hex(value.strip(), LEASE_HW_ADDRESS_OCTETS if family == 4 else LEASE_DUID_OCTETS)
+    normalized = lease_client_identifier(BY_HW_ADDRESS if family == 4 else BY_DUID, value.strip())
     if family == 6 and normalized == _EMPTY_DUID:
         raise ValueError("A client DUID cannot be Kea's empty DUID.")
     return normalized
@@ -800,12 +883,9 @@ def _wire_address(value: Any, family: int) -> IPAddressValue:
     if not isinstance(value, str):
         raise _FieldProblem("invalid-type")
     try:
-        address = ipaddress.ip_address(value)
+        address = ip_parse.ip_address(value)
     except ValueError:
         raise _FieldProblem("invalid-address") from None
-    # A scoped IPv6 address (fe80::1%eth0) is no allocation, and NetBox IPAM cannot hold one.
-    if getattr(address, "scope_id", None):
-        raise _FieldProblem("invalid-address")
     if address.version != family:
         raise _FieldProblem("wrong-family")
     return address
@@ -830,7 +910,7 @@ def _wire_hw_address(value: Any, _family: int) -> Any:
 def _wire_duid(value: Any, _family: int) -> Any:
     # A value that is not a DUID passes through, so the model reports it.
     try:
-        empty = isinstance(value, str) and normalize_hex(value, LEASE_DUID_OCTETS) == _EMPTY_DUID
+        empty = isinstance(value, str) and normalize_hex(value, LEASE_OCTETS["duid"]) == _EMPTY_DUID
     except ValueError:
         return value
     return None if empty else value

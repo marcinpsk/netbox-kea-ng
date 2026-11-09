@@ -48,6 +48,7 @@ from ipam.models import IPAddress as NbIP
 from netbox_kea import constants
 from netbox_kea.kea import KeaCommand
 from netbox_kea.lease_reads import LeaseSearch
+from netbox_kea.leases import parse_lease_query
 from netbox_kea.models import Server
 from netbox_kea.signals import lease_added
 from netbox_kea.utilities import parse_lease_csv
@@ -298,6 +299,18 @@ class TestServerLeases6DeleteView(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self._assert_no_none_pk_redirect(response)
         self.assertIn(str(self.server.pk), response.url)
+
+    def test_a_selection_with_a_scoped_address_is_invalid_and_kea_gets_no_command(self):
+        """The shown facts come back as JSON, which pydantic parses with ipaddress; the model refuses the zone."""
+        url = reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 6})
+        record = lease_record("fe80::1", subnet_id=1)
+        token = shown_token(record).replace('"fe80::1"', '"fe80::1%eth0"')
+        self.assertIn("fe80::1%eth0", token)
+        with _lease_stub(LeaseDaemon(6, record).responses()) as kea:
+            response = self.client.post(url, {"pk": [token], "_confirm": "1"})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands(), [])
+        self.assertIn("Invalid lease selection", " ".join(str(m) for m in get_messages(response.wsgi_request)))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -704,6 +717,18 @@ class TestLeaseSearchPaths(_ViewTestBase):
         body = kea.bodies("lease6-get-by-duid")[0]
         self.assertEqual(body["arguments"]["duid"], "00:01:aa:bb:cc:dd")
         self.assertEqual(body["service"], ["dhcp6"])
+
+    def test_search_finds_a_lease_by_a_130_octet_duid(self):
+        """A Kea Lease DUID can have 130 octets; the search sends it in canonical form and shows the Lease."""
+        server6 = _make_db_server(name="kea-v6-long-duid", ca_url="https://kea6.example.com", dhcp4=False, dhcp6=True)
+        url = reverse("plugins:netbox_kea:server_leases", kwargs={"pk": server6.pk, "family": 6})
+        duid = ":".join(["0a"] * 130)
+        lease = complete_lease({"ip-address": "2001:db8::5", "duid": duid, "valid-lft": 3600, "state": 0})
+        with _lease_stub({"subnet6-list": self._SUBNETS6, "lease6-get-by-duid": self._multi([lease])}) as kea:
+            response = self._htmx_get(url, {"by": "duid", "q": duid.upper().replace(":", "-")})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.bodies("lease6-get-by-duid")[0]["arguments"], {"duid": duid})
+        self.assertContains(response, "2001:db8::5")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1636,6 +1661,23 @@ class TestLeaseEditView(_ViewTestBase):
         self.assertEqual(update_args["hostname"], "newhost.example.com")
         self.assertEqual(update_args["hw-address"], "11:22:33:44:55:66")
         self.assertEqual(update_args["valid-lft"], 7200)
+
+    def test_post_saves_the_20_octet_hardware_address_that_the_form_filled_in(self):
+        """A Kea Lease hardware address can have 20 octets, so the form takes back the value it showed."""
+        hw_address = ":".join(["ab"] * 20)
+        record = {**_LEASE4_GET_RESP[0]["arguments"], "hw-address": hw_address}
+        with _lease_stub({"lease4-get": {"result": 0, "arguments": record}}):
+            shown = self.client.get(self._url())
+        self.assertContains(shown, f'value="{hw_address}"')
+        with _lease_stub(LeaseDaemon(4, record).responses()) as kea:
+            response = self.client.post(
+                self._url(),
+                {"shown": shown_token(record), "hostname": "newhost.example.com", "hw_address": hw_address},
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands(), ["lease4-get", "lease4-update"])
+        update_args = kea.bodies("lease4-update")[0]["arguments"]
+        self.assertEqual((update_args["hostname"], update_args["hw-address"]), ("newhost.example.com", hw_address))
 
     def test_post_kea_exception_redirects_with_error(self):
         """POST that raises KeaException shows error and redirects."""
@@ -2674,6 +2716,14 @@ class TestBulkLeaseImportView(_ViewTestBase):
         self.assertEqual(args["duid"], "00:01:02:03")
         self.assertEqual(args["iaid"], 12345)
 
+    def test_a_scoped_ipv6_address_is_a_file_error_and_kea_gets_no_lease(self):
+        csv_bytes = self._csv6(rows=["fe80::1%eth0,00:01:02:03,12345,1,host1\n"])
+        with _lease_stub(LeaseDaemon(6).responses()) as kea:
+            response = self.client.post(self._url(version=6), self._post(version=6, csv_bytes=csv_bytes))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"].errors["csv_file"], ["Line 2: 'ip-address' is not an IPv6 address."])
+        self.assertNotIn("lease6-add", kea.commands())
+
     def test_post_multiple_rows_calls_lease_add_per_row(self):
         """Each CSV row triggers one lease_add call."""
         csv_bytes = self._csv4(
@@ -3163,7 +3213,7 @@ class TestFetchLeaseSearch(_ViewTestBase):
         )
         variants = [f"lease{version}-get{suffix}" for suffix in suffixes]
         with _lease_stub(dict.fromkeys(variants, payload)):
-            return fetch(self.server, version, LeaseSearch(by, q))
+            return fetch(self.server, version, LeaseSearch(parse_lease_query(version, by, q)))
 
     def test_by_hw_address(self):
         snapshot = self._call(constants.BY_HW_ADDRESS, q="aa:bb:cc:dd:ee:ff")
@@ -3191,7 +3241,7 @@ class TestFetchLeaseSearch(_ViewTestBase):
 
     def test_null_args_is_an_unavailable_notice(self):
         with _lease_stub({"lease4-get-by-hostname": {"result": 0, "arguments": None}}):
-            loaded = fetch(self.server, 4, LeaseSearch(constants.BY_HOSTNAME, "ghost"))
+            loaded = fetch(self.server, 4, LeaseSearch(parse_lease_query(4, constants.BY_HOSTNAME, "ghost")))
 
         self.assertIsInstance(loaded, Notice)
         self.assertTrue(loaded.unavailable)
@@ -3215,7 +3265,7 @@ class TestFetchLeaseSearch(_ViewTestBase):
             "arguments": {"leases": [complete_lease({"ip-address": "198.18.0.1", "valid-lft": 3600, "state": 1})]},
         }
         with _lease_stub({"stat-lease4-get": stats, "lease4-get-by-state": response}) as kea:
-            snapshot = fetch(self.server, 4, LeaseSearch(constants.BY_SUBNET_ID, 1, "declined"))
+            snapshot = fetch(self.server, 4, LeaseSearch(parse_lease_query(4, constants.BY_SUBNET_ID, "1", "declined")))
 
         self.assertEqual(len(snapshot.records), 1)
         self.assertEqual(
@@ -3403,12 +3453,6 @@ class TestGetLeasesCoverage(_ViewTestBase):
     def _url(self):
         return reverse("plugins:netbox_kea:server_leases", kwargs={"pk": self.server.pk, "family": 4})
 
-    def test_invalid_by_raises_value_error(self):
-        """An invalid search selector must fail before a Kea request."""
-        with stub_kea({}) as kea, self.assertRaises(ValueError):
-            fetch(self.server, 4, LeaseSearch("not_a_valid_by", "test_query"))
-        self.assertEqual(kea.commands(), [])
-
     def test_null_args_from_lease_get_raises_runtime_error(self):
         """lease-get returns arguments=None → RuntimeError (caught by HTMX handler)."""
         subnets = _subnet_list(4, [])
@@ -3492,6 +3536,19 @@ class TestLease6EditDuid(_ViewTestBase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(kea.commands(), ["lease6-get", "lease6-update"])
         self.assertEqual(kea.bodies("lease6-update")[0]["arguments"]["duid"], "01:02:03:04")
+
+    def test_post_writes_a_130_octet_duid(self):
+        """A Kea Lease DUID can have 130 octets."""
+        url = reverse(
+            "plugins:netbox_kea:server_lease_edit",
+            kwargs={"pk": self.server.pk, "family": 6, "ip_address": "2001:db8::1"},
+        )
+        record = complete_lease({"ip-address": "2001:db8::1", "duid": "00:00:01", "valid-lft": 3600})
+        duid = ":".join(["0a"] * 130)
+        with _lease_stub(LeaseDaemon(6, record).responses()) as kea:
+            response = self.client.post(url, {"shown": shown_token(record), "duid": duid.upper(), "hostname": ""})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.bodies("lease6-update")[0]["arguments"]["duid"], duid)
 
 
 # ---------------------------------------------------------------------------

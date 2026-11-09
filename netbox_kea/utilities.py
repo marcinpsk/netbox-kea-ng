@@ -4,9 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import csv
 import io
-import ipaddress
 import logging
-import re
 from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime
 from typing import Any, Protocol
@@ -17,7 +15,7 @@ from django_tables2.export import TableExport
 from pydantic import ValidationError as PydanticValidationError
 from utilities.views import ViewTab
 
-from . import constants
+from . import constants, ip_parse
 from .constants import Family
 from .decimal_text import parse_decimal
 from .leases import (
@@ -171,15 +169,6 @@ def export_table(
     return exporter.response(filename=filename)
 
 
-def is_hex_string(s: str, min_octets: int, max_octets: int):
-    """Return True if *s* is a colon/dash-delimited hex string within the given octet length bounds."""
-    if not re.match(constants.HEX_STRING_REGEX, s):
-        return False
-
-    octets = len(s.replace(":", "").replace("-", "")) / 2
-    return octets >= min_octets and octets <= max_octets
-
-
 #: Bounds on a DHCPv6 reservation's delegated-prefix list.  Kea imposes no count
 #: limit of its own; these keep a pasted blob from reaching the Kea API as one host.
 MAX_DELEGATED_PREFIXES = 16
@@ -213,7 +202,7 @@ def parse_delegated_prefixes(value: str, separator: str = ",") -> list[str]:
             raise ValueError(f"'{entry}' is not a prefix — expected an IPv6 network such as 2001:db8:1::/64.")
         try:
             # strict=True rejects a prefix with host bits set, e.g. 2001:db8::1/64.
-            network = ipaddress.ip_network(entry, strict=True)
+            network = ip_parse.ip_network(entry, strict=True)
         except ValueError as exc:
             raise ValueError(f"'{entry}' is not a valid IPv6 prefix: {exc}") from exc
         if network.version != 6:
@@ -285,7 +274,7 @@ def parse_lease_csv(version: Family, content: str) -> list[tuple[int, LeaseReque
                     raise LeaseCSVError(f"Line {line}: '{column}' must be an integer.") from None
             elif column == "ip-address":
                 try:
-                    values[field] = ipaddress.ip_address(text)
+                    values[field] = ip_parse.ip_address(text)
                 except ValueError:
                     raise LeaseCSVError(f"Line {line}: '{column}' is not an IPv{version} address.") from None
             else:

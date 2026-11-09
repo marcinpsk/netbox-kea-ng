@@ -11,18 +11,19 @@ on the object identity.
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import logging
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Any, ClassVar, Generic, Literal, TypeVar, cast, overload
 
 from dcim.models import MACAddress
 from django.db import DatabaseError, connection
+from django.db.models import QuerySet
 from ipam.models import IPAddress, IPRange, Prefix
 from netaddr import AddrFormatError, IPNetwork
 
-from . import event_scope, subnet_catalogue
+from . import event_scope, ip_parse, subnet_catalogue
 from .constants import IP_RANGE_MAX_SIZE, Family, IPNetworkValue, StaleCleanupMode
 from .dhcp_mapping_lifecycle import MetadataBusy
 from .integrations import dhcp_plugin
@@ -34,10 +35,10 @@ from .ipam_marker import (
     rewrite_marker,
     status_kind,
 )
-from .ipam_ownership import host_text
 from .ipam_sources import (
     LEASE,
     LEASE_PREFIX,
+    OWNED_KINDS,
     PD_POOL,
     POOL,
     RESERVATION,
@@ -45,6 +46,9 @@ from .ipam_sources import (
     SOURCES,
     SUBNET,
     ObjectField,
+    host_text,
+    object_field,
+    range_key,
 )
 from .ipam_upgrade_barrier import adoption_waits
 from .leases import LEASE_VARIANTS, AllocationKind, DHCPv6PrefixLease, Lease, LeaseSnapshot
@@ -97,7 +101,7 @@ def _ip_fields(status: str, hostname: str, description: str) -> dict[str, str]:
 
 
 class DuplicateNetBoxRowsError(Exception):
-    """More than one NetBox Prefix or IP Range matches the key of one Kea subnet or pool.
+    """More than one NetBox IP address, Prefix or IP Range in the sync VRF matches the key of one reported object.
 
     ``str()`` names the row pks, so it is for the server log only. The job log uses
     ``kea_object`` and ``list_url``, and the list view applies the viewer's permissions.
@@ -332,7 +336,7 @@ class SyncReport:
     unclassified_objects: set[tuple[str, int]] = field(default_factory=set)
     created: int = 0
     updated: int = 0
-    # IP address ownership links removed by stale cleanup, including the last link of a removed address.
+    # Ownership links removed by stale cleanup, including the last link of a removed object.
     cleaned: int = 0
     removed: int = 0
     deprecated: int = 0
@@ -426,7 +430,7 @@ def _cleanup_adoption_waits(link: IPAMOwnershipLink, object_field: ObjectField) 
 def _cleanup_links(obj: IPAddress | Prefix | IPRange) -> list[IPAMOwnershipLink]:
     """Refuse a busy owner row before cleanup can wait with retained policy locks."""
     return list(
-        IPAMOwnershipLink.objects.select_for_update(nowait=True).filter(**{_object_field(obj): obj}).order_by("pk")
+        IPAMOwnershipLink.objects.select_for_update(nowait=True).filter(**{object_field(type(obj)): obj}).order_by("pk")
     )
 
 
@@ -860,10 +864,7 @@ def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncRe
     for source, cutoff in cutoffs.items():
         if cutoff is None:
             continue
-        if SOURCES[source].object_field == "ip_address":
-            _remove_stale_links(server, family, source, cutoff, mode, last_links_go, report)
-        else:
-            _remove_stale_network_links(server, family, source, cutoff, report)
+        _remove_stale_links(server, family, source, cutoff, mode, last_links_go, report)
     logger.info(
         "Server %s (v%s): IPAM reconciliation created=%d updated=%d removed=%d deprecated=%d conflicts=%d"
         " disagreements=%d errors=%d complete=%s",
@@ -879,11 +880,6 @@ def reconcile(server: Server, family: Family, phases: Sequence[Phase]) -> SyncRe
         report.complete,
     )
     return report
-
-
-def _lock_identity(vrf_id: int | None, address: str, *, nowait: bool = False) -> None:
-    """Hold the advisory lock of one IP address identity, the VRF and the address, until the transaction ends."""
-    _lock_key(f"ip-address {vrf_id} {address}", nowait=nowait)
 
 
 def _lock_key(identity: str, *, nowait: bool) -> None:
@@ -1092,128 +1088,65 @@ def _claim(
     server: Server,
     family: Family,
     source: str,
-    report: _Report,
+    report: _Report | _NetworkReport,
     *,
     force: bool = False,
     conflicts: set[str] | None = None,
     before_write: Callable[[], None] | None = None,
 ) -> _Outcome:
-    """Link one reported address under its identity lock, and apply the report when no owner disagrees.
+    """Link one reported object under its identity lock, and apply the report when no owner disagrees.
 
-    *before_write* runs immediately before the first IP address write; a row that writes no IP address skips it.
+    *before_write* runs once, immediately before the first write of an owned object; a row that writes none skips it.
     """
-    vrf_id = server.sync_vrf_id
-    _lock_identity(None, report.address)
-    if vrf_id is not None:
-        _lock_identity(vrf_id, report.address)
-    rows = list(
-        IPAddress.objects.select_for_update().filter(vrf_id=vrf_id, address__net_host=report.address).order_by("pk")[:2]
-    )
-    if len(rows) > 1:
-        raise _RowRefused(f"more than one IP address {report.address} in the sync VRF")
-    if vrf_id is not None:
-        legacy = list(
-            IPAddress.objects.select_for_update()
-            .filter(vrf__isnull=True, address__net_host=report.address)
-            .order_by("pk")[:2]
-        )
-        eligible = (
-            len(legacy) == 1
-            and parse_marker(legacy[0].description) is not None
-            and not IPAMOwnershipLink.objects.filter(ip_address=legacy[0]).exists()
-            and not Server.objects.exclude(sync_vrf_id=vrf_id).exists()
-        )
-        if eligible and rows:
-            if conflicts is not None:
-                conflicts.add(report.address)
-        elif eligible and report.facts is not None:
-            legacy[0].snapshot()
-            legacy[0].vrf_id = vrf_id
-            if before_write is not None:
-                before_write()
-                before_write = None  # The row passed; a later write in this call does not check again.
-            legacy[0].save()
-            rows = legacy
+    kind = _kind_of(source)
+    write = _Once(before_write)
+    obj = kind.locked_row(server, source, report, conflicts, write)
     facts = report.facts
-    if not rows:
+    if obj is None:
         if facts is None:
             # A phase that disagrees with itself, or a Global Reservation, creates no object.
             return "disagreement" if report.disagreement else "unchanged"
-        status = _status({source})
-        ip = IPAddress(
-            address=IPNetwork(f"{report.address}/{facts.prefix_length}"),
-            vrf_id=vrf_id,
-            status=status,
-            dns_name=facts.hostname,
-            description=render_marker(status_kind(status)),
-        )
-        if before_write is not None:
-            before_write()
-        ip.save()
-        _store_link(None, server, family, source, ip, facts.stored(), stale_mark=None)
+        write()
+        obj = kind.create(server, source, report)
+        _store_link(None, server, family, source, obj, facts.stored(), stale_mark=None)
         return "created"
 
-    ip = rows[0]
-    links = list(IPAMOwnershipLink.objects.filter(ip_address=ip))
-    if parse_marker(ip.description) is None:
-        # A blank or curated description: the object is not owned, and an operator edit released it.
+    links = list(IPAMOwnershipLink.objects.filter(**{kind.field: obj}))
+    marked = parse_marker(obj.description) is not None
+    if not marked:
+        # A blank or curated description: the object is not owned, and an operator edit released it (ADR 0006).
         IPAMOwnershipLink.objects.filter(pk__in=[link.pk for link in links]).delete()
-        if report.disagreement:
-            return "disagreement"
-        if not force or facts is None:
+        if facts is None and not report.disagreement and not links:
             # A Global Reservation does not change an object that it never linked.
-            return "unchanged" if facts is None and not links else "conflict"
+            return "unchanged"
+        if not force or facts is None:
+            return "conflict"
         links = []
-    return _apply_claim(server, family, source, report, ip, links, before_write)
-
-
-def _apply_claim(
-    server: Server,
-    family: Family,
-    source: str,
-    report: _Report,
-    ip: IPAddress,
-    links: list[IPAMOwnershipLink],
-    before_write: Callable[[], None] | None = None,
-) -> _Outcome:
-    """Compare owners before applying facts or an explicit takeover to the locked row."""
-    facts = report.facts
-    adopted = (not links and parse_marker(ip.description) is not None) or any(link.adopted for link in links)
+    adopted = (not links and marked) or any(link.adopted for link in links)
     own = next((link for link in links if _is_own_link(link, server, family, source)), None)
     others = _drop_superseded_stale_links([link for link in links if link is not own])
-    if report.disagreement:
-        _store_link(
-            own, server, family, source, ip, own.facts if own else None, stale_mark=_kept_mark(own), adopted=adopted
-        )
-        return "disagreement"
     if facts is None:
-        # A Global Reservation links the object without facts and does not change it (ADR 0002).
-        _store_link(own, server, family, source, ip, None, stale_mark=_kept_mark(own), adopted=adopted)
-        return "unchanged"
-    applied = _applied_facts(source, facts, others)
+        # An owner disagreement keeps the stored facts; a Global Reservation links without facts (ADR 0002).
+        kept = own.facts if own is not None and report.disagreement else None
+        _store_link(own, server, family, source, obj, kept, stale_mark=_kept_mark(own), adopted=adopted)
+        return "disagreement" if report.disagreement else "unchanged"
+    applied = kind.applied(source, facts, others)
     if applied is None:
-        _store_link(own, server, family, source, ip, facts.stored(), stale_mark=_kept_mark(own), adopted=adopted)
+        _store_link(own, server, family, source, obj, facts.stored(), stale_mark=_kept_mark(own), adopted=adopted)
         return "disagreement"
-
-    status = _status(_live_sources(others) | {source})
-    description = _ip_description(ip.description, status)
-    if description is None:
+    fields = kind.fields(obj, source, report, applied, others)
+    if fields is None:
         # The new marker and the operator note do not fit: the object stays as it is, and the owner keeps its link.
-        _store_link(own, server, family, source, ip, facts.stored(), stale_mark=_kept_mark(own), adopted=adopted)
+        _store_link(own, server, family, source, obj, facts.stored(), stale_mark=_kept_mark(own), adopted=adopted)
         return "conflict"
-    fields: dict[str, object] = {
-        **_ip_fields(status, applied.hostname, description),
-        "address": IPNetwork(f"{report.address}/{applied.prefix_length}"),
-    }
-    changed = any(str(getattr(ip, name)) != str(value) for name, value in fields.items())
+    changed = any(str(getattr(obj, name)) != str(value) for name, value in fields.items())
     if changed:
-        if before_write is not None:
-            before_write()
-        ip.snapshot()
+        write()
+        obj.snapshot()
         for name, value in fields.items():
-            setattr(ip, name, value)
-        ip.save()
-    _store_link(own, server, family, source, ip, facts.stored(), stale_mark=None, adopted=adopted)
+            setattr(obj, name, value)
+        obj.save()
+    _store_link(own, server, family, source, obj, facts.stored(), stale_mark=None, adopted=adopted)
     return "updated" if changed else "unchanged"
 
 
@@ -1359,7 +1292,7 @@ def _store_link(
             server=server,
             family=family,
             source=source,
-            **{_object_field(ip): ip},
+            **{object_field(type(ip)): ip},
             facts=facts,
             confirmation=confirmation,
             stale_mark=stale_mark,
@@ -1378,9 +1311,9 @@ def _store_link(
 @dataclass(frozen=True)
 class _StaleLink:
     pk: int
-    ip_pk: int
+    object_pk: int
     vrf_id: int | None
-    address: str
+    identity: str
 
 
 def _remove_stale_links(
@@ -1394,30 +1327,33 @@ def _remove_stale_links(
 ) -> None:
     """Remove the links of a complete phase that no run confirmed since *cutoff*.
 
-    The last link of the Server to an object goes only when *last_links_go*. The last link of an object follows *mode*.
+    The last link of the Server to an IP address goes only when *last_links_go*. The last link of an object follows
+    the stale action of its kind for *mode*.
     """
+    kind = _kind_of(source)
+    links = IPAMOwnershipLink.objects.filter(server=server, family=family, source=source, confirmation__lt=cutoff)
+    # A marked link still needs the release check: an operator may have removed its object's marker.
     candidates = [
-        _StaleLink(pk, ip_pk, vrf_id, host_text(address))
-        for pk, ip_pk, vrf_id, address in IPAMOwnershipLink.objects.filter(
-            server=server, family=family, source=source, confirmation__lt=cutoff
-        ).values_list("pk", "ip_address", "ip_address__vrf", "ip_address__address")
+        _StaleLink(link.pk, obj.pk, obj.vrf_id, kind.identity(obj))
+        for link in links.select_related(kind.field)
+        if (obj := getattr(link, kind.field)) is not None
     ]
     if not candidates:
         return
-    referenced = dhcp_plugin.sys4_referenced_ip_ids()
+    keeps_last = kind.guards_last_link and not last_links_go
     nowait = connection.in_atomic_block
     rows = _each_row(
         candidates,
         report,
         source,
-        lambda stale: _remove_stale_link(stale, cutoff, mode, last_links_go, referenced, nowait=nowait),
-        lambda stale: f"stale {source} link of {stale.address} of Server {server.name}",
+        lambda stale: _remove_stale_link(kind, stale, cutoff, mode, keeps_last, nowait=nowait),
+        lambda stale: f"stale {source} link of {stale.identity} of Server {server.name}",
     )
     for stale, outcome in rows:
         if outcome == "waiting":
-            report.waiting_objects.add(("ip_address", stale.ip_pk))
+            report.waiting_objects.add((kind.field, stale.object_pk))
         elif outcome == "unclassified":
-            report.unclassified_objects.add(("ip_address", stale.ip_pk))
+            report.unclassified_objects.add((kind.field, stale.object_pk))
         if outcome in {"removed", "unlinked", "updated", "unchanged"}:
             report.cleaned += 1
         if outcome == "removed":
@@ -1427,31 +1363,32 @@ def _remove_stale_links(
         elif outcome == "updated":
             report.updated += 1
         elif outcome == "conflict":
-            report.conflicts.add(stale.address)
+            report.conflicts.add(stale.identity)
 
 
 def _remove_stale_link(
+    kind: _Kind[Any, Any],
     stale: _StaleLink,
     cutoff: int,
     mode: StaleCleanupMode,
-    last_links_go: bool,
-    referenced: set[int],
+    keeps_last: bool,
     *,
     nowait: bool,
 ) -> str:
     """Decide one stale link under the identity lock and the row lock of its object."""
-    _lock_identity(stale.vrf_id, stale.address, nowait=nowait)
-    ip = IPAddress.objects.select_for_update(nowait=nowait).filter(pk=stale.ip_pk).first()
-    if ip is None:
+    kind.lock(stale.vrf_id, stale.identity, nowait=nowait)
+    obj = kind.model.objects.select_for_update(nowait=nowait).filter(pk=stale.object_pk).first()
+    if obj is None:
         return "kept"
-    links = _cleanup_links(ip)
+    links = _cleanup_links(obj)
     link = next((link for link in links if link.pk == stale.pk), None)
     if link is None or link.confirmation >= cutoff:
         return "kept"
-    if (ip.vrf_id, host_text(ip.address)) != (stale.vrf_id, stale.address):
-        raise _RowRefused(f"the address of IP address {ip.pk} changed while the cleanup read it")
-    if parse_marker(ip.description) is None:
-        IPAMOwnershipLink.objects.filter(ip_address=ip).delete()
+    if (obj.vrf_id, kind.identity(obj)) != (stale.vrf_id, stale.identity):
+        raise _RowRefused(f"the identity of {kind.field} {obj.pk} changed while the cleanup read it")
+    marker = parse_marker(obj.description)
+    if marker is None:
+        IPAMOwnershipLink.objects.filter(**{kind.field: obj}).delete()
         return "conflict"
     if _unclassified(link):
         # Without the allocation kind, the address alone cannot show whether a replacement Prefix exists.
@@ -1459,30 +1396,40 @@ def _remove_stale_link(
     if _marked_and_unconfirmed(link):
         return "kept"
     others = [other for other in links if other.pk != link.pk]
-    if not last_links_go and not any(other.server_id == link.server_id for other in others):
+    if keeps_last and not any(other.server_id == link.server_id for other in others):
         # The last link of its Server needs a later call with complete required sources.
         return "kept"
     if others:
-        outcome = _restatus(ip, others)
+        outcome = kind.restatus(obj, marker, others)
         if outcome != "conflict":
             # On a conflict the link stays, so the status still matches the links and the next run tries again.
             link.delete()
         return outcome
-    if _cleanup_adoption_waits(link, "ip_address"):
+    if _cleanup_adoption_waits(link, kind.field):
         return "waiting"
-    if mode == "none" or ip.pk in referenced:
+    action = kind.stale_action(link, mode)
+    # The reference read runs under the row lock, so a DHCP plugin row cannot add a reference before the delete.
+    if action == "none" or dhcp_plugin.is_referenced(kind.field, obj.pk):
         link.delete()
         return "unlinked"
-    if mode == "remove":
-        ip.delete()
+    if action == "remove":
+        obj.delete()
         return "removed"
     link.stale_mark = cutoff
     link.save(update_fields=["stale_mark"])
-    if ip.status != "deprecated":
-        ip.snapshot()
-        ip.status = "deprecated"
-        ip.save()
+    if obj.status != "deprecated":
+        obj.snapshot()
+        obj.status = "deprecated"
+        obj.save()
     return "deprecated"
+
+
+@dataclass(frozen=True)
+class _NetworkFacts:
+    prefix_length: int
+
+    def stored(self) -> dict[str, Any]:
+        return {"prefix_length": self.prefix_length}
 
 
 @dataclass(frozen=True)
@@ -1493,22 +1440,262 @@ class _NetworkReport:
     end: str = ""
     disagreement: bool = False
 
-    def facts(self) -> dict[str, Any]:
-        return {"prefix_length": self.prefix_length}
+    @property
+    def facts(self) -> _NetworkFacts | None:
+        """Return the facts that the report applies; a report that disagrees with itself applies none."""
+        return None if self.disagreement else _NetworkFacts(self.prefix_length)
 
 
-def _object_field(obj: IPAddress | Prefix | IPRange) -> str:
-    if isinstance(obj, Prefix):
-        return "prefix"
-    if isinstance(obj, IPRange):
-        return "ip_range"
-    return "ip_address"
+class _Once:
+    """Run a callback at most once: the check before the first write of one claim."""
+
+    def __init__(self, callback: Callable[[], None] | None) -> None:
+        self._callback = callback
+
+    def __call__(self) -> None:
+        callback, self._callback = self._callback, None
+        if callback is not None:
+            callback()
 
 
-def _lock_network(vrf_id: int | None, source: str, address: str, *, nowait: bool = False) -> None:
-    # The lock kind is the object field in the form of the address lock: prefix or ip-range.
-    kind = SOURCES[source].object_field.replace("_", "-")
-    _lock_key(f"{kind} {vrf_id} {address}", nowait=nowait)
+ReportT = TypeVar("ReportT", _Report, _NetworkReport)
+ObjectT = TypeVar("ObjectT", IPAddress, Prefix, IPRange)
+
+
+class _Kind(ABC, Generic[ReportT, ObjectT]):
+    """The steps of one owned object kind that the shared claim and stale cleanup call (ADR 0006)."""
+
+    field: ClassVar[ObjectField]
+    #: Whether the stale cleanup keeps the last link of a Server until its required sources are complete.
+    guards_last_link: ClassVar[bool] = False
+
+    @property
+    def model(self) -> type[ObjectT]:
+        return cast("type[ObjectT]", OWNED_KINDS[self.field].model)
+
+    def identity(self, obj: ObjectT) -> str:
+        return OWNED_KINDS[self.field].identity(obj)
+
+    def lock(self, vrf_id: int | None, identity: str, *, nowait: bool = False) -> None:
+        """Hold the advisory lock of one object identity, the VRF and the text, until the transaction ends."""
+        _lock_key(f"{self.field.replace('_', '-')} {vrf_id} {identity}", nowait=nowait)
+
+    @abstractmethod
+    def rows(self, vrf_id: int | None, report: ReportT) -> QuerySet[ObjectT]:
+        """Return the objects of the report key in the VRF."""
+
+    @abstractmethod
+    def list_filter(self, report: ReportT) -> dict[str, str]:
+        """Return the NetBox list-view query parameters, without the VRF, that select the same objects."""
+
+    def locked_row(
+        self, server: Server, source: str, report: ReportT, conflicts: set[str] | None, write: _Once
+    ) -> ObjectT | None:
+        """Lock the identity and the one object of the report key in the sync VRF; refuse duplicate objects."""
+        self.lock(server.sync_vrf_id, report.address)
+        return self._locked_match(server.sync_vrf_id, source, report)
+
+    def _locked_match(self, vrf_id: int | None, source: str, report: ReportT) -> ObjectT | None:
+        return _single_match(
+            self.rows(vrf_id, report).select_for_update(),
+            f"{source} {report.address}",
+            {**self.list_filter(report), "vrf_id": str(vrf_id) if vrf_id is not None else "null"},
+        )
+
+    @abstractmethod
+    def create(self, server: Server, source: str, report: ReportT) -> ObjectT:
+        """Create the object that only *source* owns."""
+
+    def applied(self, source: str, facts: Any, others: Iterable[IPAMOwnershipLink]) -> Any:
+        """Return the facts that the report applies, or None when a live link has another prefix length."""
+        if any(_is_live(link) and link.facts["prefix_length"] != facts.prefix_length for link in others):
+            return None
+        return facts
+
+    @abstractmethod
+    def fields(
+        self, obj: ObjectT, source: str, report: ReportT, applied: Any, others: Sequence[IPAMOwnershipLink]
+    ) -> dict[str, Any] | None:
+        """Return the owned fields after the claim, or None when the new marker and the operator note do not fit."""
+
+    @abstractmethod
+    def restatus(self, obj: ObjectT, marker: Marker, others: Sequence[IPAMOwnershipLink]) -> _Outcome:
+        """Give an owned object the fields of its remaining *others* after a stale link goes."""
+
+    @abstractmethod
+    def stale_action(self, link: IPAMOwnershipLink, mode: StaleCleanupMode) -> StaleCleanupMode:
+        """Return what the cleanup does with the object when its last *link* goes: unlink, deprecate or remove."""
+
+
+class _AddressKind(_Kind[_Report, IPAddress]):
+    field = "ip_address"
+    guards_last_link = True
+
+    def rows(self, vrf_id: int | None, report: _Report) -> QuerySet[IPAddress]:
+        return IPAddress.objects.filter(vrf_id=vrf_id, address__net_host=report.address)
+
+    def list_filter(self, report: _Report) -> dict[str, str]:
+        return {"address": report.address}
+
+    def locked_row(
+        self, server: Server, source: str, report: _Report, conflicts: set[str] | None, write: _Once
+    ) -> IPAddress | None:
+        """Also move a marked global row with no links into the sync VRF, while every Server uses that VRF."""
+        vrf_id = server.sync_vrf_id
+        self.lock(None, report.address)
+        if vrf_id is None:
+            return self._locked_match(None, source, report)
+        self.lock(vrf_id, report.address)
+        ip = self._locked_match(vrf_id, source, report)
+        legacy = list(
+            IPAddress.objects.select_for_update()
+            .filter(vrf__isnull=True, address__net_host=report.address)
+            .order_by("pk")[:2]
+        )
+        eligible = (
+            len(legacy) == 1
+            and parse_marker(legacy[0].description) is not None
+            and not IPAMOwnershipLink.objects.filter(ip_address=legacy[0]).exists()
+            and not Server.objects.exclude(sync_vrf_id=vrf_id).exists()
+        )
+        if eligible and ip is not None:
+            if conflicts is not None:
+                conflicts.add(report.address)
+        elif eligible and report.facts is not None:
+            legacy[0].snapshot()
+            legacy[0].vrf_id = vrf_id
+            write()
+            legacy[0].save()
+            return legacy[0]
+        return ip
+
+    def create(self, server: Server, source: str, report: _Report) -> IPAddress:
+        facts = cast("_Facts", report.facts)
+        status = _status({source})
+        ip = IPAddress(
+            address=IPNetwork(f"{report.address}/{facts.prefix_length}"),
+            vrf_id=server.sync_vrf_id,
+            status=status,
+            dns_name=facts.hostname,
+            description=render_marker(status_kind(status)),
+        )
+        ip.save()
+        return ip
+
+    def applied(self, source: str, facts: Any, others: Iterable[IPAMOwnershipLink]) -> Any:
+        return _applied_facts(source, facts, others)
+
+    def fields(
+        self, obj: IPAddress, source: str, report: _Report, applied: Any, others: Sequence[IPAMOwnershipLink]
+    ) -> dict[str, Any] | None:
+        status = _status(_live_sources(others) | {source})
+        description = _ip_description(obj.description, status)
+        if description is None:
+            return None
+        return {
+            **_ip_fields(status, applied.hostname, description),
+            "address": IPNetwork(f"{report.address}/{applied.prefix_length}"),
+        }
+
+    def restatus(self, obj: IPAddress, marker: Marker, others: Sequence[IPAMOwnershipLink]) -> _Outcome:
+        return _restatus(obj, others)
+
+    def stale_action(self, link: IPAMOwnershipLink, mode: StaleCleanupMode) -> StaleCleanupMode:
+        return mode
+
+
+class _NetworkKind(_Kind[_NetworkReport, ObjectT]):
+    """A Prefix or an IP Range: always Active, and never removed (ADR 0006)."""
+
+    @abstractmethod
+    def identity_fields(self, report: _NetworkReport) -> dict[str, IPNetwork]:
+        """Return the fields that hold the report key."""
+
+    def create(self, server: Server, source: str, report: _NetworkReport) -> ObjectT:
+        return self.model.objects.create(
+            **self.identity_fields(report),
+            vrf_id=server.sync_vrf_id,
+            status="active",
+            description=render_marker(_network_marker_kind({source})),
+        )
+
+    def fields(
+        self, obj: ObjectT, source: str, report: _NetworkReport, applied: Any, others: Sequence[IPAMOwnershipLink]
+    ) -> dict[str, Any] | None:
+        marker = parse_marker(obj.description)
+        if marker is None:
+            # Only a forced claim reaches here with a released object: the note follows the new block.
+            marker = Marker(_network_marker_kind({source}), f" {obj.description}" if obj.description else "", False)
+        description = rewrite_marker(marker, _network_marker_kind({source} | _live_sources(others)))
+        if description is None:
+            return None
+        return {**self.identity_fields(report), "status": "active", "description": description}
+
+    def restatus(self, obj: ObjectT, marker: Marker, others: Sequence[IPAMOwnershipLink]) -> _Outcome:
+        sources = _live_sources(others)
+        if not sources:
+            return "unchanged"
+        description = rewrite_marker(marker, _network_marker_kind(sources))
+        if description is None:
+            return "conflict"
+        if obj.status == "active" and obj.description == description:
+            return "unchanged"
+        obj.snapshot()
+        obj.status = "active"
+        obj.description = description
+        obj.save()
+        return "updated"
+
+    def stale_action(self, link: IPAMOwnershipLink, mode: StaleCleanupMode) -> StaleCleanupMode:
+        # The current field of the Server whose phase drops the last link applies, not the field the run loaded.
+        return "deprecate" if link.server.sync_deprecate_prefixes_and_ranges else "none"
+
+
+class _PrefixKind(_NetworkKind[Prefix]):
+    field = "prefix"
+
+    def rows(self, vrf_id: int | None, report: _NetworkReport) -> QuerySet[Prefix]:
+        return Prefix.objects.filter(vrf_id=vrf_id, prefix=report.address)
+
+    def list_filter(self, report: _NetworkReport) -> dict[str, str]:
+        return {"prefix": report.address}
+
+    def identity_fields(self, report: _NetworkReport) -> dict[str, IPNetwork]:
+        return {"prefix": IPNetwork(report.address)}
+
+
+class _RangeKind(_NetworkKind[IPRange]):
+    field = "ip_range"
+
+    def rows(self, vrf_id: int | None, report: _NetworkReport) -> QuerySet[IPRange]:
+        return IPRange.objects.filter(
+            vrf_id=vrf_id, start_address__net_host=report.start, end_address__net_host=report.end
+        )
+
+    def list_filter(self, report: _NetworkReport) -> dict[str, str]:
+        return {"start_address": report.start, "end_address": report.end}
+
+    def pool_report(self, pool: Pool, prefix_length: int) -> _NetworkReport | None:
+        """Return the report of a Pool, or None when the Pool is too large for an IP Range."""
+        if int(pool.end) - int(pool.start) + 1 > IP_RANGE_MAX_SIZE:
+            return None
+        return _NetworkReport(range_key(pool.start, pool.end), prefix_length, str(pool.start), str(pool.end))
+
+    def identity_fields(self, report: _NetworkReport) -> dict[str, IPNetwork]:
+        return {
+            "start_address": IPNetwork(f"{report.start}/{report.prefix_length}"),
+            "end_address": IPNetwork(f"{report.end}/{report.prefix_length}"),
+        }
+
+
+_ADDRESS = _AddressKind()
+_RANGE = _RangeKind()
+_KINDS: dict[ObjectField, _Kind[Any, Any]] = {kind.field: kind for kind in (_ADDRESS, _PrefixKind(), _RANGE)}
+
+
+def _kind_of(source: str) -> _Kind[Any, Any]:
+    """Return the adapter of the object kind that *source* owns."""
+    return _KINDS[SOURCES[source].object_field]
 
 
 def _run_network_phase(
@@ -1528,10 +1715,10 @@ def _run_network_phase(
             if subnet.configuration is None:
                 raise ValueError("A complete catalogue must include every Subnet configuration.")
             for pool in subnet.configuration.pools:
-                if int(pool.end) - int(pool.start) + 1 > IP_RANGE_MAX_SIZE:
+                row = _RANGE.pool_report(pool, subnet.network.prefixlen)
+                if row is None:
                     continue
-                address = f"{pool.start} - {pool.end}"
-                row = _NetworkReport(address, subnet.network.prefixlen, str(pool.start), str(pool.end))
+                address = row.address
                 earlier = reports.get(address)
                 if earlier is not None and (earlier.disagreement or earlier.prefix_length != row.prefix_length):
                     row = replace(earlier, disagreement=True)
@@ -1540,7 +1727,7 @@ def _run_network_phase(
         reports.values(),
         report,
         phase.source,
-        lambda row: _claim_network(server, family, phase.source, row),
+        lambda row: _claim(server, family, phase.source, row),
         lambda row: row.address,
     ):
         _count(report, row.address, outcome)
@@ -1556,170 +1743,11 @@ def _network_marker_kind(sources: Collection[str]) -> MarkerKind:
     return next(row.marker_kind for source, row in SOURCES.items() if source in sources)
 
 
-def _claim_network(
-    server: Server, family: Family, source: str, row: _NetworkReport, *, force: bool = False
-) -> _Outcome:
-    _lock_network(server.sync_vrf_id, source, row.address)
-    if SOURCES[source].object_field == "prefix":
-        query = Prefix.objects.select_for_update().filter(vrf_id=server.sync_vrf_id, prefix=row.address)
-        filters = {"prefix": row.address, "vrf_id": server.sync_vrf_id or "null"}
-        fields: dict[str, Any] = {"prefix": IPNetwork(row.address)}
-    else:
-        query = IPRange.objects.select_for_update().filter(
-            vrf_id=server.sync_vrf_id, start_address__net_host=row.start, end_address__net_host=row.end
-        )
-        filters = {"start_address": row.start, "end_address": row.end, "vrf_id": server.sync_vrf_id or "null"}
-        fields = {
-            "start_address": IPNetwork(f"{row.start}/{row.prefix_length}"),
-            "end_address": IPNetwork(f"{row.end}/{row.prefix_length}"),
-        }
-    obj = _single_match(query, f"{source} {row.address}", filters)
-    kind = _network_marker_kind({source})
-    if obj is None:
-        if row.disagreement:
-            return "disagreement"
-        obj = query.model.objects.create(
-            **fields, vrf_id=server.sync_vrf_id, status="active", description=render_marker(kind)
-        )
-        _store_link(None, server, family, source, obj, row.facts(), stale_mark=None)
-        return "created"
-    links_query = IPAMOwnershipLink.objects.filter(**{_object_field(obj): obj})
-    marker = parse_marker(obj.description)
-    was_marked = marker is not None
-    if marker is None:
-        links_query.delete()
-        if not force:
-            return "conflict"
-        marker = Marker(kind, f" {obj.description}" if obj.description else "", legacy=False)
-    links = list(links_query)
-    adopted = (not links and was_marked) or any(link.adopted for link in links)
-    own = next((link for link in links if _is_own_link(link, server, family, source)), None)
-    others = _drop_superseded_stale_links([link for link in links if link is not own])
-    if row.disagreement:
-        _store_link(
-            own, server, family, source, obj, own.facts if own else None, stale_mark=_kept_mark(own), adopted=adopted
-        )
-        return "disagreement"
-    if any(_is_live(link) and link.facts["prefix_length"] != row.prefix_length for link in others):
-        _store_link(own, server, family, source, obj, row.facts(), stale_mark=_kept_mark(own), adopted=adopted)
-        return "disagreement"
-    description = rewrite_marker(marker, _network_marker_kind({source} | _live_sources(others)))
-    if description is None:
-        _store_link(own, server, family, source, obj, row.facts(), stale_mark=_kept_mark(own), adopted=adopted)
-        return "conflict"
-    fields.update(status="active", description=description)
-    changed = any(str(getattr(obj, name)) != str(value) for name, value in fields.items())
-    if changed:
-        obj.snapshot()
-        for name, value in fields.items():
-            setattr(obj, name, value)
-        obj.save()
-    _store_link(own, server, family, source, obj, row.facts(), stale_mark=None, adopted=adopted)
-    return "updated" if changed else "unchanged"
-
-
-def _remove_stale_network_links(server: Server, family: Family, source: str, cutoff: int, report: SyncReport) -> None:
-    """Drop the stale links of a complete Subnet or Pool phase. These objects are never removed."""
-    field_name = SOURCES[source].object_field
-    links = IPAMOwnershipLink.objects.filter(server=server, family=family, source=source, confirmation__lt=cutoff)
-    # A marked link still needs the release check: an operator may have removed its object's marker.
-    candidates = list(links.select_related(field_name))
-    nowait = connection.in_atomic_block
-    for link, outcome in _each_row(
-        candidates,
-        report,
-        source,
-        lambda link: _remove_stale_network_link(link, field_name, cutoff, nowait=nowait),
-        lambda link: f"stale {source} link {link.pk}",
-    ):
-        if outcome == "waiting":
-            report.waiting_objects.add((field_name, getattr(link, field_name).pk))
-        if outcome == "deprecated":
-            report.deprecated += 1
-        elif outcome == "updated":
-            report.updated += 1
-        elif outcome == "conflict":
-            obj = getattr(link, field_name)
-            report.conflicts.add(
-                str(obj.prefix)
-                if field_name == "prefix"
-                else f"{host_text(obj.start_address)} - {host_text(obj.end_address)}"
-            )
-
-
-def _remove_stale_network_link(
-    candidate: IPAMOwnershipLink, field_name: ObjectField, cutoff: int, *, nowait: bool
-) -> str:
-    obj = getattr(candidate, field_name)
-    address = (
-        str(obj.prefix) if field_name == "prefix" else f"{host_text(obj.start_address)} - {host_text(obj.end_address)}"
-    )
-    _lock_network(obj.vrf_id, candidate.source, address, nowait=nowait)
-    locked = type(obj).objects.select_for_update(nowait=nowait).filter(pk=obj.pk).first()
-    if locked is None:
-        return "kept"
-    owners = _cleanup_links(locked)
-    link = next((link for link in owners if link.pk == candidate.pk), None)
-    if link is None or link.confirmation >= cutoff:
-        return "kept"
-    current_address = (
-        str(locked.prefix)
-        if field_name == "prefix"
-        else f"{host_text(locked.start_address)} - {host_text(locked.end_address)}"
-    )
-    if (locked.vrf_id, current_address) != (obj.vrf_id, address):
-        raise _RowRefused(f"the identity of {field_name} {obj.pk} changed during cleanup")
-    links = IPAMOwnershipLink.objects.filter(**{field_name: locked})
-    marker = parse_marker(locked.description)
-    if marker is None:
-        links.delete()
-        return "conflict"
-    if _marked_and_unconfirmed(link):
-        return "kept"
-    others = [other for other in owners if other.pk != link.pk]
-    if others:
-        changed = False
-        if _live_sources(others):
-            sources = _live_sources(others)
-            description = rewrite_marker(marker, _network_marker_kind(sources))
-            if description is None:
-                return "conflict"
-            changed = locked.status != "active" or locked.description != description
-            if changed:
-                locked.snapshot()
-                locked.status = "active"
-                locked.description = description
-                locked.save()
-        link.delete()
-        return "updated" if changed else "unlinked"
-    if _cleanup_adoption_waits(link, field_name):
-        return "waiting"
-    referenced = (
-        dhcp_plugin.sys4_referenced_prefix_ids()
-        if field_name == "prefix"
-        else dhcp_plugin.sys4_referenced_iprange_ids()
-    )
-    if not link.server.sync_deprecate_prefixes_and_ranges or locked.pk in referenced:
-        link.delete()
-        return "unlinked"
-    link.stale_mark = cutoff
-    link.save(update_fields=["stale_mark"])
-    if locked.status != "deprecated":
-        locked.snapshot()
-        locked.status = "deprecated"
-        locked.save()
-    return "deprecated"
-
-
 def _network_result(server: Server, source: str, row: _NetworkReport, outcome: _Outcome) -> PrefixClaim | RangeClaim:
     """Return the object while its identity lock is held by the current savepoint."""
-    if SOURCES[source].object_field == "ip_range":
-        obj = IPRange.objects.filter(
-            vrf_id=server.sync_vrf_id, start_address__net_host=row.start, end_address__net_host=row.end
-        ).first()
-        return RangeClaim(outcome, obj)
-    obj = Prefix.objects.filter(vrf_id=server.sync_vrf_id, prefix=row.address).first()
-    return PrefixClaim(outcome, obj)
+    kind = _kind_of(source)
+    obj = kind.rows(server.sync_vrf_id, row).first()
+    return RangeClaim(outcome, obj) if kind is _RANGE else PrefixClaim(outcome, obj)
 
 
 def _claim_network_records(
@@ -1739,15 +1767,16 @@ def _claim_network_records(
         network = record.prefix if isinstance(record, (PDPoolClaim, ReservationPrefixClaim)) else record.network
         if network.version != family:
             raise ValueError("The network does not match the claim family")
+        row: _NetworkReport | None
         if not isinstance(record, PoolClaim):
             row = _NetworkReport(str(network), network.prefixlen)
         else:
             pool = record.pool
             if pool.start not in record.network or pool.end not in record.network or int(pool.end) < int(pool.start):
                 raise ValueError("The Pool must be contained by its Subnet")
-            if int(pool.end) - int(pool.start) + 1 > IP_RANGE_MAX_SIZE:
-                continue
-            row = _NetworkReport(f"{pool.start} - {pool.end}", record.network.prefixlen, str(pool.start), str(pool.end))
+            row = _RANGE.pool_report(pool, record.network.prefixlen)
+        if row is None:
+            continue
         earlier = reports.get(row.address)
         if earlier is not None and (earlier.disagreement or earlier.prefix_length != row.prefix_length):
             row = replace(earlier, disagreement=True)
@@ -1773,7 +1802,7 @@ def _claim_network_reports(
             result.prefixes[address] = PrefixClaim("error")
 
     def apply(row: _NetworkReport) -> PrefixClaim | RangeClaim:
-        outcome = _claim_network(server, family, source, row, force=force)
+        outcome = _claim(server, family, source, row, force=force)
         return _network_result(server, source, row, outcome)
 
     def store(row: _NetworkReport, outcome: PrefixClaim | RangeClaim) -> None:
@@ -1850,7 +1879,7 @@ def _run_lease_prefix_phase(server: Server, family: Family, phase: LeasePrefixPh
         if result.outcome != "error":
             _count(report, network, result.outcome)
         if result.synchronized:
-            replaced.append(str(ipaddress.ip_network(network).network_address))
+            replaced.append(str(ip_parse.ip_network(network).network_address))
     if LEASE_PREFIX in report.incomplete:
         # An incomplete observation or claim keeps every legacy link unclassified, so the lease cleanup keeps it too.
         return None
@@ -1900,9 +1929,9 @@ def _classify_links(server: Server, family: Family, address: str, kind: Allocati
     ).values_list("pk", "ip_address", "ip_address__vrf")
     classified = 0
     for pk, ip_pk, vrf_id in candidates:
-        _lock_identity(None, address)
+        _ADDRESS.lock(None, address)
         if vrf_id is not None:
-            _lock_identity(vrf_id, address)
+            _ADDRESS.lock(vrf_id, address)
         # The row lock waits for an operator edit of the address, so the check below sees the committed address.
         ip = IPAddress.objects.select_for_update().filter(pk=ip_pk).first()
         link = IPAMOwnershipLink.objects.select_for_update().filter(pk=pk, allocation_kind="").first()

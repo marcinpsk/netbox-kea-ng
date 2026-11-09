@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 import csv
-import ipaddress
 import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -16,7 +15,9 @@ from django.urls import reverse
 from django.views import View
 
 from .. import (
+    event_scope,
     forms,
+    ip_parse,
     manual_sync,
     reservation_edit,
     runtime_change,
@@ -72,6 +73,11 @@ from .reservations import MUTATION_UNCONFIRMED, RESERVATIONS_TAB, reservation_ba
 from .workspace import FamilyRouteMixin, ServerFamilyMixin
 
 logger = logging.getLogger(__name__)
+
+_BULK_SYNC_EVENTS_FAILED = (
+    "Bulk sync stopped: NetBox saved the changes made so far, but an event dispatch failed, and some events may"
+    " already have been sent; see server logs. Check the addresses before you sync again."
+)
 
 
 def _row_error(request: HttpRequest, message: str) -> HttpResponse:
@@ -206,7 +212,16 @@ class ServerReservationBulkSyncView(FamilyRouteMixin, ServerFamilyMixin, Conditi
         except CatalogueUnavailable:
             logger.exception("Could not read the Subnet Catalogue for server %s", server.pk)
 
-        report = reconcile(server, self.dhcp_version, [ReservationPhase(catalogue)])
+        redirect_url = reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": pk, "family": self.dhcp_version})
+        try:
+            report = reconcile(server, self.dhcp_version, [ReservationPhase(catalogue)])
+        except event_scope.EventDispatchError:
+            logger.exception(
+                "Server %s: the bulk Reservation Sync stopped; an event dispatch failed and some events may have been sent",
+                pk,
+            )
+            messages.error(request, _BULK_SYNC_EVENTS_FAILED)
+            return HttpResponseRedirect(redirect_url)
         summary = (
             f"Bulk sync: {report.created} created, {report.updated} updated, "
             f"{len(report.conflicts)} conflicts skipped, {report.cleaned} stale links cleaned, "
@@ -226,7 +241,6 @@ class ServerReservationBulkSyncView(FamilyRouteMixin, ServerFamilyMixin, Conditi
             messages.warning(request, summary)
         else:
             messages.success(request, summary)
-        redirect_url = reverse("plugins:netbox_kea:server_reservations", kwargs={"pk": pk, "family": self.dhcp_version})
         return HttpResponseRedirect(redirect_url)
 
 
@@ -249,10 +263,8 @@ class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
         if not raw_ip:
             return HttpResponse("")
         try:
-            address = ipaddress.ip_address(raw_ip)
+            address = ip_parse.ip_address(raw_ip)
         except ValueError:
-            return HttpResponse("")
-        if getattr(address, "scope_id", None):
             return HttpResponse("")
         family = cast("Family", address.version)
         # The read is limited to the IP addresses the user may view, so the advisory leaks no field of another one.
