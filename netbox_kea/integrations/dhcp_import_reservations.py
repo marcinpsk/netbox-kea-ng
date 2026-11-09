@@ -175,8 +175,8 @@ class _ReservationAdapter(RowAdapter):
         return f"{self.scope.server.name} DHCPv{self.reservation.family}"
 
     def blocked(self) -> NotWritten | None:
-        """Return why the Subnet of an In-Subnet Reservation was not written."""
-        return self.stopped
+        """Return why the Subnet was not written, or why the DHCP plugin cannot hold the identifier."""
+        return self.stopped or _identifier_gap(self.reservation)
 
     def adopt(self):
         """Return the row that an import made before its Reservation had a mapping (a Global one: before the family).
@@ -500,12 +500,30 @@ def _attach_delegated_prefixes(imported, claims: ClaimResult, summary: ImportSum
             getattr(obj, relation).set([result.prefix for result in results if result.prefix is not None])
 
 
+def _identifier_field(reservation: Reservation) -> str:
+    """Return the DHCP plugin field of the Kea identifier of *reservation*: each Kea identifier type names it."""
+    return reservation.identity.identifier_type.replace("-", "_")
+
+
+def _identifier_gap(reservation: Reservation) -> NotWritten | None:
+    """Return why the DHCP plugin cannot hold the identifier text of *reservation*, or ``None``."""
+    field_name = _identifier_field(reservation)
+    if field_name == "hw_address":
+        return None
+    limit = plugin_model("HostReservation")._meta.get_field(field_name).max_length
+    if len(reservation.identity.value) <= limit:
+        return None
+    return NotWritten(
+        Reason.PLUGIN_GAP,
+        f"The DHCP plugin holds a {reservation.identity.identifier_type} of at most {limit} characters.",
+    )
+
+
 def _reservation_identifier_values(reservation: Reservation, mac_obj) -> dict:
     """Return the identifier fields of a DHCP-plugin reservation: its single Kea identifier, the others cleared."""
     identity = reservation.identity
     values: dict = {"hw_address_id": None, "duid": None, "circuit_id": None, "client_id": None, "flex_id": None}
-    # Each Kea identifier type names its plugin field.
-    field_name = identity.identifier_type.replace("-", "_")
+    field_name = _identifier_field(reservation)
     if field_name == "hw_address":
         values["hw_address_id"] = mac_obj.pk
     else:
