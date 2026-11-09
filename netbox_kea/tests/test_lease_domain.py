@@ -880,6 +880,8 @@ _SUBNET_ID = "Enter a Subnet ID from 1 to 4294967294."
         (6, constants.BY_IP, "198.18.0.10/32", "Enter an IPv6 address."),
         (4, constants.BY_SUBNET, "198.18.0.0", "Enter an IPv4 Subnet in CIDR notation."),
         (6, constants.BY_SUBNET, "198.18.0.0/24", "Enter an IPv6 Subnet in CIDR notation."),
+        (6, constants.BY_IP, "fe80::1%eth0", "Enter an IPv6 address."),
+        (6, constants.BY_SUBNET, "fe80::%eth0/64", "Enter an IPv6 Subnet in CIDR notation."),
         (4, constants.BY_SUBNET, "198.18.0.5/24", "198.18.0.5/24 is not a valid prefix. Did you mean 198.18.0.0/24?"),
         (4, constants.BY_SUBNET_ID, "0", _SUBNET_ID),
         (4, constants.BY_SUBNET_ID, "4294967295", _SUBNET_ID),

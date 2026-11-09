@@ -239,6 +239,12 @@ class TestLeaseAPIQueryParse(_APITestBase):
                 self.assertEqual(response.status_code, 400)
                 self.assertEqual(response.json(), {"detail": expected})
 
+    def test_a_scoped_ipv6_address_is_refused_before_kea(self):
+        response = self._get(6, {"ip_address": "fe80::1%eth0"})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"detail": "ip_address: Enter an IPv6 address."})
+
     def test_a_client_id_search_sends_the_client_id_query(self):
         url = reverse("plugins-api:netbox_kea-api:server-leases4", args=[self.server.pk])
         with stub_kea({"lease4-get-by-client-id": _LEASE4_LIST_RESPONSE}) as kea:

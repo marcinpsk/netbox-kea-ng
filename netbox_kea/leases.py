@@ -460,14 +460,15 @@ def _query_value(family: Family, selector: str, text: str) -> int | str:
             address = ipaddress.ip_address(text)
         except ValueError:
             address = None
-        if address is None or address.version != family:
+        # A scoped IPv6 address (fe80::1%eth0) is no Kea Lease address.
+        if address is None or address.version != family or getattr(address, "scope_id", None):
             raise LeaseQueryError("value", f"Enter an IPv{family} address.")
         return str(address)
     try:
         network = ipaddress.ip_network(text, strict=False) if "/" in text else None
     except ValueError:
         network = None
-    if network is None or network.version != family:
+    if network is None or network.version != family or getattr(network.network_address, "scope_id", None):
         raise LeaseQueryError("value", f"Enter an IPv{family} Subnet in CIDR notation.")
     if ipaddress.ip_address(text.split("/", 1)[0]) != network.network_address:
         raise LeaseQueryError("value", f"{text} is not a valid prefix. Did you mean {network}?")
