@@ -7,7 +7,6 @@ The Lease and Reservation views read the ownership of the objects that their row
 
 from __future__ import annotations
 
-import ipaddress
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -15,6 +14,7 @@ from typing import Any, Literal
 from django.db.models import Exists, OuterRef, QuerySet
 from ipam.models import IPAddress, Prefix
 
+from . import ip_parse
 from .constants import Family
 from .ipam_marker import parse_marker
 from .ipam_sources import host_text, network_text, object_field
@@ -46,9 +46,7 @@ def address_ownership(
 
     The rules are those of :func:`_ownership`. Each key is the canonical text of an address.
     """
-    parsed = [ipaddress.ip_address(address) for address in addresses]
-    if any(getattr(address, "scope_id", None) for address in parsed):
-        raise ValueError("A NetBox IP address has no IPv6 scope zone.")
+    parsed = [ip_parse.ip_address(address) for address in addresses]
     hosts = {str(address) for address in parsed}
     rows = IPAddress.objects.filter(vrf_id=server.sync_vrf_id, address__net_in=sorted(hosts))
     return _ownership(server, family, source, user, rows, hosts, lambda ip: host_text(ip.address))
@@ -62,7 +60,7 @@ def prefix_ownership(
     Only a Prefix of the same network and length counts. The rules are those of :func:`_ownership`. Each key is the
     canonical text of a network.
     """
-    keys = {str(ipaddress.ip_network(network)) for network in networks}
+    keys = {str(ip_parse.ip_network(network)) for network in networks}
     rows = Prefix.objects.filter(vrf_id=server.sync_vrf_id, prefix__in=sorted(keys))
     return _ownership(server, family, source, user, rows, keys, network_text)
 

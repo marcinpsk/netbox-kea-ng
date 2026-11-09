@@ -14,7 +14,7 @@ from django.urls import reverse
 from django.views import View
 from netbox.views import generic
 
-from .. import config_write, forms, reservation_edit, server_configuration, subnet_catalogue
+from .. import config_write, forms, ip_parse, reservation_edit, server_configuration, subnet_catalogue
 from ..config_write import ReservationChangeOutcome
 from ..constants import Family, IPAddressValue
 from ..integrations import dhcp_plugin
@@ -87,10 +87,10 @@ def _submitted_values(
     """Parse cleaned form strings and rows into the typed values of the edit module."""
     addresses: tuple[IPAddressValue, ...]
     if family == 4:
-        addresses = (ipaddress.IPv4Address(cleaned_data["ip_address"]),) if cleaned_data.get("ip_address") else ()
+        addresses = (ip_parse.ipv4_address(cleaned_data["ip_address"]),) if cleaned_data.get("ip_address") else ()
     else:
         addresses = tuple(
-            ipaddress.IPv6Address(value) for value in (cleaned_data.get("ip_addresses") or "").split(",") if value
+            ip_parse.ipv6_address(value) for value in (cleaned_data.get("ip_addresses") or "").split(",") if value
         )
     prefixes = _networks(cleaned_data.get("prefixes"))
     next_server = cleaned_data.get("next_server")
@@ -100,7 +100,7 @@ def _submitted_values(
         cleaned_data.get("hostname", ""),
         forms.option_rows(options_formset),
         client_classes=cleaned_data.get("client_classes", ""),
-        next_server=ipaddress.IPv4Address(next_server) if next_server else None,
+        next_server=ip_parse.ipv4_address(next_server) if next_server else None,
         server_hostname=cleaned_data.get("server_hostname", ""),
         boot_file_name=cleaned_data.get("boot_file_name", ""),
         excluded_prefixes=_networks(cleaned_data.get("excluded_prefixes")),
@@ -109,7 +109,7 @@ def _submitted_values(
 
 def _networks(value: str | None) -> tuple[ipaddress.IPv6Network, ...]:
     """Parse a cleaned comma-separated prefix field."""
-    return tuple(ipaddress.IPv6Network(item) for item in (value or "").split(",") if item)
+    return tuple(ip_parse.ipv6_network(item) for item in (value or "").split(",") if item)
 
 
 def reservation_identity_from_request(request: HttpRequest, version: Family) -> ReservationIdentity:
@@ -229,7 +229,7 @@ def _entered_address(value: str, family: Family) -> IPAddressValue | None:
     """Return the first address of an address field, or None when the field holds none or no valid one."""
     first = value.split(",", maxsplit=1)[0].strip()
     try:
-        address = ipaddress.ip_address(first)
+        address = ip_parse.ip_address(first)
     except ValueError:
         return None
     return address if address.version == family else None

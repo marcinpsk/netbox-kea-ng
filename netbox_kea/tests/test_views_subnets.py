@@ -1893,6 +1893,57 @@ class TestSubnetAddAllocatesThroughCatalogue(_ViewTestBase):
         )
 
 
+class TestSubnetAddRefusesAnIPv6ScopeZone(_ViewTestBase):
+    """Kea cannot use an address with a scope zone (fe80::1%eth0), so the add form refuses it before Kea sees it."""
+
+    def _post(self, family: Family, **data):
+        url = reverse("plugins:netbox_kea:server_subnet_add", kwargs={"pk": self.server.pk, "family": family})
+        with stub_kea({**_ABSENT_READ_HOOKS, **SubnetDaemon(family).responses()}) as kea:
+            response = self.client.post(url, {**_SUBNET_ADD_POST, **data})
+        return response, kea
+
+    def test_a_scoped_pool_or_dns_server_is_a_form_error_and_the_plain_value_reaches_kea(self):
+        for field, scoped, plain, error in (
+            (
+                "pools",
+                "fe80::1%eth0-fe80::9",
+                "fe80::1-fe80::9",
+                (
+                    "Pool fe80::1%eth0-fe80::9 has an invalid address: "
+                    "'fe80::1%eth0' does not appear to be an IPv4 or IPv6 address."
+                ),
+            ),
+            (
+                "pools",
+                "fe80::%eth0/120",
+                "fe80::/120",
+                (
+                    "Pool fe80::%eth0/120 is not a valid prefix: "
+                    "'fe80::%eth0/120' does not appear to be an IPv4 or IPv6 network."
+                ),
+            ),
+            ("dns_servers", "fe80::1%eth0", "fe80::1", "Invalid DNS server IP address: 'fe80::1%eth0'"),
+        ):
+            with self.subTest(field=field, value=scoped):
+                response, kea = self._post(6, subnet="fe80::/64", **{field: scoped})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.context["form"].errors[field], [error])
+                self.assertNotIn("subnet6-add", kea.commands())
+            with self.subTest(field=field, value=plain):
+                response, kea = self._post(6, subnet="fe80::/64", **{field: plain})
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(kea.commands().count("subnet6-add"), 1)
+
+    def test_a_scoped_gateway_is_an_invalid_address(self):
+        response, kea = self._post(4, subnet="198.18.1.0/24", gateway="fe80::1%eth0")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.context["form"].errors["gateway"],
+            ["Invalid gateway IP address: 'fe80::1%eth0' does not appear to be an IPv4 or IPv6 address"],
+        )
+        self.assertNotIn("subnet4-add", kea.commands())
+
+
 # ---------------------------------------------------------------------------
 # SubnetAdd exception paths
 # ---------------------------------------------------------------------------

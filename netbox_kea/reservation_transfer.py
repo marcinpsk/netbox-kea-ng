@@ -9,6 +9,7 @@ from typing import Any, Literal, cast
 
 import yaml
 
+from . import ip_parse
 from .constants import Family, IPAddressValue
 from .dhcp_options import (
     DHCPOption,
@@ -292,7 +293,7 @@ def _parse_scope(
         )
         return None
     try:
-        network = ipaddress.ip_network(cidr, strict=True)
+        network = ip_parse.ip_network(cidr, strict=True)
     except (TypeError, ValueError):
         diagnostics.append(
             _diagnostic("invalid-subnet", "The subnet CIDR must be a canonical network.", f"{position}.subnet.cidr")
@@ -344,7 +345,7 @@ def _parse_addresses(
     if not isinstance(value, list):
         diagnostics.append(_diagnostic("invalid-addresses", "Addresses must be a list.", position))
         return None
-    subnet = ipaddress.ip_network(subnet_cidr) if subnet_cidr is not None else None
+    subnet = ip_parse.ip_network(subnet_cidr) if subnet_cidr is not None else None
     parsed: list[IPAddressValue] = []
     seen: set[IPAddressValue] = set()
     for index, raw in enumerate(value):
@@ -352,7 +353,7 @@ def _parse_addresses(
             diagnostics.append(_diagnostic("invalid-address", "The address is invalid.", f"{position}[{index}]"))
             continue
         try:
-            address = ipaddress.ip_address(raw)
+            address = ip_parse.ip_address(raw)
         except (TypeError, ValueError):
             diagnostics.append(_diagnostic("invalid-address", "The address is invalid.", f"{position}[{index}]"))
             continue
@@ -399,7 +400,7 @@ def _parse_prefixes(
             )
             continue
         try:
-            prefix = ipaddress.IPv6Network(raw, strict=True)
+            prefix = ip_parse.ipv6_network(raw, strict=True)
         except (TypeError, ValueError):
             diagnostics.append(
                 _diagnostic("invalid-prefix", "The delegated prefix is invalid.", f"{position}[{index}]")
@@ -518,8 +519,8 @@ def _parse_excluded_prefixes(
             if not isinstance(delegated, str) or not isinstance(excluded, str):
                 raise ValueError("An excluded prefix entry needs two prefixes.")
             pair = ExcludedPrefix(
-                delegated=ipaddress.IPv6Network(delegated, strict=True),
-                excluded=ipaddress.IPv6Network(excluded, strict=True),
+                delegated=ip_parse.ipv6_network(delegated, strict=True),
+                excluded=ip_parse.ipv6_network(excluded, strict=True),
             )
             if prefixes is not None and pair.delegated not in prefixes:
                 raise ValueError("The delegated prefix is not one of the Reservation.")

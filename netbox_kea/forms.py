@@ -3,7 +3,6 @@
 # SPDX-FileCopyrightText: 2026 Andrew Backeby <andrew@backeby.eu>
 # SPDX-License-Identifier: Apache-2.0
 import copy
-import ipaddress
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar, cast
 
@@ -20,7 +19,7 @@ from utilities.forms import BOOLEAN_WITH_BLANK_CHOICES
 from utilities.forms.fields import CSVModelChoiceField, TagFilterField
 from utilities.forms.rendering import FieldSet
 
-from . import constants
+from . import constants, ip_parse
 from .config_write import SUBNET_LIST_UNCONFIRMED, subnet_changed
 from .constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, IPNetworkValue
 from .decimal_text import parse_decimal
@@ -85,7 +84,7 @@ class _GatewayField(forms.CharField):
         if not text:
             return ""
         try:
-            return str(ipaddress.ip_address(text))
+            return str(ip_parse.ip_address(text))
         except ValueError as exc:
             raise forms.ValidationError(f"Invalid gateway IP address: {exc}") from exc
 
@@ -178,7 +177,7 @@ def _validate_subnet_cidr(value: str, *, strict: bool) -> str:
     """Validate a subnet CIDR and return it stripped, never normalised."""
     value = value.strip()
     try:
-        ipaddress.ip_network(value, strict=strict)
+        ip_parse.ip_network(value, strict=strict)
     except ValueError as exc:
         raise forms.ValidationError(f"Invalid subnet CIDR: {exc}") from exc
     return value
@@ -962,7 +961,7 @@ class Reservation4Form(_ReservationForm):
         if "/" not in value:
             raise forms.ValidationError("Enter a valid IPv4 subnet CIDR (e.g. 10.0.0.0/24).")
         try:
-            network = ipaddress.IPv4Network(value, strict=True)
+            network = ip_parse.ipv4_network(value, strict=True)
         except ValueError as exc:
             raise forms.ValidationError("Enter a valid IPv4 subnet CIDR (e.g. 10.0.0.0/24).") from exc
         # Use the canonical CIDR form that the Subnet Catalogue find_by_cidr() compares.
@@ -1054,7 +1053,7 @@ class Reservation6Form(_ReservationForm):
             if not entry:
                 continue
             try:
-                prefixes.append(str(ipaddress.IPv6Network(entry, strict=True)))
+                prefixes.append(str(ip_parse.ipv6_network(entry, strict=True)))
             except ValueError as exc:
                 raise ValidationError(f"'{entry}' is not an IPv6 prefix, such as 2001:db8:1:ff::/64.") from exc
         return ",".join(prefixes)
@@ -1073,7 +1072,7 @@ class Reservation6Form(_ReservationForm):
         if "/" not in value:
             raise forms.ValidationError("Enter a valid IPv6 subnet CIDR (e.g. 2001:db8::/48).")
         try:
-            network = ipaddress.IPv6Network(value, strict=True)
+            network = ip_parse.ipv6_network(value, strict=True)
         except ValueError as exc:
             raise forms.ValidationError("Enter a valid IPv6 subnet CIDR (e.g. 2001:db8::/48).") from exc
         # Use the canonical CIDR form that the Subnet Catalogue find_by_cidr() compares.
@@ -1281,7 +1280,7 @@ class _SubnetBaseForm(forms.Form):
             return cleaned
         subnet_str = cleaned.get(self.subnet_field, "")
         try:
-            subnet_net = ipaddress.ip_network(subnet_str, strict=False)
+            subnet_net = ip_parse.ip_network(subnet_str, strict=False)
         except ValueError:
             return cleaned
 
@@ -1297,7 +1296,7 @@ class _SubnetBaseForm(forms.Form):
                 self.add_error("gateway", "Gateway is not allowed for IPv6 subnets.")
             else:
                 try:
-                    gw_version = ipaddress.ip_address(gateway).version
+                    gw_version = ip_parse.ip_address(gateway).version
                 except ValueError:
                     gw_version = None
                 if gw_version and gw_version != subnet_version:
@@ -1314,7 +1313,7 @@ class _SubnetBaseForm(forms.Form):
                 continue
             for address in addresses:
                 try:
-                    version = ipaddress.ip_address(address).version
+                    version = ip_parse.ip_address(address).version
                 except ValueError:
                     continue
                 if version != subnet_version:
@@ -1927,7 +1926,7 @@ class Lease4AddForm(_LeaseAddForm):
 
     def _request(self, data: dict[str, Any]) -> DHCPv4LeaseRequest:
         return DHCPv4LeaseRequest(
-            address=ipaddress.IPv4Address(data["ip_address"]),
+            address=ip_parse.ipv4_address(data["ip_address"]),
             hw_address=data["hw_address"],
             subnet_id=data["subnet_id"],
             valid_lifetime=data["valid_lft"],
@@ -1964,7 +1963,7 @@ class Lease6AddForm(_LeaseAddForm):
 
     def _request(self, data: dict[str, Any]) -> DHCPv6LeaseRequest:
         return DHCPv6LeaseRequest(
-            address=ipaddress.IPv6Address(data["ip_address"]),
+            address=ip_parse.ipv6_address(data["ip_address"]),
             duid=data["duid"],
             iaid=data["iaid"],
             subnet_id=data["subnet_id"],

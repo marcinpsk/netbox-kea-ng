@@ -300,6 +300,18 @@ class TestServerLeases6DeleteView(_ViewTestBase):
         self._assert_no_none_pk_redirect(response)
         self.assertIn(str(self.server.pk), response.url)
 
+    def test_a_selection_with_a_scoped_address_is_invalid_and_kea_gets_no_command(self):
+        """The shown facts come back as JSON, which pydantic parses with ipaddress; the model refuses the zone."""
+        url = reverse("plugins:netbox_kea:server_leases_delete", kwargs={"pk": self.server.pk, "family": 6})
+        record = lease_record("fe80::1", subnet_id=1)
+        token = shown_token(record).replace('"fe80::1"', '"fe80::1%eth0"')
+        self.assertIn("fe80::1%eth0", token)
+        with _lease_stub(LeaseDaemon(6, record).responses()) as kea:
+            response = self.client.post(url, {"pk": [token], "_confirm": "1"})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(kea.commands(), [])
+        self.assertIn("Invalid lease selection", " ".join(str(m) for m in get_messages(response.wsgi_request)))
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Phase 7a: "Reserved" badge on lease pages
@@ -2703,6 +2715,14 @@ class TestBulkLeaseImportView(_ViewTestBase):
         args = kea.bodies("lease6-add")[0]["arguments"]
         self.assertEqual(args["duid"], "00:01:02:03")
         self.assertEqual(args["iaid"], 12345)
+
+    def test_a_scoped_ipv6_address_is_a_file_error_and_kea_gets_no_lease(self):
+        csv_bytes = self._csv6(rows=["fe80::1%eth0,00:01:02:03,12345,1,host1\n"])
+        with _lease_stub(LeaseDaemon(6).responses()) as kea:
+            response = self.client.post(self._url(version=6), self._post(version=6, csv_bytes=csv_bytes))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["form"].errors["csv_file"], ["Line 2: 'ip-address' is not an IPv6 address."])
+        self.assertNotIn("lease6-add", kea.commands())
 
     def test_post_multiple_rows_calls_lease_add_per_row(self):
         """Each CSV row triggers one lease_add call."""

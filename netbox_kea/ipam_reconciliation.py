@@ -11,7 +11,6 @@ on the object identity.
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
@@ -24,7 +23,7 @@ from django.db.models import QuerySet
 from ipam.models import IPAddress, IPRange, Prefix
 from netaddr import AddrFormatError, IPNetwork
 
-from . import event_scope, subnet_catalogue
+from . import event_scope, ip_parse, subnet_catalogue
 from .constants import IP_RANGE_MAX_SIZE, Family, IPNetworkValue, StaleCleanupMode
 from .dhcp_mapping_lifecycle import MetadataBusy
 from .integrations import dhcp_plugin
@@ -1880,7 +1879,7 @@ def _run_lease_prefix_phase(server: Server, family: Family, phase: LeasePrefixPh
         if result.outcome != "error":
             _count(report, network, result.outcome)
         if result.synchronized:
-            replaced.append(str(ipaddress.ip_network(network).network_address))
+            replaced.append(str(ip_parse.ip_network(network).network_address))
     if LEASE_PREFIX in report.incomplete:
         # An incomplete observation or claim keeps every legacy link unclassified, so the lease cleanup keeps it too.
         return None
