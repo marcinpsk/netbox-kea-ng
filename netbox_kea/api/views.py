@@ -130,6 +130,11 @@ _LEASE_SELECTORS: dict[Family, dict[str, str]] = {
 class _LeaseParameterError(ValueError):
     """The REST Lease search parameters do not give exactly one valid selector and a valid state."""
 
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        # The response reads this public text, never str() of a caught exception (CodeQL py/stack-trace-exposure).
+        self.detail = detail
+
 
 def _lease_query(params, version: Family) -> LeaseQuery:
     """Return the Lease Query of the REST Lease search parameters.
@@ -204,7 +209,7 @@ class ServerViewSet(NetBoxModelViewSet):
         try:
             query = _lease_query(request.query_params, version)
         except _LeaseParameterError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"detail": exc.detail}, status=status.HTTP_400_BAD_REQUEST)
 
         def lease_search() -> LeaseSnapshot:
             with server.get_client(version=version) as client:

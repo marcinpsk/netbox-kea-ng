@@ -228,6 +228,17 @@ class TestLeaseAPIQueryParse(_APITestBase):
                 )
                 self.assertEqual(response.json(), {"detail": expected})
 
+    def test_a_selector_of_the_other_family_is_refused(self):
+        for family, params, expected in (
+            (4, {"duid": "00:01:02:03"}, "duid is only supported for DHCPv6."),
+            (6, {"hw_address": "aa:bb:cc:dd:ee:ff"}, "hw_address is only supported for DHCPv4."),
+            (6, {"client_id": "01:aa:bb"}, "client_id is only supported for DHCPv4."),
+        ):
+            with self.subTest(params=params):
+                response = self._get(family, params)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json(), {"detail": expected})
+
     def test_a_bad_client_identifier_is_refused_with_its_parameter_name(self):
         for family, params, expected in (
             (6, {"duid": "00:01"}, "duid: Enter a DUID of 3 to 130 hexadecimal octets."),
