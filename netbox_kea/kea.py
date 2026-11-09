@@ -19,7 +19,7 @@ import requests
 from requests.models import HTTPBasicAuth
 from urllib3.exceptions import SSLError as Urllib3SSLError
 
-from . import constants
+from . import constants, ip_parse
 from .constants import Family, IPAddressValue, IPNetworkValue, LeaseState, Persistence
 from .dhcp_options import (
     DHCPOptionEdit,
@@ -534,7 +534,7 @@ def _lease_cursor(version: int, cursor: str | None) -> IPAddressValue | None:
     if cursor is None:
         return None
     try:
-        parsed = ipaddress.ip_address(cursor)
+        parsed = ip_parse.ip_address(cursor)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Invalid DHCPv{version} lease cursor.") from exc
     if parsed.version != version:
@@ -570,7 +570,7 @@ def subnet_network(value: Any, family: int) -> IPNetworkValue:
     """Parse the Subnet prefix Kea declares; Kea accepts host bits, so this does too."""
     if not isinstance(value, str) or not value:
         raise ValueError("Subnet CIDR must be a non-empty string.")
-    network = ipaddress.ip_network(value, strict=False)
+    network = ip_parse.ip_network(value, strict=False)
     if network.version != family:
         raise ValueError(f"Subnet CIDR {value!r} is IPv{network.version}, not IPv{family}.")
     return network
@@ -1106,7 +1106,7 @@ class KeaClient:
         if not isinstance(scope, InSubnetReservationScope):
             raise ValueError("Reservation address discovery requires an In-Subnet Scope.")
         try:
-            parsed_address = ipaddress.ip_address(address)
+            parsed_address = ip_parse.ip_address(address)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid DHCPv{version} Reservation address.") from exc
         if parsed_address.version != version or parsed_address not in scope.subnet.network:

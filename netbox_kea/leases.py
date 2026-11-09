@@ -29,6 +29,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
+from . import ip_parse
 from .constants import (
     BY_CLIENT_ID,
     BY_DUID,
@@ -158,7 +159,7 @@ class LeaseIdentity(_Value):
 
     family: Family
     kind: AllocationKind
-    address: IPAddressValue
+    address: ip_parse.IPAddressField
 
     @model_validator(mode="after")
     def _consistent(self) -> LeaseIdentity:
@@ -176,7 +177,7 @@ def address_identity(family: Family, address: str) -> LeaseIdentity:
         ValueError: If *address* is not an address of *family*.
 
     """
-    return LeaseIdentity(family=family, kind="address", address=ipaddress.ip_address(address))
+    return LeaseIdentity(family=family, kind="address", address=ip_parse.ip_address(address))
 
 
 def allocation_identities(family: Family, address: str) -> tuple[LeaseIdentity, ...]:
@@ -187,7 +188,7 @@ def allocation_identities(family: Family, address: str) -> tuple[LeaseIdentity, 
 
     """
     kinds = _EVERY_KIND if family == 6 else ("address",)
-    return tuple(LeaseIdentity(family=family, kind=kind, address=ipaddress.ip_address(address)) for kind in kinds)
+    return tuple(LeaseIdentity(family=family, kind=kind, address=ip_parse.ip_address(address)) for kind in kinds)
 
 
 def parse_selection(family: Family, label: str) -> tuple[str, LeaseIdentity]:
@@ -200,7 +201,7 @@ def parse_selection(family: Family, label: str) -> tuple[str, LeaseIdentity]:
     if "/" not in label:
         identity = address_identity(family, label)
         return str(identity.address), identity
-    prefix = ipaddress.ip_network(label)
+    prefix = ip_parse.ip_network(label)
     return str(prefix), LeaseIdentity(family=family, kind="delegated-prefix", address=prefix.network_address)
 
 
@@ -284,7 +285,7 @@ class DHCPv4AddressLease(_AddressAllocation, _Lease):
 
     family: ClassVar[Family] = 4
     variant: Literal["dhcpv4-address"] = "dhcpv4-address"
-    address: ipaddress.IPv4Address
+    address: ip_parse.IPv4AddressField
     # A declined lease keeps Kea's empty hardware address, and a client ID can replace it.
     hw_address: HardwareAddress | None
     client_id: ClientIdentifier | None = None
@@ -327,7 +328,7 @@ class DHCPv6AddressLease(_AddressAllocation, _DHCPv6Lease):
     """One DHCPv6 address (IA_NA) Lease."""
 
     variant: Literal["dhcpv6-address"] = "dhcpv6-address"
-    address: ipaddress.IPv6Address
+    address: ip_parse.IPv6AddressField
 
 
 class DHCPv6PrefixLease(_DHCPv6Lease):
@@ -335,7 +336,7 @@ class DHCPv6PrefixLease(_DHCPv6Lease):
 
     kind: ClassVar[AllocationKind] = "delegated-prefix"
     variant: Literal["dhcpv6-delegated-prefix"] = "dhcpv6-delegated-prefix"
-    prefix: ipaddress.IPv6Network
+    prefix: ip_parse.IPv6NetworkField
 
     @property
     def prefix_length(self) -> int:
@@ -383,7 +384,7 @@ class LeaseRead(_Value):
     records: tuple[Lease, ...]
     diagnostics: tuple[LeaseDiagnostic, ...]
     raw_count: Annotated[int, Field(ge=0)]
-    next_cursor: IPAddressValue | None
+    next_cursor: ip_parse.IPAddressField | None
 
 
 class LeaseQuery(_Value):
@@ -457,20 +458,19 @@ def _query_value(family: Family, selector: str, text: str) -> int | str:
         return subnet_id
     if selector == BY_IP:
         try:
-            address = ipaddress.ip_address(text)
+            address = ip_parse.ip_address(text)
         except ValueError:
             address = None
-        # A scoped IPv6 address (fe80::1%eth0) is no Kea Lease address.
-        if address is None or address.version != family or getattr(address, "scope_id", None):
+        if address is None or address.version != family:
             raise LeaseQueryError("value", f"Enter an IPv{family} address.")
         return str(address)
     try:
-        network = ipaddress.ip_network(text, strict=False) if "/" in text else None
+        network = ip_parse.ip_network(text, strict=False) if "/" in text else None
     except ValueError:
         network = None
-    if network is None or network.version != family or getattr(network.network_address, "scope_id", None):
+    if network is None or network.version != family:
         raise LeaseQueryError("value", f"Enter an IPv{family} Subnet in CIDR notation.")
-    if ipaddress.ip_address(text.split("/", 1)[0]) != network.network_address:
+    if ip_parse.ip_address(text.split("/", 1)[0]) != network.network_address:
         raise LeaseQueryError("value", f"{text} is not a valid prefix. Did you mean {network}?")
     return str(network)
 
@@ -492,7 +492,7 @@ class LeaseSnapshot(_Value):
     records: tuple[Lease, ...]
     diagnostics: tuple[LeaseDiagnostic, ...]
     coverage: LeaseCoverage
-    next_cursor: IPAddressValue | None
+    next_cursor: ip_parse.IPAddressField | None
     _identities: frozenset[LeaseIdentity] = PrivateAttr(default=frozenset())
 
     @model_validator(mode="after")
@@ -646,7 +646,7 @@ class DHCPv4LeaseRequest(_Value):
 
     family: ClassVar[Family] = 4
     variant: Literal["dhcpv4-address"] = "dhcpv4-address"
-    address: ipaddress.IPv4Address
+    address: ip_parse.IPv4AddressField
     # lease4-add requires it.
     hw_address: HardwareAddress
     # None lets Kea select the Subnet and take its valid lifetime.
@@ -661,7 +661,7 @@ class DHCPv6LeaseRequest(_Value):
 
     family: ClassVar[Family] = 6
     variant: Literal["dhcpv6-address"] = "dhcpv6-address"
-    address: ipaddress.IPv6Address
+    address: ip_parse.IPv6AddressField
     duid: Duid
     iaid: Uint32
     subnet_id: SubnetId | None = None
@@ -883,12 +883,9 @@ def _wire_address(value: Any, family: int) -> IPAddressValue:
     if not isinstance(value, str):
         raise _FieldProblem("invalid-type")
     try:
-        address = ipaddress.ip_address(value)
+        address = ip_parse.ip_address(value)
     except ValueError:
         raise _FieldProblem("invalid-address") from None
-    # A scoped IPv6 address (fe80::1%eth0) is no allocation, and NetBox IPAM cannot hold one.
-    if getattr(address, "scope_id", None):
-        raise _FieldProblem("invalid-address")
     if address.version != family:
         raise _FieldProblem("wrong-family")
     return address

@@ -13,14 +13,13 @@
 
 from __future__ import annotations
 
-import ipaddress
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
-from .. import event_scope, kea_paths
+from .. import event_scope, ip_parse, kea_paths
 from ..constants import Family
 from ..published_name import reservation_published_name
 from ..reservations import TRAVERSAL_DIAGNOSTIC_CODES, Reservation, identity_text
@@ -230,9 +229,7 @@ class _ReservationAdapter(RowAdapter):
         for relation, networks in _reported_prefixes(self.reservation).items():
             # state() read the relations of a stored row; a new row has none.
             current = self._stored[relation] if row.pk is not None else {}
-            relations[relation] = {
-                pk for pk, prefix in current.items() if ipaddress.ip_network(str(prefix)) in networks
-            }
+            relations[relation] = {pk for pk, prefix in current.items() if ip_parse.ip_network(str(prefix)) in networks}
         return relations
 
     def state(self, row) -> RowState:

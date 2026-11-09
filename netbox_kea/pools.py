@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-import ipaddress
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from . import ip_parse
 from .constants import IPAddressValue, IPNetworkValue
 
 
@@ -47,7 +47,7 @@ def parse_pool(value: Any, subnet: IPNetworkValue) -> Pool:
     value = value.strip()
     if "/" in value:
         try:
-            pool_network = ipaddress.ip_network(value, strict=True)
+            pool_network = ip_parse.ip_network(value, strict=True)
         except ValueError as exc:
             raise ValueError(f"Pool {value} is not a valid prefix: {exc}.") from exc
         start, end = pool_network.network_address, pool_network.broadcast_address
@@ -56,7 +56,7 @@ def parse_pool(value: Any, subnet: IPNetworkValue) -> Pool:
         if len(parts) != 2 or not all(parts):
             raise ValueError(f"Pool {value} must be a range (start-end) or a prefix (CIDR).")
         try:
-            start, end = ipaddress.ip_address(parts[0]), ipaddress.ip_address(parts[1])
+            start, end = ip_parse.ip_address(parts[0]), ip_parse.ip_address(parts[1])
         except ValueError as exc:
             raise ValueError(f"Pool {value} has an invalid address: {exc}.") from exc
     if start.version != subnet.version or end.version != subnet.version:

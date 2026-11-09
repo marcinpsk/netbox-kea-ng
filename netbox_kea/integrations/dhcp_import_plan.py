@@ -22,7 +22,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, ClassVar, Generic, Protocol, TypedDict, TypeVar, cast, get_args
 
-from .. import kea_paths
+from .. import ip_parse, kea_paths
 from ..constants import Family, validate_family
 from ..dhcp_options import DHCPOptionIdentity, OptionDefinition, option_identity
 from ..kea import subnet_network
@@ -366,7 +366,7 @@ class PoolKey:
     def from_source(cls, source: MappingSource, family: int) -> PoolKey:
         """Return the key that the Pool *source* holds: its range is ``start-end``."""
         start, _, end = _identity(source).partition("-")
-        return cls(_subnet_id(source), Pool(ipaddress.ip_address(start), ipaddress.ip_address(end)))
+        return cls(_subnet_id(source), Pool(ip_parse.ip_address(start), ip_parse.ip_address(end)))
 
     def path(self, family: int) -> str:
         """Return the Kea path of the Pool in *family*, by the text that Kea's config-get gives its range."""
@@ -416,7 +416,7 @@ class PDPoolKey:
         """Return the key that the PD Pool *source* holds."""
         # The delegated length follows the last slash.
         prefix, _, delegated = _identity(source).rpartition("/")
-        return cls(_subnet_id(source), ipaddress.IPv6Network(prefix), int(delegated))
+        return cls(_subnet_id(source), ip_parse.ipv6_network(prefix), int(delegated))
 
     def path(self, family: int) -> str:
         """Return the Kea path of the PD Pool in *family*."""

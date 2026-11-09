@@ -8,13 +8,13 @@ compares a source with the constants below.
 
 from __future__ import annotations
 
-import ipaddress
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from ipam.models import IPAddress, IPRange, Prefix
 
+from . import ip_parse
 from .constants import Family
 from .ipam_marker import MarkerKind
 from .models import IPAMOwnershipSource
@@ -69,12 +69,12 @@ SOURCES: dict[str, OwnershipSource] = {
 
 def host_text(address: Any) -> str:
     """Return the canonical host text of a NetBox address, the same text as a phase report's address."""
-    return str(ipaddress.ip_address(str(address.ip)))
+    return str(ip_parse.ip_address(str(address.ip)))
 
 
 def network_text(prefix: Prefix) -> str:
     """Return the canonical network text of a NetBox Prefix, the same text as a network report's address."""
-    return str(ipaddress.ip_network(str(prefix.prefix)))
+    return str(ip_parse.ip_network(str(prefix.prefix)))
 
 
 def range_key(start: Any, end: Any) -> str:

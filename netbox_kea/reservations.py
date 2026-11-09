@@ -11,6 +11,7 @@ from datetime import datetime
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Generic, Literal, Protocol, TypeVar, assert_never, cast
 
+from . import ip_parse
 from .constants import LEASE_SELECTOR_BY_IDENTIFIER, Family, IPAddressValue, LeaseState
 from .dhcp_options import (
     DHCPOption,
@@ -737,7 +738,7 @@ class ReservationLookup(Protocol):
 MAX_SERVER_HOSTNAME_LENGTH = 63
 MAX_BOOT_FILE_NAME_LENGTH = 127
 NEXT_SERVER_RULE = "The next server must be an IPv4 address other than 0.0.0.0 and 255.255.255.255."
-_BROADCAST = ipaddress.IPv4Address("255.255.255.255")
+_BROADCAST = ip_parse.ipv4_address("255.255.255.255")
 # Kea returns this next-server for a host that sets none.
 _UNSET_NEXT_SERVER = ipaddress.IPv4Address(0)
 # Kea removes these characters from both ends of a client class name of a host.
@@ -752,7 +753,7 @@ def parse_next_server(value: Any) -> ipaddress.IPv4Address:
 
     """
     try:
-        address = ipaddress.IPv4Address(value) if isinstance(value, str) else None
+        address = ip_parse.ipv4_address(value) if isinstance(value, str) else None
     except ValueError:
         address = None
     if address is None or address in (_UNSET_NEXT_SERVER, _BROADCAST):
@@ -1349,13 +1350,12 @@ def _addresses(raw: dict[str, Any], family: Family) -> tuple[IPAddressValue, ...
         if not isinstance(value, str):
             raise MalformedReservation("invalid-address", "The Reservation contains an invalid address.", field)
         try:
-            address = ipaddress.ip_address(value)
+            address = ip_parse.ip_address(value)
         except (TypeError, ValueError) as exc:
             raise MalformedReservation(
                 "invalid-address", "The Reservation contains an invalid address.", field
             ) from exc
-        # A scoped IPv6 address (fe80::1%eth0) is no allocation, and NetBox IPAM cannot hold one.
-        if address.version != family or address in parsed or getattr(address, "scope_id", None):
+        if address.version != family or address in parsed:
             raise MalformedReservation(
                 "invalid-address", "The Reservation contains an invalid or duplicate address.", field
             )
@@ -1377,7 +1377,7 @@ def _prefixes(raw: dict[str, Any], family: Family) -> tuple[ipaddress.IPv6Networ
         if not isinstance(value, str):
             raise MalformedReservation("invalid-prefix", "The Reservation contains an invalid delegated prefix.", field)
         try:
-            prefix = ipaddress.IPv6Network(value, strict=True)
+            prefix = ip_parse.ipv6_network(value, strict=True)
         except (TypeError, ValueError) as exc:
             raise MalformedReservation(
                 "invalid-prefix", "The Reservation contains an invalid delegated prefix.", field
@@ -1473,7 +1473,7 @@ def _excluded_prefixes(
         try:
             if not isinstance(value, str):
                 raise TypeError("An excluded prefix must be a string.")
-            pairs.append(ExcludedPrefix(prefix, ipaddress.IPv6Network(value, strict=True)))
+            pairs.append(ExcludedPrefix(prefix, ip_parse.ipv6_network(value, strict=True)))
         except (TypeError, ValueError) as exc:
             raise MalformedReservation(
                 "invalid-excluded-prefix",

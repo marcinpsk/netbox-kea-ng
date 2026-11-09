@@ -1,6 +1,5 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
-import ipaddress
 import logging
 import re
 from typing import Any
@@ -14,7 +13,16 @@ from netbox.views import generic
 from utilities.htmx import htmx_partial
 from utilities.views import register_model_view
 
-from .. import config_write, forms, managed_fields, runtime_change, server_configuration, subnet_catalogue, tables
+from .. import (
+    config_write,
+    forms,
+    ip_parse,
+    managed_fields,
+    runtime_change,
+    server_configuration,
+    subnet_catalogue,
+    tables,
+)
 from ..constants import Family
 from ..dhcp_options import AmbiguousFormOption, DHCPOption, form_option_fields
 from ..kea import subnet_network
@@ -443,7 +451,7 @@ class ServerSubnetAddView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin, 
             return self._render_post(request, server, form)
         cd = form.cleaned_data
         cidr: str = cd["subnet"]
-        if ipaddress.ip_network(cidr).version != self.dhcp_version:
+        if ip_parse.ip_network(cidr).version != self.dhcp_version:
             form.add_error("subnet", f"Enter an IPv{self.dhcp_version} Subnet CIDR.")
             return self._render_post(request, server, form)
         shared_network: str | None = cd["shared_network"] or None
@@ -599,7 +607,7 @@ class ServerSubnetEditView(FamilyRouteMixin, _KeaChangeMixin, ServerFamilyMixin,
             return self._render_post(request, server, subnet_id, form)
         cd = form.cleaned_data
         cidr: str = cd["subnet_cidr"]
-        if ipaddress.ip_network(cidr, strict=False).version != self.dhcp_version:
+        if ip_parse.ip_network(cidr, strict=False).version != self.dhcp_version:
             form.add_error("subnet_cidr", f"Enter an IPv{self.dhcp_version} Subnet CIDR.")
             return self._render_post(request, server, subnet_id, form)
         edit, shown = form.to_edit(), form.shown()

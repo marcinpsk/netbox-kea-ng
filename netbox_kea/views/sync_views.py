@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 import csv
-import ipaddress
 import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -18,6 +17,7 @@ from django.views import View
 from .. import (
     event_scope,
     forms,
+    ip_parse,
     manual_sync,
     reservation_edit,
     runtime_change,
@@ -263,10 +263,8 @@ class ReservationCheckNetboxIPView(ConditionalLoginRequiredMixin, View):
         if not raw_ip:
             return HttpResponse("")
         try:
-            address = ipaddress.ip_address(raw_ip)
+            address = ip_parse.ip_address(raw_ip)
         except ValueError:
-            return HttpResponse("")
-        if getattr(address, "scope_id", None):
             return HttpResponse("")
         family = cast("Family", address.version)
         # The read is limited to the IP addresses the user may view, so the advisory leaks no field of another one.

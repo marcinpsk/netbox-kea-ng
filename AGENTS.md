@@ -672,6 +672,11 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
   operation never turns into a 500.
 - **DHCPv6 reservations use `ip-addresses` (list), not `ip-address` (string).** Check
   both fields when inspecting reservation data.
+- **Parse IP address and network text with `ip_parse.py`.** `ipaddress` accepts an IPv6 scope zone
+  (`fe80::1%eth0`) and keeps it in the value, and Kea and NetBox IPAM cannot use it. `ip_parse` parses with
+  `ipaddress` and refuses the zone with netaddr. pydantic parses JSON text with `ipaddress`, so an IP field of a
+  model uses an `ip_parse` field type (`IPAddressField`, `IPv6NetworkField`); `test_ip_parse.py` checks every
+  model. OpenGrep `kea-ip-parse-outside-module` refuses a text parse in another module.
 - **Pass `timeout=` to every `subprocess` call**, in the package, `scripts/`, and the tests.
   A child process that stops responding must fail the caller, not hang it.
 
