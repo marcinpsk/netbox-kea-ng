@@ -127,6 +127,17 @@ class LeasePresenceTest(_ViewTestBase):
                 )
                 self.assertEqual(presences, (expected,))
 
+    def test_a_global_client_id_below_the_lease_bounds_is_unsearchable_without_a_kea_read(self):
+        # Kea takes a 1-octet client-id for a Reservation but refuses it for a Lease query.
+        reservations = [{"subnet-id": 0, "client-id": "01"}, {"subnet-id": 0, "client-id": "01:aa"}]
+
+        presences, kea = self._presence(reservations, {"lease4-get-by-client-id": lease_reply()})
+
+        self.assertEqual(presences, (_unknown(UnknownLeasePresence.UNSEARCHABLE_IDENTIFIER), LeaseAbsent()))
+        self.assertEqual(
+            [body["arguments"] for body in kea.bodies("lease4-get-by-client-id")], [{"client-id": "01:aa"}]
+        )
+
     def test_a_global_reservation_matches_by_its_normalized_identity_and_never_by_its_address(self):
         reservation = {"subnet-id": 0, "hw-address": "aa:bb:cc:dd:ee:ff", "ip-address": "198.18.0.20"}
         for leases, expected in (

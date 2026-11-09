@@ -21,7 +21,7 @@ from .dhcp_options import (
     parse_dhcp_options,
 )
 from .identifiers import RESERVATION_OCTETS, ClientIdentifierKind, normalize_hex
-from .leases import DHCPv4AddressLease, DHCPv6PrefixLease, Lease, LeaseSnapshot
+from .leases import DHCPv4AddressLease, DHCPv6PrefixLease, Lease, LeaseSnapshot, lease_client_identifier
 from .malformed import MalformedKeaReply
 
 if TYPE_CHECKING:
@@ -206,7 +206,8 @@ def current_lease_presence(reservation: Reservation, leases: CurrentLeases) -> C
 
     An In-Subnet Reservation queries the Leases of its Subnet, so a reserved address matches too. A Global
     Reservation queries the Leases of its identity in any Subnet, so only the identity matches. Kea has no Lease
-    query for some identifier types, so a Global Reservation of one is Unknown without a read. A failed read raises.
+    query for some identifier types or for a value outside the Lease octet bounds, so a Global Reservation of one is
+    Unknown without a read. A failed read raises.
     """
     query = _lease_query(reservation)
     if query is None:
@@ -219,7 +220,13 @@ def _lease_query(reservation: Reservation) -> CurrentLeasesQuery | None:
     if isinstance(reservation.scope, InSubnetReservationScope):
         # DHCPv6 registered leases are current too, and only an unfiltered Subnet query returns them.
         return SubnetLeases(reservation.scope.subnet, "assigned" if reservation.family == 4 else None)
-    if reservation.identity.identifier_type not in LEASE_SELECTOR_BY_IDENTIFIER[reservation.family]:
+    selector = LEASE_SELECTOR_BY_IDENTIFIER[reservation.family].get(reservation.identity.identifier_type)
+    if selector is None:
+        return None
+    try:
+        lease_client_identifier(selector, reservation.identity.value)
+    except ValueError:
+        # A 1-octet client-id is a valid Reservation, but Kea refuses it in a Lease query.
         return None
     return IdentityLeases(reservation.identity)
 
