@@ -9,10 +9,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPOSITORY_ROOT / "scripts" / "opengrep_readme.py"
+FIRST_RULE = "kea-row-return-url-empty-fallback"
 
 
 def _run(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -21,15 +23,19 @@ def _run(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _copy(root: Path, message: str | None = None) -> Path:
-    """Copy the ruleset and the README into *root*; with *message*, give the first rule that message."""
+def _copy(root: Path, **first_rule) -> Path:
+    """Copy the ruleset and the README into *root*, with *first_rule* set on the first rule."""
     (root / ".opengrep").mkdir()
     shutil.copy(REPOSITORY_ROOT / ".opengrep" / "README.md", root / ".opengrep" / "README.md")
     ruleset = yaml.safe_load((REPOSITORY_ROOT / ".opengrep" / "kea-rules.yaml").read_text(encoding="utf-8"))
-    if message is not None:
-        ruleset["rules"][0]["message"] = message
+    ruleset["rules"][0].update(first_rule)
     (root / ".opengrep" / "kea-rules.yaml").write_text(yaml.safe_dump(ruleset), encoding="utf-8")
     return root
+
+
+def _row(root: Path, rule_id: str) -> str:
+    readme = (root / ".opengrep" / "README.md").read_text(encoding="utf-8")
+    return next(line for line in readme.splitlines() if line.startswith(f"| `{rule_id}` |"))
 
 
 def test_the_readme_rules_table_matches_the_ruleset():
@@ -39,7 +45,7 @@ def test_the_readme_rules_table_matches_the_ruleset():
 
 
 def test_a_changed_message_makes_the_check_fail_until_the_script_writes_the_table(tmp_path):
-    root = _copy(tmp_path, "A `new` message.")
+    root = _copy(tmp_path, message="A `new` message.")
 
     stale = _run(root, "--check")
     written = _run(root)
@@ -47,34 +53,58 @@ def test_a_changed_message_makes_the_check_fail_until_the_script_writes_the_tabl
     assert (stale.returncode, stale.stderr) == (1, ".opengrep/README.md is stale: run scripts/opengrep_readme.py\n")
     assert written.returncode == 1
     assert _run(root, "--check").returncode == 0
-    readme = (root / ".opengrep" / "README.md").read_text(encoding="utf-8")
     assert (
-        "| `kea-row-return-url-empty-fallback` | error | every scanned file; not `**/tests/**` | A `new` message. |"
-        in readme.splitlines()
+        _row(root, FIRST_RULE)
+        == f"| `{FIRST_RULE}` | error | every scanned file; not `**/tests/**` | A `new` message. |"
     )
 
 
-def test_the_scope_leaves_out_the_rule_test_fixture():
-    readme = (REPOSITORY_ROOT / ".opengrep" / "README.md").read_text(encoding="utf-8")
+def test_the_scope_leaves_out_the_rule_test_fixture(tmp_path):
+    root = _copy(tmp_path, paths={"include": ["netbox_kea/**", f"{FIRST_RULE}.py"], "exclude": ["netbox_kea/kea.py"]})
 
-    row = next(line for line in readme.splitlines() if line.startswith("| `kea-http-call-outside-client` |"))
+    _run(root)
 
-    assert row.split(" | ")[2] == "`netbox_kea/**`; not `netbox_kea/kea.py`, `netbox_kea/tests/**`"
+    assert _row(root, FIRST_RULE).split(" | ")[2] == "`netbox_kea/**`; not `netbox_kea/kea.py`"
 
 
-def test_markup_outside_a_code_span_is_refused(tmp_path):
-    root = _copy(tmp_path, "Call _private() here.")
+def test_a_pipe_in_a_path_or_a_message_stays_in_its_cell(tmp_path):
+    root = _copy(tmp_path, paths={"include": ["a|b.py"]}, message="Match `a|b`.")
+
+    _run(root)
+
+    assert _row(root, FIRST_RULE) == f"| `{FIRST_RULE}` | error | `a\\|b.py` | Match `a\\|b`. |"
+
+
+def test_whitespace_inside_a_code_span_is_kept(tmp_path):
+    root = _copy(tmp_path, message="Match `r'a  b'`.")
+
+    _run(root)
+
+    assert _row(root, FIRST_RULE).endswith("| Match `r'a  b'`. |")
+
+
+def test_a_marker_inside_a_message_is_not_a_marker_line(tmp_path):
+    root = _copy(tmp_path, message="Use `<!-- END generated -->` here.")
+
+    _run(root)
+
+    assert _run(root, "--check").returncode == 0
+    assert _row(root, FIRST_RULE).endswith("| Use `<!-- END generated -->` here. |")
+
+
+@pytest.mark.parametrize(
+    ("message", "error"),
+    [
+        ("Call _private() here.", "put '_' in a code span"),
+        ("Call `name() here.", "the message has an unclosed code span."),
+        ("Use \\`<b>\\`.", "use single unescaped backticks for a code span, not '\\\\`'."),
+        ("Use ``a`b``.", "use single unescaped backticks for a code span, not '``'."),
+    ],
+)
+def test_a_message_that_github_would_render_differently_is_refused(tmp_path, message, error):
+    root = _copy(tmp_path, message=message)
 
     result = _run(root, "--check")
 
     assert result.returncode == 2
-    assert "kea-row-return-url-empty-fallback: put '_' in a code span" in result.stderr
-
-
-def test_an_unclosed_code_span_is_refused(tmp_path):
-    root = _copy(tmp_path, "Call `name() here.")
-
-    result = _run(root, "--check")
-
-    assert result.returncode == 2
-    assert "kea-row-return-url-empty-fallback: the message has an unclosed code span." in result.stderr
+    assert f"error: {FIRST_RULE}: {error}" in result.stderr
