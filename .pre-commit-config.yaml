@@ -133,6 +133,14 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
         files: (\.pyi?$|^\.opengrep/|^scripts/opengrep-.*\.sh$|^\.pre-commit-config\.yaml$)
+      # The Rules table of .opengrep/README.md is written from the ruleset; the hook rewrites a stale table.
+      - id: opengrep-readme
+        name: opengrep README rules table
+        entry: uv run --system-certs python scripts/opengrep_readme.py
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+        files: (^\.opengrep/(kea-rules\.yaml|README\.md)$|^scripts/opengrep_readme\.py$)
 
 # Configuration
 default_install_hook_types: [pre-commit, commit-msg, pre-push]
