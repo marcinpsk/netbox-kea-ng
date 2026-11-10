@@ -393,6 +393,36 @@ class ScheduledImportTest(_ScheduledImportTestCase):
         )
         self.assertEqual(_scheduled_lines(job)[-1], "Scheduled DHCP Import complete: servers=1 failed=0")
 
+    def test_a_hardware_address_that_is_not_a_netbox_mac_address_is_unsupported(self):
+        server = _server("long-hw-address")
+        # Kea takes 1 to 20 octets; a NetBox MAC Address holds 6.
+        config = {"subnet4": [{"id": 1, "subnet": "198.18.1.0/24"}]}
+        hosts = [
+            {"subnet-id": 1, "hw-address": "02:00:00:00:00:01", "ip-address": "198.18.1.10"},
+            {"subnet-id": 1, "hw-address": "02:00:00:00:00:00:00:02", "ip-address": "198.18.1.11"},
+            {"subnet-id": 1, "hw-address": "02:00:00:03", "ip-address": "198.18.1.12"},
+        ]
+        job = _make_job()
+
+        with stub_kea(_sync_responses({4: config}, {4: hosts})):
+            KeaIpamSyncJob(job).run()
+
+        entries = {
+            path: (outcome, reason)
+            for path, outcome, reason in DhcpImportRun.objects.get(server=server)
+            .entries.filter(kind="reservation")
+            .values_list("kea_path", "outcome", "reason")
+        }
+        self.assertEqual(
+            entries,
+            {
+                "Dhcp4/subnet4[id=1]/reservations[hw-address=02:00:00:00:00:01]": ("created", ""),
+                "Dhcp4/subnet4[id=1]/reservations[hw-address=02:00:00:00:00:00:00:02]": ("unsupported", "plugin_gap"),
+                "Dhcp4/subnet4[id=1]/reservations[hw-address=02:00:00:03]": ("unsupported", "plugin_gap"),
+            },
+        )
+        self.assertEqual(_scheduled_lines(job)[-1], "Scheduled DHCP Import complete: servers=1 failed=0")
+
     def test_an_option_definition_write_failure_fails_the_server_and_the_job(self):
         server = _server("clash")
         dhcp_server = apps.get_model(DHCP_PLUGIN, "DHCPServer").objects.create(name=server.name)

@@ -19,6 +19,8 @@ from dataclasses import dataclass, field, replace
 from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
+from django.core.exceptions import ValidationError
+
 from .. import event_scope, ip_parse, kea_paths
 from ..constants import Family
 from ..published_name import reservation_published_name
@@ -508,9 +510,14 @@ def _identifier_field(reservation: Reservation) -> str:
 def _identifier_gap(reservation: Reservation) -> NotWritten | None:
     """Return why the DHCP plugin cannot hold the identifier text of *reservation*, or ``None``."""
     field_name = _identifier_field(reservation)
+    destination = plugin_model("HostReservation")._meta.get_field(field_name)
     if field_name == "hw_address":
+        try:
+            destination.related_model._meta.get_field("mac_address").to_python(reservation.identity.value)
+        except ValidationError:
+            return NotWritten(Reason.PLUGIN_GAP, "The DHCP plugin holds a hardware address as a 6-octet MAC Address.")
         return None
-    limit = plugin_model("HostReservation")._meta.get_field(field_name).max_length
+    limit = destination.max_length
     if len(reservation.identity.value) <= limit:
         return None
     return NotWritten(

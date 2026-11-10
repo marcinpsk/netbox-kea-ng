@@ -745,7 +745,7 @@ def _require_one_mac_each(row: _Report) -> None:
         try:
             mac = normalized_mac(hardware)
         except AddrFormatError as exc:
-            raise _RowRefused("The required hardware address is not an EUI-48 or EUI-64 address") from exc
+            raise _RowRefused("The required hardware address is not an EUI-48 address") from exc
         if len(MACAddress.objects.filter(mac_address=mac).values_list("pk", flat=True)[:2]) > 1:
             raise _RowRefused("NetBox has more than one MAC address row for the required hardware address")
 

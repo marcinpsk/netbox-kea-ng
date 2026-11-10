@@ -55,8 +55,9 @@ def _update_mac_description(mac_obj: MACAddress, hostname: str) -> bool:
 
 
 def normalized_mac(hw_address: str) -> str:
-    """Return NetBox's spelling of *hw_address*; raise ``AddrFormatError`` when it is not an EUI-48 or EUI-64."""
-    return str(EUI(hw_address, dialect=mac_unix_expanded))
+    """Return NetBox's spelling of *hw_address*; raise ``AddrFormatError`` when it is not an EUI-48."""
+    # NetBox's MACAddressField parses with version=48; an EUI-64 also overflows the 48-bit dialect (IndexError).
+    return str(EUI(hw_address, version=48, dialect=mac_unix_expanded))
 
 
 def sync_mac_address(hw_address: str, hostname: str = ""):

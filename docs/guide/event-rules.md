@@ -26,7 +26,7 @@ family then sends no event for the changes that it reverted. This has these cons
   sync result and a separate error.
 
 The sync refuses a Reservation row before its first IP address or MAC address write when a hardware address
-is not an EUI-48 or EUI-64 address, or when NetBox has more than one MAC address row for it. A row whose address
+is not an EUI-48 address, or when NetBox has more than one MAC address row for it. A row whose address
 is a conflict is reported as a conflict. The exception is a legacy address in the global table: the sync moves it
 into its VRF before it finds that its description cannot fit, so a bad hardware address refuses that row.
 
