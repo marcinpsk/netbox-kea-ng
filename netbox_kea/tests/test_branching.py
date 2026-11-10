@@ -794,7 +794,7 @@ class SelectorTableTest(TransactionTestCase):
 
     def _assert_the_refusal_says_why(self, selection: _Selection, response, client: Client, ready: Branch) -> None:
         if selection.outcome == "nbb-400":
-            reason = b"is not ready for use" if selection.header in _UNREADY else b"Invalid branch identifier"
+            reason = b"Selected branch is not ready." if selection.header in _UNREADY else b"Invalid branch identifier"
             self.assertIn(reason, response.content)
             return
         if selection.outcome == "csrf-403":
@@ -963,7 +963,7 @@ class BranchActiveResponseTest(TransactionTestCase):
     def test_a_rest_view_outside_the_plugin_gets_netbox_branchings_400_for_an_unready_branch_header(self):
         from netbox_kea.tests.branch_refusal_urls import API_OUTSIDE_SAVE_PATH
 
-        # netbox-branching 1.2.1 lets the view run, with its own 400 response as the active branch.
+        # netbox-branching refuses the unready branch header with its own 400 before the view runs.
         server = _make_db_server(name="outside", ca_url=_BEFORE, dhcp6=False)
         merged = Branch(name="sink merged")
         merged.save(provision=False)
@@ -975,7 +975,7 @@ class BranchActiveResponseTest(TransactionTestCase):
             response = self.client.post(url, headers={BRANCH_HEADER: merged.schema_id})
 
         self.assertEqual(response.status_code, 400, response.content[:500])
-        self.assertIn(b"is not ready for use", response.content)
+        self.assertIn(b"Selected branch is not ready.", response.content)
         self.assertEqual(writes, [])
         self.assertEqual(Server.objects.get(pk=server.pk).last_updated, server.last_updated)
 

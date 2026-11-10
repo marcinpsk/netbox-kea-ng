@@ -13,6 +13,24 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.13.1 (2026-11-05)
+
+### Bug Fixes
+
+- **deps**: Drop mypy-baseline again after the main merge restored it
+  ([`84b9721`](https://github.com/marcinpsk/netbox-kea-ng/commit/84b972138b7ed2efc0ee76008470b8067117af45))
+
+### Documentation
+
+- Say that the mypy gate skips untyped function bodies
+  ([`6793238`](https://github.com/marcinpsk/netbox-kea-ng/commit/67932380bbe43c73fb15fc3acaee557b80ded279))
+
+### Testing
+
+- Render the lease lifetime cells, including the infinite lifetime
+  ([`c797943`](https://github.com/marcinpsk/netbox-kea-ng/commit/c7979430ec85374d364a4f0c10b0f325e01c7135))
+
+
 ## v3.13.0 (2026-11-05)
 
 ### Bug Fixes

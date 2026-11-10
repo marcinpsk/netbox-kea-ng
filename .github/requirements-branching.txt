@@ -1,4 +1,4 @@
 # SPDX-FileCopyrightText: 2026 Marcin Zieba <marcinpsk@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 # The branching jobs in ci.yml and the branching harness variant install this pin. Dependabot updates it.
-netboxlabs-netbox-branching==1.2.1
+netboxlabs-netbox-branching==1.2.3

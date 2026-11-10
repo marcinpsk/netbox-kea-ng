@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 # netbox-branching
 
 In a [netbox-branching](https://github.com/netboxlabs/netbox-branching) branch, live Kea and import operations are read-only. CI tests
-NetBox 4.7 with netbox-branching 1.2.1. List `netbox_branching` last in `PLUGINS`.
+NetBox 4.7 with netbox-branching 1.2.2. List `netbox_branching` last in `PLUGINS`.
 
 - Kea Servers, sync settings and IPAM ownership links stay in main. A branch has
   no copy of them, so it shows main's values.
