@@ -639,6 +639,7 @@ class ImportOwnershipTest(TestCase):
         references = OptionReferences(CustomDefinitions({}, ()), ClassReferences(6, frozenset(), {}))
         scope = WriteScope(self.server, 6, summary, probe())
         step = import_reservation_snapshot(scope, None, observation, references, adoption_servers=())
+        assert step is not None
         reconcile_delegated_prefixes(self.server, 6, step, set(), summary)
         self.assertEqual(summary.reservations_skipped, 1)
         return summary
