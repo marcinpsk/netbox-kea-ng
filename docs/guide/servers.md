@@ -113,6 +113,6 @@ Each server has optional overrides for the IPAM sync job:
 | `Deprecate stale Prefixes and IP Ranges` (`sync_deprecate_prefixes_and_ranges`) | `False` | Deprecate an owned Prefix or IP Range when this server drops its last ownership link as stale. These objects are never deleted |
 | `Sync VRF` (`sync_vrf`) | None (global routing table) | VRF to assign when syncing Prefixes, IP Ranges, and lease and reservation IP Addresses. There is no global fallback: leave blank to use the global routing table (no VRF). NetBox refuses to delete a VRF while a server syncs into it |
 | `First complete IPAM observation` (`ipam_first_complete_at`) | None | Read-only time when this server first completed all enabled job and DHCP import observations after the ownership upgrade |
-| `Persist configuration` (`persist_config`) | `True` | Automatically save Kea config after each change via `config-write`. Disable when Kea config is managed externally (e.g. Ansible). Set it in the edit form or a CSV import: the REST API and GraphQL leave it out |
+| `Persist configuration` (`persist_config`) | `True` | Automatically save Kea config after each change via `config-write`. Disable when Kea config is managed externally (e.g. Ansible). Set it in the edit form or a CSV import: the Server fields of the REST API and GraphQL leave it out |
 
 These fields apply to that server. The global switches are on the Sync tab of the **Settings** page.
