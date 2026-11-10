@@ -13,6 +13,49 @@ forked, and predate its conventional-commit history.
 
 <!-- version list -->
 
+## v3.13.2 (2026-11-10)
+
+### Chores
+
+- **deps**: Bump netboxlabs-netbox-branching in /.github
+  ([`1241acd`](https://github.com/marcinpsk/netbox-kea-ng/commit/1241acda017da405a13e2f0e5a6484b3f032fad3))
+
+- **deps**: Bump netboxlabs-netbox-branching in /.github
+  ([`2291908`](https://github.com/marcinpsk/netbox-kea-ng/commit/229190874ce7f554640ebb13f62af89268b54f6e))
+
+- **deps**: Bump the github-actions group with 2 updates
+  ([`928f5fe`](https://github.com/marcinpsk/netbox-kea-ng/commit/928f5fe334109f5c6d8eeafe5d2231f2ea05f973))
+
+- **deps-dev**: Bump djangorestframework-stubs from 3.18.0 to 3.18.1
+  ([`4fea983`](https://github.com/marcinpsk/netbox-kea-ng/commit/4fea9831685a3d0212d175b1665bf360a70837f3))
+
+- **deps-dev**: Bump djangorestframework-stubs from 3.18.1 to 3.18.2
+  ([`4b63c20`](https://github.com/marcinpsk/netbox-kea-ng/commit/4b63c20cf098e5926ab0b458fa53a4023234e4b5))
+
+- **deps-dev**: Bump imageio-ffmpeg from 0.7.0 to 0.8.0
+  ([`69b2a2d`](https://github.com/marcinpsk/netbox-kea-ng/commit/69b2a2d4b12922ce59633eac6b379655b71189cf))
+
+- **deps-dev**: Bump imageio-ffmpeg from 0.8.0 to 0.8.1
+  ([`7eb8fd1`](https://github.com/marcinpsk/netbox-kea-ng/commit/7eb8fd1c18e16aee3df61bf7ec9ad8fa4d7f4569))
+
+- **deps-dev**: Bump reuse from 6.2.0 to 6.3.0
+  ([`9e6f15e`](https://github.com/marcinpsk/netbox-kea-ng/commit/9e6f15e1bbde0999c72174cea16928af20003d6b))
+
+- **deps-dev**: Bump types-pyyaml
+  ([`9292e27`](https://github.com/marcinpsk/netbox-kea-ng/commit/9292e27b017912f94a9b31110f8574da1c121f69))
+
+- **deps-dev**: Bump types-pyyaml
+  ([`50d84aa`](https://github.com/marcinpsk/netbox-kea-ng/commit/50d84aa9efe094a724e0e10344c08dd511ef69fa))
+
+- **deps-dev**: Bump zensical from 0.0.69 to 0.0.74
+  ([`e385368`](https://github.com/marcinpsk/netbox-kea-ng/commit/e385368818f6936180527d97898b337b26c7bd7c))
+
+### Testing
+
+- Match the netbox-branching 1.2.2 unready-branch refusal
+  ([`d3d14c3`](https://github.com/marcinpsk/netbox-kea-ng/commit/d3d14c3d7ab9879dd98e8e8b150730e23114391e))
+
+
 ## v3.13.1 (2026-11-05)
 
 ### Bug Fixes
