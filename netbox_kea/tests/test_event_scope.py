@@ -340,7 +340,7 @@ class SavepointLimitTest(_Recorded, TestCase):
         self.assert_every_event_names_a_committed_row()
 
     def test_an_unparseable_reservation_mac_refuses_the_row_before_its_ip_write(self):
-        # Kea accepts a hardware address of up to 20 octets; NetBox stores only EUI-48 and EUI-64.
+        # Kea accepts a hardware address of up to 20 octets; NetBox stores only EUI-48.
         host = {**_host(81), "hw-address": "02:00:00:00:00:00:00:00:00:51"}
         server = _make_db_server(dhcp6=False)
         with event_tracking(self.request), transaction.atomic():
@@ -438,8 +438,8 @@ class DhcpImportEventTest(_Recorded, TransactionTestCase):
             [str(message) for message in get_messages(response.wsgi_request)],
             [
                 (
-                    "The DHCP-plugin import saved its changes, but NetBox could not dispatch their events, "
-                    "and the import stopped. See the server logs."
+                    "The DHCP-plugin import saved its changes, but an event dispatch failed, and some events "
+                    "may already have been sent. The import stopped. See the server logs."
                 )
             ],
         )

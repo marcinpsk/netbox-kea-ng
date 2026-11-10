@@ -26,7 +26,7 @@ import ipaddress
 import logging
 from dataclasses import dataclass, field
 
-from .. import kea_paths
+from .. import ip_parse, kea_paths
 from ..constants import MAX_SUBNET_ID, MIN_SUBNET_ID, Family, validate_family
 from ..dhcp_options import DHCPOption, parse_dhcp_option, parse_option_definition
 from ..integrations import dhcp_import_ledger
@@ -366,7 +366,7 @@ def _ipv6_prefix(address, length) -> ipaddress.IPv6Network | None:
         return None
     try:
         # Kea refuses a prefix with bits set after its length, so a strict parse matches Kea.
-        return ipaddress.IPv6Network(f"{address}/{length}")
+        return ip_parse.ipv6_network(f"{address}/{length}")
     except ValueError:
         return None
 

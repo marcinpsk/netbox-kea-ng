@@ -47,7 +47,6 @@ from netbox_kea.models import (
     exact_source,
     next_confirmation_number,
 )
-from netbox_kea.reservations import MAX_IDENTITY_LENGTH
 from netbox_kea.tests.kea_stub import record_transport, stub_kea
 from netbox_kea.tests.utils import _make_db_server, with_kea_client_config
 
@@ -683,7 +682,7 @@ class TestKeaDhcpLinkIdentity(TestCase):
 
         reservation = IPv4Reservation(
             scope=GlobalReservationScope(),
-            identity=ReservationIdentity("client-id", "ab" * 128),
+            identity=ReservationIdentity("client-id", "ab" * 255),
             addresses=(),
         )
         pool = parse_pool(
@@ -696,7 +695,8 @@ class TestKeaDhcpLinkIdentity(TestCase):
             OptionDefinitionKey(name, 65_535).source,
             MappingSource.named(Kind.CLIENT_CLASS, name),
         ]
-        self.assertEqual(len(sources[0].kea_identity), MAX_IDENTITY_LENGTH)
+        # The widest Reservation Identity: a 255-octet client-id.
+        self.assertEqual(len(sources[0].kea_identity), len("client-id:") + 255 * 3 - 1)
         for object_id, source in enumerate(sources, start=1):
             with self.subTest(kind=source.kind):
                 self._link(object_id=object_id, **source.columns()).save()

@@ -24,7 +24,7 @@ from utilities.views import GetReturnURLMixin, register_model_view
 
 from .. import forms, runtime_change, subnet_catalogue, tables
 from ..after_apply import LEASE_SIGNAL_NAMES, LeaseAdded, LeaseAfterApplyFacts, LeasesDeleted, lease_after_apply
-from ..constants import Family, LeaseState
+from ..constants import Family
 from ..ipam_ownership import Ownership, address_ownership, prefix_ownership
 from ..ipam_reconciliation import claim_permissions
 from ..ipam_sources import LEASE, LEASE_PREFIX
@@ -345,8 +345,8 @@ class ServerLeasesView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectView):
             messages.warning(request, "A search attribute is required to export.")
             return redirect(request.path)
 
-        state_filter: LeaseState | None = form.cleaned_data.get("state")
-        search = LeaseSearch(by, form.cleaned_data["q"], state_filter)
+        search = LeaseSearch(form.cleaned_data["query"])
+        state_filter = search.query.state
         with _client_or_refusal(instance, self.dhcp_version) as client:
             if isinstance(client, str):
                 messages.error(request, client)
@@ -490,9 +490,7 @@ class ServerLeasesView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectView):
             by = form.cleaned_data["by"]
             # A search reads its whole scope and pages here; a read of every Lease reads one page from Kea.
             search = LeaseSearch(
-                by,
-                form.cleaned_data["q"],
-                form.cleaned_data.get("state"),
+                form.cleaned_data["query"],
                 cursor=None if by else form.cleaned_data["page"] or None,
                 per_page=get_paginate_count(request),
             )
@@ -537,7 +535,7 @@ class ServerLeasesView(FamilyRouteMixin, ServerFamilyMixin, generic.ObjectView):
         except LeaseQueryGuardError as exc:
             logger.info("Rejected unsafe Subnet lease query on server %s: %s", instance.pk, exc)
             field = "q" if isinstance(exc, LeaseQueryUnknownSubnet) else "state"
-            form.add_error(field, lease_query_guard_message(exc, form.cleaned_data.get("state")))
+            form.add_error(field, lease_query_guard_message(exc, form.cleaned_data["query"].state))
             return self._search_without_table(request, instance, form)
         # A Kea, transport or malformed-reply failure of the read is a Notice above; this is a request error.
         except ValueError:
@@ -902,8 +900,6 @@ def _unknown_badge_title(reason: UnknownReservationMatch, server: Server) -> str
             return "Kea returned a Reservation lookup reply that cannot be read."
         case UnknownReservationMatch.INVALID_READ:
             return client_settings_message(server)
-        case UnknownReservationMatch.FOREIGN_IDENTIFIER:
-            return "No Reservation matched, and this lease carries a client identifier that no Reservation can hold."
         case UnknownReservationMatch.UNKNOWN_SHARED_NETWORK:
             return (
                 "Kea can give this client an allocation of another Subnet in the Shared Network,"
@@ -961,7 +957,7 @@ def _create_reservation_url(
         "hostname": lease_published_name(observed.hostname),
         "return_url": return_url,
     }
-    identities = lease_identities(observed).identities
+    identities = lease_identities(observed)
     if identities:
         params["identifier_type"] = identities[0].identifier_type
         params["identifier"] = identities[0].value

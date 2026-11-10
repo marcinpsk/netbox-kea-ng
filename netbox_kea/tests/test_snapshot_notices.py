@@ -12,6 +12,7 @@ from django.urls import reverse
 
 from netbox_kea import display_cache, server_configuration, subnet_catalogue
 from netbox_kea.kea import KeaException, LeaseQueryPreflightUnavailable, kea_error_message
+from netbox_kea.leases import parse_lease_query
 from netbox_kea.server_configuration import Diagnostic
 from netbox_kea.views.notices import HEADLINES, Notice, ServerNotices, load_snapshot, notice, show_notices
 
@@ -159,7 +160,9 @@ class TestRecordSnapshotNotices(_ViewTestBase):
         broken = complete_lease({"ip-address": "198.18.0.10", "valid-lft": -1})
         with stub_kea({"lease4-get-by-hostname": {"result": 0, "arguments": {"leases": [broken]}}}):
             client = self.server.get_client(version=4)
-            snapshot = client.lease_search(4, "hostname", "host.example.invalid", server_id=self.server.pk)
+            snapshot = client.lease_search(
+                parse_lease_query(4, "hostname", "host.example.invalid"), server_id=self.server.pk
+            )
         result = notice(snapshot)
         self.assertEqual((result.kind, result.level, len(result.diagnostics)), ("lease", django_messages.WARNING, 1))
         self.assertEqual(
@@ -175,7 +178,9 @@ class TestRecordSnapshotNotices(_ViewTestBase):
     def test_a_complete_lease_snapshot_gives_no_notice(self):
         with stub_kea({"lease4-get-by-hostname": {"result": 3, "arguments": {"leases": []}}}):
             client = self.server.get_client(version=4)
-            snapshot = client.lease_search(4, "hostname", "host.example.invalid", server_id=self.server.pk)
+            snapshot = client.lease_search(
+                parse_lease_query(4, "hostname", "host.example.invalid"), server_id=self.server.pk
+            )
         self.assertTrue(snapshot.complete)
         self.assertIsNone(notice(snapshot))
 
@@ -196,7 +201,9 @@ class TestRecordSnapshotNotices(_ViewTestBase):
             client = self.server.get_client(version=4)
             with self.assertRaises(LeaseQueryPreflightUnavailable):
                 load_snapshot(
-                    self.server, "lease", lambda: client.lease_search(4, "subnet_id", 12, server_id=self.server.pk)
+                    self.server,
+                    "lease",
+                    lambda: client.lease_search(parse_lease_query(4, "subnet_id", "12"), server_id=self.server.pk),
                 )
             with self.assertRaises(ValueError):
                 load_snapshot(self.server, "lease", lambda: client.lease_get_page(4, limit=0, server_id=1))

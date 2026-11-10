@@ -49,19 +49,10 @@ LEASE_SELECTOR_BY_IDENTIFIER: dict[int, dict[str, str]] = {
     6: {"duid": BY_DUID},
 }
 
-HEX_STRING_REGEX = r"^([0-9A-Fa-f]{2}[:-]?)*([0-9A-Fa-f]{2})$"
-
 # Kea guide to deriving a Reservation identifier from relay data, such as the relay remote ID.
 FLEX_ID_DOCUMENTATION_URL = (
     "https://kea.readthedocs.io/en/latest/arm/hooks.html#flex-id-flexible-identifiers-for-host-reservations"
 )
-
-# kea/src/lib/dhcp
-# RFC8415 section 11.1
-DUID_MAX_OCTETS = 128
-DUID_MIN_OCTETS = 1
-CLIENT_ID_MAX_OCTETS = DUID_MAX_OCTETS
-CLIENT_ID_MIN_OCTETS = 2
 
 UINT32_MAX = 0xFFFFFFFF
 # Kea requires Subnet IDs greater than zero and less than UINT32_MAX.
@@ -76,11 +67,6 @@ LEASE_STATES: tuple[LeaseState, ...] = get_args(LeaseState)
 LEASE_STATE_CODES: dict[LeaseState, int] = {state: code for code, state in enumerate(LEASE_STATES)}
 # The states a Subnet lease query can filter by: stat_cmds counts only these.
 LEASE_QUERY_STATES: tuple[LeaseState, ...] = ("assigned", "declined")
-
-# Kea 3.2.0 lease identifier octets: HWAddr::MAX_HWADDR_LEN (hwaddr.h) and the DUID and ClientId sizes (duid.h).
-LEASE_HW_ADDRESS_OCTETS = (1, 20)
-LEASE_DUID_OCTETS = (3, 130)
-LEASE_CLIENT_ID_OCTETS = (2, 255)
 
 # Human-readable labels of the lease states that the lease UI shows.
 # https://kea.readthedocs.io/en/latest/arm/lease-db.html#lease-states

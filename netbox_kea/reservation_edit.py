@@ -8,7 +8,7 @@ import ipaddress
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from django.core import signing
 from django.db import DatabaseError
@@ -386,7 +386,8 @@ def build_add(
         return IPv4Reservation(
             scope=scope,
             identity=identity,
-            addresses=tuple(ipaddress.IPv4Address(address) for address in values.addresses),
+            # The submitted addresses belong to *family*, and the Reservation refuses another family.
+            addresses=cast("tuple[ipaddress.IPv4Address, ...]", values.addresses),
             hostname=hostname,
             options=options,
             client_classes=classes,
@@ -397,7 +398,7 @@ def build_add(
     return IPv6Reservation(
         scope=scope,
         identity=identity,
-        addresses=tuple(ipaddress.IPv6Address(address) for address in values.addresses),
+        addresses=cast("tuple[ipaddress.IPv6Address, ...]", values.addresses),
         delegated_prefixes=values.delegated_prefixes,
         hostname=hostname,
         options=options,

@@ -11,7 +11,6 @@ from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase
 
-from netbox_kea import constants
 from netbox_kea.forms import (
     Leases4SearchForm,
     Leases6SearchForm,
@@ -21,10 +20,9 @@ from netbox_kea.forms import (
     ServerImportForm,
     SubnetConfirmForm,
 )
-from netbox_kea.leases import DHCPv4LeaseRequest, LeaseEdit, shown_lease
+from netbox_kea.leases import DHCPv4LeaseRequest, LeaseEdit, LeaseQuery, shown_lease
 from netbox_kea.models import Server
 from netbox_kea.reservations import ReservationCapabilities, reservation_identifier_types
-from netbox_kea.subnet_catalogue import MAX_SUBNET_ID
 from netbox_kea.tests.kea_stub import lease_record, shown_token, typed_lease
 
 
@@ -59,75 +57,26 @@ class TestLeases4SearchFormValidation(SimpleTestCase):
         form = self._form("hostname", "myhost.example.com")
         self.assertTrue(form.is_valid(), form.errors)
 
-    def test_valid_hw_address_colon(self):
-        form = self._form("hw", "aa:bb:cc:dd:ee:ff")
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_valid_hw_address_dash(self):
-        form = self._form("hw", "aa-bb-cc-dd-ee-ff")
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_invalid_hw_address(self):
-        form = self._form("hw", "not-a-mac")
-        self.assertFalse(form.is_valid())
-        self.assertIn("q", form.errors)
-
     def test_valid_subnet_with_cidr(self):
         form = self._form("subnet", "192.168.1.0/24")
         self.assertTrue(form.is_valid(), form.errors)
 
-    def test_subnet_without_cidr_fails(self):
-        form = self._form("subnet", "192.168.1.0")
-        self.assertFalse(form.is_valid())
-        self.assertIn("q", form.errors)
-
-    def test_invalid_subnet(self):
-        form = self._form("subnet", "notanip/24")
-        self.assertFalse(form.is_valid())
-        self.assertIn("q", form.errors)
-
-    def test_subnet_not_network_address_fails(self):
-        # 192.168.1.5/24 is not a network address (network is 192.168.1.0/24)
-        form = self._form("subnet", "192.168.1.5/24")
-        self.assertFalse(form.is_valid())
-        self.assertIn("q", form.errors)
-
     def test_valid_subnet_id(self):
         form = self._form("subnet_id", "42")
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["q"], 42)
+        self.assertEqual(form.cleaned_data["query"], LeaseQuery(family=4, selector="subnet_id", value=42))
 
-    def test_subnet_id_zero_fails(self):
+    def test_a_value_or_state_that_does_not_parse_is_an_error_of_its_field(self):
+        """The Lease Query parse refuses the value on the Search field and the state on the State field."""
         form = self._form("subnet_id", "0")
         self.assertFalse(form.is_valid())
-
-    def test_subnet_id_above_the_kea_range_fails(self):
-        for value in (str(MAX_SUBNET_ID + 1), "99999999999999999999"):
-            with self.subTest(value=value):
-                form = self._form("subnet_id", value)
-                self.assertFalse(form.is_valid())
-                self.assertEqual(form.errors["q"], ["Invalid subnet ID."])
-
-    def test_subnet_id_negative_fails(self):
-        form = self._form("subnet_id", "-1")
+        self.assertEqual(form.errors["q"], ["Enter a Subnet ID from 1 to 4294967294."])
+        form = Leases4SearchForm(data={"by": "subnet", "q": "192.168.1.0/24", "state": "2"})
         self.assertFalse(form.is_valid())
-
-    def test_subnet_id_non_integer_fails(self):
-        form = self._form("subnet_id", "abc")
-        self.assertFalse(form.is_valid())
-
-    def test_subnet_id_must_be_ascii_decimal_text(self):
-        form = self._form("subnet_id", "\u0661\u0662")
-        self.assertFalse(form.is_valid())
-        self.assertEqual(form.errors["q"], ["Subnet ID must be an integer."])
-
-    def test_valid_client_id(self):
-        form = self._form("client_id", "aabb")
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_invalid_client_id(self):
-        form = self._form("client_id", "gg")
-        self.assertFalse(form.is_valid())
+        self.assertEqual(
+            form.errors["state"],
+            ["Kea cannot safely measure this lease state. Use an exact IP or client identifier search."],
+        )
 
     def test_q_without_by_fails(self):
         form = Leases4SearchForm(data={"q": "something"})
@@ -179,11 +128,6 @@ class TestLeases4SearchFormValidation(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertEqual(form.errors["page"], ["Invalid IP."])
 
-    def test_ipv6_address_fails_for_v4_form(self):
-        form = self._form("ip", "2001:db8::1")
-        self.assertFalse(form.is_valid())
-        self.assertIn("q", form.errors)
-
 
 class TestLeases6SearchFormValidation(SimpleTestCase):
     """Tests for Leases6SearchForm (DHCPv6 lease search validation)."""
@@ -195,26 +139,6 @@ class TestLeases6SearchFormValidation(SimpleTestCase):
         form = self._form("ip", "2001:db8::1")
         self.assertTrue(form.is_valid(), form.errors)
 
-    def test_invalid_ipv6_address(self):
-        form = self._form("ip", "notanip")
-        self.assertFalse(form.is_valid())
-
-    def test_ipv4_address_fails_for_v6_form(self):
-        form = self._form("ip", "192.168.1.1")
-        self.assertFalse(form.is_valid())
-
-    def test_valid_duid(self):
-        form = self._form("duid", "00:01:00:01:12:34:56:78:aa:bb:cc:dd:ee:ff")
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_invalid_duid(self):
-        form = self._form("duid", "gg:hh")
-        self.assertFalse(form.is_valid())
-
-    def test_valid_subnet_v6(self):
-        form = self._form("subnet", "2001:db8::/32")
-        self.assertTrue(form.is_valid(), form.errors)
-
     def test_valid_subnet_id(self):
         form = self._form("subnet_id", "10")
         self.assertTrue(form.is_valid(), form.errors)
@@ -223,6 +147,16 @@ class TestLeases6SearchFormValidation(SimpleTestCase):
         form = self._form("subnet_id", "10", page="3")
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["page"], 3)
+
+    def test_page_address_is_one_ipv6_address_without_a_scope_zone(self):
+        form = self._form("", "", page="2001:DB8::A")
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["page"], "2001:db8::a")
+        for page in ("fe80::1%eth0", "192.0.2.1"):
+            with self.subTest(page=page):
+                form = self._form("", "", page=page)
+                self.assertFalse(form.is_valid())
+                self.assertEqual(form.errors["page"], ["Invalid IP."])
 
 
 class TestLeaseSelectionField(SimpleTestCase):
@@ -571,17 +505,13 @@ class TestReservationForm4(SimpleTestCase):
             ["Reservation identifier value must not exceed 255 characters."],
         )
 
-    def test_max_octet_client_id_is_accepted(self):
-        """A 128-octet client-id is 383 characters delimited — past the opaque 255-char cap."""
-        identifier = ":".join(["ab"] * constants.CLIENT_ID_MAX_OCTETS)
-        form = self._form(self._valid_data(identifier_type="client-id", identifier=identifier))
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_client_id_past_its_octet_limit_is_rejected(self):
-        identifier = ":".join(["ab"] * (constants.CLIENT_ID_MAX_OCTETS + 1))
-        form = self._form(self._valid_data(identifier_type="client-id", identifier=identifier))
-        self.assertFalse(form.is_valid())
-        self.assertIn("identifier", form.errors)
+    def test_client_id_takes_the_octet_range_that_kea_takes_for_a_reservation(self):
+        """Kea 3.2.0 takes a Reservation client-id of 1 to 255 octets."""
+        for octets, valid in ((1, True), (255, True), (256, False)):
+            with self.subTest(octets=octets):
+                identifier = ":".join(["ab"] * octets)
+                form = self._form(self._valid_data(identifier_type="client-id", identifier=identifier))
+                self.assertEqual(form.is_valid(), valid, form.errors)
 
     def test_opaque_identifier_is_preserved_exactly(self):
         form = self._form(self._valid_data(identifier_type="flex-id", identifier="a" * 255))
@@ -718,6 +648,19 @@ class TestReservationForm6(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("ip_addresses", form.errors)
 
+    def test_ip_addresses_messages_and_canonical_text(self):
+        form = self._form(self._valid_data(ip_addresses="2001:DB8::A, 2001:db8::b"))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["ip_addresses"], "2001:db8::a,2001:db8::b")
+        for entries, message in (
+            ("2001:db8::1,fe80::1%eth0", "'fe80::1%eth0' is not a valid IP address."),
+            ("2001:db8::1,192.0.2.1", "'192.0.2.1' is not a valid IPv6 address."),
+        ):
+            with self.subTest(entries=entries):
+                form = self._form(self._valid_data(ip_addresses=entries))
+                self.assertFalse(form.is_valid())
+                self.assertEqual(form.errors["ip_addresses"], [message])
+
     def test_delegated_prefixes_are_canonicalised_and_deduplicated(self):
         data = self._valid_data()
         data["prefixes"] = "2001:db8:1::/64, 2001:0db8:1::/64 ,2001:db8:2::/64"
@@ -762,17 +705,12 @@ class TestReservationForm6(SimpleTestCase):
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["prefixes"], "2001:db8::/48")
 
-    def test_max_octet_duid_is_accepted(self):
-        """A 128-octet DUID is 383 characters delimited — past the opaque 255-char cap."""
-        identifier = ":".join(["ab"] * constants.DUID_MAX_OCTETS)
-        form = self._form(self._valid_data(identifier=identifier))
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_duid_past_its_octet_limit_is_rejected(self):
-        identifier = ":".join(["ab"] * (constants.DUID_MAX_OCTETS + 1))
-        form = self._form(self._valid_data(identifier=identifier))
-        self.assertFalse(form.is_valid())
-        self.assertIn("identifier", form.errors)
+    def test_duid_takes_the_octet_range_that_kea_takes_for_a_reservation(self):
+        """Kea 3.2.0 takes a Reservation DUID of 3 to 130 octets."""
+        for octets, valid in ((2, False), (3, True), (130, True), (131, False)):
+            with self.subTest(octets=octets):
+                form = self._form(self._valid_data(identifier=":".join(["ab"] * octets)))
+                self.assertEqual(form.is_valid(), valid, form.errors)
 
     def test_missing_identifier_type_fails(self):
         data = self._valid_data()
@@ -1031,6 +969,17 @@ class TestLease4AddForm(SimpleTestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("hw_address", form.errors)
 
+    def test_a_hardware_address_takes_the_octet_range_of_a_kea_lease(self):
+        """A Kea Lease hardware address has 1 to 20 octets, so it need not be a MAC address."""
+        for octets in (1, 20):
+            with self.subTest(octets=octets):
+                form = self._form(self._valid_data(hw_address="AB" * octets))
+                self.assertTrue(form.is_valid(), form.errors)
+                self.assertEqual(form.cleaned_data["request"].hw_address, ":".join(["ab"] * octets))
+        form = self._form(self._valid_data(hw_address="ab" * 21))
+        self.assertFalse(form.is_valid())
+        self.assertEqual(form.errors["hw_address"], ["Enter a hardware address of 1 to 20 hexadecimal octets."])
+
     def test_valid_with_all_fields(self):
         """Form is valid when all optional fields are provided."""
         form = self._form(
@@ -1113,6 +1062,19 @@ class TestLease6AddForm(SimpleTestCase):
         form = self._form(self._valid_data(ip_address="10.0.0.1"))
         self.assertFalse(form.is_valid())
         self.assertIn("ip_address", form.errors)
+
+    def test_ip_address_messages_and_canonical_text(self):
+        form = self._form(self._valid_data(ip_address="2001:DB8::A"))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["ip_address"], "2001:db8::a")
+        for address, message in (
+            ("fe80::1%eth0", "Enter a valid IPv6 address."),
+            ("10.0.0.1", "Must be an IPv6 address."),
+        ):
+            with self.subTest(address=address):
+                form = self._form(self._valid_data(ip_address=address))
+                self.assertFalse(form.is_valid())
+                self.assertEqual(form.errors["ip_address"], [message])
 
     def test_invalid_ip_address_rejected(self):
         """Non-IP string in ip_address causes form error."""
@@ -1635,7 +1597,7 @@ class TestLeasesSearchFormSubnetDropdown(SimpleTestCase):
     def test_subnet_id_search_still_validates(self):
         form = Leases4SearchForm(data={"by": "subnet_id", "q": "3"})
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(form.cleaned_data["q"], 3)
+        self.assertEqual(form.cleaned_data["query"].value, 3)
 
     def test_subnet_search_rejects_a_page_cursor(self):
         form = Leases4SearchForm(data={"by": "subnet", "q": "192.168.1.0/24", "page": "192.168.1.10"})

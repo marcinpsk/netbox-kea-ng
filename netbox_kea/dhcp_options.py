@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import dataclasses
-import ipaddress
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
+
+from . import ip_parse
 
 #: The largest DHCP Option code: DHCPv6 codes are 16 bits.
 MAX_OPTION_CODE = 65_535
@@ -511,7 +512,7 @@ def address_list(text: str) -> tuple[str, ...]:
         if not entry:
             continue
         try:
-            addresses.append(str(ipaddress.ip_address(entry)))
+            addresses.append(str(ip_parse.ip_address(entry)))
         except ValueError as exc:
             raise InvalidAddress(entry) from exc
     return tuple(addresses)

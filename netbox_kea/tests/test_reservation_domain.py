@@ -17,7 +17,6 @@ from netbox_kea.dhcp_options import DHCPOptionChange, DHCPOptionEdit, parse_dhcp
 from netbox_kea.kea import KeaCommand
 from netbox_kea.malformed import MalformedKeaReply
 from netbox_kea.reservations import (
-    MAX_IDENTITY_LENGTH,
     ClearValue,
     ExcludedPrefix,
     Family,
@@ -127,24 +126,6 @@ class TestReservationIdentifierTypes(SimpleTestCase):
 
 
 class TestReservationIdentity(SimpleTestCase):
-    def test_the_identity_length_bound_covers_every_identifier_type(self):
-        """KeaDhcpLink sizes its identity column from this bound, so it must hold."""
-        longest = {
-            "hw-address": "ab" * 20,
-            "duid": "ab" * 128,
-            "client-id": "ab" * 128,
-            "circuit-id": "c" * 255,
-            "flex-id": "f" * 255,
-        }
-
-        for identifier_type, value in longest.items():
-            with self.subTest(identifier_type=identifier_type):
-                identity = ReservationIdentity(identifier_type, value)
-                self.assertLessEqual(len(f"{identity.identifier_type}:{identity.value}"), MAX_IDENTITY_LENGTH)
-
-        widest = ReservationIdentity("client-id", longest["client-id"])
-        self.assertEqual(len(f"{widest.identifier_type}:{widest.value}"), MAX_IDENTITY_LENGTH)
-
     def test_normalizes_hex_identifiers_to_lowercase_colon_notation(self):
         self.assertEqual(ReservationIdentity("hw-address", "AA-BB-CC-DD-EE-FF").value, "aa:bb:cc:dd:ee:ff")
         self.assertEqual(ReservationIdentity("duid", "00010203").value, "00:01:02:03")
@@ -167,13 +148,20 @@ class TestReservationIdentity(SimpleTestCase):
                 with self.assertRaisesRegex(ValueError, "255"):
                     ReservationIdentity(identifier_type, "x" * 256)
 
-    def test_enforces_hex_identifier_octet_bounds(self):
-        max_duid = ":".join(["ab"] * 128)
-        self.assertEqual(ReservationIdentity("duid", max_duid).value, max_duid)
-        with self.assertRaises(ValueError):
-            ReservationIdentity("duid", ":".join(["ab"] * 129))
-        with self.assertRaises(ValueError):
-            ReservationIdentity("client-id", "ab")
+    def test_enforces_the_octet_bounds_that_kea_takes_for_a_reservation(self):
+        """Kea 3.2.0 takes hw-address 1-20, DUID 3-130 and client-id 1-255 octets in a Reservation."""
+        for identifier_type, refused, accepted in (
+            ("hw-address", (0, 21), (1, 20)),
+            ("duid", (2, 131), (3, 130)),
+            ("client-id", (0, 256), (1, 255)),
+        ):
+            for octets in accepted:
+                with self.subTest(identifier_type=identifier_type, octets=octets):
+                    value = ":".join(["ab"] * octets)
+                    self.assertEqual(ReservationIdentity(identifier_type, value).value, value)
+            for octets in refused:
+                with self.subTest(identifier_type=identifier_type, octets=octets), self.assertRaises(ValueError):
+                    ReservationIdentity(identifier_type, ":".join(["ab"] * octets))
 
     def test_rejects_empty_and_oversized_hardware_addresses(self):
         for value in ("", "ab" * 21):
