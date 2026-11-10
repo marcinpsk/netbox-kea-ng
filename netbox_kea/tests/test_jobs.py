@@ -1075,9 +1075,7 @@ class TestKeaIpamSyncJobRun(TestCase):
         self._make_db_server()
         with with_sync_config(stale_ip_cleanup="remove"):
             with _patch_kea(leases4=[_LEASE4], reservations=[]):
-                with patch(
-                    "netbox_kea.jobs.complete_job_observation", side_effect=RuntimeError("db gone"), autospec=True
-                ):
+                with patch("netbox_kea.jobs.complete_observation", side_effect=RuntimeError("db gone"), autospec=True):
                     with self.assertLogs("netbox.jobs", level="ERROR") as cm:
                         job = self._run_raises()
         self.assertTrue(any("Unhandled error syncing server" in msg for msg in cm.output))

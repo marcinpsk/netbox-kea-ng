@@ -25,7 +25,7 @@ from packaging.version import InvalidVersion, Version
 from .. import event_scope, kea_paths, server_configuration
 from ..constants import Family
 from ..dhcp_mapping_lifecycle import ImportEventsNotDispatched, MetadataBusy
-from ..ipam_upgrade_barrier import complete_import_observation
+from ..ipam_upgrade_barrier import complete_observation
 from ..mappers.kea_to_dhcp import ServerConfigIntent, parse_dhcp_config
 from ..read_failure import ReadFailure, attempt
 from ..server_configuration import ServerConfigurationSnapshot
@@ -253,9 +253,10 @@ def _run_locked(server: Server, trigger: DhcpImportTrigger) -> list[tuple[Family
             results.append((version, read))
             entries.append(not_written(version, Kind.SERVER, path, Reason.READ_FAILED, " ".join(read.lines)))
     try:
-        complete_import_observation(
+        complete_observation(
             server,
-            {family: summary.ownership for family, summary in results if isinstance(summary, ImportSummary)},
+            "import",
+            {family: summary.coverage() for family, summary in results if isinstance(summary, ImportSummary)},
         )
     finally:
         # Every family has committed, so the run is stored even when the receipt fails.

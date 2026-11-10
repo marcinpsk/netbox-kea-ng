@@ -50,7 +50,7 @@ from .ipam_sources import (
     object_field,
     range_key,
 )
-from .ipam_upgrade_barrier import adoption_waits
+from .ipam_upgrade_barrier import ObservationCoverage, adoption_waits
 from .leases import LEASE_VARIANTS, AllocationKind, DHCPv6PrefixLease, Lease, LeaseSnapshot
 from .models import (
     IPAMOwnershipLink,
@@ -388,6 +388,12 @@ class SyncReport:
     def complete(self) -> bool:
         """Return whether every phase of the call is complete."""
         return not self.incomplete
+
+    def coverage(self) -> ObservationCoverage:
+        """Return what the call observed for the job receipt: complete only with every phase complete and no error."""
+        return ObservationCoverage(
+            self.complete and not self.errors and not self.prefix_errors, frozenset(self.completed_sources)
+        )
 
     def fail_snapshot(self, source: str, what: str, failure: BaseException | ReadFailure) -> None:
         """Count one snapshot that could not be read, which makes its phase incomplete.

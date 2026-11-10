@@ -269,6 +269,15 @@ An owned NetBox object that a complete synchronization of its owner no longer re
 ownership. The object is removed or deprecated only when no owner is left.
 _Avoid_: Ghost IP, stale IP, orphan
 
+**Complete IPAM Observation**:
+The recorded fact that one workflow of a Server, the IPAM synchronization job or the DHCP Import, finished a run in
+which it observed every IPAM Ownership source that it can own in full, and nothing failed. A source is observed in
+full when its Kea read was complete and every object it reports was claimed. A Reservation that the DHCP Import does
+not write still counts for the Reservation source, because its addresses are claimed first, but not for the source of
+its delegated prefixes. Until each enabled workflow of a Server has one after the ownership upgrade, the cleanup keeps
+the last link of an adopted object.
+_Avoid_: receipt, initial observation
+
 **Sync Plan**:
 The Kea sources of each address family of one Server that one IPAM synchronization run reads: address leases,
 Reservations, Subnets and Pools, and on DHCPv6 also delegated-prefix leases when lease and Subnet synchronization are
