@@ -83,6 +83,14 @@ def test_whitespace_inside_a_code_span_is_kept(tmp_path):
     assert _row(root, FIRST_RULE).endswith("| Match `r'a  b'`. |")
 
 
+def test_a_code_span_can_end_in_a_backslash(tmp_path):
+    root = _copy(tmp_path, message="Match `path\\`.")
+
+    _run(root)
+
+    assert _row(root, FIRST_RULE).endswith("| Match `path\\`. |")
+
+
 def test_a_marker_inside_a_message_is_not_a_marker_line(tmp_path):
     root = _copy(tmp_path, message="Use `<!-- END generated -->` here.")
 
@@ -97,8 +105,8 @@ def test_a_marker_inside_a_message_is_not_a_marker_line(tmp_path):
     [
         ("Call _private() here.", "put '_' in a code span"),
         ("Call `name() here.", "the message has an unclosed code span."),
-        ("Use \\`<b>\\`.", "use single unescaped backticks for a code span, not '\\\\`'."),
-        ("Use ``a`b``.", "use single unescaped backticks for a code span, not '``'."),
+        ("Use \\`<b>\\`.", "use single unescaped backticks for a code span."),
+        ("Use ``a`b``.", "use single unescaped backticks for a code span."),
     ],
 )
 def test_a_message_that_github_would_render_differently_is_refused(tmp_path, message, error):
