@@ -159,6 +159,18 @@ class OwnershipSourceTableTest(SimpleTestCase):
                 self.assertIsInstance(SyncConfig._meta.get_field(flag), BooleanField)
                 self.assertIsInstance(Server._meta.get_field(flag), BooleanField)
 
+    def test_the_kind_table_has_one_row_for_each_owned_object_key_of_the_link(self):
+        from typing import get_args
+
+        from netbox_kea.ipam_sources import OWNED_KINDS, ObjectField
+        from netbox_kea.models import OWNED_OBJECT_KEYS
+
+        self.assertEqual(tuple(OWNED_KINDS), OWNED_OBJECT_KEYS)
+        self.assertEqual(get_args(ObjectField), OWNED_OBJECT_KEYS)
+        for key, kind in OWNED_KINDS.items():
+            with self.subTest(key=key):
+                self.assertIs(IPAMOwnershipLink._meta.get_field(key).related_model, kind.model)
+
 
 @with_sync_config(stale_ip_cleanup="remove")
 class JobLeasePhaseOwnershipTest(TestCase):
@@ -709,6 +721,16 @@ class LeasePhaseReleaseTest(TestCase):
         row = _row()
         self.assertEqual((row.pk, row.description, row.status), (ip.pk, "Printer on floor 2", "dhcp"))
 
+    def test_removing_the_marker_wins_over_an_owner_disagreement_of_the_same_claim(self):
+        _reconcile(self.server, [_lease(hostname="host")])
+        ip = self._curate("Printer on floor 2")
+
+        result = _claim_disagreeing(self.server, "one", "two")
+
+        self.assertEqual(result.addresses[ADDRESS].outcome, "conflict")
+        self.assertEqual(_owners(ip), set())
+        self.assertEqual(_row().description, "Printer on floor 2")
+
     def test_a_note_after_the_marker_does_not_release_the_row(self):
         _reconcile(self.server, [_lease(hostname="host")])
         ip = self._curate("[kea-sync: lease] printer on floor 2")
@@ -864,6 +886,26 @@ class LeasePhaseRowFailureTest(TestCase):
         self.assertEqual(set(_links(_row("198.18.0.99"))), {"owner"})
         self.assertEqual(sum("IPAM reconciliation of" in line for line in logs.output), 10)
         self.assertEqual(sum("Further row failures" in line for line in logs.output), 1)
+
+    def test_two_ip_addresses_of_one_address_in_the_sync_vrf_are_reported_with_a_list_link(self):
+        from urllib.parse import parse_qs, urlsplit
+
+        from django.urls import reverse
+
+        server = _server("owner")
+        pks = [NbIP.objects.create(address=f"{ADDRESS}/24", description="[kea-sync: lease]").pk for _ in range(2)]
+
+        report = _reconcile(server, [_lease(hostname="host")])
+
+        self.assertEqual((report.errors, report.created), (1, 0))
+        [duplicate] = report.duplicates
+        self.assertEqual(
+            (duplicate.kea_object, duplicate.rows, duplicate.pks), (f"lease {ADDRESS}", "IP addresses", pks)
+        )
+        url = urlsplit(duplicate.list_url)
+        self.assertEqual(url.path, reverse("ipam:ipaddress_list"))
+        self.assertEqual(parse_qs(url.query), {"address": [ADDRESS], "vrf_id": ["null"]})
+        self.assertFalse(IPAMOwnershipLink.objects.exists())
 
     def test_duplicate_phase_rejected_before_requests_or_writes(self):
         server = _server("owner")

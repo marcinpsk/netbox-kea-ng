@@ -234,8 +234,8 @@ URL request
                         the cached Kea adapters of the two reservations.py ports, in one worker pool)
   → sync.py             (the aggregate Reservation Synchronization State and DCIM MAC synchronization)
   → ipam_reconciliation.py (IPAM Ownership links, stale cleanup, per-row savepoints; ADR 0006)
-  → ipam_ownership.py   (the IPAM Ownership reads of the Lease and Reservation views, and the canonical address text)
-  → ipam_sources.py     (the IPAM Ownership sources: one constant and one row of facts for each; ADR 0006)
+  → ipam_ownership.py   (the IPAM Ownership reads of the Lease and Reservation views)
+  → ipam_sources.py     (the IPAM Ownership sources and owned object kinds, one row of facts for each, and the canonical object text; ADR 0006)
   → ipam_upgrade_barrier.py (the completion receipts and the upgrade barrier: effective sources, adoption waits,
                         upgrade counts; ADR 0006)
   → manual_sync.py      (Manual Sync of one Lease or Reservation: permission verdict, claim, typed outcome; ADR 0011)
@@ -375,6 +375,9 @@ URL request
   phase removes its own stale links. The last link of a Server to an IP address needs a complete lease phase and a complete
   Reservation phase, unless that Server disables Reservation sync. The last link of an IP address follows `stale_ip_cleanup`. A complete Subnet or Pool phase
   drops its own stale links; `Server.sync_deprecate_prefixes_and_ranges` opts in to deprecation, never deletion.
+  One claim procedure (`_claim`) and one stale-link procedure (`_remove_stale_link`) serve every kind; a small adapter
+  per kind (`_AddressKind`, `_PrefixKind`, `_RangeKind`) holds only its own steps. Add a rule to the shared procedure,
+  not to an adapter, unless it belongs to one kind.
   `read_catalogue` pairs the shared snapshot with a cutoff taken before its request. Per-row actions use
   `claim`, which never cleans up. A Lease whose Subnet ID the complete Subnet Catalogue does not hold raises
   `LeaseSubnetAbsent` (not a `ValueError`; a `ValueError` from `claim` is a caller bug), and the job counts it as a
@@ -414,7 +417,7 @@ URL request
   instead of raising it. The rows are main-only (ADR 0007) and not change-logged.
   The apply step has one module for each concept in `integrations/`; a concept module never imports `dhcp_plugin.py`:
   - **`dhcp_plugin.py`**: the integration rule, the permissions, `import_server_config`, `apply_plan` and
-    `sys4_referenced_*`.
+    `is_referenced` (whether a DHCP plugin row references one owned object; the stale cleanup reads it under the row lock).
   - **`dhcp_import_mappings.py`**: the Mapping store, the only `KeaDhcpLink` query of the import (OpenGrep
     `kea-dhcp-mapping-query-outside-store`); `mapping_identity` is in `models.py`.
   - **`dhcp_import_summary.py`**: `ImportSummary`, the entries, ownership outcomes and warnings of one run.
@@ -669,6 +672,11 @@ When a rule below has a matching opengrep rule, a violation fails the local hook
   operation never turns into a 500.
 - **DHCPv6 reservations use `ip-addresses` (list), not `ip-address` (string).** Check
   both fields when inspecting reservation data.
+- **Parse IP address and network text with `ip_parse.py`.** `ipaddress` accepts an IPv6 scope zone
+  (`fe80::1%eth0`) and keeps it in the value, and Kea and NetBox IPAM cannot use it. `ip_parse` parses with
+  `ipaddress` and refuses the zone with netaddr. pydantic parses JSON text with `ipaddress`, so an IP field of a
+  model uses an `ip_parse` field type (`IPAddressField`, `IPv6NetworkField`); `test_ip_parse.py` checks every
+  model. OpenGrep `kea-ip-parse-outside-module` refuses a text parse in another module.
 - **Pass `timeout=` to every `subprocess` call**, in the package, `scripts/`, and the tests.
   A child process that stops responding must fail the caller, not hang it.
 
@@ -737,7 +745,7 @@ resort, reserved for true external boundaries you cannot run locally.
   configuration keys or service names. String templates (f-strings, `.format`, `%`, `+`)
   count when they can build a wire literal. Wire owners are `kea.py`, `kea_paths.py`,
   `integrations/dhcp_import_ledger.py`, `integrations/dhcp_import_fields.py`, `server_configuration.py`, `subnet_catalogue.py`, `reservations.py`,
-  `dhcp_options.py`, `leases.py`, `subnet_settings.py`, and `managed_fields.py`, relative to `netbox_kea/`. The vocabulary of hyphenated
+  `dhcp_options.py`, `leases.py`, `identifiers.py`, `subnet_settings.py`, and `managed_fields.py`, relative to `netbox_kea/`. The vocabulary of hyphenated
   keys includes every key in `accepted-keys.json`.
   The checker excludes these exact modules, tests, and migrations. The transport stub
   `tests/kea_stub.py` may also use wire literals to model Kea responses.

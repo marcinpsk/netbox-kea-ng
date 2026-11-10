@@ -21,10 +21,12 @@ family then sends no event for the changes that it reverted. This has these cons
   synchronized address. On a development host, 10,000 such transactions took 151 s, against 127 s for the same
   changes in one transaction.
 - When the dispatch fails after a COMMIT (for example, the events pipeline cannot reach Redis), the operation
-  stops with an error and the committed rows stay. The IPAM sync job logs the error for that server and counts it.
+  stops and the committed rows stay. The IPAM sync job stops with an error, so it does not sync the servers after
+  that one. The bulk Reservation Sync stops and shows an error on the Reservations tab. A row Sync button shows the
+  sync result and a separate error.
 
 The sync refuses a Reservation row before its first IP address or MAC address write when a hardware address
-is not an EUI-48 or EUI-64 address, or when NetBox has more than one MAC address row for it. A row whose address
+is not an EUI-48 address, or when NetBox has more than one MAC address row for it. A row whose address
 is a conflict is reported as a conflict. The exception is a legacy address in the global table: the sync moves it
 into its VRF before it finds that its description cannot fit, so a bad hardware address refuses that row.
 

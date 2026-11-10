@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-import ipaddress
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
@@ -12,7 +11,7 @@ from typing import Any, cast
 
 from django.utils import timezone
 
-from . import display_cache
+from . import display_cache, ip_parse
 from .constants import Family, IPAddressValue, IPNetworkValue, validate_family
 from .dhcp_options import DHCPOption, OptionDefinition, parse_dhcp_option, parse_option_definition
 from .kea import CandidateConfiguration, KeaCommand, KeaResponse, SubnetDefinition, subnet_network
@@ -816,7 +815,7 @@ def _relay_addresses(
             )
             continue
         try:
-            parsed = ipaddress.ip_address(address)
+            parsed = ip_parse.ip_address(address)
         except (TypeError, ValueError):
             diagnostics.append(
                 Diagnostic(

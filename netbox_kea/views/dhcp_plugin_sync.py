@@ -475,8 +475,8 @@ class ServerDhcpPluginSyncNowView(View):
             logger.exception("The events of the DHCP-plugin import for server %s could not be dispatched", server.name)
             messages.error(
                 request,
-                "The DHCP-plugin import saved its changes, but NetBox could not dispatch their events, "
-                "and the import stopped. See the server logs.",
+                "The DHCP-plugin import saved its changes, but an event dispatch failed, and some events "
+                "may already have been sent. The import stopped. See the server logs.",
             )
             return redirect
         except Exception:

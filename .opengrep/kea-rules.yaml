@@ -603,6 +603,40 @@ rules:
       - pattern: requests.head(...)
       - pattern: requests.request(...)
 
+  - id: kea-ip-parse-outside-module
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Parse IP address and network text with netbox_kea/ip_parse.py. ipaddress accepts an IPv6 scope
+      zone (fe80::1%eth0) and keeps it in the value, and Kea and NetBox IPAM cannot use it. ip_parse
+      refuses the zone with netaddr. An int literal is not text, so the rule permits it. An (address,
+      length) tuple is matched: ipaddress parses its address element as text. Limit: netaddr.IPNetwork
+      is not matched, because the IPAM writes build it from parsed values.
+    metadata:
+      category: correctness
+      confidence: HIGH
+    paths:
+      include:
+        - "netbox_kea/**"
+        - "kea-ip-parse-outside-module.py"
+      exclude:
+        - "netbox_kea/ip_parse.py"
+        - "netbox_kea/tests/**"
+        - "netbox_kea/migrations/**"
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: ipaddress.$PARSE($VALUE, ...)
+                  - pattern: ipaddress.$PARSE(..., address=$VALUE, ...)
+              - metavariable-regex:
+                  metavariable: $PARSE
+                  regex: ^(ip_address|ip_network|ip_interface|IPv4Address|IPv6Address|IPv4Network|IPv6Network|IPv4Interface|IPv6Interface)$
+          - pattern: netaddr.IPAddress($VALUE, ...)
+      - metavariable-regex:
+          metavariable: $VALUE
+          regex: ^(?!\d+$)
+
   - id: kea-mac-sync-write-without-savepoint
     languages: [python]
     severity: ERROR

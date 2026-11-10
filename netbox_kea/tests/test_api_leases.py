@@ -138,7 +138,7 @@ class TestLeaseAPISubnetIdBounds(_APITestBase):
                     response = self.api_client.get(url, {"subnet_id": subnet_id})
 
                     self.assertEqual(response.status_code, 400)
-                    self.assertEqual(response.json(), {"detail": f"subnet_id must be from 1 to {MAX_SUBNET_ID}."})
+                    self.assertEqual(response.json(), {"detail": "subnet_id: Enter a Subnet ID from 1 to 4294967294."})
                     self.assertEqual(kea.commands(), [])
 
     def test_subnet_ids_that_are_not_ascii_decimal_text_are_refused_without_kea_requests(self):
@@ -149,7 +149,7 @@ class TestLeaseAPISubnetIdBounds(_APITestBase):
                     response = self.api_client.get(url, {"subnet_id": subnet_id})
 
                     self.assertEqual(response.status_code, 400)
-                    self.assertEqual(response.json(), {"detail": "subnet_id must be an integer."})
+                    self.assertEqual(response.json(), {"detail": "subnet_id: Enter a Subnet ID from 1 to 4294967294."})
                     self.assertEqual(kea.commands(), [])
 
 
@@ -166,15 +166,15 @@ class TestLeaseAPIFormatSuffix(_APITestBase):
 
                 self.assertEqual(plain.status_code, 400)
                 self.assertEqual(suffixed.status_code, 400)
-                self.assertEqual(suffixed.json(), {"detail": "subnet_id must be an integer."})
+                self.assertEqual(suffixed.json(), {"detail": "subnet_id: Enter a Subnet ID from 1 to 4294967294."})
                 self.assertEqual(suffixed.json(), plain.json())
                 self.assertEqual(kea.commands(), [])
 
     def test_subnet_id_and_state_must_be_ascii_decimal_text(self):
         url = reverse("plugins-api:netbox_kea-api:server-leases4", args=[self.server.pk])
         cases = (
-            ({"subnet_id": "\u0661\u0662"}, "subnet_id must be an integer."),
-            ({"subnet_id": " 12"}, "subnet_id must be an integer."),
+            ({"subnet_id": "\u0661\u0662"}, "subnet_id: Enter a Subnet ID from 1 to 4294967294."),
+            ({"subnet_id": " 12"}, "subnet_id: Enter a Subnet ID from 1 to 4294967294."),
             ({"subnet_id": "12", "state": "\u0661"}, "state must be a Kea lease state code from 0 to 4."),
         )
         for params, message in cases:
@@ -200,6 +200,71 @@ class TestLeaseAPIFormatSuffix(_APITestBase):
                 self.assertEqual(suffixed.status_code, 403)
                 self.assertEqual(suffixed.json(), plain.json())
                 self.assertEqual(kea.commands(), [])
+
+
+class TestLeaseAPIQueryParse(_APITestBase):
+    """The REST Lease search takes exactly one selector and refuses a bad value before any Kea request."""
+
+    def _get(self, family, params):
+        url = reverse(f"plugins-api:netbox_kea-api:server-leases{family}", args=[self.server.pk])
+        with stub_kea({}) as kea:
+            response = self.api_client.get(url, params)
+        self.assertEqual(kea.commands(), [])
+        return response
+
+    def test_more_than_one_selector_is_refused(self):
+        for family, params in (
+            (4, {"ip_address": "10.0.0.100", "subnet_id": "1"}),
+            (4, {"hw_address": "aa:bb:cc:dd:ee:ff", "client_id": "01:aa:bb"}),
+            (6, {"duid": "00:01:02:03", "hostname": "host.example.com"}),
+        ):
+            with self.subTest(params=params):
+                response = self._get(family, params)
+                self.assertEqual(response.status_code, 400)
+                expected = (
+                    "Give exactly one of these parameters: ip_address, hw_address, client_id, hostname, subnet_id."
+                    if family == 4
+                    else "Give exactly one of these parameters: ip_address, duid, hostname, subnet_id."
+                )
+                self.assertEqual(response.json(), {"detail": expected})
+
+    def test_a_selector_of_the_other_family_is_refused(self):
+        for family, params, expected in (
+            (4, {"duid": "00:01:02:03"}, "duid is only supported for DHCPv6."),
+            (6, {"hw_address": "aa:bb:cc:dd:ee:ff"}, "hw_address is only supported for DHCPv4."),
+            (6, {"client_id": "01:aa:bb"}, "client_id is only supported for DHCPv4."),
+        ):
+            with self.subTest(params=params):
+                response = self._get(family, params)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json(), {"detail": expected})
+
+    def test_a_bad_client_identifier_is_refused_with_its_parameter_name(self):
+        for family, params, expected in (
+            (6, {"duid": "00:01"}, "duid: Enter a DUID of 3 to 130 hexadecimal octets."),
+            (4, {"hw_address": "not-hex"}, "hw_address: Enter a hardware address of 1 to 20 hexadecimal octets."),
+            (4, {"client_id": "01"}, "client_id: Enter a client ID of 2 to 255 hexadecimal octets."),
+        ):
+            with self.subTest(params=params):
+                response = self._get(family, params)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json(), {"detail": expected})
+
+    def test_a_scoped_ipv6_address_is_refused_before_kea(self):
+        response = self._get(6, {"ip_address": "fe80::1%eth0"})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json(), {"detail": "ip_address: Enter an IPv6 address."})
+
+    def test_a_client_id_search_sends_the_client_id_query(self):
+        url = reverse("plugins-api:netbox_kea-api:server-leases4", args=[self.server.pk])
+        with stub_kea({"lease4-get-by-client-id": _LEASE4_LIST_RESPONSE}) as kea:
+            response = self.api_client.get(url, {"client_id": "01-AA-BB"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(kea.commands(), ["lease4-get-by-client-id"])
+        self.assertEqual(kea.bodies("lease4-get-by-client-id")[0]["arguments"], {"client-id": "01:aa:bb"})
+        self.assertEqual(response.json()["query"]["selector"], "client_id")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -338,9 +403,9 @@ class TestLeaseAPIState(_APITestBase):
         self.assertEqual(response.json()["query"]["state"], "declined")
         self.assertEqual(kea.bodies("lease4-get-by-hostname")[0]["arguments"], {"hostname": "host.example.com"})
 
-    def test_state_filters_the_address_search_that_an_earlier_filter_selects(self):
+    def test_state_filters_an_address_search(self):
         with stub_kea({"lease4-get": _LEASE4_RESPONSE}) as kea:
-            response = self.api_client.get(self._url(), {"ip_address": "10.0.0.100", "subnet_id": "1", "state": "1"})
+            response = self.api_client.get(self._url(), {"ip_address": "10.0.0.100", "state": "1"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["results"], [])
@@ -355,7 +420,9 @@ class TestLeaseAPIState(_APITestBase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(
             response.json(),
-            {"detail": "Kea cannot safely measure this lease state. Use an exact IP or client identifier search."},
+            {
+                "detail": "state: Kea cannot safely measure this lease state. Use an exact IP or client identifier search."
+            },
         )
         self.assertEqual(kea.commands(), [])
 

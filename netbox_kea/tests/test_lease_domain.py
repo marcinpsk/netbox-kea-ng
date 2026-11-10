@@ -264,6 +264,7 @@ def test_recorded_refusals_ground_the_value_rules():
         (6, "2001:db8:100:100::", {"prefix-len": 0}, ("out-of-range", "prefix-len")),
         (6, "2001:db8:100:100::", {"prefix-len": 129}, ("out-of-range", "prefix-len")),
         (6, "2001:db8:100:100::", {"prefix-len": "56"}, ("invalid-type", "prefix-len")),
+        (6, "2001:db8:100:100::", {"ip-address": "fe80::%eth0"}, ("invalid-address", "ip-address")),
     ],
 )
 def test_a_malformed_field_gives_one_stable_diagnostic(family, address, change, expected):
@@ -783,7 +784,6 @@ def test_a_short_page_that_repeats_the_previous_page_fails_the_read():
 
 
 def test_query_selectors_and_state_filters_match_lease_search():
-    client = kea_client("http://kea.example.com")
     selectors = (
         constants.BY_IP,
         constants.BY_HW_ADDRESS,
@@ -801,7 +801,7 @@ def test_query_selectors_and_state_filters_match_lease_search():
                 LeaseQuery(family=family, selector=selector, value=value)
             except ValidationError:
                 with pytest.raises(ValueError, match="not supported"):
-                    client.lease_search(family, selector, value, server_id=1)
+                    leases.parse_lease_query(family, selector, str(value))
             else:
                 assert selector in leases._QUERY_SELECTORS[family]
     assert leases._QUERY_SELECTORS[4] - {leases.ALL_LEASES} == {
@@ -835,3 +835,90 @@ def test_client_identifiers_accept_the_separator_forms_that_reservations_accept(
         )
     request = DHCPv6LeaseRequest(address=ipaddress.IPv6Address("2001:db8:1::20"), duid="00-01-00-01-AA-BB", iaid=1)
     assert request.duid == "00:01:00:01:aa:bb"
+
+
+def _octets(count: int) -> str:
+    return ":".join(["ab"] * count)
+
+
+@pytest.mark.parametrize(
+    ("family", "selector", "text", "value"),
+    [
+        (4, constants.BY_IP, "198.18.0.10", "198.18.0.10"),
+        (6, constants.BY_IP, "2001:DB8::1", "2001:db8::1"),
+        (4, constants.BY_SUBNET, "198.18.0.0/24", "198.18.0.0/24"),
+        (6, constants.BY_SUBNET, "2001:DB8::/64", "2001:db8::/64"),
+        (4, constants.BY_SUBNET_ID, "4294967294", 4294967294),
+        (6, constants.BY_HOSTNAME, "host.example.com", "host.example.com"),
+        (4, constants.BY_HW_ADDRESS, "AA-BB-CC-DD-EE-FF", "aa:bb:cc:dd:ee:ff"),
+        (4, constants.BY_HW_ADDRESS, "a:b:c", "0a:0b:0c"),
+        (4, constants.BY_HW_ADDRESS, "aabb.ccdd.eeff", "aa:bb:cc:dd:ee:ff"),
+        (4, constants.BY_HW_ADDRESS, "AABBCC", "aa:bb:cc"),
+        # Kea 3.2.0 Lease bounds: hw-address 1-20, client-id 2-255, DUID 3-130 octets.
+        (4, constants.BY_HW_ADDRESS, _octets(1), _octets(1)),
+        (4, constants.BY_HW_ADDRESS, _octets(20), _octets(20)),
+        (4, constants.BY_CLIENT_ID, _octets(2), _octets(2)),
+        (4, constants.BY_CLIENT_ID, _octets(255), _octets(255)),
+        (6, constants.BY_DUID, _octets(3), _octets(3)),
+        (6, constants.BY_DUID, _octets(130), _octets(130)),
+    ],
+)
+def test_a_lease_query_parses_to_its_normalized_value(family, selector, text, value):
+    query = leases.parse_lease_query(family, selector, text)
+    assert query == LeaseQuery(family=family, selector=selector, value=value)
+
+
+_HW = "Enter a hardware address of 1 to 20 hexadecimal octets."
+_CLIENT_ID = "Enter a client ID of 2 to 255 hexadecimal octets."
+_DUID = "Enter a DUID of 3 to 130 hexadecimal octets."
+_SUBNET_ID = "Enter a Subnet ID from 1 to 4294967294."
+
+
+@pytest.mark.parametrize(
+    ("family", "selector", "text", "message"),
+    [
+        (4, constants.BY_IP, "2001:db8::1", "Enter an IPv4 address."),
+        (6, constants.BY_IP, "198.18.0.10/32", "Enter an IPv6 address."),
+        (4, constants.BY_SUBNET, "198.18.0.0", "Enter an IPv4 Subnet in CIDR notation."),
+        (6, constants.BY_SUBNET, "198.18.0.0/24", "Enter an IPv6 Subnet in CIDR notation."),
+        (6, constants.BY_IP, "fe80::1%eth0", "Enter an IPv6 address."),
+        (6, constants.BY_SUBNET, "fe80::%eth0/64", "Enter an IPv6 Subnet in CIDR notation."),
+        (4, constants.BY_SUBNET, "198.18.0.5/24", "198.18.0.5/24 is not a valid prefix. Did you mean 198.18.0.0/24?"),
+        (4, constants.BY_SUBNET_ID, "0", _SUBNET_ID),
+        (4, constants.BY_SUBNET_ID, "4294967295", _SUBNET_ID),
+        (4, constants.BY_SUBNET_ID, "abc", _SUBNET_ID),
+        (4, constants.BY_SUBNET_ID, " 12", _SUBNET_ID),
+        (4, constants.BY_SUBNET_ID, "١٢", _SUBNET_ID),
+        (4, constants.BY_HOSTNAME, "", "Enter a hostname."),
+        (4, constants.BY_HW_ADDRESS, "", _HW),
+        (4, constants.BY_HW_ADDRESS, _octets(21), _HW),
+        (4, constants.BY_HW_ADDRESS, "aa:bbcc", _HW),
+        (4, constants.BY_HW_ADDRESS, "zz", _HW),
+        (4, constants.BY_CLIENT_ID, _octets(1), _CLIENT_ID),
+        (4, constants.BY_CLIENT_ID, _octets(256), _CLIENT_ID),
+        (6, constants.BY_DUID, _octets(2), _DUID),
+        (6, constants.BY_DUID, _octets(131), _DUID),
+        (6, constants.BY_DUID, "abc", _DUID),
+    ],
+)
+def test_a_lease_query_value_that_does_not_parse_names_the_value(family, selector, text, message):
+    with pytest.raises(leases.LeaseQueryError) as raised:
+        leases.parse_lease_query(family, selector, text)
+    assert (raised.value.field, str(raised.value)) == ("value", message)
+
+
+def test_a_subnet_query_refuses_a_state_that_kea_cannot_count_on_the_state():
+    assert leases.parse_lease_query(4, constants.BY_SUBNET_ID, "1", "declined").state == "declined"
+    with pytest.raises(leases.LeaseQueryError) as raised:
+        leases.parse_lease_query(6, constants.BY_SUBNET, "2001:db8::/64", "released")
+    assert (raised.value.field, str(raised.value)) == (
+        "state",
+        "Kea cannot safely measure this lease state. Use an exact IP or client identifier search.",
+    )
+
+
+def test_a_selector_of_the_other_family_is_a_caller_error():
+    for family, selector in ((4, constants.BY_DUID), (6, constants.BY_CLIENT_ID), (6, constants.BY_HW_ADDRESS)):
+        with pytest.raises(ValueError, match="not supported") as raised:
+            leases.parse_lease_query(family, selector, "aa:bb:cc")
+        assert not isinstance(raised.value, leases.LeaseQueryError)

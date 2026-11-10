@@ -4424,6 +4424,39 @@ class DhcpPluginStaleCleanupGuardTest(TestCase):
                 self.assertIn(IPAddress.objects.get(pk=referenced.pk).status, {"reserved", "dhcp"})
                 self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=referenced).exists())
 
+    def test_cleanup_keeps_an_ip_that_gains_a_reference_after_the_cleanup_started(self):
+        from django.db.models.signals import pre_delete
+        from ipam.models import IPAddress
+        from netbox_dhcp.models import DHCPServer, HostReservation
+
+        from netbox_kea.models import IPAMOwnershipLink
+
+        from .test_ipam_reconciliation import _lease, _reconcile, _row
+
+        dhcp_server = DHCPServer.objects.create(name="late-reference")
+        referenced: list[IPAddress] = []
+
+        def reference_the_other_address(sender, instance, **kwargs):
+            # The first stale delete adds a DHCP plugin reference to the other address.
+            if referenced:
+                return
+            other = next(address for address in addresses if address.pk != instance.pk)
+            referenced.append(other)
+            HostReservation.objects.create(name="late-reference", dhcp_server=dhcp_server, ipv4_address=other)
+
+        with with_sync_config(stale_ip_cleanup="remove"):
+            _reconcile(self.server, [_lease("10.0.0.5"), _lease("10.0.0.6")])
+            addresses = [_row("10.0.0.5"), _row("10.0.0.6")]
+            pre_delete.connect(reference_the_other_address, sender=IPAddress, weak=False)
+            try:
+                report = _reconcile(self.server, [])
+            finally:
+                pre_delete.disconnect(reference_the_other_address, sender=IPAddress)
+
+        self.assertEqual((report.removed, report.errors), (1, 0))
+        self.assertTrue(HostReservation.objects.filter(ipv4_address=referenced[0]).exists())
+        self.assertFalse(IPAMOwnershipLink.objects.filter(ip_address=referenced[0]).exists())
+
 
 @without_dhcp_plugin()
 class ImportSummaryCompletenessTest(TestCase):

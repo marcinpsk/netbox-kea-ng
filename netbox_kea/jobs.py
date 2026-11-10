@@ -506,7 +506,8 @@ class KeaIpamSyncJob(JobRunner):
             return False
         except event_scope.EventDispatchError:
             self.logger.error(  # noqa: TRY400 - NetBox records the traceback of the raised error
-                f"{run} saved its changes, but NetBox could not dispatch their events. The job stops."
+                f"{run} saved its changes, but an event dispatch failed, and some events may already have been sent."
+                " The job stops."
             )
             raise
         except Exception as exc:
