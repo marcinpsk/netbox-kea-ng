@@ -17,9 +17,9 @@ from django.db import DatabaseError
 from extras.models import JournalEntry
 
 from . import event_scope
-from .leases import DHCPv4LeaseRequest, DHCPv6LeaseRequest, Lease, LeaseRequest, shown_lease
+from .leases import DHCPv4LeaseRequest, DHCPv6LeaseRequest, Lease, LeaseEdit, LeaseRequest, shown_lease
 from .manual_sync import ManualSyncOutcome, refusal, sync_lease
-from .signals import lease_added, leases_deleted
+from .signals import lease_added, lease_updated, leases_deleted
 
 if TYPE_CHECKING:
     from django.dispatch import Signal
@@ -65,13 +65,17 @@ def _worst(statuses: list[SideEffectStatus]) -> SideEffectStatus:
     return next((status for status in ("events-failed", "failed") if status in statuses), "succeeded")
 
 
-LeaseAction = Literal["added", "deleted"]
+LeaseAction = Literal["added", "updated", "deleted"]
 
 #: Why a Lease add ran no Manual Sync: the operator did not ask for one, or the display read observed no Lease.
 LeaseSyncSkip = Literal["not-requested", "not-read-back"]
 
 #: The signal that each Lease action sends.
-LEASE_SIGNAL_NAMES: dict[LeaseAction, str] = {"added": "lease_added", "deleted": "leases_deleted"}
+LEASE_SIGNAL_NAMES: dict[LeaseAction, str] = {
+    "added": "lease_added",
+    "updated": "lease_updated",
+    "deleted": "leases_deleted",
+}
 
 
 @dataclass(frozen=True)
@@ -92,6 +96,14 @@ class LeaseAdded:
     observed: Lease | None
     #: The manual Sync verdict when the operator asked for a Manual Sync, else None.
     sync: SyncGate | None = None
+
+
+@dataclass(frozen=True)
+class LeaseUpdated:
+    """One Lease edit that Kea applied: the Lease that the fresh read before it observed, and the written fields."""
+
+    before: Lease
+    edit: LeaseEdit
 
 
 @dataclass(frozen=True)
@@ -124,6 +136,19 @@ def _lease_journal_comments(
     return "; ".join(parts)
 
 
+def _lease_update_comments(before: Lease, edit: LeaseEdit) -> str:
+    """Return the journal text of a Lease edit: the address and each written field."""
+    parts = [f"Lease updated: {shown_lease(before).label}"]
+    if edit.client_identifier is not None:
+        identifier = edit.client_identifier
+        parts.append(f"hw-address: {identifier}" if before.family == 4 else f"duid: {identifier}")
+    if edit.hostname is not None:
+        parts.append(f"hostname: {edit.hostname}" if edit.hostname else "hostname cleared")
+    if edit.valid_lifetime is not None:
+        parts.append(f"valid-lft: {edit.valid_lifetime}")
+    return "; ".join(parts)
+
+
 def _send_lease_added(server: Server, creation: LeaseRequest, observed: Lease | None, request: Any) -> SideEffectStatus:
     return send_signal(
         lease_added,
@@ -147,7 +172,7 @@ def _sync_added(server: Server, change: LeaseAdded) -> ManualSyncOutcome | Lease
 
 
 def lease_after_apply(
-    server: Server, user: Any, change: LeaseAdded | LeasesDeleted, *, request: Any
+    server: Server, user: Any, change: LeaseAdded | LeaseUpdated | LeasesDeleted, *, request: Any
 ) -> LeaseAfterApplyFacts:
     """Write the journal entry, send the Lease signal and run the requested Manual Sync of an applied change."""
     if isinstance(change, LeaseAdded):
@@ -162,6 +187,18 @@ def lease_after_apply(
         journal = write_journal(server, user, comments)
         signal = _send_lease_added(server, creation, change.observed, request)
         return LeaseAfterApplyFacts("added", journal, signal, _sync_added(server, change))
+    if isinstance(change, LeaseUpdated):
+        journal = write_journal(server, user, _lease_update_comments(change.before, change.edit))
+        signal = send_signal(
+            lease_updated,
+            LEASE_SIGNAL_NAMES["updated"],
+            server=server,
+            before=change.before,
+            edit=change.edit,
+            dhcp_version=change.before.family,
+            request=request,
+        )
+        return LeaseAfterApplyFacts("updated", journal, signal)
     if not change.leases:
         raise ValueError("An applied Lease delete needs the deleted Leases.")
     labels = [shown_lease(lease).label for lease in change.leases]
