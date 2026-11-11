@@ -271,11 +271,12 @@ _Avoid_: Ghost IP, stale IP, orphan
 
 **Complete IPAM Observation**:
 The recorded fact that one workflow of a Server, the IPAM synchronization job or the DHCP Import, finished a run in
-which it observed every IPAM Ownership source that it can own in full, and nothing failed. A source is observed in
-full when its Kea read was complete and every object it reports was claimed. A Reservation that the DHCP Import does
-not write still counts for the Reservation source, because its addresses are claimed first, but not for the source of
-its delegated prefixes. Until each enabled workflow of a Server has one after the ownership upgrade, the cleanup keeps
-the last link of an adopted object.
+which it observed every IPAM Ownership source that it can own in full, and nothing failed. A failed Option or Option
+Definition write does not count, because it changes no IPAM object. A source is observed in full when its Kea read was
+complete and every object it reports was claimed. A Reservation that the DHCP Import does not write still counts for
+the Reservation source, because its addresses are claimed first, but not for the source of its delegated prefixes.
+Until each enabled workflow of a Server has one after the ownership upgrade, the cleanup keeps the last link of an
+adopted object.
 _Avoid_: receipt, initial observation
 
 **Sync Plan**:

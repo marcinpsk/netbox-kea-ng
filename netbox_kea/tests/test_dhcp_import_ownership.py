@@ -370,6 +370,24 @@ class ImportOwnershipTest(TestCase):
         self.server.refresh_from_db()
         self.assertEqual(self.server.ipam_initial_observations, {})
 
+    def test_a_failed_option_write_still_records_the_import_receipt(self):
+        from django.contrib.contenttypes.models import ContentType
+        from extras.models import CustomField
+
+        self.server.sync_enabled = False
+        self.server.sync_dhcp_plugin_enabled = True
+        self.server.save()
+        # A required custom field without a value: Option.clean() refuses every Option, which changes no IPAM object.
+        required = CustomField.objects.create(name="kea_required_note", type="text", required=True)
+        required.object_types.set([ContentType.objects.get_for_model(apps.get_model("netbox_dhcp", "Option"))])
+        config = {"subnet6": [{**self.config["subnet6"][0], "option-data": [{"code": 23, "data": "2001:db8::53"}]}]}
+        with stub_kea(_sync_responses({6: config}, {6: []})):
+            results = run_dhcp_plugin_import(self.server, DhcpImportTrigger.MANUAL)
+        summary = results[0][1]
+        self.assertEqual(summary.count(Kind.OPTION, Reason.WRITE_FAILED), 1, summary.warnings)
+        self.server.refresh_from_db()
+        self.assertIn("import", self.server.ipam_initial_observations)
+
     def test_import_only_owner_protects_addresses_prefixes_and_ranges(self):
         from netbox_kea.jobs import KeaIpamSyncJob
         from netbox_kea.tests.test_jobs import _lease_page, _make_job
